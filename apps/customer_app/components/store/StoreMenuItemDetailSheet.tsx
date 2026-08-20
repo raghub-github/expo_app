@@ -20,13 +20,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppText } from "@/components/AppText";
 import { StoreTheme } from "@/constants/storeTheme";
 import { StoreFonts } from "@/constants/storeTypography";
-import type { ItemOfferDisplay } from "@/lib/itemOfferDisplay";
-import { formatOfferRupee } from "@/lib/itemOfferDisplay";
+import { formatOfferRupee, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import type { MenuItem } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useCookingSheetKeyboardDock } from "@/hooks/useCookingSheetKeyboardDock";
 import { DietIndicator } from "./DietIndicator";
 import { getBasePrice, getItemDiet, getSellingPrice } from "./storeMenuUtils";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 import {
   normalizeOrderItemSpecialInstructions,
   ORDER_ITEM_SPECIAL_INSTRUCTIONS_MAX_LENGTH,
@@ -52,7 +52,7 @@ const STEPPER_WIDTH = 118;
 const FOOTER_H_PAD = 14;
 const FOOTER_GAP = 10;
 
-function WaveTopEdge({ width }: { width: number }) {
+function WaveTopEdge({ width, fill }: { width: number; fill: string }) {
   const w = Math.max(320, width);
   const sy = WAVE_SIDE_Y;
   const py = WAVE_PEAK_Y;
@@ -76,7 +76,7 @@ function WaveTopEdge({ width }: { width: number }) {
 
   return (
     <Svg width={w} height={WAVE_HEIGHT} style={styles.wave} pointerEvents="none">
-      <Path d={fillPath} fill="#FFFFFF" />
+      <Path d={fillPath} fill={fill} />
       <Path d={strokePath} stroke={ADD_GREEN} strokeWidth={1.5} fill="none" />
     </Svg>
   );
@@ -103,17 +103,18 @@ export type StoreMenuItemDetailSheetProps = {
 export function StoreMenuItemDetailSheet({
   visible,
   item,
-  isBookmarked = false,
+  isBookmarked: _isBookmarked = false,
   isStoreClosed = false,
   itemOffer = null,
   initialSelection = null,
   onClose,
   onAdd,
-  onBookmark,
+  onBookmark: _onBookmark,
   onShare,
 }: StoreMenuItemDetailSheetProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const dark = useMerchantUiDark();
   const scrollRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
   const requestYRef = useRef(0);
@@ -187,19 +188,8 @@ export function StoreMenuItemDetailSheet({
   );
   const sellingPrice = getSellingPrice(item);
   const basePrice = getBasePrice(item);
-  const offerPrice =
-    itemOffer?.kind !== "bogo" && itemOffer?.offerPrice != null
-      ? itemOffer.offerPrice
-      : null;
-  const payablePrice =
-    offerPrice != null && offerPrice < sellingPrice ? offerPrice : sellingPrice;
-  const showStrikePrice =
-    (offerPrice != null && offerPrice < sellingPrice) ||
-    (basePrice != null && basePrice > payablePrice);
-  const strikePrice =
-    offerPrice != null && offerPrice < sellingPrice
-      ? itemOffer?.strikePrice ?? sellingPrice
-      : basePrice;
+  const { payable: payablePrice, strike: strikePrice, showStrike: showStrikePrice } =
+    resolveMenuOfferPriceDisplay({ sellingPrice, basePrice, itemOffer });
   const total = payablePrice * quantity;
   const diet = getItemDiet(item);
 
@@ -241,27 +231,17 @@ export function StoreMenuItemDetailSheet({
     <View style={styles.actionRow}>
       <TouchableOpacity
         accessibilityRole="button"
-        accessibilityLabel={isBookmarked ? "Remove bookmark" : "Bookmark dish"}
-        hitSlop={8}
-        onPress={() => onBookmark?.(item)}
-        activeOpacity={0.7}
-        style={styles.circleAction}
-      >
-        <Ionicons
-          name={isBookmarked ? "bookmark" : "bookmark-outline"}
-          size={20}
-          color={isBookmarked ? StoreTheme.accentMint : StoreTheme.textSecondary}
-        />
-      </TouchableOpacity>
-      <TouchableOpacity
-        accessibilityRole="button"
         accessibilityLabel="Share dish"
         hitSlop={8}
         onPress={() => onShare?.(item)}
         activeOpacity={0.7}
-        style={styles.circleAction}
+        style={[styles.circleAction, dark && styles.circleActionDark]}
       >
-        <Ionicons name="share-social-outline" size={20} color={StoreTheme.textSecondary} />
+        <Ionicons
+          name="share-social-outline"
+          size={20}
+          color={dark ? MerchantDarkPalette.textMuted : StoreTheme.textSecondary}
+        />
       </TouchableOpacity>
     </View>
   );
@@ -295,9 +275,12 @@ export function StoreMenuItemDetailSheet({
           // Keep touches on the sheet from falling through to the backdrop during lift.
           onStartShouldSetResponder={() => true}
         >
-          <WaveTopEdge width={windowWidth} />
+          <WaveTopEdge
+            width={windowWidth}
+            fill={dark ? MerchantDarkPalette.surface : "#FFFFFF"}
+          />
 
-          <View style={[styles.body, { width: windowWidth }]}>
+          <View style={[styles.body, dark && styles.bodyDark, { width: windowWidth }]}>
             {/*
               SINGLE TREE — never branch on keyboard visibility.
               TextInput stays mounted for the lifetime of the open sheet.
@@ -321,7 +304,7 @@ export function StoreMenuItemDetailSheet({
                 instant, deterministic swap driven purely by `inputFocused`.
               */}
               {inputFocused ? (
-                <View key="header" style={styles.compactHeaderCard}>
+                <View key="header" style={[styles.compactHeaderCard, dark && styles.detailsCardDark]}>
                   <View style={styles.compactThumbWrap}>
                     {hasImage ? (
                       <Image
@@ -337,7 +320,7 @@ export function StoreMenuItemDetailSheet({
                       <DietIndicator type={diet} />
                     </View>
                   </View>
-                  <AppText style={styles.compactName} numberOfLines={2}>
+                  <AppText style={[styles.compactName, dark && styles.titleDark]} numberOfLines={2}>
                     {item.name}
                   </AppText>
                   {dishActions}
@@ -352,15 +335,16 @@ export function StoreMenuItemDetailSheet({
                         contentFit="contain"
                         cachePolicy="memory-disk"
                         transition={120}
+                        placeholder={{ color: "transparent" }}
                         onError={() => setImageFailed(true)}
                       />
-                      <View style={styles.dietOnImage}>
+                      <View style={[styles.dietOnImage, dark && styles.dietOnImageDark]}>
                         <DietIndicator type={diet} />
                       </View>
                     </View>
                   ) : null}
 
-                  <View style={styles.detailsCard}>
+                  <View style={[styles.detailsCard, dark && styles.detailsCardDark]}>
                     {!hasImage ? (
                       <View style={styles.dietRow}>
                         <DietIndicator type={diet} />
@@ -368,14 +352,14 @@ export function StoreMenuItemDetailSheet({
                     ) : null}
                     <View style={styles.titleActionsRow}>
                       <View style={styles.titleBlock}>
-                        <AppText style={styles.title}>{item.name}</AppText>
+                        <AppText style={[styles.title, dark && styles.titleDark]}>{item.name}</AppText>
                         <View style={styles.priceRow}>
                           {showStrikePrice && strikePrice != null ? (
-                            <AppText style={styles.strikePrice}>
+                            <AppText style={[styles.strikePrice, dark && styles.strikePriceDark]}>
                               {formatOfferRupee(strikePrice)}
                             </AppText>
                           ) : null}
-                          <AppText style={styles.price}>
+                          <AppText style={[styles.price, dark && styles.titleDark]}>
                             {formatOfferRupee(payablePrice)}
                           </AppText>
                           {itemOffer ? (
@@ -389,7 +373,7 @@ export function StoreMenuItemDetailSheet({
                     </View>
 
                     {item.description ? (
-                      <AppText style={styles.description}>{item.description}</AppText>
+                      <AppText style={[styles.description, dark && styles.descriptionDark]}>{item.description}</AppText>
                     ) : null}
                     {isCustomisable ? (
                       <AppText style={styles.customisable}>Customisable</AppText>
@@ -400,17 +384,17 @@ export function StoreMenuItemDetailSheet({
 
               <View
                 key="request"
-                style={styles.requestCard}
+                style={[styles.requestCard, dark && styles.requestCardDark]}
                 onLayout={(e) => {
                   requestYRef.current = e.nativeEvent.layout.y;
                 }}
               >
-                <AppText style={styles.requestTitle}>Add a cooking request (optional)</AppText>
-                <AppText style={styles.requestHint}>
+                <AppText style={[styles.requestTitle, dark && styles.titleDark]}>Add a cooking request (optional)</AppText>
+                <AppText style={[styles.requestHint, dark && styles.descriptionDark]}>
                   The restaurant will try its best to fulfil your requests. However, refunds
                   or cancellations related to such requests won&apos;t be possible.
                 </AppText>
-                <View style={styles.inputWrap} onTouchStart={enterCompact}>
+                <View style={[styles.inputWrap, dark && styles.inputWrapDark]} onTouchStart={enterCompact}>
                   <TextInput
                     ref={inputRef}
                     value={cookingRequest}
@@ -421,15 +405,15 @@ export function StoreMenuItemDetailSheet({
                     onFocus={handleInputFocus}
                     onBlur={handleInputBlur}
                     placeholder="e.g. Don’t make it too spicy"
-                    placeholderTextColor="#A7AAB3"
+                    placeholderTextColor={dark ? MerchantDarkPalette.textDim : "#A7AAB3"}
                     multiline
                     textAlignVertical="top"
-                    style={styles.input}
+                    style={[styles.input, dark && styles.inputDark]}
                     maxLength={MAX_NOTE_LENGTH}
                     blurOnSubmit={false}
                     accessibilityLabel="Cooking request"
                   />
-                  <AppText style={styles.counter}>
+                  <AppText style={[styles.counter, dark && styles.counterDark]}>
                     {MAX_NOTE_LENGTH - cookingRequest.length}
                   </AppText>
                 </View>
@@ -439,13 +423,14 @@ export function StoreMenuItemDetailSheet({
             <View
               style={[
                 styles.footer,
+                dark && styles.footerDark,
                 {
                   width: windowWidth,
                   paddingBottom: footerPadBottom,
                 },
               ]}
             >
-              <View style={styles.stepper}>
+              <View style={[styles.stepper, dark && styles.stepperDark]}>
                 <TouchableOpacity
                   accessibilityRole="button"
                   accessibilityLabel="Decrease quantity"
@@ -457,13 +442,14 @@ export function StoreMenuItemDetailSheet({
                   <AppText
                     style={[
                       styles.stepperGlyph,
+                      dark && styles.stepperGlyphDark,
                       (quantity <= 1 || isCustomisable) && styles.stepperGlyphDisabled,
                     ]}
                   >
                     −
                   </AppText>
                 </TouchableOpacity>
-                <AppText style={styles.quantity}>{quantity}</AppText>
+                <AppText style={[styles.quantity, dark && styles.quantityDark]}>{quantity}</AppText>
                 <TouchableOpacity
                   accessibilityRole="button"
                   accessibilityLabel="Increase quantity"
@@ -475,6 +461,7 @@ export function StoreMenuItemDetailSheet({
                   <AppText
                     style={[
                       styles.stepperGlyph,
+                      dark && styles.stepperGlyphDark,
                       isCustomisable && styles.stepperGlyphDisabled,
                     ]}
                   >
@@ -532,18 +519,19 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     overflow: "hidden",
   },
+  bodyDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+  },
   scrollContent: {
     paddingTop: 6,
     paddingBottom: 10,
   },
   heroWrap: {
     alignSelf: "center",
-    width: "54%",
-    maxWidth: 220,
+    width: "58%",
+    maxWidth: 240,
     height: HERO_HEIGHT,
     marginTop: 2,
-    overflow: "hidden",
-    borderRadius: 12,
     backgroundColor: "transparent",
   },
   heroImage: {
@@ -559,6 +547,9 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     padding: 2,
   },
+  dietOnImageDark: {
+    backgroundColor: "rgba(18,18,18,0.88)",
+  },
   detailsCard: {
     marginHorizontal: 14,
     marginTop: 10,
@@ -566,6 +557,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#F8FAFC",
     paddingHorizontal: 14,
     paddingVertical: 12,
+  },
+  detailsCardDark: {
+    backgroundColor: MerchantDarkPalette.card,
   },
   // Compact keyboard-open header (Reference Image 2): thumbnail + name + actions.
   compactHeaderCard: {
@@ -588,7 +582,7 @@ const styles = StyleSheet.create({
     width: 52,
     height: 52,
     borderRadius: 8,
-    backgroundColor: "#F3F4F6",
+    backgroundColor: "transparent",
   },
   compactDietBadge: {
     position: "absolute",
@@ -624,6 +618,9 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     color: StoreTheme.textPrimary,
   },
+  titleDark: {
+    color: MerchantDarkPalette.text,
+  },
   priceRow: {
     marginTop: 7,
     flexDirection: "row",
@@ -640,6 +637,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: StoreTheme.textMuted,
     textDecorationLine: "line-through",
+  },
+  strikePriceDark: {
+    color: MerchantDarkPalette.textDim,
   },
   offerBadge: {
     borderRadius: 5,
@@ -666,12 +666,19 @@ const styles = StyleSheet.create({
     borderColor: "#E2E4EA",
     backgroundColor: "#FFFFFF",
   },
+  circleActionDark: {
+    borderColor: MerchantDarkPalette.border,
+    backgroundColor: MerchantDarkPalette.elevated,
+  },
   description: {
     marginTop: 10,
     fontFamily: StoreFonts.loraRegular,
     fontSize: 13,
     lineHeight: 19,
     color: StoreTheme.textSecondary,
+  },
+  descriptionDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   customisable: {
     marginTop: 8,
@@ -685,6 +692,9 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     backgroundColor: "#F8FAFC",
     padding: 12,
+  },
+  requestCardDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
   },
   requestTitle: {
     fontFamily: StoreFonts.loraBold,
@@ -704,6 +714,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#EEF0F5",
     overflow: "hidden",
   },
+  inputWrapDark: {
+    backgroundColor: MerchantDarkPalette.card,
+  },
   input: {
     minHeight: 84,
     paddingHorizontal: 12,
@@ -713,12 +726,18 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: StoreTheme.textPrimary,
   },
+  inputDark: {
+    color: MerchantDarkPalette.text,
+  },
   counter: {
     position: "absolute",
     right: 10,
     bottom: 8,
     fontSize: 10,
     color: "#9CA3AF",
+  },
+  counterDark: {
+    color: MerchantDarkPalette.textDim,
   },
   footer: {
     flexDirection: "row",
@@ -739,6 +758,10 @@ const styles = StyleSheet.create({
       android: { elevation: 10 },
     }),
   },
+  footerDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+    borderTopColor: MerchantDarkPalette.border,
+  },
   stepper: {
     width: STEPPER_WIDTH,
     height: CTA_HEIGHT,
@@ -753,6 +776,10 @@ const styles = StyleSheet.create({
     flexGrow: 0,
     flexShrink: 0,
   },
+  stepperDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderColor: MerchantDarkPalette.accent,
+  },
   stepperButton: {
     width: 36,
     height: CTA_HEIGHT,
@@ -765,6 +792,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: ADD_GREEN,
   },
+  stepperGlyphDark: {
+    color: MerchantDarkPalette.accent,
+  },
   stepperGlyphDisabled: {
     color: "#9CA3AF",
   },
@@ -772,6 +802,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "800",
     color: ADD_GREEN,
+  },
+  quantityDark: {
+    color: MerchantDarkPalette.accent,
   },
   addButton: {
     height: CTA_HEIGHT,

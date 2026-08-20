@@ -200,7 +200,17 @@ function deepLinkForWebRecipient(
 }
 
 function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
-  const deepLink = row.deepLink ?? undefined;
+  const metadata = { ...(row.metadata ?? {}) };
+  const metaScreen = typeof metadata.screen === "string" ? metadata.screen.trim() : "";
+  // Logical event names ("new_order") are not expo-router paths.
+  if (metaScreen && !metaScreen.startsWith("/")) {
+    delete metadata.screen;
+  }
+  const urlFromMeta =
+    typeof metadata.url === "string" && metadata.url.trim().startsWith("/")
+      ? metadata.url.trim()
+      : undefined;
+  const deepLink = urlFromMeta || (row.deepLink ?? undefined);
   return {
     notification_id: row.notificationId,
     campaign_id: row.campaignId ?? undefined,
@@ -219,9 +229,36 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
           deep_link: deepLink,
         }
       : {}),
-    ...(row.metadata ?? {}),
+    ...metadata,
+    ...(deepLink
+      ? {
+          screen: deepLink,
+          deepLink,
+          deep_link: deepLink,
+        }
+      : {}),
     appRole: row.recipient.role,
   };
+}
+
+function resolvedDeepLinkForRow(row: CreateLogRow): string | null {
+  const data = pushDataForRow(row);
+  const fromData =
+    (typeof data.deepLink === "string" && data.deepLink.trim()) ||
+    (typeof data.url === "string" && data.url.trim()) ||
+    "";
+  if (fromData.startsWith("/")) return fromData;
+  return row.deepLink ?? null;
+}
+
+function fcmDataForRow(row: CreateLogRow): Record<string, string> {
+  const src = pushDataForRow(row);
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(src)) {
+    if (v === undefined || v === null) continue;
+    out[k] = typeof v === "string" ? v : String(v);
+  }
+  return out;
 }
 
 async function dispatchExpoRow(
@@ -236,7 +273,7 @@ async function dispatchExpoRow(
     title: row.title,
     body: row.body,
     data: pushDataForRow(row),
-    screen: row.deepLink ?? undefined,
+    screen: resolvedDeepLinkForRow(row) ?? undefined,
     imageUrl: row.imageUrl ?? undefined,
     channelId: channelIdForRecipient(row.recipient, row.priority, row),
     sound: soundForRecipient(row.recipient, row),
@@ -267,20 +304,10 @@ async function dispatchExpoRow(
           title: row.title,
           body: row.body,
           imageUrl: row.imageUrl ?? null,
-          deepLink: row.deepLink ?? null,
+          deepLink: resolvedDeepLinkForRow(row),
           channelId: channelIdForRecipient(row.recipient, row.priority, row),
           appRole: row.recipient.role,
-          data: {
-            template_code: row.templateCode,
-            gmType: row.templateCode,
-            title: row.title,
-            body: row.body,
-            gmTitle: row.title,
-            gmMessage: row.body,
-            gmBanner: "true",
-            appRole: row.recipient.role,
-            ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
-          },
+          data: fcmDataForRow(row),
           priority: row.priority as never,
         });
         return finalizeFcmDelivery(row.notificationId, nativeToken, res, {
@@ -742,14 +769,10 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           title: row.title,
           body: row.body,
           imageUrl: row.imageUrl ?? null,
-          deepLink: row.deepLink ?? null,
+          deepLink: resolvedDeepLinkForRow(row),
           channelId: channelIdForRecipient(row.recipient, row.priority, row),
           appRole: row.recipient.role,
-          data: {
-            template_code: row.templateCode,
-            appRole: row.recipient.role,
-            ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
-          },
+          data: fcmDataForRow(row),
           priority: row.priority as never,
           silent: template.silent,
         });
@@ -792,8 +815,8 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         // Native FCM (Android app without Expo, or partnersite/dashboard web)
         const isWeb = row.recipient.platform === "web";
         const deepLink = isWeb
-          ? deepLinkForWebRecipient(row.deepLink, row.recipient.role)
-          : row.deepLink ?? null;
+          ? deepLinkForWebRecipient(resolvedDeepLinkForRow(row), row.recipient.role)
+          : resolvedDeepLinkForRow(row);
         console.info(
           `[notifications] fcm_token nid=${row.notificationId} role=${row.recipient.role} platform=${row.recipient.platform} token_fp=${token.slice(0, 12)}…`,
         );
@@ -809,17 +832,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
             ? undefined
             : channelIdForRecipient(row.recipient, row.priority, row),
           appRole: isWeb ? undefined : row.recipient.role,
-          data: {
-            template_code: row.templateCode,
-            gmType: row.templateCode,
-            title: row.title,
-            body: row.body,
-            gmTitle: row.title,
-            gmMessage: row.body,
-            gmBanner: "true",
-            ...(isWeb ? {} : { appRole: row.recipient.role }),
-            ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
-          },
+          data: fcmDataForRow(row),
           priority: row.priority as never,
           silent: template.silent,
         });

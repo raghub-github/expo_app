@@ -9,7 +9,7 @@ import { AppText } from "@/components/AppText";
 
 import { View, TouchableOpacity, StyleSheet, Platform, Modal, Pressable, TextInput, Share, Alert, InteractionManager, StatusBar } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
+import { useLocalSearchParams, useRouter, useFocusEffect, useNavigation } from "expo-router";
 import { useSafeAreaInsets, initialWindowMetrics } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
@@ -20,7 +20,7 @@ import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
 import { offersService, type MerchantOfferItem, type PlatformOfferItem } from "@/services/offers.service";
 import { buildItemOfferDisplayMap, offerPriority, offerTargetsItem, isItemSurface } from "@/lib/itemOfferDisplay";
 import { computeIsDiscountEligible } from "@/lib/cartDiscountEligibility";
-import { getSellingPrice } from "@/components/store/storeMenuUtils";
+import { getBasePrice, getSellingPrice } from "@/components/store/storeMenuUtils";
 import {
   STORE_OFFERS_STALE_MS,
   buildStoreOffersQueryKey,
@@ -46,6 +46,9 @@ import { addressService, type Address } from "@/services/address.service";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { useCartStore } from "@/store/cartStore";
 import { useLocationStore } from "@/store/locationStore";
+import { useFoodHomeLayout } from "@/hooks/useFoodHomeLayout";
+import { recordRecentlyViewedStore } from "@/lib/recentlyViewedStores";
+import { MerchantUiThemeProvider, MerchantDarkPalette } from "@/features/merchant-detail/merchantUiTheme";
 import { useAuthStore } from "@/store/authStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useMerchantScrollStore } from "@/store/merchantScrollStore";
@@ -80,7 +83,7 @@ import {
 } from "@/lib/menu-item-config-query";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreTheme } from "@/constants/storeTheme";
-import type { StoreFilterId } from "@/components/store/StoreFilterBar";
+import { StoreFilterBar, type StoreFilterId } from "@/components/store/StoreFilterBar";
 import {
   StoreFilterSheet,
   DEFAULT_STORE_MENU_FILTERS,
@@ -102,6 +105,7 @@ import { MerchantStickyChrome } from "@/features/merchant-detail/components/Merc
 import { MerchantFloatingFab } from "@/features/merchant-detail/components/MerchantFloatingFab";
 import {
   buildFlashListData,
+  buildCategoryChips,
   findFlatIndexForScrollTarget,
 } from "@/features/merchant-detail/lib/buildFlashListData";
 import {
@@ -109,6 +113,7 @@ import {
   buildMenuSections,
   buildSortedMenuSection,
   lowestAvailableMenuPrice,
+  sortMenuSectionsMultiItemFirst,
 } from "@/features/merchant-detail/lib/menuSections";
 import {
   scrollFlashListToFlatIndex,
@@ -133,9 +138,9 @@ import {
   STICKY_SEARCH_ROW_HEIGHT,
   merchantHeaderTopGutter,
   merchantHeroActionsTopPad,
-  menuScrollStickyOffset,
+  merchantStickyFilterTop,
 } from "@/features/merchant-detail/constants/layout";
-import type { MerchantFlashListItem, MenuSection } from "@/features/merchant-detail/types";
+import type { MerchantFlashListItem, MenuSection, MerchantCategoryChip } from "@/features/merchant-detail/types";
 import {
   StoreMenuSheet,
   type MenuSheetScrollTarget,
@@ -197,6 +202,7 @@ export default function MerchantDetailScreen() {
     focusItemId?: string;
   }>();
   const router = useRouter();
+  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   // OS nav inset only (no 48dp Android fallback) — locked to max(seed, live) so it
   // never shrinks to 0 later (top overlap) or grows from 0 (bottom gap).
@@ -208,9 +214,22 @@ export default function MerchantDetailScreen() {
   const safeTopWhenImmersive = Math.max(insets.top, SAFE_TOP_SEED);
   const topPad = hideStatusBarSpacer ? safeTopWhenImmersive : 0;
   const headerTopGutter = merchantHeaderTopGutter(topPad);
-  const scrollStickyOffset = menuScrollStickyOffset(topPad);
   const heroActionsTopPad = merchantHeroActionsTopPad(topPad);
   const merchantId = id ?? "";
+  const coords = useLocationStore((s) => s.coords);
+  const locationSource = useLocationStore((s) => s.locationSource);
+  const locationAddress = useLocationStore((s) => s.address);
+  const { layoutKey: foodHomeLayoutKeyRaw, cachedLayoutKey } = useFoodHomeLayout(
+    locationAddress,
+    coords
+  );
+  const isDiscoveryLayout = (foodHomeLayoutKeyRaw ?? cachedLayoutKey) === "discovery";
+  const chromeHeight = isDiscoveryLayout
+    ? merchantStickyFilterTop(topPad) + FILTER_BAR_HEIGHT
+    : 0;
+  const merchantChromeBg = isDiscoveryLayout ? MerchantDarkPalette.bg : "#FFFFFF";
+  const merchantStatusBarStyle = isDiscoveryLayout ? ("light-content" as const) : ("dark-content" as const);
+  const merchantChromeStoreStyle = isDiscoveryLayout ? ("light" as const) : ("dark" as const);
   const hasMerchantCartItems = useCartStore(
     (s) =>
       merchantCartMatchesRoute(s.merchantId, merchantId) &&
@@ -226,9 +245,11 @@ export default function MerchantDetailScreen() {
   const scrollListRef = useRef<MerchantScrollListHandle>(null);
   const menuScrollTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const [filter, setFilter] = useState<StoreFilterId>("all");
+  const [menuRefreshing, setMenuRefreshing] = useState(false);
   const [advancedFilters, setAdvancedFilters] = useState<StoreMenuFilterState>(DEFAULT_STORE_MENU_FILTERS);
   const [filtersSheetVisible, setFiltersSheetVisible] = useState(false);
   const [menuSheetVisible, setMenuSheetVisible] = useState(false);
+  const [activeCategoryId, setActiveCategoryId] = useState<string | null>("cat-all");
   const [selectedMenuOfferId, setSelectedMenuOfferId] = useState<string | null>(null);
   const [menuSearchQuery, setMenuSearchQuery] = useState("");
   const debouncedMenuSearchQuery = useDebouncedValue(menuSearchQuery, MENU_SEARCH_DEBOUNCE_MS);
@@ -360,6 +381,7 @@ export default function MerchantDetailScreen() {
   } = useMerchantScrollAnimation({
     headerSearchExpandedSv,
     userMenuScrollStarted,
+    pinned: isDiscoveryLayout,
     onBeginDrag: onUserTakeOverMenuScroll,
     onScrollEnd: (y) => {
       setStoreScrollOffset(merchantId, y);
@@ -368,7 +390,6 @@ export default function MerchantDetailScreen() {
   });
 
   const heroBannerHeight = HEADER_IMAGE_HEIGHT;
-
   const {
     stickySearchActive,
     heroActionsVisible,
@@ -380,18 +401,29 @@ export default function MerchantDetailScreen() {
 
   useLayoutEffect(() => {
     useScreenChromeStore.setState({
-      statusBarBackground: "#FFFFFF",
-      statusBarStyle: "dark",
+      statusBarBackground: merchantChromeBg,
+      statusBarStyle: merchantChromeStoreStyle,
       hideStatusBarSpacer: false,
       bootstrapActive: false,
     });
+    navigation.setOptions({
+      statusBarStyle: merchantChromeStoreStyle,
+      statusBarBackgroundColor: merchantChromeBg,
+      navigationBarColor: merchantChromeBg,
+    });
     StatusBar.setHidden(false, "none");
+    StatusBar.setBarStyle(merchantStatusBarStyle, true);
     if (Platform.OS === "android") {
       StatusBar.setTranslucent(false);
-      StatusBar.setBackgroundColor("#FFFFFF", true);
-      StatusBar.setBarStyle("dark-content", true);
+      StatusBar.setBackgroundColor(merchantChromeBg, true);
     }
-  }, [merchantId]);
+  }, [
+    merchantId,
+    merchantChromeBg,
+    merchantChromeStoreStyle,
+    merchantStatusBarStyle,
+    navigation,
+  ]);
 
   // Declared BEFORE the focus effect below — that effect reads queryClient in its
   // callback and dependency array, so a later `const` here was a temporal-dead-zone
@@ -403,18 +435,18 @@ export default function MerchantDetailScreen() {
 
   const assertMerchantStatusBarChrome = useCallback(() => {
     StatusBar.setHidden(false, "none");
+    StatusBar.setBarStyle(merchantStatusBarStyle, true);
     if (Platform.OS === "android") {
       StatusBar.setTranslucent(false);
-      StatusBar.setBackgroundColor("#FFFFFF", true);
-      StatusBar.setBarStyle("dark-content", true);
+      StatusBar.setBackgroundColor(merchantChromeBg, true);
     }
     useScreenChromeStore.setState({
-      statusBarBackground: "#FFFFFF",
-      statusBarStyle: "dark",
+      statusBarBackground: merchantChromeBg,
+      statusBarStyle: merchantChromeStoreStyle,
       hideStatusBarSpacer: false,
       bootstrapActive: false,
     });
-  }, []);
+  }, [merchantChromeBg, merchantChromeStoreStyle, merchantStatusBarStyle]);
 
   useFocusEffect(
     useCallback(() => {
@@ -452,7 +484,7 @@ export default function MerchantDetailScreen() {
     prefetchMerchantDetail(queryClient, merchantId);
   }, [merchantId, queryClient]);
 
-  const { data: liveStatusSnapshot } = useStoreDetailLiveStatus(merchantId);
+  const { data: liveStatusSnapshot, refetch: refetchLiveStatus } = useStoreDetailLiveStatus(merchantId);
 
   const [secondaryQueriesReady, setSecondaryQueriesReady] = useState(
     () => !!readSyncMerchantMenu(merchantId)?.menu?.length
@@ -618,6 +650,15 @@ export default function MerchantDetailScreen() {
     };
   }, [merchant, merchantId, queryClient]);
 
+  const recordedVisitIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const src = (displayMerchant ?? merchant) as MerchantSummary | undefined;
+    if (!src?.id || !src.name) return;
+    if (recordedVisitIdRef.current === src.id) return;
+    recordedVisitIdRef.current = src.id;
+    void recordRecentlyViewedStore(src);
+  }, [displayMerchant, merchant]);
+
   /** List screen often has displayImage already; detail payload can miss URLs — reuse for header banner. */
   const listCachedBanner = useMemo(() => {
     const entries = queryClient.getQueriesData<MerchantSummary[]>({ queryKey: ["merchants"] });
@@ -666,10 +707,6 @@ export default function MerchantDetailScreen() {
     if (!hero) return trimmed;
     return trimmed.filter((u) => u !== hero);
   }, [merchant?.id, merchant?.bannerImages, merchantBannerHeroUri]);
-
-  const coords = useLocationStore((s) => s.coords);
-  const locationSource = useLocationStore((s) => s.locationSource);
-  const locationAddress = useLocationStore((s) => s.address);
 
   // Deep link / cold open: validate backend active location before quotes.
   useEffect(() => {
@@ -803,6 +840,7 @@ export default function MerchantDetailScreen() {
 
   const {
     data: storeOffersData,
+    refetch: refetchStoreOffers,
   } = useQuery({
     queryKey: storeOffersQueryKey,
     queryFn: async () => {
@@ -831,6 +869,23 @@ export default function MerchantDetailScreen() {
       : undefined,
   });
 
+  const handleMenuRefresh = useCallback(async () => {
+    if (!merchantId || menuRefreshing) return;
+    setMenuRefreshing(true);
+    try {
+      const detail = await fetchMerchantByIdWithCache(merchantId);
+      queryClient.setQueryData(MERCHANT_DETAIL_QUERY_KEY(merchantId), detail);
+      await Promise.all([
+        refetchLiveStatus(),
+        refetchStoreOffers(),
+      ]);
+    } catch {
+      await syncMerchantMenuInBackground(queryClient, merchantId);
+    } finally {
+      setMenuRefreshing(false);
+    }
+  }, [merchantId, menuRefreshing, queryClient, refetchLiveStatus, refetchStoreOffers]);
+
   const sheetOffers = useMemo(
     () => filterOffersForStoreSheet(storeOffersData),
     [storeOffersData]
@@ -843,11 +898,16 @@ export default function MerchantDetailScreen() {
 
   const itemOfferById = useMemo(() => {
     const merchantOffers = storeOffersData?.merchant_offers ?? [];
-    const catalog = (merchant?.menu ?? []).map((m) => ({
-      id: m.id,
-      menuItemId: m.menuItemId ?? null,
-      price: getSellingPrice(m),
-    }));
+    const catalog = (merchant?.menu ?? []).map((m) => {
+      const selling = getSellingPrice(m);
+      const strike = getBasePrice(m);
+      return {
+        id: m.id,
+        menuItemId: m.menuItemId ?? null,
+        price: selling,
+        customerStrikePrice: strike != null && strike > selling ? strike : null,
+      };
+    });
     return buildItemOfferDisplayMap(merchantOffers, catalog);
   }, [storeOffersData?.merchant_offers, merchant?.menu]);
 
@@ -884,7 +944,7 @@ export default function MerchantDetailScreen() {
         lng: coords?.longitude,
         limit: 8,
       }),
-    enabled: !!merchantId && coords != null && secondaryQueriesReady,
+    enabled: !!merchantId && coords != null && secondaryQueriesReady && !isDiscoveryLayout,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -1503,14 +1563,39 @@ export default function MerchantDetailScreen() {
         advancedFilters.sortBy === "price_asc" ? "Price: low to high" : "Price: high to low";
       return attachListRowKeys(buildSortedMenuSection(list, title));
     }
-    return attachListRowKeys(buildMenuSections(list));
-  }, [merchant?.menu, filter, debouncedMenuSearchQuery, advancedFilters, highlyReorderedIds]);
+    const grouped = attachListRowKeys(buildMenuSections(list));
+    return isDiscoveryLayout ? sortMenuSectionsMultiItemFirst(grouped) : grouped;
+  }, [
+    merchant?.menu,
+    filter,
+    debouncedMenuSearchQuery,
+    advancedFilters,
+    highlyReorderedIds,
+    isDiscoveryLayout,
+  ]);
 
   const catalogSections = useMemo((): MenuSection[] => {
     const menu = merchant?.menu;
     if (!menu || !Array.isArray(menu) || menu.length === 0) return [];
-    return attachListRowKeys(buildMenuSections(menu));
-  }, [merchant?.menu]);
+    const grouped = attachListRowKeys(buildMenuSections(menu));
+    return isDiscoveryLayout ? sortMenuSectionsMultiItemFirst(grouped) : grouped;
+  }, [merchant?.menu, isDiscoveryLayout]);
+
+  // Always from the full catalog — sort/diet filters must not collapse or hide the rail.
+  const categoryChips = useMemo(() => buildCategoryChips(catalogSections), [catalogSections]);
+
+  useEffect(() => {
+    if (categoryChips.length === 0) return;
+    const railChips = isDiscoveryLayout
+      ? categoryChips.filter(
+          (chip) => chip.id !== "cat-all" && chip.title.trim().toLowerCase() !== "all"
+        )
+      : categoryChips;
+    const pool = railChips.length > 0 ? railChips : categoryChips;
+    if (!pool.some((chip) => chip.id === activeCategoryId)) {
+      setActiveCategoryId(pool[0]!.id);
+    }
+  }, [activeCategoryId, categoryChips, isDiscoveryLayout]);
 
   const sectionStartingPrice = useMemo(
     () => lowestAvailableMenuPrice(merchant?.menu ?? []),
@@ -1571,12 +1656,12 @@ export default function MerchantDetailScreen() {
 
   /** Clearance for Menu FAB / Continue bar — painted inside gray footer, not as white list pad. */
   const footerBottomPadding = useMemo(() => {
-    const fabClearance = MENU_FAB_HEIGHT + 12;
+    const fabClearance = isDiscoveryLayout ? 12 : MENU_FAB_HEIGHT + 12;
     if (!hasMerchantCartItems) {
       return fabClearance + cartDockBottomInset;
     }
     return resolveStoreContinueBarHeight(true, cartDockBottomInset) + fabClearance;
-  }, [cartDockBottomInset, hasMerchantCartItems]);
+  }, [cartDockBottomInset, hasMerchantCartItems, isDiscoveryLayout]);
 
   const listContentContainerStyle = useMemo(() => ({ paddingBottom: 0 }), []);
 
@@ -1624,6 +1709,8 @@ export default function MerchantDetailScreen() {
         menuPending,
         pairingAnchorKey,
         pairingCompanionItems,
+        hideInfoCard: isDiscoveryLayout,
+        masonry: isDiscoveryLayout,
       }),
     [
       sections,
@@ -1636,6 +1723,7 @@ export default function MerchantDetailScreen() {
       menuPending,
       pairingAnchorKey,
       pairingCompanionItems,
+      isDiscoveryLayout,
     ]
   );
 
@@ -1652,11 +1740,27 @@ export default function MerchantDetailScreen() {
       // Always scroll from Menu sheet / deep-link — do not gate on prior user scroll.
       cancelScheduledMenuScroll();
       requestAnimationFrame(() => {
-        scrollFlashListToFlatIndex(scrollListRef, flatIndex, true, scrollStickyOffset);
+        scrollFlashListToFlatIndex(scrollListRef, flatIndex, true, 8);
       });
     },
     [flashIndexMap, cancelScheduledMenuScroll]
   );
+
+  const handleSelectCategory = useCallback(
+    (chip: MerchantCategoryChip) => {
+      setActiveCategoryId(chip.id);
+      if (chip.id === "cat-all") {
+        scrollListRef.current?.scrollToOffset({ offset: 0, animated: true });
+        return;
+      }
+      scrollToMenuTarget(chip.scrollTarget);
+    },
+    [scrollToMenuTarget]
+  );
+
+  const handleVisibleCategoryChange = useCallback((chipId: string | null) => {
+    setActiveCategoryId((prev) => (prev === chipId ? prev : chipId));
+  }, []);
 
   useEffect(() => {
     const pending = pendingMenuNavRef.current;
@@ -1684,7 +1788,7 @@ export default function MerchantDetailScreen() {
     setHighlightedMenuItemKey(target);
 
     const scrollToItem = () => {
-      scrollFlashListToFlatIndex(scrollListRef, flatIndex, true, scrollStickyOffset);
+      scrollFlashListToFlatIndex(scrollListRef, flatIndex, true, 8);
     };
 
     // One frame — no InteractionManager / scroll-started gate (felt like multi-tap lag).
@@ -1954,8 +2058,16 @@ export default function MerchantDetailScreen() {
       onSearch: openMerchantSearch,
       onGroupOrder: handleHeroGroupOrder,
       onOptions: openOptionsSheet,
+      storeName: displayMerchant?.name ?? merchant?.name ?? "",
     }),
-    [handleHeroBack, openMerchantSearch, handleHeroGroupOrder, openOptionsSheet]
+    [
+      handleHeroBack,
+      openMerchantSearch,
+      handleHeroGroupOrder,
+      openOptionsSheet,
+      displayMerchant?.name,
+      merchant?.name,
+    ]
   );
 
   if (!merchantId) {
@@ -1972,17 +2084,25 @@ export default function MerchantDetailScreen() {
 
   if (showInitialLoader) {
     return (
-      <View style={styles.container}>
-        <MerchantMenuLoadingSkeleton
-          merchantId={merchantId}
-          startMessageIndex={loadingMessageIndex}
-          edgeToEdge
-        />
-        <LongDistanceBottomSheet
-          visible={longDistanceSheetVisible}
-          onClose={closeLongDistanceSheet}
-        />
-      </View>
+      <MerchantUiThemeProvider dark={isDiscoveryLayout}>
+        <View style={[styles.container, isDiscoveryLayout && styles.containerDark]}>
+          <StatusBar
+            hidden={false}
+            translucent={false}
+            backgroundColor={merchantChromeBg}
+            barStyle={merchantStatusBarStyle}
+          />
+          <MerchantMenuLoadingSkeleton
+            merchantId={merchantId}
+            startMessageIndex={loadingMessageIndex}
+            edgeToEdge
+          />
+          <LongDistanceBottomSheet
+            visible={longDistanceSheetVisible}
+            onClose={closeLongDistanceSheet}
+          />
+        </View>
+      </MerchantUiThemeProvider>
     );
   }
 
@@ -2009,49 +2129,65 @@ export default function MerchantDetailScreen() {
 
   if (!merchant) {
     return (
-      <View style={styles.container}>
-        <MerchantMenuLoadingSkeleton
-          merchantId={merchantId}
-          startMessageIndex={loadingMessageIndex}
-          edgeToEdge
-        />
-      </View>
+      <MerchantUiThemeProvider dark={isDiscoveryLayout}>
+        <View style={[styles.container, isDiscoveryLayout && styles.containerDark]}>
+          <StatusBar
+            hidden={false}
+            translucent={false}
+            backgroundColor={merchantChromeBg}
+            barStyle={merchantStatusBarStyle}
+          />
+          <MerchantMenuLoadingSkeleton
+            merchantId={merchantId}
+            startMessageIndex={loadingMessageIndex}
+            edgeToEdge
+          />
+        </View>
+      </MerchantUiThemeProvider>
     );
   }
 
   const pageMerchant = displayMerchant ?? merchant;
 
   return (
-    <GestureHandlerRootView style={styles.container}>
+    <MerchantUiThemeProvider dark={isDiscoveryLayout}>
+    <GestureHandlerRootView style={[styles.container, isDiscoveryLayout && styles.containerDark]}>
       <StatusBar
         hidden={false}
         translucent={false}
-        backgroundColor="#FFFFFF"
-        barStyle="dark-content"
+        backgroundColor={merchantChromeBg}
+        barStyle={merchantStatusBarStyle}
       />
       <MerchantStickyChrome
         topGutter={headerTopGutter}
         stickySearchStyle={stickySearchStyle}
         stickySearchBgStyle={stickySearchBgStyle}
-        pointerEvents={headerSearchExpanded ? "auto" : "box-none"}
-        stickySearchActive={stickySearchActive}
+        pointerEvents={isDiscoveryLayout || headerSearchExpanded ? "auto" : "box-none"}
+        stickySearchActive={isDiscoveryLayout || stickySearchActive}
         headerSearchExpanded={headerSearchExpanded}
         onBack={handleStickyBack}
+        storeName={pageMerchant.name}
+        onOpenFilters={isDiscoveryLayout ? handleOpenFiltersSheet : undefined}
+        filtersActive={filtersActive}
+        onGroupOrder={isDiscoveryLayout ? undefined : handleHeroGroupOrder}
+        onOptions={isDiscoveryLayout ? openOptionsSheet : undefined}
+        avgRating={isDiscoveryLayout ? pageMerchant.avgRating : undefined}
+        onRatingPress={isDiscoveryLayout ? openRatingSheet : undefined}
         searchRow={
-          <View style={styles.stickyHeaderRow}>
-            {headerSearchExpanded ? (
-              <View style={[styles.stickySearchWrap, { flex: 1 }]}>
-                <Ionicons name="search" size={18} color={StoreTheme.searchIcon} />
+          isDiscoveryLayout ? (
+            headerSearchExpanded ? (
+              <View style={[styles.stickySearchWrap, styles.stickySearchWrapDark, { flex: 1 }]}>
+                <Ionicons name="search" size={18} color={MerchantDarkPalette.textMuted} />
                 <TextInput
                   ref={headerSearchInputRef}
-                  style={styles.stickySearchInput}
+                  style={[styles.stickySearchInput, styles.stickySearchInputDark]}
                   placeholder={stickySearchHint}
-                  placeholderTextColor={StoreTheme.textSecondary}
+                  placeholderTextColor={MerchantDarkPalette.textDim}
                   value={menuSearchQuery}
                   onChangeText={setMenuSearchQuery}
                   returnKeyType="search"
                   autoFocus
-                  selectionColor={StoreTheme.accentMint}
+                  selectionColor={MerchantDarkPalette.accent}
                   multiline={false}
                   scrollEnabled={false}
                   {...Platform.select({
@@ -2065,17 +2201,18 @@ export default function MerchantDetailScreen() {
               </View>
             ) : (
               <TouchableOpacity
-                style={[styles.stickySearchWrap, { flex: 1 }]}
+                style={[styles.stickySearchWrap, styles.stickySearchWrapDark, { flex: 1 }]}
                 onPress={openMerchantSearch}
                 activeOpacity={0.88}
                 accessibilityRole="search"
                 accessibilityLabel={stickySearchHint}
               >
-                <Ionicons name="search" size={18} color={StoreTheme.searchIcon} />
+                <Ionicons name="search" size={18} color={MerchantDarkPalette.textMuted} />
                 <AppText
                   style={[
                     styles.stickySearchHintText,
-                    menuSearchQuery.trim().length > 0 && styles.stickySearchHintTextFilled,
+                    styles.stickySearchHintTextDark,
+                    menuSearchQuery.trim().length > 0 && styles.stickySearchHintTextFilledDark,
                   ]}
                   numberOfLines={1}
                   ellipsizeMode="tail"
@@ -2083,11 +2220,77 @@ export default function MerchantDetailScreen() {
                   {menuSearchQuery.trim().length > 0 ? menuSearchQuery : stickySearchHint}
                 </AppText>
               </TouchableOpacity>
-            )}
-            <TouchableOpacity onPress={openOptionsSheet} style={styles.heroCircleBtnLight} hitSlop={8}>
-              <Ionicons name="ellipsis-vertical" size={20} color={StoreTheme.textPrimary} />
-            </TouchableOpacity>
-          </View>
+            )
+          ) : (
+            <View style={styles.stickyHeaderRow}>
+              {headerSearchExpanded ? (
+                <View style={[styles.stickySearchWrap, { flex: 1 }]}>
+                  <Ionicons name="search" size={18} color={StoreTheme.searchIcon} />
+                  <TextInput
+                    ref={headerSearchInputRef}
+                    style={styles.stickySearchInput}
+                    placeholder={stickySearchHint}
+                    placeholderTextColor={StoreTheme.textSecondary}
+                    value={menuSearchQuery}
+                    onChangeText={setMenuSearchQuery}
+                    returnKeyType="search"
+                    autoFocus
+                    selectionColor={StoreTheme.accentMint}
+                    multiline={false}
+                    scrollEnabled={false}
+                    {...Platform.select({
+                      android: {
+                        includeFontPadding: false,
+                        textAlignVertical: "center" as const,
+                      },
+                      ios: {},
+                    })}
+                  />
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.stickySearchWrap, { flex: 1 }]}
+                  onPress={openMerchantSearch}
+                  activeOpacity={0.88}
+                  accessibilityRole="search"
+                  accessibilityLabel={stickySearchHint}
+                >
+                  <Ionicons name="search" size={18} color={StoreTheme.searchIcon} />
+                  <AppText
+                    style={[
+                      styles.stickySearchHintText,
+                      menuSearchQuery.trim().length > 0 && styles.stickySearchHintTextFilled,
+                    ]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {menuSearchQuery.trim().length > 0 ? menuSearchQuery : stickySearchHint}
+                  </AppText>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                onPress={openOptionsSheet}
+                style={styles.heroCircleBtnLight}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="More options"
+              >
+                <Ionicons name="ellipsis-vertical" size={18} color={StoreTheme.textPrimary} />
+              </TouchableOpacity>
+            </View>
+          )
+        }
+        filterBar={
+          isDiscoveryLayout ? (
+            <StoreFilterBar
+              active={filter}
+              onChange={handleFilterChange}
+              onOpenFilters={handleOpenFiltersSheet}
+              showHighlyReordered={showHighlyReorderedChip}
+              filtersActive={filtersActive}
+              style={styles.stickyFilterBar}
+            />
+          ) : null
         }
       />
 
@@ -2139,11 +2342,19 @@ export default function MerchantDetailScreen() {
         onBookmark={handleBookmarkMenuItem}
         onShare={handleShareMenuItem}
         resolveMenuItemPk={resolveMenuItemPk}
-        showHeroActions={heroActionsVisible}
+        showHeroActions={!isDiscoveryLayout && heroActionsVisible}
         heroActionsTopPad={heroActionsTopPad}
         heroActions={heroActions}
         onListLayout={handleListLayout}
         itemOfferById={itemOfferById}
+        categoryChips={categoryChips}
+        activeCategoryId={activeCategoryId}
+        onSelectCategory={handleSelectCategory}
+        onVisibleCategoryChange={handleVisibleCategoryChange}
+        chromeHeight={chromeHeight}
+        showCategoryRail={isDiscoveryLayout}
+        refreshing={menuRefreshing}
+        onRefresh={handleMenuRefresh}
       />
 
       <StoreOffersSheet
@@ -2195,48 +2406,65 @@ export default function MerchantDetailScreen() {
         largeOrderSection={menuSheetLargeOrder}
       />
 
-      <Modal visible={optionsSheetVisible} transparent animationType="slide">
+      <Modal
+        visible={optionsSheetVisible}
+        transparent
+        animationType="slide"
+        statusBarTranslucent
+        navigationBarTranslucent
+        presentationStyle="overFullScreen"
+        onShow={assertMerchantStatusBarChrome}
+      >
         <Pressable style={styles.sheetOverlay} onPress={closeOptionsSheet}>
-          <Pressable style={[styles.optionsSheet, { paddingBottom: insets.bottom + 24 }]} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.sheetHandle} />
-            <AppText style={styles.optionsSheetTitle}>{merchant.name}</AppText>
-            <TouchableOpacity style={styles.optionRow} onPress={() => { closeOptionsSheet(); /* Add to Collection */ }}>
-              <Ionicons name="bookmark-outline" size={22} color={GatiMitraColors.textPrimary} />
-              <AppText style={styles.optionRowText}>Add to Collection</AppText>
-              <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+          <Pressable
+            style={[
+              styles.optionsSheet,
+              isDiscoveryLayout && styles.optionsSheetDark,
+              { paddingBottom: Math.max(insets.bottom, 12) },
+            ]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={[styles.sheetHandle, isDiscoveryLayout && styles.sheetHandleDark]} />
+            <AppText style={[styles.optionsSheetTitle, isDiscoveryLayout && styles.optionsSheetTitleDark]}>
+              {merchant.name}
+            </AppText>
+            <TouchableOpacity style={[styles.optionRow, isDiscoveryLayout && styles.optionRowDark]} onPress={() => { closeOptionsSheet(); /* Add to Collection */ }}>
+              <Ionicons name="bookmark-outline" size={22} color={isDiscoveryLayout ? MerchantDarkPalette.text : GatiMitraColors.textPrimary} />
+              <AppText style={[styles.optionRowText, isDiscoveryLayout && styles.optionRowTextDark]}>Add to Collection</AppText>
+              <Ionicons name="chevron-forward" size={20} color={isDiscoveryLayout ? MerchantDarkPalette.textMuted : GatiMitraColors.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.optionRow}
+              style={[styles.optionRow, isDiscoveryLayout && styles.optionRowDark]}
               onPress={() => { closeOptionsSheet(); setGroupOrderSheetVisible(true); }}
             >
-              <Ionicons name="people-outline" size={22} color={GatiMitraColors.textPrimary} />
-              <AppText style={styles.optionRowText}>Group Order</AppText>
-              <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+              <Ionicons name="people-outline" size={22} color={isDiscoveryLayout ? MerchantDarkPalette.text : GatiMitraColors.textPrimary} />
+              <AppText style={[styles.optionRowText, isDiscoveryLayout && styles.optionRowTextDark]}>Group Order</AppText>
+              <Ionicons name="chevron-forward" size={20} color={isDiscoveryLayout ? MerchantDarkPalette.textMuted : GatiMitraColors.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.optionRow}
+              style={[styles.optionRow, isDiscoveryLayout && styles.optionRowDark]}
               onPress={() => { closeOptionsSheet(); router.push(`/home/merchant/about/${merchantId}`); }}
             >
-              <Ionicons name="information-circle-outline" size={22} color={GatiMitraColors.textPrimary} />
-              <AppText style={styles.optionRowText}>See more about this restaurant</AppText>
-              <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+              <Ionicons name="information-circle-outline" size={22} color={isDiscoveryLayout ? MerchantDarkPalette.text : GatiMitraColors.textPrimary} />
+              <AppText style={[styles.optionRowText, isDiscoveryLayout && styles.optionRowTextDark]}>See more about this restaurant</AppText>
+              <Ionicons name="chevron-forward" size={20} color={isDiscoveryLayout ? MerchantDarkPalette.textMuted : GatiMitraColors.textSecondary} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.optionRow} onPress={handleShareRestaurant}>
-              <Ionicons name="share-outline" size={22} color={GatiMitraColors.textPrimary} />
-              <AppText style={styles.optionRowText}>Share this restaurant</AppText>
-              <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+            <TouchableOpacity style={[styles.optionRow, isDiscoveryLayout && styles.optionRowDark]} onPress={handleShareRestaurant}>
+              <Ionicons name="share-outline" size={22} color={isDiscoveryLayout ? MerchantDarkPalette.text : GatiMitraColors.textPrimary} />
+              <AppText style={[styles.optionRowText, isDiscoveryLayout && styles.optionRowTextDark]}>Share this restaurant</AppText>
+              <Ionicons name="chevron-forward" size={20} color={isDiscoveryLayout ? MerchantDarkPalette.textMuted : GatiMitraColors.textSecondary} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.optionRow} onPress={closeOptionsSheet}>
-              <Ionicons name="eye-off-outline" size={22} color={GatiMitraColors.textPrimary} />
-              <AppText style={styles.optionRowText}>Hide this restaurant</AppText>
-              <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+            <TouchableOpacity style={[styles.optionRow, isDiscoveryLayout && styles.optionRowDark]} onPress={closeOptionsSheet}>
+              <Ionicons name="eye-off-outline" size={22} color={isDiscoveryLayout ? MerchantDarkPalette.text : GatiMitraColors.textPrimary} />
+              <AppText style={[styles.optionRowText, isDiscoveryLayout && styles.optionRowTextDark]}>Hide this restaurant</AppText>
+              <Ionicons name="chevron-forward" size={20} color={isDiscoveryLayout ? MerchantDarkPalette.textMuted : GatiMitraColors.textSecondary} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.optionRow} onPress={openReportSheet}>
-              <Ionicons name="warning-outline" size={22} color={GatiMitraColors.textPrimary} />
-              <AppText style={styles.optionRowText}>Report fraud or bad practices</AppText>
-              <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+            <TouchableOpacity style={[styles.optionRow, isDiscoveryLayout && styles.optionRowDark]} onPress={openReportSheet}>
+              <Ionicons name="warning-outline" size={22} color={isDiscoveryLayout ? MerchantDarkPalette.text : GatiMitraColors.textPrimary} />
+              <AppText style={[styles.optionRowText, isDiscoveryLayout && styles.optionRowTextDark]}>Report fraud or bad practices</AppText>
+              <Ionicons name="chevron-forward" size={20} color={isDiscoveryLayout ? MerchantDarkPalette.textMuted : GatiMitraColors.textSecondary} />
             </TouchableOpacity>
-            <AppText style={styles.optionSheetFooter}>
+            <AppText style={[styles.optionSheetFooter, isDiscoveryLayout && styles.optionSheetFooterDark]}>
               Menu items, prices, photos and descriptions are set by the restaurant. Report incorrect information.
             </AppText>
           </Pressable>
@@ -2306,21 +2534,36 @@ export default function MerchantDetailScreen() {
         />
       )}
 
-      <Modal visible={reportSheetVisible} transparent animationType="slide">
+      <Modal
+        visible={reportSheetVisible}
+        transparent
+        animationType="slide"
+        statusBarTranslucent
+        navigationBarTranslucent
+        presentationStyle="overFullScreen"
+        onShow={assertMerchantStatusBarChrome}
+      >
         <Pressable style={styles.sheetOverlay} onPress={closeReportSheet}>
-          <Pressable style={[styles.reportSheet, { paddingBottom: insets.bottom + 24 }]} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.sheetHandle} />
-            <AppText style={styles.reportSheetTitle}>Report an issue with the menu</AppText>
-            <AppText style={styles.reportSheetSub}>This feedback will be shared directly with the restaurant.</AppText>
+          <Pressable
+            style={[
+              styles.reportSheet,
+              isDiscoveryLayout && styles.optionsSheetDark,
+              { paddingBottom: Math.max(insets.bottom, 12) },
+            ]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={[styles.sheetHandle, isDiscoveryLayout && styles.sheetHandleDark]} />
+            <AppText style={[styles.reportSheetTitle, isDiscoveryLayout && styles.optionsSheetTitleDark]}>Report an issue with the menu</AppText>
+            <AppText style={[styles.reportSheetSub, isDiscoveryLayout && styles.optionSheetFooterDark]}>This feedback will be shared directly with the restaurant.</AppText>
             {REPORT_OPTIONS.map((opt) => (
               <TouchableOpacity
                 key={opt.id}
-                style={styles.reportOptionRow}
+                style={[styles.reportOptionRow, isDiscoveryLayout && styles.optionRowDark]}
                 onPress={() => handleReportSubmit(opt.id)}
                 disabled={reportSubmitting}
               >
-                <AppText style={styles.reportOptionText}>{opt.label}</AppText>
-                <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+                <AppText style={[styles.reportOptionText, isDiscoveryLayout && styles.optionRowTextDark]}>{opt.label}</AppText>
+                <Ionicons name="chevron-forward" size={20} color={isDiscoveryLayout ? MerchantDarkPalette.textMuted : GatiMitraColors.textSecondary} />
               </TouchableOpacity>
             ))}
           </Pressable>
@@ -2342,7 +2585,7 @@ export default function MerchantDetailScreen() {
         />
       </View>
 
-      {!menuSheetVisible ? (
+      {!isDiscoveryLayout && !menuSheetVisible ? (
         <MerchantFloatingFab
           bottom={floatingFabBottom}
           onPress={() => setMenuSheetVisible(true)}
@@ -2350,6 +2593,7 @@ export default function MerchantDetailScreen() {
         />
       ) : null}
     </GestureHandlerRootView>
+    </MerchantUiThemeProvider>
   );
 }
 
@@ -2357,6 +2601,10 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: StoreTheme.background,
+    overflow: "hidden",
+  },
+  containerDark: {
+    backgroundColor: MerchantDarkPalette.bg,
   },
   sectionList: {
     flex: 1,
@@ -2416,19 +2664,30 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+    minWidth: 0,
   },
   stickyBackBtn: { padding: 6 },
   stickySearchWrap: {
     flex: 1,
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: StoreTheme.searchBg,
-    borderRadius: 10,
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 0,
     gap: 8,
     height: STICKY_SEARCH_ROW_HEIGHT - 4,
     minHeight: STICKY_SEARCH_ROW_HEIGHT - 4,
+  },
+  stickySearchWrapDark: {
+    backgroundColor: MerchantDarkPalette.search,
+  },
+  stickyFilterBar: {
+    marginHorizontal: -16,
+    borderBottomWidth: 0,
+    paddingVertical: 8,
+    backgroundColor: MerchantDarkPalette.bg,
   },
   stickySearchHintText: {
     flex: 1,
@@ -2438,9 +2697,15 @@ const styles = StyleSheet.create({
     color: StoreTheme.textSecondary,
     fontWeight: "500",
   },
+  stickySearchHintTextDark: {
+    color: MerchantDarkPalette.textMuted,
+  },
   stickySearchHintTextFilled: {
     color: StoreTheme.textPrimary,
     fontWeight: "600",
+  },
+  stickySearchHintTextFilledDark: {
+    color: MerchantDarkPalette.text,
   },
   stickySearchInput: {
     flex: 1,
@@ -2454,6 +2719,9 @@ const styles = StyleSheet.create({
       android: { includeFontPadding: false, textAlignVertical: "center" as const },
       ios: {},
     }),
+  },
+  stickySearchInputDark: {
+    color: MerchantDarkPalette.text,
   },
   heroCircleBtn: {
     width: 36,
@@ -2470,6 +2738,7 @@ const styles = StyleSheet.create({
     backgroundColor: StoreTheme.searchBg,
     alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
   },
   heroCircleBtnDark: {
     width: 36,
@@ -2505,12 +2774,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 8,
     maxHeight: "80%",
+    marginBottom: 0,
+  },
+  optionsSheetDark: {
+    backgroundColor: MerchantDarkPalette.surface,
   },
   optionsSheetTitle: {
     fontSize: 18,
     fontWeight: "800",
     color: GatiMitraColors.textPrimary,
     marginBottom: 16,
+  },
+  optionsSheetTitleDark: {
+    color: MerchantDarkPalette.text,
   },
   optionRow: {
     flexDirection: "row",
@@ -2520,12 +2796,19 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: GatiMitraColors.border,
   },
+  optionRowDark: {
+    borderBottomColor: MerchantDarkPalette.border,
+  },
   optionRowText: { flex: 1, fontSize: 16, fontWeight: "600", color: GatiMitraColors.textPrimary },
+  optionRowTextDark: { color: MerchantDarkPalette.text },
   optionSheetFooter: {
     fontSize: 12,
     color: GatiMitraColors.textSecondary,
     marginTop: 16,
     lineHeight: 18,
+  },
+  optionSheetFooterDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   reportSheet: {
     position: "absolute",
@@ -2795,18 +3078,6 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraColors.softBackground,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: GatiMitraColors.border,
-  },
-  stickyFilterBar: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    minHeight: 0,
-    maxHeight: FILTER_BAR_HEIGHT,
-    justifyContent: "center",
-    backgroundColor: StoreTheme.background,
-    zIndex: 9,
-    overflow: "hidden",
-    ...GatiMitraColors.elevationShadow,
   },
   filterScroll: {
     paddingHorizontal: 16,
@@ -3259,6 +3530,9 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraColors.border,
     alignSelf: "center",
     marginBottom: 14,
+  },
+  sheetHandleDark: {
+    backgroundColor: MerchantDarkPalette.border,
   },
   sheetHeader: {
     flexDirection: "row",

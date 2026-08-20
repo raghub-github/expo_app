@@ -13,10 +13,13 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 
+import { useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
+
 const WAVE_H = 36;
-/** Soft gray layers — matches skeleton, no green. */
 const WAVE_BACK = "rgba(148, 163, 184, 0.22)";
 const WAVE_FRONT = "rgba(226, 232, 240, 0.95)";
+const WAVE_BACK_DARK = "rgba(255, 255, 255, 0.06)";
+const WAVE_FRONT_DARK = "rgba(255, 255, 255, 0.12)";
 
 function wavePath(w: number, amp: number, yBase: number): string {
   const mid = yBase;
@@ -31,9 +34,12 @@ function wavePath(w: number, amp: number, yBase: number): string {
 }
 
 export function MerchantLoadingWave() {
+  const dark = useMerchantUiDark();
   const { width } = useWindowDimensions();
   const tileW = Math.ceil(width) + 2;
   const shift = useSharedValue(0);
+  const back = dark ? WAVE_BACK_DARK : WAVE_BACK;
+  const front = dark ? WAVE_FRONT_DARK : WAVE_FRONT;
 
   useEffect(() => {
     shift.value = 0;
@@ -52,12 +58,12 @@ export function MerchantLoadingWave() {
     <View style={styles.wrap} pointerEvents="none">
       <Animated.View style={[styles.track, { width: tileW * 2 }, animStyle]}>
         <Svg width={tileW} height={WAVE_H} style={styles.tile}>
-          <Path d={wavePath(tileW, 8, 18)} fill={WAVE_BACK} />
-          <Path d={wavePath(tileW, 5, 22)} fill={WAVE_FRONT} />
+          <Path d={wavePath(tileW, 8, 18)} fill={back} />
+          <Path d={wavePath(tileW, 5, 22)} fill={front} />
         </Svg>
         <Svg width={tileW} height={WAVE_H} style={styles.tile}>
-          <Path d={wavePath(tileW, 8, 18)} fill={WAVE_BACK} />
-          <Path d={wavePath(tileW, 5, 22)} fill={WAVE_FRONT} />
+          <Path d={wavePath(tileW, 8, 18)} fill={back} />
+          <Path d={wavePath(tileW, 5, 22)} fill={front} />
         </Svg>
       </Animated.View>
     </View>

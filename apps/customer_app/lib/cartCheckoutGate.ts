@@ -194,13 +194,15 @@ export async function tryNavigateToFoodCheckout(
   checkoutNavInFlight = true;
   try {
     const sync = tryEvaluateCartCheckoutEligibilitySync(queryClient);
-    const allowed =
-      sync != null
-        ? sync.allowed
-        : (await evaluateCartCheckoutEligibility(queryClient)).allowed;
+    // Cache miss must not block View Cart — store-quote on a flaky LAN made the
+    // first tap look dead while the request hung, and the lock dropped the second tap.
+    const allowed = sync != null ? sync.allowed : true;
     const navigated = openCheckoutOrGate(allowed, router);
     if (navigated) {
       checkoutNavLockedUntil = Date.now() + CHECKOUT_NAV_COOLDOWN_MS;
+      if (sync == null) {
+        void evaluateCartCheckoutEligibility(queryClient);
+      }
     }
     return navigated;
   } finally {

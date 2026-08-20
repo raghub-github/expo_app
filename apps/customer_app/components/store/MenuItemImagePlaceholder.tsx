@@ -6,7 +6,14 @@ const ICON_GREY = "#D1D5DB";
 const ICON_GREY_SOFT = "#E5E7EB";
 
 /** Zomato-style grey image card placeholder — cloche + cutlery when a menu item has no photo. */
-export function MenuItemImagePlaceholder({ size = "md" }: { size?: "xs" | "sm" | "md" | "lg" }) {
+export function MenuItemImagePlaceholder({
+  size = "md",
+  fill = false,
+}: {
+  size?: "xs" | "sm" | "md" | "lg";
+  /** Stretch to the parent image slot (grid-first menu item look). */
+  fill?: boolean;
+}) {
   const metrics =
     size === "xs"
       ? { cloche: 16, cutlery: 10, gap: 2 }
@@ -24,6 +31,7 @@ export function MenuItemImagePlaceholder({ size = "md" }: { size?: "xs" | "sm" |
         size === "sm" && styles.wrapSm,
         size === "lg" && styles.wrapLg,
         size === "sm" && styles.wrapSmFixed,
+        fill && styles.wrapFill,
       ]}
     >
       <View style={[styles.iconCluster, { gap: metrics.gap }]}>
@@ -68,5 +76,10 @@ const styles = StyleSheet.create({
   },
   wrapLg: {
     borderRadius: 8,
+  },
+  wrapFill: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 0,
   },
 });

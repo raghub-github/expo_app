@@ -5614,6 +5614,7 @@ function StoreSettingsContent() {
                 <MerchantAppAssetImage
                   assetKey={MX_ASSET.partnerManageStores}
                   alt="Store"
+                  fallbackSrc="/gstore.png"
                   className="w-64 h-64 mb-8 object-contain"
                   style={{ maxWidth: '320px', maxHeight: '320px' }}
                 />

@@ -392,7 +392,7 @@ export async function loadMerchantOrderLineItemsByTextIds(
             100,
           has_customizations: hasCust,
           catalog_line_total: ctm.gross_value,
-          net_line_total: isBogo ? ctm.gross_value : ctm.net_ctm_value,
+          net_line_total: ctm.net_ctm_value,
           offer_discount: moneyPromo ? ctm.merchant_offer_discount : 0,
           offer_label: hasMerchantOffer ? offerName : null,
           is_item_promo: moneyPromo || isBogo,

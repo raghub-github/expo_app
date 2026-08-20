@@ -4,6 +4,7 @@ import { AppText } from "@/components/AppText";
 import { StyleSheet, TouchableOpacity, View } from "react-native";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 import type { MealsUnderPriceSortMode } from "./MealsUnderPriceFilterRow";
 
 type Props = {
@@ -22,6 +23,7 @@ const SORT_OPTIONS: { id: MealsUnderPriceSortMode; label: string }[] = [
 
 export function MealsUnderPriceSortSheet({ visible, sortBy, onClose, onApply }: Props) {
   const [draft, setDraft] = useState<MealsUnderPriceSortMode>(sortBy);
+  const dark = useMerchantUiDark();
 
   useEffect(() => {
     if (visible) setDraft(sortBy);
@@ -33,19 +35,19 @@ export function MealsUnderPriceSortSheet({ visible, sortBy, onClose, onApply }: 
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.52}>
       <View style={styles.sheetBody}>
-        <AppText style={styles.title}>Sort</AppText>
+        <AppText style={[styles.title, dark && styles.titleDark]}>Sort</AppText>
 
         {SORT_OPTIONS.map((opt) => {
           const selected = draft === opt.id;
           return (
             <TouchableOpacity
               key={opt.id}
-              style={styles.optionRow}
+              style={[styles.optionRow, dark && styles.optionRowDark]}
               activeOpacity={0.85}
               onPress={() => setDraft(opt.id)}
             >
-              <AppText style={styles.optionLabel}>{opt.label}</AppText>
-              <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
+              <AppText style={[styles.optionLabel, dark && styles.optionLabelDark]}>{opt.label}</AppText>
+              <View style={[styles.radioOuter, dark && styles.radioOuterDark, selected && styles.radioOuterSelected]}>
                 {selected ? <View style={styles.radioInner} /> : null}
               </View>
             </TouchableOpacity>
@@ -53,7 +55,7 @@ export function MealsUnderPriceSortSheet({ visible, sortBy, onClose, onApply }: 
         })}
       </View>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, dark && styles.footerDark]}>
         <TouchableOpacity
           onPress={() => setDraft("relevance")}
           hitSlop={12}
@@ -160,5 +162,20 @@ const styles = StyleSheet.create({
   },
   applyTextDisabled: {
     color: "#94A3B8",
+  },
+  titleDark: {
+    color: MerchantDarkPalette.text,
+  },
+  optionRowDark: {
+    borderBottomColor: MerchantDarkPalette.border,
+  },
+  optionLabelDark: {
+    color: MerchantDarkPalette.text,
+  },
+  radioOuterDark: {
+    borderColor: MerchantDarkPalette.chipBorder,
+  },
+  footerDark: {
+    borderTopColor: MerchantDarkPalette.border,
   },
 });

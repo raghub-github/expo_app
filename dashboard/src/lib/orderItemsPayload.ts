@@ -39,6 +39,10 @@ export type OrderItemApiRow = {
   /** Item-surface Boost / BOGO — partnersite & merchant app parity. */
   appliedOfferType?: string | null;
   offerLabel?: string | null;
+  /** Original MX unit (before store offer). Merchant bill strike. */
+  catalogAmountPerQuantity?: number;
+  /** Discounted MX unit (what merchant is paid for the line). */
+  netAmountPerQuantity?: number;
 };
 
 export type OrderPricingLine = {
@@ -124,26 +128,18 @@ export function resolveDeliveryFeeDisplayFromBilling(
     }
   }
 
-  const waived =
-    waivedInr > 0.005 ||
-    (paid <= 0.005 &&
-      quotedRaw > 0.005 &&
-      (asNum(snap.deliveryFeeQuotedInr) > 0.005 ||
-        asNum(snap.deliveryFeeBeforeBenefitsInr) > 0.005 ||
-        asNum(snap.delivery_fee_quoted) > 0.005));
-
-  const quotedCandidate = waived
+  /** Strike-through only when membership actually reduced what the customer paid. */
+  const subscriptionReduced = waivedInr > 0.005;
+  const quotedCandidate = subscriptionReduced
     ? Math.max(waivedInr, quotedRaw, paid)
-    : quotedRaw > paid + 0.005
-      ? quotedRaw
-      : 0;
+    : 0;
   const quoted = quotedCandidate > 0.005 ? round2(quotedCandidate) : null;
 
   return {
     paid,
-    quoted,
+    quoted: subscriptionReduced && quoted != null && quoted > paid + 0.005 ? quoted : null,
     /** Membership free delivery: charged fee is 0 but quoted amount remains for strikethrough. */
-    waived: Boolean(waived && quoted != null && paid <= 0.005),
+    waived: Boolean(subscriptionReduced && quoted != null && paid <= 0.005),
   };
 }
 

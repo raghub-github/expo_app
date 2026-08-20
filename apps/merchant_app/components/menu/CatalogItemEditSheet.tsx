@@ -102,7 +102,7 @@ export function CatalogItemEditSheet({
               </Text>
             </View>
             <View style={styles.priceRow}>
-              <Text style={styles.priceCaption}>Selling price</Text>
+              <Text style={styles.priceCaption}>Base CTM</Text>
               <Text style={styles.itemPrice}>{priceLabel}</Text>
             </View>
             {item.item_description?.trim() ? (

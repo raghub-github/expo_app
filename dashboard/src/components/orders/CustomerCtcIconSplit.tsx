@@ -13,7 +13,7 @@ type Props = {
   nowrap?: boolean;
 };
 
-/** 💳 cashin  +  🪙 GatiCash — under / beside CTC total. */
+/** 💳 cashin  +  🪙 GatiCash — always both, ₹0.00 when unused. */
 export function CustomerCtcIconSplit({
   cashin,
   gatiCashUsed,
@@ -21,7 +21,8 @@ export function CustomerCtcIconSplit({
   className = "",
   nowrap = false,
 }: Props): ReactNode {
-  if (!(gatiCashUsed > 0.005)) return null;
+  const card = Number.isFinite(cashin) ? Math.max(0, cashin) : 0;
+  const coins = Number.isFinite(gatiCashUsed) ? Math.max(0, gatiCashUsed) : 0;
   return (
     <span
       className={`inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-600 tabular-nums ${
@@ -31,14 +32,14 @@ export function CustomerCtcIconSplit({
     >
       <span className="inline-flex items-center gap-1 shrink-0">
         <i className="bi bi-credit-card-2-front text-[12px] text-slate-500" aria-hidden />
-        <span className="orders-num">{formatCurrency(cashin)}</span>
+        <span className="orders-num">{formatCurrency(card)}</span>
       </span>
       <span className="text-slate-400 font-semibold shrink-0" aria-hidden>
         +
       </span>
       <span className="inline-flex items-center gap-1 shrink-0">
         <i className="bi bi-coin text-[12px] text-amber-600" aria-hidden />
-        <span className="orders-num">{formatCurrency(gatiCashUsed)}</span>
+        <span className="orders-num">{formatCurrency(coins)}</span>
       </span>
     </span>
   );

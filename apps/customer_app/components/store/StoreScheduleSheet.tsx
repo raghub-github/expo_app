@@ -7,6 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { AppText } from "@/components/AppText";
 import { PermissionBottomSheetShell } from "@/components/permissions/PermissionBottomSheetShell";
 import { StoreTheme } from "@/constants/storeTheme";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 export type StoreScheduleSheetProps = {
   visible: boolean;
@@ -18,14 +19,15 @@ export type StoreScheduleSheetProps = {
 };
 
 export function StoreScheduleSheet({ visible, onClose }: StoreScheduleSheetProps) {
+  const dark = useMerchantUiDark();
   return (
     <PermissionBottomSheetShell visible={visible} maxHeightRatio={0.42}>
       <View style={styles.content}>
-        <View style={styles.iconCircle}>
-          <Ionicons name="time-outline" size={28} color={StoreTheme.accentMintDark} />
+        <View style={[styles.iconCircle, dark && styles.iconCircleDark]}>
+          <Ionicons name="time-outline" size={28} color={dark ? MerchantDarkPalette.accent : StoreTheme.accentMintDark} />
         </View>
-        <AppText style={styles.title}>Scheduled order system coming soon</AppText>
-        <AppText style={styles.message}>
+        <AppText style={[styles.title, dark && styles.titleDark]}>Scheduled order system coming soon</AppText>
+        <AppText style={[styles.message, dark && styles.messageDark]}>
           For now, you can place a regular order.
         </AppText>
         <TouchableOpacity
@@ -59,12 +61,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#A7F3D0",
   },
+  iconCircleDark: {
+    backgroundColor: MerchantDarkPalette.accentSoft,
+    borderColor: MerchantDarkPalette.accent,
+  },
   title: {
     fontSize: 20,
     fontWeight: "800",
     color: StoreTheme.textPrimary,
     textAlign: "center",
     marginBottom: 8,
+  },
+  titleDark: {
+    color: MerchantDarkPalette.text,
   },
   message: {
     fontSize: 15,
@@ -73,6 +82,9 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 22,
     marginBottom: 22,
+  },
+  messageDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   cta: {
     alignSelf: "stretch",

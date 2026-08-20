@@ -38,7 +38,10 @@ import {
   merchantBillPartsFromItems,
   merchantLineTotalForItem,
 } from "@/lib/merchant-order-item-display";
-import { resolvePartnerOrderItems } from "@/lib/partnerFoodOrderItems";
+import {
+  loadCoreDbItemsByOrderTextIds as loadPartnerCtmItemsByOrderTextIds,
+  resolvePartnerOrderItems,
+} from "@/lib/partnerFoodOrderItems";
 import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 
 export const runtime = "nodejs";
@@ -114,6 +117,19 @@ function addonUnitPrice(
 ): number {
   if (storedAddonPrice > 0) return storedAddonPrice;
   return addonList.reduce((s, a) => s + a.price * Math.max(1, a.quantity), 0);
+}
+
+function mxFromCanonicalPricing(
+  raw: Record<string, unknown> | null | undefined
+): { grossLine: number; netLine: number; discount: number; grossUnit: number; netUnit: number } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const grossLine = asNum(raw.base_ctm_line ?? raw.baseCtmLine);
+  const netLine = asNum(raw.discounted_ctm_line ?? raw.discountedCtmLine);
+  const discount = asNum(raw.merchant_discount_amount ?? raw.merchantDiscountAmount);
+  const grossUnit = asNum(raw.base_ctm_unit ?? raw.baseCtmUnit);
+  const netUnit = asNum(raw.discounted_ctm_unit ?? raw.discountedCtmUnit);
+  if (grossLine <= 0.005 && netLine <= 0.005 && grossUnit <= 0.005) return null;
+  return { grossLine, netLine, discount, grossUnit, netUnit };
 }
 
 type LineAmounts = {
@@ -280,8 +296,9 @@ export async function GET(
       ),
     ];
 
-    const [itemsByTextId, { data: addonRows }, { data: menuRows }] = await Promise.all([
+    const [itemsByTextId, partnerItemsByTextId, { data: addonRows }, { data: menuRows }] = await Promise.all([
       loadCoreDbItemsByOrderTextIds(db, keys),
+      loadPartnerCtmItemsByOrderTextIds(db, keys),
       itemIds.length > 0
         ? db
             .from("orders_core_item_addons")
@@ -363,6 +380,9 @@ export async function GET(
       vegNonveg: string | null;
       appliedOfferType: string | null;
       offerLabel: string | null;
+      canonicalPricing?: Record<string, unknown> | null;
+      catalogAmountPerQuantity?: number;
+      netAmountPerQuantity?: number;
     }> = [];
 
     const billingSnap = parseBillingSnapshot(core.billing_snapshot);
@@ -412,6 +432,7 @@ export async function GET(
       storedAddonPrice: number;
       appliedOfferType: string | null;
       offerLabel: string | null;
+      canonicalPricing: Record<string, unknown> | null;
     };
     const pendingLines: PendingLine[] = [];
 
@@ -447,6 +468,23 @@ export async function GET(
         String(row.appliedOfferLabel ?? row.applied_offer_label ?? "").trim() || null;
       if (!type || type.toUpperCase() === "NONE") return { type: null, label: null };
       return { type, label };
+    };
+
+    const canonicalFromBilling = (
+      lineIndex: number,
+      menuItemId: number | null
+    ): Record<string, unknown> | null => {
+      if (!billingPricingRows.length) return null;
+      const mid = menuItemId != null ? String(menuItemId) : "";
+      const row =
+        billingPricingRows[lineIndex] ??
+        (mid
+          ? billingPricingRows.find(
+              (r) => String(r.menuItemId ?? r.menu_item_id ?? "").trim() === mid
+            )
+          : undefined);
+      const raw = row?.canonical_pricing ?? row?.canonicalPricing;
+      return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
     };
 
     if (coreItemRows && coreItemRows.length > 0) {
@@ -539,6 +577,10 @@ export async function GET(
           storedAddonPrice: asNum(r.addon_price),
           appliedOfferType,
           offerLabel,
+          canonicalPricing:
+            (snap?.canonical_pricing as Record<string, unknown> | undefined) ??
+            (snap?.canonicalPricing as Record<string, unknown> | undefined) ??
+            canonicalFromBilling(lineIndex, menuItemId),
         });
         lineIndex += 1;
       }
@@ -573,6 +615,7 @@ export async function GET(
           storedAddonPrice: 0,
           appliedOfferType: it.appliedOfferType ?? fromBill.type,
           offerLabel: it.offerLabel ?? fromBill.label,
+          canonicalPricing: canonicalFromBilling(idx, it.menuItemId ?? null),
         });
       });
     }
@@ -647,13 +690,14 @@ export async function GET(
         vegNonveg: line.vegNonveg,
         appliedOfferType: line.appliedOfferType,
         offerLabel: line.offerLabel,
+        canonicalPricing: line.canonicalPricing,
       });
     }
 
     const merchantPartnerItems = resolvePartnerOrderItems(
       core as Record<string, unknown>,
       (food as Record<string, unknown> | null) ?? null,
-      itemsByTextId
+      partnerItemsByTextId
     );
     const allCtmFrozen =
       merchantPartnerItems.length > 0 &&
@@ -663,27 +707,81 @@ export async function GET(
       Number((core as { merchant_precision_discount?: unknown }).merchant_precision_discount) || 0
     );
 
+    let originalMxSubtotal = 0;
+    let netMxSubtotal = 0;
+    let storeOfferAmount = 0;
+    const storeOfferNames: string[] = [];
+
+    for (let i = 0; i < detailRows.length; i++) {
+      const row = detailRows[i];
+      const partner = merchantPartnerItems[i];
+      const pending = pendingLines[i];
+      const qty = Math.max(1, row.quantity);
+      let catalogLine = 0;
+      let netLine = 0;
+      let offerDisc = 0;
+      if (partner?.ctmFromSnapshot) {
+        catalogLine = asNum(partner.catalogLineTotal);
+        netLine = asNum(partner.netLineTotal);
+        offerDisc = asNum(partner.offerDiscount);
+        if (netLine <= 0.005) netLine = merchantLineTotalForItem(partner);
+        if (catalogLine <= 0.005) catalogLine = netLine + offerDisc;
+      } else {
+        const mx = mxFromCanonicalPricing(pending?.canonicalPricing);
+        if (mx) {
+          catalogLine = mx.grossLine > 0.005 ? mx.grossLine : mx.grossUnit * qty;
+          netLine = mx.netLine > 0.005 ? mx.netLine : mx.netUnit * qty;
+          offerDisc = mx.discount;
+        }
+      }
+      if (catalogLine > 0.005 || netLine > 0.005) {
+        const catalogUnit = round2((catalogLine > 0.005 ? catalogLine : netLine) / qty);
+        const netUnit = round2((netLine > 0.005 ? netLine : catalogLine) / qty);
+        row.amountPerQuantity = catalogUnit;
+        row.totalPerQuantity = catalogUnit;
+        row.lineTotal = round2(catalogUnit * qty);
+        row.catalogAmountPerQuantity = catalogUnit;
+        row.netAmountPerQuantity = netUnit;
+        originalMxSubtotal = round2(originalMxSubtotal + catalogUnit * qty);
+        netMxSubtotal = round2(netMxSubtotal + netUnit * qty);
+        const lineOffer =
+          offerDisc > 0.005 ? offerDisc : round2(Math.max(0, catalogUnit * qty - netUnit * qty));
+        storeOfferAmount = round2(storeOfferAmount + lineOffer);
+        const offerName = String(partner?.offerLabel ?? row.offerLabel ?? "").trim();
+        if (offerName && lineOffer > 0.005 && !storeOfferNames.includes(offerName)) {
+          storeOfferNames.push(offerName);
+        }
+      }
+    }
+
+    if (storeOfferAmount <= 0.005 && originalMxSubtotal > netMxSubtotal + 0.005) {
+      storeOfferAmount = round2(originalMxSubtotal - netMxSubtotal);
+    }
+
     let merchantSubtotal = round2(
-      allCtmFrozen
-        ? merchantPartnerItems.reduce((s, it) => s + merchantLineTotalForItem(it), 0)
-        : pendingLines.reduce((s, l) => s + l.lineSubtotalForGst, 0)
+      originalMxSubtotal > 0.005
+        ? originalMxSubtotal
+        : allCtmFrozen
+          ? merchantPartnerItems.reduce((s, it) => s + merchantLineTotalForItem(it), 0)
+          : pendingLines.reduce((s, l) => s + l.lineSubtotalForGst, 0)
     );
     const merchantDiscountLegacy = merchantFundedDiscountFromBilling(billingSnap);
     const merchantDiscountLinesLegacy = merchantFundedDiscountLinesFromBilling(billingSnap);
-    // SSOT: cart precision only when CTM nets already include item BOOST.
-    const merchantDiscount = allCtmFrozen
-      ? precisionFromCore
-      : Math.max(merchantDiscountLegacy, precisionFromCore);
-    const merchantDiscountLines = allCtmFrozen
-      ? precisionFromCore > 0.005
-        ? [
-            {
-              label: "Merchant Precision Discount",
-              amount: precisionFromCore,
-            },
-          ]
-        : []
-      : merchantDiscountLinesLegacy;
+    const merchantDiscount =
+      allCtmFrozen || storeOfferAmount > 0.005
+        ? precisionFromCore
+        : Math.max(merchantDiscountLegacy, precisionFromCore);
+    const merchantDiscountLines =
+      allCtmFrozen || storeOfferAmount > 0.005
+        ? precisionFromCore > 0.005
+          ? [
+              {
+                label: "Merchant Precision Discount",
+                amount: precisionFromCore,
+              },
+            ]
+          : []
+        : merchantDiscountLinesLegacy;
 
     let merchantTotal: number | null = null;
     const frozenCoreCtm = Number((core as { total_ctm?: unknown }).total_ctm);
@@ -697,7 +795,11 @@ export async function GET(
       }
     }
     if (merchantTotal == null || merchantTotal <= 0) {
-      if (allCtmFrozen && merchantSubtotal > 0.005) {
+      if (netMxSubtotal > 0.005) {
+        merchantTotal = round2(
+          Math.max(0, netMxSubtotal + customerPricingSummary.packaging - precisionFromCore)
+        );
+      } else if (allCtmFrozen && merchantSubtotal > 0.005) {
         merchantTotal = round2(
           Math.max(0, merchantSubtotal + customerPricingSummary.packaging - precisionFromCore)
         );
@@ -734,11 +836,26 @@ export async function GET(
     if (merchantSubtotal > 0) {
       merchantLines.push({
         key: "items",
-        label: allCtmFrozen
-          ? "Items subtotal (merchant nets)"
-          : "Items subtotal (merchant prices)",
+        label:
+          storeOfferAmount > 0.005
+            ? "Items subtotal (original MX)"
+            : allCtmFrozen
+              ? "Items subtotal (merchant nets)"
+              : "Items subtotal (merchant prices)",
         amount: merchantSubtotal,
         kind: "charge",
+      });
+    }
+    if (storeOfferAmount > 0.005) {
+      merchantLines.push({
+        key: "store_offer",
+        label:
+          storeOfferNames.length === 1
+            ? `Restaurant store offer (${storeOfferNames[0]})`
+            : "Restaurant store offer",
+        amount: storeOfferAmount,
+        kind: "discount",
+        discountTag: "store",
       });
     }
     if (customerPricingSummary.packaging > 0) {
@@ -768,6 +885,23 @@ export async function GET(
       });
     }
 
+    const afterKnown = round2(
+      merchantSubtotal +
+        customerPricingSummary.packaging -
+        storeOfferAmount -
+        merchantDiscount
+    );
+    const roundingGap = round2(afterKnown - (merchantTotal ?? afterKnown));
+    if (roundingGap > 0.005) {
+      merchantLines.push({
+        key: "ctm_rounding",
+        label: "Rounding",
+        amount: roundingGap,
+        kind: "discount",
+        discountTag: "store",
+      });
+    }
+
     const pricing = {
       lines: merchantLines,
       itemsAmountTotal: merchantSubtotal,
@@ -775,7 +909,7 @@ export async function GET(
       packagingTax: 0,
       gst: 0,
       deliveryFee: 0,
-      discount: merchantDiscount,
+      discount: round2(merchantDiscount + storeOfferAmount),
       platformFee: 0,
       surgeFee: 0,
       smallOrderFee: 0,

@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { MerchantLoadingTypewriterText } from "@/components/merchant/MerchantLoadingTypewriterText";
 import { useMerchantLoadingMessage } from "@/hooks/useMerchantLoadingMessage";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 const PAD = 16;
 const CARD_W = 168;
@@ -24,31 +25,33 @@ export function MealsUnderPriceLoadingSkeleton({
 }: Props) {
   const insets = useSafeAreaInsets();
   const message = useMerchantLoadingMessage("meals-under-price", startMessageIndex);
+  const dark = useMerchantUiDark();
 
   return (
     <View
       style={[
         styles.root,
+        dark && styles.rootDark,
         edgeToEdge ? { paddingTop: insets.top, paddingBottom: insets.bottom } : { paddingBottom: listOnly ? 8 : insets.bottom },
       ]}
     >
-      {!listOnly ? <GMSkeleton style={styles.hero} /> : null}
+      {!listOnly ? <GMSkeleton dark={dark} style={styles.hero} /> : null}
       {!listOnly ? (
         <View style={styles.filterRow}>
           {Array.from({ length: 4 }).map((_, i) => (
-            <GMSkeleton key={i} style={styles.filterChip} />
+            <GMSkeleton key={i} dark={dark} style={styles.filterChip} />
           ))}
         </View>
       ) : null}
 
       {Array.from({ length: 2 }).map((_, sectionIdx) => (
-        <View key={sectionIdx} style={styles.section}>
+        <View key={sectionIdx} style={[styles.section, dark && styles.sectionDark]}>
           <View style={styles.sectionHeader}>
             <View style={styles.sectionHeaderLeft}>
-              <GMSkeleton style={styles.storeTitle} />
-              <GMSkeleton style={styles.storeMeta} />
+              <GMSkeleton dark={dark} style={styles.storeTitle} />
+              <GMSkeleton dark={dark} style={styles.storeMeta} />
             </View>
-            <GMSkeleton style={styles.ratingPill} />
+            <GMSkeleton dark={dark} style={styles.ratingPill} />
           </View>
           <ScrollView
             horizontal
@@ -56,21 +59,21 @@ export function MealsUnderPriceLoadingSkeleton({
             contentContainerStyle={styles.cardRow}
           >
             {Array.from({ length: 2 }).map((_, cardIdx) => (
-              <View key={cardIdx} style={styles.card}>
-                <GMSkeleton style={styles.cardImage} />
+              <View key={cardIdx} style={[styles.card, dark && styles.cardDark]}>
+                <GMSkeleton dark={dark} style={styles.cardImage} />
                 <View style={styles.cardBody}>
-                  <GMSkeleton style={styles.cardLineLg} />
-                  <GMSkeleton style={styles.cardLineMd} />
+                  <GMSkeleton dark={dark} style={styles.cardLineLg} />
+                  <GMSkeleton dark={dark} style={styles.cardLineMd} />
                   <View style={styles.cardPriceRow}>
-                    <GMSkeleton style={styles.cardPrice} />
-                    <GMSkeleton style={styles.cardCta} />
+                    <GMSkeleton dark={dark} style={styles.cardPrice} />
+                    <GMSkeleton dark={dark} style={styles.cardCta} />
                   </View>
-                  <GMSkeleton style={styles.cardOffer} />
+                  <GMSkeleton dark={dark} style={styles.cardOffer} />
                 </View>
               </View>
             ))}
           </ScrollView>
-          <GMSkeleton style={styles.menuBtn} />
+          <GMSkeleton dark={dark} style={styles.menuBtn} />
         </View>
       ))}
 
@@ -85,6 +88,9 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: "#FFFFFF",
+  },
+  rootDark: {
+    backgroundColor: MerchantDarkPalette.bg,
   },
   hero: {
     width: "100%",
@@ -107,6 +113,9 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     borderBottomWidth: 8,
     borderBottomColor: "#F1F5F9",
+  },
+  sectionDark: {
+    borderBottomColor: MerchantDarkPalette.elevated,
   },
   sectionHeader: {
     flexDirection: "row",
@@ -145,6 +154,10 @@ const styles = StyleSheet.create({
     borderColor: "#EEF2F6",
     overflow: "hidden",
     backgroundColor: "#FFFFFF",
+  },
+  cardDark: {
+    backgroundColor: MerchantDarkPalette.card,
+    borderColor: MerchantDarkPalette.border,
   },
   cardImage: {
     width: "100%",

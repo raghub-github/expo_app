@@ -5,6 +5,7 @@ import { getEnv } from "../../config/env.js";
 import { getStoreBillingRates, getStoreByIdForOrder, getStoreByStoreId } from "../merchants/merchant.service.js";
 import type { NormalizedOrderItem } from "../orders/orderNormalizer.js";
 import { rewriteCartPricesAuthoritatively, loadMrpIneligibleMenuItemIds, loadMenuItemIdAliases } from "./serverAuthoritativePricing.js";
+import { isStoreFundedItemOfferType, parseCanonicalPricing } from "../pricing/canonicalItemPricing.js";
 import {
   markOrderLinesDiscountEligibility,
   cartPromoQualifyingSubtotal,
@@ -320,8 +321,22 @@ export async function computeBillForOrder(
   } else {
     return { ok: false, code: "INVALID_ADDRESS_DATA", message: "addressId or dropLat/dropLon required." };
   }
-  const pickupLat = input.pickupLat ?? resolved.pickupLat;
-  const pickupLon = input.pickupLon ?? resolved.pickupLon;
+  const pickupLat =
+    resolved.pickupLat != null &&
+    resolved.pickupLon != null &&
+    Number.isFinite(resolved.pickupLat) &&
+    Number.isFinite(resolved.pickupLon) &&
+    !(resolved.pickupLat === 0 && resolved.pickupLon === 0)
+      ? resolved.pickupLat
+      : (input.pickupLat ?? resolved.pickupLat);
+  const pickupLon =
+    resolved.pickupLat != null &&
+    resolved.pickupLon != null &&
+    Number.isFinite(resolved.pickupLat) &&
+    Number.isFinite(resolved.pickupLon) &&
+    !(resolved.pickupLat === 0 && resolved.pickupLon === 0)
+      ? resolved.pickupLon
+      : (input.pickupLon ?? resolved.pickupLon);
   const env = getEnv();
   const quoteRes = await resolveStoreDeliveryQuote({
     storeId: input.merchantId,
@@ -387,12 +402,26 @@ export async function computeBillForOrder(
     const rawQ = Number(i.quantity);
     const quantity =
       Number.isFinite(rawQ) && rawQ > 0 ? Math.max(1, Math.floor(rawQ)) : 1;
+    const canonical = parseCanonicalPricing(
+      i.itemSnapshot && typeof i.itemSnapshot === "object"
+        ? (i.itemSnapshot as Record<string, unknown>).canonical_pricing
+        : null
+    );
+    const boostBaked = isStoreFundedItemOfferType(canonical?.merchantOfferType);
     return {
       menuItemId: String(i.menuItemId),
       lineTotal,
       quantity,
       baseLineTotal,
       addonLineTotal: lineAddon,
+      boostAlreadyInPrice: boostBaked,
+      canonicalPricing: canonical ? (i.itemSnapshot as Record<string, unknown>).canonical_pricing as Record<string, unknown> : null,
+      appliedOfferId: boostBaked ? canonical?.merchantOfferId : undefined,
+      appliedOfferLabel: boostBaked ? canonical?.merchantOfferName : undefined,
+      appliedOfferType: boostBaked ? (canonical?.merchantOfferRawType ?? "PERCENTAGE") : undefined,
+      appliedOfferDiscountPct: boostBaked ? canonical?.boostPercent : undefined,
+      appliedOfferDiscountFlat: boostBaked ? canonical?.boostFlat : undefined,
+      offerDiscountAmount: boostBaked ? 0 : undefined,
     };
   });
 

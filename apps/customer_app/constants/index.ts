@@ -44,6 +44,8 @@ export const STORAGE_KEYS = {
   WALLET_BALANCE_CACHE: "gm_customer_wallet_balance_cache_v1",
   /** Inbox notifications deleted by the user — inbox rows have no server-side delete */
   DISMISSED_NOTIFICATIONS: "gm_customer_dismissed_notifications_v1",
+  /** Stores opened from discovery home — auto-clears after 24h */
+  RECENTLY_VIEWED_STORES: "gm_customer_recently_viewed_stores_v1",
 } as const;
 
 export const API_TIMEOUT_MS = 30000;

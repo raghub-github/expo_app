@@ -5,6 +5,7 @@ import { View, Modal, Pressable, TouchableOpacity, ScrollView, StyleSheet, Platf
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 export type MenuSheetScrollTarget =
   | { kind: "past-orders" }
@@ -53,15 +54,16 @@ function MenuRow({
   section: StoreMenuSheetSection;
   onPress: () => void;
 }) {
+  const dark = useMerchantUiDark();
   return (
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.75}>
       <View style={styles.rowLeft}>
-        <AppText style={styles.rowTitle} numberOfLines={2}>
+        <AppText style={[styles.rowTitle, dark && styles.rowTitleDark]} numberOfLines={2}>
           {section.title}
         </AppText>
         {section.showPlus ? <AppText style={styles.plusSuffix}> +</AppText> : null}
       </View>
-      <AppText style={styles.rowCount}>{section.count}</AppText>
+      <AppText style={[styles.rowCount, dark && styles.rowTitleDark]}>{section.count}</AppText>
     </TouchableOpacity>
   );
 }
@@ -119,6 +121,7 @@ export function StoreMenuSheet({
   fssaiLabel,
 }: StoreMenuSheetProps) {
   const insets = useSafeAreaInsets();
+  const dark = useMerchantUiDark();
   const { width: winW, height: winH } = useWindowDimensions();
   const cardWidth = Math.min(Math.round(winW * 0.88), 400);
   const cardMaxH = Math.round(winH * 0.58);
@@ -136,7 +139,7 @@ export function StoreMenuSheet({
       <View style={styles.root}>
         <Pressable style={styles.backdrop} onPress={onClose} accessibilityRole="button" />
 
-        <View style={[styles.cardWrap, { width: cardWidth, maxHeight: cardMaxH }]}>
+        <View style={[styles.cardWrap, dark && styles.cardWrapDark, { width: cardWidth, maxHeight: cardMaxH }]}>
           <ScrollView
             style={styles.list}
             contentContainerStyle={styles.listContent}
@@ -145,7 +148,7 @@ export function StoreMenuSheet({
           >
             {hasOffers ? (
               <>
-                <AppText style={styles.sectionLabel}>ACTIVE OFFERS</AppText>
+                <AppText style={[styles.sectionLabel, dark && styles.sectionLabelDark]}>ACTIVE OFFERS</AppText>
                 {offerRows.map((offer) => (
                   <OfferRow
                     key={offer.id}
@@ -154,8 +157,8 @@ export function StoreMenuSheet({
                     onPress={() => onSelectOffer?.(offer)}
                   />
                 ))}
-                <View style={styles.divider} />
-                <AppText style={styles.sectionLabel}>CATEGORIES</AppText>
+                <View style={[styles.divider, dark && styles.dividerDark]} />
+                <AppText style={[styles.sectionLabel, dark && styles.sectionLabelDark]}>CATEGORIES</AppText>
               </>
             ) : null}
 
@@ -169,14 +172,14 @@ export function StoreMenuSheet({
 
             {largeOrderSection ? (
               <>
-                <View style={styles.divider} />
+                <View style={[styles.divider, dark && styles.dividerDark]} />
                 <TouchableOpacity
                   style={styles.largeOrderRow}
                   onPress={() => onSelectSection(largeOrderSection)}
                   activeOpacity={0.75}
                 >
-                  <AppText style={styles.largeOrderText}>LARGE ORDER MENU</AppText>
-                  <Ionicons name="chevron-down" size={16} color={StoreTheme.textPrimary} />
+                  <AppText style={[styles.largeOrderText, dark && styles.rowTitleDark]}>LARGE ORDER MENU</AppText>
+                  <Ionicons name="chevron-down" size={16} color={dark ? MerchantDarkPalette.text : StoreTheme.textPrimary} />
                 </TouchableOpacity>
               </>
             ) : null}
@@ -237,6 +240,9 @@ const styles = StyleSheet.create({
       android: { elevation: 16 },
     }),
   },
+  cardWrapDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+  },
   list: {
     flexGrow: 0,
   },
@@ -251,6 +257,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
     marginTop: 6,
     marginBottom: 2,
+  },
+  sectionLabelDark: {
+    color: MerchantDarkPalette.textDim,
   },
   row: {
     flexDirection: "row",
@@ -271,6 +280,9 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     color: StoreTheme.textPrimary,
     lineHeight: 20,
+  },
+  rowTitleDark: {
+    color: MerchantDarkPalette.text,
   },
   plusSuffix: {
     fontSize: 15,
@@ -340,6 +352,9 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: StoreTheme.border,
     marginVertical: 6,
+  },
+  dividerDark: {
+    backgroundColor: MerchantDarkPalette.border,
   },
   largeOrderRow: {
     flexDirection: "row",

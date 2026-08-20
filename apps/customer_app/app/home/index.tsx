@@ -36,7 +36,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { StatusBar } from "expo-status-bar";
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter, useFocusEffect, useNavigation } from "expo-router";
 import { foodHomeRouterBack } from "@/lib/safeRouterBack";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
@@ -73,8 +73,10 @@ import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
 import { useStoreBookmarks } from "@/hooks/useStoreBookmarks";
+import { useRecentlyViewedStores } from "@/hooks/useRecentlyViewedStores";
 import { usePreventServicesAtPin } from "@/hooks/usePreventServicesAtPin";
 import { useAddresses, useActiveLocation } from "@/hooks/useAddresses";
+import { useFloatingDockUiStore } from "@/store/floatingDockUiStore";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import {
   CategoryRailSkeleton,
@@ -116,7 +118,7 @@ import {
   userAppCategoriesQueryKey,
 } from "@/lib/userAppCategoryCache";
 import { GMHeader } from "@/components/GMHeader";
-import { HEADER_TOP_PADDING_NONE, STATUS_BAR_TO_HEADER_GAP, resolveTopSafeInset } from "@/constants/layout";
+import { HEADER_TOP_PADDING_NONE, STATUS_BAR_TO_HEADER_GAP, resolveTopSafeInset, FLOATING_CART_BAR_HEIGHT, FLOATING_CART_UI_LIFT } from "@/constants/layout";
 import { GMSearchBar } from "@/components/GMSearchBar";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import { GMEmptyState } from "@/components/GMEmptyState";
@@ -125,27 +127,44 @@ import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   filterAndSortMerchants,
+  isMerchantCurrentlyOpen,
+  isTopBrandMerchant,
   openRestaurantsDeliveringLabel,
   resolveMerchantLiveStatus,
 } from "@/lib/merchantListing";
 import { useFeaturedOffersHome } from "@/hooks/useFeaturedOffersHome";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
 import { useFoodHomeLayout } from "@/hooks/useFoodHomeLayout";
-import { DEFAULT_FOOD_HOME_LAYOUT, DEFAULT_GRID_FIRST_UNDER_250 } from "@/lib/foodHomeLayout";
+import {
+  DEFAULT_FOOD_HOME_LAYOUT,
+  DEFAULT_GRID_FIRST_UNDER_250,
+  resolveDiscoveryDealsAtMaxPrice,
+} from "@/lib/foodHomeLayout";
 import { fetchFoodItemsUnderPriceGrouped } from "@/services/foodHomeItemsUnderPrice.service";
 import { Image } from "expo-image";
+import { filterPureVegMerchants, filterVegSafeCategories } from "@/lib/pureVegFilter";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
-import { FoodHomeCategoryChips } from "@/components/home/FoodHomeCategoryVariants";
 import { LovedMerchantsHorizontal } from "@/components/home/LovedMerchantsHorizontal";
 import { AppText } from "@/components/AppText";
+import {
+  DiscoveryHomeHeader,
+  DiscoveryPromoRail,
+  DiscoveryCategoryGrid,
+  DiscoveryExploreSection,
+  DiscoveryRestaurantCard,
+  DiscoveryBackForMoreSection,
+  DiscoveryFloatingBar,
+  DiscoveryColors,
+  DISCOVERY_FLOAT_BAR_H,
+} from "@/features/discovery-home";
 
 const PAGE_PAD = 16;
 const SECTION_GAP = 24;
 const SECTION_GAP_SM = 10;
 /** Vertical gap between the two tiles in each column. */
 const RAIL_ROW_GAP = 10;
-/** Target 4 category columns on screen (2 rows of pairs → 8 items visible before scroll). */
-const CATEGORY_RAIL_TARGET_COLUMNS = 4;
+/** Target 5 category columns on screen (2 rows of pairs → 10 items visible before scroll). */
+const CATEGORY_RAIL_TARGET_COLUMNS = 5;
 
 const OFFERS_SECTION_PAD = 10;
 const OFFER_CARD_HEIGHT = 72;
@@ -275,11 +294,13 @@ export default function FoodMerchantsScreen() {
   });
   const weatherDelayMinutes = weather?.etaDelayMinutes ?? 0;
   const { bookmarkSet, refetch: refetchBookmarks } = useStoreBookmarks();
+  const { stores: recentlyViewedStores } = useRecentlyViewedStores();
   const {
     layoutKey: foodHomeLayoutKeyRaw,
     cachedLayoutKey,
     layoutReady,
     canQuery: layoutCanQuery,
+    refetch: refetchFoodHomeLayout,
     gridFirstHeroMedia,
     gridFirstSubscriptionRowEnabled,
     gridFirstSubscriptionRowText,
@@ -289,11 +310,23 @@ export default function FoodMerchantsScreen() {
     gridFirstUnder250TabImageUrl,
     gridFirstUnder250HeroImageUrl,
     gridFirstUnder250MaxPrice,
+    discoveryDealsAtMaxPrice,
+    discoveryDealsAtImageUrl,
+    discoveryDealsAtHeroImageUrl,
+    discoveryCrazyDealsImageUrl,
+    discoveryFreePackagingImageUrl,
+    discoveryCtaTiles,
   } = useFoodHomeLayout(address, merchantsAnchorCoords);
+
+  const resolvedFoodHomeLayoutKey =
+    foodHomeLayoutKeyRaw ?? cachedLayoutKey ?? DEFAULT_FOOD_HOME_LAYOUT;
+  const isGridFirstLayout = resolvedFoodHomeLayoutKey === "grid_first";
+  const isDiscoveryLayout = resolvedFoodHomeLayoutKey === "discovery";
 
   const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
   const setVegOnly = useDietaryPreferenceStore((s) => s.setVegOnly);
   const hydrateDietaryPreferences = useDietaryPreferenceStore((s) => s.hydrate);
+  const floatingDockVisible = useFloatingDockUiStore((s) => s.dockVisible);
 
   useLayoutEffect(() => {
     seedUserAppCategoriesQueryIfCached(queryClient, HOME_CATEGORY_STORE_TYPE);
@@ -317,6 +350,8 @@ export default function FoodMerchantsScreen() {
   ]);
 
   const [openNow, setOpenNow] = useState(true);
+  const [topBrands, setTopBrands] = useState(false);
+  const [nearFast, setNearFast] = useState(false);
   const [sortBy, setSortBy] = useState<SortOption>("default");
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
   const [gridFirstCategoryTabId, setGridFirstCategoryTabId] = useState("all");
@@ -373,7 +408,11 @@ export default function FoodMerchantsScreen() {
     initialDataUpdatedAt: cachedMerchantsInitial ? Date.now() - MERCHANTS_LIST_STALE_MS : undefined,
     staleTime: MERCHANTS_LIST_STALE_MS,
     gcTime: MERCHANTS_LIST_GC_MS,
-    placeholderData: (previousData) => previousData,
+    placeholderData: (previousData, previousQuery) => {
+      const prevVeg = previousQuery?.queryKey?.[2];
+      if (prevVeg !== vegOnly) return undefined;
+      return previousData;
+    },
     refetchOnWindowFocus: false,
     retry: 2,
   });
@@ -420,17 +459,25 @@ export default function FoodMerchantsScreen() {
   useLayoutEffect(() => {
     if (gridFirstHeroMedia.length > 0) prefetchGridFirstHeroMedia(gridFirstHeroMedia);
     if (homeFeaturedOffers.length > 0) prefetchFeaturedOfferHeroImages(homeFeaturedOffers);
-    if (gridFirstUnder250TabImageUrl || gridFirstUnder250HeroImageUrl) {
-      prefetchMealsUnder250HeroMedia({
-        gridFirstUnder250TabImageUrl,
-        gridFirstUnder250HeroImageUrl,
-      });
-    }
+    prefetchMealsUnder250HeroMedia({
+      gridFirstUnder250TabImageUrl,
+      gridFirstUnder250HeroImageUrl,
+      discoveryDealsAtHeroImageUrl,
+      discoveryDealsAtImageUrl,
+      discoveryCrazyDealsImageUrl,
+      discoveryFreePackagingImageUrl,
+      discoveryCtaTiles,
+    });
   }, [
     gridFirstHeroMedia,
     homeFeaturedOffers,
     gridFirstUnder250TabImageUrl,
     gridFirstUnder250HeroImageUrl,
+    discoveryDealsAtHeroImageUrl,
+    discoveryDealsAtImageUrl,
+    discoveryCrazyDealsImageUrl,
+    discoveryFreePackagingImageUrl,
+    discoveryCtaTiles,
   ]);
 
   useEffect(() => {
@@ -460,14 +507,14 @@ export default function FoodMerchantsScreen() {
   }, [apiHomeCategories, categoryAllTab.imageUrl]);
 
   const homeCategoryRailItems = useMemo(() => {
-    const deduped = dedupeUserAppCategories(apiHomeCategories ?? []);
+    const deduped = filterVegSafeCategories(dedupeUserAppCategories(apiHomeCategories ?? []), vegOnly);
     return deduped.map((r) => ({
       id: String(r.id),
       name: r.name,
       slug: String(r.id),
       imageUrl: r.imageUrl,
     }));
-  }, [apiHomeCategories]);
+  }, [apiHomeCategories, vegOnly]);
 
   /** Reserve category rail height while first fetch runs — never flash empty → rail. */
   const categoryRailBootstrapping =
@@ -496,7 +543,10 @@ export default function FoodMerchantsScreen() {
   const offerCardWidth = windowWidth - PAGE_PAD * 2;
   const restaurantCardWidth = offerCardWidth;
 
-  const merchants = Array.isArray(merchantsData) ? merchantsData : [];
+  const merchants = filterPureVegMerchants(
+    Array.isArray(merchantsData) ? merchantsData : [],
+    vegOnly
+  );
   const hasDeliveryCoords =
     merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null;
   /** True when at least one ACTIVE store exists in the area (open or closed). Not tied to Open Now filter. */
@@ -549,7 +599,7 @@ export default function FoodMerchantsScreen() {
     console.log("Using location:", location.source);
   }, [address?.fullAddress, coords, locationSource]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     merchants.forEach((m) => {
       const liveStatus = resolveMerchantLiveStatus(m, {});
       setStatusFromApi(m.id, liveStatus === "OPEN", liveStatus);
@@ -569,9 +619,28 @@ export default function FoodMerchantsScreen() {
         deliveryFilter,
         selectedCuisines,
         noPackagingCharges,
+        nearFast,
+        hideClosed: false,
       }),
-    [merchants, statusMap, openNow, sortBy, deliveryFilter, selectedCuisines, filterHasOffers, noPackagingCharges]
+    [
+      merchants,
+      statusMap,
+      openNow,
+      sortBy,
+      deliveryFilter,
+      selectedCuisines,
+      filterHasOffers,
+      noPackagingCharges,
+      nearFast,
+    ]
   );
+
+  const topBrandMerchants = useMemo(() => {
+    if (!topBrands) return filteredAndSortedMerchants;
+    return filteredAndSortedMerchants.filter(isTopBrandMerchant);
+  }, [filteredAndSortedMerchants, topBrands]);
+
+  const listMerchants = isDiscoveryLayout ? topBrandMerchants : filteredAndSortedMerchants;
 
   const lovedByCustomers = useMemo(
     () =>
@@ -581,8 +650,8 @@ export default function FoodMerchantsScreen() {
       // store that closes mid-session drops out instantly — no refetch, no stale slot.
       // Closed stores still appear in "Restaurants Near You" (the full list) with their
       // "Closed · Opens…" label.
-      pickLovedByCustomersMerchants(filteredAndSortedMerchants).filter(
-        (m) => resolveMerchantLiveStatus(m, statusMap) === "OPEN"
+      pickLovedByCustomersMerchants(filteredAndSortedMerchants).filter((m) =>
+        isMerchantCurrentlyOpen(m, statusMap)
       ),
     [filteredAndSortedMerchants, statusMap]
   );
@@ -592,6 +661,7 @@ export default function FoodMerchantsScreen() {
     [merchants, statusMap]
   );
 
+  const navigation = useNavigation();
   const handleBack = () => foodHomeRouterBack(router);
   const handleSearch = () => router.push("/search");
   const handleLocationPress = () => router.push("/location");
@@ -600,9 +670,27 @@ export default function FoodMerchantsScreen() {
     setGridFirstCategoryTabId(id);
     router.push(`/home/category/${slug}`);
   }, [router]);
-  const handleMealsUnderPricePress = useCallback(() => {
-    navigateToMealsUnderPrice(router, queryClient);
-  }, [router, queryClient]);
+  const handleMealsUnderPricePress = useCallback(
+    (tile?: { id?: string; maxPrice?: number | null; heroImageUrl?: string | null; label?: string | null }) => {
+      navigateToMealsUnderPrice(router, queryClient, {
+        tileId: tile?.id,
+        maxPrice: tile?.maxPrice,
+        heroImageUrl: tile?.heroImageUrl,
+        title: tile?.label,
+      });
+    },
+    [router, queryClient]
+  );
+  const handleCrazyDealsPress = useCallback(() => {
+    router.push("/home/crazy-deals");
+  }, [router]);
+  const handleFreePackagingPress = useCallback(() => {
+    router.push("/home/free-packaging");
+  }, [router]);
+  const discoveryDealsAtPrice = resolveDiscoveryDealsAtMaxPrice(
+    discoveryDealsAtMaxPrice,
+    gridFirstUnder250MaxPrice || DEFAULT_GRID_FIRST_UNDER_250.maxPrice
+  );
   const showMealsUnderPriceChip =
     layoutReady &&
     (foodHomeLayoutKeyRaw ?? "classic") === "grid_first" &&
@@ -632,7 +720,11 @@ export default function FoodMerchantsScreen() {
         }),
       staleTime: 60_000,
     });
-    for (const raw of [gridFirstUnder250TabImageUrl, gridFirstUnder250HeroImageUrl]) {
+    for (const raw of [
+      gridFirstUnder250TabImageUrl,
+      gridFirstUnder250HeroImageUrl,
+      discoveryDealsAtHeroImageUrl,
+    ]) {
       if (!raw?.trim()) continue;
       const uri = toAbsoluteImageUrl(raw) ?? raw;
       void Image.prefetch(uri, { cachePolicy: "memory-disk" });
@@ -644,6 +736,7 @@ export default function FoodMerchantsScreen() {
     gridFirstUnder250MaxPrice,
     gridFirstUnder250TabImageUrl,
     gridFirstUnder250HeroImageUrl,
+    discoveryDealsAtHeroImageUrl,
     vegOnly,
     queryClient,
   ]);
@@ -797,7 +890,7 @@ export default function FoodMerchantsScreen() {
     selectedCuisines.length > 0 ||
     filterHasOffers ||
     noPackagingCharges;
-  const isVegEmptyState = vegOnly && !showMerchantsSkeleton && filteredAndSortedMerchants.length === 0;
+  const isVegEmptyState = vegOnly && !showMerchantsSkeleton && listMerchants.length === 0;
   const activeFilterCount = useMemo(() => {
     let n = 0;
     if (deliveryFilter !== "any") n += 1;
@@ -812,15 +905,25 @@ export default function FoodMerchantsScreen() {
   }, []);
 
   const handleClassicSortToggle = useCallback(() => {
-    setSortBy((s) =>
-      s === "default" ? "rating" : s === "rating" ? "distance" : "default"
-    );
+    setSortBy((s) => {
+      const next = s === "default" ? "rating" : s === "rating" ? "distance" : "default";
+      if (next !== "distance") setNearFast(false);
+      return next;
+    });
+  }, []);
+  const handleNearFastToggle = useCallback(() => {
+    setNearFast((v) => {
+      const next = !v;
+      setSortBy(next ? "distance" : "default");
+      return next;
+    });
   }, []);
   const onRefresh = async () => {
     setRefreshing(true);
     try {
       await Promise.all([
         refetch(),
+        refetchFoodHomeLayout(),
         refetchBookmarks(),
         refetchHomeCategories(),
         refetchFeaturedOffers(),
@@ -905,9 +1008,7 @@ export default function FoodMerchantsScreen() {
     queryClient,
   ]);
 
-  const resolvedFoodHomeLayoutKey =
-    foodHomeLayoutKeyRaw ?? cachedLayoutKey ?? DEFAULT_FOOD_HOME_LAYOUT;
-  const isGridFirstLayout = resolvedFoodHomeLayoutKey === "grid_first";
+  const foodHomeLayoutKey = resolvedFoodHomeLayoutKey;
   const showGridFirstSubscriptionRow =
     gridFirstSubscriptionRowEnabled && gridFirstSubscriptionRowText.trim().length > 0;
   const useGridFirstCategoryTabs = isGridFirstLayout;
@@ -977,6 +1078,17 @@ export default function FoodMerchantsScreen() {
     useScreenChromeStore.getState().setStatusBarBackground("transparent", "dark");
   }, [isGridFirstLayout, isNonServiceableScreen]);
 
+  useLayoutEffect(() => {
+    if (!isDiscoveryLayout || isNonServiceableScreen) return;
+    // Pad the discovery header ourselves. Never toggle the root spacer on this
+    // screen — that race is what slides CTA/categories under the search bar.
+    useScreenChromeStore.setState({
+      statusBarBackground: DiscoveryColors.bg,
+      statusBarStyle: "light",
+      hideStatusBarSpacer: true,
+    });
+  }, [isDiscoveryLayout, isNonServiceableScreen]);
+
   const lastActiveLocationInvalidateRef = useRef(0);
 
   useFocusEffect(
@@ -1032,6 +1144,31 @@ export default function FoodMerchantsScreen() {
       setImmersiveStatusBarChrome,
       setStatusBarBackground,
     ])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!isDiscoveryLayout) return;
+      NativeStatusBar.setHidden(false, "none");
+      NativeStatusBar.setBarStyle("light-content", true);
+      useScreenChromeStore.setState({
+        statusBarBackground: DiscoveryColors.bg,
+        statusBarStyle: "light",
+        hideStatusBarSpacer: true,
+      });
+      navigation.setOptions({
+        statusBarStyle: "light",
+        statusBarBackgroundColor: DiscoveryColors.bg,
+      });
+      if (Platform.OS === "android") {
+        NativeStatusBar.setTranslucent(true);
+        NativeStatusBar.setBackgroundColor(DiscoveryColors.bg, true);
+      }
+      return () => {
+        useScreenChromeStore.getState().resetStatusBarBackground();
+        navigation.setOptions({ statusBarStyle: "dark" });
+      };
+    }, [isDiscoveryLayout, navigation])
   );
 
   // Do NOT re-apply immersive in a layout effect — it races merchant focus and
@@ -1241,20 +1378,37 @@ export default function FoodMerchantsScreen() {
   const restaurantKeyExtractor = useCallback((item: MerchantSummary) => item.id, []);
 
   const renderRestaurantItem = useCallback<ListRenderItem<MerchantSummary>>(
-    ({ item }) => (
-      <GMRestaurantCardV2
-        merchant={item}
-        initialSaved={bookmarkSet.has(item.id)}
-        weatherDelayMinutes={weatherDelayMinutes}
-        bottomSpacing={18}
-      />
-    ),
-    [bookmarkSet, weatherDelayMinutes]
+    ({ item }) =>
+      isDiscoveryLayout ? (
+        <DiscoveryRestaurantCard merchant={item} weatherDelayMinutes={weatherDelayMinutes} />
+      ) : (
+        <GMRestaurantCardV2
+          merchant={item}
+          initialSaved={bookmarkSet.has(item.id)}
+          weatherDelayMinutes={weatherDelayMinutes}
+          bottomSpacing={18}
+        />
+      ),
+    [bookmarkSet, weatherDelayMinutes, isDiscoveryLayout]
   );
 
   const restaurantListExtraData = useMemo(
-    () => `${weatherDelayMinutes}:${foodLocked ? "1" : "0"}:${[...bookmarkSet].join(",")}`,
-    [weatherDelayMinutes, foodLocked, bookmarkSet]
+    () =>
+      `${weatherDelayMinutes}:${foodLocked ? "1" : "0"}:${isDiscoveryLayout ? "d" : "c"}:${openNow ? "1" : "0"}:${topBrands ? "1" : "0"}:${nearFast ? "1" : "0"}:${sortBy}:${filterHasOffers ? "1" : "0"}:${noPackagingCharges ? "1" : "0"}:${deliveryFilter}:${selectedCuisines.join(",")}:${[...bookmarkSet].join(",")}`,
+    [
+      weatherDelayMinutes,
+      foodLocked,
+      bookmarkSet,
+      isDiscoveryLayout,
+      openNow,
+      topBrands,
+      nearFast,
+      sortBy,
+      filterHasOffers,
+      noPackagingCharges,
+      deliveryFilter,
+      selectedCuisines,
+    ]
   );
 
   const gridFirstCategoryFlowStyle = useAnimatedStyle(() => {
@@ -1336,24 +1490,42 @@ export default function FoodMerchantsScreen() {
     );
   }
 
-  const foodHomeLayoutKey = resolvedFoodHomeLayoutKey;
   const promoCardHeight = OFFER_CARD_HEIGHT;
   const showLovedGrid =
     foodHomeLayoutKey === "classic" || foodHomeLayoutKey === "grid_first";
-  const showLovedHorizontal = foodHomeLayoutKey === "discovery";
+  const showLovedHorizontal = false;
   const lovedSectionTitle =
     foodHomeLayoutKey === "grid_first" ? "RECOMMENDED WITH DEALS" : "LOVED BY CUSTOMERS";
 
   // Single scroll: header in flow, then content (categories → filters → list). Sticky rail inside content area only.
   return (
-    <View style={styles.container}>
+    <View
+      collapsable={false}
+      style={[styles.container, isDiscoveryLayout && styles.discoveryContainer]}
+    >
       {isGridFirstLayout ? (
         <StatusBar style="dark" translucent backgroundColor="transparent" hidden={false} />
+      ) : isDiscoveryLayout ? (
+        <StatusBar style="light" backgroundColor={DiscoveryColors.bg} hidden={false} />
       ) : (
         <StatusBar style="dark" hidden={false} />
       )}
 
-      {!isGridFirstLayout ? (
+      {isDiscoveryLayout ? (
+        <DiscoveryHomeHeader
+          topInset={statusBarTopInset}
+          locationLabel={
+            [gridFirstLocationLabels.primary, gridFirstLocationLabels.secondary]
+              .filter(Boolean)
+              .join(", ")
+          }
+          onBack={handleBack}
+          onLocationPress={handleLocationPress}
+          onSearchPress={handleSearch}
+          vegOnly={vegOnly}
+          onVegChange={setVegOnly}
+        />
+      ) : !isGridFirstLayout ? (
         <GMHeader
           topInset={HEADER_TOP_PADDING_NONE}
           compact
@@ -1367,15 +1539,26 @@ export default function FoodMerchantsScreen() {
         />
       ) : null}
 
-      <View style={styles.contentWrap}>
+      <View style={[styles.contentWrap, isDiscoveryLayout && styles.discoveryContentWrap]}>
         <FlashList
-          style={styles.scroll}
-          data={showMerchantsSkeleton ? EMPTY_MERCHANTS : filteredAndSortedMerchants}
+          style={[styles.scroll, isDiscoveryLayout && styles.discoveryScroll]}
+          data={showMerchantsSkeleton ? EMPTY_MERCHANTS : listMerchants}
           keyExtractor={restaurantKeyExtractor}
           renderItem={renderRestaurantItem}
           extraData={restaurantListExtraData}
           drawDistance={480}
-          contentContainerStyle={{ paddingBottom: 8 }}
+          contentInsetAdjustmentBehavior="never"
+          overScrollMode="never"
+          bounces={!isDiscoveryLayout}
+          contentContainerStyle={{
+            paddingBottom: isDiscoveryLayout
+              ? Math.max(insets.bottom, 10) +
+                8 +
+                (floatingDockVisible
+                  ? FLOATING_CART_BAR_HEIGHT + FLOATING_CART_UI_LIFT
+                  : DISCOVERY_FLOAT_BAR_H)
+              : 8,
+          }}
           showsVerticalScrollIndicator={false}
           // First-tap cards/chips must not wait for scroll gesture settle (mirror merchant menu).
           delaysContentTouches={false}
@@ -1391,8 +1574,9 @@ export default function FoodMerchantsScreen() {
             <RefreshControl
               refreshing={refreshing}
               onRefresh={onRefresh}
-              tintColor={GatiMitraColors.primaryMint}
-              colors={[GatiMitraColors.primaryMint]}
+              tintColor={isDiscoveryLayout ? DiscoveryColors.teal : GatiMitraColors.primaryMint}
+              colors={[isDiscoveryLayout ? DiscoveryColors.teal : GatiMitraColors.primaryMint]}
+              progressBackgroundColor={isDiscoveryLayout ? DiscoveryColors.card : "#FFFFFF"}
             />
           }
           ListHeaderComponent={
@@ -1477,7 +1661,18 @@ export default function FoodMerchantsScreen() {
                 </View>
               ) : null}
             </View>
-          ) : (
+          ) : isDiscoveryLayout && discoveryCtaTiles.length > 0 ? (
+            <View style={[styles.discoveryPromoSection, styles.discoveryPromoSlot]}>
+              <DiscoveryPromoRail
+                tiles={discoveryCtaTiles}
+                offers={homeFeaturedOffers}
+                dealsAtMaxPrice={discoveryDealsAtPrice}
+                onMealsPress={handleMealsUnderPricePress}
+                onDealsPress={handleCrazyDealsPress}
+                onPackagingPress={handleFreePackagingPress}
+              />
+            </View>
+          ) : isDiscoveryLayout ? null : (
             <View style={styles.offersSection}>
               <FoodOffersRibbonCarousel
                 offers={homeFeaturedOffers}
@@ -1506,7 +1701,7 @@ export default function FoodMerchantsScreen() {
                 backgroundColor={gridFirstSubscriptionRowBgColor}
               />
             </View>
-          ) : (
+          ) : isDiscoveryLayout ? null : (
             <View style={styles.sectionGap} />
           )}
 
@@ -1537,21 +1732,21 @@ export default function FoodMerchantsScreen() {
               </View>
             )
           ) : foodHomeLayoutKey === "discovery" ? (
-            <View style={styles.categoryChipsSection}>
+            <View style={[styles.discoveryCategorySection, styles.discoveryCategorySlot]}>
               {categoryRailBootstrapping ? (
                 <CategoryRailSkeleton
-                  columnCount={4}
+                  columnCount={5}
                   itemW={categoryRailLayout.itemW}
                   columnGap={categoryRailLayout.columnGap}
-                  circle={categoryRailLayout.circle}
+                  circle={Math.min(58, Math.max(46, categoryRailLayout.circle - 4))}
                   rowGap={RAIL_ROW_GAP}
                 />
               ) : homeCategoryRailItems.length === 0 ? (
                 <View style={styles.categoryRailLoading}>
-                  <AppText style={styles.categoryRailLoadingText}>No categories yet.</AppText>
+                  <AppText style={styles.discoveryMutedText}>No categories yet.</AppText>
                 </View>
               ) : (
-                <FoodHomeCategoryChips items={homeCategoryRailItems} onSelect={handleCategorySelect} />
+                <DiscoveryCategoryGrid items={homeCategoryRailItems} onSelect={handleCategorySelect} />
               )}
             </View>
           ) : (
@@ -1569,6 +1764,14 @@ export default function FoodMerchantsScreen() {
           </>
           )}
 
+          {isDiscoveryLayout ? (
+            <DiscoveryBackForMoreSection
+              stores={recentlyViewedStores}
+              liveMerchants={merchants}
+              vegOnly={vegOnly}
+            />
+          ) : null}
+
           {/* Filter bar — always in flow above Recommended; sticky chrome takes over on scroll */}
           {isGridFirstLayout ? (
             <Animated.View
@@ -1582,6 +1785,24 @@ export default function FoodMerchantsScreen() {
             >
               {gridFirstFilterRowEl}
             </Animated.View>
+          ) : isDiscoveryLayout ? (
+            <DiscoveryExploreSection
+              openNow={openNow}
+              topBrands={topBrands}
+              sortBy={sortBy}
+              nearFast={nearFast}
+              hasOffers={filterHasOffers}
+              noPackagingCharges={noPackagingCharges}
+              hasActiveFilters={hasActiveFilters}
+              activeFilterCount={activeFilterCount}
+              onToggleOpenNow={() => setOpenNow((v) => !v)}
+              onToggleTopBrands={() => setTopBrands((v) => !v)}
+              onToggleSort={handleClassicSortToggle}
+              onToggleOffers={() => setFilterHasOffers((v) => !v)}
+              onToggleNoPackaging={() => setNoPackagingCharges((v) => !v)}
+              onToggleNearFast={handleNearFastToggle}
+              onOpenFilters={() => setFilterSheetVisible(true)}
+            />
           ) : (
             <View style={[styles.section, styles.filterBar]}>
               {classicFilterRowEl}
@@ -1593,7 +1814,7 @@ export default function FoodMerchantsScreen() {
             <View style={styles.lovedSection}>
               <AppText style={styles.sectionHeading}>{lovedSectionTitle}</AppText>
               {showMerchantsSkeleton ? (
-                <LovedMerchantsGridSkeleton count={4} />
+                <LovedMerchantsGridSkeleton count={4} dark={isDiscoveryLayout} />
               ) : (
                 <LovedMerchantsHorizontal
                   merchants={lovedByCustomers}
@@ -1604,6 +1825,16 @@ export default function FoodMerchantsScreen() {
             </View>
           ) : null}
 
+          {isDiscoveryLayout ? (
+            foodLocked ? (
+              <View style={[styles.preventBanner, styles.discoveryPreventBanner]}>
+                <Ionicons name="shield-outline" size={16} color="#FCA5A5" />
+                <AppText style={styles.discoveryPreventText}>
+                  Food ordering is restricted for this delivery location. Change address to continue.
+                </AppText>
+              </View>
+            ) : null
+          ) : (
           <View style={[styles.section, styles.restaurantSection]}>
             <AppText style={styles.sectionHeading}>RESTAURANTS NEAR YOU</AppText>
             {foodLocked ? (
@@ -1618,30 +1849,40 @@ export default function FoodMerchantsScreen() {
               <AppText style={styles.restaurantOpenCount}>{openRestaurantCountLabel}</AppText>
             ) : null}
           </View>
+          )}
             </>
           }
           ListEmptyComponent={
             showMerchantsSkeleton ? (
-              <RestaurantListSkeleton count={3} cardWidth={restaurantCardWidth} />
+              <RestaurantListSkeleton
+                count={3}
+                cardWidth={restaurantCardWidth}
+                dark={isDiscoveryLayout}
+                layout={isDiscoveryLayout ? "row" : "poster"}
+              />
             ) : vegOnly ? (
               <View style={styles.vegEmptyWrap}>
-                <View style={styles.vegEmptyIconRing}>
+                <View style={[styles.vegEmptyIconRing, isDiscoveryLayout && styles.discoveryVegRing]}>
                   <Ionicons name="leaf" size={20} color={GatiMitraColors.primaryMint} />
                 </View>
-                <AppText style={styles.vegEmptyTitle}>
+                <AppText style={[styles.vegEmptyTitle, isDiscoveryLayout && styles.discoveryMutedText]}>
                   We couldn’t find any pure-veg stores in your area.
                 </AppText>
               </View>
             ) : (
-              <AppText style={styles.restaurantEmptyHint}>
+              <AppText style={[styles.restaurantEmptyHint, isDiscoveryLayout && styles.discoveryMutedText]}>
                 No restaurants match your filters.
               </AppText>
             )
           }
           ListFooterComponent={
+            isDiscoveryLayout ? (
+              <View style={{ height: 8 }} />
+            ) : (
             <View style={isVegEmptyState ? styles.footerDock : undefined}>
               <BrandingFooter compact />
             </View>
+            )
           }
         />
 
@@ -1661,9 +1902,19 @@ export default function FoodMerchantsScreen() {
             enableFilterSticky
           />
         ) : null}
+
+        {isDiscoveryLayout && !floatingDockVisible ? (
+          <DiscoveryFloatingBar
+            sortBy={sortBy}
+            hasActiveFilters={hasActiveFilters}
+            bottomInset={Math.max(insets.bottom, 10)}
+            onSortPress={handleClassicSortToggle}
+            onFiltersPress={() => setFilterSheetVisible(true)}
+          />
+        ) : null}
       </View>
 
-      {/* Filter sheet — full-bleed bottom sheet, mint-forward */}
+      {/* Filter sheet — full-bleed bottom sheet */}
       <Modal
         visible={filterSheetVisible}
         transparent
@@ -1673,20 +1924,30 @@ export default function FoodMerchantsScreen() {
       >
         <Pressable style={styles.filterOverlay} onPress={() => setFilterSheetVisible(false)}>
           <Pressable style={styles.filterSheetStack} onPress={() => {}}>
-            <View style={[styles.filterSheetCard, { maxHeight: windowHeight * 0.9 }]}>
-              <LinearGradient
-                colors={[GatiMitraColors.mintSoft, "#FFFFFF"]}
-                locations={[0, 0.35]}
-                style={StyleSheet.absoluteFillObject}
-                pointerEvents="none"
-              />
+            <View
+              style={[
+                styles.filterSheetCard,
+                isDiscoveryLayout && styles.discoveryFilterSheetCard,
+                { maxHeight: windowHeight * 0.9 },
+              ]}
+            >
+              {isDiscoveryLayout ? null : (
+                <LinearGradient
+                  colors={[GatiMitraColors.mintSoft, "#FFFFFF"]}
+                  locations={[0, 0.35]}
+                  style={StyleSheet.absoluteFillObject}
+                  pointerEvents="none"
+                />
+              )}
               <View style={styles.filterSheetHandleWrap}>
-                <View style={styles.filterSheetHandle} />
+                <View style={[styles.filterSheetHandle, isDiscoveryLayout && styles.discoveryFilterHandle]} />
               </View>
               <View style={styles.filterSheetHeader}>
                 <View style={styles.filterSheetTitleBlock}>
-                  <AppText style={styles.filterSheetTitle}>Filters</AppText>
-                  <AppText style={styles.filterSheetSubtitle}>
+                  <AppText style={[styles.filterSheetTitle, isDiscoveryLayout && styles.discoveryFilterTitle]}>
+                    Filters
+                  </AppText>
+                  <AppText style={[styles.filterSheetSubtitle, isDiscoveryLayout && styles.discoveryFilterSubtitle]}>
                     {activeFilterCount > 0
                       ? `${activeFilterCount} active — tap Apply to update the list`
                       : "Refine delivery time, cuisine, and offers"}
@@ -1700,7 +1961,14 @@ export default function FoodMerchantsScreen() {
                   accessibilityLabel="Clear all filters"
                   accessibilityState={{ disabled: !hasActiveFilters }}
                 >
-                  <AppText style={[styles.filterSheetClear, !hasActiveFilters && styles.filterSheetClearDisabled]}>
+                  <AppText
+                    style={[
+                      styles.filterSheetClear,
+                      isDiscoveryLayout && styles.discoveryFilterClear,
+                      !hasActiveFilters && styles.filterSheetClearDisabled,
+                      !hasActiveFilters && isDiscoveryLayout && styles.discoveryFilterClearDisabled,
+                    ]}
+                  >
                     Clear all
                   </AppText>
                 </TouchableOpacity>
@@ -1712,18 +1980,26 @@ export default function FoodMerchantsScreen() {
                 keyboardShouldPersistTaps="handled"
                 bounces={false}
               >
-                <AppText style={styles.filterSectionLabel}>Delivery time</AppText>
+                <AppText style={[styles.filterSectionLabel, isDiscoveryLayout && styles.discoveryFilterSectionLabel]}>
+                  Delivery time
+                </AppText>
                 <View style={styles.filterChipsRow}>
                   {DELIVERY_OPTIONS.map((opt) => (
                     <TouchableOpacity
                       key={opt.id}
-                      style={[styles.filterSheetChip, deliveryFilter === opt.id && styles.filterSheetChipActive]}
+                      style={[
+                        styles.filterSheetChip,
+                        isDiscoveryLayout && styles.discoveryFilterChip,
+                        deliveryFilter === opt.id && styles.filterSheetChipActive,
+                        deliveryFilter === opt.id && isDiscoveryLayout && styles.discoveryFilterChipActive,
+                      ]}
                       onPress={() => setDeliveryFilter(opt.id)}
                       activeOpacity={0.85}
                     >
                       <AppText
                         style={[
                           styles.filterSheetChipText,
+                          isDiscoveryLayout && styles.discoveryFilterChipText,
                           deliveryFilter === opt.id && styles.filterSheetChipTextActive,
                         ]}
                       >
@@ -1732,14 +2008,18 @@ export default function FoodMerchantsScreen() {
                     </TouchableOpacity>
                   ))}
                 </View>
-                <AppText style={styles.filterSectionLabel}>Cuisine</AppText>
+                <AppText style={[styles.filterSectionLabel, isDiscoveryLayout && styles.discoveryFilterSectionLabel]}>
+                  Cuisine
+                </AppText>
                 <View style={styles.filterChipsRow}>
                   {CUISINE_OPTIONS.map((c) => (
                     <TouchableOpacity
                       key={c}
                       style={[
                         styles.filterSheetChip,
+                        isDiscoveryLayout && styles.discoveryFilterChip,
                         selectedCuisines.includes(c) && styles.filterSheetChipActive,
+                        selectedCuisines.includes(c) && isDiscoveryLayout && styles.discoveryFilterChipActive,
                       ]}
                       onPress={() => toggleCuisine(c)}
                       activeOpacity={0.85}
@@ -1747,6 +2027,7 @@ export default function FoodMerchantsScreen() {
                       <AppText
                         style={[
                           styles.filterSheetChipText,
+                          isDiscoveryLayout && styles.discoveryFilterChipText,
                           selectedCuisines.includes(c) && styles.filterSheetChipTextActive,
                         ]}
                       >
@@ -1755,27 +2036,42 @@ export default function FoodMerchantsScreen() {
                     </TouchableOpacity>
                   ))}
                 </View>
-                <AppText style={styles.filterSectionLabel}>Other</AppText>
+                <AppText style={[styles.filterSectionLabel, isDiscoveryLayout && styles.discoveryFilterSectionLabel]}>
+                  Other
+                </AppText>
                 <TouchableOpacity
-                  style={[styles.filterSheetRow, filterHasOffers && styles.filterSheetRowActive]}
+                  style={[
+                    styles.filterSheetRow,
+                    isDiscoveryLayout && styles.discoveryFilterRow,
+                    filterHasOffers && styles.filterSheetRowActive,
+                    filterHasOffers && isDiscoveryLayout && styles.discoveryFilterRowActive,
+                  ]}
                   onPress={() => setFilterHasOffers((v) => !v)}
                   activeOpacity={0.88}
                 >
                   <View
                     style={[
                       styles.filterSheetRowIconWrap,
+                      isDiscoveryLayout && styles.discoveryFilterRowIconWrap,
                       filterHasOffers && styles.filterSheetRowIconWrapActive,
                     ]}
                   >
                     <Ionicons
                       name="pricetag-outline"
                       size={20}
-                      color={filterHasOffers ? "#fff" : GatiMitraColors.primaryMint}
+                      color={
+                        filterHasOffers
+                          ? "#fff"
+                          : isDiscoveryLayout
+                            ? DiscoveryColors.accent
+                            : GatiMitraColors.primaryMint
+                      }
                     />
                   </View>
                   <AppText
                     style={[
                       styles.filterSheetRowText,
+                      isDiscoveryLayout && styles.discoveryFilterRowText,
                       filterHasOffers && styles.filterSheetRowTextOnMint,
                     ]}
                   >
@@ -1789,6 +2085,7 @@ export default function FoodMerchantsScreen() {
               <View
                 style={[
                   styles.filterSheetFooter,
+                  isDiscoveryLayout && styles.discoveryFilterFooter,
                   { paddingBottom: Math.max(insets.bottom, 14) },
                 ]}
               >
@@ -1800,7 +2097,11 @@ export default function FoodMerchantsScreen() {
                   accessibilityLabel="Apply filters"
                 >
                   <LinearGradient
-                    colors={GatiMitraColors.checkoutGradient}
+                    colors={
+                      isDiscoveryLayout
+                        ? DiscoveryColors.homeDelivery
+                        : GatiMitraColors.checkoutGradient
+                    }
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
                     style={styles.filterApplyBtnGradient}
@@ -1821,6 +2122,44 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: GatiMitraColors.softBackground,
+  },
+  discoveryContainer: {
+    backgroundColor: DiscoveryColors.bg,
+    overflow: "hidden",
+  },
+  discoveryPromoSection: {
+    marginBottom: 10,
+    marginTop: 2,
+  },
+  discoveryPromoSlot: {
+    minHeight: 46,
+  },
+  discoveryCategorySection: {
+    paddingVertical: 8,
+    marginBottom: 4,
+  },
+  discoveryCategorySlot: {
+    minHeight: 196,
+  },
+  discoveryMutedText: {
+    color: DiscoveryColors.textMuted,
+  },
+  discoveryPreventBanner: {
+    backgroundColor: "#3F1D1D",
+    borderColor: "#7F1D1D",
+    marginHorizontal: 16,
+    marginBottom: 12,
+  },
+  discoveryPreventText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#FECACA",
+    lineHeight: 17,
+  },
+  discoveryVegRing: {
+    backgroundColor: "rgba(34, 197, 94, 0.16)",
+    borderColor: "rgba(34, 197, 94, 0.35)",
   },
   gridFirstSkyBlock: {
     marginBottom: 0,
@@ -1866,11 +2205,19 @@ const styles = StyleSheet.create({
     position: "relative",
     zIndex: 1,
   },
+  discoveryContentWrap: {
+    zIndex: 0,
+    overflow: "hidden",
+    backgroundColor: DiscoveryColors.bg,
+  },
   nonServiceableContent: {
     flex: 1,
   },
   scroll: {
     flex: 1,
+  },
+  discoveryScroll: {
+    backgroundColor: DiscoveryColors.bg,
   },
   section: {
     paddingHorizontal: PAGE_PAD,
@@ -2301,6 +2648,57 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#fff",
     letterSpacing: 0.2,
+  },
+  discoveryFilterSheetCard: {
+    backgroundColor: DiscoveryColors.card,
+  },
+  discoveryFilterHandle: {
+    backgroundColor: "rgba(45, 212, 191, 0.45)",
+  },
+  discoveryFilterTitle: {
+    color: DiscoveryColors.text,
+  },
+  discoveryFilterSubtitle: {
+    color: DiscoveryColors.textMuted,
+  },
+  discoveryFilterClear: {
+    color: DiscoveryColors.accent,
+  },
+  discoveryFilterClearDisabled: {
+    color: DiscoveryColors.textDim,
+    opacity: 0.7,
+  },
+  discoveryFilterSectionLabel: {
+    color: DiscoveryColors.textDim,
+  },
+  discoveryFilterChip: {
+    backgroundColor: DiscoveryColors.pill,
+    borderColor: DiscoveryColors.border,
+  },
+  discoveryFilterChipActive: {
+    backgroundColor: DiscoveryColors.accent,
+    borderColor: DiscoveryColors.accent,
+  },
+  discoveryFilterChipText: {
+    color: DiscoveryColors.text,
+  },
+  discoveryFilterRow: {
+    backgroundColor: DiscoveryColors.pill,
+    borderColor: DiscoveryColors.border,
+  },
+  discoveryFilterRowActive: {
+    backgroundColor: DiscoveryColors.accent,
+    borderColor: DiscoveryColors.accent,
+  },
+  discoveryFilterRowIconWrap: {
+    backgroundColor: "rgba(45, 212, 191, 0.16)",
+  },
+  discoveryFilterRowText: {
+    color: DiscoveryColors.text,
+  },
+  discoveryFilterFooter: {
+    backgroundColor: DiscoveryColors.card,
+    borderTopColor: DiscoveryColors.border,
   },
   layoutResolvingShell: {
     flex: 1,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, type WheelEvent } from "react";
 import OrderTimeline, { type OrderTimelineEntry } from "./OrderTimeline";
 import OrderActionBanner from "./OrderActionBanner";
 import OrderRightSidebar from "./OrderRightSidebar";
@@ -20,7 +20,7 @@ import RiderRouteMap from "./RiderRouteMap";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { useIsActiveRoute } from "@/hooks/useIsActiveRoute";
 import { usePageVisible } from "@/hooks/usePageVisible";
-import { ChevronDown, History, RefreshCw, X } from "lucide-react";
+import { Check, ChevronDown, Copy, History, RefreshCw, X } from "lucide-react";
 import Link from "next/link";
 import type { OrderCancellationInfo } from "@/lib/merchant-cancellation-display";
 import type { OrderCustomerFeedback } from "@/lib/orders/order-customer-feedback";
@@ -49,6 +49,7 @@ import {
   parseGeocodedLatLon,
   resolveMapCoordinatePair,
 } from "@/lib/orders/parse-order-map-coords";
+import { resolveOrderDetailsDistanceKm } from "@/lib/orders/order-distance-display";
 import { isHardPageReload } from "@/lib/navigation/is-hard-page-reload";
 import { formatDeliveredByLabel } from "@/lib/orders/order-detail-display";
 import {
@@ -72,7 +73,7 @@ import { resolveOrderTypeFromPublicId } from "@/lib/orders/resolve-order-type-fr
 import { hasOrderCancellationOnProgressTimeline } from "@/lib/orders/order-timeline-rider-filter";
 import type { PersonRideOrderDetail } from "@/lib/orders/person-ride-order-types";
 import PersonRideOrderSections from "./PersonRideOrderSections";
-import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
+import { formatRiderOrderStatusDisplayLabel, titleCaseStatusWords } from "@/lib/riders/rider-order-status-display";
 import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 
 /** Status options for "Update order status" modal (value = DB enum) */
@@ -183,6 +184,8 @@ interface OrderDetail {
   dropAddressDeviationMeters?: number | null;
   distanceMismatchFlagged?: boolean;
   distanceKm?: number | null;
+  /** Checkout billed road km (`billing_snapshot.distanceKm`) — customer-app SSOT. */
+  billedDistanceKm?: number | null;
   merchantStoreId: number | null;
   merchantParentId: number | null;
   /** Email of last user who manually updated order status. */
@@ -432,7 +435,8 @@ function mapOrderCoreApiRowToDetail(row: Record<string, unknown>): OrderDetail {
     pickupAddressDeviationMeters: (row.pickupAddressDeviationMeters as number | null) ?? null,
     dropAddressDeviationMeters: (row.dropAddressDeviationMeters as number | null) ?? null,
     distanceMismatchFlagged: Boolean(row.distanceMismatchFlagged),
-    distanceKm: (row.distanceKm as number | null) ?? null,
+    distanceKm: toNumberOrNull(row.distanceKm),
+    billedDistanceKm: toNumberOrNull(row.billedDistanceKm),
     merchantStoreId: row.merchantStoreId as number | null,
     merchantParentId: row.merchantParentId as number | null,
     createdAt: row.createdAt as string,
@@ -640,6 +644,8 @@ export default function OrderDetailClient({
   const [paymentDetailFromCoreFor, setPaymentDetailFromCoreFor] = useState<number | null>(null);
   const [copiedOrderId, setCopiedOrderId] = useState(false);
   const copyOrderIdResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const leftColRef = useRef<HTMLDivElement | null>(null);
+  const rightColRef = useRef<HTMLDivElement | null>(null);
   const [feedbackSheetTarget, setFeedbackSheetTarget] = useState<FeedbackSheetTarget | null>(
     null
   );
@@ -1827,6 +1833,17 @@ export default function OrderDetailClient({
   );
   const mapDropLat = mapDrop?.lat ?? null;
   const mapDropLon = mapDrop?.lon ?? null;
+  const displayDistanceKm = resolveOrderDetailsDistanceKm({
+    billedKm: order.billedDistanceKm,
+    storedKm: order.distanceKm,
+    merchantLat: merchantSummary?.latitude,
+    merchantLon: merchantSummary?.longitude,
+    pickupLat: order.pickupLat,
+    pickupLon: order.pickupLon,
+    pickupGeocoded: order.pickupAddressGeocoded,
+    dropLat: mapDropLat ?? order.dropLat,
+    dropLon: mapDropLon ?? order.dropLon,
+  });
 
   const handleCopy = (text: string) => {
     if (!text) return;
@@ -1862,12 +1879,30 @@ export default function OrderDetailClient({
     }
   };
 
+  const onGutterWheel = (e: WheelEvent<HTMLDivElement>) => {
+    if (typeof window === "undefined" || !window.matchMedia("(min-width: 1024px)").matches) {
+      return;
+    }
+    const target = e.target as Node | null;
+    const inLeft = Boolean(leftColRef.current && target && leftColRef.current.contains(target));
+    const inRight = Boolean(rightColRef.current && target && rightColRef.current.contains(target));
+    if (inLeft || inRight) return;
+    e.preventDefault();
+    leftColRef.current?.scrollBy({ top: e.deltaY });
+  };
+
   return (
     <>
-      <div className="orders-typo flex h-full min-h-0 flex-1 flex-col gap-3 text-[12px] text-slate-700 md:text-[13px] lg:flex-row lg:gap-4">
-      <div className="w-full min-w-0 space-y-3 bg-[#F8FAFC] lg:min-h-0 lg:flex-[4] lg:overflow-y-auto lg:overscroll-y-contain lg:pr-3">
+      <div
+        className="orders-typo flex h-full min-h-0 flex-1 flex-col gap-3 text-[12px] text-slate-700 md:text-[13px] lg:flex-row lg:items-stretch lg:gap-4 lg:overflow-hidden"
+        onWheel={onGutterWheel}
+      >
+      <div
+        ref={leftColRef}
+        className="w-full min-w-0 space-y-3 bg-[#F8FAFC] lg:min-h-0 lg:flex-[4] lg:overflow-y-auto lg:overscroll-none lg:pr-3"
+      >
         {/* Primary order summary just below main header */}
-        <section className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 pb-2 border-b border-slate-100">
+        <section className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-slate-100 pb-2">
           <div>
             <h1 className="flex items-center gap-1.5 text-[16px] font-medium text-slate-900">
               <span className="text-slate-700">#</span>
@@ -1895,23 +1930,13 @@ export default function OrderDetailClient({
               <button
                 type="button"
                 onClick={handleCopyId}
-                className={`inline-flex shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-slate-500 transition hover:bg-transparent hover:text-slate-700 cursor-pointer ${
-                  copiedOrderId ? "min-h-5 px-0.5" : "h-5 w-5"
-                }`}
+                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-slate-500 transition hover:bg-transparent hover:text-slate-700 cursor-pointer"
                 aria-label={copiedOrderId ? "Copied" : "Copy order ID"}
               >
                 {copiedOrderId ? (
-                  <span
-                    className="text-[10px] font-medium text-emerald-600 whitespace-nowrap"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    Copied
-                  </span>
+                  <Check className="h-3 w-3 text-emerald-600" />
                 ) : (
-                  <span className="text-[10px]" aria-hidden>
-                    ⧉
-                  </span>
+                  <Copy className="h-3 w-3 text-gati-primary" />
                 )}
               </button>
             </h1>
@@ -1962,7 +1987,7 @@ export default function OrderDetailClient({
             {orderTickets && orderTickets.length > 0 && (() => {
               const lastTicket = orderTickets[0];
               const statusLabel = lastTicket.status
-                ? lastTicket.status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+                ? titleCaseStatusWords(lastTicket.status)
                 : "—";
               return (
                 <button
@@ -2217,7 +2242,7 @@ export default function OrderDetailClient({
                 status: order.status,
                 currentStatus: order.currentStatus,
                 createdAt: order.createdAt,
-                distanceKm: order.distanceKm ?? null,
+                distanceKm: displayDistanceKm,
                 riderRestaurantWaitSeconds: order.riderRestaurantWaitSeconds ?? null,
                 riderRestaurantWaitLive: order.riderRestaurantWaitLive ?? false,
                 riderRestaurantWaitAnchorAt: order.riderRestaurantWaitAnchorAt ?? null,
@@ -2323,9 +2348,12 @@ export default function OrderDetailClient({
       </div>
 
         {/* Right sidebar — keep compact (was stretched to 320/360) */}
-      <div className="w-full min-w-0 bg-[#F8FAFC] lg:min-h-0 lg:w-[260px] lg:max-w-[260px] lg:flex-none lg:overflow-y-auto lg:overscroll-y-contain lg:pl-2 xl:w-[280px] xl:max-w-[280px]">
+      <div
+        ref={rightColRef}
+        className="w-full min-w-0 bg-[#F8FAFC] lg:min-h-0 lg:w-[260px] lg:max-w-[260px] lg:flex-none lg:overflow-y-auto lg:overscroll-none lg:pl-2 xl:w-[280px] xl:max-w-[280px]"
+      >
         <OrderRightSidebar
-          order={order}
+          order={{ ...order, distanceKm: displayDistanceKm }}
           orderRefunds={orderRefunds}
           prefetchedOrderItems={orderItemsPayload}
           itemCount={
@@ -2463,7 +2491,7 @@ export default function OrderDetailClient({
               {orderTickets.map((t) => {
                 const subjectWithoutHash = (t.subject ?? "").replace(/\s*\(#\d+\)\s*$/i, "").trim();
                 const sourceLabel = t.ticketSource
-                  ? t.ticketSource.replace(/\b\w/g, (c) => c.toUpperCase())
+                  ? titleCaseStatusWords(t.ticketSource)
                   : null;
                 return (
                   <Link

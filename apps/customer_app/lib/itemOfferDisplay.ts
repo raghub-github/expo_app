@@ -29,6 +29,8 @@ export type ItemOfferCatalogItem = {
   id: string;
   menuItemId?: number | null;
   price: number;
+  /** Backend strike (markup of base CTM) when Boost is already baked into `price`. */
+  customerStrikePrice?: number | null;
 };
 
 function isBogoType(type: string): boolean {
@@ -150,7 +152,7 @@ export function offerPriority(o: MerchantOfferItem): number {
   return 0;
 }
 
-function toDisplay(best: MerchantOfferItem, catalogPrice: number): ItemOfferDisplay {
+function toDisplay(best: MerchantOfferItem, item: ItemOfferCatalogItem): ItemOfferDisplay {
   const type = best.offer_type.toUpperCase();
   if (isBogoType(type)) {
     const buy = best.buy_quantity != null && best.buy_quantity > 0 ? best.buy_quantity : 1;
@@ -167,14 +169,33 @@ function toDisplay(best: MerchantOfferItem, catalogPrice: number): ItemOfferDisp
     };
   }
 
-  const offerPrice = estimateOfferUnitPrice(catalogPrice, best);
+  const catalogPrice = item.price;
+  const strikeFromBackend = item.customerStrikePrice;
+  const baked =
+    strikeFromBackend != null && strikeFromBackend > catalogPrice + 0.001;
+
+  if (baked) {
+    return {
+      offerId: best.id,
+      kind: type === "FLAT" ? "flat" : "percentage",
+      label: best.label,
+      offerPrice: Math.round(catalogPrice),
+      strikePrice: Math.round(strikeFromBackend),
+      discountPercentage: best.discount_percentage ?? null,
+      discountValue: best.discount_value ?? null,
+      maxDiscountAmount: best.max_discount_amount ?? null,
+      autoApply: best.auto_apply,
+    };
+  }
+
+  const estimated = estimateOfferUnitPrice(catalogPrice, best);
+  const hasEstimate = estimated != null && estimated < catalogPrice - 0.001;
   return {
     offerId: best.id,
     kind: type === "FLAT" ? "flat" : "percentage",
     label: best.label,
-    offerPrice,
-    strikePrice:
-      offerPrice != null && catalogPrice > offerPrice ? Math.round(catalogPrice) : null,
+    offerPrice: hasEstimate ? estimated : Math.round(catalogPrice),
+    strikePrice: hasEstimate ? Math.round(catalogPrice) : null,
     discountPercentage: best.discount_percentage ?? null,
     discountValue: best.discount_value ?? null,
     maxDiscountAmount: best.max_discount_amount ?? null,
@@ -182,9 +203,35 @@ function toDisplay(best: MerchantOfferItem, catalogPrice: number): ItemOfferDisp
   };
 }
 
+/** Menu card payable + strike. Works for baked Boost and client-estimated Boost. */
+export function resolveMenuOfferPriceDisplay(args: {
+  sellingPrice: number;
+  basePrice: number | null;
+  itemOffer: ItemOfferDisplay | null | undefined;
+}): { payable: number; strike: number | null; showStrike: boolean } {
+  const selling = Math.round(args.sellingPrice);
+  const offer = args.itemOffer;
+  if (offer && offer.kind !== "bogo") {
+    const strike = offer.strikePrice != null ? Math.round(offer.strikePrice) : null;
+    const pay = offer.offerPrice != null ? Math.round(offer.offerPrice) : null;
+    if (strike != null && pay != null && strike > pay) {
+      const payable = Math.min(pay, selling);
+      return { payable, strike, showStrike: strike > payable };
+    }
+    if (pay != null && pay < selling) {
+      return { payable: pay, strike: strike ?? selling, showStrike: true };
+    }
+  }
+  const base = args.basePrice != null ? Math.round(args.basePrice) : null;
+  if (base != null && base > selling) {
+    return { payable: selling, strike: base, showStrike: true };
+  }
+  return { payable: selling, strike: null, showStrike: false };
+}
+
 /**
- * Re-apply Boost % / flat to any catalog unit (e.g. size variants on customization sheet).
- * BOGO has no unit strike — returns null.
+ * Menu/cart unit prices from the backend are already Boost-then-gross-up.
+ * Do not apply %/flat again. If the unit matches the strike, return the baked offer price.
  */
 export function estimateBoostUnitPrice(
   catalogPrice: number,
@@ -192,33 +239,14 @@ export function estimateBoostUnitPrice(
 ): number | null {
   if (!offer || offer.kind === "bogo") return null;
   if (!Number.isFinite(catalogPrice) || catalogPrice <= 0) return null;
-
-  if (
-    offer.kind === "percentage" &&
-    offer.discountPercentage != null &&
-    offer.discountPercentage > 0
-  ) {
-    let off = (catalogPrice * offer.discountPercentage) / 100;
-    if (offer.maxDiscountAmount != null && offer.maxDiscountAmount > 0) {
-      off = Math.min(off, offer.maxDiscountAmount);
-    }
-    return Math.max(0, Math.round(catalogPrice - off));
-  }
-
-  if (offer.kind === "flat" && offer.discountValue != null && offer.discountValue > 0) {
-    return Math.max(0, Math.round(catalogPrice - offer.discountValue));
-  }
-
-  // Fallback when raw fields missing: scale from base strike/offer pair.
   if (
     offer.offerPrice != null &&
     offer.strikePrice != null &&
-    offer.strikePrice > 0 &&
-    Math.abs(catalogPrice - offer.strikePrice) < 0.5
+    Math.abs(catalogPrice - offer.strikePrice) < 0.51
   ) {
     return offer.offerPrice;
   }
-  return null;
+  return Math.round(catalogPrice);
 }
 
 function writeAliases(
@@ -257,7 +285,7 @@ export function buildItemOfferDisplayMap(
     if (candidates.length === 0) continue;
     const best = [...candidates].sort((a, b) => offerPriority(b) - offerPriority(a))[0];
     if (!best) continue;
-    writeAliases(result, item, toDisplay(best, item.price));
+    writeAliases(result, item, toDisplay(best, item));
   }
 
   return result;

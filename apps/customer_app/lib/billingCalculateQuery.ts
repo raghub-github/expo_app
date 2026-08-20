@@ -23,6 +23,9 @@ export type BillingCalculateKeyParams = {
   subscriptionBillingCycle: "weekly" | "monthly" | "yearly" | undefined;
   subscriptionPlanId: number | undefined;
   deliveryType: "delivery" | "self_pickup";
+  /** Store coords — without these the first bill is item-only (no delivery quote). */
+  pickupLat?: number | null;
+  pickupLon?: number | null;
 };
 
 export function buildBillingCalculateQueryKey(p: BillingCalculateKeyParams): readonly unknown[] {
@@ -43,6 +46,8 @@ export function buildBillingCalculateQueryKey(p: BillingCalculateKeyParams): rea
     p.subscriptionBillingCycle,
     p.subscriptionPlanId,
     p.deliveryType,
+    p.pickupLat ?? null,
+    p.pickupLon ?? null,
   ] as const;
 }
 

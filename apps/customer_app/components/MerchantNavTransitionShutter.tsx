@@ -3,7 +3,6 @@ import {
   BackHandler,
   Modal,
   Platform,
-  StatusBar as NativeStatusBar,
   StyleSheet,
   useWindowDimensions,
   View,
@@ -11,8 +10,10 @@ import {
 import { StatusBar } from "expo-status-bar";
 import { useRouter } from "expo-router";
 import { MerchantMenuLoadingSkeleton } from "@/components/merchant/MerchantMenuLoadingSkeleton";
+import { MerchantDarkPalette, MerchantUiThemeProvider } from "@/features/merchant-detail/merchantUiTheme";
 import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
+import { applyAndroidStatusBarVisible } from "@/lib/androidEdgeToEdgeChrome";
 import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
 
 /** Min time shutter stays up after show (slide feel). */
@@ -32,6 +33,7 @@ export function MerchantNavTransitionShutter() {
   const active = useMerchantNavTransitionStore((s) => s.active);
   const merchantId = useMerchantNavTransitionStore((s) => s.merchantId);
   const loadingMessageIndex = useMerchantNavTransitionStore((s) => s.loadingMessageIndex);
+  const dark = useMerchantNavTransitionStore((s) => s.dark);
 
   useEffect(() => {
     if (!active) return;
@@ -42,6 +44,8 @@ export function MerchantNavTransitionShutter() {
   }, [active, merchantId]);
 
   const prevActiveRef = useRef(active);
+  const darkRef = useRef(dark);
+  darkRef.current = dark;
 
   /**
    * Nav shutter Modal uses statusBarTranslucent. After dismiss, Android can keep
@@ -51,12 +55,7 @@ export function MerchantNavTransitionShutter() {
     const wasActive = prevActiveRef.current;
     prevActiveRef.current = active;
     if (!wasActive || active) return;
-    NativeStatusBar.setHidden(false, "none");
-    if (Platform.OS === "android") {
-      NativeStatusBar.setTranslucent(false);
-      NativeStatusBar.setBackgroundColor("#FFFFFF", true);
-      NativeStatusBar.setBarStyle("dark-content", true);
-    }
+    applyAndroidStatusBarVisible(darkRef.current ? "light-content" : "dark-content");
   }, [active]);
 
   useEffect(() => {
@@ -87,17 +86,25 @@ export function MerchantNavTransitionShutter() {
         safeRouterBack(router, FOOD_HOME_FALLBACK);
       }}
     >
-      {/* Own the Modal's status bar: always visible, transparent, dark icons over
-          the light skeleton. The root-tree StatusBar does not apply inside this window. */}
-      <StatusBar style="dark" translucent backgroundColor="transparent" hidden={false} />
-      <View style={[styles.host, { minHeight: height }]} collapsable={false}>
-        <MerchantMenuLoadingSkeleton
-          key={`nav-load-${loadingMessageIndex}-${merchantId ?? ""}`}
-          merchantId={merchantId ?? undefined}
-          startMessageIndex={loadingMessageIndex}
-          edgeToEdge
-        />
-      </View>
+      <StatusBar
+        style={dark ? "light" : "dark"}
+        translucent
+        backgroundColor="transparent"
+        hidden={false}
+      />
+      <MerchantUiThemeProvider dark={dark}>
+        <View
+          style={[styles.host, dark && styles.hostDark, { minHeight: height }]}
+          collapsable={false}
+        >
+          <MerchantMenuLoadingSkeleton
+            key={`nav-load-${loadingMessageIndex}-${merchantId ?? ""}`}
+            merchantId={merchantId ?? undefined}
+            startMessageIndex={loadingMessageIndex}
+            edgeToEdge
+          />
+        </View>
+      </MerchantUiThemeProvider>
     </Modal>
   );
 }
@@ -106,5 +113,8 @@ const styles = StyleSheet.create({
   host: {
     flex: 1,
     backgroundColor: "#FFFFFF",
+  },
+  hostDark: {
+    backgroundColor: MerchantDarkPalette.bg,
   },
 });

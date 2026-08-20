@@ -3,16 +3,54 @@
  */
 import type { Sql } from "postgres";
 import { insertMerchantStoreNotification } from "./merchant-push-notify.js";
-import { resolveMerchantVisibleOrderTotal } from "./merchant-visible-pricing.js";
+import { resolveMerchantVisibleOrderNotify } from "./merchant-visible-pricing.js";
 import { send as sendNotification } from "../modules/notifications/notificationService.js";
+import { merchantAppOrderHref } from "./merchant-app-deeplink.js";
 
-/** Merchant CTM — always 2 decimal places (matches wallet ledger). */
+export { merchantAppOrderHref, merchantAppOrdersTabHref } from "./merchant-app-deeplink.js";
+
 function formatExactMerchantInr(amount: number): string {
   const n = Math.round(amount * 100) / 100;
   return n.toLocaleString("en-IN", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+}
+
+export async function lookupFoodOrderIdByCoreOrderText(
+  sql: Sql,
+  args: { orderIdText: string; merchantStoreId?: number | null }
+): Promise<string | null> {
+  const orderIdText = String(args.orderIdText ?? "").trim();
+  if (!orderIdText) return null;
+  const storeId = args.merchantStoreId != null ? Number(args.merchantStoreId) : null;
+  const rows =
+    storeId != null && Number.isFinite(storeId) && storeId > 0
+      ? await sql`
+          SELECT f.id::text AS food_id
+          FROM orders_food f
+          INNER JOIN orders_core c ON c.id = f.order_id
+          WHERE f.merchant_store_id = ${storeId}
+            AND (
+              c.order_id = ${orderIdText}
+              OR c.formatted_order_id = ${orderIdText}
+              OR f.formatted_order_id = ${orderIdText}
+            )
+          ORDER BY f.id DESC
+          LIMIT 1
+        `
+      : await sql`
+          SELECT f.id::text AS food_id
+          FROM orders_food f
+          INNER JOIN orders_core c ON c.id = f.order_id
+          WHERE c.order_id = ${orderIdText}
+            OR c.formatted_order_id = ${orderIdText}
+            OR f.formatted_order_id = ${orderIdText}
+          ORDER BY f.id DESC
+          LIMIT 1
+        `;
+  const id = String((rows[0] as { food_id?: string } | undefined)?.food_id ?? "").trim();
+  return /^\d+$/.test(id) ? id : null;
 }
 
 export async function notifyMerchantStoreNewOrder(
@@ -25,8 +63,14 @@ export async function notifyMerchantStoreNewOrder(
 ): Promise<void> {
   const { merchantStoreId, orderIdText } = args;
 
+  const foodId = await lookupFoodOrderIdByCoreOrderText(sql, {
+    merchantStoreId,
+    orderIdText,
+  });
+  const href = merchantAppOrderHref(foodId);
+
   const foodRows = await sql`
-    SELECT f.id::text AS food_id, f.formatted_order_id
+    SELECT f.formatted_order_id
     FROM orders_food f
     INNER JOIN orders_core c ON c.id = f.order_id
     WHERE f.merchant_store_id = ${merchantStoreId}
@@ -34,18 +78,21 @@ export async function notifyMerchantStoreNewOrder(
     ORDER BY f.id DESC
     LIMIT 1
   `;
-  const food = foodRows[0] as { food_id?: string; formatted_order_id?: string } | undefined;
-  const foodId = food?.food_id ?? null;
+  const food = foodRows[0] as { formatted_order_id?: string } | undefined;
   const displayId = (food?.formatted_order_id as string | undefined) ?? orderIdText;
 
   let total: number | null = null;
+  let itemCount = 1;
+  let customerName = "Customer";
   try {
-    const merchantTotal = await resolveMerchantVisibleOrderTotal(sql, {
+    const merchantNotify = await resolveMerchantVisibleOrderNotify(sql, {
       merchantStoreId,
       orderIdText,
     });
-    if (merchantTotal != null && merchantTotal > 0) {
-      total = Math.round(merchantTotal * 100) / 100;
+    if (merchantNotify != null && merchantNotify.amount > 0) {
+      total = Math.round(merchantNotify.amount * 100) / 100;
+      itemCount = Math.max(1, merchantNotify.itemCount);
+      customerName = merchantNotify.customerName || "Customer";
     }
   } catch {
     /* omit amount rather than show customer grand_total */
@@ -65,7 +112,7 @@ export async function notifyMerchantStoreNewOrder(
     title,
     body,
     orderId: foodId ? Number(foodId) : null,
-    actionUrl: foodId ? `/order/${foodId}` : "/(tabs)/",
+    actionUrl: href,
   });
 
   // v2 send — store_id resolves Expo + native FCM for this store's merchants
@@ -74,11 +121,12 @@ export async function notifyMerchantStoreNewOrder(
   await sendNotification({
     templateCode: "MERCHANT_NEW_ORDER",
     variables: {
-      orderId: orderIdText,
+      orderId: foodId ?? orderIdText,
+      foodOrderId: foodId ?? "",
       orderShortId: displayId,
-      itemCount: 1, // template body uses this — template can be edited to omit
+      itemCount,
       amount: total ?? 0,
-      customerName: "Customer",
+      customerName,
     },
     target: { store_id: merchantStoreId },
     priority: "critical",
@@ -87,8 +135,7 @@ export async function notifyMerchantStoreNewOrder(
       type: "merchant_new_order",
       orderId: orderIdText,
       foodOrderId: foodId,
-      url: foodId ? `/order/${foodId}` : "/(tabs)/",
-      screen: "new_order",
+      url: href,
     },
   }).catch((e) =>
     console.warn("[merchant-new-order] v2 send failed (tolerated)", (e as Error).message)

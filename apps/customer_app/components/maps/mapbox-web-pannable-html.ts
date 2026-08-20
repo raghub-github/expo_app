@@ -54,19 +54,21 @@ export function buildPannableMapHtml(
       map.on('style.load', function() { ensureMapLabelsVisible(map); });
 
       var mapReady = false;
-      var lastPosted = null;
+      var lastPostedChange = null;
 
       function postRegion(phase) {
         if (!mapReady) return;
         var c = map.getCenter();
         if (!c || !isFinite(c.lat) || !isFinite(c.lng)) return;
         if (Math.abs(c.lat) < 1e-4 && Math.abs(c.lng) < 1e-4) return;
-        if (lastPosted) {
-          var dLat = Math.abs(c.lat - lastPosted.lat);
-          var dLng = Math.abs(c.lng - lastPosted.lng);
+        if (phase === 'change' && lastPostedChange) {
+          var dLat = Math.abs(c.lat - lastPostedChange.lat);
+          var dLng = Math.abs(c.lng - lastPostedChange.lng);
           if (dLat < 1e-6 && dLng < 1e-6) return;
         }
-        lastPosted = { lat: c.lat, lng: c.lng };
+        if (phase === 'change') {
+          lastPostedChange = { lat: c.lat, lng: c.lng };
+        }
         if (window.ReactNativeWebView) {
           window.ReactNativeWebView.postMessage(JSON.stringify({
             type: 'region',

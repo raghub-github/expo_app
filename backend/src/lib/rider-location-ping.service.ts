@@ -83,33 +83,44 @@ async function loadPersistedPointFromDb(
   userId: string,
   deviceId: string
 ): Promise<LocationPoint | null> {
-  const db = getDb();
-  const [row] = await db
-    .select({
-      tsMs: riderLocationEvents.tsMs,
-      lat: riderLocationEvents.lat,
-      lng: riderLocationEvents.lng,
-      accuracyM: riderLocationEvents.accuracyM,
-      speedMps: riderLocationEvents.speedMps,
-      headingDeg: riderLocationEvents.headingDeg,
-      mocked: riderLocationEvents.mocked,
-    })
-    .from(riderLocationEvents)
-    .where(and(eq(riderLocationEvents.userId, userId), eq(riderLocationEvents.deviceId, deviceId)))
-    .orderBy(desc(riderLocationEvents.tsMs))
-    .limit(1);
+  try {
+    const db = getDb();
+    const [row] = await db
+      .select({
+        tsMs: riderLocationEvents.tsMs,
+        lat: riderLocationEvents.lat,
+        lng: riderLocationEvents.lng,
+        accuracyM: riderLocationEvents.accuracyM,
+        speedMps: riderLocationEvents.speedMps,
+        headingDeg: riderLocationEvents.headingDeg,
+        mocked: riderLocationEvents.mocked,
+      })
+      .from(riderLocationEvents)
+      .where(and(eq(riderLocationEvents.userId, userId), eq(riderLocationEvents.deviceId, deviceId)))
+      .orderBy(desc(riderLocationEvents.tsMs))
+      .limit(1);
 
-  if (!row) return null;
+    if (!row) return null;
 
-  return {
-    tsMs: row.tsMs,
-    lat: row.lat,
-    lng: row.lng,
-    accuracyM: row.accuracyM ?? null,
-    speedMps: row.speedMps ?? null,
-    headingDeg: row.headingDeg ?? null,
-    mocked: row.mocked ?? null,
-  };
+    return {
+      tsMs: row.tsMs,
+      lat: row.lat,
+      lng: row.lng,
+      accuracyM: row.accuracyM ?? null,
+      speedMps: row.speedMps ?? null,
+      headingDeg: row.headingDeg ?? null,
+      mocked: row.mocked ?? null,
+    };
+  } catch (err) {
+    const cause = err && typeof err === "object" && "cause" in err ? (err as { cause?: unknown }).cause : null;
+    console.warn("[rider-location] history lookup failed (ping continues)", {
+      userId,
+      deviceId,
+      message: err instanceof Error ? err.message : String(err),
+      cause: cause instanceof Error ? cause.message : cause,
+    });
+    return null;
+  }
 }
 
 function resolveTrackingMode(args: {
@@ -183,9 +194,13 @@ export async function handleRiderLocationPing(
   const db = getDb();
   const curr = toLocationPoint(input);
   const cached = readRiderLocationPingState(input.userId, input.deviceId);
-  const prevForFraud = cached?.lastPing ?? (await loadPersistedPointFromDb(input.userId, input.deviceId));
-  const prevPersisted =
-    cached?.lastPersisted ?? (await loadPersistedPointFromDb(input.userId, input.deviceId));
+  let prevForFraud = cached?.lastPing ?? null;
+  let prevPersisted = cached?.lastPersisted ?? null;
+  if (!prevForFraud || !prevPersisted) {
+    const fromDb = await loadPersistedPointFromDb(input.userId, input.deviceId);
+    prevForFraud = prevForFraud ?? fromDb;
+    prevPersisted = prevPersisted ?? fromDb;
+  }
 
   const { fraudSignals, fraudScore, meta } = scoreLocationPing({
     prev: prevForFraud,
@@ -231,28 +246,38 @@ export async function handleRiderLocationPing(
   });
 
   if (persistDecision.persist) {
-    await db.insert(riderLocationEvents).values({
-      id: `rloc_${ulid()}`,
-      userId: input.userId,
-      deviceId: input.deviceId,
-      tsMs: input.tsMs,
-      lat: input.lat,
-      lng: input.lng,
-      accuracyM: input.accuracyM ?? null,
-      altitudeM: input.altitudeM ?? null,
-      speedMps: input.speedMps ?? null,
-      headingDeg: input.headingDeg ?? null,
-      mocked: input.mocked ?? false,
-      provider: input.provider ?? "unknown",
-      fraudScore,
-      fraudSignals,
-      meta: {
-        ...meta,
-        persistReason: persistDecision.reason,
-        businessEvent: persistDecision.businessEvent ?? null,
-        trackingMode,
-      },
-    });
+    try {
+      await db.insert(riderLocationEvents).values({
+        id: `rloc_${ulid()}`,
+        userId: input.userId,
+        deviceId: input.deviceId,
+        tsMs: input.tsMs,
+        lat: input.lat,
+        lng: input.lng,
+        accuracyM: input.accuracyM ?? null,
+        altitudeM: input.altitudeM ?? null,
+        speedMps: input.speedMps ?? null,
+        headingDeg: input.headingDeg ?? null,
+        mocked: input.mocked ?? false,
+        provider: input.provider ?? "unknown",
+        fraudScore,
+        fraudSignals,
+        meta: {
+          ...meta,
+          persistReason: persistDecision.reason,
+          businessEvent: persistDecision.businessEvent ?? null,
+          trackingMode,
+        },
+      });
+    } catch (err) {
+      const cause = err && typeof err === "object" && "cause" in err ? (err as { cause?: unknown }).cause : null;
+      console.warn("[rider-location] history insert failed (ping continues)", {
+        userId: input.userId,
+        deviceId: input.deviceId,
+        message: err instanceof Error ? err.message : String(err),
+        cause: cause instanceof Error ? cause.message : cause,
+      });
+    }
   }
 
   rememberRiderLocationPing(input.userId, input.deviceId, curr, persistDecision.persist);
@@ -392,7 +417,12 @@ export async function handleRiderLocationPing(
             };
           })
         );
-        await db.insert(orderRiderTracking).values(rows);
+        await db.insert(orderRiderTracking).values(rows).catch((err) => {
+          console.warn("[rider-location] order trail insert failed (ping continues)", {
+            riderId,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        });
       }
 
       const locationEvent = {

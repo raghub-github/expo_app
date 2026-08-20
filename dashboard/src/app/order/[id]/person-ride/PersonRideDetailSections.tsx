@@ -552,7 +552,7 @@ function DetailField({
   if (inline) {
     return (
       <div className="grid min-h-[22px] grid-cols-[7.5rem_1fr] items-center gap-2">
-        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+        <p className="text-[10px] font-semibold text-slate-500">
           {label}
         </p>
         <div className="min-w-0 text-[12px] font-medium leading-snug text-slate-800">
@@ -563,7 +563,7 @@ function DetailField({
   }
   return (
     <div className="min-w-0">
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="text-[10px] font-semibold text-slate-500">{label}</p>
       <div className="mt-0.5 text-[12px] font-medium leading-snug text-slate-800">{children}</div>
     </div>
   );
@@ -797,7 +797,7 @@ export function FareSummaryCard({
       <div className="grid grid-cols-2 gap-2">
         {/* CTC — customer payable */}
         <div className="min-w-0 space-y-1 border-r border-slate-100 pr-2">
-          <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+          <p className="mb-1 text-[10px] font-bold text-slate-500">
             CTC
           </p>
           {lines.map((line, idx) => (
@@ -827,7 +827,7 @@ export function FareSummaryCard({
 
         {/* CTDE — rider earnings */}
         <div className="min-w-0 space-y-1 pl-1">
-          <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+          <p className="mb-1 text-[10px] font-bold text-slate-500">
             CTDE
           </p>
           <Row
@@ -896,7 +896,7 @@ export function RouteCard({ order }: { order: PersonRideDetailOrder }) {
             style={{ background: PR_GREEN }}
           />
           <div className="min-w-0">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+            <p className="text-[10px] font-semibold text-slate-500">
               Pickup
             </p>
             <p className="mt-0.5 text-[11px] leading-snug text-slate-800">{pickup}</p>
@@ -911,7 +911,7 @@ export function RouteCard({ order }: { order: PersonRideDetailOrder }) {
             style={{ background: PR_BLACK }}
           />
           <div className="min-w-0">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+            <p className="text-[10px] font-semibold text-slate-500">
               Drop
             </p>
             <p className="mt-0.5 text-[11px] leading-snug text-slate-800">{drop}</p>

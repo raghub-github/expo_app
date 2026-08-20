@@ -6,6 +6,7 @@ import { StoreBottomSheetShell } from "./StoreBottomSheetShell";
 import { StoreTheme } from "@/constants/storeTheme";
 import { ratingBadgeColors, RATING_PILL_GREEN } from "@/lib/merchantOfferBadge";
 import { AppText } from "@/components/AppText";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 export type MerchantRatingExplainerSheetProps = {
   visible: boolean;
@@ -31,6 +32,7 @@ function RatingPill({
   label: string;
   isNew?: boolean;
 }) {
+  const dark = useMerchantUiDark();
   const hasRating = !isNew && value != null && Number.isFinite(value);
   const colors = ratingBadgeColors(hasRating ? value : null);
   const display = isNew || !hasRating ? "New" : Number(value).toFixed(1);
@@ -42,7 +44,7 @@ function RatingPill({
         {hasRating ? <Ionicons name="star" size={11} color={textColor} /> : null}
         <AppText style={[styles.ratingPillText, { color: textColor }]}>{display}</AppText>
       </View>
-      <AppText style={styles.ratingColLabel}>{label}</AppText>
+      <AppText style={[styles.ratingColLabel, dark && styles.ratingColLabelDark]}>{label}</AppText>
     </View>
   );
 }
@@ -57,6 +59,7 @@ export function MerchantRatingExplainerSheet({
   userHasRatedStore,
 }: MerchantRatingExplainerSheetProps) {
   const insets = useSafeAreaInsets();
+  const dark = useMerchantUiDark();
   const reviewLabel =
     totalReviews != null && totalReviews > 0
       ? `Overall rating (${formatReviewCount(totalReviews)})`
@@ -69,14 +72,14 @@ export function MerchantRatingExplainerSheet({
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        <View style={styles.handle} />
-        <AppText style={styles.title} numberOfLines={2}>
+        <View style={[styles.handle, dark && styles.handleDark]} />
+        <AppText style={[styles.title, dark && styles.titleDark]} numberOfLines={2}>
           {storeName}
         </AppText>
 
         <View style={styles.compareRow}>
           <RatingPill value={overallRating} label={reviewLabel} />
-          <View style={styles.compareDivider} />
+          <View style={[styles.compareDivider, dark && styles.compareDividerDark]} />
           <RatingPill
             value={forYouRating}
             label="For you"
@@ -84,13 +87,13 @@ export function MerchantRatingExplainerSheet({
           />
         </View>
 
-        <AppText style={styles.sectionHeading}>HOW ARE RATINGS CALCULATED?</AppText>
+        <AppText style={[styles.sectionHeading, dark && styles.sectionHeadingDark]}>HOW ARE RATINGS CALCULATED?</AppText>
 
         <View style={styles.infoRow}>
           <View style={styles.infoIconWrap}>
-            <Ionicons name="star-outline" size={18} color={StoreTheme.textSecondary} />
+            <Ionicons name="star-outline" size={18} color={dark ? MerchantDarkPalette.textMuted : StoreTheme.textSecondary} />
           </View>
-          <AppText style={styles.infoText}>
+          <AppText style={[styles.infoText, dark && styles.infoTextDark]}>
             Overall ratings are powered by a proprietary algorithm, its based on weighted average
             that factors in recency and filters out spam.
           </AppText>
@@ -98,9 +101,9 @@ export function MerchantRatingExplainerSheet({
 
         <View style={styles.infoRow}>
           <View style={styles.infoIconWrap}>
-            <Ionicons name="heart-outline" size={18} color={StoreTheme.textSecondary} />
+            <Ionicons name="heart-outline" size={18} color={dark ? MerchantDarkPalette.textMuted : StoreTheme.textSecondary} />
           </View>
-          <AppText style={styles.infoText}>
+          <AppText style={[styles.infoText, dark && styles.infoTextDark]}>
             Ratings for you are based on your past orders, and matched with customers who&apos;ve
             similar tastes and preferences.
           </AppText>
@@ -132,12 +135,18 @@ const styles = StyleSheet.create({
     backgroundColor: "#D1D5DB",
     marginBottom: 16,
   },
+  handleDark: {
+    backgroundColor: MerchantDarkPalette.border,
+  },
   title: {
     fontSize: 17,
     fontWeight: "700",
     color: StoreTheme.textPrimary,
     textAlign: "center",
     marginBottom: 20,
+  },
+  titleDark: {
+    color: MerchantDarkPalette.text,
   },
   compareRow: {
     flexDirection: "row",
@@ -151,6 +160,9 @@ const styles = StyleSheet.create({
     backgroundColor: StoreTheme.border,
     marginHorizontal: 24,
     minHeight: 56,
+  },
+  compareDividerDark: {
+    backgroundColor: MerchantDarkPalette.border,
   },
   ratingCol: {
     flex: 1,
@@ -178,12 +190,18 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 16,
   },
+  ratingColLabelDark: {
+    color: MerchantDarkPalette.textMuted,
+  },
   sectionHeading: {
     fontSize: 11,
     fontWeight: "700",
     letterSpacing: 0.6,
     color: StoreTheme.textMuted,
     marginBottom: 14,
+  },
+  sectionHeadingDark: {
+    color: MerchantDarkPalette.textDim,
   },
   infoRow: {
     flexDirection: "row",
@@ -202,6 +220,9 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     color: StoreTheme.textPrimary,
     fontWeight: "400",
+  },
+  infoTextDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   ctaBtn: {
     marginHorizontal: 16,

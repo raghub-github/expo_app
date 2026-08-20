@@ -3,6 +3,7 @@ import type { RiderDeviceSessionMeta } from "./rider-device-sessions.js";
 import type { RiderLoginGeo } from "./login-geo.js";
 import { formatRiderLoginLocation } from "./login-geo.js";
 import { parseRiderIdFromUserId, revokeAllRiderDeviceSessions, revokeRiderDeviceSessionsByIds } from "./rider-device-sessions.js";
+import { markDeviceSessionActive, writeDeviceSessionCache, invalidateDeviceSessionCache } from "./device-session-cache.js";
 
 type Sql = ReturnType<typeof getSql>;
 
@@ -56,7 +57,10 @@ export async function persistRiderDeviceSession(
     RETURNING id
   `;
   const touched = Array.isArray(updated) ? updated.length : 0;
-  if (touched > 0) return;
+  if (touched > 0) {
+    markDeviceSessionActive(userId, deviceId);
+    return;
+  }
 
   await sql`
     INSERT INTO user_device_sessions (
@@ -100,6 +104,7 @@ export async function persistRiderDeviceSession(
       ${deviceId}
     )
   `;
+  markDeviceSessionActive(userId, deviceId);
 }
 
 /** Marks rider app session(s) inactive on logout. */
@@ -124,6 +129,7 @@ export async function deactivateRiderDeviceSessions(
         revoke_reason = ${revokeReason}
       WHERE user_id = ${userId} AND device_id = ${deviceId} AND is_active = TRUE
     `;
+    writeDeviceSessionCache(userId, deviceId, false);
     return;
   }
   await revokeAllRiderDeviceSessions(sql, {
@@ -131,6 +137,7 @@ export async function deactivateRiderDeviceSessions(
     revokedBy,
     revokeReason,
   });
+  invalidateDeviceSessionCache(userId);
 }
 
 export { revokeAllRiderDeviceSessions, revokeRiderDeviceSessionsByIds };

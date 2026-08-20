@@ -6,6 +6,9 @@
  */
 
 import { getSql } from "../client";
+import {
+  dashboardOpsCancelReason,
+} from "@/lib/merchant-cancellation-ledger-description";
 
 export type RecoveryParty = "rider" | "merchant";
 export type RecoveryImpact = "debit" | "credit" | "info";
@@ -219,13 +222,70 @@ export async function listOrderRecoveryRecords(
   orderCoreId: number
 ): Promise<OrderRecoveryRecord[]> {
   if (!Number.isFinite(orderCoreId) || orderCoreId <= 0) return [];
-  const [riderRows, merchantRows] = await Promise.all([
+  const [riderRows, merchantRows, cancelCtx] = await Promise.all([
     listRiderPenalties(orderCoreId),
     listMerchantCancellationLedger(orderCoreId),
+    loadOrderCancellationContext(orderCoreId),
   ]);
-  return [...riderRows, ...merchantRows].sort((a, b) => {
+  const opsReason = cancelCtx ? dashboardOpsCancelReason(cancelCtx) : null;
+  const merchant = opsReason
+    ? merchantRows.map((row) => ({
+        ...row,
+        reason: opsReason,
+      }))
+    : merchantRows;
+  return [...riderRows, ...merchant].sort((a, b) => {
     const ta = a.createdAt ? Date.parse(a.createdAt) : 0;
     const tb = b.createdAt ? Date.parse(b.createdAt) : 0;
     return tb - ta;
   });
+}
+
+async function loadOrderCancellationContext(orderCoreId: number): Promise<{
+  cancelledByType: string | null;
+  cancelledByLabel: string | null;
+  reason: string | null;
+  reasonCode: string | null;
+  cancelMode: string | null;
+} | null> {
+  const sql = getSql();
+  try {
+    const rows = await sql.unsafe<
+      {
+        cancelled_by_type: string | null;
+        cancelled_by_label: string | null;
+        display_reason: string | null;
+        reason_text: string | null;
+        reason_code: string | null;
+        cancel_mode: string | null;
+      }[]
+    >(
+      `
+        SELECT
+          cancelled_by_type,
+          cancelled_by_label,
+          display_reason,
+          reason_text,
+          reason_code,
+          cancel_mode
+        FROM order_cancellation_reasons
+        WHERE order_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [orderCoreId]
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      cancelledByType: row.cancelled_by_type,
+      cancelledByLabel: row.cancelled_by_label,
+      reason: row.display_reason || row.reason_text,
+      reasonCode: row.reason_code,
+      cancelMode: row.cancel_mode,
+    };
+  } catch (e) {
+    if (isRelationMissingError(e)) return null;
+    return null;
+  }
 }

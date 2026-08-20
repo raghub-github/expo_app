@@ -697,6 +697,8 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
             : null,
         isDiscountEligible: l.discountEligible !== false,
         ineligibilityReason: (l.ineligibilityReason ?? null) as "ITEM_PROMO" | "MRP" | null,
+        boostAlreadyInPrice: l.boostAlreadyInPrice === true,
+        canonical_pricing: l.canonicalPricing ?? null,
       };
     }),
   };

@@ -36,6 +36,16 @@ export function resolveCancelledByBrandForLedger(
   }
 
   if (
+    type === "system" ||
+    source === "system" ||
+    source === "auto-cancel" ||
+    source === "auto_cancel" ||
+    /auto cancel/i.test(label)
+  ) {
+    return "__AUTO__";
+  }
+
+  if (
     type === "admin" ||
     source === "admin_cancel" ||
     source.includes("dashboard") ||
@@ -43,10 +53,6 @@ export function resolveCancelledByBrandForLedger(
     label.includes("gatimitra")
   ) {
     return "GatiMitra";
-  }
-
-  if (type === "system" || source === "system" || /auto cancel/i.test(label)) {
-    return "__AUTO__";
   }
 
   if (source.includes("merchant") || source.includes("partner")) {
@@ -68,11 +74,9 @@ export function applyCancelledByBrandToDescription(
   if (isAutoCancellationBrand(brand)) {
     return description.replace(
       /Cancelled by [^:—·\n.]+:\s*([^:—·\n.]+)/gi,
-      (_match, reason: string) => {
-        const stripped = String(reason ?? "").trim().replace(/^auto cancelled?:?\s*/i, "").trim();
-        return stripped ? `Auto Canceled: ${stripped}` : "Auto Canceled";
-      },
-    ).replace(/^Cancelled by [^:—·\n.]+(?=[:—·\n.]|$)/gi, "Auto Canceled");
+      "Auto Cancelled by System"
+    ).replace(/Cancelled by [^:—·\n.]+(?=[:—·\n.]|$)/gi, "Auto Cancelled by System")
+      .replace(/\bAuto Canceled\b/gi, "Auto Cancelled by System");
   }
 
   const displayBrand =

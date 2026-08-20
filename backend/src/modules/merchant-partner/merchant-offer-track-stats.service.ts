@@ -22,10 +22,55 @@ function parseNum(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+async function purgeOrphanedOfferOrderRecords(
+  sql: Sql,
+  storeId: number,
+  offerPks: number[],
+): Promise<void> {
+  if (!offerPks.length) return;
+  try {
+    await sql`
+      DELETE FROM offer_order_applications oa
+      WHERE oa.merchant_offer_id = ANY(${offerPks})
+        AND oa.offer_source = 'MERCHANT'
+        AND NOT EXISTS (
+          SELECT 1 FROM orders_core oc
+          WHERE oc.id = oa.order_id
+             OR oc.order_id = ('GM' || oa.order_id::text)
+        )
+    `;
+    await sql`
+      DELETE FROM merchant_offer_usages u
+      WHERE u.offer_id = ANY(${offerPks})
+        AND u.order_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM orders_core oc
+          WHERE oc.id = u.order_id
+             OR oc.order_id = ('GM' || u.order_id::text)
+        )
+    `;
+    await sql`
+      UPDATE merchant_offers mo
+      SET current_uses = COALESCE((
+        SELECT COUNT(DISTINCT oa.order_id)::int
+        FROM offer_order_applications oa
+        INNER JOIN orders_core oc
+          ON oc.id = oa.order_id
+          OR oc.order_id = ('GM' || oa.order_id::text)
+        WHERE oa.merchant_offer_id = mo.id
+          AND oa.offer_source = 'MERCHANT'
+      ), 0)
+      WHERE mo.store_id = ${storeId}
+        AND mo.id = ANY(${offerPks})
+    `;
+  } catch {
+    /* optional on older DBs */
+  }
+}
+
 /**
  * Lifetime performance per merchant_offer id for a store.
- * Includes all applied orders (not only DELIVERED) so Discount matches current_uses;
- * Gross uses food item totals when available on the linked order.
+ * Counts only orders that still exist in orders_core.
  */
 export async function loadMerchantOfferTrackStats(
   sql: Sql,
@@ -36,6 +81,7 @@ export async function loadMerchantOfferTrackStats(
   if (!offerPks.length) return out;
 
   try {
+    await purgeOrphanedOfferOrderRecords(sql, storeId, offerPks);
     const rows = (await sql`
       SELECT
         oa.merchant_offer_id AS offer_pk,
@@ -50,7 +96,7 @@ export async function loadMerchantOfferTrackStats(
         COALESCE(oa.discount_amount, 0)::numeric AS discount
       FROM offer_order_applications oa
       INNER JOIN merchant_offers mo ON mo.id = oa.merchant_offer_id
-      LEFT JOIN orders_core oc
+      INNER JOIN orders_core oc
         ON oc.id = oa.order_id
         OR oc.order_id = ('GM' || oa.order_id::text)
       LEFT JOIN orders_food of
@@ -88,7 +134,8 @@ export async function loadMerchantOfferTrackStats(
       }
       const disc = parseNum(r.discount);
       acc.discount += disc;
-      const oid = String(r.core_order_pk ?? r.food_row_id ?? `${offerPk}-${acc.orders.size}`);
+      if (r.core_order_pk == null && r.food_row_id == null) continue;
+      const oid = String(r.core_order_pk ?? r.food_row_id);
       acc.orders.add(oid);
       const g = parseNum(r.gross);
       if (g > 0) {
@@ -118,7 +165,7 @@ export async function loadMerchantOfferTrackStats(
             )::numeric AS gross,
             oc.id AS core_order_pk
           FROM merchant_offer_usages u
-          LEFT JOIN orders_core oc
+          INNER JOIN orders_core oc
             ON oc.id = u.order_id
             OR oc.order_id = ('GM' || u.order_id::text)
           LEFT JOIN orders_food of
@@ -148,7 +195,8 @@ export async function loadMerchantOfferTrackStats(
             acc = { discount: 0, orders: new Set(), orderGross: new Map() };
             byOffer.set(offerPk, acc);
           }
-          const oid = String(u.core_order_pk ?? u.usage_order_id ?? `u-${offerPk}-${acc.orders.size}`);
+          if (u.core_order_pk == null && u.usage_order_id == null) continue;
+          const oid = String(u.core_order_pk ?? u.usage_order_id);
           acc.orders.add(oid);
           if (fillDiscount) {
             acc.discount += parseNum(u.discount);
@@ -187,19 +235,20 @@ export async function loadMerchantOfferTrackStats(
 export function mergeOfferTrackStatsIntoMetadata(
   meta: Record<string, unknown>,
   stat: MerchantOfferTrackStat | undefined,
-  currentUses?: number | null,
+  _currentUses?: number | null,
 ): Record<string, unknown> {
-  if (!stat) return meta;
-  const orders = Math.max(stat.orders, Number(currentUses ?? 0) || 0);
-  let eff = stat.effectiveDiscountPct;
-  if ((!eff || eff <= 0) && stat.gross > 0 && stat.discount > 0) {
-    eff = Math.round((stat.discount / stat.gross) * 1000) / 10;
+  const resolved =
+    stat ??
+    ({ offerPk: 0, orders: 0, gross: 0, discount: 0, effectiveDiscountPct: 0 } satisfies MerchantOfferTrackStat);
+  let eff = resolved.effectiveDiscountPct;
+  if ((!eff || eff <= 0) && resolved.gross > 0 && resolved.discount > 0) {
+    eff = Math.round((resolved.discount / resolved.gross) * 1000) / 10;
   }
   return {
     ...meta,
-    gross_sales: stat.gross,
-    discount_given: stat.discount,
-    orders_delivered: orders,
-    ...(eff > 0 ? { effective_discount_pct: eff } : {}),
+    gross_sales: resolved.gross,
+    discount_given: resolved.discount,
+    orders_delivered: resolved.orders,
+    ...(eff > 0 ? { effective_discount_pct: eff } : { effective_discount_pct: 0 }),
   };
 }

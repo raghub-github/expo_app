@@ -538,7 +538,7 @@ function DetailField({
 }) {
   return (
     <div className={`flex flex-col gap-0.5 min-w-0 ${className}`}>
-      <span className="text-[10px] font-medium uppercase tracking-wide text-gati-text-secondary">
+      <span className="text-[10px] font-medium text-gati-text-secondary">
         {label}
       </span>
       <div className="text-[11px] text-gati-text-primary leading-snug">{children}</div>
@@ -1322,7 +1322,7 @@ export default function RiderDetails({
 
             {order.orderId ? (
               <div className="flex w-full max-w-[12.5rem] md:justify-self-end flex-col overflow-visible rounded-md border border-slate-200 bg-white px-2 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
-                <p className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                <p className="shrink-0 text-[10px] font-semibold text-slate-500 mb-1">
                   Delivery progress
                 </p>
                 <div className="flex flex-1 flex-col justify-start min-h-0 overflow-y-auto overflow-x-visible pr-0.5">

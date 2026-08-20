@@ -424,9 +424,11 @@ export function FoodNavigateBottomSheet({
               </View>
 
               {phase === "pickup" && prepDelayed ? (
-                <View style={styles.delayBanner}>
-                  <Ionicons name="hourglass-outline" size={14} color="#ffffff" />
-                  <Text style={styles.delayBannerText}>{formatPrepDelayedLabel(overdueSec)}</Text>
+                <View style={styles.delayBannerWrap}>
+                  <View style={styles.delayBanner}>
+                    <Ionicons name="hourglass-outline" size={14} color="#ffffff" />
+                    <Text style={styles.delayBannerText}>{formatPrepDelayedLabel(overdueSec)}</Text>
+                  </View>
                 </View>
               ) : null}
 
@@ -591,7 +593,7 @@ const styles = StyleSheet.create({
   },
   cancelFloat: {
     position: "absolute",
-    top: -32,
+    top: -8,
     right: 14,
     zIndex: 60,
     ...Platform.select({
@@ -889,7 +891,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "stretch",
     gap: 8,
-    marginBottom: 0,
+    marginBottom: 12,
   },
   dropSliderDock: {
     width: "100%",
@@ -961,6 +963,11 @@ const styles = StyleSheet.create({
     color: "#202124",
     flexShrink: 0,
   },
+  delayBannerWrap: {
+    width: "100%",
+    marginTop: 4,
+    marginBottom: 12,
+  },
   delayBanner: {
     flexDirection: "row",
     alignItems: "center",
@@ -970,7 +977,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 12,
-    marginBottom: 10,
   },
   delayBannerText: {
     color: "#ffffff",

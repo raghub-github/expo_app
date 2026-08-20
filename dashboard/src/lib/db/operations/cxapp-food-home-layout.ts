@@ -1,11 +1,14 @@
 import { getSql } from "@/lib/db/client";
 import {
+  DEFAULT_DISCOVERY_CTA,
   DEFAULT_FOOD_HOME_LAYOUT,
   DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW,
   DEFAULT_GRID_FIRST_UNDER_250,
+  type DiscoveryCtaConfig,
   type FoodHomeLayoutKey,
   type GridFirstSubscriptionRowConfig,
   type GridFirstUnder250Config,
+  parseDiscoveryCtaConfig,
   parseFoodHomeLayoutKey,
   parseGridFirstSubscriptionRowBgColor,
   parseGridFirstUnder250Enabled,
@@ -23,6 +26,7 @@ export type StateFoodHomeLayoutConfig = {
   gridFirstHeroMedia: GridFirstHeroMediaItem[];
   gridFirstSubscriptionRow: GridFirstSubscriptionRowConfig;
   gridFirstUnder250: GridFirstUnder250Config;
+  discoveryCta: DiscoveryCtaConfig;
 };
 
 type LayoutRow = {
@@ -37,6 +41,15 @@ type LayoutRow = {
   grid_first_under_250_filter_label: string | null;
   grid_first_under_250_tab_image_url: string | null;
   grid_first_under_250_hero_image_url: string | null;
+  discovery_deals_at_max_price?: number | null;
+  discovery_deals_at_image_url?: string | null;
+  discovery_deals_at_hero_image_url?: string | null;
+  discovery_crazy_deals_image_url?: string | null;
+  discovery_free_packaging_image_url?: string | null;
+  discovery_deals_at_label?: string | null;
+  discovery_crazy_deals_label?: string | null;
+  discovery_free_packaging_label?: string | null;
+  discovery_cta_tiles?: unknown;
 };
 
 function parseSubscriptionRow(row: LayoutRow | undefined): GridFirstSubscriptionRowConfig {
@@ -67,31 +80,128 @@ function parseUnder250Row(row: LayoutRow | undefined): GridFirstUnder250Config {
   };
 }
 
+function parseDiscoveryRow(row: LayoutRow | undefined): DiscoveryCtaConfig {
+  if (!row) return { ...DEFAULT_DISCOVERY_CTA };
+  return parseDiscoveryCtaConfig({
+    discoveryDealsAtMaxPrice: row.discovery_deals_at_max_price,
+    discoveryDealsAtImageUrl: row.discovery_deals_at_image_url,
+    discoveryDealsAtHeroImageUrl: row.discovery_deals_at_hero_image_url,
+    discoveryCrazyDealsImageUrl: row.discovery_crazy_deals_image_url,
+    discoveryFreePackagingImageUrl: row.discovery_free_packaging_image_url,
+    discoveryDealsAtLabel: row.discovery_deals_at_label,
+    discoveryCrazyDealsLabel: row.discovery_crazy_deals_label,
+    discoveryFreePackagingLabel: row.discovery_free_packaging_label,
+    discoveryCtaTiles: row.discovery_cta_tiles,
+  });
+}
+
 export async function getStateFoodHomeLayoutConfig(stateId: string): Promise<StateFoodHomeLayoutConfig> {
   const sql = getSql();
-  const rows = await sql<LayoutRow[]>`
-    SELECT
-      layout_key::text AS layout_key,
-      grid_first_hero_media,
-      grid_first_subscription_row_enabled,
-      grid_first_subscription_row_text,
-      grid_first_subscription_row_bg_color,
-      grid_first_under_250_enabled,
-      grid_first_under_250_max_price,
-      grid_first_under_250_title,
-      grid_first_under_250_filter_label,
-      grid_first_under_250_tab_image_url,
-      grid_first_under_250_hero_image_url
-    FROM cxapp_state_food_home_layout
-    WHERE state_id = ${stateId}::uuid
-    LIMIT 1
-  `;
-  const row = rows[0];
+  let row: LayoutRow | undefined;
+  try {
+    const rows = await sql<LayoutRow[]>`
+      SELECT
+        layout_key::text AS layout_key,
+        grid_first_hero_media,
+        grid_first_subscription_row_enabled,
+        grid_first_subscription_row_text,
+        grid_first_subscription_row_bg_color,
+        grid_first_under_250_enabled,
+        grid_first_under_250_max_price,
+        grid_first_under_250_title,
+        grid_first_under_250_filter_label,
+        grid_first_under_250_tab_image_url,
+        grid_first_under_250_hero_image_url,
+        discovery_deals_at_max_price,
+        discovery_deals_at_image_url,
+        discovery_deals_at_hero_image_url,
+        discovery_crazy_deals_image_url,
+        discovery_free_packaging_image_url,
+        discovery_deals_at_label,
+        discovery_crazy_deals_label,
+        discovery_free_packaging_label,
+        discovery_cta_tiles
+      FROM cxapp_state_food_home_layout
+      WHERE state_id = ${stateId}::uuid
+      LIMIT 1
+    `;
+    row = rows[0];
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const missingDiscovery =
+      message.includes("discovery_deals_at_max_price") ||
+      message.includes("discovery_deals_at_image_url") ||
+      message.includes("discovery_deals_at_hero_image_url") ||
+      message.includes("discovery_crazy_deals_image_url") ||
+      message.includes("discovery_free_packaging_image_url") ||
+      message.includes("discovery_deals_at_label") ||
+      message.includes("discovery_crazy_deals_label") ||
+      message.includes("discovery_free_packaging_label") ||
+      message.includes("discovery_cta_tiles");
+    if (!missingDiscovery) throw err;
+    try {
+      const rows = await sql<LayoutRow[]>`
+        SELECT
+          layout_key::text AS layout_key,
+          grid_first_hero_media,
+          grid_first_subscription_row_enabled,
+          grid_first_subscription_row_text,
+          grid_first_subscription_row_bg_color,
+          grid_first_under_250_enabled,
+          grid_first_under_250_max_price,
+          grid_first_under_250_title,
+          grid_first_under_250_filter_label,
+          grid_first_under_250_tab_image_url,
+          grid_first_under_250_hero_image_url,
+          discovery_deals_at_max_price,
+          discovery_deals_at_image_url,
+          discovery_crazy_deals_image_url,
+          discovery_free_packaging_image_url,
+          discovery_deals_at_label,
+          discovery_crazy_deals_label,
+          discovery_free_packaging_label
+        FROM cxapp_state_food_home_layout
+        WHERE state_id = ${stateId}::uuid
+        LIMIT 1
+      `;
+      row = rows[0];
+    } catch (err2) {
+      const message2 = err2 instanceof Error ? err2.message : String(err2);
+      const missingLegacy =
+        message2.includes("discovery_deals_at_max_price") ||
+        message2.includes("discovery_deals_at_image_url") ||
+        message2.includes("discovery_crazy_deals_image_url") ||
+        message2.includes("discovery_free_packaging_image_url") ||
+        message2.includes("discovery_deals_at_label") ||
+        message2.includes("discovery_crazy_deals_label") ||
+        message2.includes("discovery_free_packaging_label");
+      if (!missingLegacy) throw err2;
+      const rows = await sql<LayoutRow[]>`
+        SELECT
+          layout_key::text AS layout_key,
+          grid_first_hero_media,
+          grid_first_subscription_row_enabled,
+          grid_first_subscription_row_text,
+          grid_first_subscription_row_bg_color,
+          grid_first_under_250_enabled,
+          grid_first_under_250_max_price,
+          grid_first_under_250_title,
+          grid_first_under_250_filter_label,
+          grid_first_under_250_tab_image_url,
+          grid_first_under_250_hero_image_url
+        FROM cxapp_state_food_home_layout
+        WHERE state_id = ${stateId}::uuid
+        LIMIT 1
+      `;
+      row = rows[0];
+    }
+  }
   return {
     layoutKey: parseFoodHomeLayoutKey(row?.layout_key) ?? DEFAULT_FOOD_HOME_LAYOUT,
     gridFirstHeroMedia: parseGridFirstHeroMediaItems(row?.grid_first_hero_media),
     gridFirstSubscriptionRow: parseSubscriptionRow(row),
     gridFirstUnder250: parseUnder250Row(row),
+    discoveryCta: parseDiscoveryRow(row),
   };
 }
 
@@ -121,6 +231,13 @@ async function ensureStateFoodHomeLayoutRow(stateId: string): Promise<void> {
       grid_first_under_250_filter_label,
       grid_first_under_250_tab_image_url,
       grid_first_under_250_hero_image_url,
+      discovery_deals_at_max_price,
+      discovery_deals_at_image_url,
+      discovery_crazy_deals_image_url,
+      discovery_free_packaging_image_url,
+      discovery_deals_at_label,
+      discovery_crazy_deals_label,
+      discovery_free_packaging_label,
       updated_at
     )
     VALUES (
@@ -136,6 +253,13 @@ async function ensureStateFoodHomeLayoutRow(stateId: string): Promise<void> {
       ${DEFAULT_GRID_FIRST_UNDER_250.filterLabel},
       ${DEFAULT_GRID_FIRST_UNDER_250.tabImageUrl},
       ${DEFAULT_GRID_FIRST_UNDER_250.heroImageUrl},
+      ${DEFAULT_DISCOVERY_CTA.dealsAtMaxPrice},
+      ${DEFAULT_DISCOVERY_CTA.dealsAtImageUrl},
+      ${DEFAULT_DISCOVERY_CTA.crazyDealsImageUrl},
+      ${DEFAULT_DISCOVERY_CTA.freePackagingImageUrl},
+      ${DEFAULT_DISCOVERY_CTA.dealsAtLabel},
+      ${DEFAULT_DISCOVERY_CTA.crazyDealsLabel},
+      ${DEFAULT_DISCOVERY_CTA.freePackagingLabel},
       now()
     )
     ON CONFLICT (state_id) DO NOTHING
@@ -221,4 +345,41 @@ export async function saveStateGridFirstUnder250(
     WHERE state_id = ${stateId}::uuid
   `;
   return { enabled, maxPrice, title, filterLabel, tabImageUrl, heroImageUrl };
+}
+
+export async function saveStateDiscoveryCta(
+  stateId: string,
+  config: DiscoveryCtaConfig
+): Promise<DiscoveryCtaConfig> {
+  await ensureStateFoodHomeLayoutRow(stateId);
+  const sql = getSql();
+  const parsed = parseDiscoveryCtaConfig({
+    discoveryDealsAtMaxPrice: config.dealsAtMaxPrice,
+    discoveryDealsAtImageUrl: config.dealsAtImageUrl,
+    discoveryDealsAtHeroImageUrl: config.dealsAtHeroImageUrl,
+    discoveryCrazyDealsImageUrl: config.crazyDealsImageUrl,
+    discoveryFreePackagingImageUrl: config.freePackagingImageUrl,
+    discoveryDealsAtLabel: config.dealsAtLabel,
+    discoveryCrazyDealsLabel: config.crazyDealsLabel,
+    discoveryFreePackagingLabel: config.freePackagingLabel,
+    discoveryCtaTiles: config.tiles,
+  });
+  const meals = parsed.tiles.find((t) => t.action === "meals");
+  const deals = parsed.tiles.find((t) => t.action === "deals");
+  const packaging = parsed.tiles.find((t) => t.action === "packaging");
+  await sql`
+    UPDATE cxapp_state_food_home_layout
+    SET discovery_deals_at_max_price = ${meals?.maxPrice ?? parsed.dealsAtMaxPrice},
+        discovery_deals_at_image_url = ${meals?.imageUrl ?? null},
+        discovery_deals_at_hero_image_url = ${meals?.heroImageUrl ?? parsed.dealsAtHeroImageUrl},
+        discovery_crazy_deals_image_url = ${deals?.imageUrl ?? null},
+        discovery_free_packaging_image_url = ${packaging?.imageUrl ?? null},
+        discovery_deals_at_label = ${meals?.label ?? null},
+        discovery_crazy_deals_label = ${deals?.label ?? null},
+        discovery_free_packaging_label = ${packaging?.label ?? null},
+        discovery_cta_tiles = ${JSON.stringify(parsed.tiles)}::jsonb,
+        updated_at = now()
+    WHERE state_id = ${stateId}::uuid
+  `;
+  return parsed;
 }

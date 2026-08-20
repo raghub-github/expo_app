@@ -279,6 +279,8 @@ function mapBillingToResponse(b: BillingResult, snapshot?: Record<string, unknow
       appliedOfferType: l.appliedOfferType,
       isDiscountEligible: l.isDiscountEligible,
       ineligibilityReason: l.ineligibilityReason,
+      boostAlreadyInPrice: l.boostAlreadyInPrice === true,
+      canonicalPricing: l.canonical_pricing ?? null,
     })),
   };
 }
@@ -384,6 +386,24 @@ export async function billingRoutes(app: FastifyInstance) {
                   quantity: z.number(),
                   isDiscountEligible: z.boolean(),
                   ineligibilityReason: z.enum(["ITEM_PROMO", "MRP"]).nullable(),
+                })
+              )
+              .optional(),
+            orderLinePricing: z
+              .array(
+                z.object({
+                  menuItemId: z.string(),
+                  quantity: z.number(),
+                  catalogLineTotal: z.number(),
+                  effectiveLineTotal: z.number(),
+                  offerDiscountAmount: z.number(),
+                  appliedOfferId: z.number().nullable(),
+                  appliedOfferLabel: z.string().nullable(),
+                  appliedOfferType: z.string().nullable(),
+                  isDiscountEligible: z.boolean(),
+                  ineligibilityReason: z.enum(["ITEM_PROMO", "MRP"]).nullable(),
+                  boostAlreadyInPrice: z.boolean().optional(),
+                  canonicalPricing: z.any().nullable().optional(),
                 })
               )
               .optional(),

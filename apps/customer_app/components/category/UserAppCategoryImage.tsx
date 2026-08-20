@@ -21,6 +21,8 @@ type Props = {
    * - `ndf`: legacy CMS default image (merchant/dish empty states)
    */
   fallback?: "soft" | "ndf";
+  /** Soft fallback fill. Pass transparent on dark discovery so no grey circle shows. */
+  fallbackColor?: string;
 };
 
 function UserAppCategoryImageInner({
@@ -29,6 +31,7 @@ function UserAppCategoryImageInner({
   contentFit = "contain",
   cacheKey,
   fallback = "soft",
+  fallbackColor,
 }: Props) {
   const [failed, setFailed] = useState(false);
   const uri = useMemo(
@@ -70,7 +73,14 @@ function UserAppCategoryImageInner({
   }
 
   // Soft placeholder — keeps chip layout stable without flashing "No Data Found".
-  return <View style={[style as StyleProp<ViewStyle>, { backgroundColor: "#EEF2F6" }]} />;
+  return (
+    <View
+      style={[
+        style as StyleProp<ViewStyle>,
+        { backgroundColor: fallbackColor ?? "#EEF2F6" },
+      ]}
+    />
+  );
 }
 
 /**

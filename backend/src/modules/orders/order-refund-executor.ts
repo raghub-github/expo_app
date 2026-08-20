@@ -914,6 +914,7 @@ export async function executeOrderRefund(
         SET execution_status    = 'PROCESSING',
             executed_at         = NOW(),
             razorpay_refund_id  = ${refund.id},
+            pg_refund_id        = COALESCE(NULLIF(TRIM(pg_refund_id), ''), ${refund.id}),
             razorpay_payment_id = ${snap.razorpayPaymentId},
             razorpay_response   = ${JSON.stringify(refund)}::jsonb,
             split_razorpay_amount = ${gatewayRefundAmount},
@@ -1000,6 +1001,7 @@ export async function executeOrderRefund(
             executed_at               = NOW(),
             completed_at              = NOW(),
             razorpay_refund_id        = ${refundIdRazorpay},
+            pg_refund_id              = COALESCE(NULLIF(TRIM(pg_refund_id), ''), ${refundIdRazorpay}),
             razorpay_payment_id       = ${snap.razorpayPaymentId},
             razorpay_response         = ${razorpayPayload ? JSON.stringify(razorpayPayload) : null}::jsonb,
             customer_wallet_ledger_id = ${ledgerId},
@@ -1015,6 +1017,7 @@ export async function executeOrderRefund(
         SET execution_status          = 'PROCESSING',
             executed_at               = NOW(),
             razorpay_refund_id        = ${refundIdRazorpay},
+            pg_refund_id              = COALESCE(NULLIF(TRIM(pg_refund_id), ''), ${refundIdRazorpay}),
             razorpay_payment_id       = ${snap.razorpayPaymentId},
             razorpay_response         = ${razorpayPayload ? JSON.stringify(razorpayPayload) : null}::jsonb,
             customer_wallet_ledger_id = ${ledgerId},
@@ -1212,6 +1215,11 @@ export async function completeOrderRefundFromRazorpayWebhook(args: {
     SET execution_status  = 'COMPLETED',
         completed_at      = NOW(),
         refund_status     = 'completed',
+        pg_refund_id      = COALESCE(
+          NULLIF(TRIM(pg_refund_id), ''),
+          NULLIF(TRIM(razorpay_refund_id), ''),
+          ${args.razorpayRefundId}
+        ),
         razorpay_response = COALESCE(razorpay_response, '{}'::jsonb) || ${JSON.stringify({
           confirmed_via: "webhook",
           confirmed_at: new Date().toISOString(),

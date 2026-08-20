@@ -198,6 +198,12 @@ function DashboardLayoutClientInner({
     if (cleanPrev.startsWith("/dashboard/riders") && cleanNext.startsWith("/dashboard/riders")) {
       return;
     }
+    // Merchant store tabs share one shell — keep menu/ops cache so Menu paints in one go.
+    const prevStoreId = cleanPrev.match(/^\/dashboard\/merchants\/stores\/(\d+)(?:\/|$)/)?.[1];
+    const nextStoreId = cleanNext.match(/^\/dashboard\/merchants\/stores\/(\d+)(?:\/|$)/)?.[1];
+    if (prevStoreId && prevStoreId === nextStoreId) {
+      return;
+    }
     // Order detail ↔ tickets: do not invalidate orders list or ticket caches on cross-nav.
     if (
       (cleanPrev.startsWith("/order") && cleanNext.startsWith("/dashboard/tickets")) ||
@@ -790,6 +796,12 @@ function DashboardLayoutContent({
   /** Left sidebar is a persistent shell — hide with CSS for full-bleed layouts; never unmount. */
   const leftSidebarShellHidden =
     isTicketsQueueWorkspace || isCustomerDetailFromOrder || isAddChildPage;
+
+  useLayoutEffect(() => {
+    if (typeof document === "undefined") return;
+    const w = leftSidebarShellHidden ? "0px" : isLeftSidebarOpen ? "14rem" : "4rem";
+    document.documentElement.style.setProperty("--dashboard-incoming-overlay-left", w);
+  }, [isLeftSidebarOpen, leftSidebarShellHidden]);
 
   return (
     <LeftSidebarMobileProvider>

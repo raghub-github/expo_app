@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
@@ -9,6 +9,12 @@ import { CheckCircle2, RefreshCw, Filter, User, Car } from "lucide-react";
 import { normalizePersonRideSearchType } from "@/lib/orders/person-ride-search";
 import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
+import {
+  endOrderListSearch,
+  getOrderListSearchSnapshot,
+  ORDER_LIST_SEARCH_REPEAT_EVENT,
+  useOrderListSearchPending,
+} from "@/lib/orders/order-list-search-ui";
 
 const PAGE_BG = "#f3f5f7";
 const CONTENT_BG = "#FFFFFF";
@@ -241,6 +247,28 @@ export default function PersonRideOrdersClient() {
     refetchOnMount: true,
     placeholderData: (previousData) => previousData,
   });
+  const searchPending = useOrderListSearchPending();
+  const sawSearchFetchRef = useRef(false);
+
+  useEffect(() => {
+    if (!searchPending) {
+      sawSearchFetchRef.current = false;
+      return;
+    }
+    if (isFetching) sawSearchFetchRef.current = true;
+    const submitted = getOrderListSearchSnapshot().query;
+    if ((urlSearch ?? "") !== submitted) return;
+    if (!sawSearchFetchRef.current || isFetching) return;
+    endOrderListSearch();
+  }, [searchPending, urlSearch, isFetching]);
+
+  useEffect(() => {
+    const onRepeat = () => {
+      void refetch();
+    };
+    window.addEventListener(ORDER_LIST_SEARCH_REPEAT_EVENT, onRepeat);
+    return () => window.removeEventListener(ORDER_LIST_SEARCH_REPEAT_EVENT, onRepeat);
+  }, [refetch]);
 
   useEffect(() => {
     if (!snapshotKey || data == null) return;
@@ -250,7 +278,7 @@ export default function PersonRideOrdersClient() {
   const orders = data?.orders ?? cachedListData?.orders ?? initialSnapshot?.orders ?? [];
   const total = data?.total ?? cachedListData?.total ?? initialSnapshot?.total ?? 0;
   const totalPages = data?.totalPages ?? cachedListData?.totalPages ?? initialSnapshot?.totalPages ?? 1;
-  const showTableLoading = hasMounted && isLoading && orders.length === 0;
+  const showTableLoading = hasMounted && ((isLoading && orders.length === 0) || searchPending);
   const [manualRefreshing, setManualRefreshing] = useState(false);
   const isRefreshing = manualRefreshing || (hasMounted && isFetching && orders.length > 0);
 
@@ -456,7 +484,7 @@ export default function PersonRideOrdersClient() {
             {showTableLoading ? (
               <tr>
                 <td colSpan={9} className="px-2 py-8 text-center text-xs text-gray-500">
-                  Loading orders…
+                  {searchPending ? "Searching…" : "Loading orders…"}
                 </td>
               </tr>
             ) : isError ? (

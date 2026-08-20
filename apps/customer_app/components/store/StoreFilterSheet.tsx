@@ -7,6 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { DietIndicator } from "./DietIndicator";
 import { StoreBottomSheetShell } from "./StoreBottomSheetShell";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 export type StoreMenuFilterState = {
   sortBy: "default" | "price_asc" | "price_desc";
@@ -49,14 +50,27 @@ function FilterPill({
   onPress: () => void;
   icon?: React.ReactNode;
 }) {
+  const dark = useMerchantUiDark();
   return (
     <TouchableOpacity
       onPress={onPress}
-      style={[styles.pill, active && styles.pillActive]}
+      style={[
+        styles.pill,
+        dark && styles.pillDark,
+        active && (dark ? styles.pillActiveDark : styles.pillActive),
+      ]}
       activeOpacity={0.8}
     >
       {icon}
-      <AppText style={[styles.pillText, active && styles.pillTextActive]}>{label}</AppText>
+      <AppText
+        style={[
+          styles.pillText,
+          dark && styles.pillTextDark,
+          active && (dark ? styles.pillTextActiveDark : styles.pillTextActive),
+        ]}
+      >
+        {label}
+      </AppText>
     </TouchableOpacity>
   );
 }
@@ -71,6 +85,7 @@ export function StoreFilterSheet({
   showHighlyReordered,
 }: StoreFilterSheetProps) {
   const insets = useSafeAreaInsets();
+  const dark = useMerchantUiDark();
   const [draft, setDraft] = useState<StoreMenuFilterState>(filters);
 
   useEffect(() => {
@@ -106,14 +121,14 @@ export function StoreFilterSheet({
 
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.88} flushBottom>
-      <AppText style={styles.title}>Filters and Sorting</AppText>
+      <AppText style={[styles.title, dark && styles.titleDark]}>Filters and Sorting</AppText>
 
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        <AppText style={styles.sectionLabel}>Sort by:</AppText>
+        <AppText style={[styles.sectionLabel, dark && styles.sectionLabelDark]}>Sort by:</AppText>
         <View style={styles.pillRow}>
           <FilterPill
             label="Price - low to high"
@@ -127,7 +142,7 @@ export function StoreFilterSheet({
           />
         </View>
 
-        <AppText style={styles.sectionLabel}>Veg/Non-veg preference:</AppText>
+        <AppText style={[styles.sectionLabel, dark && styles.sectionLabelDark]}>Veg/Non-veg preference:</AppText>
         <View style={styles.pillRow}>
           <FilterPill
             label="Veg"
@@ -151,7 +166,7 @@ export function StoreFilterSheet({
 
         {showHighlyReordered ? (
           <>
-            <AppText style={styles.sectionLabel}>Top picks:</AppText>
+            <AppText style={[styles.sectionLabel, dark && styles.sectionLabelDark]}>Top picks:</AppText>
             <View style={styles.pillRow}>
               <FilterPill
                 label="Highly reordered"
@@ -163,7 +178,7 @@ export function StoreFilterSheet({
           </>
         ) : null}
 
-        <AppText style={styles.sectionLabel}>Dietary preference:</AppText>
+        <AppText style={[styles.sectionLabel, dark && styles.sectionLabelDark]}>Dietary preference:</AppText>
         <View style={styles.pillRow}>
           <FilterPill
             label="Spicy"
@@ -175,7 +190,7 @@ export function StoreFilterSheet({
 
         {offerPriceTiers.length > 0 ? (
           <>
-            <AppText style={styles.sectionLabel}>Offers:</AppText>
+            <AppText style={[styles.sectionLabel, dark && styles.sectionLabelDark]}>Offers:</AppText>
             <View style={styles.offerGrid}>
               {offerPriceTiers.map((price) => (
                 <FilterPill
@@ -195,12 +210,16 @@ export function StoreFilterSheet({
         ) : null}
       </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+      <View style={[styles.footer, dark && styles.footerDark, { paddingBottom: Math.max(insets.bottom, 8) }]}>
         <TouchableOpacity onPress={clearAll} hitSlop={8}>
           <AppText style={styles.clearText}>Clear All</AppText>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.applyBtn, matchCount === 0 && styles.applyBtnDisabled]}
+          style={[
+            styles.applyBtn,
+            dark && styles.applyBtnDark,
+            matchCount === 0 && (dark ? styles.applyBtnDisabledDark : styles.applyBtnDisabled),
+          ]}
           onPress={() => {
             onApply(draft);
             onClose();
@@ -223,6 +242,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 20,
   },
+  titleDark: {
+    color: MerchantDarkPalette.text,
+  },
   scroll: {
     flexGrow: 0,
     flexShrink: 1,
@@ -238,6 +260,9 @@ const styles = StyleSheet.create({
     color: StoreTheme.textPrimary,
     marginTop: 14,
     marginBottom: 10,
+  },
+  sectionLabelDark: {
+    color: MerchantDarkPalette.text,
   },
   pillRow: {
     flexDirection: "row",
@@ -261,23 +286,37 @@ const styles = StyleSheet.create({
     borderColor: StoreTheme.filterBorder,
     backgroundColor: "#fff",
   },
+  pillDark: {
+    backgroundColor: MerchantDarkPalette.chip,
+    borderColor: MerchantDarkPalette.chipBorder,
+  },
   pillActive: {
     borderColor: StoreTheme.accentMint,
     backgroundColor: StoreTheme.accentMintSoft,
+  },
+  pillActiveDark: {
+    borderColor: MerchantDarkPalette.accent,
+    backgroundColor: MerchantDarkPalette.chipActive,
   },
   pillText: {
     fontSize: 13,
     fontWeight: "600",
     color: StoreTheme.textPrimary,
   },
+  pillTextDark: {
+    color: MerchantDarkPalette.text,
+  },
   pillTextActive: {
     color: StoreTheme.accentMintDark,
+  },
+  pillTextActiveDark: {
+    color: MerchantDarkPalette.accent,
   },
   chiliIcon: {
     fontSize: 14,
   },
   dealIcon: {
-    backgroundColor: "#7C3AED",
+    backgroundColor: "#0EA5E9",
     borderRadius: 4,
     paddingHorizontal: 4,
     paddingVertical: 2,
@@ -298,6 +337,10 @@ const styles = StyleSheet.create({
     gap: 12,
     backgroundColor: "#fff",
   },
+  footerDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+    borderTopColor: MerchantDarkPalette.border,
+  },
   clearText: {
     fontSize: 15,
     fontWeight: "600",
@@ -310,8 +353,14 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: "center",
   },
+  applyBtnDark: {
+    backgroundColor: MerchantDarkPalette.accent,
+  },
   applyBtnDisabled: {
     backgroundColor: "#D1D5DB",
+  },
+  applyBtnDisabledDark: {
+    backgroundColor: "#3A3A3A",
   },
   applyText: {
     fontSize: 15,

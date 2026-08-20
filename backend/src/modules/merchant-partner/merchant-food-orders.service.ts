@@ -1313,7 +1313,7 @@ async function buildOrderDto(
     items.length > 0 && items.every((it) => it.ctm_from_snapshot === true);
   const boardList = opts.boardList === true;
   if (allCtmFrozen) {
-    // Merchant CTM snapshot is already merchant-rupee SSOT — do not rescale from menu/commission.
+    // Merchant CTM snapshot is menu selling-price SSOT (minus BOGO/BOOST) — do not rescale from commission.
     items = items.map((it) => ({
       ...it,
       // Keep catalog for strike; price stays catalog so annotate/bill math stay consistent.

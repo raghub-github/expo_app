@@ -25,7 +25,7 @@ import { registerStorePushToken, unregisterAllStorePushTokens } from "@/services
 import { getConfig } from "@/config/env";
 import { setMerchantPushUnregister } from "@/lib/merchantPushUnregister";
 import { openOrderDetailOnce } from "@/lib/openOrderDetailOnce";
-import { isSafeMerchantPushHref } from "@/lib/merchantNavigation";
+import { isSafeMerchantPushHref, extractMerchantFoodOrderIdFromPush, isMerchantOrderRelatedPush, merchantOrdersTabHrefFromPush } from "@/lib/merchantNavigation";
 import {
   dispatchMerchantForegroundPush,
   dispatchMerchantNotificationResponse,
@@ -124,40 +124,44 @@ function NotificationSetupImpl() {
 
   const handleOpen = useCallback(
     (payload: PushNotificationOpenPayload) => {
-      const data = payload.data;
+      const data = payload.data ?? {};
       if (data?.action === "reopen_prompt" && data?.url && typeof data.url === "string") {
         if (isSafeMerchantPushHref(data.url)) {
           router.push(`${data.url}${String(data.url).includes("?") ? "&" : "?"}reopen_prompt=1` as never);
         }
         return;
       }
-      if (isMerchantNewOrderPush(data)) {
+      if (isMerchantNewOrderPush(data) || isMerchantOrderRelatedPush(data)) {
         void (async () => {
-          const foodIdRaw =
-            data.foodOrderId ??
-            (typeof data.url === "string" && data.url.match(/\/order\/(\d+)/)?.[1]);
-          const foodId = foodIdRaw != null ? parseInt(String(foodIdRaw), 10) : NaN;
-          if (!storeId || !authToken || !Number.isFinite(foodId)) {
-            if (Number.isFinite(foodId)) {
-              openOrderDetailOnce(router, String(foodId), { currentPath: pathname });
-            }
+          const foodIdRaw = extractMerchantFoodOrderIdFromPush(data);
+          const foodId = foodIdRaw != null ? parseInt(foodIdRaw, 10) : NaN;
+          if (!Number.isFinite(foodId)) {
+            router.push(merchantOrdersTabHrefFromPush(data) as never);
             return;
           }
-          let order = ordersRef.current.find((o) => o.id === String(foodId));
-          if (!order) {
-            try {
-              order = mapApiOrder(await fetchFoodOrder(storeId, foodId, authToken));
-            } catch {
+          if (isMerchantNewOrderPush(data)) {
+            if (!storeId || !authToken) {
               openOrderDetailOnce(router, String(foodId), { currentPath: pathname });
               return;
             }
-          }
-          upsertOrder(order);
-          if (order.status === "created" && !order.id.startsWith("core-")) {
-            openIncomingOrderSheet(order);
+            let order = ordersRef.current.find((o) => o.id === String(foodId));
+            if (!order) {
+              try {
+                order = mapApiOrder(await fetchFoodOrder(storeId, foodId, authToken));
+              } catch {
+                openOrderDetailOnce(router, String(foodId), { currentPath: pathname });
+                return;
+              }
+            }
+            upsertOrder(order);
+            if (order.status === "created" && !order.id.startsWith("core-")) {
+              openIncomingOrderSheet(order);
+              return;
+            }
+            openOrderDetailOnce(router, order.id, { currentPath: pathname });
             return;
           }
-          openOrderDetailOnce(router, order.id, { currentPath: pathname });
+          openOrderDetailOnce(router, String(foodId), { currentPath: pathname });
         })();
         return;
       }
@@ -177,7 +181,12 @@ function NotificationSetupImpl() {
         return;
       }
       if (data?.screen === "orders" || data?.type === "store_online") {
-        router.push("/(tabs)/orders" as never);
+        const numeric = extractMerchantFoodOrderIdFromPush(data);
+        if (numeric) {
+          openOrderDetailOnce(router, numeric, { currentPath: pathname });
+        } else {
+          router.push("/(tabs)/orders" as never);
+        }
         return;
       }
       if (
@@ -193,7 +202,12 @@ function NotificationSetupImpl() {
         return;
       }
       if (data?.orderId != null) {
-        openOrderDetailOnce(router, String(data.orderId), { currentPath: pathname });
+        const numeric = extractMerchantFoodOrderIdFromPush(data);
+        if (numeric) {
+          openOrderDetailOnce(router, numeric, { currentPath: pathname });
+        } else {
+          router.push("/(tabs)/orders" as never);
+        }
         return;
       }
       navigateFromPushData({ push: (href) => router.push(href as never) }, {

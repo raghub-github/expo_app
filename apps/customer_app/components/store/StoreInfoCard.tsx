@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { MerchantRatingBadge } from "@/components/home/MerchantRatingBadge";
 import { MerchantOfferRow } from "@/components/home/MerchantOfferRow";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 export type StoreInfoCardProps = {
   name: string;
@@ -46,6 +47,7 @@ export function StoreInfoCard({
   onOffersPress,
   onRatingHintPress,
 }: StoreInfoCardProps) {
+  const dark = useMerchantUiDark();
   const locationText = [
     distanceKm != null ? `${distanceKm.toFixed(1)} km` : null,
     areaLabel,
@@ -57,14 +59,14 @@ export function StoreInfoCard({
   const showOfferRow = offerTexts.length > 0 || offerCount > 0;
 
   return (
-    <View style={[styles.card, !showOfferRow && styles.cardPadBottom]}>
+    <View style={[styles.card, dark && styles.cardDark, !showOfferRow && styles.cardPadBottom]}>
       <View style={styles.topRow}>
         <View style={styles.nameBlock}>
-          <AppText style={styles.name} numberOfLines={2}>
+          <AppText style={[styles.name, dark && styles.nameDark]} numberOfLines={2}>
             {name}
           </AppText>
           <TouchableOpacity onPress={onInfoPress} hitSlop={8} style={styles.infoBtn}>
-            <Ionicons name="information-circle-outline" size={18} color={StoreTheme.textSecondary} />
+            <Ionicons name="information-circle-outline" size={18} color={dark ? MerchantDarkPalette.textMuted : StoreTheme.textSecondary} />
           </TouchableOpacity>
         </View>
         <View style={styles.ratingWrap}>
@@ -81,21 +83,21 @@ export function StoreInfoCard({
 
       {locationText ? (
         <TouchableOpacity style={styles.metaRow} onPress={onLocationPress} activeOpacity={0.7}>
-          <Ionicons name="location-outline" size={15} color={StoreTheme.textSecondary} />
-          <AppText style={styles.metaText} numberOfLines={1}>
+          <Ionicons name="location-outline" size={15} color={dark ? MerchantDarkPalette.textMuted : StoreTheme.textSecondary} />
+          <AppText style={[styles.metaText, dark && styles.metaTextDark]} numberOfLines={1}>
             {locationText}
           </AppText>
-          <Ionicons name="chevron-down" size={14} color={StoreTheme.textSecondary} />
+          <Ionicons name="chevron-down" size={14} color={dark ? MerchantDarkPalette.textMuted : StoreTheme.textSecondary} />
         </TouchableOpacity>
       ) : null}
 
       {etaLabel ? (
         <TouchableOpacity style={styles.metaRow} onPress={onSchedulePress} activeOpacity={0.7}>
-          <Ionicons name="time-outline" size={15} color={StoreTheme.textSecondary} />
-          <AppText style={styles.metaText} numberOfLines={1}>
+          <Ionicons name="time-outline" size={15} color={dark ? MerchantDarkPalette.textMuted : StoreTheme.textSecondary} />
+          <AppText style={[styles.metaText, dark && styles.metaTextDark]} numberOfLines={1}>
             {etaLabel} · Schedule for later
           </AppText>
-          <Ionicons name="chevron-down" size={14} color={StoreTheme.textSecondary} />
+          <Ionicons name="chevron-down" size={14} color={dark ? MerchantDarkPalette.textMuted : StoreTheme.textSecondary} />
         </TouchableOpacity>
       ) : null}
 
@@ -167,16 +169,17 @@ const logoStyles = StyleSheet.create({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: "#fff",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    // Soft tuck under the banner — content must sit fully on white, never in the image.
-    marginTop: -12,
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    marginTop: 0,
     paddingHorizontal: 16,
-    // paddingTop > |marginTop| so name / rating / info stay below the banner edge.
-    paddingTop: 24,
+    paddingTop: 16,
     // Offer row owns its bottom hairline — avoid double gap under the card.
     paddingBottom: 0,
     zIndex: 2,
+  },
+  cardDark: {
+    backgroundColor: MerchantDarkPalette.bg,
   },
   cardPadBottom: {
     paddingBottom: 12,
@@ -202,6 +205,9 @@ const styles = StyleSheet.create({
     color: StoreTheme.textPrimary,
     lineHeight: 28,
   },
+  nameDark: {
+    color: MerchantDarkPalette.text,
+  },
   infoBtn: {
     marginTop: 5,
     flexShrink: 0,
@@ -221,6 +227,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: StoreTheme.textSecondary,
     fontWeight: "500",
+  },
+  metaTextDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   reorderBadge: {
     flexDirection: "row",

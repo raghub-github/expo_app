@@ -194,7 +194,10 @@ export function RiderPushSetup() {
         expoGo,
       });
       if (expoGo) return;
-      if (snap.osStatus === "granted") return;
+      if (snap.osStatus === "granted") {
+        await controller.syncTokens();
+        return;
+      }
       // Returning riders who skipped /(permissions) still need a grant + register.
       if (permissionPromptedRef.current) return;
       permissionPromptedRef.current = true;
@@ -224,10 +227,10 @@ export function RiderPushSetup() {
   }, [hydrated, session?.accessToken, session?.role, controller, expoGo]);
 
   useEffect(() => {
-    if (snapshot.osStatus === "granted") {
-      void controller.syncTokens();
-    }
-  }, [snapshot.osStatus, controller]);
+    if (!hydrated || !session?.accessToken || session.role !== "rider") return;
+    if (snapshot.osStatus !== "granted" || expoGo) return;
+    void controller.syncTokens();
+  }, [snapshot.osStatus, controller, hydrated, session?.accessToken, session?.role, expoGo]);
 
   useEffect(() => {
     const granted = snapshot.osStatus === "granted";

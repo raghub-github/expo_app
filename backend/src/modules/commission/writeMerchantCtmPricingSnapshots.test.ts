@@ -5,11 +5,14 @@ import {
   buildCtmLineInputsFromFrozenItems,
   buildSettlementBreakdownFromCtmRows,
   prepareCtmRows,
+  platformFundingFromBilling,
+  merchantRefundFromPlatformFunding,
   resolveBackfillCtmLineInput,
   type BackfillOrderItemRow,
   type FrozenOrderItemForCtm,
   type MerchantCtmLineInput,
 } from "./writeMerchantCtmPricingSnapshots.js";
+import { resolveItemPricing, serializeCanonicalPricing } from "../pricing/canonicalItemPricing.js";
 
 type CtmRow = { gross: number; disc: number; offerType: string };
 
@@ -80,9 +83,9 @@ describe("buildCtmLineInputsFromFrozenItems → prepareCtmRows — per-item inde
     [r.orderItemId, r.offerType, r.disc, r.gross, r.net];
 
   it("BOOST only", () => {
-    assert.deepEqual(run([boostItem(1, 2, 60, 9)]).map(shape), [[1, "BOOST", 9, 60, 51]]);
+    assert.deepEqual(run([boostItem(1, 2, 60, 9)]).map(shape), [[1, "PERCENTAGE", 9, 60, 51]]);
   });
-  it("BOGO only — discount zeroed, net === gross", () => {
+  it("BOGO only — discount 0, net = selling price", () => {
     assert.deepEqual(run([bogoItem(1, 5, 180)]).map(shape), [[1, "BOGO", 0, 180, 180]]);
   });
   it("NONE only", () => {
@@ -90,11 +93,11 @@ describe("buildCtmLineInputsFromFrozenItems → prepareCtmRows — per-item inde
   });
   it("BOOST + BOGO — neither leaks into the other", () => {
     assert.deepEqual(run([boostItem(1, 2, 60, 9), bogoItem(2, 5, 180)]).map(shape),
-      [[1, "BOOST", 9, 60, 51], [2, "BOGO", 0, 180, 180]]);
+      [[1, "PERCENTAGE", 9, 60, 51], [2, "BOGO", 0, 180, 180]]);
   });
   it("BOOST + NONE", () => {
     assert.deepEqual(run([boostItem(1, 2, 60, 9), noneItem(2, 7, 140)]).map(shape),
-      [[1, "BOOST", 9, 60, 51], [2, "NONE", 0, 140, 140]]);
+      [[1, "PERCENTAGE", 9, 60, 51], [2, "NONE", 0, 140, 140]]);
   });
   it("BOGO + NONE — NONE never inherits the BOGO", () => {
     assert.deepEqual(run([bogoItem(1, 5, 180), noneItem(2, 7, 140)]).map(shape),
@@ -102,13 +105,13 @@ describe("buildCtmLineInputsFromFrozenItems → prepareCtmRows — per-item inde
   });
   it("BOOST + BOGO + NONE — all three independent", () => {
     assert.deepEqual(run([boostItem(1, 2, 60, 9), bogoItem(2, 5, 180), noneItem(3, 7, 140)]).map(shape),
-      [[1, "BOOST", 9, 60, 51], [2, "BOGO", 0, 180, 180], [3, "NONE", 0, 140, 140]]);
+      [[1, "PERCENTAGE", 9, 60, 51], [2, "BOGO", 0, 180, 180], [3, "NONE", 0, 140, 140]]);
   });
   it("multiple BOOST items keep their own discounts", () => {
     assert.deepEqual(run([boostItem(1, 2, 60, 9), boostItem(2, 3, 200, 30)]).map(shape),
-      [[1, "BOOST", 9, 60, 51], [2, "BOOST", 30, 200, 170]]);
+      [[1, "PERCENTAGE", 9, 60, 51], [2, "PERCENTAGE", 30, 200, 170]]);
   });
-  it("multiple BOGO items — every one disc 0, net === gross", () => {
+  it("multiple BOGO items — each is type BOGO with discount 0", () => {
     assert.deepEqual(run([bogoItem(1, 5, 180), bogoItem(2, 6, 200)]).map(shape),
       [[1, "BOGO", 0, 180, 180], [2, "BOGO", 0, 200, 200]]);
   });
@@ -125,7 +128,7 @@ describe("buildCtmLineInputsFromFrozenItems → prepareCtmRows — per-item inde
       bogoItem(351, 25, 60),
     ]);
     assert.deepEqual(rows.map((r) => [r.orderItemId, r.offerType]), [
-      [348, "BOOST"], [349, "BOGO"], [350, "NONE"], [351, "BOGO"],
+      [348, "PERCENTAGE"], [349, "BOGO"], [350, "NONE"], [351, "BOGO"],
     ]);
   });
 
@@ -178,7 +181,7 @@ describe("resolveBackfillCtmLineInput — BOGO survives any placement path (neve
   type Olp = Record<string, unknown>;
   const bogoOlp = (menuItemId: string, catalog: number): Olp => ({
     menuItemId, appliedOfferId: 30, appliedOfferType: "BUY_X_GET_Y",
-    appliedOfferLabel: "Buy One Get One", offerDiscountAmount: 0,
+    appliedOfferLabel: "Buy One Get One", offerDiscountAmount: catalog / 2,
     ineligibilityReason: "ITEM_PROMO", catalogLineTotal: catalog,
   });
   const boostOlp = (menuItemId: string, catalog: number, disc: number): Olp => ({
@@ -193,7 +196,7 @@ describe("resolveBackfillCtmLineInput — BOGO survives any placement path (neve
   const finalType = (input: MerchantCtmLineInput, snap: Record<string, unknown> | null = null) =>
     prepareCtmRows([input], 0, snap).rows[0]!;
 
-  it("BARE row (no frozen columns) + billing says BOGO → BOGO, disc 0, net === gross", () => {
+  it("BARE row (no frozen columns) + billing says BOGO → BOGO with recovered free-unit discount", () => {
     const input = resolveBackfillCtmLineInput(
       bareRow({ orderItemId: 1, menuItemId: 25, catalogLineTotal: 120 }),
       [bogoOlp("25", 120)],
@@ -202,7 +205,8 @@ describe("resolveBackfillCtmLineInput — BOGO survives any placement path (neve
     const r = finalType(input);
     assert.equal(r.offerType, "BOGO");
     assert.equal(r.disc, 0);
-    assert.equal(r.net, r.gross);
+    assert.equal(r.net, 120);
+    assert.equal(r.gross, 120);
   });
 
   it("BARE row + billing says BOOST → BOOST with the billed discount", () => {
@@ -212,7 +216,7 @@ describe("resolveBackfillCtmLineInput — BOGO survives any placement path (neve
       0
     );
     const r = finalType(input);
-    assert.equal(r.offerType, "BOOST");
+    assert.equal(r.offerType, "PERCENTAGE");
     assert.equal(r.disc, 30);
     assert.equal(r.net, 170);
   });
@@ -245,7 +249,7 @@ describe("resolveBackfillCtmLineInput — BOGO survives any placement path (neve
     ].map((row, i) => resolveBackfillCtmLineInput(row, pricing, i));
     const out = prepareCtmRows(rows, 0, null).rows;
     assert.deepEqual(out.map((r) => [r.orderItemId, r.offerType]), [
-      [1, "BOGO"], [2, "BOOST"], [3, "NONE"],
+      [1, "BOGO"], [2, "PERCENTAGE"], [3, "NONE"],
     ]);
   });
 
@@ -301,12 +305,13 @@ describe("buildSettlementBreakdownFromCtmRows", () => {
       { gross: 150, disc: 0, offerType: "NONE" },
     ];
     const b = buildSettlementBreakdownFromCtmRows(rows, null, 20);
-    assert.equal(b.itemTotal, 350);
+    // CTM gross is catalog selling ₹; settlement scales by (100 − commission%).
+    assert.equal(b.itemTotal, 280);
     assert.equal(b.couponOfferDiscount, 0);
     assert.equal(b.percentageFlatOfferDiscount, 0);
     assert.equal(b.comboOfferDiscount, 0);
     assert.equal(b.freeDeliveryOfferDiscount, 0);
-    assert.equal(b.merchantGross, 350);
+    assert.equal(b.merchantGross, 280);
   });
 
   it("BOOST: falls into percentage_flat_offer_discount, never coupon or combo", () => {
@@ -366,8 +371,10 @@ describe("buildSettlementBreakdownFromCtmRows", () => {
     const billingSnapshot = { packaging_fee: 20 };
     const b = buildSettlementBreakdownFromCtmRows(rows, billingSnapshot, 20);
     // packaging 20 at (100-20)/100 commission factor => 16
+    // catalog item 100 at same factor => 80
     assert.equal(b.packagingCharge, 16);
-    assert.equal(b.merchantGross, 116);
+    assert.equal(b.itemTotal, 80);
+    assert.equal(b.merchantGross, 96);
   });
 
   it("high quantity / large discount never drives merchantGross negative", () => {
@@ -480,11 +487,11 @@ describe("prepareCtmRows — Merchant Precision must never populate CTM lines", 
 /**
  * Regression matrix for the "every line saved as BOOST" production bug.
  *
- * SSOT: merchant_ctm_pricing_snapshot.merchant_offer_type may only be BOOST (an item-surface
- * %/flat offer on an ITEM_PROMO line), BOGO, or NONE. The billing engine represents a Boost as
- * appliedOfferType PERCENTAGE/FLAT + ineligibilityReason ITEM_PROMO (there is no literal "BOOST"
- * offer type). A %/flat discount on a NON-ITEM_PROMO line is a cart-level (Merchant Precision) or
- * platform/coupon attribution and must NEVER become a merchant item offer here.
+ * SSOT: merchant_ctm_pricing_snapshot.merchant_offer_type may be PERCENTAGE, FLAT,
+ * BOOST (legacy), BOGO, or NONE. The billing engine represents a store %/flat offer as
+ * appliedOfferType PERCENTAGE/FLAT + ineligibilityReason ITEM_PROMO. A %/flat discount on a
+ * NON-ITEM_PROMO line is a cart-level (Merchant Precision) or platform/coupon attribution
+ * and must NEVER become a merchant item offer here.
  */
 describe("prepareCtmRows — merchant_offer_type reflects ONLY genuine merchant ITEM offers", () => {
   /** billing snapshot carrying just the per-line ITEM_PROMO/eligibility array (index-based fallback path). */
@@ -504,11 +511,11 @@ describe("prepareCtmRows — merchant_offer_type reflects ONLY genuine merchant 
       }),
     ];
     const { rows } = prepareCtmRows(lines, 0, null);
-    assert.equal(rows[0]!.offerType, "BOOST");
+    assert.equal(rows[0]!.offerType, "PERCENTAGE");
     assert.equal(rows[0]!.gross, 60);
     assert.equal(rows[0]!.disc, 9);
     assert.equal(rows[0]!.net, 51);
-    assert.equal(rows[0]!.offerName, "Boost Offer Applied");
+    assert.equal(rows[0]!.offerName, "Store Offer Applied");
   });
 
   it("CASE 2 — FLAT item offer on an ITEM_PROMO line also maps to BOOST", () => {
@@ -516,12 +523,12 @@ describe("prepareCtmRows — merchant_offer_type reflects ONLY genuine merchant 
       ctmLine({ offerType: "FLAT", customerCatalogLine: 200, customerOfferDiscount: 40, offerDiscountFlat: 40, isItemPromo: true }),
     ];
     const { rows } = prepareCtmRows(lines, 0, null);
-    assert.equal(rows[0]!.offerType, "BOOST");
+    assert.equal(rows[0]!.offerType, "FLAT");
     assert.equal(rows[0]!.disc, 40);
     assert.equal(rows[0]!.net, 160);
   });
 
-  it("CASE 1 — BOGO: type BOGO, discount 0, net === gross, canonical name; BOGO ₹ never in merchant_offer_discount", () => {
+  it("CASE 1 — BOGO: type BOGO, discount 0, net = selling price, name Buy One Get One", () => {
     const lines = [
       ctmLine({
         offerType: "BOGO",
@@ -534,7 +541,7 @@ describe("prepareCtmRows — merchant_offer_type reflects ONLY genuine merchant 
     const { rows } = prepareCtmRows(lines, 0, null);
     assert.equal(rows[0]!.offerType, "BOGO");
     assert.equal(rows[0]!.disc, 0);
-    assert.equal(rows[0]!.net, rows[0]!.gross);
+    assert.equal(rows[0]!.gross, 120);
     assert.equal(rows[0]!.net, 120);
     assert.equal(rows[0]!.offerName, "Buy One Get One");
   });
@@ -546,6 +553,95 @@ describe("prepareCtmRows — merchant_offer_type reflects ONLY genuine merchant 
     assert.equal(rows[0]!.offerName, null);
     assert.equal(rows[0]!.disc, 0);
     assert.equal(rows[0]!.net, 140);
+  });
+
+  it("gross_value is catalog selling price; net_ctm matches when there is no store offer", () => {
+    const { rows } = prepareCtmRows(
+      [ctmLine({ customerCatalogLine: 99, customerOfferDiscount: 0 })],
+      15,
+      null
+    );
+    assert.equal(rows[0]!.gross, 99);
+    assert.equal(rows[0]!.net, 99);
+    assert.equal(rows[0]!.disc, 0);
+  });
+
+  it("BOOST: gross is catalog selling; net is selling minus offer (commission stays out)", () => {
+    const { rows } = prepareCtmRows(
+      [
+        ctmLine({
+          customerCatalogLine: 99,
+          customerOfferDiscount: 20,
+          offerType: "PERCENTAGE",
+          offerDiscountPct: 15,
+          isItemPromo: true,
+        }),
+      ],
+      15,
+      null
+    );
+    assert.equal(rows[0]!.offerType, "PERCENTAGE");
+    assert.equal(rows[0]!.gross, 99);
+    assert.equal(rows[0]!.disc, 20);
+    assert.equal(rows[0]!.net, 79);
+    assert.equal(rows[0]!.offerName, "Store Offer Applied");
+  });
+
+  it("FLAT store offer: type/name/discount captured; net is selling minus offer", () => {
+    const { rows } = prepareCtmRows(
+      [
+        ctmLine({
+          customerCatalogLine: 117,
+          customerOfferDiscount: 20,
+          offerType: "FLAT",
+          offerName: "₹20 off",
+          offerDiscountFlat: 20,
+          isItemPromo: true,
+        }),
+      ],
+      15,
+      null
+    );
+    assert.equal(rows[0]!.offerType, "FLAT");
+    assert.equal(rows[0]!.gross, 117);
+    assert.equal(rows[0]!.disc, 20);
+    assert.equal(rows[0]!.net, 97);
+    assert.equal(rows[0]!.offerName, "₹20 off");
+  });
+
+  it("BOOST percent with missing rupee discount still reduces net from the percent", () => {
+    const { rows } = prepareCtmRows(
+      [
+        ctmLine({
+          customerCatalogLine: 99,
+          customerOfferDiscount: 0,
+          offerType: "PERCENTAGE",
+          offerDiscountPct: 40,
+          isItemPromo: true,
+        }),
+      ],
+      15,
+      {
+        discounts: [
+          {
+            label: "Boost Offer Applied",
+            amount: 39.6,
+            meta: {
+              source: "merchant_offers",
+              offerType: "PERCENTAGE",
+              itemSurface: true,
+              conditionsMode: "boost",
+              discountPercentage: 40,
+            },
+          },
+        ],
+        order_line_eligibility: [{ ineligibilityReason: "ITEM_PROMO" }],
+      }
+    );
+    assert.equal(rows[0]!.offerType, "PERCENTAGE");
+    assert.equal(rows[0]!.gross, 99);
+    assert.equal(rows[0]!.disc, 39.6);
+    assert.equal(rows[0]!.net, 59.4);
   });
 
   it("THE BUG — PERCENTAGE discount on a NON-ITEM_PROMO line (Precision/platform attribution) must be NONE, never BOOST", () => {
@@ -580,7 +676,7 @@ describe("prepareCtmRows — merchant_offer_type reflects ONLY genuine merchant 
     assert.deepEqual(
       rows.map((r) => [r.orderItemId, r.offerType, r.disc, r.net]),
       [
-        [1, "BOOST", 9, 51],
+        [1, "PERCENTAGE", 9, 51],
         [2, "NONE", 0, 140],
         [3, "BOGO", 0, 180],
         [4, "NONE", 0, 200],
@@ -594,10 +690,11 @@ describe("prepareCtmRows — merchant_offer_type reflects ONLY genuine merchant 
       ctmLine({ orderItemId: 2, offerType: "BOGO", offerName: "Buy One Get One", customerCatalogLine: 100, customerOfferDiscount: 50, isItemPromo: true }),
     ];
     const { rows } = prepareCtmRows(lines, 0, null);
-    assert.equal(rows[0]!.offerType, "BOOST");
+    assert.equal(rows[0]!.offerType, "PERCENTAGE");
     assert.equal(rows[0]!.disc, 20);
     assert.equal(rows[1]!.offerType, "BOGO");
     assert.equal(rows[1]!.disc, 0);
+    assert.equal(rows[1]!.net, 100);
   });
 
   it("fallback path — ITEM_PROMO sourced from order_line_eligibility (no per-line isItemPromo) still yields BOOST", () => {
@@ -605,7 +702,7 @@ describe("prepareCtmRows — merchant_offer_type reflects ONLY genuine merchant 
       ctmLine({ offerType: "PERCENTAGE", customerCatalogLine: 60, customerOfferDiscount: 9, offerDiscountPct: 15 }),
     ];
     const { rows } = prepareCtmRows(lines, 0, eligibilitySnapshot(["ITEM_PROMO"]));
-    assert.equal(rows[0]!.offerType, "BOOST");
+    assert.equal(rows[0]!.offerType, "PERCENTAGE");
     assert.equal(rows[0]!.disc, 9);
   });
 
@@ -627,7 +724,7 @@ describe("prepareCtmRows — merchant_offer_type reflects ONLY genuine merchant 
     assert.equal(rows[0]!.offerType, "NONE");
   });
 
-  it("never emits PRECISION, PERCENTAGE, FLAT, or COUPON as a merchant_offer_type", () => {
+  it("never emits PRECISION or COUPON as a merchant_offer_type", () => {
     const lines = [
       ctmLine({ orderItemId: 1, offerType: "PERCENTAGE", customerOfferDiscount: 9, isItemPromo: true }),
       ctmLine({ orderItemId: 2, offerType: "PRECISION", customerOfferDiscount: 20, isItemPromo: false }),
@@ -636,15 +733,20 @@ describe("prepareCtmRows — merchant_offer_type reflects ONLY genuine merchant 
       ctmLine({ orderItemId: 5, offerType: "BOGO", customerOfferDiscount: 40, isItemPromo: true }),
     ];
     const { rows } = prepareCtmRows(lines, 0, null);
-    const allowed = new Set(["BOOST", "BOGO", "NONE"]);
+    const allowed = new Set(["PERCENTAGE", "FLAT", "BOOST", "BOGO", "NONE"]);
     for (const r of rows) assert.ok(allowed.has(r.offerType), `unexpected offerType ${r.offerType}`);
+    assert.equal(rows[0]!.offerType, "PERCENTAGE");
+    assert.equal(rows[1]!.offerType, "NONE");
+    assert.equal(rows[2]!.offerType, "NONE");
+    assert.equal(rows[3]!.offerType, "NONE");
+    assert.equal(rows[4]!.offerType, "BOGO");
   });
 });
 
 /**
  * A BOGO must NEVER be treated or stored as a BOOST — regardless of how the merchant row
  * spelled its offer type, whether the line is ITEM_PROMO, and whether a per-unit discount
- * was recorded. BOGO always: type BOGO, discount 0, gross === net.
+ * was recorded. BOGO always: type BOGO; discount 0; net = catalog selling price.
  */
 describe("prepareCtmRows — BOGO is never stored as BOOST", () => {
   const bogoCase = (offerType: string) => {
@@ -668,12 +770,12 @@ describe("prepareCtmRows — BOGO is never stored as BOOST", () => {
     "Buy 2 Get 1",
     "bogo_50",
   ]) {
-    it(`offer type "${variant}" → BOGO (never BOOST), discount 0, gross === net`, () => {
+    it(`offer type "${variant}" → BOGO (never BOOST), discount 0, net = selling price`, () => {
       const r = bogoCase(variant);
       assert.equal(r.offerType, "BOGO");
       assert.notEqual(r.offerType, "BOOST");
       assert.equal(r.disc, 0);
-      assert.equal(r.net, r.gross);
+      assert.equal(r.gross, 90);
       assert.equal(r.net, 90);
       assert.equal(r.offerName, "Buy One Get One");
     });
@@ -681,13 +783,14 @@ describe("prepareCtmRows — BOGO is never stored as BOOST", () => {
 
   it("BOGO on an ITEM_PROMO line is NOT reclassified as BOOST even though ITEM_PROMO gates Boost", () => {
     // ITEM_PROMO + a nonzero line discount is exactly the shape of a Boost line — the BOGO
-    // type must still win and zero the discount.
+    // type must still win and keep the free-unit discount (never reclassify as BOOST).
     const lines = [
       ctmLine({ offerType: "BOGO", customerCatalogLine: 120, customerOfferDiscount: 60, isItemPromo: true }),
     ];
     const { rows } = prepareCtmRows(lines, 0, null);
     assert.equal(rows[0]!.offerType, "BOGO");
     assert.equal(rows[0]!.disc, 0);
+    assert.equal(rows[0]!.net, 120);
   });
 
   it("a BOGO line and a Boost line in the same cart never bleed into each other", () => {
@@ -698,7 +801,8 @@ describe("prepareCtmRows — BOGO is never stored as BOOST", () => {
     const { rows } = prepareCtmRows(lines, 0, null);
     assert.equal(rows[0]!.offerType, "BOGO");
     assert.equal(rows[0]!.disc, 0);
-    assert.equal(rows[1]!.offerType, "BOOST");
+    assert.equal(rows[0]!.net, 90);
+    assert.equal(rows[1]!.offerType, "PERCENTAGE");
     assert.equal(rows[1]!.disc, 9);
   });
 });
@@ -850,12 +954,11 @@ describe("prepareCtmRows — buy-get label forces BOGO even when the raw type is
     const { rows } = prepareCtmRows(lines, 0, null);
     assert.equal(rows[0]!.offerType, "BOGO");
     assert.equal(rows[0]!.disc, 0);
-    assert.equal(rows[0]!.net, rows[0]!.gross);
     assert.equal(rows[0]!.net, 90);
     assert.equal(rows[0]!.offerName, "Buy One Get One");
   });
 
-  it("FLAT type + 'Buy 2 Get 1' label → BOGO with canonical name and 0 discount", () => {
+  it("FLAT type + 'Buy 2 Get 1' label → BOGO with canonical name and captured discount", () => {
     const lines = [
       ctmLine({
         offerType: "FLAT",
@@ -869,6 +972,7 @@ describe("prepareCtmRows — buy-get label forces BOGO even when the raw type is
     const { rows } = prepareCtmRows(lines, 0, null);
     assert.equal(rows[0]!.offerType, "BOGO");
     assert.equal(rows[0]!.disc, 0);
+    assert.equal(rows[0]!.net, 120);
     assert.equal(rows[0]!.offerName, "Buy Two Get One");
   });
 
@@ -884,7 +988,7 @@ describe("prepareCtmRows — buy-get label forces BOGO even when the raw type is
       }),
     ];
     const { rows } = prepareCtmRows(lines, 0, null);
-    assert.equal(rows[0]!.offerType, "BOOST");
+    assert.equal(rows[0]!.offerType, "PERCENTAGE");
     assert.equal(rows[0]!.disc, 9);
   });
 });
@@ -979,7 +1083,7 @@ describe("prepareCtmRows — a Precision offer's lines are NONE, never BOOST (ap
       }),
     ];
     const { rows } = prepareCtmRows(lines, 0, boostSnapshot);
-    assert.equal(rows[0]!.offerType, "BOOST");
+    assert.equal(rows[0]!.offerType, "PERCENTAGE");
     assert.equal(rows[0]!.disc, 9);
     assert.equal(rows[0]!.net, 51);
   });
@@ -996,7 +1100,7 @@ describe("prepareCtmRows — a Precision offer's lines are NONE, never BOOST (ap
       ctmLine({ orderItemId: 2, offerType: "PERCENTAGE", offerName: "Flat 20% Off up to ₹80", appliedOfferId: 17, customerCatalogLine: 129, customerOfferDiscount: 12, offerDiscountPct: 20, isItemPromo: true }),
     ];
     const { rows } = prepareCtmRows(lines, 0, snapshot);
-    assert.equal(rows[0]!.offerType, "BOOST");
+    assert.equal(rows[0]!.offerType, "PERCENTAGE");
     assert.equal(rows[0]!.disc, 9);
     assert.equal(rows[1]!.offerType, "NONE");
     assert.equal(rows[1]!.disc, 0);
@@ -1014,7 +1118,7 @@ describe("prepareCtmRows — a Precision offer's lines are NONE, never BOOST (ap
     const { rows } = prepareCtmRows(lines, 0, snapshot);
     assert.equal(rows[0]!.offerType, "BOGO");
     assert.equal(rows[0]!.disc, 0);
-    assert.equal(rows[0]!.net, rows[0]!.gross);
+    assert.equal(rows[0]!.net, 90);
   });
 });
 
@@ -1070,7 +1174,7 @@ describe("CTM mixed cart — every order item persists only its own merchant off
       [bogoRow("1", 180, 90), boostRow("2", 60, 9), noneRow("3", 140)]
     );
     assert.deepEqual(shape(rows[0]!), [1001, "BOGO", "Buy One Get One", 0, 180, 180]);
-    assert.deepEqual(shape(rows[1]!), [1002, "BOOST", "Boost Offer Applied", 9, 60, 51]);
+    assert.deepEqual(shape(rows[1]!), [1002, "PERCENTAGE", "Boost Offer Applied", 9, 60, 51]);
     assert.deepEqual(shape(rows[2]!), [1003, "NONE", null, 0, 140, 140]);
   });
 
@@ -1092,11 +1196,11 @@ describe("CTM mixed cart — every order item persists only its own merchant off
       [{ menuItemId: 2, quantity: 1, basePrice: 60 }, { menuItemId: 3, quantity: 1, basePrice: 140 }],
       [boostRow("2", 60, 9), noneRow("3", 140)]
     );
-    assert.deepEqual(shape(rows[0]!), [1001, "BOOST", "Boost Offer Applied", 9, 60, 51]);
+    assert.deepEqual(shape(rows[0]!), [1001, "PERCENTAGE", "Boost Offer Applied", 9, 60, 51]);
     assert.deepEqual(shape(rows[1]!), [1002, "NONE", null, 0, 140, 140]);
   });
 
-  it("BOGO + NONE: NONE stays NONE, BOGO disc 0", () => {
+  it("BOGO + NONE: NONE stays NONE, BOGO keeps free-unit discount", () => {
     const rows = build(
       [{ menuItemId: 1, quantity: 2, basePrice: 90 }, { menuItemId: 3, quantity: 1, basePrice: 140 }],
       [bogoRow("1", 180, 90), noneRow("3", 140)]
@@ -1111,7 +1215,7 @@ describe("CTM mixed cart — every order item persists only its own merchant off
       [bogoRow("1", 180, 90), boostRow("2", 60, 9)]
     );
     assert.deepEqual(shape(rows[0]!), [1001, "BOGO", "Buy One Get One", 0, 180, 180]);
-    assert.deepEqual(shape(rows[1]!), [1002, "BOOST", "Boost Offer Applied", 9, 60, 51]);
+    assert.deepEqual(shape(rows[1]!), [1002, "PERCENTAGE", "Boost Offer Applied", 9, 60, 51]);
   });
 
   it("multiple BOGO + multiple BOOST + NONE: each row independent", () => {
@@ -1132,9 +1236,304 @@ describe("CTM mixed cart — every order item persists only its own merchant off
       ]
     );
     assert.deepEqual(shape(rows[0]!), [1001, "BOGO", "Buy One Get One", 0, 180, 180]);
-    assert.deepEqual(shape(rows[1]!), [1002, "BOOST", "Boost Offer Applied", 9, 60, 51]);
+    assert.deepEqual(shape(rows[1]!), [1002, "PERCENTAGE", "Boost Offer Applied", 9, 60, 51]);
     assert.deepEqual(shape(rows[2]!), [1003, "NONE", null, 0, 140, 140]);
     assert.deepEqual(shape(rows[3]!), [1004, "BOGO", "Buy One Get One", 0, 200, 200]);
-    assert.deepEqual(shape(rows[4]!), [1005, "BOOST", "Boost Offer Applied", 30, 200, 170]);
+    assert.deepEqual(shape(rows[4]!), [1005, "PERCENTAGE", "Boost Offer Applied", 30, 200, 170]);
+  });
+});
+
+describe("v2 settlement — Boost on CTM, platform funding", () => {
+  it("TEST 3 — company-funded platform ₹20 does not reduce merchant CTM", () => {
+    const b = buildSettlementBreakdownFromCtmRows(
+      [{ gross: 100, disc: 40, offerType: "BOOST", net: 60, calculationVersion: 2 }],
+      {
+        discounts: [
+          {
+            amount: 20,
+            offerSource: "PLATFORM",
+            meta: {
+              platformOfferId: 9,
+              fundingMode: "PLATFORM_ONLY",
+              platformContribution: 20,
+              merchantContribution: 0,
+            },
+          },
+        ],
+      },
+      15
+    );
+    assert.equal(b.calculationVersion, 2);
+    assert.equal(b.itemTotal, 60);
+    assert.equal(b.platformMerchantShare, 0);
+    assert.equal(b.companyFundedDiscount, 20);
+    assert.equal(b.merchantGross, 60);
+  });
+
+  it("TEST 4 — 40/60 split of ₹20 reduces merchant settlement by ₹8 only", () => {
+    const b = buildSettlementBreakdownFromCtmRows(
+      [{ gross: 100, disc: 40, offerType: "BOOST", net: 60, calculationVersion: 2 }],
+      {
+        discounts: [
+          {
+            amount: 20,
+            offerSource: "PLATFORM",
+            meta: {
+              platformOfferId: 9,
+              fundingMode: "CO_FUNDED",
+              platformContribution: 12,
+              merchantContribution: 8,
+            },
+          },
+        ],
+      },
+      15
+    );
+    assert.equal(b.platformMerchantShare, 8);
+    assert.equal(b.companyFundedDiscount, 12);
+    assert.equal(b.merchantGross, 52);
+  });
+
+  it("platformFundingFromBilling prefers apply-time contribution fields", () => {
+    const f = platformFundingFromBilling({
+      discounts: [
+        {
+          amount: 20,
+          meta: {
+            platformOfferId: 1,
+            platformShare: 20,
+            merchantShare: 0,
+            platformContribution: 12,
+            merchantContribution: 8,
+          },
+        },
+      ],
+    });
+    assert.equal(f.merchantShare, 8);
+    assert.equal(f.companyShare, 12);
+    assert.equal(f.total, 20);
+  });
+
+  it("TEST 5 — Plus delivery waiver does not change v2 item CTM", () => {
+    const b = buildSettlementBreakdownFromCtmRows(
+      [{ gross: 100, disc: 40, offerType: "BOOST", net: 60, calculationVersion: 2 }],
+      {
+        discounts: [
+          {
+            amount: 40,
+            offerSource: "PLATFORM",
+            meta: { source: "customer_subscription_free_delivery" },
+          },
+        ],
+        delivery_fee: 0,
+      },
+      15
+    );
+    assert.equal(b.merchantGross, 60);
+    assert.equal(b.platformMerchantShare, 0);
+    assert.equal(b.companyFundedDiscount, 0);
+  });
+
+  it("TEST 12 — refunds debit merchant share only; company share is absorbed", () => {
+    const adj = merchantRefundFromPlatformFunding({ merchantShare: 8, companyShare: 12 });
+    assert.equal(adj.merchantDebit, 8);
+    assert.equal(adj.companyAbsorbed, 12);
+    const companyOnly = merchantRefundFromPlatformFunding({ merchantShare: 0, companyShare: 20 });
+    assert.equal(companyOnly.merchantDebit, 0);
+    assert.equal(companyOnly.companyAbsorbed, 20);
+  });
+
+  it("v1 snapshots still reverse-scale catalog by the commission factor", () => {
+    const b = buildSettlementBreakdownFromCtmRows(
+      [{ gross: 118, disc: 0, offerType: "NONE" }],
+      {},
+      15
+    );
+    assert.equal(b.calculationVersion, 1);
+    assert.equal(b.itemTotal, Math.round(118 * 0.85));
+    assert.equal(b.merchantGross, b.itemTotal);
+  });
+
+  it("TEST 2 snapshot — ₹149 / 40% / 15%: type PERCENTAGE, discount ₹59.60, gross ≠ net", () => {
+    const priced = resolveItemPricing({
+      baseCtmUnit: 149,
+      quantity: 1,
+      commissionPercent: 15,
+      offers: [
+        {
+          id: 1,
+          offerId: "o1",
+          title: "Flat 40% OFF",
+          offerType: "PERCENTAGE",
+          offerSubType: "SPECIFIC_ITEM",
+          discountValue: null,
+          discountPercentage: 40,
+          maxDiscountAmount: null,
+          minOrderAmount: null,
+          maxOrderAmount: null,
+          buyQuantity: null,
+          getQuantity: null,
+          couponCode: null,
+          autoApply: true,
+          isStackable: false,
+          perOrderLimit: 1,
+          firstOrderOnly: false,
+          newUserOnly: false,
+          maxUsesTotal: null,
+          maxUsesPerUser: null,
+          currentUses: 0,
+          applicableOnDays: null,
+          applicableTimeStart: null,
+          applicableTimeEnd: null,
+          maxDiscountPerOrder: null,
+          metadata: { conditions_mode: "boost", menu_item_ids: ["10"] },
+          displayPriority: 10,
+          priority: 10,
+          createdSourcePlatform: "MERCHANT_APP",
+          createdByRole: "MERCHANT",
+          approvalStatus: "AUTO_APPROVED",
+        },
+      ],
+      menuItemId: 10,
+    });
+    const { rows } = prepareCtmRows(
+      [ctmLine({ canonicalPricing: priced, customerCatalogLine: priced.customerItemPriceLine })],
+      15,
+      null
+    );
+    const r = rows[0]!;
+    assert.equal(r.offerType, "PERCENTAGE");
+    assert.equal(r.offerName, "Flat 40% OFF");
+    assert.equal(r.disc, 59.6);
+    assert.equal(r.gross, 149);
+    assert.equal(r.net, 89.4);
+    assert.notEqual(r.gross, r.net);
+    assert.equal(priced.customerItemPriceUnit, 105.18);
+    assert.equal(priced.commissionAmount, 15.78);
+  });
+
+  it("GM10000275 — billing canonical_pricing is CTM SSOT even when frozen item has no snapshot and disc=0", () => {
+    const priced = resolveItemPricing({
+      baseCtmUnit: 149,
+      quantity: 1,
+      commissionPercent: 15,
+      offers: [
+        {
+          id: 20,
+          offerId: "o20",
+          title: "Flat 40% Off",
+          offerType: "PERCENTAGE",
+          offerSubType: "SPECIFIC_ITEM",
+          discountValue: 40,
+          discountPercentage: 40,
+          maxDiscountAmount: null,
+          minOrderAmount: null,
+          maxOrderAmount: null,
+          buyQuantity: null,
+          getQuantity: null,
+          couponCode: null,
+          autoApply: true,
+          isStackable: false,
+          perOrderLimit: 1,
+          firstOrderOnly: false,
+          newUserOnly: false,
+          maxUsesTotal: null,
+          maxUsesPerUser: null,
+          currentUses: 0,
+          applicableOnDays: null,
+          applicableTimeStart: null,
+          applicableTimeEnd: null,
+          maxDiscountPerOrder: null,
+          metadata: { conditions_mode: "boost", menu_item_ids: ["10"] },
+          displayPriority: 10,
+          priority: 10,
+          createdSourcePlatform: "MERCHANT_APP",
+          createdByRole: "MERCHANT",
+          approvalStatus: "AUTO_APPROVED",
+        },
+      ],
+      menuItemId: 10,
+    });
+    const snap = serializeCanonicalPricing(priced);
+    const frozen = buildCtmLineInputsFromFrozenItems([
+      {
+        orderItemId: 465,
+        menuItemId: 10,
+        quantity: 1,
+        catalogLineTotal: 175,
+        offerDiscountAmount: 0,
+        appliedOfferType: "PERCENTAGE",
+        appliedOfferLabel: "Flat 40% Off",
+        appliedOfferId: 20,
+        isItemPromo: true,
+        itemSnapshot: {},
+      },
+    ]);
+    assert.equal(frozen[0]!.canonicalPricing, null);
+    const { rows } = prepareCtmRows(frozen, 15, {
+      order_line_pricing: [
+        {
+          menuItemId: "10",
+          catalogLineTotal: 175,
+          offerDiscountAmount: 0,
+          appliedOfferId: 20,
+          appliedOfferLabel: "Flat 40% Off",
+          appliedOfferType: "PERCENTAGE",
+          appliedOfferDiscountPct: 40,
+          boostAlreadyInPrice: true,
+          ineligibilityReason: "ITEM_PROMO",
+          canonical_pricing: snap,
+        },
+      ],
+      discounts: [],
+    });
+    const r = rows[0]!;
+    assert.equal(r.calculationVersion, 2);
+    assert.equal(r.offerType, "PERCENTAGE");
+    assert.equal(r.offerName, "Flat 40% Off");
+    assert.equal(r.disc, 59.6);
+    assert.equal(r.gross, 149);
+    assert.equal(r.net, 89.4);
+    assert.notEqual(r.gross, r.net);
+    const b = buildSettlementBreakdownFromCtmRows(rows, { discounts: [] }, 15);
+    assert.equal(b.calculationVersion, 2);
+    assert.equal(b.merchantGross, Math.round(89.4));
+  });
+
+  it("no-offer canonical_pricing still writes MX CTM, not customer catalog", () => {
+    const priced = resolveItemPricing({
+      baseCtmUnit: 149,
+      quantity: 1,
+      commissionPercent: 15,
+      offers: [],
+      menuItemId: 10,
+    });
+    const { rows } = prepareCtmRows(
+      [
+        ctmLine({
+          customerCatalogLine: 175.29,
+          customerOfferDiscount: 0,
+          canonicalPricing: null,
+        }),
+      ],
+      15,
+      {
+        order_line_pricing: [
+          {
+            menuItemId: "10",
+            catalogLineTotal: 175.29,
+            offerDiscountAmount: 0,
+            appliedOfferType: "",
+            canonical_pricing: serializeCanonicalPricing(priced),
+          },
+        ],
+      }
+    );
+    const r = rows[0]!;
+    assert.equal(r.calculationVersion, 2);
+    assert.equal(r.offerType, "NONE");
+    assert.equal(r.gross, 149);
+    assert.equal(r.net, 149);
+    assert.equal(r.disc, 0);
   });
 });

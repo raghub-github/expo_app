@@ -3,12 +3,15 @@ import type { FoodHomeLayoutKey } from "@/lib/foodHomeLayout";
 import {
   DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW,
   DEFAULT_GRID_FIRST_UNDER_250,
+  DEFAULT_DISCOVERY_CTA,
+  parseDiscoveryCtaConfig,
   parseGridFirstSubscriptionRowBgColor,
   parseGridFirstSubscriptionRowEnabled,
   parseGridFirstUnder250Enabled,
   parseGridFirstUnder250ImageUrl,
   parseGridFirstUnder250MaxPrice,
   parseGridFirstUnder250Title,
+  type DiscoveryCtaTile,
 } from "@/lib/foodHomeLayout";
 import type { GridFirstHeroMediaItem } from "@/lib/gridFirstHeroMedia";
 import { parseGridFirstHeroMediaItems } from "@/lib/gridFirstHeroMedia";
@@ -27,6 +30,15 @@ export type FoodHomeLayoutResult = {
   gridFirstUnder250FilterLabel: string;
   gridFirstUnder250TabImageUrl: string | null;
   gridFirstUnder250HeroImageUrl: string | null;
+  discoveryDealsAtMaxPrice: number | null;
+  discoveryDealsAtImageUrl: string | null;
+  discoveryDealsAtHeroImageUrl: string | null;
+  discoveryCrazyDealsImageUrl: string | null;
+  discoveryFreePackagingImageUrl: string | null;
+  discoveryDealsAtLabel: string | null;
+  discoveryCrazyDealsLabel: string | null;
+  discoveryFreePackagingLabel: string | null;
+  discoveryCtaTiles: DiscoveryCtaTile[];
 };
 
 function mapFoodHomeLayoutResponse(
@@ -57,6 +69,15 @@ function mapFoodHomeLayoutResponse(
     ),
     gridFirstUnder250TabImageUrl: parseGridFirstUnder250ImageUrl(data.gridFirstUnder250TabImageUrl),
     gridFirstUnder250HeroImageUrl: parseGridFirstUnder250ImageUrl(data.gridFirstUnder250HeroImageUrl),
+    discoveryDealsAtMaxPrice: parseDiscoveryCtaConfig(data).dealsAtMaxPrice,
+    discoveryDealsAtImageUrl: parseDiscoveryCtaConfig(data).dealsAtImageUrl,
+    discoveryDealsAtHeroImageUrl: parseDiscoveryCtaConfig(data).dealsAtHeroImageUrl,
+    discoveryCrazyDealsImageUrl: parseDiscoveryCtaConfig(data).crazyDealsImageUrl,
+    discoveryFreePackagingImageUrl: parseDiscoveryCtaConfig(data).freePackagingImageUrl,
+    discoveryDealsAtLabel: parseDiscoveryCtaConfig(data).dealsAtLabel,
+    discoveryCrazyDealsLabel: parseDiscoveryCtaConfig(data).crazyDealsLabel,
+    discoveryFreePackagingLabel: parseDiscoveryCtaConfig(data).freePackagingLabel,
+    discoveryCtaTiles: parseDiscoveryCtaConfig(data).tiles,
   };
 }
 
@@ -91,6 +112,15 @@ export async function getFoodHomeLayout(params: {
       gridFirstUnder250FilterLabel: DEFAULT_GRID_FIRST_UNDER_250.filterLabel,
       gridFirstUnder250TabImageUrl: DEFAULT_GRID_FIRST_UNDER_250.tabImageUrl,
       gridFirstUnder250HeroImageUrl: DEFAULT_GRID_FIRST_UNDER_250.heroImageUrl,
+      discoveryDealsAtMaxPrice: DEFAULT_DISCOVERY_CTA.dealsAtMaxPrice,
+      discoveryDealsAtImageUrl: DEFAULT_DISCOVERY_CTA.dealsAtImageUrl,
+      discoveryDealsAtHeroImageUrl: DEFAULT_DISCOVERY_CTA.dealsAtHeroImageUrl,
+      discoveryCrazyDealsImageUrl: DEFAULT_DISCOVERY_CTA.crazyDealsImageUrl,
+      discoveryFreePackagingImageUrl: DEFAULT_DISCOVERY_CTA.freePackagingImageUrl,
+      discoveryDealsAtLabel: DEFAULT_DISCOVERY_CTA.dealsAtLabel,
+      discoveryCrazyDealsLabel: DEFAULT_DISCOVERY_CTA.crazyDealsLabel,
+      discoveryFreePackagingLabel: DEFAULT_DISCOVERY_CTA.freePackagingLabel,
+      discoveryCtaTiles: DEFAULT_DISCOVERY_CTA.tiles,
     };
   }
 }

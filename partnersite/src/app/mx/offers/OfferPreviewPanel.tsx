@@ -92,8 +92,8 @@ export function OfferPreviewPanel({
         ) : pricing ? (
           <>
             <Row label="MRP" value={pricing.mrp} strike />
-            <Row label="Selling price" value={pricing.sellingPrice} strike />
-            <Row label="Merchant discount" value={-pricing.merchantDiscount} accent="text-emerald-600" />
+            <Row label="Customer strike (gross-up of Base CTM)" value={pricing.sellingPrice} strike />
+            <Row label="Merchant discount (on CTM)" value={-pricing.merchantDiscount} accent="text-emerald-600" />
             {pricing.platformDiscount > 0 ? (
               <Row label="Platform discount" value={-pricing.platformDiscount} accent="text-blue-600" />
             ) : null}
@@ -105,7 +105,7 @@ export function OfferPreviewPanel({
               <span className="text-lg font-bold text-violet-700">₹{pricing.finalPrice}</span>
             </div>
             <div className="flex justify-between text-xs text-gray-600">
-              <span>Merchant settlement (est.)</span>
+              <span>Merchant settlement (discounted CTM)</span>
               <span className="font-semibold">₹{pricing.merchantSettlement}</span>
             </div>
             {pricing.appliedOfferTitles.length > 0 ? (

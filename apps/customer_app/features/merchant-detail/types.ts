@@ -16,6 +16,8 @@ export type MerchantCategoryChip = {
   id: string;
   title: string;
   scrollTarget: MenuSheetScrollTarget;
+  /** First dish image in the category — used as a rail thumbnail when present. */
+  imageUrl?: string | null;
 };
 
 export type MerchantListItemType =
@@ -30,6 +32,7 @@ export type MerchantListItemType =
   | "section_lead"
   | "section_header"
   | "menu_item"
+  | "menu_masonry"
   | "footer"
   | "empty_menu"
   | "menu_skeleton"
@@ -68,6 +71,13 @@ export type MerchantFlashListItem =
       itemIndex: number;
       isLastInSection: boolean;
       showDivider: boolean;
+    }
+  | {
+      type: "menu_masonry";
+      key: string;
+      title: string;
+      sectionIndex: number;
+      items: MenuListRow[];
     }
   | {
       type: "pairing_strip";

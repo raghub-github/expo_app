@@ -26,12 +26,7 @@ import {
   resolveMerchantCarouselGalleryUris,
 } from "@/lib/merchantBanner";
 import { formatMerchantDeliveryTime } from "@/lib/merchantDeliveryTime";
-import {
-  buildStoreOpenStatusLabel,
-  formatOpenStatusTagText,
-} from "@/lib/storeOpenStatusLabel";
-import { toTimestamp } from "@/lib/storeScheduleUi";
-import { useScheduleTick } from "@/hooks/useScheduleTick";
+import { StoreOpenStatusBadge } from "@/components/home/StoreOpenStatusBadge";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AppText } from "@/components/AppText";
@@ -54,59 +49,6 @@ export type GMRestaurantCardV2Props = {
   weatherDelayMinutes?: number;
   bottomSpacing?: number;
 };
-
-function StoreOpenStatusBadge({
-  isOpen,
-  nextOpenAt,
-  nextCloseAt,
-}: {
-  isOpen: boolean;
-  nextOpenAt?: string | number | null;
-  nextCloseAt?: string | number | null;
-}) {
-  // Always derive a short client label from nextOpenAt / nextCloseAt so the card
-  // never shows the long backend banner ("Closed by merchant · schedule…").
-  // Realtime patches to nextOpenAt recalculate this on the next tick.
-  const needsTick =
-    toTimestamp(nextOpenAt) != null || toTimestamp(nextCloseAt) != null;
-  const now = useScheduleTick(needsTick);
-
-  const openStatus = buildStoreOpenStatusLabel({
-    isOpen,
-    nextOpenAt,
-    nextCloseAt,
-    nowMs: now,
-  });
-
-  const isOpeningSoon = !isOpen && openStatus.isOpeningSoon === true;
-  const isClosingSoon = isOpen && openStatus.isClosingSoon === true;
-
-  return (
-    <View
-      pointerEvents="none"
-      style={[
-        styles.openClosedTag,
-        isClosingSoon
-          ? styles.openClosedTagRed
-          : isOpeningSoon
-            ? styles.openClosedTagOpenSoon
-            : openStatus.isGreen
-              ? styles.openClosedTagGreen
-              : styles.openClosedTagRed,
-      ]}
-    >
-      <AppText
-        style={[
-          styles.openClosedTagText,
-          (isClosingSoon || !openStatus.isGreen) && styles.openClosedTagTextRed,
-        ]}
-        numberOfLines={1}
-      >
-        {formatOpenStatusTagText(openStatus)}
-      </AppText>
-    </View>
-  );
-}
 
 function GMRestaurantCardV2Inner({
   merchant,
@@ -423,32 +365,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  openClosedTag: {
-    position: "absolute",
-    top: 12,
-    left: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    maxWidth: "70%",
-    zIndex: 4,
-  },
-  openClosedTagGreen: {
-    backgroundColor: "#16A34A",
-  },
-  /** Store still closed — softer green until countdown ends. */
-  openClosedTagOpenSoon: {
-    backgroundColor: "rgba(22, 163, 74, 0.58)",
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.35)",
-  },
-  openClosedTagRed: {
-    backgroundColor: "#FF4D4F",
-    borderRadius: 12,
-  },
-  openClosedTagTextRed: {
-    fontWeight: "600",
-  },
   contentClosed: {
     opacity: 0.78,
   },
@@ -460,12 +376,6 @@ const styles = StyleSheet.create({
   },
   imageClosed: {
     opacity: 0.82,
-  },
-  openClosedTagText: {
-    fontSize: 11,
-    color: "#fff",
-    fontWeight: "700",
-    letterSpacing: 0.2,
   },
   content: {
     flexDirection: "row",

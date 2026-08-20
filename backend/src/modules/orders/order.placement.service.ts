@@ -550,8 +550,10 @@ async function persistOfferSnapshots(
         offerTitle,
         couponCode,
         discountAmount:  String(amount),
-        platformShare:   String(asNumber(meta.platformShare ?? (offerSource === "PLATFORM" ? amount : 0))),
-        merchantShare:   String(asNumber(meta.merchantShare ?? (offerSource === "MERCHANT" ? amount : 0))),
+        platformShare:   String(asNumber(meta.platformContribution ?? meta.platformShare ?? (offerSource === "PLATFORM" ? amount : 0))),
+        merchantShare:   String(asNumber(meta.merchantContribution ?? meta.merchantShare ?? (offerSource === "MERCHANT" ? amount : 0))),
+        platformContribution: String(asNumber(meta.platformContribution ?? meta.platformShare ?? 0)),
+        merchantContribution: String(asNumber(meta.merchantContribution ?? meta.merchantShare ?? 0)),
         fundingMode:     String(meta.fundingMode ?? (offerSource === "MERCHANT" ? "MERCHANT_ONLY" : "PLATFORM_ONLY")),
         snapshotJson:    d,
       } as never).onConflictDoNothing();
@@ -1091,8 +1093,14 @@ export async function createPendingOrder(
   // customer_active_location lat/lng — those can diverge while addressId is bound).
   const dropLat = addrRow.latitude != null ? Number(addrRow.latitude) : 0;
   const dropLon = addrRow.longitude != null ? Number(addrRow.longitude) : 0;
-  // Immutable store snapshot: prefer merchant_stores row at place time, then client
-  // echo, never the delivery pin (that made store+home collapse onto GPS for some carts).
+  const isUsableLatLon = (lat: number | null, lon: number | null): boolean =>
+    lat != null &&
+    lon != null &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lon) &&
+    !(lat === 0 && lon === 0) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lon) <= 180;
   const storePickupLat =
     storeForOrder?.latitude != null && Number.isFinite(storeForOrder.latitude)
       ? Number(storeForOrder.latitude)
@@ -1105,17 +1113,43 @@ export async function createPendingOrder(
     input.pickupLat != null && Number.isFinite(input.pickupLat) ? Number(input.pickupLat) : null;
   const clientPickupLon =
     input.pickupLon != null && Number.isFinite(input.pickupLon) ? Number(input.pickupLon) : null;
-  const pickupLat = storePickupLat ?? clientPickupLat ?? 0;
-  const pickupLon = storePickupLon ?? clientPickupLon ?? 0;
+  const pickupLat = isUsableLatLon(storePickupLat, storePickupLon)
+    ? (storePickupLat as number)
+    : isUsableLatLon(clientPickupLat, clientPickupLon)
+      ? (clientPickupLat as number)
+      : 0;
+  const pickupLon = isUsableLatLon(storePickupLat, storePickupLon)
+    ? (storePickupLon as number)
+    : isUsableLatLon(clientPickupLat, clientPickupLon)
+      ? (clientPickupLon as number)
+      : 0;
 
-  // Reuse route distance from billing snapshot when available — createPending already
-  // ran computeBillForOrder above, which calls the same routing engine. Skipping a
-  // second getRoute here cuts place-order latency and avoids client timeouts.
   let distanceKm = 0;
-  const snapDist = billingSnapshot?.distanceKm;
-  if (typeof snapDist === "number" && Number.isFinite(snapDist) && snapDist >= 0) {
+  const snapDist = Number(billingSnapshot?.distanceKm);
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const airKm =
+    isUsableLatLon(pickupLat, pickupLon) && isUsableLatLon(dropLat, dropLon)
+      ? (() => {
+          const dLat = toRad(dropLat - pickupLat);
+          const dLon = toRad(dropLon - pickupLon);
+          const a =
+            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(toRad(pickupLat)) *
+              Math.cos(toRad(dropLat)) *
+              Math.sin(dLon / 2) *
+              Math.sin(dLon / 2);
+          return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        })()
+      : null;
+  const snapMatchesPins =
+    airKm != null &&
+    Number.isFinite(snapDist) &&
+    snapDist >= 0 &&
+    snapDist >= airKm * 0.75 &&
+    snapDist <= Math.max(airKm * 2.2, airKm + 1.5);
+  if (snapMatchesPins) {
     distanceKm = snapDist;
-  } else {
+  } else if (isUsableLatLon(pickupLat, pickupLon) && isUsableLatLon(dropLat, dropLon)) {
     try {
       const route = await getRoute({
         origin: { lat: pickupLat, lng: pickupLon },
@@ -1126,15 +1160,7 @@ export async function createPendingOrder(
       });
       distanceKm = route.distanceKm;
     } catch {
-      const toRad = (deg: number) => (deg * Math.PI) / 180;
-      const R = 6371;
-      const dLat = toRad(dropLat - pickupLat);
-      const dLon = toRad(dropLon - pickupLon);
-      const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(toRad(pickupLat)) * Math.cos(toRad(dropLat)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      distanceKm = Math.round(R * c * 100) / 100;
+      distanceKm = airKm != null ? Math.round(airKm * 100) / 100 : 0;
     }
   }
   const pickupAddressNormalized = sanitizeOptional((storeForOrder?.fullAddress ?? input.pickupAddressRaw ?? dropAddressRaw).trim() || null);
@@ -1614,6 +1640,7 @@ export async function finalizeOrder(
               appliedOfferId: ins.appliedOfferId ?? null,
               isItemPromo:
                 String(ins.ineligibilityReason ?? "").trim().toUpperCase() === "ITEM_PROMO",
+              itemSnapshot: (ins.itemSnapshot as Record<string, unknown> | undefined) ?? null,
             };
           })
         );
@@ -2344,6 +2371,7 @@ export async function finalizePendingOrderFromWebhook(
               appliedOfferId: ins.appliedOfferId ?? null,
               isItemPromo:
                 String(ins.ineligibilityReason ?? "").trim().toUpperCase() === "ITEM_PROMO",
+              itemSnapshot: (ins.itemSnapshot as Record<string, unknown> | undefined) ?? null,
             };
           })
         );

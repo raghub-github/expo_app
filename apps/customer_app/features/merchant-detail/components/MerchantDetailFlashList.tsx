@@ -6,9 +6,12 @@ import React, {
   useMemo,
   useRef,
 } from "react";
-import { View, StyleSheet, Platform, ScrollView } from "react-native";
+import { View, StyleSheet, Platform, ScrollView, RefreshControl } from "react-native";
 import { AppText } from "@/components/AppText";
-import Animated, { type ScrollHandlerProcessed } from "react-native-reanimated";
+import Animated, {
+  type ScrollHandlerProcessed,
+  type SharedValue,
+} from "react-native-reanimated";
 import { StoreInfoCard } from "@/components/store/StoreInfoCard";
 import { StoreFilterBar, type StoreFilterId } from "@/components/store/StoreFilterBar";
 import { StorePastOrdersSection } from "@/components/store/StorePastOrdersSection";
@@ -19,14 +22,18 @@ import { StoreMenuItemRow } from "@/components/store/StoreMenuItemRow";
 import { StoreMenuPairingSection } from "@/components/store/StoreMenuPairingSection";
 import { MerchantClosedBanner } from "./MerchantClosedBanner";
 import { MerchantRushBanner } from "./MerchantRushBanner";
+import { MerchantCategoryRail } from "./MerchantCategoryRail";
+import { MerchantMenuMasonrySection } from "./MerchantMenuMasonrySection";
 import { MerchantMenuLoadingSkeleton } from "@/components/merchant/MerchantMenuLoadingSkeleton";
 import { StoreTheme } from "@/constants/storeTheme";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import type { MerchantFlashListItem } from "../types";
+import { MerchantDarkPalette, useMerchantUiDark } from "../merchantUiTheme";
+import type { MerchantCategoryChip, MerchantFlashListItem } from "../types";
 import type { ComboPair } from "@/components/store/StoreComboSection";
 import type { MenuItem, MerchantSummary } from "@/services/merchant.service";
 import type { ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import {
+  CATEGORY_RAIL_WIDTH,
   MENU_ITEM_ROW_HEIGHT,
   MENU_LOADING_FILL_MIN_HEIGHT,
   MERCHANT_HERO_ACTIONS_TOP_PAD,
@@ -108,6 +115,18 @@ export type MerchantDetailFlashListProps = {
   itemOfferById?: Map<string, ItemOfferDisplay>;
   /** Shared visit sentence index so inline skeleton matches shutter / full-screen loader. */
   loadingMessageIndex?: number;
+  categoryChips?: MerchantCategoryChip[];
+  activeCategoryId?: string | null;
+  onSelectCategory?: (chip: MerchantCategoryChip) => void;
+  onVisibleCategoryChange?: (chipId: string | null) => void;
+  scrollY?: SharedValue<number>;
+  railStickyTop?: number;
+  /** Persistent discovery header height — list/rail start below it. */
+  chromeHeight?: number;
+  /** Discovery only — vertical category rail beside the masonry menu. */
+  showCategoryRail?: boolean;
+  refreshing?: boolean;
+  onRefresh?: () => void;
 };
 
 const MerchantDetailFlashListInner = forwardRef<
@@ -166,7 +185,19 @@ const MerchantDetailFlashListInner = forwardRef<
     onListLayout,
     itemOfferById,
     loadingMessageIndex,
+    categoryChips = [],
+    activeCategoryId = null,
+    onSelectCategory,
+    onVisibleCategoryChange,
+    chromeHeight = 0,
+    showCategoryRail: showCategoryRailProp = false,
+    refreshing = false,
+    onRefresh,
   } = props;
+  const dark = useMerchantUiDark();
+
+  const showCategoryRail = showCategoryRailProp && categoryChips.length > 0;
+  const railInset = 0;
 
   const scrollRef = useRef<ScrollView>(null);
   const rowHeightsRef = useRef<Map<string, number>>(new Map());
@@ -183,9 +214,6 @@ const MerchantDetailFlashListInner = forwardRef<
     for (const row of data) {
       rowOffsetsRef.current.set(row.key, offset);
       const height = rowHeightsRef.current.get(row.key);
-      // Stop at the first unmeasured row: every offset past it would be wrong, and an
-      // absent offset is what tells scrollToIndex to wait for layout instead of
-      // scrolling to a bogus position.
       if (height == null) break;
       offset += height;
     }
@@ -260,6 +288,28 @@ const MerchantDetailFlashListInner = forwardRef<
     [scheduleRebuildRowOffsets]
   );
 
+  const resolveVisibleCategoryId = useCallback(
+    (scrollOffset: number) => {
+      if (categoryChips.length === 0) return null;
+      const probe = scrollOffset + 12;
+      let current: string | null = categoryChips[0]?.id ?? null;
+      for (const row of data) {
+        if (row.type !== "menu_masonry") continue;
+        const y = rowOffsetsRef.current.get(row.key);
+        if (y == null || y > probe) break;
+        const match = categoryChips.find(
+          (chip) =>
+            chip.id !== "cat-all" &&
+            chip.scrollTarget.kind === "category" &&
+            chip.scrollTarget.categoryName?.trim().toLowerCase() === row.title.trim().toLowerCase()
+        );
+        if (match) current = match.id;
+      }
+      return current;
+    },
+    [categoryChips, data]
+  );
+
   const renderRow = (item: MerchantFlashListItem) => {
     switch (item.type) {
       case "hero":
@@ -283,6 +333,7 @@ const MerchantDetailFlashListInner = forwardRef<
         );
 
       case "info":
+        if (dark) return null;
         return (
           <StoreInfoCard
             name={merchant.name}
@@ -364,18 +415,42 @@ const MerchantDetailFlashListInner = forwardRef<
 
       case "section_lead":
         return (
-          <StoreSectionHeader
-            title={item.title}
-            couponLink={item.showCouponLink}
-            onCouponPress={onCouponPress}
-          />
+          <View style={railInset ? { paddingLeft: Math.max(0, railInset - 8) } : null}>
+            <StoreSectionHeader
+              title={item.title}
+              couponLink={item.showCouponLink}
+              onCouponPress={onCouponPress}
+            />
+          </View>
         );
 
       case "section_header":
         return (
-          <View style={styles.sectionHeader}>
-            <AppText style={styles.sectionHeaderText}>{item.title}</AppText>
+          <View style={[styles.sectionHeader, dark && styles.sectionHeaderDark]}>
+            <AppText style={[styles.sectionHeaderText, dark && styles.sectionHeaderTextDark]}>{item.title}</AppText>
           </View>
+        );
+
+      case "menu_masonry":
+        return (
+          <MerchantMenuMasonrySection
+            title={item.title}
+            items={item.items}
+            merchantId={merchantId}
+            onAdd={onAdd}
+            onItemPress={onItemPress}
+            onIncrement={onIncrement}
+            onDecrement={onDecrement}
+            isStoreClosed={isStoreClosed}
+            highlightedMenuItemKey={highlightedMenuItemKey}
+            highlightedOfferId={highlightedOfferId}
+            highlyReorderedIds={highlyReorderedIds}
+            bookmarkMenuItemIdSet={bookmarkMenuItemIdSet}
+            onBookmark={onBookmark}
+            resolveMenuItemPk={resolveMenuItemPk}
+            itemOfferById={itemOfferById}
+            railInset={railInset}
+          />
         );
 
       case "menu_item": {
@@ -417,16 +492,18 @@ const MerchantDetailFlashListInner = forwardRef<
       case "pairing_strip":
         if (item.companions.length === 0) return null;
         return (
-          <StoreMenuPairingSection
-            companions={item.companions}
-            merchantId={merchantId}
-            onAdd={onAdd}
-            onItemPress={onItemPress}
-            onIncrement={onIncrement}
-            onDecrement={onDecrement}
-            isStoreClosed={isStoreClosed}
-            showDivider
-          />
+          <View style={railInset ? { paddingLeft: railInset } : null}>
+            <StoreMenuPairingSection
+              companions={item.companions}
+              merchantId={merchantId}
+              onAdd={onAdd}
+              onItemPress={onItemPress}
+              onIncrement={onIncrement}
+              onDecrement={onDecrement}
+              isStoreClosed={isStoreClosed}
+              showDivider
+            />
+          </View>
         );
 
       case "footer":
@@ -439,27 +516,35 @@ const MerchantDetailFlashListInner = forwardRef<
 
       case "empty_menu":
         return (
-          <View style={styles.emptyMenu}>
-            <AppText style={styles.emptyMenuText}>No items match the selected filters.</AppText>
+          <View style={[styles.emptyMenu, dark && styles.emptyMenuDark, railInset ? { paddingLeft: railInset + 8 } : null]}>
+            <AppText style={[styles.emptyMenuText, dark && styles.emptyMenuTextDark]}>No items match the selected filters.</AppText>
           </View>
         );
 
       case "menu_skeleton":
         return (
-          <MerchantMenuLoadingSkeleton
-            merchantId={merchantId}
-            startMessageIndex={loadingMessageIndex}
-            variant="inline"
-          />
-        );
-
-      case "menu_loading":
-        return (
-          <View style={[styles.menuLoading, { minHeight: MENU_LOADING_FILL_MIN_HEIGHT }]}>
             <MerchantMenuLoadingSkeleton
               merchantId={merchantId}
               startMessageIndex={loadingMessageIndex}
               variant="inline"
+              showRail={!showCategoryRail}
+            />
+        );
+
+      case "menu_loading":
+        return (
+          <View
+            style={[
+              styles.menuLoading,
+              dark && styles.menuLoadingDark,
+              { minHeight: MENU_LOADING_FILL_MIN_HEIGHT, paddingLeft: railInset },
+            ]}
+          >
+            <MerchantMenuLoadingSkeleton
+              merchantId={merchantId}
+              startMessageIndex={loadingMessageIndex}
+              variant="inline"
+              showRail={!showCategoryRail}
             />
           </View>
         );
@@ -471,53 +556,87 @@ const MerchantDetailFlashListInner = forwardRef<
 
   return (
     <View
-      style={styles.listHost}
+      style={[styles.listHost, dark && styles.listHostDark, chromeHeight > 0 ? { paddingTop: chromeHeight } : null]}
       onLayout={() => {
         onListLayout?.();
       }}
     >
-      <AnimatedScrollView
-        ref={scrollRef}
-        style={styles.list}
-        contentContainerStyle={[styles.listContent, contentContainerStyle]}
-        onScroll={scrollHandler as never}
-        scrollEventThrottle={16}
-        keyboardShouldPersistTaps="always"
-        nestedScrollEnabled
-        showsVerticalScrollIndicator
-        // Never clip off-screen rows — blank white gaps on fast fling.
-        removeClippedSubviews={false}
-        bounces
-        // First-tap ADD must not wait for scroll gesture settle (Android + iOS).
-        delaysContentTouches={false}
-        // Keep ADD responder when the finger moves slightly (thumb jitter ≠ scroll).
-        canCancelContentTouches={false}
-        onScrollBeginDrag={markMerchantMenuScrollActive}
-        onMomentumScrollBegin={markMerchantMenuScrollActive}
-        onScrollEndDrag={markMerchantMenuScrollEnded}
-        onMomentumScrollEnd={markMerchantMenuScrollEnded}
-        {...(Platform.OS === "android"
-          ? { overScrollMode: "never" as const, persistentScrollbar: false }
-          : null)}
-      >
-        {data.map((item) => (
-          <View
-            key={item.key}
-            collapsable={false}
-            style={[
-              styles.rowShell,
-              item.type === "menu_item" ? { minHeight: MENU_ITEM_ROW_HEIGHT } : null,
-              // Info card tucks over the hero — must paint above banner, not clip into it.
-              item.type === "info" ? styles.infoRowShell : null,
-            ]}
-            onLayout={(event) => {
-              recordRowLayout(item.key, event.nativeEvent.layout.height);
-            }}
-          >
-            {renderRow(item)}
+      <View style={styles.split}>
+        {showCategoryRail && onSelectCategory ? (
+          <View style={styles.railColumn}>
+            <MerchantCategoryRail
+              categories={categoryChips}
+              activeCategoryId={activeCategoryId}
+              onSelect={onSelectCategory}
+            />
           </View>
-        ))}
-      </AnimatedScrollView>
+        ) : null}
+        <AnimatedScrollView
+          ref={scrollRef}
+          style={[styles.list, dark && styles.listDark]}
+          contentContainerStyle={[styles.listContent, dark && styles.listContentDark, contentContainerStyle]}
+          onScroll={scrollHandler as never}
+          scrollEventThrottle={16}
+          keyboardShouldPersistTaps="always"
+          nestedScrollEnabled
+          showsVerticalScrollIndicator
+          removeClippedSubviews={false}
+          bounces
+          delaysContentTouches={false}
+          canCancelContentTouches={false}
+          refreshControl={
+            onRefresh ? (
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={dark ? MerchantDarkPalette.accent : GatiMitraColors.primaryMint}
+                colors={[dark ? MerchantDarkPalette.accent : GatiMitraColors.primaryMint]}
+                progressBackgroundColor={dark ? MerchantDarkPalette.card : "#FFFFFF"}
+              />
+            ) : undefined
+          }
+          onScrollBeginDrag={markMerchantMenuScrollActive}
+          onMomentumScrollBegin={markMerchantMenuScrollActive}
+          onScrollEndDrag={(event) => {
+            markMerchantMenuScrollEnded();
+            onVisibleCategoryChange?.(
+              resolveVisibleCategoryId(event.nativeEvent.contentOffset.y)
+            );
+          }}
+          onMomentumScrollEnd={(event) => {
+            markMerchantMenuScrollEnded();
+            onVisibleCategoryChange?.(
+              resolveVisibleCategoryId(event.nativeEvent.contentOffset.y)
+            );
+          }}
+          {...(Platform.OS === "android"
+            ? { overScrollMode: onRefresh ? ("auto" as const) : ("never" as const), persistentScrollbar: false }
+            : null)}
+        >
+          {data.map((item) => (
+            <View
+              key={item.key}
+              collapsable={false}
+              style={[
+                styles.rowShell,
+                dark && styles.rowShellDark,
+                item.type === "menu_item" ? { minHeight: MENU_ITEM_ROW_HEIGHT } : null,
+                item.type === "menu_masonry" ||
+                item.type === "empty_menu" ||
+                item.type === "menu_loading"
+                  ? styles.masonryRowShell
+                  : null,
+                item.type === "info" ? styles.infoRowShell : null,
+              ]}
+              onLayout={(event) => {
+                recordRowLayout(item.key, event.nativeEvent.layout.height);
+              }}
+            >
+              {renderRow(item)}
+            </View>
+          ))}
+        </AnimatedScrollView>
+      </View>
     </View>
   );
 });
@@ -538,21 +657,51 @@ const styles = StyleSheet.create({
   listHost: {
     flex: 1,
     zIndex: 0,
-    backgroundColor: StoreTheme.background,
+    backgroundColor: GatiMitraColors.softBackground,
+  },
+  listHostDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+  },
+  split: {
+    flex: 1,
+    flexDirection: "row",
+    minHeight: 0,
+    minWidth: 0,
+    overflow: "hidden",
+  },
+  railColumn: {
+    width: CATEGORY_RAIL_WIDTH,
+    alignSelf: "stretch",
+    height: "100%",
+    minHeight: 0,
+    overflow: "hidden",
+    zIndex: 8,
+    flexGrow: 0,
+    flexShrink: 0,
   },
   list: {
     flex: 1,
+    minWidth: 0,
     zIndex: 0,
-    backgroundColor: StoreTheme.background,
+    backgroundColor: GatiMitraColors.softBackground,
+  },
+  listDark: {
+    backgroundColor: MerchantDarkPalette.bg,
   },
   listContent: {
-    backgroundColor: StoreTheme.background,
+    backgroundColor: GatiMitraColors.softBackground,
     paddingBottom: 8,
   },
+  listContentDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+  },
   rowShell: {
-    backgroundColor: StoreTheme.background,
+    backgroundColor: GatiMitraColors.softBackground,
     overflow: "hidden",
     zIndex: 1,
+  },
+  rowShellDark: {
+    backgroundColor: MerchantDarkPalette.bg,
   },
   infoRowShell: {
     // Let the rounded card sit above the banner; never clip name / rating / info.
@@ -578,25 +727,45 @@ const styles = StyleSheet.create({
     backgroundColor: StoreTheme.background,
     paddingTop: 4,
   },
+  menuLoadingDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+  },
   sectionHeader: {
     paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: 8,
     backgroundColor: StoreTheme.background,
   },
+  sectionHeaderDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+  },
   sectionHeaderText: {
     fontSize: 17,
     fontWeight: "800",
     color: StoreTheme.textPrimary,
   },
+  sectionHeaderTextDark: {
+    color: MerchantDarkPalette.text,
+  },
   emptyMenu: {
     padding: 24,
     alignItems: "center",
-    backgroundColor: StoreTheme.background,
+    backgroundColor: GatiMitraColors.softBackground,
+  },
+  emptyMenuDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+  },
+  masonryRowShell: {
+    overflow: "hidden",
+    alignSelf: "stretch",
+    maxWidth: "100%",
   },
   emptyMenuText: {
     fontSize: 14,
     color: GatiMitraColors.textSecondary,
     textAlign: "center",
+  },
+  emptyMenuTextDark: {
+    color: MerchantDarkPalette.textMuted,
   },
 });

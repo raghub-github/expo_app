@@ -7,13 +7,13 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 const GREEN = GatiMitraColors.primaryMint;
 const GREEN_DARK = GatiMitraColors.deepMintStart;
 
-/** Tilted 3D-style wallet icon — GatiMitra green. */
-export function GatiCashWalletHeroIcon() {
+/** Tilted 3D-style wallet icon — GatiMitra green, teal in discovery dark. */
+export function GatiCashWalletHeroIcon({ dark = false }: { dark?: boolean }) {
   return (
     <View style={styles.wrap}>
-      <View style={styles.shadowLayer} />
+      <View style={[styles.shadowLayer, dark && styles.shadowLayerDark]} />
       <LinearGradient
-        colors={[GREEN, GREEN_DARK]}
+        colors={dark ? ["#2DD4BF", "#0F766E"] : [GREEN, GREEN_DARK]}
         start={{ x: 0.15, y: 0 }}
         end={{ x: 0.85, y: 1 }}
         style={styles.body}
@@ -39,6 +39,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(22, 163, 74, 0.32)",
     top: 8,
     left: 6,
+  },
+  shadowLayerDark: {
+    backgroundColor: "rgba(45, 212, 191, 0.28)",
   },
   body: {
     width: 88,

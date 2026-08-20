@@ -1,5 +1,5 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
-import { router, type Href } from "expo-router";
+import { router, useRootNavigationState, type Href } from "expo-router";
 import { usePermissionStore } from "@/src/stores/permissionStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useLanguageStore } from "@/src/stores/languageStore";
@@ -7,11 +7,14 @@ import { useOnboardingGate } from "@/src/hooks/useOnboardingGate";
 import { RiderBootstrapScreen } from "@/src/components/RiderBootstrapScreen";
 import { useEffect, useRef } from "react";
 
+const MIN_SPLASH_MS = 900;
+
 /**
- * Cold-start router. Prefer cached session → tabs immediately.
- * Bootstrap splash only while storage hydrate is still unknown.
+ * Cold-start router. Keep the branded splash on screen until the root navigator
+ * is mounted, then replace into login / onboarding / tabs.
  */
 export default function Index() {
+  const nav = useRootNavigationState();
   const hydrated = usePermissionStore((s) => s.hydrated);
   const hasRequestedPermissions = usePermissionStore((s) => s.hasRequestedPermissions);
   const session = useSessionStore((s) => s.session);
@@ -21,6 +24,7 @@ export default function Index() {
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
   const { ready: onboardingGateReady, href: onboardingHref, canAccessTabs } = useOnboardingGate();
   const lastReplaceTargetRef = useRef<string | null>(null);
+  const splashShownAtRef = useRef(Date.now());
 
   useEffect(() => {
     void hydrateLanguage().catch((err) => {
@@ -29,21 +33,16 @@ export default function Index() {
   }, [hydrateLanguage]);
 
   useEffect(() => {
-    // Fast path: known logged-in rider with home access → tabs without waiting onboarding fetch.
+    if (!nav?.key) return;
+
+    let target: Href | null = null;
     if (sessionHydrated && session && canAccessTabs) {
-      const target = "/(tabs)" as Href;
-      if (lastReplaceTargetRef.current !== target) {
-        lastReplaceTargetRef.current = target as string;
-        router.replace(target);
-      }
+      target = "/(tabs)";
+    } else if (!hydrated || !languageHydrated || !sessionHydrated) {
       return;
-    }
-
-    if (!hydrated || !languageHydrated || !sessionHydrated) return;
-    if (session && !onboardingGateReady) return;
-
-    let target: Href;
-    if (session && onboardingHref) {
+    } else if (session && !onboardingGateReady) {
+      return;
+    } else if (session && onboardingHref) {
       target = onboardingHref;
     } else if (!languageSelected) {
       target = "/(onboarding)/language";
@@ -55,10 +54,20 @@ export default function Index() {
       target = "/(auth)/login";
     }
 
-    if (lastReplaceTargetRef.current === target) return;
-    lastReplaceTargetRef.current = target;
-    router.replace(target);
+    if (!target || lastReplaceTargetRef.current === String(target)) return;
+    const wait = Math.max(0, MIN_SPLASH_MS - (Date.now() - splashShownAtRef.current));
+    const timer = setTimeout(() => {
+      lastReplaceTargetRef.current = String(target);
+      try {
+        router.replace(target);
+      } catch (err) {
+        lastReplaceTargetRef.current = null;
+        console.warn("[Index] Navigation not ready yet:", err);
+      }
+    }, wait);
+    return () => clearTimeout(timer);
   }, [
+    nav?.key,
     hydrated,
     languageHydrated,
     sessionHydrated,
@@ -69,11 +78,6 @@ export default function Index() {
     languageSelected,
     hasRequestedPermissions,
   ]);
-
-  // Returning riders with cached access: no splash — blank white until tabs mounts is fine.
-  if (sessionHydrated && session && canAccessTabs) {
-    return null;
-  }
 
   return <RiderBootstrapScreen />;
 }

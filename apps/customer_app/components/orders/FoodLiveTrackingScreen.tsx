@@ -73,6 +73,7 @@ import { canCustomerUpdateAlternateContact } from "@/lib/alternate-contact";
 import { canCustomerUpdateDeliveryInstructions } from "@/lib/delivery-instructions";
 import { orderService } from "@/services/order.service";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
+import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
 
 const MINT = GatiMitraColors.primaryMint;
 const MINT_DARK = GatiMitraColors.deepMintStart;
@@ -208,6 +209,7 @@ export function FoodLiveTrackingScreen({
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
+  const isDiscoveryDark = useDiscoveryLayout();
   const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
   const resetStatusBarBackground = useScreenChromeStore((s) => s.resetStatusBarBackground);
 
@@ -615,13 +617,14 @@ export function FoodLiveTrackingScreen({
     ]
   );
 
-  const deliveryMapCenter = useMemo(
-    () => ({
-      latitude: (pickupLat + deliveryLat) / 2,
-      longitude: (pickupLng + deliveryLng) / 2,
-    }),
-    [pickupLat, pickupLng, deliveryLat, deliveryLng]
-  );
+  const deliveryMapCenter = useMemo(() => {
+    const latitude = (pickupLat + deliveryLat) / 2;
+    const longitude = (pickupLng + deliveryLng) / 2;
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return { latitude: 22, longitude: 88 };
+    }
+    return { latitude, longitude };
+  }, [pickupLat, pickupLng, deliveryLat, deliveryLng]);
 
   const { data: trackingWeather } = useLocationWeather({
     lat: order.deliveryLat,
@@ -1091,6 +1094,7 @@ export function FoodLiveTrackingScreen({
         addressLine={deliveryInstructionAddressLine}
         initialInstructions={deliveryInstructionsList}
         onSave={handleSaveDeliveryInstructions}
+        dark={isDiscoveryDark}
       />
 
       <DeliveryPartnerSafetyBottomSheet

@@ -5,6 +5,7 @@ import type { FoodHomeLayoutKey } from "@/lib/foodHomeLayout";
 import {
   DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW,
   DEFAULT_GRID_FIRST_UNDER_250,
+  parseDiscoveryCtaConfig,
   parseGridFirstSubscriptionRowBgColor,
   parseGridFirstSubscriptionRowEnabled,
   parseGridFirstUnder250Enabled,
@@ -21,7 +22,8 @@ import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
 import type { ReverseGeocodeResult } from "@/services/location.service";
 
-export const FOOD_HOME_LAYOUT_STALE_MS = 5 * 60 * 1000;
+/** Short so admin tile/layout edits show on the next home focus. */
+export const FOOD_HOME_LAYOUT_STALE_MS = 5 * 1000;
 export const FOOD_HOME_LAYOUT_GC_MS = 30 * 60 * 1000;
 
 type GeoHints = ReturnType<typeof extractCustomerGeoHints>;
@@ -104,6 +106,15 @@ function normalizeCachedFoodHomeLayout(entry: CachedFoodHomeLayoutEntry): FoodHo
     ),
     gridFirstUnder250TabImageUrl: parseGridFirstUnder250ImageUrl(entry.gridFirstUnder250TabImageUrl),
     gridFirstUnder250HeroImageUrl: parseGridFirstUnder250ImageUrl(entry.gridFirstUnder250HeroImageUrl),
+    discoveryDealsAtMaxPrice: parseDiscoveryCtaConfig(entry).dealsAtMaxPrice,
+    discoveryDealsAtImageUrl: parseDiscoveryCtaConfig(entry).dealsAtImageUrl,
+    discoveryDealsAtHeroImageUrl: parseDiscoveryCtaConfig(entry).dealsAtHeroImageUrl,
+    discoveryCrazyDealsImageUrl: parseDiscoveryCtaConfig(entry).crazyDealsImageUrl,
+    discoveryFreePackagingImageUrl: parseDiscoveryCtaConfig(entry).freePackagingImageUrl,
+    discoveryDealsAtLabel: parseDiscoveryCtaConfig(entry).dealsAtLabel,
+    discoveryCrazyDealsLabel: parseDiscoveryCtaConfig(entry).crazyDealsLabel,
+    discoveryFreePackagingLabel: parseDiscoveryCtaConfig(entry).freePackagingLabel,
+    discoveryCtaTiles: parseDiscoveryCtaConfig(entry).tiles,
   };
 }
 
@@ -229,6 +240,15 @@ export async function prefetchFoodHomeLayout(
   } finally {
     prefetchInFlight.delete(key);
   }
+}
+
+export function peekCachedFoodHomeLayoutKey(): FoodHomeLayoutKey | null {
+  let best: CachedFoodHomeLayoutEntry | undefined;
+  for (const entry of memoryByKey.values()) {
+    if (!entry?.layoutKey) continue;
+    if (!best || (entry.cachedAt ?? 0) > (best.cachedAt ?? 0)) best = entry;
+  }
+  return best?.layoutKey ?? null;
 }
 
 export function getSyncFoodHomeLayoutFromQueryClient(

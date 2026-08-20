@@ -350,11 +350,33 @@ export default function MerchantDetails({
           </div>
         </div>
 
-        {/* Store Name (web link removed as per design) */}
+        {/* Store Name */}
         <div className="grid grid-cols-[140px_1fr] items-start min-h-[20px]">
           <div className="text-[12px] text-gati-text-secondary font-medium">Name:</div>
           <div className="text-[12px] text-gati-text-primary font-normal flex items-center gap-1.5 leading-snug flex-wrap">
             <span>{profile?.storeName ?? "—"}</span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-[140px_1fr] items-start min-h-[20px]">
+          <div className="text-[12px] text-gati-text-secondary font-medium">City:</div>
+          <div className="text-[12px] text-gati-text-primary font-normal flex items-start gap-1.5 leading-snug">
+            <span>{profile?.city?.trim() || "—"}</span>
+            {profile?.city?.trim() ? (
+              <button
+                type="button"
+                className="inline-flex shrink-0 items-center justify-center text-[11px] cursor-pointer opacity-80 hover:opacity-100 transition-opacity mt-0.5"
+                onClick={() => handleCopyGeneric(profile?.city?.trim() || "", "city")}
+                aria-label="Copy city"
+              >
+                {copiedKey === "city" ? (
+                  <Check className="h-3 w-3 text-emerald-600" />
+                ) : (
+                  <Copy className="h-3 w-3 text-gati-primary" />
+                )}
+                <span className="sr-only">Copy</span>
+              </button>
+            ) : null}
           </div>
         </div>
 

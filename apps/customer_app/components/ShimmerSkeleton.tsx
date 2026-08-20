@@ -22,13 +22,15 @@ const SHIMMER_HIGH = 0.7;
 const GM_SHIMMER_DURATION_MS = 1300;
 const GM_STRIP_WIDTH = 120;
 
-/** Base skeleton box: #eceff1, 12px radius, horizontal shimmer sweep. */
+/** Base skeleton box: light #eceff1 or charcoal, 12px radius, horizontal shimmer sweep. */
 export function GMSkeleton({
   style,
   children,
+  dark = false,
 }: {
   style?: StyleProp<ViewStyle>;
   children?: React.ReactNode;
+  dark?: boolean;
 }) {
   const translateX = useSharedValue(-GM_STRIP_WIDTH);
   const boxWidth = useSharedValue(SCREEN_WIDTH);
@@ -56,14 +58,17 @@ export function GMSkeleton({
 
   return (
     <View
-      style={[styles.gmSkeletonBase, style]}
+      style={[styles.gmSkeletonBase, dark && styles.gmSkeletonBaseDark, style]}
       onLayout={(e) => {
         const w = e.nativeEvent.layout.width;
         if (w > 0) boxWidth.value = w;
       }}
     >
       {children}
-      <Animated.View style={[styles.gmSkeletonStrip, animatedStyle]} pointerEvents="none" />
+      <Animated.View
+        style={[styles.gmSkeletonStrip, dark && styles.gmSkeletonStripDark, animatedStyle]}
+        pointerEvents="none"
+      />
     </View>
   );
 }
@@ -75,6 +80,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#eceff1",
     borderRadius: 12,
   },
+  gmSkeletonBaseDark: {
+    backgroundColor: "#2A2A2A",
+  },
   gmSkeletonStrip: {
     position: "absolute",
     left: 0,
@@ -82,6 +90,9 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: GM_STRIP_WIDTH,
     backgroundColor: "rgba(255,255,255,0.6)",
+  },
+  gmSkeletonStripDark: {
+    backgroundColor: "rgba(255,255,255,0.14)",
   },
 });
 
@@ -130,6 +141,9 @@ const skeletonStyles = StyleSheet.create({
     borderRadius: HOME_CARD_RADIUS,
     overflow: "hidden",
     backgroundColor: "#fff",
+  },
+  cardDark: {
+    backgroundColor: "#1E1E1E",
   },
   heroPlc: {
     width: "100%",
@@ -184,17 +198,78 @@ const rowSkeletonStyles = StyleSheet.create({
   },
   imagePlc: { width: 110, height: 110 },
   info: { flex: 1, padding: 16, justifyContent: "center" },
+  discoveryCard: {
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    overflow: "hidden",
+    marginHorizontal: 20,
+    marginBottom: 12,
+    padding: 10,
+    minHeight: 118,
+  },
+  discoveryCardDark: {
+    backgroundColor: "#1E1E1E",
+  },
+  discoveryImage: {
+    width: 96,
+    height: 96,
+    borderRadius: 12,
+  },
+  discoveryInfo: {
+    flex: 1,
+    marginLeft: 12,
+    gap: 8,
+    justifyContent: "center",
+  },
+  discoveryLine1: { height: 16, borderRadius: 8, width: "78%" },
+  discoveryLine2: { height: 12, borderRadius: 8, width: "52%" },
+  discoveryLine3: { height: 12, borderRadius: 8, width: "40%" },
 });
 
 /** Restaurant card skeleton — aligned with GMRestaurantCardV2 dimensions. */
-export function RestaurantCardSkeleton({ cardWidth = HOME_CARD_WIDTH }: { cardWidth?: number }) {
+export function RestaurantCardSkeleton({
+  cardWidth = HOME_CARD_WIDTH,
+  dark = false,
+  layout = "poster",
+}: {
+  cardWidth?: number;
+  dark?: boolean;
+  layout?: "poster" | "row";
+}) {
+  if (layout === "row") {
+    return (
+      <View
+        style={[
+          rowSkeletonStyles.discoveryCard,
+          dark && rowSkeletonStyles.discoveryCardDark,
+          cardWidth != null ? { width: cardWidth } : null,
+        ]}
+      >
+        <GMSkeleton dark={dark} style={rowSkeletonStyles.discoveryImage} />
+        <View style={rowSkeletonStyles.discoveryInfo}>
+          <GMSkeleton dark={dark} style={rowSkeletonStyles.discoveryLine1} />
+          <GMSkeleton dark={dark} style={rowSkeletonStyles.discoveryLine2} />
+          <GMSkeleton dark={dark} style={rowSkeletonStyles.discoveryLine3} />
+        </View>
+      </View>
+    );
+  }
   return (
-    <View style={[skeletonStyles.card, cardWidth != null ? { width: cardWidth } : null]}>
-      <GMSkeleton style={skeletonStyles.heroPlc} />
+    <View
+      style={[
+        skeletonStyles.card,
+        dark && skeletonStyles.cardDark,
+        cardWidth != null ? { width: cardWidth } : null,
+      ]}
+    >
+      <GMSkeleton dark={dark} style={skeletonStyles.heroPlc} />
       <View style={skeletonStyles.content}>
-        <GMSkeleton style={skeletonStyles.line1} />
-        <GMSkeleton style={skeletonStyles.line2} />
-        <GMSkeleton style={skeletonStyles.line3} />
+        <GMSkeleton dark={dark} style={skeletonStyles.line1} />
+        <GMSkeleton dark={dark} style={skeletonStyles.line2} />
+        <GMSkeleton dark={dark} style={skeletonStyles.line3} />
       </View>
     </View>
   );
@@ -204,14 +279,18 @@ export function RestaurantCardSkeleton({ cardWidth = HOME_CARD_WIDTH }: { cardWi
 export function RestaurantListSkeleton({
   count = 4,
   cardWidth,
+  dark = false,
+  layout = "poster",
 }: {
   count?: number;
   cardWidth?: number;
+  dark?: boolean;
+  layout?: "poster" | "row";
 }) {
   return (
     <>
       {Array.from({ length: count }).map((_, i) => (
-        <RestaurantCardSkeleton key={i} cardWidth={cardWidth} />
+        <RestaurantCardSkeleton key={i} cardWidth={cardWidth} dark={dark} layout={layout} />
       ))}
     </>
   );
@@ -264,7 +343,13 @@ import { MERCHANT_RAIL_CARD_W, MERCHANT_RAIL_GAP, merchantRailImageHeight } from
 const LOVED_RAIL_PAD = 16;
 
 /** Horizontal rail skeleton — 2 full cards + peek. */
-export function LovedMerchantsGridSkeleton({ count = 4 }: { count?: number }) {
+export function LovedMerchantsGridSkeleton({
+  count = 4,
+  dark = false,
+}: {
+  count?: number;
+  dark?: boolean;
+}) {
   const imageH = merchantRailImageHeight(MERCHANT_RAIL_CARD_W);
   return (
     <View
@@ -276,9 +361,12 @@ export function LovedMerchantsGridSkeleton({ count = 4 }: { count?: number }) {
     >
       {Array.from({ length: count }).map((_, i) => (
         <View key={i} style={{ width: MERCHANT_RAIL_CARD_W }}>
-          <GMSkeleton style={{ width: MERCHANT_RAIL_CARD_W, height: imageH, borderRadius: 14 }} />
-          <GMSkeleton style={{ height: 13, width: "88%", marginTop: 10, borderRadius: 6 }} />
-          <GMSkeleton style={{ height: 11, width: "60%", marginTop: 4, marginBottom: 6, borderRadius: 6 }} />
+          <GMSkeleton
+            dark={dark}
+            style={{ width: MERCHANT_RAIL_CARD_W, height: imageH, borderRadius: 14 }}
+          />
+          <GMSkeleton dark={dark} style={{ height: 13, width: "88%", marginTop: 10, borderRadius: 6 }} />
+          <GMSkeleton dark={dark} style={{ height: 11, width: "60%", marginTop: 4, marginBottom: 6, borderRadius: 6 }} />
         </View>
       ))}
     </View>
@@ -299,6 +387,55 @@ export function HomeOfferBannerSkeleton({
 const MERCHANT_HEADER_IMAGE_H = 196;
 const MERCHANT_MENU_IMAGE_SIZE = 118;
 const MERCHANT_FILTER_BAR_H = 52;
+
+const discoverySkeletonStyles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: "#F8FAF9" },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 8,
+    backgroundColor: "#FFFFFF",
+  },
+  circle: { width: 36, height: 36, borderRadius: 18 },
+  name: { flex: 1, height: 18, borderRadius: 8 },
+  square: { width: 36, height: 36, borderRadius: 10 },
+  searchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+    backgroundColor: "#FFFFFF",
+  },
+  search: { flex: 1, height: 44, borderRadius: 12 },
+  filter: { width: 44, height: 44, borderRadius: 12 },
+  split: { flex: 1, flexDirection: "row", minHeight: 0 },
+  rail: {
+    width: 68,
+    backgroundColor: "#134E3A",
+    borderTopRightRadius: 22,
+    borderBottomRightRadius: 22,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    gap: 12,
+  },
+  railSlot: { height: 44, borderRadius: 12, backgroundColor: "rgba(255,255,255,0.18)" },
+  grid: { flex: 1, flexDirection: "row", gap: 8, padding: 8, alignItems: "flex-start" },
+  col: { flex: 1, minWidth: 0, gap: 8 },
+  card: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    overflow: "hidden",
+    paddingBottom: 8,
+    gap: 6,
+  },
+  cardImg: { width: "100%", borderRadius: 0 },
+  cardLine: { height: 12, width: "80%", borderRadius: 5, marginHorizontal: 8 },
+  cardLineSm: { height: 10, width: "52%", borderRadius: 5, marginHorizontal: 8 },
+});
 
 const merchantDetailSkeletonStyles = StyleSheet.create({
   screen: {
@@ -503,8 +640,60 @@ export function StoreMenuItemRowSkeleton({ showDivider = true }: { showDivider?:
   );
 }
 
-/** Full merchant inner page skeleton — banner, info card, filters, section header, menu rows. */
-export function MerchantDetailSkeleton({ menuRowCount = 5 }: { menuRowCount?: number }) {
+/** Classic inner-page skeleton — banner, info card, filters, list rows. */
+export function MerchantDetailSkeleton({
+  menuRowCount = 5,
+  layout = "classic",
+}: {
+  menuRowCount?: number;
+  layout?: "classic" | "discovery";
+}) {
+  if (layout === "discovery") {
+    const leftCount = Math.ceil(menuRowCount / 2);
+    const rightCount = Math.floor(menuRowCount / 2);
+    return (
+      <View style={discoverySkeletonStyles.screen}>
+        <View style={discoverySkeletonStyles.headerRow}>
+          <GMSkeleton style={discoverySkeletonStyles.circle} />
+          <GMSkeleton style={discoverySkeletonStyles.name} />
+          <GMSkeleton style={discoverySkeletonStyles.square} />
+          <GMSkeleton style={discoverySkeletonStyles.square} />
+        </View>
+        <View style={discoverySkeletonStyles.searchRow}>
+          <GMSkeleton style={discoverySkeletonStyles.search} />
+          <GMSkeleton style={discoverySkeletonStyles.filter} />
+        </View>
+        <View style={discoverySkeletonStyles.split}>
+          <View style={discoverySkeletonStyles.rail}>
+            {Array.from({ length: 6 }).map((_, i) => (
+              <View key={i} style={discoverySkeletonStyles.railSlot} />
+            ))}
+          </View>
+          <View style={discoverySkeletonStyles.grid}>
+            <View style={discoverySkeletonStyles.col}>
+              {Array.from({ length: leftCount }).map((_, i) => (
+                <View key={i} style={discoverySkeletonStyles.card}>
+                  <GMSkeleton style={[discoverySkeletonStyles.cardImg, i % 2 === 0 ? { height: 110 } : { height: 88 }]} />
+                  <GMSkeleton style={discoverySkeletonStyles.cardLine} />
+                  <GMSkeleton style={discoverySkeletonStyles.cardLineSm} />
+                </View>
+              ))}
+            </View>
+            <View style={discoverySkeletonStyles.col}>
+              {Array.from({ length: rightCount }).map((_, i) => (
+                <View key={i} style={discoverySkeletonStyles.card}>
+                  <GMSkeleton style={[discoverySkeletonStyles.cardImg, i % 2 === 0 ? { height: 88 } : { height: 110 }]} />
+                  <GMSkeleton style={discoverySkeletonStyles.cardLine} />
+                  <GMSkeleton style={discoverySkeletonStyles.cardLineSm} />
+                </View>
+              ))}
+            </View>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={merchantDetailSkeletonStyles.screen}>
       <View style={merchantDetailSkeletonStyles.bannerWrap}>

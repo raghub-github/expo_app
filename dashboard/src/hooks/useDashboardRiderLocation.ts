@@ -156,7 +156,10 @@ export function useDashboardRiderLocation(opts: {
         });
         if (!ticketRes.ok || cancelled) {
           setWsConnected(false);
-          scheduleReconnect();
+          if (ticketRes.status === 401 || ticketRes.status === 403) {
+            attempt = Math.max(attempt, 8);
+          }
+          scheduleReconnect(ticketRes.status === 401 || ticketRes.status === 403 ? 60_000 : undefined);
           return;
         }
         const { ticket } = (await ticketRes.json()) as { ticket?: string };
@@ -203,9 +206,12 @@ export function useDashboardRiderLocation(opts: {
       }
     };
 
-    const scheduleReconnect = () => {
+    const scheduleReconnect = (minDelayMs?: number) => {
       if (cancelled || reconnectTimer) return;
-      const delay = Math.min(30_000, 2_000 * Math.pow(1.6, attempt));
+      const delay = Math.max(
+        minDelayMs ?? 0,
+        Math.min(60_000, 2_000 * Math.pow(1.6, attempt))
+      );
       attempt += 1;
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;

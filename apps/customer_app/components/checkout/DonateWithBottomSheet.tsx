@@ -7,6 +7,7 @@ import { View, Modal, Pressable, StyleSheet } from "react-native";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 const GM = GatiMitraColors;
 
@@ -32,11 +33,14 @@ function RadioRow({
   selected: boolean;
   onPress: () => void;
 }) {
+  const dark = useMerchantUiDark();
   return (
-    <Pressable style={styles.optionRow} onPress={onPress} accessibilityRole="radio" accessibilityState={{ selected }}>
-      <CheckoutText style={styles.optionLabel}>{label}</CheckoutText>
-      <View style={[styles.radioOuter, selected && styles.radioOuterSelected]}>
+    <Pressable style={styles.optionHit} onPress={onPress} accessibilityRole="radio" accessibilityState={{ selected }}>
+      <View style={styles.optionRow}>
+      <CheckoutText style={[styles.optionLabel, dark && styles.labelDark]}>{label}</CheckoutText>
+      <View style={[styles.radioOuter, dark && styles.radioDark, selected && styles.radioOuterSelected]}>
         {selected ? <View style={styles.radioInner} /> : null}
+      </View>
       </View>
     </Pressable>
   );
@@ -44,6 +48,7 @@ function RadioRow({
 
 export function DonateWithBottomSheet({ visible, value, onClose, onSave }: DonateWithBottomSheetProps) {
   const insets = useSafeAreaInsets();
+  const dark = useMerchantUiDark();
   const [draft, setDraft] = useState<DonationScope>(value);
 
   useEffect(() => {
@@ -54,15 +59,15 @@ export function DonateWithBottomSheet({ visible, value, onClose, onSave }: Donat
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
       <View style={styles.root}>
         <Pressable style={styles.dim} onPress={onClose} accessibilityLabel="Close" />
-        <View style={[styles.card, { paddingBottom: Math.max(insets.bottom, 14) + 8 }]}>
-          <CheckoutText style={styles.title}>Donate with</CheckoutText>
+        <View style={[styles.card, dark && styles.cardDark, { paddingBottom: Math.max(insets.bottom, 14) + 8 }]}>
+          <CheckoutText style={[styles.title, dark && styles.labelDark]}>Donate with</CheckoutText>
 
           <RadioRow
             label="Every Order"
             selected={draft === "every_order"}
             onPress={() => setDraft("every_order")}
           />
-          <View style={styles.optionDivider} />
+          <View style={[styles.optionDivider, dark && styles.dividerDark]} />
           <RadioRow
             label="This Order"
             selected={draft === "this_order"}
@@ -101,11 +106,13 @@ const styles = StyleSheet.create({
     color: "#111827",
     marginBottom: 8,
   },
+  optionHit: {
+    paddingVertical: 16,
+  },
   optionRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 16,
   },
   optionLabel: {
     fontSize: 15,
@@ -140,4 +147,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   saveBtnText: { fontSize: 16, fontWeight: "800", color: "#FFFFFF", letterSpacing: 0.2 },
+  cardDark: { backgroundColor: MerchantDarkPalette.card },
+  labelDark: { color: MerchantDarkPalette.text, textDecorationColor: MerchantDarkPalette.chipBorder },
+  radioDark: { borderColor: MerchantDarkPalette.chipBorder },
+  dividerDark: { backgroundColor: MerchantDarkPalette.border },
 });

@@ -62,23 +62,25 @@ export const MapboxWebPannableMap = forwardRef<CustomerMapRef, Props>(function M
 
   const token = getConfig().mapboxAccessToken?.trim() ?? "";
 
+  const originRef = useRef({
+    latitude: initialRegion.latitude,
+    longitude: initialRegion.longitude,
+    latitudeDelta: initialRegion.latitudeDelta ?? 0.01,
+  });
+
   const html = useMemo(() => {
     if (!token) return "";
+    const origin = originRef.current;
     return buildPannableMapHtml(
       token,
-      { latitude: initialRegion.latitude, longitude: initialRegion.longitude },
+      { latitude: origin.latitude, longitude: origin.longitude },
       {
-        latitudeDelta: initialRegion.latitudeDelta ?? 0.01,
+        latitudeDelta: origin.latitudeDelta,
         circleRadiusMeters,
       }
     );
-  }, [
-    token,
-    initialRegion.latitude,
-    initialRegion.longitude,
-    initialRegion.latitudeDelta,
-    circleRadiusMeters,
-  ]);
+    // Keep the first camera; later moves use animateToRegion so panning does not reload the WebView.
+  }, [token, circleRadiusMeters]);
 
   const injectSnapPoints = useCallback(() => {
     if (!readyRef.current) return;

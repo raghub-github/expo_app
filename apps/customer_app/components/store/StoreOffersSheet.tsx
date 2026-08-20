@@ -7,6 +7,7 @@ import type { MerchantOfferItem, PlatformOfferItem } from "@/services/offers.ser
 import { formatListCardOfferFromMerchantOffer } from "@/lib/merchantOfferBadge";
 import { StoreTheme } from "@/constants/storeTheme";
 import { StoreBottomSheetShell } from "./StoreBottomSheetShell";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 type StoreOffer = MerchantOfferItem | PlatformOfferItem;
 
@@ -67,6 +68,7 @@ function OfferCard({
   itemScoped?: boolean;
   platform?: boolean;
 }) {
+  const dark = useMerchantUiDark();
   const [expanded, setExpanded] = useState(false);
   const merchant = isMerchantOffer(offer);
   const code = merchant
@@ -102,7 +104,7 @@ function OfferCard({
   ];
 
   return (
-    <View style={[styles.card, platform && styles.cardPlatform]}>
+    <View style={[styles.card, dark && styles.cardDark, platform && styles.cardPlatform, platform && dark && styles.cardPlatformDark]}>
       <TouchableOpacity
         style={styles.cardHeader}
         onPress={() => setExpanded((v) => !v)}
@@ -122,18 +124,18 @@ function OfferCard({
           />
         </View>
         <View style={styles.cardTextCol}>
-          <AppText style={styles.cardTitle}>{title}</AppText>
-          {sub ? <AppText style={styles.cardSub}>{sub}</AppText> : null}
+          <AppText style={[styles.cardTitle, dark && styles.cardTitleDark]}>{title}</AppText>
+          {sub ? <AppText style={[styles.cardSub, dark && styles.cardSubDark]}>{sub}</AppText> : null}
           {code ? (
-            <View style={styles.codeBox}>
-              <AppText style={styles.codeText}>{code}</AppText>
+            <View style={[styles.codeBox, dark && styles.codeBoxDark]}>
+              <AppText style={[styles.codeText, dark && styles.cardTitleDark]}>{code}</AppText>
             </View>
           ) : null}
         </View>
         <Ionicons
           name={expanded ? "chevron-up" : "chevron-down"}
           size={18}
-          color={StoreTheme.textSecondary}
+          color={dark ? MerchantDarkPalette.textMuted : StoreTheme.textSecondary}
         />
       </TouchableOpacity>
 
@@ -154,6 +156,7 @@ function OfferCard({
 
 export function StoreOffersSheet({ visible, onClose, storeName, offers }: StoreOffersSheetProps) {
   const { height: winH } = useWindowDimensions();
+  const dark = useMerchantUiDark();
   const scrollMaxH = Math.round(winH * 0.62);
 
   const { itemOffers, storeOffers, platformOffers } = useMemo(() => {
@@ -176,7 +179,7 @@ export function StoreOffersSheet({ visible, onClose, storeName, offers }: StoreO
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.9}>
       <View style={styles.handle} />
-      <AppText style={styles.sheetTitle}>Offers at {storeName}</AppText>
+      <AppText style={[styles.sheetTitle, dark && styles.sheetTitleDark]}>Offers at {storeName}</AppText>
 
       <ScrollView
         style={[styles.list, { maxHeight: scrollMaxH }]}
@@ -185,13 +188,13 @@ export function StoreOffersSheet({ visible, onClose, storeName, offers }: StoreO
         bounces
       >
         {empty ? (
-          <AppText style={styles.empty}>No offers available for this store right now.</AppText>
+          <AppText style={[styles.empty, dark && styles.cardSubDark]}>No offers available for this store right now.</AppText>
         ) : (
           <>
             {platformOffers.length > 0 ? (
               <View style={styles.sectionBlock}>
-                <AppText style={styles.sectionLabel}>SPECIAL OFFERS</AppText>
-                <AppText style={styles.sectionHint}>Applied automatically at checkout</AppText>
+                <AppText style={[styles.sectionLabel, dark && styles.sheetTitleDark]}>SPECIAL OFFERS</AppText>
+                <AppText style={[styles.sectionHint, dark && styles.cardSubDark]}>Applied automatically at checkout</AppText>
                 {platformOffers.map((offer) => (
                   <OfferCard
                     key={`platform-${offer.id}-${offer.label}`}
@@ -204,8 +207,8 @@ export function StoreOffersSheet({ visible, onClose, storeName, offers }: StoreO
 
             {storeOffers.length > 0 ? (
               <View style={styles.sectionBlock}>
-                <AppText style={styles.sectionLabel}>MORE OFFERS</AppText>
-                <AppText style={styles.sectionHint}>Bill discounts · applied at checkout</AppText>
+                <AppText style={[styles.sectionLabel, dark && styles.sheetTitleDark]}>MORE OFFERS</AppText>
+                <AppText style={[styles.sectionHint, dark && styles.cardSubDark]}>Bill discounts · applied at checkout</AppText>
                 {storeOffers.map((offer) => (
                   <OfferCard key={`store-${offer.id}-${offer.label}`} offer={offer} />
                 ))}
@@ -214,8 +217,8 @@ export function StoreOffersSheet({ visible, onClose, storeName, offers }: StoreO
 
             {itemOffers.length > 0 ? (
               <View style={styles.sectionBlock}>
-                <AppText style={styles.sectionLabel}>ITEM DEALS</AppText>
-                <AppText style={styles.sectionHint}>
+                <AppText style={[styles.sectionLabel, dark && styles.sheetTitleDark]}>ITEM DEALS</AppText>
+                <AppText style={[styles.sectionHint, dark && styles.cardSubDark]}>
                   Look for badges on eligible dishes
                 </AppText>
                 {itemOffers.map((offer) => (
@@ -250,6 +253,9 @@ const styles = StyleSheet.create({
     color: StoreTheme.textPrimary,
     marginBottom: 14,
     paddingHorizontal: 16,
+  },
+  sheetTitleDark: {
+    color: MerchantDarkPalette.text,
   },
   sectionBlock: {
     gap: 12,
@@ -287,9 +293,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     overflow: "hidden",
   },
+  cardDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderColor: MerchantDarkPalette.border,
+  },
   cardPlatform: {
     borderColor: "#99F6E4",
     backgroundColor: "#F0FDFA",
+  },
+  cardPlatformDark: {
+    borderColor: MerchantDarkPalette.accent,
+    backgroundColor: MerchantDarkPalette.accentSoft,
   },
   cardHeader: {
     flexDirection: "row",
@@ -322,10 +336,16 @@ const styles = StyleSheet.create({
     color: StoreTheme.textPrimary,
     lineHeight: 19,
   },
+  cardTitleDark: {
+    color: MerchantDarkPalette.text,
+  },
   cardSub: {
     fontSize: 12,
     color: StoreTheme.textSecondary,
     lineHeight: 16,
+  },
+  cardSubDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   codeBox: {
     alignSelf: "flex-start",
@@ -336,6 +356,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     marginTop: 4,
+  },
+  codeBoxDark: {
+    borderColor: MerchantDarkPalette.border,
   },
   codeText: {
     fontSize: 12,

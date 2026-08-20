@@ -13,6 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 import { useLocationStore } from "@/store/locationStore";
 import { useProfile } from "@/hooks/useProfile";
 
@@ -53,6 +54,7 @@ export function GroupOrderStartSheet({
   onStarted,
 }: GroupOrderStartSheetProps) {
   const insets = useSafeAreaInsets();
+  const dark = useMerchantUiDark();
   const { height: screenHeight } = useWindowDimensions();
   const sheetMaxHeight = Math.round(screenHeight * SHEET_HEIGHT_PERCENT);
   const safeBottom = insets.bottom;
@@ -94,7 +96,12 @@ export function GroupOrderStartSheet({
         </TouchableOpacity>
         <View style={[styles.sheetAnchor, { height: sheetMaxHeight }]}>
           <Pressable
-            style={[styles.sheet, styles.sheetFlex, { borderTopLeftRadius: SHEET_TOP_RADIUS, borderTopRightRadius: SHEET_TOP_RADIUS }]}
+            style={[
+              styles.sheet,
+              styles.sheetFlex,
+              dark && styles.sheetDark,
+              { borderTopLeftRadius: SHEET_TOP_RADIUS, borderTopRightRadius: SHEET_TOP_RADIUS },
+            ]}
             onPress={(e) => e.stopPropagation()}
           >
             <View style={styles.handleWrap}>
@@ -109,8 +116,8 @@ export function GroupOrderStartSheet({
                   </View>
                 </View>
                 <View style={styles.headerRight}>
-                  <AppText style={styles.headerName} numberOfLines={1}>Group Order</AppText>
-                  <AppText style={styles.headerSub}>Invite friends to add items</AppText>
+                  <AppText style={[styles.headerName, dark && styles.headerNameDark]} numberOfLines={1}>Group Order</AppText>
+                  <AppText style={[styles.headerSub, dark && styles.headerSubDark]}>Invite friends to add items</AppText>
                   <View style={styles.titleRow}>
                     <TextInput
                       style={styles.titleInput}
@@ -135,7 +142,7 @@ export function GroupOrderStartSheet({
                   bounces={true}
                 >
                   <View style={styles.section}>
-                    <AppText style={styles.sectionTitle}>Delivery Location</AppText>
+                    <AppText style={[styles.sectionTitle, dark && styles.headerNameDark]}>Delivery Location</AppText>
                     <AppText style={styles.sectionSub}>Required • Tap to change</AppText>
                     <TouchableOpacity
                       style={styles.optionRow}
@@ -144,7 +151,7 @@ export function GroupOrderStartSheet({
                     >
                       <Ionicons name="location" size={20} color={GatiMitraColors.emerald} style={styles.optionRowIcon} />
                       <View style={styles.optionRowTextWrap}>
-                        <AppText style={styles.optionRowPrimary} numberOfLines={1}>{deliveryLine}</AppText>
+                      <AppText style={[styles.optionRowPrimary, dark && styles.headerNameDark]} numberOfLines={1}>{deliveryLine}</AppText>
                         {secondaryLine ? <AppText style={styles.optionRowSecondary} numberOfLines={1}>{secondaryLine}</AppText> : null}
                       </View>
                       <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
@@ -152,7 +159,7 @@ export function GroupOrderStartSheet({
                   </View>
 
                   <View style={styles.section}>
-                    <AppText style={styles.sectionTitle}>Add items by</AppText>
+                    <AppText style={[styles.sectionTitle, dark && styles.headerNameDark]}>Add items by</AppText>
                     <AppText style={styles.sectionSub}>Required • Select 1 option</AppText>
                     <View style={styles.optionList}>
                       {TIMER_OPTIONS.map((opt) => (
@@ -238,6 +245,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     overflow: "hidden",
   },
+  sheetDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+  },
   sheetFlex: {
     flex: 1,
     flexDirection: "column",
@@ -284,7 +294,9 @@ const styles = StyleSheet.create({
   },
   headerRight: { flex: 1, minWidth: 0 },
   headerName: { fontSize: 16, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  headerNameDark: { color: MerchantDarkPalette.text },
   headerSub: { fontSize: 13, color: GatiMitraColors.textSecondary, marginTop: 2 },
+  headerSubDark: { color: MerchantDarkPalette.textMuted },
   titleRow: {
     flexDirection: "row",
     alignItems: "center",

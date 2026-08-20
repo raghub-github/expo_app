@@ -10,6 +10,7 @@ import {
 import Svg, { Path } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors } from "@/theme";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 /** Same central-hump wave as Rider PermissionBottomSheetShell / StoreMenuItemDetailSheet. */
 const WAVE_HEIGHT = 36;
@@ -17,7 +18,7 @@ const WAVE_SIDE_Y = 28;
 const WAVE_PEAK_Y = 2;
 const WAVE_STROKE = colors.primary[700];
 
-function WaveTopEdge({ width }: { width: number }) {
+function WaveTopEdge({ width, fill, stroke }: { width: number; fill: string; stroke: string }) {
   const w = Math.max(320, width);
   const sy = WAVE_SIDE_Y;
   const py = WAVE_PEAK_Y;
@@ -41,8 +42,8 @@ function WaveTopEdge({ width }: { width: number }) {
 
   return (
     <Svg width={w} height={WAVE_HEIGHT} style={styles.wave} pointerEvents="none">
-      <Path d={fillPath} fill="#FFFFFF" />
-      <Path d={strokePath} stroke={WAVE_STROKE} strokeWidth={1.5} fill="none" />
+      <Path d={fillPath} fill={fill} />
+      <Path d={strokePath} stroke={stroke} strokeWidth={1.5} fill="none" />
     </Svg>
   );
 }
@@ -62,6 +63,7 @@ export function PermissionBottomSheetShell({
   sheetStyle,
 }: PermissionBottomSheetShellProps) {
   const insets = useSafeAreaInsets();
+  const dark = useMerchantUiDark();
   const { height: winH, width: winW } = useWindowDimensions();
   const maxH = Math.round(winH * maxHeightRatio);
 
@@ -80,10 +82,15 @@ export function PermissionBottomSheetShell({
         <View style={styles.backdrop} />
         <View style={[styles.anchor, { maxHeight: maxH }]}>
           <View style={styles.sheetOuter} pointerEvents="box-none">
-            <WaveTopEdge width={winW} />
+            <WaveTopEdge
+              width={winW}
+              fill={dark ? MerchantDarkPalette.surface : "#FFFFFF"}
+              stroke={dark ? MerchantDarkPalette.accent : WAVE_STROKE}
+            />
             <View
               style={[
                 styles.sheet,
+                dark && styles.sheetDark,
                 { paddingBottom: Math.max(insets.bottom, 16) },
                 sheetStyle,
               ]}
@@ -128,5 +135,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     marginTop: -(WAVE_HEIGHT - WAVE_SIDE_Y),
     overflow: "hidden",
+  },
+  sheetDark: {
+    backgroundColor: MerchantDarkPalette.surface,
   },
 });

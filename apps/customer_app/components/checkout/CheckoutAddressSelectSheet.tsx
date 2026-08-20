@@ -24,6 +24,7 @@ import type { Address } from "@/services/address.service";
 
 import { openCheckoutAddAddress } from "@/lib/openCheckoutAddAddress";
 import { OutOfDeliveryZoneSheet } from "@/components/checkout/OutOfDeliveryZoneSheet";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 const CX = {
   mint: "#2DB5A0",
@@ -75,6 +76,7 @@ export function CheckoutAddressSelectSheet({
   const { data: addresses = [], isLoading: addressesLoading } = useAddresses();
   const [busyId, setBusyId] = useState<number | null>(null);
   const [outOfZoneMessageVisible, setOutOfZoneMessageVisible] = useState(false);
+  const dark = useMerchantUiDark();
 
   const serviceability = useQueries({
     queries: addresses.map((addr) => ({
@@ -135,6 +137,7 @@ export function CheckoutAddressSelectSheet({
         <View
             style={[
               styles.card,
+              dark && styles.cardDark,
               {
                 paddingBottom: Math.max(insets.bottom, 4),
               },
@@ -145,11 +148,11 @@ export function CheckoutAddressSelectSheet({
               <Ionicons name="close" size={22} color="#FFFFFF" />
             </Pressable>
           </View>
-          <CheckoutText style={styles.title}>Select an address</CheckoutText>
+          <CheckoutText style={[styles.title, dark && styles.textDark]}>Select an address</CheckoutText>
 
-          <View style={styles.actionPanel}>
+          <View style={[styles.actionPanel, dark && styles.panelDark]}>
             <Pressable
-              style={styles.actionRow}
+              style={styles.actionHit}
               onPress={() => {
                 void openCheckoutAddAddress({
                   router,
@@ -161,20 +164,22 @@ export function CheckoutAddressSelectSheet({
               }}
               android_ripple={{ color: "rgba(45, 181, 160, 0.12)" }}
             >
+              <View style={styles.actionRow}>
               <View style={styles.actionLeft}>
                 <Ionicons name="add" size={22} color={CX.mint} />
                 <View style={styles.actionTextCol}>
-                  <CheckoutText style={styles.actionTitle}>Add Address</CheckoutText>
-                  <CheckoutText style={styles.actionSub} numberOfLines={1}>
+                  <CheckoutText style={[styles.actionTitle, dark && styles.textDark]}>Add Address</CheckoutText>
+                  <CheckoutText style={[styles.actionSub, dark && styles.mutedDark]} numberOfLines={1}>
                     Search area or drop a pin on the map
                   </CheckoutText>
                 </View>
               </View>
               <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+              </View>
             </Pressable>
           </View>
 
-          <CheckoutText style={styles.sectionLabel}>SAVED ADDRESSES</CheckoutText>
+          <CheckoutText style={[styles.sectionLabel, dark && styles.mutedDark]}>SAVED ADDRESSES</CheckoutText>
 
           {addressesLoading ? (
             <View style={styles.loading}>
@@ -192,7 +197,7 @@ export function CheckoutAddressSelectSheet({
               showsVerticalScrollIndicator={false}
               bounces={false}
             >
-              <View style={[styles.actionPanel, styles.actionPanelInScroll]}>
+              <View style={[styles.actionPanel, styles.actionPanelInScroll, dark && styles.panelDark]}>
                 {addresses.map((addr, index) => {
                   const busy = busyId === addr.id;
                   const quote = serviceability[index]?.data;
@@ -209,7 +214,7 @@ export function CheckoutAddressSelectSheet({
                     <Pressable
                       key={addr.id}
                       style={[
-                        styles.actionRow,
+                        styles.actionHit,
                         isSelected && styles.actionRowSelected,
                         isOutOfZone && styles.actionRowUnavailable,
                         index === addresses.length - 1 && styles.actionRowLast,
@@ -221,6 +226,7 @@ export function CheckoutAddressSelectSheet({
                         isOutOfZone ? undefined : { color: "rgba(45, 181, 160, 0.1)" }
                       }
                     >
+                      <View style={styles.actionRow}>
                       <View style={styles.actionLeft}>
                         {busy ? (
                           <ActivityIndicator size="small" color={CX.mint} />
@@ -239,7 +245,7 @@ export function CheckoutAddressSelectSheet({
                               </CheckoutText>
                             </View>
                           ) : null}
-                          <CheckoutText style={styles.actionTitle} numberOfLines={1}>
+                          <CheckoutText style={[styles.actionTitle, dark && styles.textDark]} numberOfLines={1}>
                             {title}
                           </CheckoutText>
                           {showLabel ? (
@@ -250,7 +256,7 @@ export function CheckoutAddressSelectSheet({
                           <DeliveryAddressText
                             variant="checkout"
                             address={addr.fullAddress}
-                            style={styles.actionSub}
+                            style={[styles.actionSub, dark && styles.mutedDark]}
                           />
                           {dist !== "—" ? (
                             <CheckoutText style={styles.actionDist}>{dist}</CheckoutText>
@@ -266,6 +272,7 @@ export function CheckoutAddressSelectSheet({
                       ) : isDeliverable ? (
                         <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
                       ) : null}
+                      </View>
                     </Pressable>
                   );
                 })}
@@ -319,14 +326,16 @@ const styles = StyleSheet.create({
   actionPanelInScroll: {
     marginBottom: 0,
   },
-  actionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+  actionHit: {
     paddingHorizontal: 16,
     paddingVertical: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E8ECF0",
+  },
+  actionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 10,
   },
   actionRowLast: { borderBottomWidth: 0 },
@@ -405,4 +414,11 @@ const styles = StyleSheet.create({
   },
   scroll: { flexGrow: 0 },
   scrollContent: { flexGrow: 0, paddingBottom: 0 },
+  cardDark: { backgroundColor: MerchantDarkPalette.card },
+  textDark: { color: MerchantDarkPalette.text },
+  mutedDark: { color: MerchantDarkPalette.textMuted },
+  panelDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderColor: MerchantDarkPalette.border,
+  },
 });

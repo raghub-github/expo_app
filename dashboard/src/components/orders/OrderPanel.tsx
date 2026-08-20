@@ -229,7 +229,7 @@ export function OrderPanel({
       className={`relative flex flex-col h-auto max-h-[calc(100dvh-10rem)] bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden ${className ?? ''}`}
     >
       <div className="flex flex-col xl:flex-row divide-y xl:divide-y-0 xl:divide-x divide-dashed divide-gray-200 overflow-y-auto hide-scrollbar flex-1 min-h-0">
-        <div className="flex flex-col p-4 xl:w-[32%] min-w-0 shrink-0">
+        <div className="flex flex-col p-4 xl:w-[30%] min-w-0 shrink-0">
           <div className="mb-3 flex flex-col gap-2">
             <span
               className="inline-flex max-w-full w-fit items-center rounded-md bg-violet-100 px-2.5 py-1 text-[10px] font-bold tracking-wide text-violet-800 whitespace-nowrap overflow-hidden text-ellipsis"
@@ -337,11 +337,12 @@ export function OrderPanel({
           ) : null}
         </div>
 
-        <div className="flex flex-col p-4 flex-1 min-w-0 min-h-0">
+        <div className="flex flex-col p-4 flex-[1.35] min-w-0 min-h-0">
           <MerchantOrderItemsList
             items={previewItems as unknown as Parameters<typeof MerchantOrderItemsList>[0]["items"]}
             requiresUtensils={order.requires_utensils}
             utensilsLabel={utensilsLabel}
+            showQuantityColumn
             onItemClick={(item) => setSelectedItem(item as OrderLineItem)}
           />
           {hasMoreItems ? (
@@ -381,7 +382,7 @@ export function OrderPanel({
           ) : null}
         </div>
 
-        <div className="relative flex flex-col p-4 xl:w-[28%] min-w-[240px] shrink-0 gap-2 min-h-0">
+        <div className="relative flex flex-col p-4 xl:w-[20%] min-w-[200px] max-w-[280px] shrink-0 gap-2 min-h-0">
           {onClose && (
             <button
               type="button"

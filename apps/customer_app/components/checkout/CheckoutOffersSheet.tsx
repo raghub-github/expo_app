@@ -27,6 +27,7 @@ import {
 import { formatCheckoutSavingsRupees } from "@/lib/checkoutAppliedSavings";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 const CX = GatiMitraColors;
 
@@ -127,8 +128,16 @@ function OfferRow({
   onUnlockWithGatiCash?: () => void;
   gatiCashPending?: boolean;
 }) {
+  const dark = useMerchantUiDark();
   return (
-    <View style={[styles.offerRow, locked && styles.offerRowLocked, applied && styles.offerRowApplied]}>
+    <View
+      style={[
+        styles.offerRow,
+        dark && styles.offerRowDark,
+        locked && (dark ? styles.offerRowLockedDark : styles.offerRowLocked),
+        applied && (dark ? styles.offerRowAppliedDark : styles.offerRowApplied),
+      ]}
+    >
       {applied ? (
         <View style={styles.tick}>
           <Ionicons name="checkmark" size={12} color="#fff" />
@@ -143,12 +152,12 @@ function OfferRow({
         </View>
       )}
       <View style={styles.offerTextCol}>
-        <CheckoutText style={[styles.offerTitle, locked && styles.offerTitleMuted]} numberOfLines={2}>
+        <CheckoutText style={[styles.offerTitle, dark && styles.offerTitleDark, locked && styles.offerTitleMuted]} numberOfLines={2}>
           {title}
         </CheckoutText>
         {couponCode?.trim() ? (
-          <View style={[styles.couponCodeBox, locked && styles.couponCodeBoxLocked]}>
-            <CheckoutText style={[styles.couponCodeText, locked && styles.couponCodeTextLocked]}>
+          <View style={[styles.couponCodeBox, dark && styles.couponCodeBoxDark, locked && styles.couponCodeBoxLocked]}>
+            <CheckoutText style={[styles.couponCodeText, dark && styles.offerTitleDark, locked && styles.couponCodeTextLocked]}>
               {couponCode.trim().toUpperCase()}
             </CheckoutText>
           </View>
@@ -158,7 +167,7 @@ function OfferRow({
             {lockReason}
           </CheckoutText>
         ) : subtitle ? (
-          <CheckoutText style={styles.offerSub} numberOfLines={2}>
+          <CheckoutText style={[styles.offerSub, dark && styles.sheetSubDark]} numberOfLines={2}>
             {subtitle}
           </CheckoutText>
         ) : null}
@@ -230,6 +239,7 @@ export function CheckoutOffersSheet({
   onUnlockWithGatiCash,
   onRemoveMissedOfferWallet,
 }: CheckoutOffersSheetProps) {
+  const dark = useMerchantUiDark();
   const savingsForPlatform = (id: number) => {
     const d = appliedDiscounts.find((x) => x.platformOfferId === id);
     return d?.amount ?? null;
@@ -494,14 +504,17 @@ export function CheckoutOffersSheet({
     >
       <View style={styles.handle} />
 
-      <LinearGradient colors={["#DBEAFE", "#EFF6FF", "#FFFFFF"]} style={styles.sheetHero}>
+      <LinearGradient
+        colors={dark ? ["#134E4A", "#1A2A2E", MerchantDarkPalette.surface] : ["#DBEAFE", "#EFF6FF", "#FFFFFF"]}
+        style={styles.sheetHero}
+      >
         <View style={styles.heroTopRow}>
           <View style={styles.heroIconBadge}>
             <CheckoutText style={styles.heroIconPct}>%</CheckoutText>
           </View>
           <View style={styles.heroTextCol}>
-            <CheckoutText style={styles.sheetTitle}>Coupons & offers</CheckoutText>
-            <CheckoutText style={styles.sheetSub}>Save more on this order</CheckoutText>
+            <CheckoutText style={[styles.sheetTitle, dark && styles.sheetTitleDark]}>Coupons & offers</CheckoutText>
+            <CheckoutText style={[styles.sheetSub, dark && styles.sheetSubDark]}>Save more on this order</CheckoutText>
           </View>
           {totalSavings > 0 ? (
             <View style={styles.heroSavingsPill}>
@@ -512,9 +525,9 @@ export function CheckoutOffersSheet({
 
         <View style={styles.codeRow}>
           <TextInput
-            style={styles.codeInput}
+            style={[styles.codeInput, dark && styles.codeInputDark]}
             placeholder="Enter coupon code"
-            placeholderTextColor="#9CA3AF"
+            placeholderTextColor={dark ? MerchantDarkPalette.textDim : "#9CA3AF"}
             value={couponInput}
             onChangeText={onCouponInputChange}
             autoCapitalize="characters"
@@ -1155,4 +1168,28 @@ const styles = StyleSheet.create({
   clearAllBtn: { alignSelf: "center", paddingVertical: 6 },
   clearAllText: { fontSize: 12, fontWeight: "600", color: "#94A3B8" },
   empty: { textAlign: "center", color: "#6B7280", paddingVertical: 20, fontSize: 13 },
+  offerRowDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderColor: MerchantDarkPalette.border,
+  },
+  offerRowLockedDark: {
+    backgroundColor: MerchantDarkPalette.search,
+    borderColor: MerchantDarkPalette.border,
+  },
+  offerRowAppliedDark: {
+    backgroundColor: "rgba(34, 197, 94, 0.12)",
+    borderColor: MerchantDarkPalette.accent,
+  },
+  offerTitleDark: { color: MerchantDarkPalette.text },
+  couponCodeBoxDark: {
+    backgroundColor: MerchantDarkPalette.card,
+    borderColor: MerchantDarkPalette.chipBorder,
+  },
+  sheetTitleDark: { color: MerchantDarkPalette.text },
+  sheetSubDark: { color: MerchantDarkPalette.textMuted },
+  codeInputDark: {
+    backgroundColor: MerchantDarkPalette.search,
+    borderColor: MerchantDarkPalette.border,
+    color: MerchantDarkPalette.text,
+  },
 });

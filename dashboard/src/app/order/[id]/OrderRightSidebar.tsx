@@ -49,6 +49,7 @@ import {
   fetchRiderActivityLogCached,
 } from "@/lib/riderActivityLogCache";
 import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
+import { formatOrderDistanceKmLabel } from "@/lib/orders/order-distance-display";
 
 interface OrderRightSidebarProps {
   order: {
@@ -850,9 +851,13 @@ export default function OrderRightSidebar({
         !options?.force &&
         shouldSkipEmbeddedActivityFetch(activityRefreshKey, initialRemarks)
       ) {
+        setIsLoadingRemarks(false);
         return;
       }
-      if (options?.signal?.aborted) return;
+      if (options?.signal?.aborted) {
+        setIsLoadingRemarks(false);
+        return;
+      }
 
       const fetchRemarks = async () =>
         fetch(`/api/orders/${order.id}/remarks`, {
@@ -957,9 +962,7 @@ export default function OrderRightSidebar({
         // eslint-disable-next-line no-console
         console.error("Error loading remarks", error);
       } finally {
-        if (!options?.signal?.aborted) {
-          setIsLoadingRemarks(false);
-        }
+        setIsLoadingRemarks(false);
       }
     },
     [activityRefreshKey, authReady, initialRemarks, order.id, remarks.length, userEmail]
@@ -1745,7 +1748,7 @@ export default function OrderRightSidebar({
             <dt className="shrink-0">Distance:</dt>
             <dd className="font-medium text-slate-700">
               {order.distanceKm != null ? (
-                <OrderMixedText>{`${Number(order.distanceKm).toFixed(2)} km`}</OrderMixedText>
+                <OrderMixedText>{formatOrderDistanceKmLabel(order.distanceKm)}</OrderMixedText>
               ) : (
                 "—"
               )}
@@ -1958,7 +1961,7 @@ export default function OrderRightSidebar({
             className="flex items-center gap-1 text-xs font-medium text-emerald-600 hover:text-emerald-700 cursor-pointer"
             onClick={() => {
               setShowRemarksModal(true);
-              void loadRemarks({ force: true });
+              void loadRemarks({ force: remarks.length === 0 });
             }}
           >
             <i className="bi bi-list-check" />
@@ -2332,7 +2335,7 @@ export default function OrderRightSidebar({
 
             {/* Modal body */}
             <div className="max-h-[440px] overflow-y-auto px-5 py-3 bg-white rounded-b-xl">
-              {isLoadingRemarks ? (
+              {isLoadingRemarks && remarks.length === 0 ? (
                 <div className="py-6 text-center text-xs text-slate-500">
                   Loading remarks...
                 </div>
@@ -2822,7 +2825,7 @@ export default function OrderRightSidebar({
               >
                 {riderInstructionLines.length > 0 ? (
                   <div className="min-w-0 rounded-md border border-sky-100 bg-white p-3">
-                    <span className="mb-2 inline-flex items-center rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800 ring-1 ring-sky-100">
+                    <span className="mb-2 inline-flex items-center rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-semibold text-sky-800 ring-1 ring-sky-100">
                       Rider
                     </span>
                     <ul className="list-disc space-y-1 pl-4 text-[12px] text-slate-700">
@@ -2834,7 +2837,7 @@ export default function OrderRightSidebar({
                 ) : null}
                 {merchantInstructionLines.length > 0 ? (
                   <div className="min-w-0 rounded-md border border-amber-100 bg-white p-3">
-                    <span className="mb-2 inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900 ring-1 ring-amber-100">
+                    <span className="mb-2 inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-900 ring-1 ring-amber-100">
                       Merchant
                     </span>
                     <ul className="list-disc space-y-1 pl-4 text-[12px] text-slate-700">

@@ -2,6 +2,10 @@
  * Merchant store push + in-app notifications (orders, ratings, rider pickup, online status).
  */
 import type { Sql } from "postgres";
+import {
+  merchantAppOrderHref,
+  merchantAppOrdersTabHref,
+} from "./merchant-app-deeplink.js";
 
 type PushPayload = {
   title: string;
@@ -367,7 +371,6 @@ export async function notifyMerchantRiderReachedPickup(
       orderId: args.displayOrderId,
       foodOrderId: args.foodOrderId,
       url: actionUrl,
-      screen: "orders",
     },
   });
 }
@@ -419,7 +422,6 @@ export async function notifyMerchantRiderFreeWaitExceeded(
       orderId: args.displayOrderId,
       foodOrderId: args.foodOrderId,
       url: actionUrl,
-      screen: "orders",
       idempotencyKey: `MERCHANT_RIDER_FREE_WAIT:${args.foodOrderId}`,
     },
   });
@@ -436,6 +438,11 @@ const LIFECYCLE_STAGES = new Set([
   "DISPATCHED",
   "CANCELLED",
   "DELIVERED",
+  "COMPLETED",
+  "RTO",
+  "SCHEDULED",
+  "PREORDER",
+  "PRE_ORDER",
 ]);
 
 function lifecycleCopy(
@@ -449,35 +456,49 @@ function lifecycleCopy(
     const why = (reason ?? "").trim();
     return {
       title: `Order ${id} cancelled`,
-      body: why ? why : "Order was cancelled. Tap to manage live orders.",
+      body: why ? why : "Order was cancelled. Tap to view.",
       subtitle: `Order ${id} cancelled`,
     };
   }
-  if (s === "DELIVERED") {
+  if (s === "RTO") {
+    return {
+      title: `Order ${id} returned (RTO)`,
+      body: "Tap to view this order",
+      subtitle: `Order ${id} RTO`,
+    };
+  }
+  if (s === "SCHEDULED" || s === "PREORDER" || s === "PRE_ORDER") {
+    return {
+      title: `Scheduled order ${id}`,
+      body: "Tap to view this scheduled order",
+      subtitle: `Order ${id} scheduled`,
+    };
+  }
+  if (s === "DELIVERED" || s === "COMPLETED") {
     return {
       title: `Order ${id} delivered`,
-      body: "Tap to manage your live orders",
+      body: "Tap to view this order",
       subtitle: `Order ${id} delivered`,
     };
   }
   if (s === "READY" || s === "READY_FOR_PICKUP") {
     return {
       title: `Order ${id} is ready`,
-      body: "Ready for pickup — tap to manage live orders",
+      body: "Ready for pickup — tap to view",
       subtitle: `Order ${id} is ready`,
     };
   }
   if (s === "OUT_FOR_DELIVERY" || s === "PICKED_UP" || s === "IN_TRANSIT" || s === "DISPATCHED") {
     return {
       title: `Order ${id} out for delivery`,
-      body: "On the way to customer — tap to manage live orders",
+      body: "On the way to customer — tap to view",
       subtitle: `Order ${id} out for delivery`,
     };
   }
   // PREPARING / ACCEPTED
   return {
     title: `Order ${id} is preparing`,
-    body: "Kitchen started — tap to manage live orders",
+    body: "Kitchen started — tap to view",
     subtitle: `Order ${id} is preparing`,
   };
 }
@@ -561,7 +582,9 @@ export async function notifyMerchantOrderLifecycle(
   const activeOrdersCount = breakdown.active_orders;
   const copy = lifecycleCopy(stage, args.displayOrderId, args.reason);
   const actionUrl =
-    args.foodOrderId != null ? `/order/${args.foodOrderId}` : "/(tabs)/orders?tab=active";
+    args.foodOrderId != null
+      ? merchantAppOrderHref(args.foodOrderId)
+      : merchantAppOrdersTabHref(stage);
 
   await notifyMerchantStore(sql, {
     storeId: args.storeId,
@@ -586,8 +609,7 @@ export async function notifyMerchantOrderLifecycle(
       stickySubtitle: copy.subtitle,
       orderId: args.displayOrderId,
       foodOrderId: args.foodOrderId,
-      url: "/(tabs)/orders?tab=active",
-      screen: "orders",
+      url: actionUrl,
     },
   });
 }

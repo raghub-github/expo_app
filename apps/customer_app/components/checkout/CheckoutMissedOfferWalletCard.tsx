@@ -6,6 +6,7 @@ import { View, Pressable, StyleSheet } from "react-native";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 import type { MissedOfferWalletCompensation } from "@/lib/checkout-missed-offer-wallet";
 
 const BRAND = GatiMitraColors.splashMint;
@@ -32,6 +33,8 @@ export function CheckoutMissedOfferWalletCard({
   onPressAdd,
   onPressRemove,
 }: Props) {
+  const dark = useMerchantUiDark();
+  const accent = dark ? MerchantDarkPalette.accent : BRAND;
   return (
     <View style={styles.wrap}>
       <View style={styles.badge}>
@@ -40,20 +43,20 @@ export function CheckoutMissedOfferWalletCard({
         </CheckoutText>
       </View>
 
-      <Pressable style={styles.card} onPress={pending ? undefined : onPressAdd}>
+      <Pressable style={[styles.card, dark && styles.cardDark]} onPress={pending ? undefined : onPressAdd}>
         <View style={styles.body}>
           <View style={styles.copyCol}>
             <View style={styles.lineRow}>
-              <MaterialCommunityIcons name="tag-outline" size={16} color={BRAND} />
-              <CheckoutText style={styles.headline}>
+              <MaterialCommunityIcons name="tag-outline" size={16} color={accent} />
+              <CheckoutText style={[styles.headline, dark && styles.textDark]}>
                 {pending
                   ? `Save ₹${formatInr(offer.offerSavingsInr)} on this order`
                   : offer.headline}
               </CheckoutText>
             </View>
             <View style={styles.lineRow}>
-              <MaterialCommunityIcons name="wallet-outline" size={16} color={BRAND} />
-              <CheckoutText style={styles.subline}>
+              <MaterialCommunityIcons name="wallet-outline" size={16} color={accent} />
+              <CheckoutText style={[styles.subline, dark && styles.mutedDark]}>
                 {pending
                   ? `₹${formatInr(offer.amountInr)} added to GatiCash after order`
                   : offer.subline}
@@ -69,7 +72,7 @@ export function CheckoutMissedOfferWalletCard({
           <View style={styles.actionCol}>
             {pending ? (
               <Pressable
-                style={styles.removeBtn}
+                style={[styles.removeBtn, dark && styles.btnDark]}
                 onPress={(e) => {
                   e.stopPropagation?.();
                   onPressRemove();
@@ -79,11 +82,11 @@ export function CheckoutMissedOfferWalletCard({
                 <CheckoutText style={styles.removeBtnText}>REMOVE</CheckoutText>
               </Pressable>
             ) : (
-              <Pressable style={styles.addBtn} onPress={onPressAdd} hitSlop={6}>
-                <CheckoutText style={styles.addBtnText}>ADD</CheckoutText>
+              <Pressable style={[styles.addBtn, dark && styles.btnDark]} onPress={onPressAdd} hitSlop={6}>
+                <CheckoutText style={[styles.addBtnText, dark && { color: accent }]}>ADD</CheckoutText>
               </Pressable>
             )}
-            <CheckoutText style={styles.amount}>₹{formatInr(offer.amountInr)}</CheckoutText>
+            <CheckoutText style={[styles.amount, dark && styles.textDark]}>₹{formatInr(offer.amountInr)}</CheckoutText>
           </View>
         </View>
       </Pressable>
@@ -185,4 +188,14 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   amount: { fontSize: 14, fontWeight: "700", color: TEXT_DARK },
+  cardDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderColor: MerchantDarkPalette.border,
+  },
+  textDark: { color: MerchantDarkPalette.text },
+  mutedDark: { color: MerchantDarkPalette.textMuted },
+  btnDark: {
+    backgroundColor: MerchantDarkPalette.card,
+    borderColor: MerchantDarkPalette.chipBorder,
+  },
 });

@@ -5,6 +5,7 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { useWalletBalance } from "@/hooks/useWalletBalance";
 import { walletBalanceFallback } from "@/lib/walletBalanceCache";
 import { AppText } from "@/components/AppText";
+import { markWalletEntrySource } from "@/store/walletChromeStore";
 
 const TITLE_DARK = "#1F2937";
 const ICON_CIRCLE_BG = "#F3F4F6";
@@ -24,10 +25,12 @@ function formatPillBalance(value: number): string {
 
 type Props = {
   variant?: "default" | "gridFirst";
+  /** When true, wallet matches Food Home (dark in discovery). Tabs Home stays light. */
+  fromFoodHome?: boolean;
 };
 
 /** Compact wallet chip — always shows cached/zero balance; never blocks header on fetch. */
-export function GatiCashHeaderPill({ variant = "default" }: Props) {
+export function GatiCashHeaderPill({ variant = "default", fromFoodHome = false }: Props) {
   const router = useRouter();
   const balanceQ = useWalletBalance();
 
@@ -37,12 +40,17 @@ export function GatiCashHeaderPill({ variant = "default" }: Props) {
     walletBalanceFallback().available_balance;
   const displayAmount = formatPillBalance(balance);
 
+  const openWallet = () => {
+    markWalletEntrySource(fromFoodHome ? "food-home" : "default");
+    router.push("/wallet");
+  };
+
   if (variant === "gridFirst") {
     return (
       <TouchableOpacity
         style={styles.gridPill}
         activeOpacity={0.82}
-        onPress={() => router.push("/wallet")}
+        onPress={openWallet}
         accessibilityRole="button"
         accessibilityLabel={`GatiCash wallet, balance ${displayAmount} rupees`}
       >
@@ -60,7 +68,7 @@ export function GatiCashHeaderPill({ variant = "default" }: Props) {
     <TouchableOpacity
       style={styles.pill}
       activeOpacity={0.82}
-      onPress={() => router.push("/wallet")}
+      onPress={openWallet}
       accessibilityRole="button"
       accessibilityLabel={`GatiCash wallet, balance ${displayAmount} rupees`}
     >

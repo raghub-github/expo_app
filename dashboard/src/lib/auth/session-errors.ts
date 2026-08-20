@@ -141,12 +141,13 @@ export function isTimeoutOrAbortError(err: unknown): boolean {
   if (name === "aborterror" || name === "authfetchtimeouterror" || name === "timeouterror") {
     return true;
   }
-  if (msg.includes("aborted") || msg.includes("auth fetch timeout") || msg.includes("auth probe")) {
+  if (msg.includes("aborted") || msg.includes("auth fetch timeout") || msg.includes("auth probe") || msg.includes("request timeout")) {
     return true;
   }
   if (e.code === 20 || e.code === "ABORT_ERR" || e.code === "ABORT" || e.code === "TIMEOUT") {
     return true;
   }
+  if ((e as { status?: number }).status === 408) return true;
   const code = getCauseCode(err) ?? (typeof e.code === "string" ? e.code : undefined);
   return (
     code === "UND_ERR_CONNECT_TIMEOUT" ||

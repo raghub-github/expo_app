@@ -8,22 +8,27 @@ import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { orderService } from "@/services/order.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { useCheckoutPaymentFailureStore } from "@/store/checkoutPaymentFailureStore";
 
 const PAD = 20;
 
 export default function PaymentConfirmingScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { pendingId: pendingIdParam, merchantName: merchantNameParam, message: messageParam, deliveryEtaLabel: deliveryEtaLabelParam } = useLocalSearchParams<{
+  const { pendingId: pendingIdParam, merchantName: merchantNameParam, message: messageParam, deliveryEtaLabel: deliveryEtaLabelParam, amount: amountParam, method: methodParam } = useLocalSearchParams<{
     pendingId?: string | string[];
     merchantName?: string | string[];
     message?: string | string[];
     deliveryEtaLabel?: string | string[];
+    amount?: string | string[];
+    method?: string | string[];
   }>();
   const pendingId = Array.isArray(pendingIdParam) ? pendingIdParam[0] : pendingIdParam;
   const merchantName = Array.isArray(merchantNameParam) ? merchantNameParam[0] : merchantNameParam;
   const initialMessage = Array.isArray(messageParam) ? messageParam[0] : messageParam;
   const deliveryEtaLabel = Array.isArray(deliveryEtaLabelParam) ? deliveryEtaLabelParam[0] : deliveryEtaLabelParam;
+  const amountRaw = Array.isArray(amountParam) ? amountParam[0] : amountParam;
+  const methodRaw = Array.isArray(methodParam) ? methodParam[0] : methodParam;
 
   const statusQuery = useQuery({
     queryKey: ["pending-order-status", pendingId],
@@ -48,19 +53,14 @@ export default function PaymentConfirmingScreen() {
       return;
     }
     if (data.paymentState === "refunded" || data.paymentState === "failed" || data.paymentState === "refund_pending") {
-      router.replace({
-        pathname: "/orders/payment-failure",
-        params: {
-          title: data.paymentState === "refund_pending" ? "Refund in progress" : "Payment not confirmed",
-          message:
-            data.message ??
-            (data.paymentState === "refund_pending"
-              ? "Payment could not be confirmed in time. Refund has been started."
-              : "Payment could not be confirmed. Please check your bank statement or contact support."),
-        },
+      const amount = amountRaw != null ? Number(amountRaw) : NaN;
+      useCheckoutPaymentFailureStore.getState().show({
+        amountInr: Number.isFinite(amount) ? amount : null,
+        methodLabel: methodRaw?.trim() || "UPI",
       });
+      router.replace("/checkout");
     }
-  }, [deliveryEtaLabel, merchantName, router, statusQuery.data]);
+  }, [amountRaw, deliveryEtaLabel, merchantName, methodRaw, router, statusQuery.data]);
 
   return (
     <ScrollView

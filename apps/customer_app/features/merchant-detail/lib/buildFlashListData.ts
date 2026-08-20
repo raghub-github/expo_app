@@ -27,6 +27,10 @@ export type BuildFlashListInput = {
   /** Row key / id of the last item added to cart — pairing strip renders below it only. */
   pairingAnchorKey: string | null;
   pairingCompanionItems: MenuItem[];
+  /** Discovery inner page — skip the large store-info header (name/rating/offers). */
+  hideInfoCard?: boolean;
+  /** Masonry + rail for discovery only. Classic / grid-first keep list rows. */
+  masonry?: boolean;
 };
 
 function itemMatchesPairingAnchor(
@@ -46,13 +50,16 @@ export type BuildFlashListResult = {
 };
 
 export function buildCategoryChips(catalogSections: MenuSection[]): MerchantCategoryChip[] {
-  return catalogSections
+  const cats = catalogSections
     .filter((s) => !s.isSmart && !/large order/i.test(s.title))
     .map((sec, idx) => {
       const categoryId = sec.data[0]?.categoryId ?? null;
+      const imageUrl =
+        sec.data.find((item) => item.imageUrl?.trim())?.imageUrl?.trim() ?? null;
       return {
         id: `cat-${categoryId ?? sec.title}-${idx}`,
         title: sec.title,
+        imageUrl,
         scrollTarget: {
           kind: "category" as const,
           categoryId,
@@ -60,6 +67,17 @@ export function buildCategoryChips(catalogSections: MenuSection[]): MerchantCate
         },
       };
     });
+
+  if (cats.length === 0) return [];
+
+  return [
+    {
+      id: "cat-all",
+      title: "All",
+      scrollTarget: cats[0]!.scrollTarget,
+    },
+    ...cats,
+  ];
 }
 
 export function buildFlashListData(input: BuildFlashListInput): BuildFlashListResult {
@@ -74,6 +92,8 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
     menuPending,
     pairingAnchorKey,
     pairingCompanionItems,
+    hideInfoCard = false,
+    masonry = false,
   } = input;
 
   const data: MerchantFlashListItem[] = [];
@@ -88,8 +108,12 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
     return data.length - 1;
   };
 
-  push({ type: "hero", key: "hero" });
-  push({ type: "info", key: "info" });
+  if (!masonry) {
+    push({ type: "hero", key: "hero" });
+  }
+  if (!hideInfoCard) {
+    push({ type: "info", key: "info" });
+  }
 
   if (showClosedBanner) {
     push({ type: "closed_banner", key: "closed_banner" });
@@ -97,7 +121,9 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
     push({ type: "rush_banner", key: "rush_banner" });
   }
 
-  push({ type: "filter_bar", key: "filter_bar" });
+  if (!hideInfoCard) {
+    push({ type: "filter_bar", key: "filter_bar" });
+  }
 
   if (pastOrderItems.length > 0) {
     pastOrders = push({ type: "past_orders", key: "past_orders", items: pastOrderItems });
@@ -107,7 +133,7 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
     push({ type: "combo_section", key: "combo_section", combos: comboPairs });
   }
 
-  if (sections.length > 0 && sectionStartingPrice != null) {
+  if (!hideInfoCard && sections.length > 0 && sectionStartingPrice != null) {
     startingAt = push({
       type: "section_lead",
       key: "section_lead",
@@ -123,6 +149,48 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
       push({ type: "empty_menu", key: "empty_menu" });
     } else {
       sections.forEach((sec, sectionIndex) => {
+        if (masonry) {
+          const masonryIdx = push({
+            type: "menu_masonry",
+            key: `menu_masonry-${sectionIndex}-${sec.title}`,
+            title: sec.title,
+            sectionIndex,
+            items: sec.data,
+          });
+          if (!sectionByTitle.has(sec.title.trim().toLowerCase())) {
+            sectionByTitle.set(sec.title.trim().toLowerCase(), masonryIdx);
+          }
+          const sectionCategoryId = sec.isSmart ? null : sec.data[0]?.categoryId ?? null;
+          if (sectionCategoryId != null && !sectionByCategoryId.has(String(sectionCategoryId))) {
+            sectionByCategoryId.set(String(sectionCategoryId), masonryIdx);
+          }
+          sec.data.forEach((item) => {
+            menuItemByKey.set(item.listRowKey, masonryIdx);
+            menuItemByKey.set(item.id, masonryIdx);
+            if (item.menuItemId != null) {
+              menuItemByKey.set(String(item.menuItemId), masonryIdx);
+            }
+          });
+
+          const pairingAnchor = sec.data.find(
+            (item) =>
+              pairingAnchorKey != null &&
+              pairingCompanionItems.length > 0 &&
+              itemMatchesPairingAnchor(item, pairingAnchorKey)
+          );
+          if (pairingAnchor) {
+            push({
+              type: "pairing_strip",
+              key: `pairing-${pairingAnchor.listRowKey}`,
+              companions: pairingCompanionItems.map((c) => ({
+                ...c,
+                listRowKey: `${pairingAnchor.listRowKey}::pair::${c.id}`,
+              })),
+            });
+          }
+          return;
+        }
+
         const headerKey = `hdr-${sectionIndex}-${sec.title}`;
         const headerIdx = push({
           type: "section_header",

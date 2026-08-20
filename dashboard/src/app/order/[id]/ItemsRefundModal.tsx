@@ -152,7 +152,7 @@ function PricingBreakdownPanel({
     cashinAmount != null && Number.isFinite(cashinAmount)
       ? Number(cashinAmount)
       : Math.max(0, totalAmount - Math.max(0, gati));
-  const showSplit = accent === 'blue' && gati > 0.005;
+  const showSplit = accent === 'blue';
 
   return (
     <div className={`rounded-md border ${borderClass} ${bgClass} p-3`}>
@@ -239,6 +239,8 @@ function mapApiItemToRefundItemForView(
     isDeliveryFee: delivery,
     appliedOfferType: row.appliedOfferType ?? null,
     offerLabel: row.offerLabel ?? null,
+    catalogAmountPerQuantity: row.catalogAmountPerQuantity,
+    netAmountPerQuantity: row.netAmountPerQuantity,
   };
 }
 
@@ -261,6 +263,8 @@ function syncRefundItemAmounts(
       customAmount: amounts.amountPerQuantity,
       appliedOfferType: row.appliedOfferType ?? item.appliedOfferType ?? null,
       offerLabel: row.offerLabel ?? item.offerLabel ?? null,
+      catalogAmountPerQuantity: row.catalogAmountPerQuantity,
+      netAmountPerQuantity: row.netAmountPerQuantity,
     };
   });
 }
@@ -506,6 +510,8 @@ interface RefundItem {
   isDeliveryFee: boolean;
   appliedOfferType?: string | null;
   offerLabel?: string | null;
+  catalogAmountPerQuantity?: number;
+  netAmountPerQuantity?: number;
 }
 
 function payloadToRefundState(
@@ -2258,11 +2264,33 @@ export default function ItemsRefundModal({
                       />
                     </td>
                     <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 orders-num">{isDeliveryFeeRow(item) ? '-' : item.quantity}</td>
-                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{isDeliveryFeeRow(item) ? item.amountPerQuantity.toFixed(2) : item.amountPerQuantity}</td>
+                    <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">
+                      {isDeliveryFeeRow(item) ? (
+                        item.amountPerQuantity.toFixed(2)
+                      ) : billView === 'merchant' &&
+                        item.catalogAmountPerQuantity != null &&
+                        item.netAmountPerQuantity != null &&
+                        item.netAmountPerQuantity < item.catalogAmountPerQuantity - 0.005 ? (
+                        <span className="inline-flex flex-col items-center leading-tight">
+                          <span className="text-slate-400 line-through text-[10px]">
+                            {item.catalogAmountPerQuantity.toFixed(2)}
+                          </span>
+                          <span>{item.netAmountPerQuantity.toFixed(2)}</span>
+                        </span>
+                      ) : (
+                        item.amountPerQuantity
+                      )}
+                    </td>
                     <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{item.taxPerQuantity.toFixed(2)}</td>
                     <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">{item.chargesPerQuantity.toFixed(2)}</td>
                     <td className="px-2 py-1.5 border border-slate-200 text-center text-slate-600 tabular-nums">
-                      {originalItemCtcTotal(item).toFixed(2)}
+                      {billView === 'merchant' &&
+                      !isDeliveryFeeRow(item) &&
+                      item.catalogAmountPerQuantity != null &&
+                      item.netAmountPerQuantity != null &&
+                      item.netAmountPerQuantity < item.catalogAmountPerQuantity - 0.005
+                        ? (item.netAmountPerQuantity * Math.max(1, item.quantity)).toFixed(2)
+                        : originalItemCtcTotal(item).toFixed(2)}
                     </td>
                   </tr>
                 ))}

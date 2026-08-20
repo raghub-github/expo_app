@@ -22,6 +22,7 @@
  *   3. Add a handler in registerDomainEventHandlers().
  */
 import { send as sendNotification } from "./notificationService.js";
+import type { TemplateVariables } from "./types.js";
 import { getSql } from "../../db/client.js";
 import {
   clearMerchantStoreOrderNotificationsByOrderRef,
@@ -29,6 +30,11 @@ import {
 } from "../../lib/clear-merchant-order-notifications.js";
 import { clearCustomerOrderNotifications } from "../../lib/clear-customer-order-notifications.js";
 import { resolveCustomerOrderCancelledTemplateCode } from "../../lib/order-cancel-notification.js";
+import {
+  lookupFoodOrderIdByCoreOrderText,
+  merchantAppOrderHref,
+} from "../../lib/merchant-new-order-notify.js";
+import { resolveMerchantVisibleOrderNotify } from "../../lib/merchant-visible-pricing.js";
 
 // ---------------------------------------------------------------------------
 // Event catalog
@@ -427,6 +433,37 @@ export function registerDomainEventHandlers(): void {
     }
 
     const map = STATUS_TO_TEMPLATE[e.toStatus.toUpperCase()];
+    const toStatus = e.toStatus.toUpperCase();
+    const foodOrderId = await lookupFoodOrderIdByCoreOrderText(getSql(), {
+      orderIdText: e.orderId,
+      merchantStoreId: e.merchantStoreId,
+    });
+    const merchantHref = merchantAppOrderHref(foodOrderId);
+
+    // Store-token lifecycle push for every merchant-visible stage (works when
+    // the template map has no merchant row, e.g. preparing / ready / RTO).
+    if (e.merchantStoreId != null && e.merchantStoreId > 0) {
+      try {
+        const { notifyMerchantOrderLifecycle } = await import(
+          "../../lib/merchant-push-notify.js"
+        );
+        const foodIdNum =
+          foodOrderId != null && /^\d+$/.test(foodOrderId) ? Number(foodOrderId) : NaN;
+        await notifyMerchantOrderLifecycle(getSql(), {
+          storeId: e.merchantStoreId,
+          foodOrderId: Number.isInteger(foodIdNum) && foodIdNum > 0 ? foodIdNum : null,
+          displayOrderId: e.orderShortId ?? e.orderId,
+          stage: toStatus,
+          reason: e.reason ?? null,
+        });
+      } catch (err) {
+        console.warn(
+          "[eventBus] merchant lifecycle push failed:",
+          (err as Error)?.message ?? err
+        );
+      }
+    }
+
     if (!map) return;
     const vars = {
       orderId: e.orderId,
@@ -436,8 +473,6 @@ export function registerDomainEventHandlers(): void {
       riderName: e.riderName ?? "Your rider",
       etaMinutes: 25,
     };
-
-    const toStatus = e.toStatus.toUpperCase();
     let customerTemplate = map.customer;
     if (toStatus === "CANCELLED" && e.customerId) {
       let refundEligible = e.refundEligible;
@@ -489,12 +524,43 @@ export function registerDomainEventHandlers(): void {
       });
     }
     if (map.merchant && e.merchantUserId) {
+      const merchantVars: TemplateVariables = {
+        ...vars,
+        foodOrderId: foodOrderId ?? "",
+        orderId: foodOrderId ?? e.orderId,
+      };
+      if (
+        map.merchant === "MERCHANT_NEW_ORDER" &&
+        e.merchantStoreId != null &&
+        e.merchantStoreId > 0
+      ) {
+        try {
+          const ctm = await resolveMerchantVisibleOrderNotify(getSql(), {
+            merchantStoreId: e.merchantStoreId,
+            orderIdText: e.orderId,
+          });
+          if (ctm) {
+            merchantVars.amount = ctm.amount;
+            merchantVars.itemCount = ctm.itemCount;
+            merchantVars.customerName = ctm.customerName;
+          }
+        } catch {
+          /* keep template without amount rather than customer CTC */
+        }
+      }
       await sendNotification({
         templateCode: map.merchant,
-        variables: vars,
+        variables: merchantVars,
         target: { user_id: e.merchantUserId },
         idempotencyKey: `${map.merchant}:${e.orderId}:${e.toStatus}`,
-        metadata: { orderId: e.orderId, gmType: map.merchant },
+        metadata: {
+          type: map.merchant === "MERCHANT_NEW_ORDER" ? "merchant_new_order" : "merchant_order",
+          orderId: e.orderId,
+          foodOrderId,
+          url: merchantHref,
+          gmType: map.merchant,
+          stage: toStatus,
+        },
       });
     }
     if (map.rider && e.riderUserId) {
@@ -505,42 +571,6 @@ export function registerDomainEventHandlers(): void {
         idempotencyKey: `${map.rider}:${e.orderId}:${e.toStatus}`,
         metadata: { orderId: e.orderId, gmType: map.rider },
       });
-    }
-
-    // Store-token lifecycle push (preparing / ready / OFD / cancel / delivered)
-    // so the merchant sticky "active orders" tray updates while backgrounded.
-    if (e.merchantStoreId != null && e.merchantStoreId > 0) {
-      const stage = e.toStatus.toUpperCase();
-      if (
-        stage === "PREPARING" ||
-        stage === "ACCEPTED" ||
-        stage === "READY" ||
-        stage === "READY_FOR_PICKUP" ||
-        stage === "OUT_FOR_DELIVERY" ||
-        stage === "PICKED_UP" ||
-        stage === "CANCELLED" ||
-        stage === "DELIVERED"
-      ) {
-        try {
-          const { notifyMerchantOrderLifecycle } = await import(
-            "../../lib/merchant-push-notify.js"
-          );
-          const foodIdRaw = Number(e.orderId);
-          await notifyMerchantOrderLifecycle(getSql(), {
-            storeId: e.merchantStoreId,
-            foodOrderId:
-              Number.isInteger(foodIdRaw) && foodIdRaw > 0 ? foodIdRaw : null,
-            displayOrderId: e.orderShortId ?? e.orderId,
-            stage,
-            reason: e.reason ?? null,
-          });
-        } catch (err) {
-          console.warn(
-            "[eventBus] merchant lifecycle push failed:",
-            (err as Error)?.message ?? err
-          );
-        }
-      }
     }
   });
 

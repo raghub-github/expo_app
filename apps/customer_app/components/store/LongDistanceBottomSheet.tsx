@@ -9,6 +9,7 @@ import { AppAssetImage, useAppAssetUrl } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { reloadCustomerAppAssets } from "@/store/appAssetsStore";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 const POINTS: Array<{
   icon: ComponentProps<typeof Ionicons>["name"];
@@ -26,6 +27,7 @@ type Props = {
 
 export function LongDistanceBottomSheet({ visible, onClose }: Props) {
   const insets = useSafeAreaInsets();
+  const dark = useMerchantUiDark();
   const heroUrl = useAppAssetUrl(CX.store.longDistanceSheet);
 
   useEffect(() => {
@@ -59,7 +61,7 @@ export function LongDistanceBottomSheet({ visible, onClose }: Props) {
           >
             <Ionicons name="close" size={20} color="#FFFFFF" />
           </TouchableOpacity>
-          <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+          <View style={[styles.sheet, dark && styles.sheetDark, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
             {heroUrl ? (
               <View style={styles.heroWrap}>
                 <AppAssetImage
@@ -72,15 +74,15 @@ export function LongDistanceBottomSheet({ visible, onClose }: Props) {
               </View>
             ) : null}
 
-            <AppText style={styles.title}>Your food will come from far away</AppText>
+            <AppText style={[styles.title, dark && styles.titleDark]}>Your food will come from far away</AppText>
 
             <View style={styles.points}>
               {POINTS.map((row) => (
                 <View key={row.text} style={styles.pointRow}>
-                  <View style={styles.pointIcon}>
-                    <Ionicons name={row.icon} size={16} color={GatiMitraColors.deepMintStart} />
+                  <View style={[styles.pointIcon, dark && styles.pointIconDark]}>
+                    <Ionicons name={row.icon} size={16} color={dark ? MerchantDarkPalette.accent : GatiMitraColors.deepMintStart} />
                   </View>
-                  <AppText style={styles.pointText}>{row.text}</AppText>
+                  <AppText style={[styles.pointText, dark && styles.pointTextDark]}>{row.text}</AppText>
                 </View>
               ))}
             </View>
@@ -146,6 +148,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 22,
     paddingTop: 18,
   },
+  sheetDark: {
+    backgroundColor: MerchantDarkPalette.surface,
+  },
   heroWrap: {
     width: "100%",
     height: 132,
@@ -165,6 +170,9 @@ const styles = StyleSheet.create({
     lineHeight: 28,
     marginBottom: 18,
   },
+  titleDark: {
+    color: MerchantDarkPalette.text,
+  },
   points: {
     gap: 14,
     marginBottom: 22,
@@ -183,12 +191,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginTop: 1,
   },
+  pointIconDark: {
+    backgroundColor: MerchantDarkPalette.accentSoft,
+  },
   pointText: {
     flex: 1,
     fontSize: 15,
     fontWeight: "500",
     color: "#374151",
     lineHeight: 22,
+  },
+  pointTextDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   ctaPress: {
     borderRadius: 12,

@@ -1,32 +1,34 @@
 import React from "react";
 import { AppText } from "@/components/AppText";
-
 import { View, StyleSheet, TouchableOpacity, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 
-/** Opaque charcoal — must stay solid (not parent opacity) so buttons read on any banner. */
-const BTN_BG = "#2D2D2D";
 const BTN_SIZE = 40;
+const MINT_BTN = "#D1FAE5";
+const DARK_BTN = "#134E3A";
 
 export type MerchantHeroTopBarActions = {
   onBack: () => void;
   onSearch: () => void;
   onGroupOrder: () => void;
   onOptions: () => void;
+  storeName?: string;
 };
 
 export type MerchantHeroTopBarProps = MerchantHeroTopBarActions & {
   visible: boolean;
 };
 
-function HeroCircleBtn({
+function HeroSquareBtn({
   onPress,
   label,
+  backgroundColor,
   children,
 }: {
   onPress: () => void;
   label: string;
+  backgroundColor: string;
   children: React.ReactNode;
 }) {
   return (
@@ -37,7 +39,7 @@ function HeroCircleBtn({
       accessibilityLabel={label}
       hitSlop={6}
     >
-      <View style={styles.circleBtn}>{children}</View>
+      <View style={[styles.squareBtn, { backgroundColor }]}>{children}</View>
     </TouchableOpacity>
   );
 }
@@ -48,34 +50,28 @@ export const MerchantHeroTopBarContent = React.memo(function MerchantHeroTopBarC
   onSearch,
   onGroupOrder,
   onOptions,
+  storeName,
 }: MerchantHeroTopBarActions) {
   return (
     <View style={styles.row} pointerEvents="box-none">
-      <HeroCircleBtn onPress={onBack} label="Go back">
+      <HeroSquareBtn onPress={onBack} label="Go back" backgroundColor="rgba(0,0,0,0.55)">
         <Ionicons name="chevron-back" size={22} color="#FFFFFF" />
-      </HeroCircleBtn>
+      </HeroSquareBtn>
+
+      <AppText style={styles.storeName} numberOfLines={1}>
+        {storeName?.trim() || "Menu"}
+      </AppText>
 
       <View style={styles.right} pointerEvents="box-none">
-        <TouchableOpacity
-          onPress={onSearch}
-          activeOpacity={0.88}
-          accessibilityRole="button"
-          accessibilityLabel="Search menu"
-          hitSlop={4}
-        >
-          <View style={styles.searchPill}>
-            <Ionicons name="search" size={16} color="#FFFFFF" />
-            <AppText style={styles.searchText}>Search</AppText>
-          </View>
-        </TouchableOpacity>
-
-        <HeroCircleBtn onPress={onGroupOrder} label="Group order">
-          <Ionicons name="people-outline" size={19} color="#FFFFFF" />
-        </HeroCircleBtn>
-
-        <HeroCircleBtn onPress={onOptions} label="More options">
+        <HeroSquareBtn onPress={onSearch} label="Search menu" backgroundColor={MINT_BTN}>
+          <Ionicons name="search" size={18} color={DARK_BTN} />
+        </HeroSquareBtn>
+        <HeroSquareBtn onPress={onGroupOrder} label="Group order" backgroundColor={MINT_BTN}>
+          <Ionicons name="people-outline" size={18} color={DARK_BTN} />
+        </HeroSquareBtn>
+        <HeroSquareBtn onPress={onOptions} label="More options" backgroundColor={DARK_BTN}>
           <Ionicons name="ellipsis-vertical" size={18} color="#FFFFFF" />
-        </HeroCircleBtn>
+        </HeroSquareBtn>
       </View>
     </View>
   );
@@ -88,6 +84,7 @@ export const MerchantHeroTopBar = React.memo(function MerchantHeroTopBar({
   onSearch,
   onGroupOrder,
   onOptions,
+  storeName,
 }: MerchantHeroTopBarProps) {
   const insets = useSafeAreaInsets();
   if (!visible) return null;
@@ -103,6 +100,7 @@ export const MerchantHeroTopBar = React.memo(function MerchantHeroTopBar({
         onSearch={onSearch}
         onGroupOrder={onGroupOrder}
         onOptions={onOptions}
+        storeName={storeName}
       />
     </View>
   );
@@ -115,7 +113,7 @@ const styles = StyleSheet.create({
     right: 0,
     top: 0,
     zIndex: 200,
-    paddingHorizontal: 12,
+    paddingHorizontal: 16,
     ...Platform.select({
       android: { elevation: 16 },
       ios: {},
@@ -126,17 +124,30 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     minHeight: BTN_SIZE,
+    gap: 10,
+  },
+  storeName: {
+    flex: 1,
+    minWidth: 0,
+    textAlign: "center",
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: -0.2,
+    textShadowColor: "rgba(0,0,0,0.45)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   right: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+    flexShrink: 0,
   },
-  circleBtn: {
+  squareBtn: {
     width: BTN_SIZE,
     height: BTN_SIZE,
-    borderRadius: BTN_SIZE / 2,
-    backgroundColor: BTN_BG,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
     ...Platform.select({
@@ -144,33 +155,9 @@ const styles = StyleSheet.create({
       ios: {
         shadowColor: "#000",
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.35,
+        shadowOpacity: 0.28,
         shadowRadius: 4,
       },
     }),
-  },
-  searchPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    backgroundColor: BTN_BG,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: BTN_SIZE / 2,
-    minHeight: BTN_SIZE,
-    ...Platform.select({
-      android: { elevation: 6 },
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.35,
-        shadowRadius: 4,
-      },
-    }),
-  },
-  searchText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#FFFFFF",
   },
 });

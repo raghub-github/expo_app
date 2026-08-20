@@ -90,6 +90,7 @@ export async function geoRoutes(app: FastifyInstance) {
     }
     try {
       const result = await withSqlRetry(() => resolveFoodHomeLayout({ pincode, state, lat, lng }));
+      void reply.header("Cache-Control", "private, max-age=0, must-revalidate");
       return reply.send({ ok: true, ...result });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "resolve_failed";

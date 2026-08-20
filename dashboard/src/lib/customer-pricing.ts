@@ -1,11 +1,8 @@
 /**
- * Customer-facing price math — mirrors backend/src/modules/commission/pricing.ts
- * and cxsite/lib/server/customerPricing.ts:
- *   customer_price = merchant_net * 100 / (100 - commission_percent)
- *
- * Merchant menu stores NET prices (what the merchant wants to receive).
- * Customer app / website mark them up at read time. Dashboard photo-review
- * previews must use the same markup so admins see the live customer price.
+ * Customer-facing price math — MUST match backend/src/modules/commission/pricing.ts.
+ * Dashboard photo-review may markup nets for preview; live customer/menu/checkout
+ * prices come from the backend canonical engine (Boost on CTM, then gross-up).
+ * Do not use this module to apply merchant offers.
  */
 
 export type Rounding = "NEAREST_RUPEE" | "NEAREST_PAISE";

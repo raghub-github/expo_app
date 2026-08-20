@@ -41,12 +41,14 @@ export type OrderPaymentDetail = {
   totalCashbackEarned: number | null;
   /** GatiCash wallet applied (INR). */
   gatiCashUsed: number | null;
-  /** Total discount granted to customer on this order. */
+  /** Customer list-vs-paid discount (CTC). Same 40% Boost is larger than MX rupees. */
   totalDiscountGranted: number | null;
+  /** Restaurant-funded offer on merchant bill (CTM) — matches Items merchant bill. */
+  merchantStoreOfferDiscount?: number | null;
   discountOfferSource: OrderDiscountOfferSource | null;
-  /** Display delivery fee (quoted when membership waived; otherwise charged). */
+  /** Customer-paid delivery fee (₹0 when membership waived). */
   deliveryFee: number | null;
-  /** Pre-benefit quoted fee for strikethrough when membership waived. */
+  /** Pre-membership quoted fee — only set when subscription reduced what the customer paid. */
   deliveryFeeQuoted?: number | null;
   /** True when membership benefit made delivery ₹0. */
   deliveryFeeWaived?: boolean;

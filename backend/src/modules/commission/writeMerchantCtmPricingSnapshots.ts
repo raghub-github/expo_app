@@ -1,11 +1,17 @@
 /**
  * Freeze Merchant CTM line pricing at order placement.
  *
- * SSOT for merchant-facing screens: net_ctm_value = gross_value − merchant_offer_discount.
- * Platform coupons / campaigns / membership never reduce Merchant CTM.
+ * Engine origin: MCRDP / allset (`a4af39e1`).
  *
- * Customer food checkout → finalizeOrder / webhook / legacy POST must always call this
- * so merchant_ctm_pricing_snapshot is populated for every placed item.
+ *   gross_value              = catalog selling price (menu ₹, before commission)
+ *   net_ctm_value            = discounted MX after store offer (no commission scaling)
+ *                              BOGO does not reduce net (discount stored as 0)
+ *   merchant_offer_type      = PERCENTAGE | FLAT | BOGO | NONE  (legacy BOOST still valid)
+ *   merchant_offer_name      = actual store offer title
+ *   merchant_offer_discount  = store-offer ₹ on MX CTM (not the percent)
+ *
+ * v1: gross_value = customer catalog; net = catalog − store offer; settlement × (100−pct)/100.
+ * v2: billing order_line_pricing.canonical_pricing is SSOT (gross = original MX; net = discounted MX).
  */
 
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
@@ -16,6 +22,12 @@ import {
   isCartSurfaceDiscountRow,
 } from "../../lib/merchant-billing-discount.js";
 import type { ResolvedCommission } from "./commission.resolver.js";
+import {
+  ITEM_PRICING_CALCULATION_VERSION,
+  isStoreFundedItemOfferType,
+  parseCanonicalPricing,
+  type ItemPricingResult,
+} from "../pricing/canonicalItemPricing.js";
 
 function num(v: unknown): number {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -79,6 +91,18 @@ function isBoostOfferType(t: string): boolean {
 }
 
 function isItemPercentOrFlatType(t: string): boolean {
+  return t === "PERCENTAGE" || t === "FLAT" || t === "BOOST";
+}
+
+/** Persist the actual store-offer type. Do not collapse PERCENTAGE/FLAT into BOOST. */
+function persistStoreItemOfferType(raw: string): "PERCENTAGE" | "FLAT" | "BOOST" {
+  const t = String(raw ?? "").trim().toUpperCase().replace(/[-\s]+/g, "_");
+  if (t === "FLAT") return "FLAT";
+  if (t === "BOOST") return "BOOST";
+  return "PERCENTAGE";
+}
+
+function isStoreFundedPersistType(t: string): boolean {
   return t === "PERCENTAGE" || t === "FLAT" || t === "BOOST";
 }
 
@@ -146,7 +170,7 @@ function canonicalCtmOfferName(args: {
     return raw || "Buy One Get One";
   }
   if (isBoostOfferType(offerType) || offerType === "PERCENTAGE" || offerType === "FLAT") {
-    return "Boost Offer Applied";
+    return (offerName ?? "").trim() || "Store Offer Applied";
   }
   if (offerType === "PRECISION" || offerType === "CART_PERCENTAGE" || offerType === "CART_FLAT") {
     return (offerName ?? "").trim() || "Precision Offer Applied";
@@ -182,7 +206,17 @@ export type MerchantCtmLineInput = {
    * Boost in CTM. Undefined = signal not available (falls back to order_line_eligibility).
    */
   isItemPromo?: boolean;
+  /** v2 canonical item pricing frozen on the cart/order line. */
+  canonicalPricing?: ItemPricingResult | null;
 };
+
+/** Billing order_line_pricing.canonical_pricing is the CTM v2 SSOT — do not reverse-scale catalog. */
+function canonicalPricingFromBillingRow(
+  row: Record<string, unknown> | null | undefined
+): ItemPricingResult | null {
+  if (!row) return null;
+  return parseCanonicalPricing(row.canonical_pricing ?? row.canonicalPricing);
+}
 
 /**
  * Read the billing engine's per-line ITEM_PROMO flag off the matched order_line_pricing row.
@@ -272,6 +306,7 @@ export function buildMerchantCtmLineInputs(args: {
     quantity: number;
     basePrice: number;
     addons: Array<{ addonPrice: number; quantity: number }>;
+    itemSnapshot?: Record<string, unknown> | null;
   }>;
   billingSnapshot: Record<string, unknown> | null | undefined;
 }): MerchantCtmLineInput[] {
@@ -331,6 +366,11 @@ export function buildMerchantCtmLineInputs(args: {
       offerDiscountPct: pctRaw > 0 && pctRaw <= 100 ? pctRaw : null,
       offerDiscountFlat: flatRaw > 0 ? flatRaw : null,
       isItemPromo: itemPromoFromPricingRow(row),
+      canonicalPricing: parseCanonicalPricing(
+        row?.canonical_pricing ??
+          row?.canonicalPricing ??
+          (it as { itemSnapshot?: Record<string, unknown> }).itemSnapshot?.canonical_pricing
+      ),
     });
   }
   return out;
@@ -358,6 +398,7 @@ export type FrozenOrderItemForCtm = {
   appliedOfferId: number | null;
   /** orders_core_items.ineligibility_reason === 'ITEM_PROMO' — SSOT gate for a merchant ITEM offer. */
   isItemPromo: boolean | undefined;
+  itemSnapshot?: Record<string, unknown> | null;
 };
 
 /**
@@ -386,6 +427,9 @@ export function ctmLineInputFromFrozenItem(row: FrozenOrderItemForCtm): Merchant
     offerDiscountPct: null,
     offerDiscountFlat: null,
     isItemPromo: row.isItemPromo,
+    canonicalPricing: parseCanonicalPricing(
+      row.itemSnapshot?.canonical_pricing ?? row.itemSnapshot?.canonicalPricing
+    ),
   };
 }
 
@@ -442,6 +486,7 @@ export type BackfillOrderItemRow = {
   ownOfferDiscount: number;
   /** orders_core_items.ineligibility_reason; undefined if the column isn't in this schema. */
   ownIneligibilityReason: string | null | undefined;
+  itemSnapshot?: Record<string, unknown> | null;
 };
 
 /**
@@ -481,6 +526,7 @@ export function resolveBackfillCtmLineInput(
         row.ownIneligibilityReason === undefined
           ? undefined
           : String(row.ownIneligibilityReason ?? "").trim().toUpperCase() === "ITEM_PROMO",
+      itemSnapshot: row.itemSnapshot ?? null,
     });
   }
 
@@ -490,6 +536,13 @@ export function resolveBackfillCtmLineInput(
     ? Math.max(0, round2(num(pricing.offerDiscountAmount ?? pricing.offer_discount_amount)))
     : ownDisc;
   const recoveredOfferId = Number(pricing?.appliedOfferId ?? pricing?.applied_offer_id);
+  const recoveredSnap =
+    row.itemSnapshot ??
+    (pricing
+      ? {
+          canonical_pricing: pricing.canonical_pricing ?? pricing.canonicalPricing ?? null,
+        }
+      : null);
   return ctmLineInputFromFrozenItem({
     orderItemId: row.orderItemId,
     menuItemId: row.menuItemId,
@@ -502,6 +555,7 @@ export function resolveBackfillCtmLineInput(
       String(pricing?.appliedOfferLabel ?? pricing?.applied_offer_label ?? row.ownOfferLabel ?? "").trim() || null,
     appliedOfferId: Number.isFinite(recoveredOfferId) && recoveredOfferId > 0 ? recoveredOfferId : null,
     isItemPromo: itemPromoFromPricingRow(pricing),
+    itemSnapshot: recoveredSnap,
   });
 }
 
@@ -514,16 +568,22 @@ export function prepareCtmRows(
   rows: Array<{
     orderItemId: number;
     menuItemId: number | null;
+    quantity: number;
+    customerCatalogLine: number;
+    customerOfferDiscount: number;
     gross: number;
     disc: number;
     net: number;
     offerType: string;
     offerName: string | null;
+    calculationVersion?: number;
+    canonicalPricing?: ItemPricingResult | null;
   }>;
   /**
    * Merchant Precision total in COMMISSION-SCALED (merchant-rupee) terms — used ONLY by
-   * settlement math (merchantGross is itself commission-scaled). Never write this to
-   * orders_core.merchant_precision_discount.
+   * settlement math. CTM `gross_value` is catalog selling ₹; `net_ctm_value` is
+   * selling minus BOOST. Commission is applied in settlement, not in these columns.
+   * Never write this to orders_core.merchant_precision_discount.
    */
   cartPrecisionMerchant: number;
   /**
@@ -568,30 +628,66 @@ export function prepareCtmRows(
     }
   }
 
-  const prepared = lines.map((line) => {
-    // Merchant Precision (cart-level) never enters CTM — only item-surface offers do.
-    // gross stays the full catalog value; a cart-attributed line's discount is simply
-    // not represented here (orders_core.merchant_precision_discount is its home).
-    // A line is cart-surface if its RAW type says so OR — authoritatively — its applied merchant
-    // offer id resolved to a cart/precision offer in the finalized discounts[] metadata.
+  const pricingAssigned = assignPricingRowsToItems(
+    billingSnapshot,
+    lines.map((l) => (l.menuItemId != null ? String(l.menuItemId) : ""))
+  );
+
+  const prepared = lines.map((line, idx) => {
+    const pricing = pricingAssigned[idx];
+    const mergedTypeRaw =
+      String(line.offerType ?? "").trim() ||
+      String(pricing?.appliedOfferType ?? pricing?.applied_offer_type ?? "").trim() ||
+      null;
+    const mergedName =
+      String(line.offerName ?? "").trim() ||
+      String(pricing?.appliedOfferLabel ?? pricing?.applied_offer_label ?? "").trim() ||
+      null;
+    const pricingDisc = pricing
+      ? Math.max(0, round2(num(pricing.offerDiscountAmount ?? pricing.offer_discount_amount)))
+      : 0;
+    const mergedDisc =
+      line.customerOfferDiscount > 0.005 ? round2(line.customerOfferDiscount) : pricingDisc;
+    const mergedOfferIdRaw = Number(
+      line.appliedOfferId ?? pricing?.appliedOfferId ?? pricing?.applied_offer_id
+    );
+    const mergedOfferId =
+      Number.isFinite(mergedOfferIdRaw) && mergedOfferIdRaw > 0 ? mergedOfferIdRaw : null;
+    const mergedPromo = line.isItemPromo ?? itemPromoFromPricingRow(pricing);
+
     const appliedOfferIsCart =
-      line.appliedOfferId != null && cartSurfaceOfferIds.has(line.appliedOfferId);
-    const isCartLine = isCartSurfaceOfferTypeRaw(line.offerType) || appliedOfferIsCart;
-    const customerGross = Math.max(0, round2(line.customerCatalogLine));
-    const customerDisc = isCartLine ? 0 : Math.max(0, round2(line.customerOfferDiscount));
-    const gross = merchantRupee(customerGross * factor);
-    const disc = merchantRupee(Math.min(gross, customerDisc * factor));
+      mergedOfferId != null && cartSurfaceOfferIds.has(mergedOfferId);
+    const isCartLine = isCartSurfaceOfferTypeRaw(mergedTypeRaw) || appliedOfferIsCart;
+    const selling = Math.max(0, round2(line.customerCatalogLine));
+    const customerDisc = isCartLine ? 0 : Math.max(0, round2(mergedDisc));
+    const pricingPct = pricing
+      ? num(pricing.appliedOfferDiscountPct ?? pricing.applied_offer_discount_pct)
+      : 0;
+    const pricingFlat = pricing
+      ? num(pricing.appliedOfferDiscountFlat ?? pricing.applied_offer_discount_flat)
+      : 0;
+    // gross_value = catalog selling price (before commission).
+    const gross = selling;
     return {
       orderItemId: line.orderItemId,
       menuItemId: line.menuItemId,
+      quantity: line.quantity,
+      selling,
       gross,
-      disc,
-      offerType: isCartLine ? "NONE" : normalizeOfferType(line.offerType),
-      offerName: isCartLine ? null : (line.offerName ?? "").trim() || null,
-      offerDiscountPct: isCartLine ? null : line.offerDiscountPct,
-      offerDiscountFlat: isCartLine ? null : line.offerDiscountFlat,
-      // SSOT gate for a merchant ITEM offer (Boost). Cart-surface lines are never item-promo.
-      isItemPromo: isCartLine ? false : line.isItemPromo,
+      disc: Math.min(selling, customerDisc),
+      offerType: isCartLine ? "NONE" : normalizeOfferType(mergedTypeRaw),
+      offerName: isCartLine ? null : mergedName,
+      offerDiscountPct: isCartLine
+        ? null
+        : line.offerDiscountPct ?? (pricingPct > 0 && pricingPct <= 100 ? pricingPct : null),
+      offerDiscountFlat: isCartLine
+        ? null
+        : line.offerDiscountFlat ?? (pricingFlat > 0 ? pricingFlat : null),
+      isItemPromo: isCartLine ? false : mergedPromo,
+      // Billing canonical_pricing wins over a frozen item_snapshot that never received it.
+      canonicalPricing: isCartLine
+        ? null
+        : canonicalPricingFromBillingRow(pricing) ?? line.canonicalPricing ?? null,
     };
   });
 
@@ -688,42 +784,52 @@ export function prepareCtmRows(
       // A buy-get deal is a BOGO whether it arrived typed (BOGO/BUY_X_GET_Y/…) OR only labelled
       // "Buy One Get One" by the engine — either signal forces BOGO so it can never become BOOST.
       const hadBogo = isBogoOfferType(p.offerType) || labelLooksBogo(p.offerName);
-      // Prefer the per-line ITEM_PROMO flag off order_line_pricing (matched by menuItemId);
-      // fall back to the index-based order_line_eligibility array only when it's absent.
       const lineIsItemPromo = p.isItemPromo ?? promoIdx.has(idx);
-      // A BOGO line is NEVER a Boost — exclude it explicitly so a buy-get deal can never be
-      // reclassified as BOOST regardless of ITEM_PROMO/discount state.
+      const hadPctOrFlatBoost =
+        lineIsItemPromo === true &&
+        isItemPercentOrFlatType(p.offerType) &&
+        (p.disc > 0.005 ||
+          (p.offerDiscountPct != null && p.offerDiscountPct > 0) ||
+          (p.offerDiscountFlat != null && p.offerDiscountFlat > 0));
       const hadItemBoost =
-        lineIsItemPromo &&
-        !hadBogo &&
-        (isBoostOfferType(p.offerType) || isItemPercentOrFlatType(p.offerType));
+        !hadBogo && (isBoostOfferType(p.offerType) || hadPctOrFlatBoost);
 
-      // A merchant ITEM offer is ONLY ever a BOGO (any buy-get/free-unit deal) or a Boost
-      // (item-surface %/flat on an ITEM_PROMO line). BOGO is resolved FIRST and unconditionally
-      // — the user requirement is that a BOGO must never be treated or stored as BOOST, and its
-      // free-unit value must never land in merchant_offer_discount (zeroed below; net = gross).
-      // There is deliberately NO fallback that maps a bare %/flat line type onto BOOST: any
-      // remaining line-level discount belongs to a cart-level offer (Merchant Precision) or a
-      // platform coupon/campaign, which must NEVER be laundered into a merchant item offer.
-      // Those amounts live in orders_core.merchant_precision_discount / the platform pools —
-      // not in CTM. So a non-BOGO, non-ITEM_PROMO-Boost line stays NONE.
       let offerType = "NONE";
       if (hadBogo) {
         offerType = "BOGO";
-      } else if (p.disc > 0.005 && hadItemBoost) {
-        offerType = "BOOST";
+      } else if (hadItemBoost) {
+        offerType = persistStoreItemOfferType(p.offerType);
+      } else if (lineIsItemPromo === true && p.disc > 0.005) {
+        offerType = persistStoreItemOfferType(p.offerType);
+      } else if (
+        lineIsItemPromo === true &&
+        merchantDiscRows.some(
+          (r) =>
+            r.itemSurface &&
+            (isBogoOfferType(r.offerType) || labelLooksBogo(r.label))
+        )
+      ) {
+        offerType = "BOGO";
       }
 
-      let disc = p.disc;
-      let net = merchantRupee(Math.max(0, p.gross - p.disc));
-      if (offerType === "BOGO" || offerType === "NONE") {
-        disc = 0;
-        net = p.gross;
+      // gross_value = original MX / catalog selling.
+      // net_ctm_value = discounted MX after store offer. Commission is never scaled into net.
+      const selling = Math.max(0, round2(p.selling));
+      let disc = 0;
+      if (isStoreFundedPersistType(offerType)) {
+        disc = Math.min(selling, Math.max(0, round2(p.disc)));
+        if (disc <= 0.005 && p.offerDiscountPct != null && p.offerDiscountPct > 0 && p.offerDiscountPct <= 100) {
+          disc = Math.min(selling, round2((selling * p.offerDiscountPct) / 100));
+        }
+        if (disc <= 0.005 && p.offerDiscountFlat != null && p.offerDiscountFlat > 0) {
+          disc = Math.min(selling, round2(p.offerDiscountFlat));
+        }
       }
+      const net = round2(Math.max(0, selling - disc));
 
       let offerDiscountPct = p.offerDiscountPct;
       let offerDiscountFlat = p.offerDiscountFlat;
-      if (offerType === "BOOST" && (offerDiscountPct == null || offerDiscountPct <= 0)) {
+      if (isStoreFundedPersistType(offerType) && (offerDiscountPct == null || offerDiscountPct <= 0)) {
         const boostMeta = merchantDiscRows.find(
           (r) =>
             r.itemSurface &&
@@ -748,7 +854,50 @@ export function prepareCtmRows(
               offerDiscountFlat,
             })
           : null;
-      return { ...p, disc, net, offerType, offerName };
+
+      const canon = p.canonicalPricing;
+      if (canon && canon.calculationVersion === ITEM_PRICING_CALCULATION_VERSION) {
+        const raw = String(canon.merchantOfferRawType ?? canon.merchantOfferType ?? "")
+          .toUpperCase()
+          .replace(/[-\s]+/g, "_");
+        const v2Type = isBogoOfferType(offerType) || canon.merchantOfferType === "BOGO"
+          ? "BOGO"
+          : raw === "FLAT"
+            ? "FLAT"
+            : isStoreFundedItemOfferType(raw) || isStoreFundedItemOfferType(canon.merchantOfferType)
+              ? "PERCENTAGE"
+              : offerType === "BOGO"
+                ? "BOGO"
+                : "NONE";
+        const storeFunded = isStoreFundedItemOfferType(v2Type);
+        const v2Disc = storeFunded ? round2(canon.merchantDiscountAmount) : 0;
+        const v2Gross = round2(canon.baseCtmLine);
+        const v2Net = storeFunded ? round2(canon.discountedCtmLine) : v2Gross;
+        return {
+          ...p,
+          disc: v2Disc,
+          net: v2Net,
+          gross: v2Gross,
+          selling: v2Gross,
+          offerType: v2Type,
+          offerName: storeFunded
+            ? (String(canon.merchantOfferName ?? "").trim() || offerName)
+            : v2Type === "BOGO"
+              ? offerName
+              : null,
+          calculationVersion: ITEM_PRICING_CALCULATION_VERSION,
+          canonicalPricing: canon,
+        };
+      }
+
+      return {
+        ...p,
+        disc,
+        net,
+        offerType,
+        offerName,
+        calculationVersion: 1,
+      };
     }),
     cartPrecisionMerchant: Math.max(0, cartPrecisionMerchantTarget),
     cartPrecisionCustomer: Math.max(0, cartPrecisionCustomerTarget),
@@ -763,7 +912,77 @@ export type SettlementBreakdownFromCtm = {
   percentageFlatOfferDiscount: number;
   comboOfferDiscount: number;
   freeDeliveryOfferDiscount: number;
+  calculationVersion: number;
+  companyFundedDiscount: number;
+  platformMerchantShare: number;
+  platformCompanyShare: number;
+  platformDiscountTotal: number;
 };
+
+export function platformFundingFromBilling(
+  billingSnapshot: Record<string, unknown> | null | undefined
+): {
+  total: number;
+  merchantShare: number;
+  companyShare: number;
+  offerId: number | null;
+} {
+  const rows = Array.isArray(billingSnapshot?.discounts)
+    ? (billingSnapshot!.discounts as unknown[])
+    : [];
+  let total = 0;
+  let merchantShare = 0;
+  let companyShare = 0;
+  let offerId: number | null = null;
+  for (const d of rows) {
+    if (!d || typeof d !== "object") continue;
+    const row = d as Record<string, unknown>;
+    const meta =
+      row.meta && typeof row.meta === "object" ? (row.meta as Record<string, unknown>) : {};
+    const platformOfferId = Number(meta.platformOfferId ?? meta.platform_offer_id);
+    const source = String(row.offerSource ?? row.offer_source ?? meta.source ?? "")
+      .toUpperCase()
+      .replace(/[-\s]+/g, "_");
+    const metaSource = String(meta.source ?? "").toLowerCase();
+    if (
+      metaSource.includes("customer_subscription_free_delivery") ||
+      metaSource.includes("gati_mitra_plus")
+    ) {
+      continue;
+    }
+    if (!(Number.isFinite(platformOfferId) && platformOfferId > 0) && source !== "PLATFORM" && source !== "PLATFORM_OFFERS") {
+      continue;
+    }
+    const amt = Math.max(0, round2(num(row.amount)));
+    const merchant =
+      num(meta.merchantContribution ?? meta.merchant_contribution ?? meta.merchantShare);
+    const company = num(meta.platformContribution ?? meta.platform_contribution ?? meta.platformShare);
+    total = round2(total + amt);
+    merchantShare = round2(merchantShare + Math.max(0, merchant));
+    companyShare = round2(companyShare + Math.max(0, company));
+    if (offerId == null && Number.isFinite(platformOfferId) && platformOfferId > 0) {
+      offerId = platformOfferId;
+    }
+  }
+  if (total > 0.005 && merchantShare <= 0.005 && companyShare <= 0.005) {
+    companyShare = total;
+  }
+  return { total, merchantShare, companyShare, offerId };
+}
+
+/**
+ * TEST 12 / refunds: company-funded platform share is absorbed by the company;
+ * only the merchant-funded share may reduce merchant CTM / cancel clawback.
+ */
+export function merchantRefundFromPlatformFunding(funding: {
+  merchantShare: number;
+  companyShare: number;
+}): { merchantDebit: number; companyAbsorbed: number } {
+  return {
+    merchantDebit: round2(Math.max(0, funding.merchantShare)),
+    companyAbsorbed: round2(Math.max(0, funding.companyShare)),
+  };
+}
 
 /** Maps a canonicalized CTM merchant_offer_type onto an order_settlement_breakdown payout-B bucket (see 0381 migration). */
 function settlementBucketForOfferType(
@@ -792,7 +1011,7 @@ function settlementBucketForOfferType(
  * computed for this order — settlement must never recompute discounts independently.
  */
 export function buildSettlementBreakdownFromCtmRows(
-  rows: Array<{ gross: number; disc: number; offerType: string }>,
+  rows: Array<{ gross: number; disc: number; offerType: string; net?: number; calculationVersion?: number }>,
   billingSnapshot: Record<string, unknown> | null | undefined,
   commissionPercent: number,
   /**
@@ -806,6 +1025,8 @@ export function buildSettlementBreakdownFromCtmRows(
 ): SettlementBreakdownFromCtm {
   const pct = commissionPercent;
   const factor = Number.isFinite(pct) && pct >= 0 && pct < 100 ? (100 - pct) / 100 : 1;
+  const funding = platformFundingFromBilling(billingSnapshot);
+  const isV2 = rows.some((r) => r.calculationVersion === ITEM_PRICING_CALCULATION_VERSION);
 
   let itemTotal = 0;
   let couponOfferDiscount = 0;
@@ -813,13 +1034,29 @@ export function buildSettlementBreakdownFromCtmRows(
   let comboOfferDiscount = 0;
 
   for (const r of rows) {
-    itemTotal = round2(itemTotal + r.gross);
-    const bucket = settlementBucketForOfferType(r.offerType);
-    if (!bucket || r.disc <= 0.005) continue;
-    if (bucket === "coupon") couponOfferDiscount = round2(couponOfferDiscount + r.disc);
-    else if (bucket === "percentageFlat")
-      percentageFlatOfferDiscount = round2(percentageFlatOfferDiscount + r.disc);
-    else if (bucket === "combo") comboOfferDiscount = round2(comboOfferDiscount + r.disc);
+    if (isV2) {
+      const netM = merchantRupee(r.net ?? Math.max(0, r.gross - r.disc));
+      const discM = merchantRupee(Math.min(netM + r.disc, r.disc));
+      itemTotal = round2(itemTotal + netM);
+      const bucket = settlementBucketForOfferType(r.offerType);
+      if (bucket === "percentageFlat" && discM > 0.005) {
+        percentageFlatOfferDiscount = round2(percentageFlatOfferDiscount + discM);
+      } else if (bucket === "combo" && discM > 0.005) {
+        comboOfferDiscount = round2(comboOfferDiscount + discM);
+      } else if (bucket === "coupon" && discM > 0.005) {
+        couponOfferDiscount = round2(couponOfferDiscount + discM);
+      }
+    } else {
+      const grossM = merchantRupee(r.gross * factor);
+      const discM = merchantRupee(Math.min(grossM, r.disc * factor));
+      itemTotal = round2(itemTotal + grossM);
+      const bucket = settlementBucketForOfferType(r.offerType);
+      if (!bucket || discM <= 0.005) continue;
+      if (bucket === "coupon") couponOfferDiscount = round2(couponOfferDiscount + discM);
+      else if (bucket === "percentageFlat")
+        percentageFlatOfferDiscount = round2(percentageFlatOfferDiscount + discM);
+      else if (bucket === "combo") comboOfferDiscount = round2(comboOfferDiscount + discM);
+    }
   }
 
   const packagingCustomer = num(
@@ -827,11 +1064,21 @@ export function buildSettlementBreakdownFromCtmRows(
       (billingSnapshot as Record<string, unknown> | null)?.packagingFee
   );
   const packagingCharge = merchantRupee(Math.max(0, packagingCustomer) * factor);
+  const platformMerchantShare = round2(Math.max(0, funding.merchantShare));
+  const platformCompanyShare = round2(Math.max(0, funding.companyShare));
+  const platformDiscountTotal = round2(Math.max(0, funding.total));
 
   const merchantFundedDiscount = round2(
     couponOfferDiscount + percentageFlatOfferDiscount + comboOfferDiscount
   );
-  const merchantGross = round2(Math.max(0, itemTotal + packagingCharge - merchantFundedDiscount));
+  const merchantGross = round2(
+    Math.max(
+      0,
+      isV2
+        ? itemTotal + packagingCharge - precisionMerchantAmount - platformMerchantShare
+        : itemTotal + packagingCharge - merchantFundedDiscount
+    )
+  );
 
   return {
     itemTotal,
@@ -840,9 +1087,12 @@ export function buildSettlementBreakdownFromCtmRows(
     couponOfferDiscount,
     percentageFlatOfferDiscount,
     comboOfferDiscount,
-    // Merchant-funded free-delivery isn't represented on CTM item lines; left at 0
-    // until a merchant-funded free-delivery offer type is threaded through CTM.
     freeDeliveryOfferDiscount: 0,
+    calculationVersion: isV2 ? ITEM_PRICING_CALCULATION_VERSION : 1,
+    companyFundedDiscount: platformCompanyShare,
+    platformMerchantShare,
+    platformCompanyShare,
+    platformDiscountTotal,
   };
 }
 
@@ -874,10 +1124,12 @@ async function upsertSettlementBreakdownFromCtm(
   );
   try {
     await tx.execute(sql`
-      INSERT INTO order_settlement_breakdown (
+        INSERT INTO order_settlement_breakdown (
         order_id, item_total, packaging_charge, merchant_gross, commission_percentage,
         coupon_offer_discount, percentage_flat_offer_discount, combo_offer_discount,
-        free_delivery_offer_discount, promo_discount, other_restaurant_discount, fulfillment_status
+        free_delivery_offer_discount, promo_discount, other_restaurant_discount, fulfillment_status,
+        calculation_version, company_funded_discount, platform_merchant_share,
+        platform_company_share, platform_discount_total
       ) VALUES (
         ${coreOrderId},
         ${breakdown.itemTotal.toFixed(2)},
@@ -890,7 +1142,12 @@ async function upsertSettlementBreakdownFromCtm(
         ${breakdown.freeDeliveryOfferDiscount.toFixed(2)},
         ${breakdown.couponOfferDiscount.toFixed(2)},
         ${legacyOtherRestaurantDiscount.toFixed(2)},
-        'PLACED'
+        'PLACED',
+        ${breakdown.calculationVersion},
+        ${breakdown.companyFundedDiscount.toFixed(2)},
+        ${breakdown.platformMerchantShare.toFixed(2)},
+        ${breakdown.platformCompanyShare.toFixed(2)},
+        ${breakdown.platformDiscountTotal.toFixed(2)}
       )
       ON CONFLICT (order_id) DO UPDATE SET
         item_total = EXCLUDED.item_total,
@@ -903,6 +1160,11 @@ async function upsertSettlementBreakdownFromCtm(
         free_delivery_offer_discount = EXCLUDED.free_delivery_offer_discount,
         promo_discount = EXCLUDED.promo_discount,
         other_restaurant_discount = EXCLUDED.other_restaurant_discount,
+        calculation_version = EXCLUDED.calculation_version,
+        company_funded_discount = EXCLUDED.company_funded_discount,
+        platform_merchant_share = EXCLUDED.platform_merchant_share,
+        platform_company_share = EXCLUDED.platform_company_share,
+        platform_discount_total = EXCLUDED.platform_discount_total,
         updated_at = NOW()
       WHERE order_settlement_breakdown.settled = FALSE
     `);
@@ -935,6 +1197,11 @@ export async function writeMerchantCtmPricingSnapshots(
     billingSnapshot: Record<string, unknown> | null | undefined;
     lines: MerchantCtmLineInput[];
     commission?: ResolvedCommission | null;
+    /**
+     * Backfill / completion safety net: insert missing rows only.
+     * Never overwrite a snapshot that was already frozen at placement.
+     */
+    preserveExisting?: boolean;
   }
 ): Promise<number> {
   const { coreOrderId, billingSnapshot, lines } = args;
@@ -952,62 +1219,121 @@ export async function writeMerchantCtmPricingSnapshots(
     args.commissionPercent,
     billingSnapshot
   );
+  const preserveExisting = args.preserveExisting === true;
 
-  // Opt-in audit trail (set MERCHANT_CTM_DEBUG=1) — logs the finalized billing-engine values
-  // RESOLVED per line next to what is about to be PERSISTED, so any divergence (e.g. a Precision
-  // line resolving to a merchant offer that gets written as BOOST) is visible in one place.
-  if (process.env.MERCHANT_CTM_DEBUG === "1") {
-    for (let i = 0; i < rows.length; i++) {
-      const p = rows[i]!;
-      const src = lines.find((l) => l.orderItemId === p.orderItemId);
-      console.info(
-        "[merchant-ctm][debug]",
-        JSON.stringify({
-          coreOrderId,
-          orderItemId: p.orderItemId,
-          menuItemId: p.menuItemId,
-          resolvedAppliedOfferId: src?.appliedOfferId ?? null,
-          resolvedMerchantOfferType: src?.offerType ?? null,
-          resolvedMerchantOfferName: src?.offerName ?? null,
-          resolvedMerchantOfferDiscount: src?.customerOfferDiscount ?? null,
-          grossValue: p.gross,
-          netValue: p.net,
-          persistedMerchantOfferType: p.offerType,
-          persistedMerchantOfferName: p.offerName,
-          persistedMerchantOfferDiscount: p.disc,
-        })
-      );
-    }
-  }
+  console.info(
+    "[merchant-ctm] ORDER_PLACEMENT",
+    JSON.stringify({
+      coreOrderId,
+      preserveExisting,
+      platform_commission: args.commissionPercent,
+      lines: rows.map((p) => ({
+        orderItemId: p.orderItemId,
+        merchant_offer_type: p.offerType,
+        merchant_offer_name: p.offerName,
+        merchant_offer_discount: p.disc,
+        net_ctm_value: p.net,
+        gross_value: p.gross,
+      })),
+    })
+  );
 
   let written = 0;
+  const funding = platformFundingFromBilling(billingSnapshot);
+  const netSum = rows.reduce((s, r) => s + Math.max(0, r.net), 0);
 
   for (const p of rows) {
     if (!Number.isFinite(p.orderItemId) || p.orderItemId <= 0) continue;
+    const canon = p.canonicalPricing;
+    const calcVer = p.calculationVersion === ITEM_PRICING_CALCULATION_VERSION ? ITEM_PRICING_CALCULATION_VERSION : 1;
+    const share =
+      calcVer === ITEM_PRICING_CALCULATION_VERSION && netSum > 0.005
+        ? round2(funding.merchantShare * (p.net / netSum))
+        : 0;
+    const companyShare =
+      calcVer === ITEM_PRICING_CALCULATION_VERSION && netSum > 0.005
+        ? round2(funding.companyShare * (p.net / netSum))
+        : 0;
+    const settlement = round2(Math.max(0, p.net - share));
+    const offerSnap = JSON.stringify(canon?.merchantOfferSnapshot ?? {});
+    const fulfilled = Math.max(1, Number(p.quantity) || 1);
+    let paidQty = fulfilled;
+    let freeQty = 0;
+    if (p.offerType === "BOGO") {
+      const catalog = num(p.customerCatalogLine);
+      const custDisc = num(p.customerOfferDiscount);
+      const unit = catalog / fulfilled;
+      if (unit > 0.005 && custDisc > 0.005) {
+        freeQty = Math.min(fulfilled, Math.max(0, Math.round(custDisc / unit)));
+        paidQty = fulfilled - freeQty;
+      }
+    }
+    const conflictClause = preserveExisting
+      ? sql`ON CONFLICT (order_item_id) DO NOTHING`
+      : sql`ON CONFLICT (order_item_id) DO UPDATE SET
+            core_order_id = EXCLUDED.core_order_id,
+            menu_item_id = EXCLUDED.menu_item_id,
+            gross_value = EXCLUDED.gross_value,
+            merchant_offer_type = EXCLUDED.merchant_offer_type,
+            merchant_offer_name = EXCLUDED.merchant_offer_name,
+            merchant_offer_discount = EXCLUDED.merchant_offer_discount,
+            net_ctm_value = EXCLUDED.net_ctm_value,
+            calculation_version = EXCLUDED.calculation_version,
+            base_ctm_value = EXCLUDED.base_ctm_value,
+            discounted_ctm_value = EXCLUDED.discounted_ctm_value,
+            commission_percent = EXCLUDED.commission_percent,
+            commission_amount = EXCLUDED.commission_amount,
+            customer_item_price = EXCLUDED.customer_item_price,
+            merchant_offer_id = EXCLUDED.merchant_offer_id,
+            merchant_offer_snapshot = EXCLUDED.merchant_offer_snapshot,
+            platform_offer_id = EXCLUDED.platform_offer_id,
+            platform_discount_total = EXCLUDED.platform_discount_total,
+            merchant_funded_discount = EXCLUDED.merchant_funded_discount,
+            company_funded_discount = EXCLUDED.company_funded_discount,
+            merchant_settlement_ctm = EXCLUDED.merchant_settlement_ctm,
+            paid_quantity = EXCLUDED.paid_quantity,
+            free_quantity = EXCLUDED.free_quantity,
+            fulfilled_quantity = EXCLUDED.fulfilled_quantity`;
     try {
       await tx.execute(sql`
-        INSERT INTO merchant_ctm_pricing_snapshot (
-          core_order_id, order_item_id, menu_item_id,
-          gross_value, merchant_offer_type, merchant_offer_name,
-          merchant_offer_discount, net_ctm_value
-        ) VALUES (
-          ${coreOrderId},
-          ${p.orderItemId},
-          ${p.menuItemId},
-          ${p.gross.toFixed(2)},
-          ${p.offerType},
-          ${p.offerName},
-          ${p.disc.toFixed(2)},
-          ${p.net.toFixed(2)}
-        )
-        ON CONFLICT (order_item_id) DO UPDATE SET
-          core_order_id = EXCLUDED.core_order_id,
-          menu_item_id = EXCLUDED.menu_item_id,
-          gross_value = EXCLUDED.gross_value,
-          merchant_offer_type = EXCLUDED.merchant_offer_type,
-          merchant_offer_name = EXCLUDED.merchant_offer_name,
-          merchant_offer_discount = EXCLUDED.merchant_offer_discount,
-          net_ctm_value = EXCLUDED.net_ctm_value
+          INSERT INTO merchant_ctm_pricing_snapshot (
+            core_order_id, order_item_id, menu_item_id,
+            gross_value, merchant_offer_type, merchant_offer_name,
+            merchant_offer_discount, net_ctm_value,
+            calculation_version, base_ctm_value, discounted_ctm_value,
+            commission_percent, commission_amount, customer_item_price,
+            merchant_offer_id, merchant_offer_snapshot,
+            platform_offer_id, platform_discount_total,
+            merchant_funded_discount, company_funded_discount,
+            merchant_settlement_ctm,
+            paid_quantity, free_quantity, fulfilled_quantity
+          ) VALUES (
+            ${coreOrderId},
+            ${p.orderItemId},
+            ${p.menuItemId},
+            ${p.gross.toFixed(2)},
+            ${p.offerType},
+            ${p.offerName},
+            ${p.disc.toFixed(2)},
+            ${p.net.toFixed(2)},
+            ${calcVer},
+            ${(canon?.baseCtmLine ?? p.gross).toFixed(2)},
+            ${(canon?.discountedCtmLine ?? p.net).toFixed(2)},
+            ${(canon?.commissionRate ?? args.commissionPercent).toFixed(2)},
+            ${(canon?.commissionAmount ?? 0).toFixed(2)},
+            ${(canon?.customerItemPriceLine ?? 0).toFixed(2)},
+            ${canon?.merchantOfferId ?? null},
+            ${offerSnap}::jsonb,
+            ${funding.offerId},
+            ${round2(funding.total * (netSum > 0 ? p.net / netSum : 0)).toFixed(2)},
+            ${share.toFixed(2)},
+            ${companyShare.toFixed(2)},
+            ${settlement.toFixed(2)},
+            ${paidQty.toFixed(3)},
+            ${freeQty.toFixed(3)},
+            ${fulfilled.toFixed(3)}
+          )
+          ${conflictClause}
       `);
       written += 1;
     } catch (err) {
@@ -1018,13 +1344,21 @@ export async function writeMerchantCtmPricingSnapshots(
         );
         return 0;
       }
+      if (code === "23514") {
+        console.error(
+          "[merchant-ctm] snapshot check constraint rejected the row — apply backend/drizzle/0560_merchant_ctm_offer_type_percentage.sql (PERCENTAGE/FLAT) plus 0555/0557. order_item_id=",
+          p.orderItemId,
+          { offerType: p.offerType, disc: p.disc, net: p.net, gross: p.gross }
+        );
+      }
       console.error("[merchant-ctm] insert failed for order_item_id=", p.orderItemId, err);
       throw err;
     }
   }
 
   // Freeze cart/precision ₹ on the order so partner CTM can always subtract it.
-  if (written > 0) {
+  // Completion/backfill must not rewrite precision or settlement once placement froze them.
+  if (written > 0 && !preserveExisting) {
     // orders_core.merchant_precision_discount must equal the EXACT Merchant Precision the
     // Billing Engine finalized and the customer sees in the billing breakdown (customer ₹) —
     // never a recomputed or commission-scaled figure. `cartPrecisionCustomer` is that value
@@ -1092,6 +1426,18 @@ export async function writeMerchantCtmPricingSnapshots(
       commissionPercent: args.commissionPercent,
       breakdown,
     });
+    try {
+      await tx.execute(sql`
+        UPDATE orders_core
+        SET total_ctm = ${breakdown.merchantGross.toFixed(2)}::numeric,
+            updated_at = NOW()
+        WHERE id = ${coreOrderId}
+      `);
+    } catch (err) {
+      if ((err as { code?: string })?.code !== "42703") {
+        console.error("[merchant-ctm] failed to freeze orders_core.total_ctm", err);
+      }
+    }
   }
 
   if (written < lines.length) {
@@ -1129,21 +1475,33 @@ export async function ensureMerchantCtmPricingSnapshotsForOrder(
       itemRows = await db.execute(sql`
         SELECT id, menu_item_id, quantity, base_price, addon_price, total_price,
           offer_discount_amount, applied_offer_label, applied_offer_type,
-          applied_offer_id, ineligibility_reason
+          applied_offer_id, ineligibility_reason, item_snapshot
         FROM orders_core_items
         WHERE order_id = ${orderIdText}
         ORDER BY id ASC
       `);
     } catch (err) {
       if ((err as { code?: string })?.code !== "42703") throw err;
-      hasFrozenOfferMeta = false;
-      itemRows = await db.execute(sql`
-        SELECT id, menu_item_id, quantity, base_price, addon_price, total_price,
-          offer_discount_amount, applied_offer_label, applied_offer_type
-        FROM orders_core_items
-        WHERE order_id = ${orderIdText}
-        ORDER BY id ASC
-      `);
+      try {
+        itemRows = await db.execute(sql`
+          SELECT id, menu_item_id, quantity, base_price, addon_price, total_price,
+            offer_discount_amount, applied_offer_label, applied_offer_type,
+            applied_offer_id, ineligibility_reason
+          FROM orders_core_items
+          WHERE order_id = ${orderIdText}
+          ORDER BY id ASC
+        `);
+      } catch (err2) {
+        if ((err2 as { code?: string })?.code !== "42703") throw err2;
+        hasFrozenOfferMeta = false;
+        itemRows = await db.execute(sql`
+          SELECT id, menu_item_id, quantity, base_price, addon_price, total_price,
+            offer_discount_amount, applied_offer_label, applied_offer_type
+          FROM orders_core_items
+          WHERE order_id = ${orderIdText}
+          ORDER BY id ASC
+        `);
+      }
     }
     const items = itemRows as unknown as Array<{
       id: number | string;
@@ -1157,10 +1515,34 @@ export async function ensureMerchantCtmPricingSnapshotsForOrder(
       applied_offer_type: string | null;
       applied_offer_id?: number | string | null;
       ineligibility_reason?: string | null;
+      item_snapshot?: Record<string, unknown> | null;
     }>;
     if (items.length === 0) return;
-    // Always rewrite (ON CONFLICT UPDATE) so item-surface offer changes stay in sync —
-    // Precision/cart-level discount is never represented on CTM lines (orders_core only).
+
+    const existingSnap = await db.execute(sql`
+      SELECT order_item_id
+      FROM merchant_ctm_pricing_snapshot
+      WHERE core_order_id = ${coreOrderId}
+    `);
+    const existingRaw = Array.isArray(existingSnap)
+      ? existingSnap
+      : ((existingSnap as { rows?: unknown })?.rows ?? []);
+    const existingIds = new Set(
+      (existingRaw as Array<{ order_item_id: number | string }>).map((r) => Number(r.order_item_id))
+    );
+    const missingItems = items.filter((row) => !existingIds.has(Number(row.id)));
+    if (missingItems.length === 0) {
+      console.info(
+        "[merchant-ctm] ORDER_COMPLETION preserve",
+        JSON.stringify({
+          coreOrderId,
+          orderIdText,
+          existing: existingIds.size,
+          reason: "snapshots already frozen at placement",
+        })
+      );
+      return;
+    }
 
     const coreRows = await db.execute(sql`
       SELECT billing_snapshot, merchant_store_id
@@ -1226,6 +1608,8 @@ export async function ensureMerchantCtmPricingSnapshotsForOrder(
           ownOfferId: row.applied_offer_id != null ? Number(row.applied_offer_id) : null,
           ownOfferDiscount: num(row.offer_discount_amount),
           ownIneligibilityReason: hasFrozenOfferMeta ? (row.ineligibility_reason ?? null) : undefined,
+          itemSnapshot:
+            row.item_snapshot && typeof row.item_snapshot === "object" ? row.item_snapshot : null,
         },
         pricingRows,
         i
@@ -1236,11 +1620,14 @@ export async function ensureMerchantCtmPricingSnapshotsForOrder(
       coreOrderId,
       commissionPercent: pct,
       billingSnapshot,
-      lines,
+      lines: existingIds.size > 0
+        ? lines.filter((l) => !existingIds.has(l.orderItemId))
+        : lines,
+      preserveExisting: existingIds.size > 0,
     });
     if (written > 0) {
       console.info(
-        `[merchant-ctm] backfilled ${written} rows for order ${orderIdText} (core_id=${coreOrderId})`
+        `[merchant-ctm] ORDER_COMPLETION backfill ${written} missing rows for order ${orderIdText} (core_id=${coreOrderId})`
       );
     }
   } catch (err) {

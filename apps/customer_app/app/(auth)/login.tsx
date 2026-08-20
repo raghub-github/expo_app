@@ -4,7 +4,7 @@
  * rounded input with focus glow, green gradient CTA, safe-area aware.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import {
   FlatList,
   Pressable,
   Image,
+  Dimensions,
   type ImageSourcePropType,
   type KeyboardEvent,
 } from "react-native";
@@ -154,6 +155,7 @@ export default function LoginScreen() {
   const [error, setError] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [keyboardCovered, setKeyboardCovered] = useState(0);
   const [selectedCountry, setSelectedCountry] = useState<CountryOption>(DEFAULT_COUNTRY);
   const [countryPickerVisible, setCountryPickerVisible] = useState(false);
   const [logoError, setLogoError] = useState(false);
@@ -164,32 +166,28 @@ export default function LoginScreen() {
   const [apiUrlSaving, setApiUrlSaving] = useState(false);
   const [currentApiUrl, setCurrentApiUrl] = useState<string>(() => getConfig().apiBaseUrl);
 
-  const scrollFormIntoView = useCallback(() => {
-    const end = () => scrollRef.current?.scrollToEnd({ animated: true });
-    requestAnimationFrame(end);
-    setTimeout(end, 100);
-    setTimeout(end, 280);
-  }, []);
-
   useEffect(() => {
     const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const subShow = Keyboard.addListener(showEvt, (_event: KeyboardEvent) => {
+    const subShow = Keyboard.addListener(showEvt, (event: KeyboardEvent) => {
       setKeyboardVisible(true);
+      if (Platform.OS === "ios") {
+        setKeyboardCovered(0);
+        return;
+      }
+      const kbTop = event.endCoordinates.screenY;
+      const winH = Dimensions.get("window").height;
+      setKeyboardCovered(Math.max(0, Math.round(winH - kbTop)));
     });
     const subHide = Keyboard.addListener(hideEvt, () => {
       setKeyboardVisible(false);
+      setKeyboardCovered(0);
     });
     return () => {
       subShow.remove();
       subHide.remove();
     };
   }, []);
-
-  useEffect(() => {
-    if (!keyboardVisible) return;
-    scrollFormIntoView();
-  }, [keyboardVisible, scrollFormIntoView]);
 
   const openApiUrlModal = () => {
     setApiUrlInput(currentApiUrl);
@@ -296,7 +294,12 @@ export default function LoginScreen() {
         contentContainerStyle={[
           styles.scrollContent,
           keyboardVisible && styles.scrollContentKeyboard,
-          { paddingBottom: keyboardVisible ? 24 : 24 + insets.bottom },
+          {
+            paddingTop: keyboardVisible ? 8 : 24,
+            paddingBottom: keyboardVisible
+              ? keyboardCovered + 8
+              : 24 + insets.bottom,
+          },
         ]}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
@@ -378,7 +381,6 @@ export default function LoginScreen() {
                   onChangeText={handlePhoneChange}
                   onFocus={() => {
                     setInputFocused(true);
-                    scrollFormIntoView();
                   }}
                   onBlur={() => setInputFocused(false)}
                   editable={!loading}
@@ -648,8 +650,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   scrollContentKeyboard: {
-    justifyContent: "flex-start",
-    paddingTop: 12,
+    justifyContent: "flex-end",
   },
   card: {
     width: "100%",

@@ -5,6 +5,7 @@ import { useToast } from "@/context/ToastContext";
 import { RideTimelineCard, type TimelineStamp } from "./PersonRideDetailSections";
 import type { PersonRideDetailOrder } from "./person-ride-detail-types";
 import { isRideFarePaymentPending } from "@/lib/riders/ride-wallet-credit-pending";
+import { titleCaseStatusWords } from "@/lib/riders/rider-order-status-display";
 
 type RemarkRow = {
   id: string;
@@ -223,8 +224,8 @@ export default function PersonRideRightSidebar({
                     <span className="pr-num text-[11px] font-semibold text-emerald-700">
                       ₹{Number(r.refundAmount || 0).toFixed(2)}
                     </span>
-                    <span className="text-[9px] uppercase text-slate-500">
-                      {r.refundStatus ?? "—"}
+                    <span className="text-[9px] text-slate-500">
+                      {r.refundStatus ? titleCaseStatusWords(String(r.refundStatus)) : "—"}
                     </span>
                   </div>
                   <p className="mt-0.5 text-[10px] leading-snug text-slate-600">
@@ -280,8 +281,8 @@ export default function PersonRideRightSidebar({
             {remarks.slice(0, 8).map((r) => (
               <li key={r.id} className="rounded-md bg-slate-50 px-2 py-1.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-semibold uppercase text-emerald-700">
-                    {r.type}
+                  <span className="text-[10px] font-semibold text-emerald-700">
+                    {titleCaseStatusWords(r.type)}
                   </span>
                   <span className="pr-num text-[9px] text-slate-500">{r.time}</span>
                 </div>

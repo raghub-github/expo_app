@@ -2,6 +2,8 @@ import { headers } from "next/headers";
 import { requireDashboardAccess } from "@/lib/permissions/page-protection";
 import { StoreLayoutWrapper } from "./StoreLayoutWrapper";
 import type { StoreInfo } from "./StoreLayoutShell";
+import { RecoverStoreIdClient } from "@/components/merchants/RecoverStoreIdClient";
+import { parseNumericStoreId } from "@/lib/merchants/effective-store-id";
 import {
   getInternalDashboardOrigin,
   readJsonResponse,
@@ -29,17 +31,17 @@ export default async function StoreDashboardLayout({
 }) {
   await requireDashboardAccess("MERCHANT");
   const { id } = await params;
-  const storeId = parseInt(id, 10);
+  const numericId = parseNumericStoreId(id);
+  if (!numericId) {
+    return <RecoverStoreIdClient />;
+  }
+  const storeId = parseInt(numericId, 10);
   if (!Number.isFinite(storeId)) {
-    return (
-      <div className="rounded-xl border border-gray-200 bg-white p-6">
-        <p className="text-gray-500">Invalid store ID.</p>
-      </div>
-    );
+    return <RecoverStoreIdClient />;
   }
   const store = await getStore(storeId);
   return (
-    <StoreLayoutWrapper storeId={id} store={store}>
+    <StoreLayoutWrapper storeId={numericId} store={store}>
       {children}
     </StoreLayoutWrapper>
   );

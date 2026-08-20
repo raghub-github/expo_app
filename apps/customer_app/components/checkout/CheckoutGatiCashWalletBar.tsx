@@ -2,11 +2,13 @@
  * Zomato-style GatiCash wallet toggle on checkout — use wallet balance on this order.
  */
 
+import type { ReactNode } from "react";
 import { View, Pressable, StyleSheet, ActivityIndicator } from "react-native";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 const BRAND = GatiMitraColors.splashMint;
 const TITLE_DARK = "#111827";
@@ -24,6 +26,8 @@ type Props = {
   checked: boolean;
   onToggle: () => void;
   loading?: boolean;
+  /** Delivery / takeaway toggle on the right of this row. */
+  trailing?: ReactNode;
 };
 
 export function CheckoutGatiCashWalletBar({
@@ -33,45 +37,63 @@ export function CheckoutGatiCashWalletBar({
   checked,
   onToggle,
   loading = false,
+  trailing,
 }: Props) {
   const router = useRouter();
+  const dark = useMerchantUiDark();
+  const accent = dark ? MerchantDarkPalette.accent : BRAND;
+  const hideWallet = balance <= 0.005;
 
   if (loading) {
     return (
-      <View style={styles.bar}>
-        <ActivityIndicator size="small" color={BRAND} />
-        <CheckoutText style={styles.loadingText}>Loading GatiCash…</CheckoutText>
+      <View style={[styles.bar, dark && styles.barDark]}>
+        <ActivityIndicator size="small" color={accent} />
+        <CheckoutText style={[styles.loadingText, dark && styles.mutedDark, styles.textCol]} numberOfLines={1}>
+          Loading GatiCash…
+        </CheckoutText>
+        {trailing ? <View style={styles.trailing}>{trailing}</View> : null}
       </View>
     );
   }
 
-  if (balance <= 0.005) return null;
+  if (hideWallet && !trailing) return null;
 
   return (
-    <View style={styles.bar}>
-      <Pressable
-        style={styles.checkHit}
-        onPress={onToggle}
-        hitSlop={8}
-        accessibilityRole="checkbox"
-        accessibilityState={{ checked }}
-      >
-        <View style={[styles.checkBox, checked && styles.checkBoxOn]}>
-          {checked ? <Ionicons name="checkmark" size={15} color="#FFFFFF" /> : null}
-        </View>
-      </Pressable>
-
-      <View style={styles.textCol}>
-        <CheckoutText style={styles.primaryText}>
-          Use ₹{formatInrLabel(checked ? applyAmount : maxApplyAmount)} from GatiCash
-        </CheckoutText>
-        <View style={styles.subRow}>
-          <CheckoutText style={styles.balanceText}>Balance: ₹{formatInrLabel(balance)}</CheckoutText>
-          <Pressable onPress={() => router.push("/wallet/add-money")} hitSlop={6}>
-            <CheckoutText style={styles.addMoneyLink}>Add Money ›</CheckoutText>
+    <View style={[styles.bar, dark && styles.barDark]}>
+      {!hideWallet ? (
+        <View style={styles.leftCluster}>
+          <Pressable
+            style={styles.checkHit}
+            onPress={onToggle}
+            hitSlop={8}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked }}
+          >
+            <View style={[styles.checkBox, dark && styles.checkBoxDark, checked && styles.checkBoxOn, checked && dark && { backgroundColor: accent, borderColor: accent }]}>
+              {checked ? <Ionicons name="checkmark" size={15} color="#FFFFFF" /> : null}
+            </View>
           </Pressable>
+
+          <View style={styles.textCol}>
+            <CheckoutText style={[styles.primaryText, dark && styles.textDark]} numberOfLines={1}>
+              Use ₹{formatInrLabel(checked ? applyAmount : maxApplyAmount)} from GatiCash
+            </CheckoutText>
+            <View style={styles.subRow}>
+              <CheckoutText style={[styles.balanceText, dark && styles.mutedDark]} numberOfLines={1}>
+                Balance: ₹{formatInrLabel(balance)}
+              </CheckoutText>
+              <Pressable onPress={() => router.push("/wallet/add-money")} hitSlop={6}>
+                <CheckoutText style={[styles.addMoneyLink, dark && { color: accent }]} numberOfLines={1}>
+                  Add Money ›
+                </CheckoutText>
+              </Pressable>
+            </View>
+          </View>
         </View>
-      </View>
+      ) : (
+        <View style={styles.leftCluster} />
+      )}
+      {trailing ? <View style={styles.trailing}>{trailing}</View> : null}
     </View>
   );
 }
@@ -79,16 +101,28 @@ export function CheckoutGatiCashWalletBar({
 const styles = StyleSheet.create({
   bar: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
+    flexWrap: "nowrap",
+    alignItems: "center",
     backgroundColor: "#FFFFFF",
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E5E7EB",
     paddingHorizontal: 16,
-    paddingVertical: 11,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E5E7EB",
+  },
+  leftCluster: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    flexWrap: "nowrap",
+    alignItems: "center",
+    marginRight: 10,
   },
   checkHit: {
-    paddingTop: 2,
+    marginRight: 10,
+    flexShrink: 0,
   },
   checkBox: {
     width: 22,
@@ -116,22 +150,39 @@ const styles = StyleSheet.create({
   },
   subRow: {
     flexDirection: "row",
+    flexWrap: "nowrap",
     alignItems: "center",
-    flexWrap: "wrap",
-    gap: 6,
-    marginTop: 4,
+    marginTop: 3,
   },
   balanceText: {
     fontSize: 13,
     color: TEXT_GRAY,
+    flexShrink: 1,
   },
   addMoneyLink: {
     fontSize: 13,
     fontWeight: "600",
     color: BRAND,
+    marginLeft: 6,
+    flexShrink: 0,
   },
   loadingText: {
     fontSize: 14,
     color: TEXT_GRAY,
+  },
+  barDark: {
+    backgroundColor: MerchantDarkPalette.card,
+    borderTopColor: MerchantDarkPalette.border,
+    borderBottomColor: MerchantDarkPalette.border,
+  },
+  checkBoxDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderColor: MerchantDarkPalette.chipBorder,
+  },
+  textDark: { color: MerchantDarkPalette.text },
+  mutedDark: { color: MerchantDarkPalette.textMuted },
+  trailing: {
+    flexShrink: 0,
+    marginLeft: 4,
   },
 });

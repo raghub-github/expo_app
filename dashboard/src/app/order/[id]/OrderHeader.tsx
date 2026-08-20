@@ -117,25 +117,37 @@ export default function OrderHeader({ forceSkeleton = false }: OrderHeaderProps)
   const initials = getUserInitials(name, email);
   const displayName = name ?? displayEmail;
 
-  /** Only the user block can skeleton — logo is static and must match SSR. */
+  const showBrandSkeleton = forceSkeleton;
   const showUserSkeleton =
     forceSkeleton ||
     !identityReady ||
     (!authReady && !email && !systemUserId && !name);
 
   return (
-    <header className="z-40 shrink-0 border-b border-slate-200 bg-white/95 shadow-[0_1px_4px_rgba(15,23,42,0.08)] backdrop-blur">
+    <header className="sticky top-0 z-50 shrink-0 border-b border-slate-200 bg-white">
       <div className="flex h-11 w-full items-center justify-between px-3 sm:h-12 sm:px-4 md:px-6">
-        <div className="flex items-center gap-2 sm:gap-3">
-          <div className="relative h-6 w-[120px] sm:h-7 sm:w-[150px] md:h-7 md:w-[170px]">
-            <Image
-              src="/logo.png"
-              alt="GatiMitra"
-              fill
-              priority
-              className="object-contain"
-            />
-          </div>
+        <div className="flex items-center gap-2">
+          {showBrandSkeleton ? (
+            <>
+              <div className="h-8 w-8 shrink-0 rounded-full bg-slate-100 animate-pulse" />
+              <div className="h-3.5 w-[92px] rounded bg-slate-100 animate-pulse sm:h-4 sm:w-[102px]" />
+            </>
+          ) : (
+            <>
+              <Image
+                src="/onlylogo.png"
+                alt=""
+                width={32}
+                height={32}
+                priority
+                className="h-8 w-8 shrink-0 object-contain"
+              />
+              <span className="text-[15px] font-bold leading-none tracking-tight sm:text-[16px]">
+                <span style={{ color: "#2E9F86" }}>Gati</span>
+                <span style={{ color: "#D4890A" }}>Mitra</span>
+              </span>
+            </>
+          )}
         </div>
 
         <div className="flex items-center gap-2 sm:gap-2.5">

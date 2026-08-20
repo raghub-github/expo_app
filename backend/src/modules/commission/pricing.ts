@@ -58,6 +58,29 @@ export function rupeesToPaise(rupees: number): number {
   return Math.round(rupees * 100);
 }
 
+/** Merchant net rupees → customer-visible rupees. Formula is always ÷ (1 − rate). */
+export function markupRupees(
+  netRupees: number,
+  commissionPercent: number,
+  rounding: Rounding = "NEAREST_RUPEE"
+): number {
+  if (!Number.isFinite(netRupees) || netRupees <= 0) return 0;
+  const { customerPaise } = customerPriceFromBase(
+    rupeesToPaise(netRupees),
+    commissionPercent,
+    rounding
+  );
+  return customerPaise / 100;
+}
+
+/**
+ * Same Commission Engine formula, snapped to paise (₹x.xx).
+ * Used after a store offer so ₹89.40 @ 15% → ₹105.18, not a whole rupee.
+ */
+export function markupRupeesPaise(netRupees: number, commissionPercent: number): number {
+  return markupRupees(netRupees, commissionPercent, "NEAREST_PAISE");
+}
+
 /** Convenience: paise → rupees as a decimal string fit for NUMERIC(12,2) columns. */
 export function paiseToRupeesStr(paise: number): string {
   return (paise / 100).toFixed(2);

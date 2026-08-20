@@ -70,7 +70,7 @@ function MapLink({ lat, lon }: { lat: number; lon: number }) {
 function DetailField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="min-w-0">
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="text-[10px] font-semibold text-slate-500">{label}</p>
       <div className="mt-0.5 text-[12px] font-medium leading-snug text-slate-800">{children}</div>
     </div>
   );
@@ -302,7 +302,7 @@ export function ParcelFareSummaryCard({
       />
       <div className="grid grid-cols-2 gap-2">
         <div className="min-w-0 space-y-1 border-r border-slate-100 pr-2">
-          <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">CTC</p>
+          <p className="mb-1 text-[10px] font-bold text-slate-500">CTC</p>
           {lines.length > 0 ? (
             lines.map((line, idx) => (
               <Row
@@ -340,7 +340,7 @@ export function ParcelFareSummaryCard({
         </div>
 
         <div className="min-w-0 space-y-1 pl-1">
-          <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">CTDE</p>
+          <p className="mb-1 text-[10px] font-bold text-slate-500">CTDE</p>
           <Row
             label="Captain payout"
             value={
@@ -412,7 +412,7 @@ export function ParcelTripDetailsCard({ order }: { order: ParcelDetailOrder }) {
 
       <div className="grid flex-1 gap-3 lg:grid-cols-2">
         <div className="space-y-3 rounded-md border border-slate-100 bg-slate-50/60 p-2.5">
-          <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Pickup</p>
+          <p className="text-[10px] font-bold text-emerald-700">Pickup</p>
           <DetailField label="Label">{parcel?.pickupLabel?.trim() || "—"}</DetailField>
           <DetailField label="Address">{pickup}</DetailField>
           <DetailField label="Coordinates">
@@ -433,7 +433,7 @@ export function ParcelTripDetailsCard({ order }: { order: ParcelDetailOrder }) {
         </div>
 
         <div className="space-y-3 rounded-md border border-slate-100 bg-slate-50/60 p-2.5">
-          <p className="text-[10px] font-bold uppercase tracking-wide text-sky-700">Drop</p>
+          <p className="text-[10px] font-bold text-sky-700">Drop</p>
           <DetailField label="Label">{parcel?.dropLabel?.trim() || "—"}</DetailField>
           <DetailField label="Address">{drop}</DetailField>
           <DetailField label="Coordinates">

@@ -7,8 +7,9 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TextInput, ScrollView, TouchableOpacity, StyleSheet, Dimensions, Image, Modal, Pressable, ActivityIndicator, useWindowDimensions, Platform, type ImageSourcePropType, type ImageStyle } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { View, TextInput, ScrollView, TouchableOpacity, StyleSheet, Dimensions, Image, Modal, Pressable, ActivityIndicator, useWindowDimensions, Platform, StatusBar as RNStatusBar, type ImageSourcePropType, type ImageStyle } from "react-native";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
@@ -22,6 +23,7 @@ import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { navigateToMealsUnderPrice } from "@/lib/navigateToMealsUnderPrice";
 import { useFoodHomeLayout } from "@/hooks/useFoodHomeLayout";
 import { DEFAULT_GRID_FIRST_UNDER_250 } from "@/lib/foodHomeLayout";
+import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
 import {
   markFoodHomeListScrollActive,
   markFoodHomeListScrollEnded,
@@ -34,6 +36,8 @@ import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import { LovedMerchantsHorizontal } from "@/components/home/LovedMerchantsHorizontal";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
 import { BrandingFooter } from "@/components/BrandingFooter";
+import { DiscoveryRestaurantCard } from "@/features/discovery-home/DiscoveryRestaurantCard";
+import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 import {
   fetchUserAppCategoriesWithCache,
   getUserAppCategoriesCachedAt,
@@ -44,10 +48,17 @@ import {
 } from "@/lib/userAppCategoryCache";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
-import { filterAndSortMerchants, resolveMerchantLiveStatus } from "@/lib/merchantListing";
+import {
+  filterAndSortMerchants,
+  resolveMerchantLiveStatus,
+  type DeliveryFilter,
+  type MerchantListSort,
+} from "@/lib/merchantListing";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
+import { filterPureVegMerchants, filterVegSafeCategories } from "@/lib/pureVegFilter";
 import { appAssetSource } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 const { width, height: WINDOW_HEIGHT } = Dimensions.get("window");
 /** Cuisines bottom sheet height (~72% screen): taller drawer, still leaves header/chips visible. */
@@ -71,8 +82,7 @@ const SHADOW = { shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, sha
 
 type BrowseCategoryChip =
   | { kind: "all"; id: "all"; name: string; remoteUri?: string | null }
-  | { kind: "item"; id: string; name: string; remoteUri: string | null }
-  | { kind: "seeAll"; id: "see-all"; name: string };
+  | { kind: "item"; id: string; name: string; remoteUri: string | null };
 
 /** De-dupe API rows (same id or same display name; keep lowest display_order). */
 function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryItem[] {
@@ -140,7 +150,6 @@ const BASE_OFFER_PILLS: OfferPill[] = [
   { id: "hyderabadi", label: "Hyderabadi" },
 ];
 
-type DeliveryFilter = "any" | "30" | "45" | "60";
 type VegPageOverride = "use_global" | "force_on" | "force_off";
 const DELIVERY_OPTIONS: { id: DeliveryFilter; label: string }[] = [
   { id: "any", label: "Any" },
@@ -210,6 +219,8 @@ export default function CategoryBrowseScreen() {
   );
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const goFoodHome = useCallback(() => safeRouterBack(router, FOOD_HOME_FALLBACK), [router]);
+
   const activeCategory = useMemo(() => normalizeCategorySlugParam(slugParam), [slugParam]);
   const railMetrics = useMemo(
     () => computeCategoryBrowseRailMetrics(windowWidth),
@@ -222,6 +233,8 @@ export default function CategoryBrowseScreen() {
   const [selectedCuisines, setSelectedCuisines] = useState<string[]>([]);
   const [filterHasOffers, setFilterHasOffers] = useState(false);
   const [openNow, setOpenNow] = useState(true);
+  const [nearFast, setNearFast] = useState(false);
+  const [sortBy, setSortBy] = useState<MerchantListSort>("default");
   const [vegPageOverride, setVegPageOverride] = useState<VegPageOverride>("use_global");
   const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
   const hydrateDietaryPreferences = useDietaryPreferenceStore((s) => s.hydrate);
@@ -256,10 +269,37 @@ export default function CategoryBrowseScreen() {
   const { coords, address } = useLocationStore();
   const debouncedCoords = useDebouncedCoords(coords, 400);
   const {
+    layoutKey,
+    cachedLayoutKey,
     gridFirstUnder250Enabled,
     gridFirstUnder250FilterLabel,
     gridFirstUnder250MaxPrice,
   } = useFoodHomeLayout(address, debouncedCoords);
+  const isDiscoveryDark = (layoutKey ?? cachedLayoutKey) === "discovery";
+  const accent = isDiscoveryDark ? DiscoveryColors.teal : TEAL;
+  const pageBg = isDiscoveryDark ? DiscoveryColors.bg : BG;
+  const cardBg = isDiscoveryDark ? DiscoveryColors.card : CARD_BG;
+  const textPrimary = isDiscoveryDark ? DiscoveryColors.text : TITLE_DARK;
+  const textMuted = isDiscoveryDark ? DiscoveryColors.textMuted : TEXT_GRAY;
+  const borderColor = isDiscoveryDark ? DiscoveryColors.border : BORDER;
+  const searchBg = isDiscoveryDark ? DiscoveryColors.search : BG;
+
+  useFocusEffect(
+    useCallback(() => {
+      const bg = isDiscoveryDark ? DiscoveryColors.bg : "#FFFFFF";
+      useScreenChromeStore.setState({
+        statusBarBackground: bg,
+        statusBarStyle: isDiscoveryDark ? "light" : "dark",
+        hideStatusBarSpacer: true,
+      });
+      if (Platform.OS === "android") {
+        RNStatusBar.setHidden(false, "none");
+      }
+      return () => {
+        useScreenChromeStore.getState().resetStatusBarBackground();
+      };
+    }, [isDiscoveryDark])
+  );
 
   const offerPills = useMemo((): OfferPill[] => {
     const pills = [...BASE_OFFER_PILLS];
@@ -291,7 +331,11 @@ export default function CategoryBrowseScreen() {
       }),
     enabled: debouncedCoords?.latitude != null && debouncedCoords?.longitude != null,
     staleTime: 60 * 1000,
-    placeholderData: (prev) => prev,
+    placeholderData: (previousData, previousQuery) => {
+      const prevVeg = previousQuery?.queryKey?.[4];
+      if (prevVeg !== effectiveVegOnly) return undefined;
+      return previousData;
+    },
   });
 
   useEffect(() => {
@@ -310,7 +354,10 @@ export default function CategoryBrowseScreen() {
       placeholderData: (previousData) => previousData,
     });
 
-  const apiSheetCategories = sheetCategoriesResponse?.items ?? [];
+  const apiSheetCategories = filterVegSafeCategories(
+    sheetCategoriesResponse?.items ?? [],
+    effectiveVegOnly
+  );
   const sheetCategoryAllTab = sheetCategoriesResponse?.allTab ?? { label: "All", imageUrl: null };
 
   useEffect(() => {
@@ -340,10 +387,6 @@ export default function CategoryBrowseScreen() {
     };
     if (!sheetCategoriesReady) return [allChip];
     const deduped = dedupeUserAppCategories(apiSheetCategories ?? []);
-    const more = deduped.length > RAIL_MAX_CATEGORY_ITEMS;
-    const seeAll: BrowseCategoryChip | null = more
-      ? { kind: "seeAll", id: "see-all", name: "See all" }
-      : null;
 
     const rowToChip = (r: UserAppCategoryItem): BrowseCategoryChip => ({
       kind: "item",
@@ -355,13 +398,10 @@ export default function CategoryBrowseScreen() {
     const limited = deduped.slice(0, RAIL_MAX_CATEGORY_ITEMS);
     const limitedChips = limited.map(rowToChip);
 
-    const defaultOrder = (): BrowseCategoryChip[] =>
-      seeAll ? [allChip, ...limitedChips, seeAll] : [allChip, ...limitedChips];
-
-    if (activeCategory === "all") return defaultOrder();
+    if (activeCategory === "all") return [allChip, ...limitedChips];
 
     const selRow = deduped.find((r) => String(r.id) === activeCategory);
-    if (!selRow) return defaultOrder();
+    if (!selRow) return [allChip, ...limitedChips];
 
     const selectedChip = rowToChip(selRow);
     const othersChips = deduped
@@ -369,11 +409,10 @@ export default function CategoryBrowseScreen() {
       .slice(0, RAIL_MAX_CATEGORY_ITEMS)
       .map(rowToChip);
 
-    const ordered: BrowseCategoryChip[] = [allChip, selectedChip, ...othersChips];
-    return seeAll ? [...ordered, seeAll] : ordered;
+    return [allChip, selectedChip, ...othersChips];
   }, [sheetCategoriesReady, apiSheetCategories, activeCategory, sheetCategoryAllTab.label, sheetCategoryAllTab.imageUrl]);
 
-  const merchants = Array.isArray(data) ? data : [];
+  const merchants = filterPureVegMerchants(Array.isArray(data) ? data : [], effectiveVegOnly);
   const searchQ = searchQuery.trim().toLowerCase();
   const filteredMerchants = useMemo(() => {
     if (!searchQ) return merchants;
@@ -418,11 +457,23 @@ export default function CategoryBrowseScreen() {
     () =>
       filterAndSortMerchants(categoryScopedMerchants, statusMap, {
         openNow,
+        sortBy,
         filterHasOffers,
         deliveryFilter,
         selectedCuisines,
+        nearFast,
+        hideClosed: false,
       }),
-    [categoryScopedMerchants, statusMap, openNow, deliveryFilter, selectedCuisines, filterHasOffers]
+    [
+      categoryScopedMerchants,
+      statusMap,
+      openNow,
+      sortBy,
+      deliveryFilter,
+      selectedCuisines,
+      filterHasOffers,
+      nearFast,
+    ]
   );
 
   const isCategoryFocus = activeCategory !== "all";
@@ -436,20 +487,23 @@ export default function CategoryBrowseScreen() {
   }, []);
 
   const hasActiveFilters =
-    deliveryFilter !== "any" || selectedCuisines.length > 0 || filterHasOffers;
+    deliveryFilter !== "any" || selectedCuisines.length > 0 || filterHasOffers || nearFast;
 
   const activeFilterCount = useMemo(() => {
     let n = 0;
     if (deliveryFilter !== "any") n += 1;
     n += selectedCuisines.length;
     if (filterHasOffers) n += 1;
+    if (nearFast) n += 1;
     return n;
-  }, [deliveryFilter, selectedCuisines, filterHasOffers]);
+  }, [deliveryFilter, selectedCuisines, filterHasOffers, nearFast]);
 
   const clearFilters = useCallback(() => {
     setDeliveryFilter("any");
     setSelectedCuisines([]);
     setFilterHasOffers(false);
+    setNearFast(false);
+    setSortBy("default");
   }, []);
 
   const applyFilters = useCallback(() => setFilterSheetVisible(false), []);
@@ -470,6 +524,9 @@ export default function CategoryBrowseScreen() {
 
   const renderMerchant = useCallback<ListRenderItem<MerchantSummary>>(
     ({ item }) => {
+      if (isDiscoveryDark) {
+        return <DiscoveryRestaurantCard merchant={item} />;
+      }
       if (isCategoryFocus) {
         return (
           <View style={styles.fullBleedList}>
@@ -506,11 +563,22 @@ export default function CategoryBrowseScreen() {
         </TouchableOpacity>
       );
     },
-    [isCategoryFocus, openMerchantPage]
+    [isCategoryFocus, openMerchantPage, isDiscoveryDark]
   );
 
+  const listExtraData = `${isCategoryFocus}:${isDiscoveryDark}:${openNow}:${nearFast}:${sortBy}:${deliveryFilter}:${selectedCuisines.join(",")}:${filterHasOffers}:${effectiveVegOnly}`;
+  const darkChip = isDiscoveryDark
+    ? { backgroundColor: DiscoveryColors.pill, borderColor: DiscoveryColors.border }
+    : null;
+  const darkChipText = isDiscoveryDark ? { color: DiscoveryColors.text } : null;
+  const darkSheetLabel = isDiscoveryDark ? { color: DiscoveryColors.textMuted } : null;
+  const darkSheetRow = isDiscoveryDark
+    ? { backgroundColor: DiscoveryColors.pill, borderColor: DiscoveryColors.border }
+    : null;
+
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: pageBg }]}>
+      <StatusBar style={isDiscoveryDark ? "light" : "dark"} hidden={false} />
       <Modal
         visible={cuisinesSheetOpen}
         animationType="slide"
@@ -534,10 +602,20 @@ export default function CategoryBrowseScreen() {
               </TouchableOpacity>
             </View>
             <View
-              style={[styles.sheetPanel, { paddingBottom: Math.max(insets.bottom, 12), height: SHEET_MAX_HEIGHT }]}
+              style={[
+                styles.sheetPanel,
+                isDiscoveryDark && {
+                  backgroundColor: DiscoveryColors.card,
+                  shadowOpacity: 0,
+                  elevation: 0,
+                },
+                { paddingBottom: Math.max(insets.bottom, 12), height: SHEET_MAX_HEIGHT },
+              ]}
             >
             <View style={styles.sheetHeaderRow}>
-              <AppText style={styles.sheetTitle}>Cuisines & Dishes</AppText>
+              <AppText style={[styles.sheetTitle, isDiscoveryDark && { color: DiscoveryColors.text }]}>
+                Cuisines & Dishes
+              </AppText>
             </View>
             <ScrollView
               style={styles.sheetScroll}
@@ -550,12 +628,16 @@ export default function CategoryBrowseScreen() {
             >
               {sheetCategoriesFetching && cuisinesSheetRows.length === 0 ? (
                 <View style={styles.sheetStateBlock}>
-                  <ActivityIndicator size="large" color={TEAL} />
+                  <ActivityIndicator size="large" color={accent} />
                 </View>
               ) : cuisinesSheetRows.length === 0 ? (
                 <View style={styles.sheetStateBlock}>
-                  <AppText style={styles.sheetEmptyText}>No cuisines to show yet.</AppText>
-                  <AppText style={styles.sheetEmptyHint}>Add rows in user_app_category (FOOD, active).</AppText>
+                  <AppText style={[styles.sheetEmptyText, isDiscoveryDark && { color: DiscoveryColors.text }]}>
+                    No cuisines to show yet.
+                  </AppText>
+                  <AppText style={[styles.sheetEmptyHint, isDiscoveryDark && { color: DiscoveryColors.textMuted }]}>
+                    Add rows in user_app_category (FOOD, active).
+                  </AppText>
                 </View>
               ) : (
                 cuisinesSheetRows.map((item) => {
@@ -575,9 +657,9 @@ export default function CategoryBrowseScreen() {
                         styles.sheetTileImageWrap,
                         {
                           borderWidth: sheetRing,
-                          borderColor: sheetTileActive ? TEAL : "transparent",
+                          borderColor: sheetTileActive ? accent : "transparent",
                           backgroundColor: sheetTileActive
-                            ? "rgba(20, 184, 166, 0.08)"
+                            ? "rgba(45, 212, 191, 0.12)"
                             : "transparent",
                         },
                       ]}
@@ -596,7 +678,8 @@ export default function CategoryBrowseScreen() {
                     <AppText
                       style={[
                         styles.sheetTileLabel,
-                        sheetTileActive ? styles.sheetTileLabelActive : null,
+                        { color: isDiscoveryDark ? DiscoveryColors.textMuted : TEXT_GRAY },
+                        sheetTileActive ? { color: accent, fontWeight: "700" } : null,
                       ]}
                       numberOfLines={2}
                     >
@@ -612,16 +695,28 @@ export default function CategoryBrowseScreen() {
         </View>
       </Modal>
       {/* Header: back, search (no cart on food) */}
-      <View style={[styles.header, SHADOW]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
+      <View
+        style={[
+          styles.header,
+          {
+            backgroundColor: isDiscoveryDark ? DiscoveryColors.bg : CARD_BG,
+            borderBottomColor: borderColor,
+            borderBottomWidth: StyleSheet.hairlineWidth,
+            paddingTop: insets.top + 10,
+            shadowOpacity: 0,
+            elevation: 0,
+          },
+        ]}
+      >
+        <TouchableOpacity onPress={goFoodHome} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={24} color={textPrimary} />
         </TouchableOpacity>
-        <View style={styles.searchWrap}>
-          <Ionicons name="search" size={20} color={TEXT_GRAY} />
+        <View style={[styles.searchWrap, { backgroundColor: searchBg, borderColor }]}>
+          <Ionicons name="search" size={20} color={textMuted} />
           <TextInput
-            style={styles.searchInput}
+            style={[styles.searchInput, { color: textPrimary }]}
             placeholder="Restaurant name or a dish..."
-            placeholderTextColor={TEXT_GRAY}
+            placeholderTextColor={textMuted}
             value={searchQuery}
             onChangeText={setSearchQuery}
             returnKeyType="search"
@@ -634,7 +729,7 @@ export default function CategoryBrowseScreen() {
             onPress={() => router.push({ pathname: "/search", params: { voice: "1" } })}
             accessibilityLabel="Voice search"
           >
-            <Ionicons name="mic-outline" size={22} color={TEAL} />
+            <Ionicons name="mic-outline" size={22} color={accent} />
           </TouchableOpacity>
         </View>
       </View>
@@ -650,7 +745,7 @@ export default function CategoryBrowseScreen() {
       <FlashList
         data={listData}
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { backgroundColor: pageBg }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
@@ -676,14 +771,13 @@ export default function CategoryBrowseScreen() {
           style={styles.categoryChipsScroll}
         >
           {browseCategoryChips.map((c) => {
-            const chipKey =
-              c.kind === "all" ? "all" : c.kind === "seeAll" ? "see-all" : c.id;
+            const chipKey = c.kind === "all" ? "all" : c.id;
             const allActive = c.kind === "all" && activeCategory === "all";
             const itemActive = c.kind === "item" && activeCategory === c.id;
             const ringW = allActive || itemActive ? 2 : 0;
             const imgSide = Math.max(40, railMetrics.icon - ringW * 2);
             const ringColor =
-              allActive || itemActive ? TEAL : "transparent";
+              allActive || itemActive ? accent : "transparent";
 
             return (
             <TouchableOpacity
@@ -691,10 +785,6 @@ export default function CategoryBrowseScreen() {
               onPress={() => {
                 if (c.kind === "all") {
                   setCategoryRoute("all");
-                  setCuisinesSheetOpen(true);
-                  return;
-                }
-                if (c.kind === "seeAll") {
                   setCuisinesSheetOpen(true);
                   return;
                 }
@@ -729,23 +819,9 @@ export default function CategoryBrowseScreen() {
                     <Ionicons
                       name="storefront"
                       size={Math.round(26 * (imgSide / 56))}
-                      color={allActive ? TEAL : TITLE_DARK}
+                      color={allActive ? accent : textPrimary}
                     />
                   )}
-                </View>
-              ) : c.kind === "seeAll" ? (
-                <View
-                  style={[
-                    styles.categoryChipImage,
-                    styles.seeAllChipCircle,
-                    {
-                      width: railMetrics.icon,
-                      height: railMetrics.icon,
-                      borderRadius: railMetrics.icon / 2,
-                    },
-                  ]}
-                >
-                  <Ionicons name="apps" size={Math.round(22 * (railMetrics.icon / 56))} color={TEAL} />
                 </View>
               ) : (
                 <View
@@ -779,7 +855,8 @@ export default function CategoryBrowseScreen() {
               <AppText
                 style={[
                   styles.categoryChipText,
-                  allActive || itemActive ? styles.categoryChipTextActive : null,
+                  { color: textMuted, width: railMetrics.chipW },
+                  allActive || itemActive ? { color: accent, fontWeight: "700" } : null,
                 ]}
                 numberOfLines={2}
               >
@@ -793,17 +870,20 @@ export default function CategoryBrowseScreen() {
         {/* Filter / offer pills */}
         <ScrollView
           horizontal
+          nestedScrollEnabled
           showsHorizontalScrollIndicator={false}
+          delaysContentTouches={false}
+          keyboardShouldPersistTaps="handled"
           contentContainerStyle={styles.pillsWrap}
         >
           {effectiveVegOnly ? (
             <View style={styles.vegModePill}>
-              <Ionicons name="leaf" size={14} color={TEAL} />
-              <AppText style={styles.vegModePillText}>Pure Veg</AppText>
+              <Ionicons name="leaf" size={14} color={accent} />
+              <AppText style={[styles.vegModePillText, { color: accent }]}>Pure Veg</AppText>
             </View>
           ) : null}
           <TouchableOpacity
-            style={styles.vegOverridePill}
+            style={[styles.vegOverridePill, { backgroundColor: cardBg, borderColor }]}
             activeOpacity={0.85}
             onPress={() =>
               setVegPageOverride((prev) =>
@@ -815,8 +895,8 @@ export default function CategoryBrowseScreen() {
               )
             }
           >
-            <Ionicons name="options-outline" size={14} color={TEXT_GRAY} />
-            <AppText style={styles.vegOverridePillText}>
+            <Ionicons name="options-outline" size={14} color={textMuted} />
+            <AppText style={[styles.vegOverridePillText, { color: textMuted }]}>
               {vegPageOverride === "use_global"
                 ? `Diet: Global (${vegOnly ? "Pure Veg" : "All"})`
                 : vegPageOverride === "force_on"
@@ -825,21 +905,59 @@ export default function CategoryBrowseScreen() {
             </AppText>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.filterBtn, hasActiveFilters && styles.filterBtnActive]}
+            style={[
+              styles.filterBtn,
+              { backgroundColor: cardBg, borderColor },
+              hasActiveFilters && styles.filterBtnActive,
+            ]}
             activeOpacity={0.8}
             onPress={() => setFilterSheetVisible(true)}
           >
-            <Ionicons name="options-outline" size={18} color={hasActiveFilters ? "#fff" : TITLE_DARK} />
-            <AppText style={[styles.filterBtnText, hasActiveFilters && styles.filterBtnTextActive]}>Filters</AppText>
-            <Ionicons name="chevron-down" size={14} color={hasActiveFilters ? "#fff" : TEXT_GRAY} />
+            <Ionicons name="options-outline" size={18} color={hasActiveFilters ? "#fff" : textPrimary} />
+            <AppText style={[styles.filterBtnText, { color: textPrimary }, hasActiveFilters && styles.filterBtnTextActive]}>
+              {activeFilterCount > 0 ? `Filters · ${activeFilterCount}` : "Filters"}
+            </AppText>
+            <Ionicons name="chevron-down" size={14} color={hasActiveFilters ? "#fff" : textMuted} />
           </TouchableOpacity>
-          {offerPills.map((p) => (
+          {offerPills.map((p) => {
+            const pillOn =
+              (p.id === "fast" && nearFast) ||
+              (p.id === "flat50" && filterHasOffers) ||
+              (p.id === "hyderabadi" &&
+                selectedCuisines.some((c) => c.toLowerCase() === "hyderabadi"));
+            return (
             <TouchableOpacity
               key={p.id}
-              style={[styles.pill, p.mealsPromo && styles.pillMeals]}
+              style={[
+                styles.pill,
+                { backgroundColor: cardBg, borderColor },
+                p.mealsPromo && styles.pillMeals,
+                pillOn && {
+                  backgroundColor: isDiscoveryDark ? "rgba(45,212,191,0.12)" : "rgba(20,184,166,0.12)",
+                  borderColor: accent,
+                },
+              ]}
               activeOpacity={0.8}
               onPress={() => {
-                if (p.id === "meals") navigateToMealsUnderPrice(router, queryClient);
+                if (p.id === "meals") {
+                  navigateToMealsUnderPrice(router, queryClient);
+                  return;
+                }
+                if (p.id === "fast") {
+                  setNearFast((v) => {
+                    const next = !v;
+                    setSortBy(next ? "distance" : "default");
+                    return next;
+                  });
+                  return;
+                }
+                if (p.id === "flat50") {
+                  setFilterHasOffers((v) => !v);
+                  return;
+                }
+                if (p.id === "hyderabadi") {
+                  toggleCuisine("Hyderabadi");
+                }
               }}
             >
               {p.tag ? (
@@ -848,23 +966,30 @@ export default function CategoryBrowseScreen() {
                 </View>
               ) : null}
               {p.icon === "flash" ? (
-                <Ionicons name="flash" size={14} color={TEAL} />
+                <Ionicons name="flash" size={14} color={pillOn ? accent : "#16A34A"} />
               ) : null}
               <AppText
-                style={[styles.pillText, p.mealsPromo && styles.pillTextMeals]}
+                style={[
+                  styles.pillText,
+                  { color: textPrimary },
+                  p.mealsPromo && styles.pillTextMeals,
+                ]}
                 numberOfLines={1}
               >
                 {p.label}
               </AppText>
             </TouchableOpacity>
-          ))}
+            );
+          })}
         </ScrollView>
 
         {isCategoryFocus ? (
           <>
-            <AppText style={styles.sectionHeading}>ALL RESTAURANTS</AppText>
+            <AppText style={[styles.sectionHeading, { color: textMuted }]}>ALL RESTAURANTS</AppText>
             {selectedCategoryLabel ? (
-              <AppText style={[styles.sectionSub, styles.sectionSubAccent]}>{selectedCategoryLabel}</AppText>
+              <AppText style={[styles.sectionSub, styles.sectionSubAccent, { color: accent }]}>
+                {selectedCategoryLabel}
+              </AppText>
             ) : null}
           </>
         ) : (
@@ -872,7 +997,7 @@ export default function CategoryBrowseScreen() {
             <AppText style={styles.sectionHeading}>RECOMMENDED FOR YOU</AppText>
             {isLoading ? (
               <View style={styles.skeletonListWrap}>
-                <LovedMerchantsGridSkeleton count={4} />
+                <LovedMerchantsGridSkeleton count={4} dark={isDiscoveryDark} />
               </View>
             ) : (
               <LovedMerchantsHorizontal
@@ -889,14 +1014,22 @@ export default function CategoryBrowseScreen() {
         }
         renderItem={renderMerchant}
         keyExtractor={merchantKeyExtractor}
-        extraData={isCategoryFocus}
+        extraData={listExtraData}
         ListEmptyComponent={
           isLoading ? (
             <View style={styles.skeletonListWrap}>
-              <RestaurantListSkeleton count={isCategoryFocus ? 5 : 4} />
+              <RestaurantListSkeleton
+                count={isCategoryFocus ? 5 : 4}
+                dark={isDiscoveryDark}
+                layout={isDiscoveryDark ? "row" : "poster"}
+              />
             </View>
           ) : (
-            <EmptyRestaurantsNearby />
+            <EmptyRestaurantsNearby
+              ctaLabel="Back to home"
+              onPress={goFoodHome}
+              dark={isDiscoveryDark}
+            />
           )
         }
         ListFooterComponent={<BrandingFooter />}
@@ -911,20 +1044,37 @@ export default function CategoryBrowseScreen() {
       >
         <Pressable style={styles.filterOverlay} onPress={() => setFilterSheetVisible(false)}>
           <Pressable style={styles.filterSheetStack} onPress={() => {}}>
-            <View style={[styles.filterSheetCard, { maxHeight: windowHeight * 0.9 }]}>
+            <View
+              style={[
+                styles.filterSheetCard,
+                isDiscoveryDark && { backgroundColor: DiscoveryColors.card, elevation: 0 },
+                { maxHeight: windowHeight * 0.9 },
+              ]}
+            >
               <LinearGradient
-                colors={[GatiMitraColors.mintSoft, "#FFFFFF"]}
+                colors={
+                  isDiscoveryDark
+                    ? [DiscoveryColors.card, DiscoveryColors.card]
+                    : [GatiMitraColors.mintSoft, "#FFFFFF"]
+                }
                 locations={[0, 0.35]}
                 style={StyleSheet.absoluteFillObject}
                 pointerEvents="none"
               />
               <View style={styles.filterSheetHandleWrap}>
-                <View style={styles.filterSheetHandle} />
+                <View
+                  style={[
+                    styles.filterSheetHandle,
+                    isDiscoveryDark && { backgroundColor: "rgba(45, 212, 191, 0.45)" },
+                  ]}
+                />
               </View>
               <View style={styles.filterSheetHeader}>
                 <View style={styles.filterSheetTitleBlock}>
-                  <AppText style={styles.filterSheetTitle}>Filters</AppText>
-                  <AppText style={styles.filterSheetSubtitle}>
+                  <AppText style={[styles.filterSheetTitle, isDiscoveryDark && { color: DiscoveryColors.text }]}>
+                    Filters
+                  </AppText>
+                  <AppText style={[styles.filterSheetSubtitle, isDiscoveryDark && { color: DiscoveryColors.textMuted }]}>
                     {activeFilterCount > 0
                       ? `${activeFilterCount} active — tap Apply to update the list`
                       : "Refine delivery time, cuisine, and offers"}
@@ -950,18 +1100,23 @@ export default function CategoryBrowseScreen() {
                 keyboardShouldPersistTaps="handled"
                 bounces={false}
               >
-                <AppText style={styles.filterSectionLabel}>Delivery time</AppText>
+                <AppText style={[styles.filterSectionLabel, darkSheetLabel]}>Delivery time</AppText>
                 <View style={styles.filterChipsRow}>
                   {DELIVERY_OPTIONS.map((opt) => (
                     <TouchableOpacity
                       key={opt.id}
-                      style={[styles.filterSheetChip, deliveryFilter === opt.id && styles.filterSheetChipActive]}
+                      style={[
+                        styles.filterSheetChip,
+                        darkChip,
+                        deliveryFilter === opt.id && styles.filterSheetChipActive,
+                      ]}
                       onPress={() => setDeliveryFilter(opt.id)}
                       activeOpacity={0.85}
                     >
                       <AppText
                         style={[
                           styles.filterSheetChipText,
+                          darkChipText,
                           deliveryFilter === opt.id && styles.filterSheetChipTextActive,
                         ]}
                       >
@@ -970,13 +1125,14 @@ export default function CategoryBrowseScreen() {
                     </TouchableOpacity>
                   ))}
                 </View>
-                <AppText style={styles.filterSectionLabel}>Cuisine</AppText>
+                <AppText style={[styles.filterSectionLabel, darkSheetLabel]}>Cuisine</AppText>
                 <View style={styles.filterChipsRow}>
                   {CUISINE_OPTIONS.map((c) => (
                     <TouchableOpacity
                       key={c}
                       style={[
                         styles.filterSheetChip,
+                        darkChip,
                         selectedCuisines.includes(c) && styles.filterSheetChipActive,
                       ]}
                       onPress={() => toggleCuisine(c)}
@@ -985,6 +1141,7 @@ export default function CategoryBrowseScreen() {
                       <AppText
                         style={[
                           styles.filterSheetChipText,
+                          darkChipText,
                           selectedCuisines.includes(c) && styles.filterSheetChipTextActive,
                         ]}
                       >
@@ -993,9 +1150,13 @@ export default function CategoryBrowseScreen() {
                     </TouchableOpacity>
                   ))}
                 </View>
-                <AppText style={styles.filterSectionLabel}>Other</AppText>
+                <AppText style={[styles.filterSectionLabel, darkSheetLabel]}>Other</AppText>
                 <TouchableOpacity
-                  style={[styles.filterSheetRow, openNow && styles.filterSheetRowActive]}
+                  style={[
+                    styles.filterSheetRow,
+                    darkSheetRow,
+                    openNow && styles.filterSheetRowActive,
+                  ]}
                   onPress={() => setOpenNow((v) => !v)}
                   activeOpacity={0.88}
                 >
@@ -1011,7 +1172,13 @@ export default function CategoryBrowseScreen() {
                       color={openNow ? "#fff" : GatiMitraColors.primaryMint}
                     />
                   </View>
-                  <AppText style={[styles.filterSheetRowText, openNow && styles.filterSheetRowTextOnMint]}>
+                  <AppText
+                    style={[
+                      styles.filterSheetRowText,
+                      darkChipText,
+                      openNow && styles.filterSheetRowTextOnMint,
+                    ]}
+                  >
                     Open Now — open first, closed below
                   </AppText>
                   {openNow ? (
@@ -1019,7 +1186,11 @@ export default function CategoryBrowseScreen() {
                   ) : null}
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.filterSheetRow, filterHasOffers && styles.filterSheetRowActive]}
+                  style={[
+                    styles.filterSheetRow,
+                    darkSheetRow,
+                    filterHasOffers && styles.filterSheetRowActive,
+                  ]}
                   onPress={() => setFilterHasOffers((v) => !v)}
                   activeOpacity={0.88}
                 >
@@ -1035,7 +1206,13 @@ export default function CategoryBrowseScreen() {
                       color={filterHasOffers ? "#fff" : GatiMitraColors.primaryMint}
                     />
                   </View>
-                  <AppText style={[styles.filterSheetRowText, filterHasOffers && styles.filterSheetRowTextOnMint]}>
+                  <AppText
+                    style={[
+                      styles.filterSheetRowText,
+                      darkChipText,
+                      filterHasOffers && styles.filterSheetRowTextOnMint,
+                    ]}
+                  >
                     Has offers
                   </AppText>
                   {filterHasOffers ? (
@@ -1244,7 +1421,7 @@ const styles = StyleSheet.create({
   },
   categoryChip: {
     alignItems: "center",
-    width: 72,
+    justifyContent: "flex-start",
   },
   categoryChipImage: {
     width: 56,
@@ -1256,7 +1433,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
     color: TEXT_GRAY,
+    textAlign: "center",
+    lineHeight: 15,
+    minHeight: 30,
     textDecorationLine: "none",
+    ...(Platform.OS === "android" ? { includeFontPadding: false } : {}),
   },
   categoryChipTextActive: {
     color: TEAL,

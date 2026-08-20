@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw, X } from "lucide-react";
+import { Check, Copy, RefreshCw, X } from "lucide-react";
 import type { ParcelDetailOrder } from "./parcel-detail-types";
 import { formatRideStatusLabel, normalizeStatus } from "../person-ride/person-ride-utils";
+import { titleCaseStatusWords } from "@/lib/riders/rider-order-status-display";
 
 export type ParcelTicketSummary = {
   id: number;
@@ -104,19 +105,13 @@ export default function ParcelOrderHeader({
             <button
               type="button"
               onClick={handleCopyId}
-              className={`inline-flex shrink-0 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-slate-500 transition hover:text-slate-700 ${
-                copied ? "min-h-5 px-0.5" : "h-5 w-5"
-              }`}
+              className="inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-slate-500 transition hover:text-slate-700"
               aria-label={copied ? "Copied" : "Copy order ID"}
             >
               {copied ? (
-                <span className="whitespace-nowrap text-[10px] font-medium text-emerald-600" role="status">
-                  Copied
-                </span>
+                <Check className="h-3 w-3 text-emerald-600" />
               ) : (
-                <span className="text-[10px]" aria-hidden>
-                  ⧉
-                </span>
+                <Copy className="h-3 w-3 text-gati-primary" />
               )}
             </button>
           </h1>
@@ -159,7 +154,7 @@ export default function ParcelOrderHeader({
                 <span className="text-emerald-600/80">·</span>
                 <span>
                   {tickets[0].status
-                    ? tickets[0].status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+                    ? titleCaseStatusWords(tickets[0].status)
                     : "—"}
                 </span>
               </span>
@@ -175,7 +170,7 @@ export default function ParcelOrderHeader({
             )}`}
           >
             Order status:&nbsp;
-            <span className="font-medium">{statusLabel.toUpperCase()}</span>
+            <span className="font-medium">{statusLabel}</span>
           </span>
           <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-[10px] font-normal text-slate-700">
             Order category:&nbsp;
@@ -218,7 +213,7 @@ export default function ParcelOrderHeader({
                     </span>
                     <span className="text-[11px] text-slate-600">
                       {t.status
-                        ? t.status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+                        ? titleCaseStatusWords(t.status)
                         : "—"}
                     </span>
                   </a>

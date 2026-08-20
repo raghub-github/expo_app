@@ -5,6 +5,7 @@ import { View, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { DietIndicator } from "./DietIndicator";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 export type StoreFilterId = "all" | "veg" | "egg" | "nonveg" | "highlyreordered";
 
@@ -39,12 +40,13 @@ export const StoreFilterBar = React.memo(function StoreFilterBar({
   filtersActive = false,
   style,
 }: StoreFilterBarProps) {
+  const dark = useMerchantUiDark();
   const filters: FilterDef[] = showHighlyReordered
     ? [...BASE_FILTERS, { id: "highlyreordered", label: "Highly re...", type: "tag" }]
     : BASE_FILTERS;
 
   return (
-    <View style={[styles.wrap, style]}>
+    <View style={[styles.wrap, style, dark && styles.wrapDark]}>
       <ScrollView
         horizontal
         nestedScrollEnabled
@@ -64,26 +66,26 @@ export const StoreFilterBar = React.memo(function StoreFilterBar({
                 if (f.type === "filters") onOpenFilters?.();
                 else onChange(f.id);
               }}
-              style={[styles.chip, isActive && styles.chipActive]}
+              style={[styles.chip, dark && styles.chipDark, isActive && (dark ? styles.chipActiveDark : styles.chipActive)]}
               activeOpacity={0.75}
             >
               {f.type === "filters" ? (
                 <>
-                  <Ionicons name="options-outline" size={15} color={StoreTheme.textPrimary} />
-                  <AppText style={styles.chipText}>{f.label}</AppText>
-                  <Ionicons name="chevron-down" size={13} color={StoreTheme.textSecondary} />
+                  <Ionicons name="options-outline" size={15} color={dark ? MerchantDarkPalette.text : StoreTheme.textPrimary} />
+                  <AppText style={[styles.chipText, dark && styles.chipTextDark]}>{f.label}</AppText>
+                  <Ionicons name="chevron-down" size={13} color={dark ? MerchantDarkPalette.textMuted : StoreTheme.textSecondary} />
                 </>
               ) : f.type === "diet" && f.diet ? (
                 <>
                   <DietIndicator type={f.diet} />
-                  <AppText style={styles.chipText}>{f.label}</AppText>
+                  <AppText style={[styles.chipText, dark && styles.chipTextDark]}>{f.label}</AppText>
                 </>
               ) : (
                 <>
                   <View style={styles.reorderIcon}>
                     <Ionicons name="refresh-circle" size={15} color={StoreTheme.reorderGreen} />
                   </View>
-                  <AppText style={styles.chipText}>{f.label}</AppText>
+                  <AppText style={[styles.chipText, dark && styles.chipTextDark]}>{f.label}</AppText>
                 </>
               )}
             </TouchableOpacity>
@@ -101,11 +103,15 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: StoreTheme.border,
   },
+  wrapDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+    borderBottomColor: MerchantDarkPalette.border,
+  },
   scrollView: {
     flexGrow: 0,
   },
   scroll: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     gap: 8,
     alignItems: "center",
   },
@@ -121,14 +127,25 @@ const styles = StyleSheet.create({
     backgroundColor: StoreTheme.chipBg,
     marginRight: 8,
   },
+  chipDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderColor: MerchantDarkPalette.chipBorder,
+  },
   chipActive: {
     borderColor: StoreTheme.accentMint,
     backgroundColor: StoreTheme.accentMintSoft,
+  },
+  chipActiveDark: {
+    borderColor: MerchantDarkPalette.accent,
+    backgroundColor: MerchantDarkPalette.chipActive,
   },
   chipText: {
     fontSize: 13,
     fontWeight: "600",
     color: StoreTheme.textPrimary,
+  },
+  chipTextDark: {
+    color: MerchantDarkPalette.text,
   },
   reorderIcon: {},
 });

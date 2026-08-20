@@ -988,7 +988,10 @@ export function OfferFormSheet({
             {boostPreviewItems.length > 0 && discountNum > 0 ? (
               <View style={styles.previewItemsCard}>
                 <Text style={styles.previewItemsTitle}>
-                  Selected items ({boostPreviewPool.length})
+                  Discounted CTM preview ({boostPreviewPool.length})
+                </Text>
+                <Text style={styles.previewEmptyHint}>
+                  Strike is Base CTM. After amount is what you keep; customer price is marked up after this.
                 </Text>
                 {boostPreviewItems.map((item) => {
                   const original = parseFloat(item.selling_price || item.base_price || "0") || 0;
@@ -1015,7 +1018,7 @@ export function OfferFormSheet({
               </View>
             ) : discountNum > 0 ? (
               <Text style={styles.previewEmptyHint}>
-                Select items in Applies to to preview discounted prices.
+                Select items in Applies to to preview discounted Base CTM.
               </Text>
             ) : null}
           </View>

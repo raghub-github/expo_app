@@ -10,19 +10,21 @@ import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { WalletSubpageHeader } from "@/components/wallet/WalletSubpageHeader";
 import { GatiCashFaqAccordion } from "@/components/wallet/GatiCashFaqAccordion";
 import { GATICASH_FAQS } from "@/constants/gatiCashFaqs";
+import { useWalletDark } from "@/hooks/useWalletDark";
 
 const PAGE_BG = "#F5F5F7";
 
 export default function WalletFaqScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const dark = useWalletDark();
 
   return (
     <>
       <AndroidBackHandler />
-      <StatusBar style="dark" backgroundColor={PAGE_BG} />
-      <View style={styles.screen}>
-        <WalletSubpageHeader title="GatiCash FAQs" onBack={() => router.back()} />
+      <StatusBar style={dark ? "light" : "dark"} backgroundColor={dark ? "#121212" : PAGE_BG} />
+      <View style={[styles.screen, dark && { backgroundColor: "#121212" }]}>
+        <WalletSubpageHeader title="GatiCash FAQs" onBack={() => router.back()} dark={dark} />
 
         <ScrollView
           style={styles.scroll}

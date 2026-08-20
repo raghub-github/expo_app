@@ -2,31 +2,41 @@ import { useEffect } from "react";
 import { useSegments } from "expo-router";
 import {
   AppState,
-  Platform,
   StatusBar as NativeStatusBar,
   type AppStateStatus,
 } from "react-native";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 
-function assertSplashStatusBar() {
-  NativeStatusBar.setHidden(false, "none");
-  if (Platform.OS !== "android") return;
-  NativeStatusBar.setTranslucent(true);
-  NativeStatusBar.setBackgroundColor("transparent", true);
-  NativeStatusBar.setBarStyle("light-content", true);
+function barStyleFromChrome(
+  style: "light" | "dark" | undefined,
+  backgroundColor?: string
+): "light-content" | "dark-content" {
+  if (style === "light") return "light-content";
+  if (style === "dark") return "dark-content";
+  const hex = (backgroundColor || "").replace("#", "").trim();
+  if (hex.length < 6) return "dark-content";
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  if ([r, g, b].some((n) => Number.isNaN(n))) return "dark-content";
+  return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? "dark-content" : "light-content";
 }
 
-function assertStatusBarVisible(opts?: { solidWhite?: boolean; backgroundColor?: string }) {
+function applyBarVisibility(barStyle: "light-content" | "dark-content") {
   NativeStatusBar.setHidden(false, "none");
-  if (Platform.OS !== "android") return;
-  if (opts?.solidWhite || opts?.backgroundColor) {
-    NativeStatusBar.setTranslucent(false);
-    NativeStatusBar.setBackgroundColor(opts.backgroundColor ?? "#FFFFFF", true);
-    NativeStatusBar.setBarStyle("dark-content", true);
-    return;
-  }
-  // Immersive / translucent routes: never hide; keep dark icons (homes use light heroes).
-  NativeStatusBar.setBarStyle("dark-content", true);
+  NativeStatusBar.setBarStyle(barStyle, true);
+}
+
+function assertSplashStatusBar() {
+  applyBarVisibility("light-content");
+}
+
+function assertStatusBarVisible(opts?: {
+  solidWhite?: boolean;
+  backgroundColor?: string;
+  barStyle?: "light" | "dark";
+}) {
+  applyBarVisibility(barStyleFromChrome(opts?.barStyle, opts?.backgroundColor));
 }
 
 /**
@@ -34,16 +44,27 @@ function assertStatusBarVisible(opts?: { solidWhite?: boolean; backgroundColor?:
  * Everything else must keep the spacer so headers never fall under system chrome.
  * Status bar icons themselves must remain visible on ALL routes.
  */
-function routeAllowsImmersiveStatusBar(segments: readonly string[]): boolean {
+function routeAllowsImmersiveStatusBar(
+  segments: readonly string[],
+  hideStatusBarSpacer: boolean
+): boolean {
   const root = segments[0] ?? "";
   const leaf = segments[1] ?? "";
 
-  // Food home (grid-first hero under status bar)
-  if (root === "home" && (leaf === "" || leaf === "index")) return true;
+  // Grid-first food home opts in via hideStatusBarSpacer. Discovery must keep the
+  // root spacer — treating every /home as immersive slides CTA/categories under search.
+  if (root === "home" && (leaf === "" || leaf === "index")) return hideStatusBarSpacer;
   // Meals-under-price uses the same immersive hero chrome
   if (root === "home" && leaf === "meals-under-price") return true;
   // Payment success — green hero must paint under the status bar (never force white).
+  // Live route is /orders/payment-success; /checkout/success is the legacy alias.
   if (root === "checkout" && leaf === "success") return true;
+  if (
+    root === "orders" &&
+    (leaf === "payment-success" || leaf === "payment-confirming")
+  ) {
+    return true;
+  }
 
   return false;
 }
@@ -68,32 +89,25 @@ export function StatusBarRouteChromeGuard() {
   useEffect(() => {
     if (bootstrapActive) {
       assertSplashStatusBar();
-    } else if (routeAllowsImmersiveStatusBar(segments)) {
+    } else if (routeAllowsImmersiveStatusBar(segments, hideStatusBarSpacer)) {
       const chrome = useScreenChromeStore.getState();
-      NativeStatusBar.setHidden(false, "none");
-      if (Platform.OS === "android") {
-        NativeStatusBar.setTranslucent(true);
-        const bg =
-          chrome.statusBarBackground === "transparent"
-            ? "transparent"
-            : chrome.statusBarBackground;
-        NativeStatusBar.setBackgroundColor(bg, true);
-        NativeStatusBar.setBarStyle(
-          chrome.statusBarStyle === "light" ? "light-content" : "dark-content",
-          true
-        );
-      }
+      applyBarVisibility(
+        barStyleFromChrome(chrome.statusBarStyle, chrome.statusBarBackground)
+      );
     } else if ((segments[0] ?? "") === "(auth)") {
       // Match login/OTP screen chrome — avoid white↔mint status-bar flicker.
-      assertStatusBarVisible({ backgroundColor: "#F0F4F3" });
+      assertStatusBarVisible({ backgroundColor: "#F0F4F3", barStyle: "dark" });
     } else {
-      // Honor screen-set chrome (e.g. courier mint) instead of always forcing white.
+      // Honor screen-set chrome (e.g. courier mint / discovery dark).
       const chrome = useScreenChromeStore.getState();
       const bg =
         chrome.statusBarBackground && chrome.statusBarBackground !== "transparent"
           ? chrome.statusBarBackground
           : "#FFFFFF";
-      assertStatusBarVisible({ backgroundColor: bg });
+      assertStatusBarVisible({
+        backgroundColor: bg,
+        barStyle: chrome.statusBarStyle,
+      });
     }
 
     const onAppStateChange = (state: AppStateStatus) => {
@@ -102,25 +116,15 @@ export function StatusBarRouteChromeGuard() {
         assertSplashStatusBar();
         return;
       }
-      if (routeAllowsImmersiveStatusBar(segments)) {
+      if (routeAllowsImmersiveStatusBar(segments, hideStatusBarSpacer)) {
         const chrome = useScreenChromeStore.getState();
-        NativeStatusBar.setHidden(false, "none");
-        if (Platform.OS === "android") {
-          NativeStatusBar.setTranslucent(true);
-          const bg =
-            chrome.statusBarBackground === "transparent"
-              ? "transparent"
-              : chrome.statusBarBackground;
-          NativeStatusBar.setBackgroundColor(bg, true);
-          NativeStatusBar.setBarStyle(
-            chrome.statusBarStyle === "light" ? "light-content" : "dark-content",
-            true
-          );
-        }
+        applyBarVisibility(
+          barStyleFromChrome(chrome.statusBarStyle, chrome.statusBarBackground)
+        );
         return;
       }
       if ((segments[0] ?? "") === "(auth)") {
-        assertStatusBarVisible({ backgroundColor: "#F0F4F3" });
+        assertStatusBarVisible({ backgroundColor: "#F0F4F3", barStyle: "dark" });
         return;
       }
       const chrome = useScreenChromeStore.getState();
@@ -128,42 +132,47 @@ export function StatusBarRouteChromeGuard() {
         chrome.statusBarBackground && chrome.statusBarBackground !== "transparent"
           ? chrome.statusBarBackground
           : "#FFFFFF";
-      assertStatusBarVisible({ backgroundColor: bg });
+      assertStatusBarVisible({
+        backgroundColor: bg,
+        barStyle: chrome.statusBarStyle,
+      });
     };
     const subscription = AppState.addEventListener("change", onAppStateChange);
     return () => subscription.remove();
-  }, [routeKey, segments, bootstrapActive]);
+  }, [routeKey, segments, bootstrapActive, hideStatusBarSpacer]);
 
   useEffect(() => {
     if (bootstrapActive) {
       assertSplashStatusBar();
       return;
     }
-    if (routeAllowsImmersiveStatusBar(segments)) {
+    if (routeAllowsImmersiveStatusBar(segments, hideStatusBarSpacer)) {
       // Immersive is allowed — still never leave the bar hidden.
       // Honor screen chrome (e.g. payment success green + light icons).
       const chrome = useScreenChromeStore.getState();
-      NativeStatusBar.setHidden(false, "none");
-      if (Platform.OS === "android") {
-        NativeStatusBar.setTranslucent(true);
-        const bg =
-          chrome.statusBarBackground === "transparent"
-            ? "transparent"
-            : chrome.statusBarBackground;
-        NativeStatusBar.setBackgroundColor(bg, true);
-        NativeStatusBar.setBarStyle(
-          chrome.statusBarStyle === "light" ? "light-content" : "dark-content",
-          true
-        );
-      }
+      applyBarVisibility(
+        barStyleFromChrome(chrome.statusBarStyle, chrome.statusBarBackground)
+      );
       return;
     }
     // EVERY non-immersive route (store, profile, checkout, orders, legal, tabs home, …)
     // must show a solid, visible status bar. If it inherited leaked immersive/transparent
-    // chrome from a previous screen, restore the safe default.
+    // chrome from a previous screen, restore the safe default — unless the screen already
+    // set a solid dark bar (discovery wallet / store).
     const chrome = useScreenChromeStore.getState();
     const authChrome = (segments[0] ?? "") === "(auth)";
     const desiredBar = authChrome ? "#F0F4F3" : "#FFFFFF";
+    const hasSolidDarkChrome =
+      chrome.statusBarStyle === "light" &&
+      chrome.statusBarBackground !== "transparent" &&
+      !chrome.hideStatusBarSpacer;
+    if (hasSolidDarkChrome) {
+      assertStatusBarVisible({
+        backgroundColor: chrome.statusBarBackground,
+        barStyle: "light",
+      });
+      return;
+    }
     if (
       chrome.hideStatusBarSpacer ||
       chrome.statusBarBackground === "transparent" ||
@@ -176,7 +185,9 @@ export function StatusBarRouteChromeGuard() {
         bootstrapActive: false,
       });
       assertStatusBarVisible(
-        authChrome ? { backgroundColor: desiredBar } : { solidWhite: true },
+        authChrome
+          ? { backgroundColor: desiredBar, barStyle: "dark" }
+          : { solidWhite: true, barStyle: "dark" },
       );
     }
   }, [segments, bootstrapActive, hideStatusBarSpacer]);

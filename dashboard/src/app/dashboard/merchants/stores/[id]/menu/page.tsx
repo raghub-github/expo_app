@@ -11,9 +11,9 @@ export default async function StoreMenuPage({
   const { id } = await params;
   return (
     <StoreMenuTabs storeId={id}>
-      <StoreMenuClient storeId={id} />
-      <AddonLibraryClient storeId={id} />
-      <StoreCombosClient storeId={id} />
+      <StoreMenuClient key={id} storeId={id} />
+      <AddonLibraryClient key={`addons-${id}`} storeId={id} />
+      <StoreCombosClient key={`combos-${id}`} storeId={id} />
     </StoreMenuTabs>
   );
 }

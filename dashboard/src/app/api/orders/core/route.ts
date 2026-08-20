@@ -259,6 +259,7 @@ async function enrichSingleOrderDetail(
           riderRestaurantWaitLive: detailExtra.riderRestaurantWaitLive,
           riderRestaurantWaitAnchorAt: detailExtra.riderRestaurantWaitAnchorAt,
           deliveryProofImageUrl: detailExtra.deliveryProofImageUrl,
+          billedDistanceKm: detailExtra.billedDistanceKm,
         },
       ] as unknown as typeof enrichedData;
     }

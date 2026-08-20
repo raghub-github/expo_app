@@ -70,6 +70,9 @@ export function resolveCancelledByBrand(
   if (t === "rider" || lower.includes("rider") || lower.includes("delivery")) {
     return "Delivery partner";
   }
+  if (t === "system" || /^auto cancel/i.test(lower)) {
+    return "__AUTO__";
+  }
   if (lower.includes("gatimitra")) {
     return GATIMITRA_BRAND;
   }
@@ -83,6 +86,18 @@ export function buildEligibleCompensationMessage(args: {
 }): string {
   const reason = args.reasonDetail.trim() || "Order cancelled";
   const brand = args.cancelledByBrand.trim() || GATIMITRA_BRAND;
+
+  if (brand === "__AUTO__" || /^auto cancel/i.test(reason)) {
+    const prefix = "Auto Cancelled by System";
+    if (args.compensationPct <= 0.009) {
+      return `${prefix}. As per policy, you will not receive compensation for this cancellation.`;
+    }
+    if (args.compensationPct >= 99.99) {
+      return `${prefix}. As per policy, you will receive ${formatPct(args.compensationPct)}% of net order value as compensation.`;
+    }
+    return `${prefix}. As per policy, you will get ${formatPct(args.compensationPct)}% of net order value as compensation.`;
+  }
+
   const prefix = `Cancelled by ${brand}: ${reason}`;
 
   if (args.compensationPct <= 0.009) {

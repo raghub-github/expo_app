@@ -8,6 +8,7 @@ export const HEADER_IMAGE_HEIGHT = 196;
 export const HEADER_COLLAPSED_THRESHOLD = 100;
 
 /** Sticky chrome row heights — keep in sync with component styles. */
+export const STICKY_TITLE_ROW_HEIGHT = 36;
 export const STICKY_SEARCH_ROW_HEIGHT = 48;
 export const CATEGORY_ROW_HEIGHT = 44;
 export const FILTER_BAR_HEIGHT = 52;
@@ -43,6 +44,7 @@ export function merchantHeaderTopGutter(safeTop = 0): number {
 export function merchantStickyFilterTop(safeTop = 0): number {
   return (
     merchantHeaderTopGutter(safeTop) +
+    STICKY_TITLE_ROW_HEIGHT +
     STICKY_SEARCH_ROW_HEIGHT +
     STICKY_SEARCH_WRAP_PADDING_BOTTOM
   );
@@ -55,6 +57,7 @@ export function menuScrollStickyOffset(safeTop = 0): number {
 /** Fallback when insets are unavailable (tests / early layout). */
 export const MERCHANT_STICKY_FILTER_TOP =
   MERCHANT_HEADER_TOP_EXTRA +
+  STICKY_TITLE_ROW_HEIGHT +
   STICKY_SEARCH_ROW_HEIGHT +
   STICKY_SEARCH_WRAP_PADDING_BOTTOM;
 
@@ -67,6 +70,11 @@ export const SCREEN_WIDTH_EXPORT = SCREEN_WIDTH;
 
 /** Menu row height — fixed for zero layout shift / stable scrollTo. */
 export const MENU_ITEM_ROW_HEIGHT = 202;
+
+/** Compact vertical category rail beside the masonry menu grid. */
+export const CATEGORY_RAIL_WIDTH = 88;
+export const MENU_MASONRY_GUTTER = 8;
+export const MENU_MASONRY_CARD_RADIUS = 14;
 
 /** Min height for menu-loading skeleton — fills viewport below hero/info so scroll never hits blank. */
 export const MENU_LOADING_FILL_MIN_HEIGHT = Math.max(

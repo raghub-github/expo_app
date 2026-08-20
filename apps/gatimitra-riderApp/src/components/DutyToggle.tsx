@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useDutyToggle } from "@/src/hooks/useDutyToggle";
 import { useRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
 import { OffDutyConfirmModal } from "@/src/components/home/OffDutyConfirmModal";
-import { SubscriptionDutyBlockedSheet } from "@/src/components/subscription/SubscriptionDutyBlockedSheet";
+import { openSubscriptionDutyBlockedSheet } from "@/src/stores/subscriptionDutyBlockedSheetStore";
 import { LORA_BOLD } from "@/src/theme/headerFonts";
 
 interface DutyToggleProps {
@@ -17,7 +17,6 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
   const { isOnDuty, setDuty, isPending, dutyGoOnBlocked } = useDutyToggle();
   const { refetch: refetchSubscription } = useRiderSubscriptionStatus();
   const [confirmVisible, setConfirmVisible] = useState(false);
-  const [blockedSheetVisible, setBlockedSheetVisible] = useState(false);
 
   const requestToggle = useCallback(() => {
     if (isPending) return;
@@ -27,12 +26,12 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
     }
     if (dutyGoOnBlocked) {
       void refetchSubscription();
-      setBlockedSheetVisible(true);
+      openSubscriptionDutyBlockedSheet();
       return;
     }
     void setDuty(true).then((result) => {
       if (result?.blockedFromGoingOn) {
-        setBlockedSheetVisible(true);
+        openSubscriptionDutyBlockedSheet();
       }
     });
   }, [dutyGoOnBlocked, isOnDuty, isPending, refetchSubscription, setDuty]);
@@ -48,10 +47,6 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
         onCancel={() => setConfirmVisible(false)}
         onConfirm={handleConfirmOffDuty}
         loading={isPending}
-      />
-      <SubscriptionDutyBlockedSheet
-        visible={blockedSheetVisible}
-        onClose={() => setBlockedSheetVisible(false)}
       />
     </>
   );

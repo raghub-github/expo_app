@@ -13,6 +13,15 @@ export type RiderDashboardOrderStatusInput = {
 
 const RIDER_ASSIGNMENT_ENDED = new Set(["cancelled", "unassigned", "rejected"]);
 
+/** Raw status / enum → title case with lowercase letters (Rider Assigned, not RIDER ASSIGNED). */
+export function titleCaseStatusWords(raw: string): string {
+  return raw
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 /** Raw orders_core status → title case (Delivered, Assigned, …). */
 export function formatRiderOrderStatusDisplayLabel(
   status: string | null | undefined,
@@ -24,7 +33,7 @@ export function formatRiderOrderStatusDisplayLabel(
   if (key === "delivered" && isPersonRideOrderType(orderType)) {
     return "Completed";
   }
-  return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return titleCaseStatusWords(raw);
 }
 
 /**

@@ -8,6 +8,8 @@ import { LinearGradient } from "expo-linear-gradient";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { checkoutRouterBack } from "@/lib/safeRouterBack";
 import { useCartStore } from "@/store/cartStore";
+import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
+import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 
 const HEADER_HEIGHT = 48;
 const TITLE_DARK = "#1A1A1A";
@@ -59,14 +61,19 @@ const styles = StyleSheet.create({
 });
 
 export default function CheckoutLayout() {
+  const discovery = useDiscoveryLayout();
+  const barStyle = discovery ? "light" : "dark";
+  const barBg = discovery ? DiscoveryColors.bg : "#F8F8F8";
+
   return (
     <>
       <AndroidBackHandler />
       <Stack
         screenOptions={{
-          // See app/_layout.tsx — stops screens from re-rendering while a
-          // screen is pushed on top of them.
           freezeOnBlur: true,
+          statusBarHidden: false,
+          statusBarStyle: barStyle,
+          contentStyle: { backgroundColor: barBg },
         }}
       >
       <Stack.Screen

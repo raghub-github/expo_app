@@ -4,11 +4,12 @@
  * so the browser never needs cross-origin cookies against the REST API.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import {
-  readCookieAccessSession,
-  isCookieAccessTokenUsable,
-} from "@/lib/auth/read-cookie-access-session";
+  getAuthenticatedApiUser,
+  authFailureResponse,
+  type ApiAuthSuccess,
+} from "@/lib/auth/api-session";
+import { readCookieAccessSession, isCookieAccessTokenUsable } from "@/lib/auth/read-cookie-access-session";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -28,6 +29,29 @@ type TicketBody = {
   zoneKeys?: string[];
 };
 
+async function resolveAccessToken(
+  request: NextRequest,
+  supabase: ApiAuthSuccess["supabase"]
+): Promise<string | null> {
+  const cookieSession = readCookieAccessSession({
+    get: (name) => request.cookies.get(name),
+    getAll: () => request.cookies.getAll(),
+  });
+  if (isCookieAccessTokenUsable(cookieSession) && cookieSession?.accessToken?.trim()) {
+    return cookieSession.accessToken.trim();
+  }
+
+  try {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token?.trim();
+    if (token) return token;
+  } catch {
+    /* cookie JWT is the source of truth; getSession is fallback only */
+  }
+
+  return null;
+}
+
 export async function POST(request: NextRequest) {
   const auth = await getAuthenticatedApiUser(request);
   if (!auth.ok) return authFailureResponse(auth);
@@ -39,11 +63,7 @@ export async function POST(request: NextRequest) {
     body = {};
   }
 
-  const cookieSession = readCookieAccessSession(request.cookies);
-  const accessToken =
-    cookieSession && isCookieAccessTokenUsable(cookieSession)
-      ? cookieSession.accessToken
-      : null;
+  const accessToken = await resolveAccessToken(request, auth.supabase);
 
   if (!accessToken) {
     return NextResponse.json(

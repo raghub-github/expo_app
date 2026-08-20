@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { getQueryClient } from "@/lib/react-query";
 import { STORE_KEY } from "@/hooks/useStore";
 import type { StoreProfile } from "@/hooks/useStore";
+import { prefetchStoreMenu } from "@/hooks/queries/useMerchantStoreQueries";
 import { queryKeys } from "@/lib/queryKeys";
 import { readStoreOperationsCache, writeStoreOperationsCache } from "@/lib/merchants/partner-store-ops-cache";
 import { useLocalStoreStatusEngineStore } from "@/lib/localStoreStatusEngineStore";
@@ -49,6 +50,7 @@ export function StoreQueryHydrator({
       },
       staleTime: 10 * 60 * 1000,
     });
+    prefetchStoreMenu(queryClient, storeId);
   }, [storeId]);
 
   return null;

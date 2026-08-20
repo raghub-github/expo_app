@@ -11,7 +11,7 @@ import {
   type SearchBoxFeatureSuggestion,
 } from "@mapbox/search-js-core";
 import { getConfig } from "@/config/env";
-import type { EnrichedPlaceResult } from "@/services/locationSearch.service";
+import { isValidMapCoordinate } from "@/lib/map-coordinates";
 
 export const MAPBOX_SEARCH_DEBOUNCE_MS = 400;
 export const MAPBOX_SEARCH_MIN_CHARS = 2;
@@ -229,20 +229,23 @@ export async function mapboxSearchRetrieve(
   return featureToEnriched(feature);
 }
 
-/** Resolve enriched result — retrieves when coords are pending. */
+/** Resolve enriched result — retrieves when coords are pending or missing. */
 export async function resolveMapboxEnrichedPlace(
   place: EnrichedPlaceResult,
   context: MapboxSearchSessionContext,
   signal?: AbortSignal
 ): Promise<EnrichedPlaceResult> {
-  if (!place.pendingRetrieve || !place.mapboxSuggestion) {
-    if (place.latitude && place.longitude) {
-      resetMapboxSearchSession(context);
-    }
+  if (isValidMapCoordinate(place.latitude, place.longitude) && !place.pendingRetrieve) {
+    resetMapboxSearchSession(context);
     return place;
   }
-  const retrieved = await mapboxSearchRetrieve(place.mapboxSuggestion, context, signal);
-  return retrieved ?? place;
+  if (place.mapboxSuggestion) {
+    const retrieved = await mapboxSearchRetrieve(place.mapboxSuggestion, context, signal);
+    if (retrieved && isValidMapCoordinate(retrieved.latitude, retrieved.longitude)) {
+      return retrieved;
+    }
+  }
+  return place;
 }
 
 export type MapboxReverseResult = {

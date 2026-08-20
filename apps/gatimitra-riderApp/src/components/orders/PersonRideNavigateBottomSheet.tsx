@@ -441,7 +441,7 @@ const styles = StyleSheet.create({
   },
   cancelFloat: {
     position: "absolute",
-    top: -32,
+    top: -8,
     right: 14,
     zIndex: 60,
     ...Platform.select({

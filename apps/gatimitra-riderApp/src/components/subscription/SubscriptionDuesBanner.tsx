@@ -25,6 +25,7 @@ import {
 import { extractApiErrorMessage } from "@/src/services/http";
 import { BannerPagerIndicators } from "@/src/components/home/HomeAlertBannerCarousel";
 import { openHostedRazorpayCheckout } from "@/src/components/payment/RazorpayCheckoutModal";
+import { showRiderPaymentSuccess } from "@/src/stores/paymentSuccessSheetStore";
 
 function formatRupee(amount: number) {
   return `₹${amount.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
@@ -73,7 +74,7 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
             )
           );
         } else {
-          Alert.alert(
+          showRiderPaymentSuccess(
             t("subscription.duesPaidTitle", "Payment successful"),
             t(
               "subscription.duesPaidMessage",
@@ -103,7 +104,7 @@ export function SubscriptionDuesBanner({ embedded = false }: { embedded?: boolea
         const result = await payDues.mutateAsync();
         await refetch();
         if (result.paidAmount > 0 && result.totalDueAfter <= 0) {
-          Alert.alert(
+          showRiderPaymentSuccess(
             t("subscription.duesPaidTitle", "Payment successful"),
             t(
               "subscription.duesPaidFromWallet",

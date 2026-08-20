@@ -2,13 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import {
   getStateFoodHomeLayoutConfig,
+  saveStateDiscoveryCta,
   saveStateGridFirstSubscriptionRow,
   saveStateGridFirstUnder250,
   upsertStateFoodHomeLayout,
 } from "@/lib/db/operations/cxapp-food-home-layout";
 import {
+  DEFAULT_DISCOVERY_CTA,
   DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW,
   DEFAULT_GRID_FIRST_UNDER_250,
+  parseDiscoveryCtaConfig,
   parseFoodHomeLayoutKey,
   parseGridFirstSubscriptionRowBgColor,
   parseGridFirstUnder250Enabled,
@@ -46,10 +49,19 @@ export async function GET(_request: NextRequest, ctx: RouteCtx) {
         gridFirstUnder250FilterLabel: config.gridFirstUnder250.filterLabel,
         gridFirstUnder250TabImageUrl: config.gridFirstUnder250.tabImageUrl,
         gridFirstUnder250HeroImageUrl: config.gridFirstUnder250.heroImageUrl,
+        discoveryDealsAtMaxPrice: config.discoveryCta.dealsAtMaxPrice,
+        discoveryDealsAtImageUrl: config.discoveryCta.dealsAtImageUrl,
+        discoveryDealsAtHeroImageUrl: config.discoveryCta.dealsAtHeroImageUrl,
+        discoveryCrazyDealsImageUrl: config.discoveryCta.crazyDealsImageUrl,
+        discoveryFreePackagingImageUrl: config.discoveryCta.freePackagingImageUrl,
+        discoveryDealsAtLabel: config.discoveryCta.dealsAtLabel,
+        discoveryCrazyDealsLabel: config.discoveryCta.crazyDealsLabel,
+        discoveryFreePackagingLabel: config.discoveryCta.freePackagingLabel,
+        discoveryCtaTiles: config.discoveryCta.tiles,
       },
       {
         headers: {
-          "Cache-Control": "private, max-age=15, stale-while-revalidate=30",
+          "Cache-Control": "private, max-age=5, stale-while-revalidate=15",
         },
       }
     );
@@ -80,6 +92,15 @@ export async function PUT(request: NextRequest, ctx: RouteCtx) {
       gridFirstUnder250FilterLabel?: unknown;
       gridFirstUnder250TabImageUrl?: unknown;
       gridFirstUnder250HeroImageUrl?: unknown;
+      discoveryDealsAtMaxPrice?: unknown;
+      discoveryDealsAtImageUrl?: unknown;
+      discoveryDealsAtHeroImageUrl?: unknown;
+      discoveryCrazyDealsImageUrl?: unknown;
+      discoveryFreePackagingImageUrl?: unknown;
+      discoveryDealsAtLabel?: unknown;
+      discoveryCrazyDealsLabel?: unknown;
+      discoveryFreePackagingLabel?: unknown;
+      discoveryCtaTiles?: unknown;
     };
 
     const layoutKey = body.layoutKey != null ? parseFoodHomeLayoutKey(body.layoutKey) : null;
@@ -160,6 +181,66 @@ export async function PUT(request: NextRequest, ctx: RouteCtx) {
       under250 = current.gridFirstUnder250;
     }
 
+    const hasDiscoveryCtaPatch =
+      body.discoveryDealsAtMaxPrice !== undefined ||
+      body.discoveryDealsAtImageUrl !== undefined ||
+      body.discoveryDealsAtHeroImageUrl !== undefined ||
+      body.discoveryCrazyDealsImageUrl !== undefined ||
+      body.discoveryFreePackagingImageUrl !== undefined ||
+      body.discoveryDealsAtLabel !== undefined ||
+      body.discoveryCrazyDealsLabel !== undefined ||
+      body.discoveryFreePackagingLabel !== undefined ||
+      body.discoveryCtaTiles !== undefined;
+
+    let discoveryCta = DEFAULT_DISCOVERY_CTA;
+    if (hasDiscoveryCtaPatch) {
+      const current = await getStateFoodHomeLayoutConfig(stateId);
+      discoveryCta = await saveStateDiscoveryCta(
+        stateId,
+        parseDiscoveryCtaConfig({
+          discoveryDealsAtMaxPrice:
+            body.discoveryDealsAtMaxPrice !== undefined
+              ? body.discoveryDealsAtMaxPrice
+              : current.discoveryCta.dealsAtMaxPrice,
+          discoveryDealsAtImageUrl:
+            body.discoveryDealsAtImageUrl !== undefined
+              ? body.discoveryDealsAtImageUrl
+              : current.discoveryCta.dealsAtImageUrl,
+          discoveryDealsAtHeroImageUrl:
+            body.discoveryDealsAtHeroImageUrl !== undefined
+              ? body.discoveryDealsAtHeroImageUrl
+              : current.discoveryCta.dealsAtHeroImageUrl,
+          discoveryCrazyDealsImageUrl:
+            body.discoveryCrazyDealsImageUrl !== undefined
+              ? body.discoveryCrazyDealsImageUrl
+              : current.discoveryCta.crazyDealsImageUrl,
+          discoveryFreePackagingImageUrl:
+            body.discoveryFreePackagingImageUrl !== undefined
+              ? body.discoveryFreePackagingImageUrl
+              : current.discoveryCta.freePackagingImageUrl,
+          discoveryDealsAtLabel:
+            body.discoveryDealsAtLabel !== undefined
+              ? body.discoveryDealsAtLabel
+              : current.discoveryCta.dealsAtLabel,
+          discoveryCrazyDealsLabel:
+            body.discoveryCrazyDealsLabel !== undefined
+              ? body.discoveryCrazyDealsLabel
+              : current.discoveryCta.crazyDealsLabel,
+          discoveryFreePackagingLabel:
+            body.discoveryFreePackagingLabel !== undefined
+              ? body.discoveryFreePackagingLabel
+              : current.discoveryCta.freePackagingLabel,
+          discoveryCtaTiles:
+            body.discoveryCtaTiles !== undefined
+              ? body.discoveryCtaTiles
+              : current.discoveryCta.tiles,
+        })
+      );
+    } else {
+      const current = await getStateFoodHomeLayoutConfig(stateId);
+      discoveryCta = current.discoveryCta;
+    }
+
     const savedLayoutKey = layoutKey ?? (await getStateFoodHomeLayoutConfig(stateId)).layoutKey;
 
     return NextResponse.json({
@@ -174,6 +255,15 @@ export async function PUT(request: NextRequest, ctx: RouteCtx) {
       gridFirstUnder250FilterLabel: under250.filterLabel,
       gridFirstUnder250TabImageUrl: under250.tabImageUrl,
       gridFirstUnder250HeroImageUrl: under250.heroImageUrl,
+      discoveryDealsAtMaxPrice: discoveryCta.dealsAtMaxPrice,
+      discoveryDealsAtImageUrl: discoveryCta.dealsAtImageUrl,
+      discoveryDealsAtHeroImageUrl: discoveryCta.dealsAtHeroImageUrl,
+      discoveryCrazyDealsImageUrl: discoveryCta.crazyDealsImageUrl,
+      discoveryFreePackagingImageUrl: discoveryCta.freePackagingImageUrl,
+      discoveryDealsAtLabel: discoveryCta.dealsAtLabel,
+      discoveryCrazyDealsLabel: discoveryCta.crazyDealsLabel,
+      discoveryFreePackagingLabel: discoveryCta.freePackagingLabel,
+      discoveryCtaTiles: discoveryCta.tiles,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Failed to save layout";

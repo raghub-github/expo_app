@@ -10,6 +10,7 @@ import {
 } from "@/lib/prefetchMerchantDetail";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
+import { peekCachedFoodHomeLayoutKey } from "@/lib/foodHomeLayoutCache";
 
 /**
  * Open restaurant detail with an instant full-screen shutter Modal.
@@ -25,9 +26,10 @@ export function navigateToMerchant(
 
   // 1) Shutter Modal first — must beat the native stack paint.
   useMerchantNavTransitionStore.getState().show(merchantId);
+  const discovery = peekCachedFoodHomeLayoutKey() === "discovery";
   useScreenChromeStore.setState({
-    statusBarBackground: "#FFFFFF",
-    statusBarStyle: "dark",
+    statusBarBackground: discovery ? "#121212" : "#FFFFFF",
+    statusBarStyle: discovery ? "light" : "dark",
     hideStatusBarSpacer: false,
   });
 
@@ -57,9 +59,10 @@ export function navigateToMerchant(
 export function showMerchantNavShutter(merchantId: string): void {
   if (!merchantId) return;
   useMerchantNavTransitionStore.getState().show(merchantId);
+  const discovery = peekCachedFoodHomeLayoutKey() === "discovery";
   useScreenChromeStore.setState({
-    statusBarBackground: "#FFFFFF",
-    statusBarStyle: "dark",
+    statusBarBackground: discovery ? "#121212" : "#FFFFFF",
+    statusBarStyle: discovery ? "light" : "dark",
     hideStatusBarSpacer: false,
   });
 }

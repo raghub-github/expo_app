@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --webpack -p 3001",
+    "dev": "node ./scripts/dev-with-memory.mjs",
     "dev:turbopack": "next dev -p 3001",
-    "dev:webpack": "next dev --webpack -p 3001",
+    "dev:webpack": "node ./scripts/dev-with-memory.mjs",
     "clean": "node ./scripts/clean-next.mjs",
     "dev:clean": "npm run clean && next dev --webpack -p 3001",
     "build": "npm run clean && node ./scripts/build-with-memory.mjs",
@@ -15,7 +15,7 @@
     "migrate": "tsx scripts/run-migration.ts",
     "migrate:owner": "tsx scripts/run-owner-full-name-migration.ts",
     "verify-migration": "tsx scripts/verify-migration.ts",
-    "test": "tsx --test src/lib/pricing/__tests__/slabPricingEngine.test.ts src/lib/pricing/__tests__/slabInputUtils.test.ts"
+    "test": "tsx --test src/lib/pricing/__tests__/slabPricingEngine.test.ts src/lib/pricing/__tests__/slabInputUtils.test.ts src/lib/orders/__tests__/refund-log-ids.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.985.0",

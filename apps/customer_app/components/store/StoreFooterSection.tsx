@@ -12,6 +12,7 @@ import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
+import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 export type StoreFooterSectionProps = {
   similarMerchants: MerchantSummary[];
@@ -112,15 +113,16 @@ export function StoreFooterSection({
   bottomPadding = 0,
 }: StoreFooterSectionProps) {
   const router = useRouter();
+  const dark = useMerchantUiDark();
   const { width } = useWindowDimensions();
   const [expanded, setExpanded] = useState(true);
   const cardW = (width - 16 * 2 - 10) / 2;
 
   return (
-    <View style={[styles.wrap, bottomPadding > 0 ? { paddingBottom: bottomPadding } : null]}>
+    <View style={[styles.wrap, dark && styles.wrapDark, bottomPadding > 0 ? { paddingBottom: bottomPadding } : null]}>
       {/* Soft white → gray fade so the item-list seam isn't a hard color cut. */}
       <LinearGradient
-        colors={["#FFFFFF", "#F5F5F5"]}
+        colors={dark ? [MerchantDarkPalette.bg, MerchantDarkPalette.bg] : ["#FFFFFF", "#F5F5F5"]}
         locations={[0, 1]}
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 1 }}
@@ -129,18 +131,18 @@ export function StoreFooterSection({
       />
 
       <View style={styles.inner}>
-        {similarMerchants.length > 0 ? (
+        {!dark && similarMerchants.length > 0 ? (
           <View style={styles.block}>
             <TouchableOpacity
               style={styles.similarHeader}
               onPress={() => setExpanded((v) => !v)}
               activeOpacity={0.8}
             >
-              <AppText style={styles.similarTitle}>Try these similar restaurants</AppText>
+              <AppText style={[styles.similarTitle, dark && styles.similarTitleDark]}>Try these similar restaurants</AppText>
               <Ionicons
                 name={expanded ? "chevron-up" : "chevron-down"}
                 size={18}
-                color={StoreTheme.textPrimary}
+                color={dark ? MerchantDarkPalette.text : StoreTheme.textPrimary}
               />
             </TouchableOpacity>
             {expanded ? (
@@ -159,14 +161,18 @@ export function StoreFooterSection({
         ) : null}
 
         <LinearGradient
-          colors={[StoreTheme.promoBannerStart, StoreTheme.promoBannerEnd]}
+          colors={
+            dark
+              ? [MerchantDarkPalette.card, MerchantDarkPalette.elevated]
+              : [StoreTheme.promoBannerStart, StoreTheme.promoBannerEnd]
+          }
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 0 }}
-          style={styles.promoBanner}
+          style={[styles.promoBanner, dark && styles.promoBannerDark]}
         >
           <View style={styles.promoTextBlock}>
-            <AppText style={styles.promoTitle}>Serving smiles at your doorstep</AppText>
-            <View style={styles.promoArrow}>
+            <AppText style={[styles.promoTitle, dark && styles.promoTitleDark]}>Serving smiles at your doorstep</AppText>
+            <View style={[styles.promoArrow, dark && styles.promoArrowDark]}>
               <Ionicons name="arrow-forward" size={14} color="#fff" />
             </View>
           </View>
@@ -182,8 +188,8 @@ export function StoreFooterSection({
         <View style={styles.disclaimerBlock}>
           {DISCLAIMERS.map((d) => (
             <View key={d} style={styles.bulletRow}>
-              <AppText style={styles.bullet}>•</AppText>
-              <AppText style={styles.disclaimerText}>{d}</AppText>
+              <AppText style={[styles.bullet, dark && styles.disclaimerDark]}>•</AppText>
+              <AppText style={[styles.disclaimerText, dark && styles.disclaimerDark]}>{d}</AppText>
             </View>
           ))}
         </View>
@@ -205,6 +211,9 @@ const styles = StyleSheet.create({
   wrap: {
     backgroundColor: "#F5F5F5",
     paddingBottom: 4,
+  },
+  wrapDark: {
+    backgroundColor: MerchantDarkPalette.bg,
   },
   topBlend: {
     height: 56,
@@ -232,6 +241,9 @@ const styles = StyleSheet.create({
     color: "#02060C",
     flex: 1,
     paddingRight: 8,
+  },
+  similarTitleDark: {
+    color: MerchantDarkPalette.text,
   },
   grid: {
     flexDirection: "row",
@@ -338,6 +350,10 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     minHeight: 88,
   },
+  promoBannerDark: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: MerchantDarkPalette.border,
+  },
   promoTextBlock: {
     flex: 1,
     flexDirection: "row",
@@ -352,6 +368,9 @@ const styles = StyleSheet.create({
     color: StoreTheme.promoText,
     lineHeight: 20,
   },
+  promoTitleDark: {
+    color: MerchantDarkPalette.text,
+  },
   promoArrow: {
     width: 28,
     height: 28,
@@ -359,6 +378,9 @@ const styles = StyleSheet.create({
     backgroundColor: StoreTheme.reorderGreen,
     alignItems: "center",
     justifyContent: "center",
+  },
+  promoArrowDark: {
+    backgroundColor: MerchantDarkPalette.accent,
   },
   promoImageClip: {
     width: 128,
@@ -391,5 +413,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: StoreTheme.textSecondary,
     lineHeight: 18,
+  },
+  disclaimerDark: {
+    color: MerchantDarkPalette.textDim,
   },
 });

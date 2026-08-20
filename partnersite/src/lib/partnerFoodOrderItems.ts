@@ -167,7 +167,7 @@ export async function loadCoreDbItemsByOrderTextIds(
         const offerTypeRaw = String(ctm.merchant_offer_type ?? '').trim();
         const offerTypeNorm = offerTypeRaw.toUpperCase().replace(/[-\s]+/g, '_');
         const isNone = !offerTypeNorm || offerTypeNorm === 'NONE';
-        // BOGO freezes with discount 0 (gross = net) — still stamp type/name for pills.
+        // BOGO freezes type/name even when qty is too low for a free unit (discount 0).
         const isBogo =
           offerTypeNorm === 'BOGO' ||
           offerTypeNorm === 'BUY_X_GET_Y' ||
@@ -175,15 +175,15 @@ export async function loadCoreDbItemsByOrderTextIds(
         const moneyPromo = ctm.merchant_offer_discount > 0.005;
         const offerName = String(ctm.merchant_offer_name ?? '').trim() || null;
         const hasMerchantOffer = !isNone && (moneyPromo || isBogo || Boolean(offerName));
-        const displayNet = moneyPromo ? ctm.net_ctm_value : ctm.gross_value;
+        const displayCatalog = ctm.gross_value;
         raw[i] = {
           ...raw[i],
-          // Line `total`/`price` = what merchant sees as selling price (net CTM).
-          total: displayNet,
-          total_price: displayNet,
-          price: displayNet / qty,
+          // Line `total`/`price` = catalog selling ₹ (gross_value). net_ctm is selling minus BOOST.
+          total: displayCatalog,
+          total_price: displayCatalog,
+          price: displayCatalog / qty,
           catalog_line_total: ctm.gross_value,
-          net_line_total: isBogo ? ctm.gross_value : ctm.net_ctm_value,
+          net_line_total: ctm.net_ctm_value,
           offer_discount: moneyPromo ? ctm.merchant_offer_discount : 0,
           offer_label: hasMerchantOffer ? offerName : null,
           is_item_promo: moneyPromo || isBogo,

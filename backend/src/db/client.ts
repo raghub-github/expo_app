@@ -166,6 +166,7 @@ export function isDbConnectionError(err: unknown): boolean {
     "CONNECT_TIMEOUT",
     "CONNECTION_DESTROYED",
     "CONNECTION_CLOSED",
+    "CONNECTION_ENDED",
     "57P01",
     "08006",
     "08003",
@@ -183,6 +184,8 @@ export function isDbConnectionError(err: unknown): boolean {
     msg.includes("getaddrinfo enotfound") ||
     msg.includes("getaddrinfo eai_again") ||
     msg.includes("write connection_closed") ||
+    msg.includes("write connection_ended") ||
+    msg.includes("connection ended") ||
     msg.includes("connect_timeout") ||
     msg.includes("connect etimedout")
   );
@@ -198,19 +201,15 @@ export function isDbConnectionError(err: unknown): boolean {
  */
 function needsFullPoolReset(err: unknown): boolean {
   const codes = new Set(collectErrCodes(err));
-  if (
-    codes.has("CONNECTION_DESTROYED") ||
-    codes.has("CONNECTION_CLOSED") ||
-    codes.has("CONNECT_TIMEOUT") ||
-    codes.has("ENOTFOUND") ||
-    codes.has("EAI_AGAIN")
-  ) {
+  // CONNECTION_DESTROYED / CLOSED / ENDED mean one socket died (or sql.end
+  // already ran). Calling sql.end() again kills every in-flight query and
+  // is what produced the CONNECTION_DESTROYED storms on menu / addresses /
+  // live-status. Retry on the same pool — postgres.js will open a new socket.
+  if (codes.has("CONNECT_TIMEOUT") || codes.has("ENOTFOUND") || codes.has("EAI_AGAIN")) {
     return true;
   }
   const msg = collectErrMessage(err);
   return (
-    msg.includes("connection_destroyed") ||
-    msg.includes("connection_closed") ||
     msg.includes("connect_timeout") ||
     msg.includes("getaddrinfo enotfound") ||
     msg.includes("getaddrinfo eai_again") ||

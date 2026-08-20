@@ -128,14 +128,20 @@ function toFiniteNumber(v: unknown): number | undefined {
 }
 
 function mapCustomerMenuItem(
-  m: MerchantMenuItemRow & { category_name?: string | null }
+  m: MerchantMenuItemRow & {
+    category_name?: string | null;
+    customer_strike_price?: string;
+    canonical_pricing?: Record<string, unknown>;
+  }
 ) {
   const menuItemId = toFiniteInt(m.id);
   const price = toFiniteNumber(m.selling_price);
   if (menuItemId == null || price == null) return null;
 
   const categoryId = toFiniteInt(m.category_id);
-  const basePrice = toFiniteNumber(m.base_price);
+  const strike = toFiniteNumber(m.customer_strike_price);
+  const mrp = toFiniteNumber(m.base_price);
+  const basePrice = strike != null && strike > price ? strike : mrp;
   const discountPercentage = toFiniteNumber(m.discount_percentage);
   const prepTimeMinutes = toFiniteInt(m.preparation_time_minutes);
 
@@ -146,6 +152,7 @@ function mapCustomerMenuItem(
     description: m.item_description ?? undefined,
     price,
     basePrice,
+    canonicalPricing: m.canonical_pricing ?? undefined,
     imageUrl: toAbsoluteClientMediaUrl(m.item_image_url ?? null) ?? undefined,
     foodType: m.food_type ?? undefined,
     spiceLevel: m.spice_level ?? undefined,
@@ -279,6 +286,7 @@ export async function merchantRoutes(app: FastifyInstance) {
                 statusChip: z.string().nullable().optional(),
                 completedOrderCount: z.number().optional(),
                 packagingChargeAmount: z.number().nullable().optional(),
+                isPureVeg: z.boolean().optional(),
               })
             ),
           }),
@@ -517,6 +525,7 @@ export async function merchantRoutes(app: FastifyInstance) {
             Number.isFinite(storeInternalId) && storeInternalId > 0
               ? mediaByStoreId.get(storeInternalId)?.packaging_charge_amount ?? 0
               : 0,
+          isPureVeg: s.is_pure_veg === true,
         };
       });
       return reply.send({ items: body });
