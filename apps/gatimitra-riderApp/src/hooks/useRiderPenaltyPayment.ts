@@ -66,6 +66,22 @@ export function useRiderPenaltyPayment() {
     },
   });
 
+  /**
+   * Ask the backend to reconcile any pending/delayed Razorpay payment against the
+   * gateway (settles a captured-but-unconfirmed one, fails an abandoned one). Safe
+   * to call on refresh/foreground — idempotent and a no-op when nothing is pending.
+   */
+  const reconcile = useMutation({
+    mutationFn: async () => {
+      if (!session?.accessToken) throw new Error("Not authenticated");
+      return postJson<{ success: boolean; reconciled: number; settled: number }>(
+        `${API_BASE()}/v1/rider/penalty/reconcile`,
+        {},
+        { headers: { authorization: `Bearer ${session.accessToken}` } }
+      );
+    },
+  });
+
   /** Record a cancelled / failed native-sheet attempt (fire-and-forget). */
   const recordAttempt = useMutation({
     mutationFn: async (payload: {
@@ -82,7 +98,7 @@ export function useRiderPenaltyPayment() {
     },
   });
 
-  return { createOrder, verifyPayment, recordAttempt };
+  return { createOrder, verifyPayment, recordAttempt, reconcile };
 }
 
 /** Rider's own wallet-payment history (all statuses). */

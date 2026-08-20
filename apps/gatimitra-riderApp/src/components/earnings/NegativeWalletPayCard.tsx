@@ -43,8 +43,16 @@ export function NegativeWalletPayCard() {
   const canPayFromWallet = subStatus?.dues?.alertBanner?.canPayFromWallet === true;
 
   const refreshAll = useCallback(async () => {
+    // Reconcile first so a captured-but-unconfirmed (delayed/webhook-less) payment is
+    // settled server-side before we re-read the balance — otherwise the wallet would
+    // still show negative right after a payment that the verify call missed.
+    try {
+      await penaltyPayment.reconcile.mutateAsync();
+    } catch {
+      // best-effort — never block the balance refresh on reconciliation
+    }
     await Promise.all([refetch(), refetchSub()]);
-  }, [refetch, refetchSub]);
+  }, [penaltyPayment.reconcile, refetch, refetchSub]);
 
   const runNative = useCallback(
     async (order: { orderId: string; keyId: string; amount: number }, description: string) => {

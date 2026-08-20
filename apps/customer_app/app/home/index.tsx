@@ -294,6 +294,12 @@ export default function FoodMerchantsScreen() {
   const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
   const setVegOnly = useDietaryPreferenceStore((s) => s.setVegOnly);
   const hydrateDietaryPreferences = useDietaryPreferenceStore((s) => s.hydrate);
+  // Until the persisted veg-only preference has hydrated, `vegOnly` is the
+  // provisional default (false). Fetching/seeding the merchant list against that
+  // provisional value paints non-veg stores that a veg-only user will then see
+  // yanked one tick later (the "store shows for 1s then vanishes" report). Gate
+  // every store read on this so the first fetch already uses the real preference.
+  const dietaryHydrated = useDietaryPreferenceStore((s) => s.hydrated);
 
   useLayoutEffect(() => {
     seedUserAppCategoriesQueryIfCached(queryClient, HOME_CATEGORY_STORE_TYPE);
@@ -301,7 +307,11 @@ export default function FoodMerchantsScreen() {
     if (cachedCategories) {
       prefetchUserAppCategoryImagesAwait(cachedCategories.items ?? [], cachedCategories.allTab?.imageUrl);
     }
-    if (merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null) {
+    if (
+      dietaryHydrated &&
+      merchantsAnchorCoords?.latitude != null &&
+      merchantsAnchorCoords?.longitude != null
+    ) {
       seedMerchantsListQueryIfCached(
         queryClient,
         merchantsAnchorCoords.latitude,
@@ -311,6 +321,7 @@ export default function FoodMerchantsScreen() {
     }
   }, [
     queryClient,
+    dietaryHydrated,
     merchantsAnchorCoords?.latitude,
     merchantsAnchorCoords?.longitude,
     vegOnly,
@@ -328,6 +339,9 @@ export default function FoodMerchantsScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const cachedMerchantsInitial = useMemo(() => {
+    // Don't seed initial data from the provisional (pre-hydration) veg preference —
+    // that is exactly what paints a store the veg-only refetch then removes.
+    if (!dietaryHydrated) return undefined;
     if (merchantsAnchorCoords?.latitude == null || merchantsAnchorCoords?.longitude == null) {
       return undefined;
     }
@@ -338,7 +352,7 @@ export default function FoodMerchantsScreen() {
     );
     // Only hydrate non-empty cache — empty buckets must wait for a live network confirm.
     return entry?.items?.length ? entry.items : undefined;
-  }, [merchantsAnchorCoords?.latitude, merchantsAnchorCoords?.longitude, vegOnly]);
+  }, [dietaryHydrated, merchantsAnchorCoords?.latitude, merchantsAnchorCoords?.longitude, vegOnly]);
 
   const {
     data: merchantsData,
@@ -367,8 +381,13 @@ export default function FoodMerchantsScreen() {
         vegOnly
       );
     },
-    // Industry-standard: only fetch restaurants once we have an active location (GPS or user-selected).
-    enabled: merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
+    // Industry-standard: only fetch restaurants once we have an active location (GPS or user-selected)
+    // AND the persisted veg-only preference has hydrated, so the first fetch already uses the real
+    // filter and never paints a non-veg store that a veg-only refetch would immediately remove.
+    enabled:
+      dietaryHydrated &&
+      merchantsAnchorCoords?.latitude != null &&
+      merchantsAnchorCoords?.longitude != null,
     initialData: cachedMerchantsInitial,
     initialDataUpdatedAt: cachedMerchantsInitial ? Date.now() - MERCHANTS_LIST_STALE_MS : undefined,
     staleTime: MERCHANTS_LIST_STALE_MS,
