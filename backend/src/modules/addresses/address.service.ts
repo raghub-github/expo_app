@@ -664,6 +664,8 @@ export async function setActiveLocation(
     address?: string | null;
     /** When set, binds checkout to this saved address. Pass null to clear (e.g. live GPS). */
     addressId?: number | null;
+    /** Device timestamp of the GPS fix (for §30 stale-fix guard on coord syncs). */
+    capturedAt?: Date | null;
   }
 ): Promise<boolean> {
   const db = getDb();
@@ -706,6 +708,11 @@ export async function setActiveLocation(
       patchAddressId ? (addressId ?? null) : addressIdBefore,
   });
 
+  const capturedAt = data.capturedAt ?? null;
+  // Apply the §30 stale-fix guard only to pure GPS coord syncs. A deliberate bind of
+  // a saved address (patchAddressId && addressId != null) is a user action and must
+  // always win regardless of fix age.
+  const isDeliberateBind = patchAddressId && addressId != null;
   await db
     .insert(customerActiveLocation)
     .values({
@@ -717,6 +724,7 @@ export async function setActiveLocation(
       addressId: addressId !== undefined ? addressId : addressIdBefore,
       lockedForOrder: false,
       orderId: null,
+      gpsCapturedAt: capturedAt,
     })
     .onConflictDoUpdate({
       target: customerActiveLocation.customerId,
@@ -726,7 +734,12 @@ export async function setActiveLocation(
         address: data.address ?? null,
         ...(patchAddressId ? { addressId: addressId ?? null } : {}),
         updatedAt: new Date(),
+        gpsCapturedAt: capturedAt,
       },
+      setWhere:
+        capturedAt == null || isDeliberateBind
+          ? undefined
+          : sql`${customerActiveLocation.gpsCapturedAt} IS NULL OR ${customerActiveLocation.gpsCapturedAt} <= ${capturedAt}`,
     });
 
   // Explicit bind of a Saved Address always bumps MRU — including re-select of the
@@ -783,13 +796,15 @@ export type ReconcileActiveLocationResult = {
 /** Force browsing pin to live GPS and clear saved-address binding (bypasses order lock). */
 async function forceActiveLocationToCurrentGps(
   customerId: number,
-  gps: { latitude: number; longitude: number; address?: string | null }
+  gps: { latitude: number; longitude: number; address?: string | null; capturedAt?: Date | null }
 ): Promise<void> {
+  const capturedAt = gps.capturedAt ?? null;
   console.info("[active-location] force_current_gps", {
     customerId,
     path: "forceActiveLocationToCurrentGps",
     gpsLatitude: gps.latitude,
     gpsLongitude: gps.longitude,
+    capturedAt: capturedAt ? capturedAt.toISOString() : null,
     note: "clears addressId",
   });
   const db = getDb();
@@ -803,6 +818,7 @@ async function forceActiveLocationToCurrentGps(
       addressId: null,
       lockedForOrder: false,
       orderId: null,
+      gpsCapturedAt: capturedAt,
     })
     .onConflictDoUpdate({
       target: customerActiveLocation.customerId,
@@ -814,7 +830,15 @@ async function forceActiveLocationToCurrentGps(
         lockedForOrder: false,
         orderId: null,
         updatedAt: new Date(),
+        gpsCapturedAt: capturedAt,
       },
+      // §30: an out-of-order/stale GPS fix must not overwrite a newer one. Skip the
+      // overwrite when the stored fix is strictly newer than this one. No guard when
+      // the caller didn't supply a fix time (legacy) → last-write-wins as before.
+      setWhere:
+        capturedAt == null
+          ? undefined
+          : sql`${customerActiveLocation.gpsCapturedAt} IS NULL OR ${customerActiveLocation.gpsCapturedAt} <= ${capturedAt}`,
     });
 }
 
@@ -827,7 +851,7 @@ async function forceActiveLocationToCurrentGps(
  */
 export async function reconcileActiveLocationWithGps(
   customerId: number,
-  gps: { latitude: number; longitude: number; address?: string | null }
+  gps: { latitude: number; longitude: number; address?: string | null; capturedAt?: Date | null }
 ): Promise<ReconcileActiveLocationResult> {
   const retentionRadiusM = getEnv().ACTIVE_SAVED_ADDRESS_RETENTION_RADIUS_M;
   const existing = await getActiveLocation(customerId);

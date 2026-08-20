@@ -166,6 +166,8 @@ export const addressService = {
     latitude: number;
     longitude: number;
     address?: string | null;
+    /** Device epoch-ms of the GPS fix (§30 stale-fix guard). Optional. */
+    capturedAtMs?: number;
   }): Promise<ReconcileActiveLocationResult> {
     const { data } = await api.post<ReconcileActiveLocationResult>(
       "/v1/me/active-location/reconcile",
