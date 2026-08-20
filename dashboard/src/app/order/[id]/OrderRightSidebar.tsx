@@ -49,6 +49,7 @@ import {
   fetchRiderActivityLogCached,
 } from "@/lib/riderActivityLogCache";
 import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
+import { OrderPageOverlay } from "@/components/orders/OrderPageOverlay";
 import { formatOrderDistanceKmLabel } from "@/lib/orders/order-distance-display";
 
 interface OrderRightSidebarProps {
@@ -88,6 +89,7 @@ interface OrderRightSidebarProps {
     scheduledDeliverySummary?: string | null;
     deliveryType?: string | null;
     contactlessDelivery?: boolean | null;
+    acceptanceSource?: string | null;
     localityIsSafe?: boolean | null;
     deliveryInitiator?: string | null;
     pickupOtp?: string | null;
@@ -1857,6 +1859,16 @@ export default function OrderRightSidebar({
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">Acceptance Source:</dt>
+            <dd className="min-w-0 text-right font-medium text-slate-700">
+              {order.acceptanceSource ? (
+                <OrderMixedText>{order.acceptanceSource}</OrderMixedText>
+              ) : (
+                "—"
+              )}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Order ID:</dt>
             <dd className="min-w-0 truncate font-medium text-slate-700 text-right orders-num">
               {displayOrderId}
@@ -2314,7 +2326,7 @@ export default function OrderRightSidebar({
 
       {/* All remarks modal */}
       {showRemarksModal && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-2">
+        <OrderPageOverlay className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm px-2">
           <div className="w-full max-w-3xl rounded-xl bg-[#f1faf5] shadow-xl border border-emerald-100">
             {/* Modal header */}
             <div className="flex items-center justify-between px-5 py-3 border-b border-emerald-100">
@@ -2554,12 +2566,12 @@ export default function OrderRightSidebar({
               )}
             </div>
           </div>
-        </div>
+        </OrderPageOverlay>
       )}
 
       {/* All CX notifications modal */}
       {showNotificationsModal && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-2">
+        <OrderPageOverlay className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm px-2">
           <div className="w-full max-w-3xl rounded-xl bg-[#f1faf5] shadow-xl border border-emerald-100">
             <div className="flex items-center justify-between px-5 py-3 border-b border-emerald-100">
               <div className="flex items-center gap-2">
@@ -2636,12 +2648,12 @@ export default function OrderRightSidebar({
               )}
             </div>
           </div>
-        </div>
+        </OrderPageOverlay>
       )}
 
       {/* All recons modal */}
       {showReconsModal && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-3 py-4">
+        <OrderPageOverlay className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm px-3 py-4">
           <div className="flex max-h-[min(90vh,640px)] w-full max-w-5xl flex-col rounded-xl bg-[#f1faf5] shadow-xl border border-emerald-100">
             <div className="flex shrink-0 items-center justify-between px-5 py-3 border-b border-emerald-100">
               <div className="flex items-center gap-2">
@@ -2747,7 +2759,7 @@ export default function OrderRightSidebar({
               )}
             </div>
           </div>
-        </div>
+        </OrderPageOverlay>
       )}
     </aside>
 
@@ -2782,9 +2794,9 @@ export default function OrderRightSidebar({
     />
 
     {showCxInstructions && (
-      <div
-        className="fixed inset-0 z-[10002] bg-black/50 flex items-center justify-center p-4"
-        onClick={(e) => {
+      <OrderPageOverlay
+        className="fixed inset-0 z-[210] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+        onBackdropClick={(e) => {
           if (e.target === e.currentTarget) setShowCxInstructions(false);
         }}
       >
@@ -2851,7 +2863,7 @@ export default function OrderRightSidebar({
             )}
           </div>
         </div>
-      </div>
+        </OrderPageOverlay>
     )}
 
     {toastMessage && (

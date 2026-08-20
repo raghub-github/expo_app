@@ -21,6 +21,7 @@ import {
   labelsForStatusUpdate,
   normalizeActionMode,
   normalizeActionSource,
+  orderAcceptanceSourceFromAction,
   type MerchantOrderActionMode,
   type MerchantOrderActionSource,
 } from "../../lib/merchant-order-food-action-labels.js";
@@ -2476,24 +2477,15 @@ export async function patchMerchantFoodOrderStatus(
   if (corePk == null) throw new Error("core_order_not_found");
 
   let currentStatus = normalizeOrderStatusForTransition(existing.order_status);
-  const coreRows = await sql`
-    SELECT status, current_status FROM orders_core WHERE id = ${corePk} LIMIT 1
-  `;
-  const core = coreRows[0] as { status?: string; current_status?: string | null } | undefined;
-  if (core) {
-    currentStatus = normalizeOrderStatusForTransition(
-      resolvePartnerPipeline(
-        existing.order_status,
-        core.status ?? "assigned",
-        core.current_status ?? null,
-        toIsoOrNull(existing.rider_picked_up_at)
-      )
-    );
-  }
 
-  const allowed = VALID_TRANSITIONS[currentStatus] || [];
-  if (!allowed.includes(status)) {
-    throw new Error(`invalid_transition:${currentStatus}:${status}`);
+  if (status === currentStatus) {
+    const loaded = await loadMerchantFoodOrders(sql, storeId, { ordersFoodId, limit: 1 });
+    if (loaded[0]) return loaded[0];
+  } else {
+    const allowed = VALID_TRANSITIONS[currentStatus] || [];
+    if (!allowed.includes(status)) {
+      throw new Error(`invalid_transition:${currentStatus}:${status}`);
+    }
   }
 
   const now = new Date().toISOString();
@@ -2536,7 +2528,29 @@ export async function patchMerchantFoodOrderStatus(
       bodyPrepMinutes: opts?.preparationTimeMinutes,
     });
 
-    const acceptRows = await sql`
+    const acceptanceSource = orderAcceptanceSourceFromAction(actionSource);
+    let acceptRows: unknown[] = [];
+    try {
+      acceptRows = await sql`
+      UPDATE orders_food
+      SET order_status = ${status}, updated_at = ${now}::timestamptz, accepted_at = ${now}::timestamptz,
+          accepted_by_label = ${actionLabels.accepted_by_label ?? null},
+          acceptance_source = ${acceptanceSource},
+          preparation_time_minutes = ${prep.prepMinutes},
+          prep_ready_by_at = ${prep.prepReadyByAt}::timestamptz,
+          expected_ready_at = ${prep.prepReadyByAt}::timestamptz,
+          prep_time_source = ${prep.prepTimeSource}
+      WHERE id = ${ordersFoodId}
+        AND merchant_store_id = ${storeId}
+        AND UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED')) IN (
+          'CREATED', 'PLACED', 'ORDER_RECEIVED', 'ORDER_PLACED'
+        )
+      RETURNING id
+    `;
+    } catch (acceptErr) {
+      const msg = String((acceptErr as { message?: string })?.message ?? acceptErr).toLowerCase();
+      if (!msg.includes("acceptance_source")) throw acceptErr;
+      acceptRows = await sql`
       UPDATE orders_food
       SET order_status = ${status}, updated_at = ${now}::timestamptz, accepted_at = ${now}::timestamptz,
           accepted_by_label = ${actionLabels.accepted_by_label ?? null},
@@ -2551,9 +2565,15 @@ export async function patchMerchantFoodOrderStatus(
         )
       RETURNING id
     `;
+    }
     if (!Array.isArray(acceptRows) || acceptRows.length === 0) {
-      // Another device already accepted/moved this order — prevent duplicate accept.
-      throw new Error(`invalid_transition:${currentStatus}:${status}`);
+      const again = await sql<{ order_status: string | null }[]>`
+        SELECT order_status FROM orders_food WHERE id = ${ordersFoodId} LIMIT 1
+      `;
+      const st = normalizeOrderStatusForTransition(again[0]?.order_status);
+      if (st !== "ACCEPTED") {
+        throw new Error(`invalid_transition:${currentStatus}:${status}`);
+      }
     }
     try {
       await sql`
@@ -2925,7 +2945,12 @@ export async function patchMerchantFoodOrderStatus(
   try {
     const meta = JSON.stringify({
       ...(rejectedReason ? { rejected_reason: rejectedReason } : {}),
-      ...(status === "ACCEPTED" ? { accept_mode: actionMode } : {}),
+      ...(status === "ACCEPTED"
+        ? {
+            accept_mode: actionMode,
+            acceptance_source: orderAcceptanceSourceFromAction(actionSource),
+          }
+        : {}),
       ...(status === "CANCELLED" ? { cancel_mode: actionMode } : {}),
     });
     await sql`
@@ -2942,9 +2967,90 @@ export async function patchMerchantFoodOrderStatus(
     /* non-fatal */
   }
 
-  const loaded = await loadMerchantFoodOrders(sql, storeId, { ordersFoodId, limit: 1 });
-  const order = loaded[0];
-  if (!order) throw new Error("order_not_found_after_update");
+  const loaded = await loadMerchantFoodOrders(sql, storeId, { ordersFoodId, limit: 1 }).catch(
+    () => [] as MerchantFoodOrderDto[]
+  );
+  const order =
+    loaded[0] ??
+    ({
+      orders_food_id: ordersFoodId,
+      orders_core_id: corePk,
+      core_only: false,
+      formatted_order_id: null,
+      order_status: status,
+      customer_name: null,
+      customer_phone: null,
+      created_at: now,
+      delivery_type: "DELIVERY",
+      rider_id: null,
+      rider_name: null,
+      rider_mobile: null,
+      rider_selfie_url: null,
+      rider_assignment_status: null,
+      rider_reached_at: null,
+      rider_display_variant: "on_the_way",
+      core_status: null,
+      current_status: status,
+      reached_merchant_at: null,
+      rider_reached_pickup_at: null,
+      pickup_wait_seconds: null,
+      rider_store_wait_live: false,
+      rider_store_wait_anchor_at: null,
+      rider_free_wait_seconds: 0,
+      rider_wait_priority: false,
+      grand_total: num(existing.food_items_total_value),
+      food_items_total_value: num(existing.food_items_total_value),
+      merchant_precision_discount: 0,
+      billing_snapshot: null,
+      payment_status: null,
+      items: [],
+      pickup_otp: null,
+      pickup_token: null,
+      kot_number: null,
+      rto_otp: null,
+      payment_method: null,
+      accepted_at: status === "ACCEPTED" ? now : null,
+      preparing_at: null,
+      prepared_at: null,
+      handed_over_to_rider_at: null,
+      rider_picked_up_at: toIsoOrNull(existing.rider_picked_up_at),
+      dispatched_at: null,
+      delivered_at: null,
+      cancelled_at: status === "CANCELLED" ? now : null,
+      rejected_reason: rejectedReason ?? null,
+      accepted_by_label: actionLabels.accepted_by_label ?? null,
+      cancelled_by_label: actionLabels.cancelled_by_label ?? null,
+      cancelled_by_type: null,
+      cancellation_compensation: null,
+      customer_email: null,
+      drop_address: null,
+      distance_km: null,
+      customer_store_order_ordinal: null,
+      customer_store_orders_total: null,
+      customer_platform_orders_total: null,
+      is_bulk_order: false,
+      veg_non_veg: null,
+      requires_utensils: null,
+      delivery_instructions: null,
+      merchant_instructions_list: null,
+      preparation_time_minutes: null,
+      prep_ready_by_at: null,
+      expected_ready_at: null,
+      prep_delay_minutes: null,
+      prep_delay_use_count: null,
+      last_prep_delay_minutes_added: null,
+      prepared_late_minutes: null,
+      merchant_response_deadline_at: null,
+      merchant_response_timeout_seconds: null,
+      store_rating: null,
+      pricing: {
+        subtotal: num(existing.food_items_total_value),
+        packaging: 0,
+        taxes: 0,
+        discount: 0,
+        total: num(existing.food_items_total_value),
+      },
+    } as MerchantFoodOrderDto);
 
   // Merchant CTM snapshot (net of merchant-funded offers) is the source of truth â€”
   // order_settlement_breakdown.merchant_gross is written from it at placement time.
@@ -3053,6 +3159,18 @@ export async function patchMerchantFoodOrderStatus(
       );
     } catch {
       /* tolerated */
+    }
+    if (status === "ACCEPTED" || status === "CANCELLED") {
+      void import("../../lib/merchant-incoming-resolved-broadcast.js")
+        .then(({ broadcastMerchantIncomingResolved }) =>
+          broadcastMerchantIncomingResolved({
+            storeId,
+            coreId: corePk,
+            foodId: ordersFoodId,
+            status,
+          })
+        )
+        .catch(() => undefined);
     }
   } catch { /* tolerated */ }
 

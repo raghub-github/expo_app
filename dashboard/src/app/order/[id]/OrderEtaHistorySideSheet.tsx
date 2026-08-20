@@ -5,6 +5,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Clock3, X } from "lucide-react";
+import { OrderPageOverlay } from "@/components/orders/OrderPageOverlay";
 import {
   toOperationalEtaCards,
   type EtaHistoryRawEntry,
@@ -98,7 +99,10 @@ export function OrderEtaHistorySideSheet({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[80] flex justify-end bg-black/30" onClick={onClose}>
+    <OrderPageOverlay
+      className="fixed inset-0 z-[200] flex justify-end bg-black/30 backdrop-blur-sm"
+      onBackdropClick={onClose}
+    >
       <aside
         className="flex h-full w-full max-w-md flex-col bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
@@ -258,6 +262,6 @@ export function OrderEtaHistorySideSheet({
           )}
         </div>
       </aside>
-    </div>
+    </OrderPageOverlay>
   );
 }

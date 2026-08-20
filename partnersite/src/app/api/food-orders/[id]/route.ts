@@ -5,6 +5,7 @@ import {
   normalizeActionMode,
   normalizeActionSource,
   computeOrderItemQuantityCount,
+  orderAcceptanceSourceFromAction,
 } from '@/lib/merchantOrderFoodActions';
 import { appendAcceptanceTimeline } from '@/lib/orderAcceptanceTimeline';
 import { appendCancellationTimeline } from '@/lib/orderCancellationTimeline';
@@ -37,6 +38,7 @@ import {
   computePreparedLateMinutes,
 } from '@/lib/order-prep-time';
 import { triggerOrderEtaRecalcAfterAccept } from '@/lib/trigger-order-eta-recalc';
+import { broadcastMerchantIncomingResolved } from '@/lib/merchant-incoming-resolved-broadcast';
 import { notifyCustomerMerchantAccepted } from '@/lib/notify-customer-merchant-accepted';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
@@ -177,6 +179,8 @@ export async function PATCH(
     if (newStatus === 'ACCEPTED') {
       updates.accepted_at = now;
       if (actionLabels.accepted_by_label) updates.accepted_by_label = actionLabels.accepted_by_label;
+      const acceptanceSource = orderAcceptanceSourceFromAction(actionSource);
+      if (acceptanceSource) updates.acceptance_source = acceptanceSource;
 
       const [{ data: storeRow }, { data: settingsRow }] = await Promise.all([
         db
@@ -245,13 +249,27 @@ export async function PATCH(
       }
     }
 
-    const { data, error } = await db
+    let { data, error } = await db
       .from('orders_food')
       .update(updates)
       .eq('id', orderIdNum)
       .eq('merchant_store_id', storeInternalId)
       .select()
       .single();
+
+    if (error && String(error.message || '').toLowerCase().includes('acceptance_source')) {
+      const withoutSource = { ...updates };
+      delete withoutSource.acceptance_source;
+      const retry = await db
+        .from('orders_food')
+        .update(withoutSource)
+        .eq('id', orderIdNum)
+        .eq('merchant_store_id', storeInternalId)
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
 
     if (error) {
       console.error('[food-orders PATCH] Error:', error);
@@ -453,6 +471,9 @@ export async function PATCH(
         metadata: {
           ...(rejectedReason ? { rejected_reason: rejectedReason } : {}),
           accept_mode: newStatus === 'ACCEPTED' ? actionMode : undefined,
+          ...(newStatus === 'ACCEPTED'
+            ? { acceptance_source: orderAcceptanceSourceFromAction(actionSource) }
+            : {}),
           cancel_mode: newStatus === 'CANCELLED' ? actionMode : undefined,
         },
       });
@@ -496,6 +517,15 @@ export async function PATCH(
       items: enrichedItems,
       food_items_count: (data as { food_items_count?: number | null }).food_items_count,
     });
+
+    if (newStatus === 'ACCEPTED' || newStatus === 'CANCELLED') {
+      void broadcastMerchantIncomingResolved({
+        storeId: storeInternalId,
+        coreId: Number(existing.order_id) || null,
+        foodId: orderIdNum,
+        status: newStatus,
+      });
+    }
 
     return NextResponse.json({
       order: {

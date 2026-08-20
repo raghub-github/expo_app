@@ -103,6 +103,8 @@ interface ItemFormProps {
   imageValidating?: boolean;
   /** Optional: center 1:1 crop + resize after validation failed (dashboard normalizes client-side). */
   onNormalizeMenuItemImage?: () => void | Promise<void>;
+  /** Edit mode: file chosen but not saved yet — keep showing the current image. */
+  pendingImageFileName?: string | null;
   storeDefaults?: {
     avg_preparation_time_minutes?: number | null;
     packaging_charge_amount?: number | null;
@@ -147,6 +149,7 @@ export function MenuItemForm({
   imageValidationError,
   imageValidating = false,
   onNormalizeMenuItemImage,
+  pendingImageFileName = null,
   storeDefaults,
   onVariantRemoved,
 }: ItemFormProps) {
@@ -1032,22 +1035,23 @@ export function MenuItemForm({
                       )}
                       <span className="mt-1 flex items-center justify-center gap-1 px-2 py-1 rounded text-xs text-gray-700">
                         <Upload size={12} />
-                        <span>Upload</span>
+                        <span>{pendingImageFileName ? "Change" : "Upload"}</span>
                       </span>
                     </div>
                     {imageValidationError && (
-                      <p className="text-xs text-red-600 mt-1 max-w-[10rem]" role="alert">
+                      <p className="text-xs text-red-600 mt-1 max-w-[12rem]" role="alert">
                         {imageValidationError}
                       </p>
                     )}
                     {imageValidationError && onNormalizeMenuItemImage && (
                       <button
                         type="button"
-                        className="mt-1 text-xs text-orange-600 font-semibold hover:text-orange-700 disabled:opacity-50"
+                        className="mt-1.5 inline-flex items-center justify-center px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-orange-500 hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
                         onClick={() => void onNormalizeMenuItemImage()}
                         disabled={imageValidating}
+                        title="1:1 crop and resize"
                       >
-                        Auto-fix (1:1 crop and resize)
+                        {imageValidating ? "Fixing…" : "Auto-fix"}
                       </button>
                     )}
                   </>

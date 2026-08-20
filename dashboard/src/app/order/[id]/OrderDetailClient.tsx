@@ -75,6 +75,7 @@ import type { PersonRideOrderDetail } from "@/lib/orders/person-ride-order-types
 import PersonRideOrderSections from "./PersonRideOrderSections";
 import { formatRiderOrderStatusDisplayLabel, titleCaseStatusWords } from "@/lib/riders/rider-order-status-display";
 import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
+import { OrderPageOverlay } from "@/components/orders/OrderPageOverlay";
 
 /** Status options for "Update order status" modal (value = DB enum) */
 const STATUS_OPTIONS = [
@@ -220,6 +221,8 @@ interface OrderDetail {
   scheduledDeliverySummary?: string | null;
   deliveryType?: string | null;
   contactlessDelivery?: boolean | null;
+  /** DASH-MX-PORT | PARTNERSITE | MX-APP */
+  acceptanceSource?: string | null;
   localityType?: string | null;
   localityIsSafe?: boolean | null;
   deliveredBy?: string | null;
@@ -471,6 +474,7 @@ function mapOrderCoreApiRowToDetail(row: Record<string, unknown>): OrderDetail {
         : row.contactlessDelivery === false
           ? false
           : null,
+    acceptanceSource: row.acceptanceSource != null ? String(row.acceptanceSource) : null,
     localityType: row.localityType != null ? String(row.localityType) : null,
     localityIsSafe:
       row.localityIsSafe === true ? true : row.localityIsSafe === false ? false : null,
@@ -588,6 +592,7 @@ export default function OrderDetailClient({
   const isHardReloadRef = useRef(false);
   const fetchGenerationRef = useRef(0);
   const orderRef = useRef<OrderDetail | null>(null);
+  const coreFetchRetryRef = useRef(0);
   const [hasHydrated, setHasHydrated] = useState(false);
   const [isHardReload, setIsHardReload] = useState(false);
   const [order, setOrder] = useState<OrderDetail | null>(null);
@@ -760,7 +765,10 @@ export default function OrderDetailClient({
 
   useEffect(() => {
     const authPending = !auth?.authReady;
-    onNotFoundChange?.(!loading && !authPending && Boolean(error || !order));
+    const transient =
+      Boolean(error) &&
+      /temporarily unavailable|retrying/i.test(error ?? "");
+    onNotFoundChange?.(!loading && !authPending && !transient && Boolean(error || !order));
   }, [loading, error, order, onNotFoundChange, auth?.authReady]);
 
   useEffect(() => {
@@ -818,6 +826,7 @@ export default function OrderDetailClient({
 
     let cancelled = false;
     const generation = ++fetchGenerationRef.current;
+    let scheduledRetry = false;
 
     const normalizedPublicId = orderPublicId.trim().replace(/[-\s]/g, "");
 
@@ -951,6 +960,7 @@ export default function OrderDetailClient({
           if (cancelled) return;
 
           setOrder(mapOrderCoreApiRowToDetail(row as Record<string, unknown>));
+          coreFetchRetryRef.current = 0;
           if (fetchGenerationRef.current === generation) {
             setLoading(false);
             setIsRefreshing(false);
@@ -1183,9 +1193,20 @@ export default function OrderDetailClient({
             apiCode === "REQUEST_ABORTED" ||
             apiCode === "SERVICE_UNAVAILABLE"
           ) {
-            // Auth timeout / aborted request — do not force logout; allow retry.
-            setError(apiError ?? "Temporarily unavailable. Retrying…");
-            if (fetchGenerationRef.current === generation) {
+            // Local compile storms / auth timeout — keep spinning and retry.
+            // Never treat this as a fatal blank "not found" page.
+            const keepExisting =
+              orderRef.current != null &&
+              orderMatchesPublicId(orderRef.current, normalizedPublicId);
+            coreFetchRetryRef.current += 1;
+            scheduledRetry = true;
+            const delay = Math.min(8000, 600 * 2 ** Math.min(coreFetchRetryRef.current - 1, 4));
+            window.setTimeout(() => {
+              if (cancelled || fetchGenerationRef.current !== generation) return;
+              setRefetchTrigger((t) => t + 1);
+            }, delay);
+            setError(null);
+            if (keepExisting && fetchGenerationRef.current === generation) {
               setLoading(false);
               setIsRefreshing(false);
             }
@@ -1222,6 +1243,27 @@ export default function OrderDetailClient({
       .catch((err: unknown) => {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : "";
+        const transient = /Invalid order response|Failed to fetch|network|load failed|abort/i.test(
+          msg
+        );
+        if (transient) {
+          coreFetchRetryRef.current += 1;
+          scheduledRetry = true;
+          const delay = Math.min(8000, 600 * 2 ** Math.min(coreFetchRetryRef.current - 1, 4));
+          window.setTimeout(() => {
+            if (cancelled || fetchGenerationRef.current !== generation) return;
+            setRefetchTrigger((t) => t + 1);
+          }, delay);
+          setError(null);
+          const keepExisting =
+            orderRef.current != null &&
+            orderMatchesPublicId(orderRef.current, normalizedPublicId);
+          if (keepExisting && fetchGenerationRef.current === generation) {
+            setLoading(false);
+            setIsRefreshing(false);
+          }
+          return;
+        }
         setError(msg ? `Failed to load order: ${msg}` : "Failed to load order.");
         if (fetchGenerationRef.current === generation) {
           setLoading(false);
@@ -1229,10 +1271,10 @@ export default function OrderDetailClient({
         }
       })
       .finally(() => {
-        if (!cancelled && fetchGenerationRef.current === generation) {
-          setLoading(false);
-          setIsRefreshing(false);
-        }
+        if (cancelled || fetchGenerationRef.current !== generation) return;
+        if (scheduledRetry && !orderRef.current) return;
+        setLoading(false);
+        setIsRefreshing(false);
       });
     return () => {
       cancelled = true;
@@ -2155,8 +2197,9 @@ export default function OrderDetailClient({
           ) : (
           <>
           {/* Main grid of sections — food / parcel */}
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid items-stretch gap-3 md:grid-cols-2 xl:grid-cols-3">
             {/* Customer card */}
+            <div className="min-h-0 min-w-0 h-full">
             <CustomerDetails
               order={{
                 userId: order.customerExternalId ?? order.customerId ?? order.id,
@@ -2185,8 +2228,10 @@ export default function OrderDetailClient({
               onPhoneClick={handleCustomerPhoneClick}
               onOpenPartnerChat={() => setPartnerChatOpen(true)}
             />
+            </div>
 
             {/* Merchant card */}
+            <div className="min-h-0 min-w-0 h-full">
             <MerchantDetails
               merchant={{
                 storeId: order.merchantStoreId,
@@ -2201,8 +2246,10 @@ export default function OrderDetailClient({
               onOpenFeedback={() => setFeedbackSheetTarget("merchant")}
               onCopy={handleCopy}
             />
+            </div>
 
             {/* Payment details */}
+            <div className="min-h-0 min-w-0 h-full">
             <PaymentDetails
               order={order}
               displayId={displayId}
@@ -2212,6 +2259,7 @@ export default function OrderDetailClient({
               orderItemsPricing={orderItemsPayload?.pricing ?? null}
               onPrefetchOrderItems={ensureOrderItemsPrefetch}
             />
+            </div>
           </div>
           </>
           )}
@@ -2401,9 +2449,9 @@ export default function OrderDetailClient({
     </div>
 
     {showHistoryModal && (
-        <div
-          className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-4"
-          onClick={(e) => {
+        <OrderPageOverlay
+          className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+          onBackdropClick={(e) => {
             if (e.target === e.currentTarget) setShowHistoryModal(false);
           }}
         >
@@ -2463,13 +2511,13 @@ export default function OrderDetailClient({
               </div>
             )}
           </div>
-        </div>
+        </OrderPageOverlay>
       )}
 
     {showTicketsModal && orderTickets && orderTickets.length > 0 && (
-        <div
-          className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-4"
-          onClick={(e) => {
+        <OrderPageOverlay
+          className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+          onBackdropClick={(e) => {
             if (e.target === e.currentTarget) setShowTicketsModal(false);
           }}
         >
@@ -2543,7 +2591,7 @@ export default function OrderDetailClient({
               })}
             </div>
           </div>
-        </div>
+        </OrderPageOverlay>
       )}
 
       {feedbackSheetTarget != null && order?.customerFeedback ? (

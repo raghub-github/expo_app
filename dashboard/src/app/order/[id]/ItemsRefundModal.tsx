@@ -43,6 +43,7 @@ import { OrderMixedText, OrderNum } from '@/components/orders/orders-typography'
 import { itemRefundBalances } from '@/lib/orders/item-refund-balances';
 import { resolveAttachmentProxyUrl } from '@/lib/attachments/resolve-attachment-proxy-url';
 import { ITEM_PLACEHOLDER_SVG } from '@/app/dashboard/merchants/stores/[id]/menu/menu-types';
+import { OrderPageOverlay } from '@/components/orders/OrderPageOverlay';
 
 type RiderPenaltyPreviewRider = {
   riderId: number;
@@ -116,6 +117,55 @@ function DiscountTagBadge({ tag }: { tag?: OrderPricingLine['discountTag'] }) {
     <span className={`ml-1.5 inline-flex rounded px-1.5 py-0.5 text-[9px] font-semibold border ${styles}`}>
       {label}
     </span>
+  );
+}
+
+function OrderItemImagePanel({
+  url,
+  alt,
+  onReady,
+}: {
+  url: string;
+  alt: string;
+  onReady: () => void;
+}) {
+  const src = resolveAttachmentProxyUrl(url) || url;
+  const readyOnce = useRef(false);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+
+  const markReady = useCallback(() => {
+    if (readyOnce.current) return;
+    readyOnce.current = true;
+    onReadyRef.current();
+  }, []);
+
+  useEffect(() => {
+    readyOnce.current = false;
+    const el = imgRef.current;
+    if (!el?.complete) return;
+    const id = window.requestAnimationFrame(() => markReady());
+    return () => window.cancelAnimationFrame(id);
+  }, [src, markReady]);
+
+  return (
+    <img
+      ref={imgRef}
+      src={src}
+      alt={alt}
+      loading="eager"
+      decoding="async"
+      className="w-full h-auto object-cover max-h-[400px]"
+      onLoad={markReady}
+      onError={(e) => {
+        markReady();
+        const t = e.currentTarget;
+        if (t.src !== ITEM_PLACEHOLDER_SVG) {
+          t.src = ITEM_PLACEHOLDER_SVG;
+        }
+      }}
+    />
   );
 }
 
@@ -1825,7 +1875,10 @@ export default function ItemsRefundModal({
   return (
     <>
       {showWarning && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[10000] p-5">
+        <OrderPageOverlay
+          zClass="z-[210]"
+          className="fixed inset-0 z-[210] flex items-center justify-center bg-black/70 backdrop-blur-sm p-5"
+        >
           <div
             className={`bg-white rounded-xl w-full shadow-[0_20px_40px_rgba(0,0,0,0.3)] animate-[fadeIn_0.3s_ease] overflow-hidden ${
               isCompactConfirmModal ? 'max-w-md' : 'max-w-[min(1000px,94vw)]'
@@ -2056,11 +2109,15 @@ export default function ItemsRefundModal({
               </div>
             </div>
           </div>
-        </div>
+        </OrderPageOverlay>
       )}
 
       {showImageModal && selectedItemImage && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[10002] p-5" onClick={closeImageModal}>
+        <OrderPageOverlay
+          zClass="z-[220]"
+          className="fixed inset-0 z-[220] flex items-center justify-center bg-black/70 backdrop-blur-sm p-5"
+          onBackdropClick={closeImageModal}
+        >
           <div ref={imageModalRef} className="bg-white rounded-xl w-full max-w-[500px] shadow-[0_20px_60px_rgba(0,0,0,0.4)] overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <div className="bg-gradient-to-r from-blue-50 to-white px-5 py-4 border-b border-gray-200 flex justify-between items-center">
               <div className="flex items-center gap-3">
@@ -2082,32 +2139,18 @@ export default function ItemsRefundModal({
                 {imagePanelLoading ? (
                   <Loader2 className="w-8 h-8 animate-spin text-emerald-600 absolute z-10" aria-hidden />
                 ) : null}
-                <img
-                  key={selectedItemImage.imageUrl}
-                  src={resolveAttachmentProxyUrl(selectedItemImage.imageUrl) || selectedItemImage.imageUrl}
+                <OrderItemImagePanel
+                  url={selectedItemImage.imageUrl}
                   alt={selectedItemImage.name}
-                  loading="eager"
-                  decoding="async"
-                  className="w-full h-auto object-cover max-h-[400px]"
-                  ref={(el) => {
-                    if (!el) return;
-                    // Cached images often skip a late onLoad — clear spinner immediately.
-                    if (el.complete && el.naturalWidth > 0) {
-                      setLoadedImageUrls((prev) => new Set(prev).add(selectedItemImage.imageUrl));
-                      setImagePanelLoading(false);
-                    }
-                  }}
-                  onLoad={(e) => {
-                    setLoadedImageUrls((prev) => new Set(prev).add(selectedItemImage.imageUrl));
+                  onReady={() => {
+                    const url = selectedItemImage.imageUrl;
+                    setLoadedImageUrls((prev) => {
+                      if (prev.has(url)) return prev;
+                      const next = new Set(prev);
+                      next.add(url);
+                      return next;
+                    });
                     setImagePanelLoading(false);
-                    void (e.currentTarget.decode?.() ?? Promise.resolve()).catch(() => undefined);
-                  }}
-                  onError={(e) => {
-                    setImagePanelLoading(false);
-                    const t = e.currentTarget;
-                    if (t.src !== ITEM_PLACEHOLDER_SVG) {
-                      t.src = ITEM_PLACEHOLDER_SVG;
-                    }
                   }}
                 />
               </div>
@@ -2118,12 +2161,14 @@ export default function ItemsRefundModal({
               </button>
             </div>
           </div>
-        </div>
+        </OrderPageOverlay>
       )}
 
-      <div
-        className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999] p-5"
-        onClick={(e) => { if (e.target === e.currentTarget) handleModalClose(); }}
+      <OrderPageOverlay
+        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-5"
+        onBackdropClick={(e) => {
+          if (e.target === e.currentTarget) handleModalClose();
+        }}
       >
         <div className="bg-white rounded-lg w-full max-w-[min(1100px,96vw)] max-h-[85vh] overflow-y-auto shadow-[0_20px_40px_rgba(0,0,0,0.2)] animate-[fadeIn_0.3s_ease]" onClick={(e) => e.stopPropagation()}>
           <div className="bg-emerald-50 px-4 py-2.5 border-b border-slate-200 flex justify-between items-center rounded-t-lg sticky top-0 z-10">
@@ -2619,7 +2664,7 @@ export default function ItemsRefundModal({
             })()}
           </div>
         </div>
-      </div>
+      </OrderPageOverlay>
     </>
   );
 }

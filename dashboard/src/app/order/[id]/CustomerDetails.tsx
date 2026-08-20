@@ -118,7 +118,7 @@ function CustomerLinkedContactsModal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[10001] flex items-center justify-center bg-slate-900/40 p-4"
+      className="fixed inset-0 z-[10001] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4"
       role="dialog"
       aria-modal="true"
       aria-label="Customer Others contact"
@@ -289,7 +289,7 @@ export default function CustomerDetails({
 
   return (
     <>
-      <div className="bg-white rounded-lg px-3 py-2 shadow-sm border border-[#e5e5e5] transition-all hover:shadow-md hover:border-gati-primary/20">
+      <div className="bg-white rounded-lg px-3 py-2 shadow-sm border border-[#e5e5e5] transition-all hover:shadow-md hover:border-gati-primary/20 h-full flex flex-col">
         <div className="flex justify-between items-start mb-2 pb-1.5 border-b border-[#e5e5e5]">
           <span className="text-[13px] font-semibold text-gati-text-primary flex items-center gap-2">
             <span className="flex items-center gap-1.5">
@@ -322,7 +322,7 @@ export default function CustomerDetails({
           </div>
         </div>
 
-        <div className="grid gap-1">
+        <div className="grid gap-1 flex-1">
           {/* Name */}
           <div className="grid grid-cols-[120px_1fr] items-start min-h-[20px]">
             <div className="text-[12px] text-gati-text-secondary font-medium">
@@ -508,40 +508,39 @@ export default function CustomerDetails({
               </a>
             </div>
           </div>
+        </div>
 
-          {/* Wallet balance + Chat History */}
-          <div className="grid grid-cols-[120px_1fr] items-start min-h-[22px]">
-            <div className="text-[12px] text-gati-text-secondary font-medium">
-              Wallet balance:
-            </div>
-            <div className="text-[12px] text-gati-text-primary font-normal flex items-center justify-between gap-4 min-w-0">
-              {customerWalletLedgerUrl ? (
-                <a
-                  href={customerWalletLedgerUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title="Open full wallet ledger"
-                  className="shrink-0 cursor-pointer font-semibold tabular-nums text-emerald-700 no-underline hover:text-emerald-800 hover:no-underline"
-                >
-                  {formatWalletBalance(walletBalance)}
-                </a>
-              ) : (
-                <span className="shrink-0 font-semibold tabular-nums text-emerald-700">
-                  {formatWalletBalance(walletBalance)}
-                </span>
-              )}
-              {onOpenPartnerChat ? (
-                <button
-                  type="button"
-                  onClick={onOpenPartnerChat}
-                  className="inline-flex shrink-0 items-center gap-0.5 text-gati-primary font-medium text-[10px] p-0 border-0 bg-transparent cursor-pointer whitespace-nowrap ml-auto hover:opacity-80"
-                >
-                  <i className="bi bi-chat-left-text text-[10px]" />
-                  Chat history
-                </button>
-              ) : null}
-            </div>
+        <div className="mt-auto flex h-7 shrink-0 items-center justify-between gap-2 border-t border-transparent pt-1">
+          <div className="flex min-w-0 items-center gap-1.5 text-[12px]">
+            <span className="text-gati-text-secondary font-medium shrink-0">Wallet balance:</span>
+            {customerWalletLedgerUrl ? (
+              <a
+                href={customerWalletLedgerUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open full wallet ledger"
+                className="shrink-0 cursor-pointer font-semibold tabular-nums text-emerald-700 no-underline hover:text-emerald-800 hover:no-underline"
+              >
+                {formatWalletBalance(walletBalance)}
+              </a>
+            ) : (
+              <span className="shrink-0 font-semibold tabular-nums text-emerald-700">
+                {formatWalletBalance(walletBalance)}
+              </span>
+            )}
           </div>
+          {onOpenPartnerChat ? (
+            <button
+              type="button"
+              onClick={onOpenPartnerChat}
+              className="inline-flex shrink-0 items-center gap-0.5 text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 cursor-pointer whitespace-nowrap py-0.5 bg-transparent border-0 p-0"
+            >
+              <i className="bi bi-chat-left-text text-[10px]" />
+              Chat history
+            </button>
+          ) : (
+            <span className="min-h-[28px]" />
+          )}
         </div>
       </div>
 

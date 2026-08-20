@@ -625,6 +625,7 @@ export async function loadMerchantStoreFoodOrders(
           cancelled_at: (food?.cancelled_at as string | null) ?? (core.cancelled_at as string | null) ?? null,
           rejected_reason: (food?.rejected_reason as string | null) ?? null,
           accepted_by_label: (food?.accepted_by_label as string | null) ?? null,
+          acceptance_source: (food?.acceptance_source as string | null) ?? null,
           cancelled_by_label: (food?.cancelled_by_label as string | null) ?? null,
           cancelled_by: (food?.cancelled_by as string | null) ?? (core.cancelled_by as string | null) ?? null,
           cancelled_by_type: (food?.cancelled_by_type as string | null) ?? (core.cancelled_by_type as string | null) ?? null,

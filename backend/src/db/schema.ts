@@ -3000,6 +3000,8 @@ export const ordersFood = pgTable(
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     rejectedReason: text("rejected_reason"),
+    acceptedByLabel: text("accepted_by_label"),
+    acceptanceSource: text("acceptance_source"),
     cancelledByLabel: text("cancelled_by_label"),
     customerPackagingFeedback: text("customer_packaging_feedback"),
     customerPackagingReportedAt: timestamp("customer_packaging_reported_at", {

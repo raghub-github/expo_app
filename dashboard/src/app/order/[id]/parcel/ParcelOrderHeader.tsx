@@ -5,6 +5,7 @@ import { Check, Copy, RefreshCw, X } from "lucide-react";
 import type { ParcelDetailOrder } from "./parcel-detail-types";
 import { formatRideStatusLabel, normalizeStatus } from "../person-ride/person-ride-utils";
 import { titleCaseStatusWords } from "@/lib/riders/rider-order-status-display";
+import { OrderPageOverlay } from "@/components/orders/OrderPageOverlay";
 
 export type ParcelTicketSummary = {
   id: number;
@@ -180,9 +181,9 @@ export default function ParcelOrderHeader({
       </section>
 
       {showTicketsModal && tickets.length > 0 ? (
-        <div
-          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4"
-          onClick={(e) => {
+        <OrderPageOverlay
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+          onBackdropClick={(e) => {
             if (e.target === e.currentTarget) setShowTicketsModal(false);
           }}
         >
@@ -221,7 +222,7 @@ export default function ParcelOrderHeader({
               ))}
             </ul>
           </div>
-        </div>
+        </OrderPageOverlay>
       ) : null}
     </>
   );

@@ -7,10 +7,59 @@ export type MerchantOrderActionMode = "auto" | "manual";
 export function normalizeActionSource(raw: unknown): MerchantOrderActionSource {
   const s = String(raw ?? "website").trim().toLowerCase();
   if (s === "app" || s === "mobile" || s === "merchant_app") return "app";
-  if (s === "admin" || s === "dashboard") return "admin";
+  if (
+    s === "admin" ||
+    s === "dashboard" ||
+    s === "dash-mx-port" ||
+    s === "dash_mx_port" ||
+    s === "dash-mx-portal"
+  ) {
+    return "admin";
+  }
   if (s === "api") return "api";
   if (s === "system" || s === "auto" || s === "schedule") return "system";
   return "website";
+}
+
+export const ORDER_ACCEPTANCE_SOURCE = {
+  DASH_MX_PORT: "DASH-MX-PORT",
+  PARTNERSITE: "PARTNERSITE",
+  MX_APP: "MX-APP",
+} as const;
+
+export type OrderAcceptanceSource =
+  (typeof ORDER_ACCEPTANCE_SOURCE)[keyof typeof ORDER_ACCEPTANCE_SOURCE];
+
+export function orderAcceptanceSourceFromAction(
+  source: MerchantOrderActionSource
+): OrderAcceptanceSource | null {
+  if (source === "app") return ORDER_ACCEPTANCE_SOURCE.MX_APP;
+  if (source === "admin") return ORDER_ACCEPTANCE_SOURCE.DASH_MX_PORT;
+  if (source === "website") return ORDER_ACCEPTANCE_SOURCE.PARTNERSITE;
+  return null;
+}
+
+export function normalizeOrderAcceptanceSource(raw: unknown): OrderAcceptanceSource | null {
+  const s = String(raw ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s_]+/g, "-");
+  if (
+    s === "DASH-MX-PORT" ||
+    s === "DASH-MX-PORTAL" ||
+    s === "ADMIN" ||
+    s === "DASHBOARD" ||
+    s === "ADMIN-DASHBOARD"
+  ) {
+    return ORDER_ACCEPTANCE_SOURCE.DASH_MX_PORT;
+  }
+  if (s === "PARTNERSITE" || s === "PARTNER-SITE" || s === "WEBSITE" || s === "PORTAL") {
+    return ORDER_ACCEPTANCE_SOURCE.PARTNERSITE;
+  }
+  if (s === "MX-APP" || s === "APP" || s === "MERCHANT-APP" || s === "MERCHANTAPP") {
+    return ORDER_ACCEPTANCE_SOURCE.MX_APP;
+  }
+  return null;
 }
 
 export function normalizeActionMode(raw: unknown): MerchantOrderActionMode {

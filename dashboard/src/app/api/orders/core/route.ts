@@ -231,6 +231,7 @@ async function enrichSingleOrderDetail(
           scheduledDeliverySummary: detailExtra.scheduledDeliverySummary,
           deliveryType: detailExtra.deliveryType,
           contactlessDelivery: detailExtra.contactlessDelivery,
+          acceptanceSource: detailExtra.acceptanceSource,
           localityType: detailExtra.localityType,
           localityIsSafe: detailExtra.localityIsSafe,
           deliveredBy: detailExtra.deliveredBy,

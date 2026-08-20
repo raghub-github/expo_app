@@ -1219,16 +1219,17 @@ function ItemForm(props: ItemFormProps) {
                       </span>
                     </div>
                     {imageValidationError && (
-                      <p className="text-xs text-red-600 mt-1 max-w-[10rem]" role="alert">{imageValidationError}</p>
+                      <p className="text-xs text-red-600 mt-1 max-w-[12rem]" role="alert">{imageValidationError}</p>
                     )}
                     {!readOnly && imageValidationError && onNormalizeMenuItemImage && (
                       <button
                         type="button"
-                        className="mt-1 text-xs text-orange-600 font-semibold hover:text-orange-700 disabled:opacity-50"
+                        className="mt-1.5 inline-flex items-center justify-center px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-orange-500 hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
                         onClick={() => void onNormalizeMenuItemImage()}
                         disabled={imageValidating}
+                        title="1:1 crop and resize"
                       >
-                        Auto-fix (1:1 crop and resize)
+                        {imageValidating ? 'Fixing…' : 'Auto-fix'}
                       </button>
                     )}
                   </>
@@ -2645,11 +2646,20 @@ function MenuContent() {
   };
 
   const processImageFile = async (file: File, isEdit: boolean = false) => {
+    const localUrl = URL.createObjectURL(file);
     if (isEdit) {
+      setEditImagePreview((prev) => {
+        if (prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+        return localUrl;
+      });
       setEditImageValidationError('');
       setEditImageValidating(true);
       editImagePendingFileRef.current = file;
     } else {
+      setImagePreview((prev) => {
+        if (prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+        return localUrl;
+      });
       setAddImageValidationError('');
       setAddImageValidating(true);
       addImagePendingFileRef.current = file;
@@ -2675,24 +2685,9 @@ function MenuContent() {
 
     if (isEdit) {
       editImagePendingFileRef.current = null;
-    } else {
-      addImagePendingFileRef.current = null;
-    }
-
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const dataUrl = reader.result as string;
-      if (isEdit) {
-        setEditImagePreview(dataUrl);
-      } else {
-        setImagePreview(dataUrl);
-      }
-    };
-    reader.readAsDataURL(file);
-
-    if (isEdit) {
       setEditForm(prev => ({ ...prev, image: file }));
     } else {
+      addImagePendingFileRef.current = null;
       setAddForm(prev => ({ ...prev, image: file }));
     }
 

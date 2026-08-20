@@ -88,6 +88,44 @@ export function resolveCustomerCtcPaidAmount(args: {
   return { ctc, cashin, gatiCashUsed: gati };
 }
 
+/**
+ * Refund amount split into cash/card + GatiCash, matching CTC icon row.
+ * Prefers recorded refund split columns; otherwise uses original payment mix.
+ */
+export function resolveRefundCoinCashSplit(args: {
+  refundAmount: number;
+  originalCashin: number;
+  originalGatiCash: number;
+  refunds?: Array<{
+    splitWalletAmount?: number | null;
+    splitRazorpayAmount?: number | null;
+  }>;
+}): { cashin: number; gatiCashUsed: number } {
+  const total = roundCtcMoney(Math.max(0, asNum(args.refundAmount)));
+  let wallet = 0;
+  let gateway = 0;
+  for (const row of args.refunds ?? []) {
+    wallet += Math.max(0, asNum(row.splitWalletAmount));
+    gateway += Math.max(0, asNum(row.splitRazorpayAmount));
+  }
+  wallet = roundCtcMoney(wallet);
+  gateway = roundCtcMoney(gateway);
+  if (wallet > 0.005 || gateway > 0.005) {
+    const recorded = roundCtcMoney(wallet + gateway);
+    if (recorded < total - 0.005) {
+      const missing = roundCtcMoney(total - recorded);
+      if (wallet <= 0.005) gateway = roundCtcMoney(gateway + missing);
+      else if (gateway <= 0.005) wallet = roundCtcMoney(wallet + missing);
+      else gateway = roundCtcMoney(gateway + missing);
+    }
+    const coins = roundCtcMoney(Math.min(total, wallet));
+    return { cashin: roundCtcMoney(Math.max(0, total - coins)), gatiCashUsed: coins };
+  }
+  const origGati = roundCtcMoney(Math.max(0, asNum(args.originalGatiCash)));
+  const coins = roundCtcMoney(Math.min(total, origGati));
+  return { cashin: roundCtcMoney(Math.max(0, total - coins)), gatiCashUsed: coins };
+}
+
 /** Prefer icon split UI (`CustomerCtcIconSplit`) over this string helper. */
 export function formatCustomerCtcWithSplit(
   ctc: number,

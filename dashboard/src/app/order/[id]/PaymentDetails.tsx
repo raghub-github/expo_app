@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useEffect, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
+import { OrderPageOverlay } from '@/components/orders/OrderPageOverlay';
 import type { OrderPaymentDetail, OrderPaymentRecord } from '@/lib/orders/order-payment-types';
 import {
   formatPaymentInstrumentSource,
@@ -22,6 +23,7 @@ import {
 import { resolveRefundLogIds, refundInitiatedByLabel } from '@/lib/orders/refund-log-ids';
 import {
   resolveCustomerCtcPaidAmount,
+  resolveRefundCoinCashSplit,
 } from '@/lib/orders/customer-ctc';
 import { CustomerCtcIconSplit } from '@/components/orders/CustomerCtcIconSplit';
 import { formatInrWithGap } from '@/lib/format-inr';
@@ -347,6 +349,12 @@ function PaymentDetailsModal({
     (sum, r) => sum + (Number(r.refundAmount) || 0),
     0
   );
+  const refundIconSplit = resolveRefundCoinCashSplit({
+    refundAmount: totalRefundAmount,
+    originalCashin: Math.max(0, (Number(totalAmount) || 0) - (Number(totalGatiCash) || 0)),
+    originalGatiCash: Number(totalGatiCash) || 0,
+    refunds: settledRefunds,
+  });
   const receivedCount = records.length;
   const refundTxnCount = settledRefunds.length;
   const totalTransactions = receivedCount + refundTxnCount;
@@ -363,8 +371,8 @@ function PaymentDetailsModal({
     .reduce((sum, r) => sum + Math.abs(Number(r.amount) || 0), 0);
 
   return (
-    <div
-      className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-4"
+    <OrderPageOverlay
+      className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
       role="presentation"
     >
       <div
@@ -579,9 +587,19 @@ function PaymentDetailsModal({
                   : refundedCount}
               </p>
               {refundTxnCount > 0 ? (
-                <p className="mt-0.5 text-[10px] text-red-600/80">
-                  {refundTxnCount} refund{refundTxnCount === 1 ? '' : 's'}
-                </p>
+                <>
+                  <p className="mt-0.5 text-[10px] text-red-600/80">
+                    {refundTxnCount} refund{refundTxnCount === 1 ? '' : 's'}
+                  </p>
+                  <div className="mt-1.5">
+                    <CustomerCtcIconSplit
+                      cashin={refundIconSplit.cashin}
+                      gatiCashUsed={refundIconSplit.gatiCashUsed}
+                      formatCurrency={formatCurrency}
+                      className="max-w-full text-red-800"
+                    />
+                  </div>
+                </>
               ) : null}
             </div>
             <div className="bg-white p-3 rounded-md border border-gray-200">
@@ -806,7 +824,7 @@ function PaymentDetailsModal({
           </div>
         )}
       </div>
-    </div>
+    </OrderPageOverlay>
   );
 }
 
@@ -1076,9 +1094,19 @@ export default function PaymentDetails({
     };
   }, [paymentDetail, order, displayId, hasRefundRecords, totalRefundFromRefunds, orderItemsPricing]);
 
+  const refundCardSplit = resolveRefundCoinCashSplit({
+    refundAmount: Number(resolved.refundAmount) || 0,
+    originalCashin: Math.max(
+      0,
+      (Number(resolved.totalAmount) || 0) - (Number(resolved.gatiCashUsed) || 0)
+    ),
+    originalGatiCash: Number(resolved.gatiCashUsed) || 0,
+    refunds: orderRefunds,
+  });
+
   return (
     <>
-      <div className="bg-white rounded-lg px-3 py-2 shadow-sm border border-[#e5e5e5] transition-all hover:shadow-md hover:border-gati-primary/20">
+      <div className="bg-white rounded-lg px-3 py-2 shadow-sm border border-[#e5e5e5] transition-all hover:shadow-md hover:border-gati-primary/20 h-full flex flex-col">
         <div className="flex justify-between items-start mb-2 pb-1.5 border-b border-[#e5e5e5]">
           <span className="text-[13px] font-semibold text-gati-text-primary flex items-center gap-2">
             <span className="flex items-center gap-1.5">
@@ -1103,7 +1131,7 @@ export default function PaymentDetails({
             </span>
           ) : null}
         </div>
-        <div className="space-y-1.5">
+        <div className="space-y-1.5 flex-1">
           {(() => {
             const gati = Number(resolved.gatiCashUsed ?? 0) || 0;
             const { ctc, cashin } = resolveCustomerCtcPaidAmount({
@@ -1227,18 +1255,27 @@ export default function PaymentDetails({
           resolved.refundAmount != null &&
           Number.isFinite(resolved.refundAmount) &&
           resolved.refundAmount > 0 ? (
-            <p className={paymentDetailRowClass}>
-              <span className="text-gati-text-secondary font-medium shrink-0">Refund Amount:</span>
-              <span className="text-gati-text-primary font-medium orders-num shrink-0">
-                {formatCurrency(resolved.refundAmount)}
-              </span>
-            </p>
+            <div className="text-[12px] min-w-0">
+              <div className="flex flex-nowrap items-center gap-x-1.5 overflow-x-auto whitespace-nowrap">
+                <span className="text-gati-text-secondary font-medium shrink-0">Refund Amount:</span>
+                <span className="text-gati-text-primary font-medium orders-num shrink-0">
+                  {formatCurrency(resolved.refundAmount)}
+                </span>
+                <CustomerCtcIconSplit
+                  cashin={refundCardSplit.cashin}
+                  gatiCashUsed={refundCardSplit.gatiCashUsed}
+                  formatCurrency={formatCurrency}
+                  nowrap
+                  className="shrink-0"
+                />
+              </div>
+            </div>
           ) : null}
         </div>
-        <div className="mt-1 flex justify-end">
+        <div className="mt-auto flex h-7 shrink-0 items-center justify-end gap-2 border-t border-transparent pt-1">
           <button
             type="button"
-            className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 cursor-pointer inline-flex items-center gap-1"
+            className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 cursor-pointer inline-flex items-center gap-1 whitespace-nowrap py-0.5"
             onClick={() => setIsModalOpen(true)}
           >
             <span>Explore More</span>

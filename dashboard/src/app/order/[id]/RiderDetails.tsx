@@ -18,6 +18,7 @@ import {
 import { useLiveElapsedSeconds } from "@/hooks/useLiveElapsedSeconds";
 import { Check, ChevronDown, Copy, Star } from "lucide-react";
 import { RiderPhotoModal } from "@/components/orders/RiderPhotoModal";
+import { OrderPageOverlay } from "@/components/orders/OrderPageOverlay";
 import {
   RiderSelectionSideSheet,
   type RiderSelectionMode,
@@ -255,9 +256,9 @@ export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy
     summary.total > 0 ? summary : (cachedEntry?.summary ?? EMPTY_RIDER_ACTIVITY_SUMMARY);
 
   return (
-    <div
-      className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-4"
-      onClick={(e) => {
+    <OrderPageOverlay
+      className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      onBackdropClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
@@ -520,7 +521,7 @@ export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy
           </button>
         </div>
       </div>
-    </div>
+    </OrderPageOverlay>
   );
 }
 
