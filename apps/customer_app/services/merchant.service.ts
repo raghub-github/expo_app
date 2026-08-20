@@ -101,6 +101,7 @@ export type MenuItem = {
    * same MenuItem appears under multiple sections (recommended + category).
    * Falls back to `id` when absent. Assigned by the list builder, not the API.
    */
+  listRowKey?: string;
   canonicalPricing?: Record<string, unknown>;
 };
 
@@ -345,15 +346,6 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
       if (raw == null || raw === "") return null;
       const n = Number(raw);
       return Number.isFinite(n) && n > 0 ? n : null;
-    })(),
-    packagingChargeAmount: (() => {
-      const raw =
-        item.packagingChargeAmount ??
-        (item as Record<string, unknown>).packagingChargeAmount ??
-        (item as Record<string, unknown>).packaging_charge_amount;
-      if (raw == null || raw === "") return 0;
-      const n = Number(raw);
-      return Number.isFinite(n) && n > 0 ? n : 0;
     })(),
     liveStatus: (() => {
       const raw =

@@ -29,6 +29,7 @@ import {
   type ReverseGeocodeResult,
 } from "@/services/location.service";
 import { profileService } from "@/services/profile.service";
+import { getStoreDeliveryQuote } from "@/services/distance.service";
 import { useLocationStore, type LocationSource } from "@/store/locationStore";
 import { useCheckoutAddressHandoffStore } from "@/store/checkoutAddressHandoffStore";
 import { useCartStore } from "@/store/cartStore";

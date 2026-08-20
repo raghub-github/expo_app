@@ -335,7 +335,6 @@ export function StoreMenuItemDetailSheet({
                         contentFit="contain"
                         cachePolicy="memory-disk"
                         transition={120}
-                        placeholder={{ color: "transparent" }}
                         onError={() => setImageFailed(true)}
                       />
                       <View style={[styles.dietOnImage, dark && styles.dietOnImageDark]}>

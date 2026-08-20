@@ -94,7 +94,8 @@ export function recentlyViewedToSummary(row: RecentlyViewedStore): MerchantSumma
     avgRating: row.avgRating,
     offerText: row.offerText,
     isPureVeg: row.isPureVeg === true,
-    liveStatus: row.liveStatus,
+    liveStatus:
+      row.liveStatus === "OPEN" ? "OPEN" : row.liveStatus === "CLOSED" ? "CLOSED" : undefined,
     isOpen: row.isOpen,
     nextOpenAt: row.nextOpenAt,
     nextCloseAt: row.nextCloseAt,

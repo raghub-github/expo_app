@@ -76,7 +76,10 @@ async function openAndroidUpiActivity(upiPay: string, upiApp?: string): Promise<
 
   for (const extra of attempts) {
     try {
-      await IntentLauncher.startActivityAsync(IntentLauncher.ActivityAction.VIEW, extra);
+      // Raw Android action string (equivalent to ActivityAction.VIEW, which isn't
+      // exposed on the enum in this expo-intent-launcher version). startActivityAsync
+      // accepts the action as a string.
+      await IntentLauncher.startActivityAsync("android.intent.action.VIEW", extra);
       return true;
     } catch {
       // app missing or activity rejected — try the next target

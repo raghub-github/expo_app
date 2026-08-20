@@ -1560,7 +1560,7 @@ export default function FoodMerchantsScreen() {
 
       <View style={[styles.contentWrap, isDiscoveryLayout && styles.discoveryContentWrap]}>
         <FlashList
-          style={[styles.scroll, isDiscoveryLayout && styles.discoveryScroll]}
+          style={StyleSheet.flatten([styles.scroll, isDiscoveryLayout && styles.discoveryScroll])}
           data={showMerchantsSkeleton ? EMPTY_MERCHANTS : listMerchants}
           keyExtractor={restaurantKeyExtractor}
           renderItem={renderRestaurantItem}

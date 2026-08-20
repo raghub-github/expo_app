@@ -12,6 +12,7 @@ import {
 } from "@mapbox/search-js-core";
 import { getConfig } from "@/config/env";
 import { isValidMapCoordinate } from "@/lib/map-coordinates";
+import { type EnrichedPlaceResult } from "@/services/locationSearch.service";
 
 export const MAPBOX_SEARCH_DEBOUNCE_MS = 400;
 export const MAPBOX_SEARCH_MIN_CHARS = 2;
