@@ -907,6 +907,13 @@ export const customerActiveLocation = pgTable("customer_active_location", {
   lockedForOrder: boolean("locked_for_order").default(false),
   orderId: bigint("order_id", { mode: "number" }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  /**
+   * Device timestamp of the GPS fix these coords came from (NOT server write time).
+   * Lets the backend reject an out-of-order/stale fix overwriting a newer one
+   * (see setActiveLocation / forceActiveLocationToCurrentGps). Null for legacy /
+   * non-GPS writes, which fall back to last-write-wins.
+   */
+  gpsCapturedAt: timestamp("gps_captured_at", { withTimezone: true }),
 });
 
 /** Self-learning delivery locations (orders + manual); powers local search fallback and cityâ†’area suggestions. */

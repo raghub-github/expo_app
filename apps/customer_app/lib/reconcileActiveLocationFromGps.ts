@@ -102,9 +102,14 @@ export async function reconcileActiveLocationFromGps(
   }
 
   let gps: { latitude: number; longitude: number };
+  // Device time of the fix (§30): lets the backend reject an out-of-order/stale fix
+  // overwriting a newer one. Only set for a genuinely fresh fix — a cached fallback
+  // has no reliable capture time, so we omit it (backend falls back to last-write-wins).
+  let capturedAtMs: number | undefined;
   try {
     const fix = await getBestEffortPosition({});
     gps = { latitude: fix.latitude, longitude: fix.longitude };
+    capturedAtMs = Date.now();
   } catch {
     const fallback = useLocationStore.getState().coords;
     if (!fallback) {
@@ -137,6 +142,7 @@ export async function reconcileActiveLocationFromGps(
       latitude: gps.latitude,
       longitude: gps.longitude,
       address: addressLabel,
+      capturedAtMs,
     });
 
     if (__DEV__) {

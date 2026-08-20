@@ -49,12 +49,16 @@ const activeLocationBodySchema = z.object({
   address: z.string().max(500).optional().nullable(),
   /** Explicit saved address for delivery. null clears (live GPS). Omit to leave unchanged. */
   addressId: z.number().int().positive().optional().nullable(),
+  /** Device epoch-ms of the GPS fix (§30 stale-fix guard). Optional; omit for non-GPS writes. */
+  capturedAtMs: z.number().int().positive().optional(),
 });
 
 const reconcileActiveLocationBodySchema = z.object({
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
   address: z.string().max(500).optional().nullable(),
+  /** Device epoch-ms of the GPS fix (§30 stale-fix guard). Optional. */
+  capturedAtMs: z.number().int().positive().optional(),
 });
 
 const reconcileActiveLocationResponseSchema = z.object({
@@ -462,8 +466,18 @@ export async function addressRoutes(app: FastifyInstance) {
       const customerPk = await resolveCustomerPk(request.auth!);
       if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
       const body = activeLocationBodySchema.parse(request.body);
+      // Clamp a client-supplied fix time to "now" so a bad/future clock can't pin the
+      // §30 guard into always-accept or block legitimate later updates.
+      const capturedAt =
+        body.capturedAtMs != null ? new Date(Math.min(body.capturedAtMs, Date.now())) : null;
       try {
-        const ok = await setActiveLocation(customerPk, body);
+        const ok = await setActiveLocation(customerPk, {
+          latitude: body.latitude,
+          longitude: body.longitude,
+          address: body.address,
+          addressId: body.addressId,
+          capturedAt,
+        });
         if (!ok) {
           return reply.status(423).send({
             error: "Location is locked for an active order",
@@ -501,8 +515,15 @@ export async function addressRoutes(app: FastifyInstance) {
       const customerPk = await resolveCustomerPk(request.auth!);
       if (customerPk === null) return reply.status(403).send({ error: "Customer only" });
       const body = reconcileActiveLocationBodySchema.parse(request.body);
+      const capturedAt =
+        body.capturedAtMs != null ? new Date(Math.min(body.capturedAtMs, Date.now())) : null;
       try {
-        const result = await reconcileActiveLocationWithGps(customerPk, body);
+        const result = await reconcileActiveLocationWithGps(customerPk, {
+          latitude: body.latitude,
+          longitude: body.longitude,
+          address: body.address,
+          capturedAt,
+        });
         return reply.send(result);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
