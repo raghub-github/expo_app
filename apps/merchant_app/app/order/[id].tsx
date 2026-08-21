@@ -14,6 +14,10 @@ import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { printOrderBill } from "@/lib/orderCardActions";
 import { useMerchantPrintContext } from "@/hooks/useMerchantPrintContext";
 import {
+  MerchantRiderTrackingModal,
+  isTerminalOrderStatus,
+} from "@/components/tracking/MerchantRiderTrackingModal";
+import {
   fetchFoodOrder,
   fetchFoodOrderTimeline,
   fetchFoodOrderActions,
@@ -150,6 +154,7 @@ export default function OrderDetailScreen() {
 
   const [loading, setLoading] = useState(!cachedSeed && !boardSeed);
   const [error, setError] = useState<string | null>(null);
+  const [trackingOpen, setTrackingOpen] = useState(false);
   const [order, setOrder] = useState<ApiFoodOrder | null>(
     () => cachedSeed?.order ?? boardSeed ?? null
   );
@@ -653,6 +658,17 @@ export default function OrderDetailScreen() {
                   showPendingAssign={showPendingAssign}
                   nearbySummary={nearbyRiderSummary}
                 />
+                {displayRider?.rider_id ? (
+                  <Pressable
+                    onPress={() => setTrackingOpen(true)}
+                    style={styles.trackBtn}
+                    accessibilityRole="button"
+                    hitSlop={6}
+                  >
+                    <Ionicons name="navigate" size={16} color="#ffffff" />
+                    <Text style={styles.trackBtnTxt}>Track rider live</Text>
+                  </Pressable>
+                ) : null}
               </View>
             ) : null}
 
@@ -733,6 +749,14 @@ export default function OrderDetailScreen() {
           </>
         ) : null}
       </ScrollView>
+
+      <MerchantRiderTrackingModal
+        visible={trackingOpen}
+        onClose={() => setTrackingOpen(false)}
+        storeId={storeId}
+        ordersFoodId={ordersFoodId}
+        ended={isTerminalOrderStatus(order?.order_status)}
+      />
     </View>
   );
 }
@@ -742,6 +766,17 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: GatiMitraMerchant.background,
   },
+  trackBtn: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#f97316",
+    borderRadius: 12,
+    paddingVertical: 12,
+  },
+  trackBtnTxt: { color: "#ffffff", fontWeight: "800", fontSize: 14.5 },
   header: {
     flexDirection: "row",
     alignItems: "center",
