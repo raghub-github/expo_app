@@ -658,7 +658,7 @@ export default function OrderDetailScreen() {
                   showPendingAssign={showPendingAssign}
                   nearbySummary={nearbyRiderSummary}
                 />
-                {displayRider?.riderId ? (
+                {displayRider?.rider_id ? (
                   <Pressable
                     onPress={() => setTrackingOpen(true)}
                     style={styles.trackBtn}
