@@ -14,6 +14,7 @@ import {
   demandZonesToGeoJson,
   type DemandZone,
 } from "@/src/lib/demand-zones";
+import { hotZonesToGeoJson, type HotZoneCell } from "@/src/lib/hot-zones";
 
 const BRAND = colors.primary[500];
 /** Last successful camera center — never jump to a hardcoded city while waiting for GPS. */
@@ -47,6 +48,8 @@ interface RiderMapViewProps {
   style?: object;
   showRadar?: boolean;
   demandZones?: DemandZone[];
+  /** Backend-authoritative H3 hot zones (preferred over the legacy circle demandZones). */
+  hotZones?: HotZoneCell[];
   isOnDuty?: boolean;
 }
 
@@ -66,7 +69,7 @@ const OrderPin: React.FC<{ order: Order; onPress?: () => void }> = ({ order, onP
 );
 
 export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(function RiderMapView(
-  { riderLocation, orders, onOrderPress, style, showRadar = false, demandZones = [], isOnDuty = false },
+  { riderLocation, orders, onOrderPress, style, showRadar = false, demandZones = [], hotZones = [], isOnDuty = false },
   ref
 ) {
   const cameraRef = useRef<{ setCamera: (opts: object) => void } | null>(null);
@@ -106,6 +109,13 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
     [demandZones]
   );
 
+  // Real H3 hot zones (backend). Preferred; when present the legacy circle demandZones
+  // are not drawn (orders.tsx passes only one of the two).
+  const hotGeoJson = useMemo(
+    () => (hotZones.length > 0 ? hotZonesToGeoJson(hotZones) : null),
+    [hotZones]
+  );
+
   const recenter = useCallback(() => {
     if (!cameraRef.current || !riderLocation) return;
     try {
@@ -122,8 +132,17 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
 
   useImperativeHandle(ref, () => ({ recenter }), [recenter]);
 
+  // Center on the rider ONCE — when the first fix + map are ready. After that the
+  // camera is fully user-controlled: GPS ticks, hot-zone refreshes, order events and
+  // realtime updates must NOT recenter or re-zoom the map. The previous version ran
+  // this on every riderLocation change, which (together with the controlled Camera
+  // props below) fought the user's manual zoom/pan — the root cause of the zoom-reset
+  // bug. The Locate Me FAB still recenters on demand via the exposed recenter() ref.
+  const didInitialCenterRef = useRef(false);
   useEffect(() => {
+    if (didInitialCenterRef.current) return;
     if (!Mapbox || !riderLocation || !cameraRef.current || !mapReady) return;
+    didInitialCenterRef.current = true;
     recenter();
   }, [riderLocation?.lat, riderLocation?.lng, mapReady, Mapbox, recenter]);
 
@@ -190,14 +209,22 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
       >
         <Mapbox.Camera
           ref={cameraRef}
-          zoomLevel={HOME_MAP_ZOOM}
-          // Prefer live fix, else last known camera — never a hardcoded city.
+          // INITIAL-ONLY positioning via defaultSettings (applied once on mount).
+          // Controlled `zoomLevel` / `centerCoordinate` props re-apply on every
+          // re-render — and cameraSeed changes on every GPS tick — so they
+          // continuously overrode the user's manual zoom/pan (the zoom-reset bug).
+          // defaultSettings positions the map once when a fix/last-known center is
+          // available at mount; if the first fix arrives later, the one-time effect
+          // above calls recenter(). After that the camera stays user-controlled.
           {...(cameraSeed
             ? {
-                centerCoordinate: [
-                  formatCoordinate(cameraSeed.lng),
-                  formatCoordinate(cameraSeed.lat),
-                ] as [number, number],
+                defaultSettings: {
+                  centerCoordinate: [
+                    formatCoordinate(cameraSeed.lng),
+                    formatCoordinate(cameraSeed.lat),
+                  ] as [number, number],
+                  zoomLevel: HOME_MAP_ZOOM,
+                },
               }
             : {})}
           animationMode="none"
@@ -220,6 +247,57 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
                 lineWidth: 2,
                 lineDasharray: [2, 1.5],
                 lineOpacity: 0.95,
+              }}
+            />
+          </Mapbox.ShapeSource>
+        ) : null}
+
+        {hotGeoJson ? (
+          <Mapbox.ShapeSource id="hot-zones" shape={hotGeoJson}>
+            {/* H3 hexagons (NOT circles), coloured/weighted by pressure status. */}
+            <Mapbox.FillLayer
+              id="hot-zones-fill"
+              style={{
+                fillColor: [
+                  "match",
+                  ["get", "status"],
+                  "CRITICAL",
+                  "#DC2626",
+                  "HOT",
+                  "#F97316",
+                  "WARM",
+                  "#F59E0B",
+                  "#9CA3AF",
+                ],
+                fillOpacity: [
+                  "match",
+                  ["get", "status"],
+                  "CRITICAL",
+                  0.38,
+                  "HOT",
+                  0.3,
+                  "WARM",
+                  0.22,
+                  0.12,
+                ],
+              }}
+            />
+            <Mapbox.LineLayer
+              id="hot-zones-outline"
+              style={{
+                lineColor: [
+                  "match",
+                  ["get", "status"],
+                  "CRITICAL",
+                  "#B91C1C",
+                  "HOT",
+                  "#EA580C",
+                  "WARM",
+                  "#D97706",
+                  "#6B7280",
+                ],
+                lineWidth: 1.5,
+                lineOpacity: 0.9,
               }}
             />
           </Mapbox.ShapeSource>

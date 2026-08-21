@@ -278,7 +278,17 @@ export async function addAddress(
   if (existing.length > 0) {
     const existingRow = existing[0];
     if (data.isDefault) {
-      await db.update(customerAddresses).set({ isDefault: false }).where(eq(customerAddresses.customerId, customerId));
+      // Demote only OTHER defaults; the matched existing row is about to be set default.
+      await db
+        .update(customerAddresses)
+        .set({ isDefault: false })
+        .where(
+          and(
+            eq(customerAddresses.customerId, customerId),
+            eq(customerAddresses.isDefault, true),
+            ne(customerAddresses.id, existingRow.id)
+          )
+        );
     }
     const [updated] = await db
       .update(customerAddresses)
@@ -302,7 +312,7 @@ export async function addAddress(
   }
 
   if (data.isDefault) {
-    await db.update(customerAddresses).set({ isDefault: false }).where(eq(customerAddresses.customerId, customerId));
+    await db.update(customerAddresses).set({ isDefault: false }).where(and(eq(customerAddresses.customerId, customerId), eq(customerAddresses.isDefault, true)));
   }
   const addressId = randomUUID();
   const [row] = await db
@@ -355,7 +365,18 @@ export async function updateAddress(
 ): Promise<AddressRow | null> {
   const db = getDb();
   if (data.isDefault) {
-    await db.update(customerAddresses).set({ isDefault: false }).where(eq(customerAddresses.customerId, customerId));
+    // Demote only OTHER current defaults — never the target (which this call is about
+    // to keep/make default), so a target that is already default isn't churned.
+    await db
+      .update(customerAddresses)
+      .set({ isDefault: false })
+      .where(
+        and(
+          eq(customerAddresses.customerId, customerId),
+          eq(customerAddresses.isDefault, true),
+          ne(customerAddresses.id, addressId)
+        )
+      );
   }
   const set: Partial<typeof customerAddresses.$inferInsert> = {};
   if (data.label !== undefined) {
@@ -513,34 +534,78 @@ export async function deleteAddress(customerId: number, addressId: number): Prom
 
 export async function setAddressDefault(customerId: number, addressId: number): Promise<boolean> {
   const db = getDb();
-  await db.update(customerAddresses).set({ isDefault: false }).where(eq(customerAddresses.customerId, customerId));
-  const result = await db
+  // Demote only OTHER currently-default rows (never the target) and promote the
+  // target only if it isn't already default — so re-defaulting the same address is
+  // a 0-write no-op (no history-trigger churn).
+  await db
+    .update(customerAddresses)
+    .set({ isDefault: false })
+    .where(
+      and(
+        eq(customerAddresses.customerId, customerId),
+        eq(customerAddresses.isDefault, true),
+        ne(customerAddresses.id, addressId)
+      )
+    );
+  const promoted = await db
     .update(customerAddresses)
     .set({ isDefault: true })
-    .where(and(eq(customerAddresses.id, addressId), eq(customerAddresses.customerId, customerId)))
+    .where(
+      and(
+        eq(customerAddresses.id, addressId),
+        eq(customerAddresses.customerId, customerId),
+        eq(customerAddresses.isDefault, false)
+      )
+    )
     .returning({ id: customerAddresses.id });
-  return result.length > 0;
+  if (promoted.length > 0) return true;
+  // Already the default (idempotent success) → confirm it exists for this customer.
+  const [existing] = await db
+    .select({ id: customerAddresses.id })
+    .from(customerAddresses)
+    .where(and(eq(customerAddresses.id, addressId), eq(customerAddresses.customerId, customerId)))
+    .limit(1);
+  return Boolean(existing);
 }
 
 /**
  * Mark address as most-recently selected/used (MRU).
  * Preserves other rows' last_used_at so relative MRU order stays stable.
  * Call on: user select, order place, and backend auto-restore (kept_nearby).
+ *
+ * IDEMPOTENT / write-minimal: this is invoked on every location reconcile
+ * (app open / foreground / pre-checkout), so it must NOT write when nothing
+ * changes. The previous version issued an unconditional `SET is_last_used=false`
+ * across ALL of the customer's active rows plus a set on the target — N+1 writes
+ * per call, every one logged by the customer_addresses history trigger. For a
+ * customer with 6 saved addresses that was ~7 no-op history rows on every app
+ * open (the root cause of customer_address_history bloat). We now touch only rows
+ * that actually change: clear the flag solely on rows that currently hold it
+ * (excluding the target), and promote the target only when it isn't already MRU.
+ * Re-affirming the already-active address therefore writes ZERO rows.
  */
 export async function setAddressLastUsed(customerId: number, addressId: number): Promise<void> {
   const db = getDb();
   const now = new Date();
-  await db
+
+  // Demote only the row(s) that currently hold the MRU flag and aren't the target.
+  const cleared = await db
     .update(customerAddresses)
     .set({ isLastUsed: false })
     .where(
       and(
         eq(customerAddresses.customerId, customerId),
         eq(customerAddresses.isActive, true),
-        isNull(customerAddresses.deletedAt)
+        isNull(customerAddresses.deletedAt),
+        eq(customerAddresses.isLastUsed, true),
+        ne(customerAddresses.id, addressId)
       )
-    );
-  const updated = await db
+    )
+    .returning({ id: customerAddresses.id });
+
+  // Promote the target only if it isn't already flagged MRU. On a repeated reconcile
+  // of the same active address this matches 0 rows → the whole call is 0 writes.
+  const promoted = await db
     .update(customerAddresses)
     .set({ isLastUsed: true, lastUsedAt: now, updatedAt: now })
     .where(
@@ -548,15 +613,33 @@ export async function setAddressLastUsed(customerId: number, addressId: number):
         eq(customerAddresses.id, addressId),
         eq(customerAddresses.customerId, customerId),
         eq(customerAddresses.isActive, true),
-        isNull(customerAddresses.deletedAt)
+        isNull(customerAddresses.deletedAt),
+        eq(customerAddresses.isLastUsed, false)
       )
     )
     .returning({ id: customerAddresses.id });
-  if (updated.length === 0) {
-    console.warn("[active-location] setAddressLastUsed: address not found", {
-      customerId,
-      addressId,
-    });
+
+  // Diagnostic only (read-only): if we neither promoted nor demoted anything, the
+  // target is either already the MRU (normal, no-op) or not a valid active address.
+  if (promoted.length === 0 && cleared.length === 0) {
+    const [target] = await db
+      .select({ id: customerAddresses.id })
+      .from(customerAddresses)
+      .where(
+        and(
+          eq(customerAddresses.id, addressId),
+          eq(customerAddresses.customerId, customerId),
+          eq(customerAddresses.isActive, true),
+          isNull(customerAddresses.deletedAt)
+        )
+      )
+      .limit(1);
+    if (!target) {
+      console.warn("[active-location] setAddressLastUsed: address not found", {
+        customerId,
+        addressId,
+      });
+    }
   }
 }
 
@@ -581,6 +664,8 @@ export async function setActiveLocation(
     address?: string | null;
     /** When set, binds checkout to this saved address. Pass null to clear (e.g. live GPS). */
     addressId?: number | null;
+    /** Device timestamp of the GPS fix (for §30 stale-fix guard on coord syncs). */
+    capturedAt?: Date | null;
   }
 ): Promise<boolean> {
   const db = getDb();
@@ -623,6 +708,11 @@ export async function setActiveLocation(
       patchAddressId ? (addressId ?? null) : addressIdBefore,
   });
 
+  const capturedAt = data.capturedAt ?? null;
+  // Apply the §30 stale-fix guard only to pure GPS coord syncs. A deliberate bind of
+  // a saved address (patchAddressId && addressId != null) is a user action and must
+  // always win regardless of fix age.
+  const isDeliberateBind = patchAddressId && addressId != null;
   await db
     .insert(customerActiveLocation)
     .values({
@@ -634,6 +724,7 @@ export async function setActiveLocation(
       addressId: addressId !== undefined ? addressId : addressIdBefore,
       lockedForOrder: false,
       orderId: null,
+      gpsCapturedAt: capturedAt,
     })
     .onConflictDoUpdate({
       target: customerActiveLocation.customerId,
@@ -643,7 +734,12 @@ export async function setActiveLocation(
         address: data.address ?? null,
         ...(patchAddressId ? { addressId: addressId ?? null } : {}),
         updatedAt: new Date(),
+        gpsCapturedAt: capturedAt,
       },
+      setWhere:
+        capturedAt == null || isDeliberateBind
+          ? undefined
+          : sql`${customerActiveLocation.gpsCapturedAt} IS NULL OR ${customerActiveLocation.gpsCapturedAt} <= ${capturedAt}`,
     });
 
   // Explicit bind of a Saved Address always bumps MRU — including re-select of the
@@ -700,13 +796,15 @@ export type ReconcileActiveLocationResult = {
 /** Force browsing pin to live GPS and clear saved-address binding (bypasses order lock). */
 async function forceActiveLocationToCurrentGps(
   customerId: number,
-  gps: { latitude: number; longitude: number; address?: string | null }
+  gps: { latitude: number; longitude: number; address?: string | null; capturedAt?: Date | null }
 ): Promise<void> {
+  const capturedAt = gps.capturedAt ?? null;
   console.info("[active-location] force_current_gps", {
     customerId,
     path: "forceActiveLocationToCurrentGps",
     gpsLatitude: gps.latitude,
     gpsLongitude: gps.longitude,
+    capturedAt: capturedAt ? capturedAt.toISOString() : null,
     note: "clears addressId",
   });
   const db = getDb();
@@ -720,6 +818,7 @@ async function forceActiveLocationToCurrentGps(
       addressId: null,
       lockedForOrder: false,
       orderId: null,
+      gpsCapturedAt: capturedAt,
     })
     .onConflictDoUpdate({
       target: customerActiveLocation.customerId,
@@ -731,7 +830,15 @@ async function forceActiveLocationToCurrentGps(
         lockedForOrder: false,
         orderId: null,
         updatedAt: new Date(),
+        gpsCapturedAt: capturedAt,
       },
+      // §30: an out-of-order/stale GPS fix must not overwrite a newer one. Skip the
+      // overwrite when the stored fix is strictly newer than this one. No guard when
+      // the caller didn't supply a fix time (legacy) → last-write-wins as before.
+      setWhere:
+        capturedAt == null
+          ? undefined
+          : sql`${customerActiveLocation.gpsCapturedAt} IS NULL OR ${customerActiveLocation.gpsCapturedAt} <= ${capturedAt}`,
     });
 }
 
@@ -744,7 +851,7 @@ async function forceActiveLocationToCurrentGps(
  */
 export async function reconcileActiveLocationWithGps(
   customerId: number,
-  gps: { latitude: number; longitude: number; address?: string | null }
+  gps: { latitude: number; longitude: number; address?: string | null; capturedAt?: Date | null }
 ): Promise<ReconcileActiveLocationResult> {
   const retentionRadiusM = getEnv().ACTIVE_SAVED_ADDRESS_RETENTION_RADIUS_M;
   const existing = await getActiveLocation(customerId);
