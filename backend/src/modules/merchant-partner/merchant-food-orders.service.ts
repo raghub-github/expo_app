@@ -2529,7 +2529,9 @@ export async function patchMerchantFoodOrderStatus(
     });
 
     const acceptanceSource = orderAcceptanceSourceFromAction(actionSource);
-    let acceptRows: unknown[] = [];
+    // postgres.js returns a readonly RowList, so keep the type readonly (only read via
+    // Array.isArray + .length below).
+    let acceptRows: readonly unknown[] = [];
     try {
       acceptRows = await sql`
       UPDATE orders_food
