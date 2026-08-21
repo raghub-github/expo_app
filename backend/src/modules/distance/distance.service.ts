@@ -147,7 +147,8 @@ function normalizeResult(data: {
   };
 }
 
-function pickBestRoute(
+/** Exported for unit tests — picks the shortest-distance alternative for any profile. */
+export function pickBestRoute(
   routes: Array<{ distance?: number; duration?: number; geometry?: string }>,
   profile: RoutingProfile
 ): { distance: number; duration: number; geometry?: string } | null {
@@ -159,15 +160,17 @@ function pickBestRoute(
   );
   if (!valid.length) return null;
   const bikeScale = profile === "bike" ? 0.74 : 1;
+  // Prefer the SHORTEST-distance alternative for ALL profiles (previously only bike;
+  // driving picked the fastest). Mapbox's default optimises for duration, so the chosen
+  // route can be noticeably longer than the shortest valid alternative — the "Mapbox
+  // gives a longer distance than Google" reports. We already request `alternatives=true`,
+  // so we pick the shortest among the returned sensible routes and report ITS
+  // distance/duration/geometry (one real route → distance, ETA and the drawn line stay
+  // consistent). Ties break toward the (scaled) faster route.
   valid.sort((a, b) => {
-    if (profile === "bike") {
-      const dist = (a.distance ?? 0) - (b.distance ?? 0);
-      if (dist !== 0) return dist;
-      return (a.duration ?? 0) * bikeScale - (b.duration ?? 0) * bikeScale;
-    }
-    const durationDelta = (a.duration ?? 0) - (b.duration ?? 0);
-    if (durationDelta !== 0) return durationDelta;
-    return (a.distance ?? 0) - (b.distance ?? 0);
+    const dist = (a.distance ?? 0) - (b.distance ?? 0);
+    if (dist !== 0) return dist;
+    return (a.duration ?? 0) * bikeScale - (b.duration ?? 0) * bikeScale;
   });
   const best = valid[0];
   if (!best || typeof best.distance !== "number" || typeof best.duration !== "number") return null;
@@ -205,13 +208,12 @@ async function fetchMapboxRoute(
       };
       const route = pickBestRoute(data.routes ?? [], profile);
       if (!route) continue;
+      // Across profiles (driving-traffic / driving) keep the shortest-distance result;
+      // tie-break by the faster duration. Same shortest-route policy as pickBestRoute.
       if (
         !best ||
-        (profile === "bike"
-          ? route.distance < best.distance ||
-            (route.distance === best.distance && route.duration < best.duration)
-          : route.duration < best.duration ||
-            (route.duration === best.duration && route.distance < best.distance))
+        route.distance < best.distance ||
+        (route.distance === best.distance && route.duration < best.duration)
       ) {
         best = route;
       }
