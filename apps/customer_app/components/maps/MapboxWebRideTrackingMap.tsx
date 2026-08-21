@@ -1,19 +1,31 @@
+// @ts-nocheck — native Mapbox module is loaded via require()
 import React, {
   forwardRef,
   useCallback,
   useEffect,
   useImperativeHandle,
-  useMemo,
   useRef,
+  useState,
 } from "react";
-import { StyleSheet, View, Platform } from "react-native";
-import { WebView, type WebViewMessageEvent } from "react-native-webview";
-import { getConfig } from "@/config/env";
-import { useMapMarkerDataUri } from "@/hooks/useMapMarkerDataUri";
+import { StyleSheet, View } from "react-native";
 import type { CustomerMapRef, MapEdgePadding } from "@/lib/customer-map-handle";
-import { buildRideTrackingMapHtml } from "@/components/maps/mapbox-web-ride-tracking-html";
-import { CustomerMapUnavailable } from "@/components/maps/CustomerMapUnavailable";
 import type { LatLng } from "@/services/directions.service";
+import {
+  DropHomePin,
+  NATIVE_MAP_STYLE,
+  NativeMapUnavailable,
+  PickupRestaurantPin,
+  ROUTE_BLUE,
+  ROUTE_CASING,
+  VehicleMarker,
+  circlePolygon,
+  fitCameraToPoints,
+  latLngsToLine,
+  nativeMapUnavailableReason,
+  renderNativeMarker,
+  useCustomerNativeMapbox,
+  useRiderMarkerSource,
+} from "@/components/maps/native-map-shared";
 
 type Props = {
   center: LatLng;
@@ -22,9 +34,7 @@ type Props = {
   riderHeading?: number | null;
   pickupPosition?: LatLng | null;
   dropPosition?: LatLng | null;
-  /** Catalog image_key for captain marker (bike, auto, cab, cab_premium). */
   riderMarkerImageKey?: string;
-  /** Google Maps–style blue nav route + tilted follow camera (drop leg). */
   navigationMode?: boolean;
   highlightPickupZone?: boolean;
   highlightDropZone?: boolean;
@@ -34,10 +44,6 @@ type Props = {
   onUserPan?: () => void;
   style?: object;
 };
-
-function escJsString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
 
 export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
   function MapboxWebRideTrackingMap(
@@ -60,233 +66,214 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
     },
     ref
   ) {
-    const webRef = useRef<WebView>(null);
+    const Mapbox = useCustomerNativeMapbox();
+    const mapRef = useRef(null);
+    const cameraRef = useRef(null);
     const readyRef = useRef(false);
-    const initialCenterRef = useRef(center);
+    const followRef = useRef(true);
+    const geofenceCameraRef = useRef(false);
     const pendingFitRef = useRef<{
       coords: LatLng[];
       options: { edgePadding: MapEdgePadding; maxZoom?: number };
     } | null>(null);
-    const pointWaiters = useRef(
-      new Map<number, (value: { x: number; y: number } | null) => void>()
+    const [mapReady, setMapReady] = useState(false);
+    const markerSource = useRiderMarkerSource(riderMarkerImageKey);
+    const initialCenterRef = useRef(center);
+
+    const routeLine = latLngsToLine(routeCoordinates);
+    const pickupZone =
+      highlightPickupZone && pickupPosition
+        ? circlePolygon(pickupPosition.longitude, pickupPosition.latitude, geofenceRadiusM)
+        : null;
+    const dropZone =
+      highlightDropZone && dropPosition
+        ? circlePolygon(dropPosition.longitude, dropPosition.latitude, geofenceRadiusM)
+        : null;
+
+    const applyFit = useCallback(
+      (coords: LatLng[], options: { edgePadding: MapEdgePadding; maxZoom?: number }) => {
+        if (navigationMode) return;
+        const pts = coords.map((c) => [c.longitude, c.latitude] as [number, number]);
+        fitCameraToPoints(cameraRef.current, pts, options.edgePadding, 650, options.maxZoom ?? 15);
+      },
+      [navigationMode]
     );
-    const pointSeq = useRef(0);
-
-    const token = getConfig().mapboxAccessToken?.trim() ?? "";
-    const markerDataUri = useMapMarkerDataUri(riderMarkerImageKey);
-
-    const html = useMemo(() => {
-      if (!token || !markerDataUri) return "";
-      return buildRideTrackingMapHtml(token, initialCenterRef.current, markerDataUri, {
-        navigationStyle: navigationMode,
-      });
-    }, [token, markerDataUri, navigationMode]);
-
-    useEffect(() => {
-      readyRef.current = false;
-    }, [html]);
-
-    const applyFit = useCallback((coords: LatLng[], options: { edgePadding: MapEdgePadding; maxZoom?: number }) => {
-      const json = JSON.stringify(coords);
-      const pad = JSON.stringify(options.edgePadding);
-      const maxZoom = options.maxZoom ?? 15;
-      webRef.current?.injectJavaScript(
-        `window.fitToCoordinates && window.fitToCoordinates(${json}, ${pad}, ${maxZoom}); true;`
-      );
-    }, []);
-
-    const injectMarkerIcon = useCallback(() => {
-      if (!readyRef.current || !markerDataUri) return;
-      const uri = escJsString(markerDataUri);
-      webRef.current?.injectJavaScript(
-        `window.setRiderMarkerIcon && window.setRiderMarkerIcon('${uri}'); true;`
-      );
-    }, [markerDataUri]);
-
-    const injectRoute = useCallback(() => {
-      if (!readyRef.current) return;
-      const json = JSON.stringify(routeCoordinates.length >= 2 ? routeCoordinates : []);
-      webRef.current?.injectJavaScript(`window.updateRoute && window.updateRoute(${json}); true;`);
-    }, [routeCoordinates]);
-
-    const injectRider = useCallback(() => {
-      if (!readyRef.current) return;
-      const lat = riderPosition?.latitude ?? null;
-      const lng = riderPosition?.longitude ?? null;
-      const heading = riderHeading ?? null;
-      webRef.current?.injectJavaScript(
-        `window.updateRider && window.updateRider(${lat}, ${lng}, ${heading}); true;`
-      );
-    }, [riderPosition, riderHeading]);
-
-    const injectNavigationMode = useCallback(() => {
-      if (!readyRef.current) return;
-      const enabled = navigationMode ? "true" : "false";
-      const dLat = dropPosition?.latitude ?? null;
-      const dLng = dropPosition?.longitude ?? null;
-      webRef.current?.injectJavaScript(
-        `window.setNavigationMode && window.setNavigationMode(${enabled}, ${dLat}, ${dLng}); true;`
-      );
-    }, [navigationMode, dropPosition?.latitude, dropPosition?.longitude]);
-
-    const injectPickupZone = useCallback(() => {
-      if (!readyRef.current) return;
-      const lat = pickupPosition?.latitude ?? null;
-      const lng = pickupPosition?.longitude ?? null;
-      webRef.current?.injectJavaScript(
-        `window.updatePickupZoneHighlight && window.updatePickupZoneHighlight(${lat}, ${lng}, ${highlightPickupZone ? "true" : "false"}, ${geofenceRadiusM}); true;`
-      );
-    }, [pickupPosition, highlightPickupZone, geofenceRadiusM]);
-
-    const injectDropZone = useCallback(() => {
-      if (!readyRef.current) return;
-      const lat = dropPosition?.latitude ?? null;
-      const lng = dropPosition?.longitude ?? null;
-      webRef.current?.injectJavaScript(
-        `window.updateDropZoneHighlight && window.updateDropZoneHighlight(${lat}, ${lng}, ${highlightDropZone ? "true" : "false"}, ${geofenceRadiusM}); true;`
-      );
-    }, [dropPosition, highlightDropZone, geofenceRadiusM]);
-
-    const syncLayers = useCallback(() => {
-      injectMarkerIcon();
-      injectRoute();
-      injectRider();
-      injectNavigationMode();
-      injectPickupZone();
-      injectDropZone();
-    }, [
-      injectMarkerIcon,
-      injectRoute,
-      injectRider,
-      injectNavigationMode,
-      injectPickupZone,
-      injectDropZone,
-    ]);
 
     useImperativeHandle(
       ref,
       () => ({
-        pointForCoordinate: (coord) =>
-          new Promise((resolve) => {
-            if (!readyRef.current) {
-              resolve(null);
-              return;
-            }
-            const requestId = ++pointSeq.current;
-            pointWaiters.current.set(requestId, resolve);
-            webRef.current?.injectJavaScript(
-              `window.projectPoint && window.projectPoint(${coord.latitude}, ${coord.longitude}, ${requestId}); true;`
-            );
-            setTimeout(() => {
-              if (pointWaiters.current.has(requestId)) {
-                pointWaiters.current.delete(requestId);
-                resolve(null);
-              }
-            }, 1200);
-          }),
+        pointForCoordinate: async (coord) => {
+          try {
+            const pt = await mapRef.current?.getPointInView?.([coord.longitude, coord.latitude]);
+            if (!pt || pt.length < 2) return null;
+            return { x: pt[0], y: pt[1] };
+          } catch {
+            return null;
+          }
+        },
         fitToCoordinates: (coords, options) => {
           if (!readyRef.current) {
             pendingFitRef.current = { coords, options };
             return;
           }
-          if (navigationMode) return;
           applyFit(coords, options);
         },
-        fitToGeofence: (center, radiusM, options) => {
+        fitToGeofence: (c, radiusM, options) => {
           if (!readyRef.current) return;
-          const pad = JSON.stringify(options.edgePadding);
-          const force = options.force === true ? "true" : "false";
-          const maxZoom = options.maxZoom ?? 16.4;
-          const duration = options.animated === false ? 0 : 750;
-          webRef.current?.injectJavaScript(
-            `window.fitToGeofence && window.fitToGeofence(${center.latitude}, ${center.longitude}, ${radiusM}, ${pad}, { force: ${force}, maxZoom: ${maxZoom}, duration: ${duration} }); true;`
+          geofenceCameraRef.current = true;
+          const r = Math.max(radiusM || 200, 120) * 1.28;
+          const latOffset = (r / 6378137) * (180 / Math.PI);
+          const lngOffset = latOffset / Math.max(0.35, Math.cos((c.latitude * Math.PI) / 180));
+          fitCameraToPoints(
+            cameraRef.current,
+            [
+              [c.longitude + lngOffset, c.latitude + latOffset],
+              [c.longitude - lngOffset, c.latitude - latOffset],
+            ],
+            options.edgePadding,
+            options.animated === false ? 0 : 750,
+            options.maxZoom ?? 16.4
           );
         },
         clearGeofenceCamera: () => {
-          webRef.current?.injectJavaScript(
-            `window.clearGeofenceCamera && window.clearGeofenceCamera(); true;`
-          );
+          geofenceCameraRef.current = false;
         },
         recenterOnRider: () => {
-          webRef.current?.injectJavaScript(
-            `window.recenterOnRider && window.recenterOnRider(); true;`
-          );
+          followRef.current = true;
+          if (geofenceCameraRef.current || !riderPosition) return;
+          cameraRef.current?.setCamera?.({
+            centerCoordinate: [riderPosition.longitude, riderPosition.latitude],
+            animationDuration: 450,
+            animationMode: "easeTo",
+          });
         },
       }),
-      [applyFit, navigationMode]
+      [applyFit, riderPosition]
     );
 
-    const onMessage = useCallback(
-      (event: WebViewMessageEvent) => {
-        try {
-          const msg = JSON.parse(event.nativeEvent.data) as {
-            type?: string;
-            requestId?: number;
-            x?: number;
-            y?: number;
-            error?: boolean;
-          };
-          if (msg.type === "point" && msg.requestId != null) {
-            const resolve = pointWaiters.current.get(msg.requestId);
-            if (resolve) {
-              pointWaiters.current.delete(msg.requestId);
-              if (msg.error || msg.x == null || msg.y == null) resolve(null);
-              else resolve({ x: msg.x, y: msg.y });
-            }
-            return;
-          }
-          if (msg.type === "ready") {
+    useEffect(() => {
+      if (!mapReady || !navigationMode || !riderPosition) return;
+      cameraRef.current?.setCamera?.({
+        centerCoordinate: [riderPosition.longitude, riderPosition.latitude],
+        zoomLevel: 16,
+        pitch: 48,
+        heading: riderHeading ?? 0,
+        animationDuration: 380,
+        animationMode: "easeTo",
+      });
+    }, [
+      mapReady,
+      navigationMode,
+      riderPosition?.latitude,
+      riderPosition?.longitude,
+      riderHeading,
+    ]);
+
+    useEffect(() => {
+      if (!mapReady || navigationMode || geofenceCameraRef.current) return;
+      if (!followRef.current || !riderPosition) return;
+      cameraRef.current?.setCamera?.({
+        centerCoordinate: [riderPosition.longitude, riderPosition.latitude],
+        animationDuration: 420,
+        animationMode: "easeTo",
+      });
+    }, [mapReady, navigationMode, riderPosition?.latitude, riderPosition?.longitude]);
+
+    if (nativeMapUnavailableReason() || !Mapbox) {
+      return <NativeMapUnavailable style={style} />;
+    }
+
+    return (
+      <View style={[styles.fill, style]} collapsable={false}>
+        <Mapbox.MapView
+          ref={mapRef}
+          style={styles.fill}
+          styleURL={NATIVE_MAP_STYLE}
+          logoEnabled={false}
+          attributionEnabled={false}
+          compassEnabled={false}
+          scaleBarEnabled={false}
+          scrollEnabled
+          zoomEnabled
+          pitchEnabled={navigationMode}
+          rotateEnabled
+          surfaceView={false}
+          onDidFinishLoadingMap={() => {
             readyRef.current = true;
-            syncLayers();
+            setMapReady(true);
             if (pendingFitRef.current && !navigationMode) {
               applyFit(pendingFitRef.current.coords, pendingFitRef.current.options);
               pendingFitRef.current = null;
             }
             onMapReady?.();
-            return;
-          }
-          if (msg.type === "user_pan") {
-            onUserPan?.();
-            return;
-          }
-          if (msg.type === "moveend") onRegionChangeComplete?.();
-        } catch {
-          /* ignore */
-        }
-      },
-      [applyFit, syncLayers, navigationMode, onMapReady, onRegionChangeComplete, onUserPan]
-    );
-
-    useEffect(() => {
-      if (!readyRef.current) return;
-      syncLayers();
-    }, [syncLayers]);
-
-    if (!token || !html) {
-      return <CustomerMapUnavailable style={style} />;
-    }
-
-    return (
-      <View style={[styles.fill, style]}>
-        <WebView
-          ref={webRef}
-          source={{ html }}
-          style={styles.fill}
-          originWhitelist={["*"]}
-          javaScriptEnabled
-          domStorageEnabled
-          scrollEnabled={false}
-          nestedScrollEnabled={Platform.OS === "android"}
-          overScrollMode="never"
-          androidLayerType="hardware"
-          allowFileAccess
-          allowUniversalAccessFromFileURLs
-          mixedContentMode="always"
-          onMessage={onMessage}
-          onLoadEnd={() => {
-            if (readyRef.current) syncLayers();
           }}
-        />
+          onCameraChanged={(e) => {
+            if (e?.gestures?.isGestureActive) {
+              followRef.current = false;
+              onUserPan?.();
+            }
+          }}
+          onMapIdle={() => onRegionChangeComplete?.()}
+        >
+          <Mapbox.Camera
+            ref={cameraRef}
+            defaultSettings={{
+              centerCoordinate: [initialCenterRef.current.longitude, initialCenterRef.current.latitude],
+              zoomLevel: 14.5,
+            }}
+          />
+          {pickupZone ? (
+            <Mapbox.ShapeSource id="ride-pickup-zone" shape={pickupZone}>
+              <Mapbox.FillLayer id="ride-pickup-zone-fill" style={{ fillColor: "#22C55E", fillOpacity: 0.14 }} />
+              <Mapbox.LineLayer id="ride-pickup-zone-line" style={{ lineColor: "#22C55E", lineWidth: 1.5, lineOpacity: 0.35 }} />
+            </Mapbox.ShapeSource>
+          ) : null}
+          {dropZone ? (
+            <Mapbox.ShapeSource id="ride-drop-zone" shape={dropZone}>
+              <Mapbox.FillLayer id="ride-drop-zone-fill" style={{ fillColor: "#22C55E", fillOpacity: 0.14 }} />
+              <Mapbox.LineLayer id="ride-drop-zone-line" style={{ lineColor: "#22C55E", lineWidth: 1.5, lineOpacity: 0.35 }} />
+            </Mapbox.ShapeSource>
+          ) : null}
+          {routeLine ? (
+            <Mapbox.ShapeSource id="ride-track-route" shape={routeLine}>
+              <Mapbox.LineLayer
+                id="ride-track-route-casing"
+                style={{ lineColor: ROUTE_CASING, lineWidth: 7, lineJoin: "round", lineCap: "round" }}
+              />
+              <Mapbox.LineLayer
+                id="ride-track-route-line"
+                style={{ lineColor: ROUTE_BLUE, lineWidth: 4.5, lineOpacity: 0.96, lineJoin: "round", lineCap: "round" }}
+              />
+            </Mapbox.ShapeSource>
+          ) : null}
+          {pickupPosition
+            ? renderNativeMarker(
+                Mapbox,
+                "ride-pickup",
+                [pickupPosition.longitude, pickupPosition.latitude],
+                { x: 0.5, y: 1 },
+                <PickupRestaurantPin />
+              )
+            : null}
+          {dropPosition
+            ? renderNativeMarker(
+                Mapbox,
+                "ride-drop",
+                [dropPosition.longitude, dropPosition.latitude],
+                { x: 0.5, y: 1 },
+                <DropHomePin />
+              )
+            : null}
+          {riderPosition
+            ? renderNativeMarker(
+                Mapbox,
+                "ride-captain",
+                [riderPosition.longitude, riderPosition.latitude],
+                { x: 0.5, y: 0.5 },
+                <VehicleMarker source={markerSource} headingDeg={riderHeading ?? 0} size={44} />
+              )
+            : null}
+        </Mapbox.MapView>
       </View>
     );
   }

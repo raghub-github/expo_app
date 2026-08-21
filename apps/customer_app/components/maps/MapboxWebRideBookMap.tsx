@@ -1,19 +1,29 @@
+// @ts-nocheck — native Mapbox module is loaded via require()
 import React, {
   forwardRef,
   useCallback,
-  useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
 } from "react";
-import { StyleSheet, View, Platform } from "react-native";
-import { WebView, type WebViewMessageEvent } from "react-native-webview";
-import { getConfig } from "@/config/env";
-import { useMapMarkerDataUri } from "@/hooks/useMapMarkerDataUri";
+import { StyleSheet, View } from "react-native";
 import type { CustomerMapRef, MapEdgePadding } from "@/lib/customer-map-handle";
-import { buildRideBookMapHtml } from "@/components/maps/mapbox-web-ride-book-html";
 import type { LatLng } from "@/services/directions.service";
 import type { NearbySupplyRider } from "@/services/rideAvailability.service";
+import {
+  NATIVE_MAP_STYLE,
+  NativeMapUnavailable,
+  ROUTE_BOOK_BLUE,
+  ROUTE_CASING,
+  VehicleMarker,
+  fitCameraToPoints,
+  latLngsToLine,
+  nativeMapUnavailableReason,
+  renderNativeMarker,
+  useCustomerNativeMapbox,
+  useRiderMarkerSource,
+} from "@/components/maps/native-map-shared";
 
 type FitOptions = {
   edgePadding: MapEdgePadding;
@@ -35,10 +45,6 @@ type Props = {
   style?: object;
 };
 
-function escJsString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
 export const MapboxWebRideBookMap = forwardRef<CustomerMapRef, Props>(function MapboxWebRideBookMap(
   {
     center,
@@ -55,114 +61,41 @@ export const MapboxWebRideBookMap = forwardRef<CustomerMapRef, Props>(function M
   },
   ref
 ) {
-  const webRef = useRef<WebView>(null);
+  const Mapbox = useCustomerNativeMapbox();
+  const mapRef = useRef(null);
+  const cameraRef = useRef(null);
   const readyRef = useRef(false);
   const pendingFitRef = useRef<{ coords: LatLng[]; options: FitOptions } | null>(null);
-  const pointWaiters = useRef(
-    new Map<number, (value: { x: number; y: number } | null) => void>()
-  );
-  const pointSeq = useRef(0);
+  const [mapReady, setMapReady] = useState(false);
+  const markerSource = useRiderMarkerSource(riderMarkerImageKey);
   const initialCenterRef = useRef(center);
 
-  const token = getConfig().mapboxAccessToken?.trim() ?? "";
-  const markerDataUri = useMapMarkerDataUri(riderMarkerImageKey);
-
-  const html = useMemo(() => {
-    if (!token || !markerDataUri) return "";
-    return buildRideBookMapHtml(token, initialCenterRef.current, markerDataUri);
-  }, [token, markerDataUri]);
-
-  useEffect(() => {
-    readyRef.current = false;
-  }, [html]);
-
-  const ridersPayload = useMemo(
-    () =>
-      nearbyRiders.map((r) => ({
-        riderId: r.riderId,
-        lat: r.lat,
-        lng: r.lng,
-        heading: r.heading,
-      })),
-    [nearbyRiders]
-  );
-
-  const injectRoute = useCallback(() => {
-    if (!readyRef.current || !showRoadPolyline || routeCoordinates.length < 2) {
-      webRef.current?.injectJavaScript(
-        `window.updateRoute && window.updateRoute([]); true;`
-      );
-      return;
-    }
-    const json = JSON.stringify(routeCoordinates);
-    webRef.current?.injectJavaScript(`window.updateRoute && window.updateRoute(${json}); true;`);
-  }, [routeCoordinates, showRoadPolyline]);
-
-  const injectRiders = useCallback(() => {
-    if (!readyRef.current) return;
-    const json = JSON.stringify(ridersPayload);
-    webRef.current?.injectJavaScript(`window.updateRiders && window.updateRiders(${json}); true;`);
-  }, [ridersPayload]);
-
-  const injectStops = useCallback(() => {
-    if (!readyRef.current) return;
-    const json = JSON.stringify(stopCoords);
-    webRef.current?.injectJavaScript(`window.updateStops && window.updateStops(${json}); true;`);
-  }, [stopCoords]);
-
-  const injectMarkerIcon = useCallback(() => {
-    if (!readyRef.current || !markerDataUri) return;
-    const uri = escJsString(markerDataUri);
-    webRef.current?.injectJavaScript(
-      `window.setRiderMarkerIcon && window.setRiderMarkerIcon('${uri}'); true;`
-    );
-  }, [markerDataUri]);
-
-  const syncLayers = useCallback(() => {
-    injectMarkerIcon();
-    injectRoute();
-    injectRiders();
-    injectStops();
-  }, [injectMarkerIcon, injectRoute, injectRiders, injectStops]);
+  const routeLine = showRoadPolyline ? latLngsToLine(routeCoordinates) : null;
 
   const applyFitToCoordinates = useCallback((coords: LatLng[], options: FitOptions) => {
     if (coords.length < 1) return;
-    const json = JSON.stringify(coords);
-    const pad = JSON.stringify(options.edgePadding);
-    const maxZoom = options.maxZoom ?? 15;
-    webRef.current?.injectJavaScript(
-      `window.fitToCoordinates && window.fitToCoordinates(${json}, ${pad}, ${maxZoom}); true;`
+    const pts = coords.map((c) => [c.longitude, c.latitude] as [number, number]);
+    fitCameraToPoints(
+      cameraRef.current,
+      pts,
+      options.edgePadding,
+      options.animated === false ? 0 : 650,
+      options.maxZoom ?? 15
     );
   }, []);
-
-  const flushPendingFit = useCallback(() => {
-    const pending = pendingFitRef.current;
-    if (!pending || !readyRef.current) return;
-    pendingFitRef.current = null;
-    applyFitToCoordinates(pending.coords, pending.options);
-  }, [applyFitToCoordinates]);
 
   useImperativeHandle(
     ref,
     () => ({
-      pointForCoordinate: (coord) =>
-        new Promise((resolve) => {
-          if (!readyRef.current) {
-            resolve(null);
-            return;
-          }
-          const requestId = ++pointSeq.current;
-          pointWaiters.current.set(requestId, resolve);
-          webRef.current?.injectJavaScript(
-            `window.projectPoint && window.projectPoint(${coord.latitude}, ${coord.longitude}, ${requestId}); true;`
-          );
-          setTimeout(() => {
-            if (pointWaiters.current.has(requestId)) {
-              pointWaiters.current.delete(requestId);
-              resolve(null);
-            }
-          }, 1200);
-        }),
+      pointForCoordinate: async (coord) => {
+        try {
+          const pt = await mapRef.current?.getPointInView?.([coord.longitude, coord.latitude]);
+          if (!pt || pt.length < 2) return null;
+          return { x: pt[0], y: pt[1] };
+        } catch {
+          return null;
+        }
+      },
       fitToCoordinates: (coords, options) => {
         if (!readyRef.current) {
           pendingFitRef.current = { coords, options };
@@ -174,81 +107,108 @@ export const MapboxWebRideBookMap = forwardRef<CustomerMapRef, Props>(function M
     [applyFitToCoordinates]
   );
 
-  const onMessage = useCallback((event: WebViewMessageEvent) => {
-    try {
-      const msg = JSON.parse(event.nativeEvent.data) as {
-        type?: string;
-        requestId?: number;
-        x?: number;
-        y?: number;
-        error?: boolean;
-      };
-      if (msg.type === "point" && msg.requestId != null) {
-        const resolve = pointWaiters.current.get(msg.requestId);
-        if (resolve) {
-          pointWaiters.current.delete(msg.requestId);
-          if (msg.error || msg.x == null || msg.y == null) resolve(null);
-          else resolve({ x: msg.x, y: msg.y });
-        }
-        return;
-      }
-      if (msg.type === "usergesture") {
-        onUserMapGesture?.();
-        return;
-      }
-      if (msg.type === "ready") {
-        readyRef.current = true;
-        syncLayers();
-        flushPendingFit();
-        onMapReady?.();
-        return;
-      }
-      if (msg.type === "move") {
-        onRegionChange?.();
-        return;
-      }
-      if (msg.type === "moveend") {
-        onRegionChangeComplete?.();
-      }
-    } catch {
-      // ignore malformed messages
-    }
-  }, [onMapReady, onRegionChange, onRegionChangeComplete, onUserMapGesture, syncLayers, flushPendingFit]);
+  const riders = useMemo(
+    () =>
+      nearbyRiders.filter(
+        (r) => Number.isFinite(r.lat) && Number.isFinite(r.lng)
+      ),
+    [nearbyRiders]
+  );
 
-  useEffect(() => {
-    if (!readyRef.current) return;
-    syncLayers();
-  }, [syncLayers]);
-
-  if (!token || !html) {
-    return <View style={[styles.fill, style]} />;
+  if (nativeMapUnavailableReason() || !Mapbox) {
+    return <NativeMapUnavailable style={style} />;
   }
 
   return (
-    <View style={[styles.fill, style]}>
-      <WebView
-        ref={webRef}
-        source={{ html }}
+    <View style={[styles.fill, style]} collapsable={false}>
+      <Mapbox.MapView
+        ref={mapRef}
         style={styles.fill}
-        originWhitelist={["*"]}
-        javaScriptEnabled
-        domStorageEnabled
-        scrollEnabled={false}
-        nestedScrollEnabled={Platform.OS === "android"}
-        overScrollMode="never"
-        androidLayerType="hardware"
-        allowFileAccess
-        allowUniversalAccessFromFileURLs
-        mixedContentMode="always"
-        onMessage={onMessage}
-        onLoadEnd={() => {
-          if (readyRef.current) syncLayers();
+        styleURL={NATIVE_MAP_STYLE}
+        logoEnabled={false}
+        attributionEnabled={false}
+        compassEnabled={false}
+        scaleBarEnabled={false}
+        scrollEnabled
+        zoomEnabled
+        pitchEnabled={false}
+        rotateEnabled
+        surfaceView={false}
+        onDidFinishLoadingMap={() => {
+          readyRef.current = true;
+          setMapReady(true);
+          if (pendingFitRef.current) {
+            applyFitToCoordinates(pendingFitRef.current.coords, pendingFitRef.current.options);
+            pendingFitRef.current = null;
+          }
+          onMapReady?.();
         }}
-      />
+        onCameraChanged={(e) => {
+          if (e?.gestures?.isGestureActive) onUserMapGesture?.();
+          onRegionChange?.();
+        }}
+        onMapIdle={() => onRegionChangeComplete?.()}
+      >
+        <Mapbox.Camera
+          ref={cameraRef}
+          defaultSettings={{
+            centerCoordinate: [initialCenterRef.current.longitude, initialCenterRef.current.latitude],
+            zoomLevel: 14.2,
+          }}
+        />
+        {routeLine ? (
+          <Mapbox.ShapeSource id="ride-book-route" shape={routeLine}>
+            <Mapbox.LineLayer
+              id="ride-book-route-casing"
+              style={{ lineColor: ROUTE_CASING, lineWidth: 6, lineJoin: "round", lineCap: "round" }}
+            />
+            <Mapbox.LineLayer
+              id="ride-book-route-line"
+              style={{
+                lineColor: ROUTE_BOOK_BLUE,
+                lineWidth: 3.5,
+                lineOpacity: 0.95,
+                lineJoin: "round",
+                lineCap: "round",
+              }}
+            />
+          </Mapbox.ShapeSource>
+        ) : null}
+        {mapReady
+          ? stopCoords.map((s, i) =>
+              renderNativeMarker(
+                Mapbox,
+                `stop-${i}`,
+                [s.longitude, s.latitude],
+                { x: 0.5, y: 1 },
+                <View style={styles.stopDot} />
+              )
+            )
+          : null}
+        {mapReady
+          ? riders.map((r) =>
+              renderNativeMarker(
+                Mapbox,
+                `nearby-${r.riderId}`,
+                [r.lng, r.lat],
+                { x: 0.5, y: 0.5 },
+                <VehicleMarker source={markerSource} headingDeg={r.heading ?? 0} size={34} />
+              )
+            )
+          : null}
+      </Mapbox.MapView>
     </View>
   );
 });
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
+  stopDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: "#111827",
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
+  },
 });

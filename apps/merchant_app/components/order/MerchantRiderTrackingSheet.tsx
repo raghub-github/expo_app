@@ -1,17 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet, ActivityIndicator, Pressable, Platform } from "react-native";
-import { WebView } from "react-native-webview";
+import { View, StyleSheet, ActivityIndicator, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { OrderRecord } from "@/hooks/useOrders";
 import type { MerchantRiderLiveEnrichment } from "@/hooks/useMerchantRiderLiveEnrichment";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 import { getConfig, resolveUrlForDevice } from "@/config/env";
-import type { MerchantRiderTrackingPayload } from "@/services/riderTrackingApi";
-import {
-  buildMapUpdateScript,
-  buildMerchantRiderTrackingMapHtml,
-} from "@/lib/merchantRiderTrackingMapHtml";
 import {
   resolveRiderCardVariant,
   riderStatusHeadline,
@@ -25,6 +19,7 @@ import { useAppAssetUrl } from "@/store/appAssetsStore";
 import { resolveImageUrl } from "@/services/outletApi";
 import { RiderSelfieAvatar } from "@/components/order/RiderSelfieAvatar";
 import { RiderSelfieViewerModal } from "@/components/order/RiderSelfieViewerModal";
+import { MerchantRiderNativeTrackingMap } from "@/components/order/MerchantRiderNativeTrackingMap";
 import { GatiMitraMerchant } from "@/constants/theme";
 
 type Props = {
@@ -36,37 +31,13 @@ type Props = {
   enrichment: MerchantRiderLiveEnrichment;
 };
 
-function trackingCoordsChanged(
-  prev: MerchantRiderTrackingPayload | null,
-  next: MerchantRiderTrackingPayload | null
-): boolean {
-  if (!next) return false;
-  if (!prev?.location && next.location) return true;
-  if (!prev?.location || !next.location) return prev !== next;
-  const dLat = Math.abs(prev.location.latitude - next.location.latitude);
-  const dLng = Math.abs(prev.location.longitude - next.location.longitude);
-  const headingA = prev.location.heading_degrees ?? 0;
-  const headingB = next.location.heading_degrees ?? 0;
-  return dLat > 0.00005 || dLng > 0.00005 || Math.abs(headingA - headingB) > 8;
-}
-
-function parseOrdersFoodId(orderId: string): number | null {
-  const n = parseInt(orderId, 10);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
 export function MerchantRiderTrackingSheet({
   visible,
   onClose,
   order,
-  storeId,
-  token,
   enrichment,
 }: Props) {
-  const webRef = useRef<WebView>(null);
-  const lastMapInjectRef = useRef<MerchantRiderTrackingPayload | null>(null);
   const [selfieModalOpen, setSelfieModalOpen] = useState(false);
-  const ordersFoodId = parseOrdersFoodId(order.id);
   const mapboxToken = getConfig().mapboxPublicToken;
 
   const data = enrichment.trackingData;
@@ -117,73 +88,6 @@ export function MerchantRiderTrackingSheet({
     return mapbikeMarkerUri();
   }, [mapbikeFromStore]);
 
-  const injectMapResize = () => {
-    webRef.current?.injectJavaScript(
-      `(function(){try{if(window.resizeRiderTrackingMap){window.resizeRiderTrackingMap();}else if(window.map&&window.map.resize){window.map.resize();}}catch(e){} true;})();`
-    );
-  };
-
-  const injectBikeIcon = (uri: string) => {
-    if (!uri.trim()) return;
-    webRef.current?.injectJavaScript(
-      `(function(){try{if(window.setRiderBikeIcon){window.setRiderBikeIcon(${JSON.stringify(uri)});} }catch(e){} true;})();`
-    );
-  };
-
-  // Build HTML once tracking data arrives; inject Super Admin bike when URL resolves.
-  const [mapHtml, setMapHtml] = useState<string | null>(null);
-  const builtWithBikeRef = useRef("");
-  useEffect(() => {
-    if (!visible) {
-      setMapHtml(null);
-      builtWithBikeRef.current = "";
-      return;
-    }
-    if (!mapboxToken || !data) return;
-
-    const bikeReady = mapbikeUri.trim();
-
-    if (!mapHtml) {
-      // Wait briefly for merchant.map.bike (map.bike) so the marker uses Super Admin asset.
-      if (!bikeReady) {
-        const t = setTimeout(() => {
-          const lateBike = mapbikeMarkerUri();
-          setMapHtml(buildMerchantRiderTrackingMapHtml(mapboxToken, data, lateBike));
-          builtWithBikeRef.current = lateBike;
-        }, 500);
-        return () => clearTimeout(t);
-      }
-      setMapHtml(buildMerchantRiderTrackingMapHtml(mapboxToken, data, bikeReady));
-      builtWithBikeRef.current = bikeReady;
-      return;
-    }
-
-    if (bikeReady && bikeReady !== builtWithBikeRef.current) {
-      builtWithBikeRef.current = bikeReady;
-      injectBikeIcon(bikeReady);
-    }
-  }, [visible, mapboxToken, data, mapHtml, mapbikeUri]);
-
-  useEffect(() => {
-    if (!data || !mapHtml) return;
-    if (!trackingCoordsChanged(lastMapInjectRef.current, data)) return;
-    lastMapInjectRef.current = data;
-    webRef.current?.injectJavaScript(buildMapUpdateScript(data));
-  }, [data, mapHtml]);
-
-  // Sheet animation / Android layout often leaves Mapbox at 0×0; re-fit after open.
-  useEffect(() => {
-    if (!visible || !mapHtml) return;
-    const t1 = setTimeout(injectMapResize, 100);
-    const t2 = setTimeout(injectMapResize, 400);
-    const t3 = setTimeout(injectMapResize, 900);
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-    };
-  }, [visible, mapHtml]);
-
   const mapHint =
     !data?.location && data?.store
       ? "Store is on the map. Rider GPS will appear when they start navigation."
@@ -202,13 +106,7 @@ export function MerchantRiderTrackingSheet({
         </Text>
       </View>
 
-      <View
-        style={styles.mapWrap}
-        collapsable={false}
-        onLayout={() => {
-          if (mapHtml) injectMapResize();
-        }}
-      >
+      <View style={styles.mapWrap} collapsable={false}>
         {loading && !data ? (
           <View style={styles.loader}>
             <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
@@ -217,32 +115,11 @@ export function MerchantRiderTrackingSheet({
           <View style={styles.loader}>
             <Text style={styles.errorText}>{error}</Text>
           </View>
-        ) : mapHtml ? (
-          <WebView
-            ref={webRef}
-            // No baseUrl — matches customer tracking maps; api.mapbox.com baseUrl can block style tiles.
-            source={{ html: mapHtml }}
-            style={styles.map}
-            scrollEnabled={false}
-            nestedScrollEnabled={Platform.OS === "android"}
-            overScrollMode="never"
-            androidLayerType="hardware"
-            originWhitelist={["*"]}
-            javaScriptEnabled
-            domStorageEnabled
-            allowFileAccess
-            allowUniversalAccessFromFileURLs
-            mixedContentMode="always"
-            setSupportMultipleWindows={false}
-            onLoadEnd={() => {
-              injectMapResize();
-              if (data) {
-                webRef.current?.injectJavaScript(buildMapUpdateScript(data));
-              }
-            }}
-            onMessage={() => {
-              injectMapResize();
-            }}
+        ) : visible && data && mapboxToken ? (
+          <MerchantRiderNativeTrackingMap
+            payload={data}
+            mapboxToken={mapboxToken}
+            bikeUri={mapbikeUri}
           />
         ) : (
           <View style={styles.loader}>
@@ -330,12 +207,7 @@ const styles = StyleSheet.create({
   mapWrap: {
     height: 360,
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
-  },
-  map: {
-    flex: 1,
-    width: "100%",
-    height: "100%",
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    overflow: "hidden",
   },
   loader: {
     flex: 1,

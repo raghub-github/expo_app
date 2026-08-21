@@ -641,6 +641,8 @@ export default function OrderDetailClient({
   const [riderTrackingInitial, setRiderTrackingInitial] = useState<
     OrderRiderTrackingPayload | null | undefined
   >(undefined);
+  /** Avoid duplicate /rider-tracking when core handler already kicked it off. */
+  const riderTrackingFetchForRef = useRef<number | null>(null);
   const [paymentDetail, setPaymentDetail] = useState<OrderPaymentDetail | null>(null);
   /**
    * Core order id whose payment card arrived embedded in /api/orders/core.
@@ -731,9 +733,14 @@ export default function OrderDetailClient({
     const orderId = order?.id;
     if (orderId == null || !Number.isFinite(orderId)) return;
     if (riderTrackingInitial !== undefined) return;
+    if (riderTrackingFetchForRef.current === orderId) return;
 
     let cancelled = false;
-    void fetch(`/api/orders/${orderId}/rider-tracking`, { credentials: "include" })
+    riderTrackingFetchForRef.current = orderId;
+    void fetch(`/api/orders/${orderId}/rider-tracking`, {
+      credentials: "include",
+      cache: "no-store",
+    })
       .then((r) => r.json().catch(() => null))
       .then((body) => {
         if (cancelled) return;
@@ -850,9 +857,11 @@ export default function OrderDetailClient({
     // Keep prior paymentDetail until the background fetch refreshes it (avoids empty modal).
     if (!hasMatchingOrder) {
       setPaymentDetail(null);
+      // Only clear rider payloads when switching orders — soft refetch keeps map/timeline warm.
+      setRiderTrackingInitial(undefined);
+      setRiderTimelineInitial(undefined);
+      riderTrackingFetchForRef.current = null;
     }
-    setRiderTrackingInitial(undefined);
-    setRiderTimelineInitial(undefined);
 
     setOrder((prev) => {
       if (!prev) return null;
@@ -1045,9 +1054,28 @@ export default function OrderDetailClient({
           if (hasEmbeddedRiderTracking) {
             setRiderTrackingInitial(
               embeddedRiderTracking && typeof embeddedRiderTracking === "object"
-                ? embeddedRiderTracking
+                ? (embeddedRiderTracking as OrderRiderTrackingPayload)
                 : null
             );
+          } else if (coreOrderId != null) {
+            // Kick off immediately (don't wait for React effect after paint).
+            riderTrackingFetchForRef.current = coreOrderId;
+            void fetch(`/api/orders/${coreOrderId}/rider-tracking`, {
+              credentials: "include",
+              cache: "no-store",
+            })
+              .then((r) => r.json().catch(() => null))
+              .then((trackingBody) => {
+                if (cancelled) return;
+                if (trackingBody && typeof trackingBody === "object") {
+                  setRiderTrackingInitial(trackingBody as OrderRiderTrackingPayload);
+                } else {
+                  setRiderTrackingInitial(null);
+                }
+              })
+              .catch(() => {
+                if (!cancelled) setRiderTrackingInitial(null);
+              });
           }
           // else: leave undefined / existing — background rider-tracking effect fills it
           if (coreOrderId != null && !hasEmbeddedTimeline) {
@@ -2264,7 +2292,7 @@ export default function OrderDetailClient({
           </>
           )}
 
-          {/* Rider + map — all order types */}
+          {/* Rider + map — keep rider card half-width; map stays visible after complete */}
           <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-stretch">
             <div className="w-full md:w-1/2 md:min-w-0 md:shrink-0">
             <RiderDetails

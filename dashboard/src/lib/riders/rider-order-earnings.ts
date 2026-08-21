@@ -77,13 +77,19 @@ export function resolveRiderEarningFromOrderFields(input: {
   const direct = Number(input.riderEarning);
   if (Number.isFinite(direct) && direct > 0) return round2(direct);
 
-  const deliveryFee = parseBillingAmount(input.billingSnapshot, [
+  const deliveryFeeGross = parseBillingAmount(input.billingSnapshot, [
+    "delivery_fee_gross",
+    "deliveryFeeGross",
+  ]);
+  const deliveryFeeNet = parseBillingAmount(input.billingSnapshot, [
     "delivery_fee",
     "final_delivery_fee",
     "deliveryFee",
     "finalDeliveryFee",
-    "deliveryFeeQuotedInr",
   ]);
+  // Prefer gross (rider base). Never treat rider-overwritten net as earnings fallback
+  // when rider_payout_snapshot already exists (snapshot path above should have hit).
+  const deliveryFee = deliveryFeeGross > 0 ? deliveryFeeGross : deliveryFeeNet;
   const tipFromColumn = Number(input.tipAmount);
   const tipFromBilling = parseBillingAmount(input.billingSnapshot, [
     "tip_amount",

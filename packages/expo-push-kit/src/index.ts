@@ -73,5 +73,6 @@ export {
   getInAppBannerSnapshot,
   subscribeInAppBanner,
   FloatingInAppBannerHost,
+  isSystemShadeOnlyPush,
   type InAppBannerItem,
 } from "./floatingBanner";

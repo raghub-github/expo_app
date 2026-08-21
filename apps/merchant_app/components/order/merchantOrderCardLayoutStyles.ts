@@ -4,15 +4,21 @@ import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
 export const merchantOrderCardLayoutStyles = StyleSheet.create({
   wrap: {
     borderRadius: CARD_RADIUS,
-    overflow: "hidden",
+    // Android drops taps on Touchable/Pressable inside overflow:"hidden" ancestors.
+    overflow: "visible",
     ...GatiMitraMerchant.shadowSm,
+  },
+  bannerClip: {
+    overflow: "hidden",
+    borderTopLeftRadius: CARD_RADIUS,
+    borderTopRightRadius: CARD_RADIUS,
   },
   card: {
     backgroundColor: "#FFFFFF",
     borderRadius: CARD_RADIUS,
     borderWidth: 1,
     borderColor: "#EEEEEE",
-    overflow: "hidden",
+    overflow: "visible",
   },
   cardUnderBanner: {
     borderTopWidth: 0,
@@ -157,6 +163,8 @@ export const merchantOrderCardLayoutStyles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 14,
     gap: 10,
+    zIndex: 2,
+    elevation: 2,
   },
   riderRow: {
     flexDirection: "row",

@@ -1,0 +1,166 @@
+{
+  "title": "GMF100008 — Google ~4.8 km vs Mapbox 7.18 km — final investigation",
+  "testedAt": "2026-08-21T10:30:00.000Z",
+  "orderId": "GMF100008",
+  "coordinates": {
+    "pickup_raw": { "lng": 76.984943, "lat": 29.342238, "note": "SWAAD SUTRA / Shivalika Rugs area" },
+    "drop_raw": { "lng": 76.963811, "lat": 29.370167, "note": "Customer Rajnagar" },
+    "pickup_snapped": { "lng": 76.985003, "lat": 29.342155, "snapDistanceM": 10.965 },
+    "drop_snapped": { "lng": 76.963656, "lat": 29.370224, "snapDistanceM": 16.308 }
+  },
+  "googleReference": {
+    "distanceKm": 4.8,
+    "via": "NH-1 / Anaj Mandi Rd → north along rail → west across railway → Rajnagar",
+    "role": "diagnostic reference only — NOT used in production"
+  },
+  "mapbox": {
+    "primaryKm": 7.18,
+    "alternativeKm": 8.34,
+    "gapVsGoogleKm": 2.38,
+    "gapPercent": 49.6
+  },
+  "productionHttpRequest": {
+    "liveRiderMap": "GET https://api.mapbox.com/directions/v5/mapbox/driving/76.984943,29.342238;76.963811,29.370167?alternatives=true&overview=full&geometries=geojson&steps=true&access_token=***",
+    "backendDistanceEngine": "GET https://api.mapbox.com/directions/v5/mapbox/driving/{lng,lat;...}?alternatives=true&overview=full&geometries=polyline&steps=false&access_token=***",
+    "profile": "driving",
+    "parametersPresent": {
+      "alternatives": true,
+      "geometries": "geojson|polyline",
+      "overview": "full",
+      "steps": "true|false",
+      "bearings": false,
+      "radiuses": false,
+      "layers": false,
+      "approaches": false,
+      "continue_straight": false,
+      "exclude": false,
+      "include": false,
+      "max_height": false,
+      "max_width": false,
+      "max_weight": false,
+      "depart_at": false,
+      "arrive_by": false
+    },
+    "codebaseAudit": {
+      "exclude_tunnel": false,
+      "exclude_bridge": false,
+      "exclude_motorway": false,
+      "customTunnelFilter": false,
+      "filesChecked": [
+        "dashboard/src/app/order/[id]/RiderRouteMap.tsx",
+        "dashboard/src/lib/map/unified-route-selector.ts",
+        "backend/src/modules/distance/distance.service.ts",
+        "apps/customer_app/services/directions.service.ts"
+      ]
+    }
+  },
+  "parameterSweeps": {
+    "clean_no_extras": { "km": 7.18 },
+    "continue_straight_false": { "km": 7.18 },
+    "driving_traffic": { "km": 7.18 },
+    "cycling_diagnostic": { "km": 7.54 },
+    "walking_diagnostic": { "km": 7.47 },
+    "bearings_north": { "km": 7.18 },
+    "bearings_west": { "km": 7.18 },
+    "radiuses_50": { "km": 7.18 },
+    "radiuses_5": { "km": 7.18 },
+    "approaches_unrestricted": { "km": 7.18 },
+    "exclude_ferry": { "km": 7.18 },
+    "exclude_motorway": { "km": 7.18 },
+    "conclusion": "No request-parameter change reproduces Google ~4.8 km. Shortest Mapbox full-trip remains 7.18 km."
+  },
+  "candidateRoutes": [
+    {
+      "index": 0,
+      "distanceKm": 7.18,
+      "durationMin": 14.8,
+      "entersGoogleStyleShortCross": false,
+      "geometryNote": "Goes north around rail corridor then returns — longer loop"
+    },
+    {
+      "index": 1,
+      "distanceKm": 8.34,
+      "durationMin": 21.7,
+      "entersGoogleStyleShortCross": false
+    }
+  ],
+  "underpassConnectivityTests": [
+    {
+      "id": "rail_near_drop",
+      "crowM": 157,
+      "routeM": 2982,
+      "detourRatio": 19,
+      "shortRoutable": false
+    },
+    {
+      "id": "rail_mid_corridor",
+      "crowM": 194,
+      "routeM": 1175,
+      "detourRatio": 6.1,
+      "shortRoutable": false
+    },
+    {
+      "id": "rail_south_anaj",
+      "crowM": 242,
+      "routeM": 1754,
+      "detourRatio": 7.2,
+      "shortRoutable": false
+    },
+    {
+      "id": "rail_nh1_guess",
+      "crowM": 233,
+      "routeM": 160,
+      "detourRatio": 0.7,
+      "shortRoutable_apparent": true,
+      "criticalFinding": "Both endpoints snap to the EAST-side network (west snap 88 m to lng 76.965708). Tilequery at raw west point sees major_rail only — no west-side road. WEST→DROP still 4.14 km (×3.2). Not a usable cross onto the customer-side graph."
+    },
+    {
+      "id": "force_pickup_east_west_drop",
+      "routeKm": 8.14,
+      "vsClean": "WORSE than 7.18 — forcing the probe corridor does not unlock Google distance"
+    }
+  ],
+  "snappingVerdict": {
+    "pickupOk": true,
+    "dropOk": true,
+    "issue": false,
+    "note": "Endpoint snaps are 11 m / 16 m — not the cause of the +2.38 km gap."
+  },
+  "bearingVerdict": {
+    "sentInProduction": false,
+    "diagnosticChangeHelps": false
+  },
+  "layerVerdict": {
+    "sentInProduction": false,
+    "tilequeryStructureAtProbes": "structure=none (not tagged tunnel). Streets + major_rail present cartographically.",
+    "note": "No confirmed multi-level layer id available to pass; layer param not applicable without metadata."
+  },
+  "underpassDiagnostics": {
+    "routeable_as_google_style_link": "NO",
+    "connected_in_routing_graph": "NO (for vehicle path equivalent to Google 4.8 km)",
+    "accessible_driving": "NO for the short rail-cross Google uses",
+    "vehicle_compatible_in_mapbox_graph": "NO",
+    "one_way_issue": "NO (not the root cause)",
+    "snapping_issue": "NO for O/D; YES for naive west-of-rail probes (snap back east)"
+  },
+  "rootCause": {
+    "classification": "B. Mapbox routing-data / routing-graph limitation",
+    "not": [
+      "A. Our configuration bug",
+      "C. Proven legal restriction (Google treats path as normal driving; Mapbox graph simply lacks equivalent edge connectivity)"
+    ],
+    "statement": "Basemap/visual roads (and Google Directions) show a ~4.8 km path that crosses the railway corridor. Mapbox Directions for profile=driving, with a clean alternatives=true request and no exclusions/bearings/layers, returns 7.18 km / 8.34 km only. Direct entrance→exit probes either detour multi-km or snap both ends onto the east-side network so the customer-side remains poorly connected (west→drop ~4.1 km). Forcing corridor waypoints makes the full trip longer (8.14 km), proving the Google path is not available as a routable Mapbox driving edge sequence."
+  },
+  "productionDecision": {
+    "optionA_keepMapbox": "Accept local discrepancy until Mapbox graph is fixed",
+    "optionB_mapDataTicket": "Recommended — escalate with this evidence pack",
+    "optionC_multiProvider": "Do NOT implement without explicit product decision",
+    "chosenNow": "A + B — keep Mapbox canonical route; do not fabricate Google geometry"
+  },
+  "artifacts": [
+    "dashboard/docs/mapbox-vs-google-gmf100008-diag.json",
+    "dashboard/docs/mapbox-gmf100008-candidates.geojson",
+    "dashboard/docs/mapbox-force-google-corridor.json",
+    "dashboard/docs/mapbox-panipat-rail-crossing-feedback.json"
+  ]
+}

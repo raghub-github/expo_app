@@ -3,7 +3,7 @@
  */
 import { sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { getDb } from "../db/client.js";
+import { getDb, getSql } from "../db/client.js";
 import { resolveRiderOrderDistanceSnapshot } from "./rider-order-distance-snapshot.js";
 
 type DbTx = PostgresJsDatabase<Record<string, unknown>>;
@@ -579,5 +579,79 @@ export async function recordRiderAssignmentDeliveredIfActive(input: {
     });
   } catch (err) {
     console.warn("[recordRiderAssignmentDeliveredIfActive]", err);
+  }
+}
+
+/**
+ * Post-commit: fill MX/CX on assigned + accepted timeline events.
+ * Must run outside the accept claim TX so GPS lookup does not inflate lock time.
+ */
+export async function backfillAcceptTimelineDistances(input: {
+  orderCorePk: number;
+  riderId: number;
+  explicitGps?: { lat?: number | null; lng?: number | null };
+}): Promise<RiderDistanceSnapshot | null> {
+  try {
+    const distance = await enrichDistanceSnapshot(
+      input.riderId,
+      input.orderCorePk,
+      input.explicitGps
+        ? {
+            riderLat: input.explicitGps.lat,
+            riderLng: input.explicitGps.lng,
+          }
+        : undefined
+    );
+    if (!distance) return null;
+    if (distance.merchantDistanceKm == null && distance.customerDistanceKm == null) {
+      return null;
+    }
+
+    const sqlClient = getSql();
+
+    const rows = await sqlClient`
+      SELECT id
+      FROM order_rider_assignments
+      WHERE order_core_id = ${input.orderCorePk}
+        AND rider_id = ${input.riderId}
+      ORDER BY is_active DESC NULLS LAST, COALESCE(accepted_at, assigned_at, created_at) DESC
+      LIMIT 1
+    `;
+    const assignmentId = Number((rows as { id: number }[])[0]?.id ?? 0);
+    if (!assignmentId) return distance;
+
+    const mx = distance.merchantDistanceKm ?? null;
+    const cx = distance.customerDistanceKm ?? null;
+    const lat = distance.riderLat ?? null;
+    const lng = distance.riderLng ?? null;
+
+    await sqlClient`
+      UPDATE order_rider_assignments
+      SET
+        distance_to_merchant_km = COALESCE(distance_to_merchant_km, ${mx}),
+        distance_to_customer_km = COALESCE(distance_to_customer_km, ${cx}),
+        updated_at = NOW()
+      WHERE id = ${assignmentId}
+    `;
+
+    await sqlClient`
+      UPDATE order_rider_assignment_timeline_events
+      SET
+        merchant_distance_km = COALESCE(merchant_distance_km, ${mx}),
+        customer_distance_km = COALESCE(customer_distance_km, ${cx}),
+        rider_latitude = COALESCE(rider_latitude, ${lat}),
+        rider_longitude = COALESCE(rider_longitude, ${lng})
+      WHERE rider_assignment_id = ${assignmentId}
+        AND event_type IN ('assigned', 'accepted')
+        AND (
+          merchant_distance_km IS NULL
+          OR customer_distance_km IS NULL
+        )
+    `;
+
+    return distance;
+  } catch (err) {
+    console.warn("[backfillAcceptTimelineDistances]", err);
+    return null;
   }
 }

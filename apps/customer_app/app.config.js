@@ -128,6 +128,11 @@ module.exports = {
         },
       ],
       "@config-plugins/react-native-blob-util",
+      // Resolve via file path — Expo's plugin resolver cannot load
+      // `@rnmapbox/maps` by package name (exports map hides app.plugin).
+      ...(fs.existsSync(path.resolve(__dirname, "node_modules/@rnmapbox/maps/app.plugin.js"))
+        ? [path.resolve(__dirname, "node_modules/@rnmapbox/maps/app.plugin.js")]
+        : []),
       [
         "expo-notifications",
         {

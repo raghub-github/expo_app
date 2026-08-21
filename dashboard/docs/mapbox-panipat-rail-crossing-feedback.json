@@ -1,0 +1,14 @@
+{
+  "title": "Mapbox map-data feedback — Panipat railway corridor (GMF100008)",
+  "testedAt": "2026-08-21T10:30:00.000Z",
+  "location": "Panipat, Haryana, India",
+  "expected": "Driving route ~4.8 km via Anaj Mandi Rd / NH-1 area crossing the railway corridor (as Google Maps Directions returns for the same coordinates).",
+  "mapboxReturned": "driving primary 7.18 km, alternative 8.34 km — no candidate matches the ~4.8 km corridor.",
+  "coordinates": {
+    "origin": "76.984943,29.342238",
+    "destination": "76.963811,29.370167"
+  },
+  "cleanRequest": "https://api.mapbox.com/directions/v5/mapbox/driving/76.984943,29.342238;76.963811,29.370167?alternatives=true&overview=full&geometries=geojson&steps=true",
+  "evidence": "Entrance/exit probes across the rail either require multi-km detours or snap both ends onto the east-side network; forcing cross waypoints increases total distance to 8.14 km. Tilequery shows cartographic street + major_rail with structure=none, but Directions graph lacks a usable driving connection equivalent to Google.",
+  "request": "Please add/fix the routable driving connection across this railway corridor so Directions can return a path comparable to ground-truth ~4.8 km driving."
+}

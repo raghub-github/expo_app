@@ -1,0 +1,1789 @@
+{
+  "summary": {
+    "cleanKm": 7.18,
+    "forceViaCrossKm": 8.14,
+    "forcePickupWestDropKm": 9.21,
+    "forcePickupEastDropKm": 7.71,
+    "forceLandmarksKm": 221.56,
+    "crossEastWestM": 160,
+    "crossWestEastM": 160,
+    "googleKm": 4.8,
+    "canForceNearGoogle": false
+  },
+  "out": {
+    "landmarks": {
+      "kabaddi": [
+        {
+          "name": "Raj Nagar ، 110075 Dwarka، India",
+          "center": {
+            "lng": 77.085746,
+            "lat": 28.58711
+          }
+        },
+        {
+          "name": "Raj Nagar ، 110010 New Delhi، India",
+          "center": {
+            "lng": 77.101605,
+            "lat": 28.584537
+          }
+        },
+        {
+          "name": "Raj Nagar ، 110037 New Delhi، India",
+          "center": {
+            "lng": 77.074498,
+            "lat": 28.570048
+          }
+        }
+      ],
+      "sabzi": [
+        {
+          "name": "Near Subzi Mandi ، 132106 Panipat، India",
+          "center": {
+            "lng": 76.972703,
+            "lat": 29.40775
+          }
+        },
+        {
+          "name": "Near Sabji Mandi ، 132106 Panipat، India",
+          "center": {
+            "lng": 76.969337,
+            "lat": 29.408344
+          }
+        },
+        {
+          "name": "Mandi, Israna, Panipat, Haryana, India",
+          "center": {
+            "lng": 76.89093,
+            "lat": 29.247509
+          }
+        }
+      ],
+      "shivalika": [
+        {
+          "name": "Assandh Road Panipat ، 132106 Panipat، India",
+          "center": {
+            "lng": 76.965685,
+            "lat": 29.39475
+          }
+        },
+        {
+          "name": "Panipat - Shamli Road ، 247774 Kairana، India",
+          "center": {
+            "lng": 77.205575,
+            "lat": 29.391834
+          }
+        },
+        {
+          "name": "Panipat Rd ، 132105 Matlauda، India",
+          "center": {
+            "lng": 76.924366,
+            "lat": 29.394494
+          }
+        }
+      ],
+      "anaj": [
+        {
+          "name": "Anaj Mandi Rd ، 132106 Panipat، India",
+          "center": {
+            "lng": 76.964251,
+            "lat": 29.359582
+          }
+        },
+        {
+          "name": "Mandi Rd ، 132106 Panipat، India",
+          "center": {
+            "lng": 76.973093,
+            "lat": 29.366536
+          }
+        },
+        {
+          "name": "New Anaj Mandi Rd ، 131001 Sonipat، India",
+          "center": {
+            "lng": 77.014921,
+            "lat": 28.970969
+          }
+        }
+      ],
+      "manisha": [
+        {
+          "name": "Assandh Road Panipat ، 132106 Panipat، India",
+          "center": {
+            "lng": 76.965685,
+            "lat": 29.39475
+          }
+        },
+        {
+          "name": "Panipat - Shamli Road ، 247774 Kairana، India",
+          "center": {
+            "lng": 77.205575,
+            "lat": 29.391834
+          }
+        },
+        {
+          "name": "Panipat Rd ، 132105 Matlauda، India",
+          "center": {
+            "lng": 76.924366,
+            "lat": 29.394494
+          }
+        }
+      ]
+    },
+    "eastWest": {
+      "label": "EAST→WEST (nh1 probe)",
+      "routes": [
+        {
+          "i": 0,
+          "km": 0.16,
+          "m": 160,
+          "min": 0.5,
+          "crowM": 233,
+          "ratio": 0.7,
+          "legs": [
+            {
+              "km": 0.16,
+              "summary": "",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 145,
+                  "type": "depart",
+                  "instruction": "Drive west."
+                },
+                {
+                  "name": "",
+                  "m": 15,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 0,
+                  "type": "arrive",
+                  "modifier": "right",
+                  "instruction": "Your destination is on the right."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "waypoints": [
+        {
+          "location": [
+            76.967201,
+            29.358614
+          ],
+          "name": "",
+          "distance": 12.637
+        },
+        {
+          "location": [
+            76.965708,
+            29.35849
+          ],
+          "name": "",
+          "distance": 88.1
+        }
+      ],
+      "code": "Ok"
+    },
+    "westEast": {
+      "label": "WEST→EAST (nh1 probe)",
+      "routes": [
+        {
+          "i": 0,
+          "km": 0.16,
+          "m": 160,
+          "min": 0.5,
+          "crowM": 233,
+          "ratio": 0.7,
+          "legs": [
+            {
+              "km": 0.16,
+              "summary": "",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 15,
+                  "type": "depart",
+                  "instruction": "Drive north."
+                },
+                {
+                  "name": "",
+                  "m": 145,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 0,
+                  "type": "arrive",
+                  "modifier": "right",
+                  "instruction": "Your destination is on the right."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "waypoints": [
+        {
+          "location": [
+            76.965708,
+            29.35849
+          ],
+          "name": "",
+          "distance": 88.1
+        },
+        {
+          "location": [
+            76.967201,
+            29.358614
+          ],
+          "name": "",
+          "distance": 12.637
+        }
+      ],
+      "code": "Ok"
+    },
+    "pickupEast": {
+      "label": "PICKUP→EAST",
+      "routes": [
+        {
+          "i": 0,
+          "km": 3.44,
+          "m": 3437,
+          "min": 7.9,
+          "crowM": 2495,
+          "ratio": 1.4,
+          "legs": [
+            {
+              "km": 3.44,
+              "summary": "NH44",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 233,
+                  "type": "depart",
+                  "instruction": "Drive southwest."
+                },
+                {
+                  "name": "",
+                  "m": 533,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right to take the ramp."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 971,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto NH44/AH1/AH2/Grand Trunk Road."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 166,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "i": 1,
+          "km": 3.36,
+          "m": 3356,
+          "min": 7.8,
+          "crowM": 2495,
+          "ratio": 1.3,
+          "legs": [
+            {
+              "km": 3.36,
+              "summary": "NH44",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 233,
+                  "type": "depart",
+                  "instruction": "Drive southwest."
+                },
+                {
+                  "name": "",
+                  "m": 533,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right to take the ramp."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 971,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto NH44/AH1/AH2/Grand Trunk Road."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 68,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "waypoints": [
+        {
+          "location": [
+            76.985003,
+            29.342155
+          ],
+          "name": "",
+          "distance": 10.965
+        },
+        {
+          "location": [
+            76.967201,
+            29.358614
+          ],
+          "name": "",
+          "distance": 12.637
+        }
+      ],
+      "code": "Ok"
+    },
+    "westDrop": {
+      "label": "WEST→DROP",
+      "routes": [
+        {
+          "i": 0,
+          "km": 4.14,
+          "m": 4139,
+          "min": 12.4,
+          "crowM": 1301,
+          "ratio": 3.2,
+          "legs": [
+            {
+              "km": 4.14,
+              "summary": "",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 634,
+                  "type": "depart",
+                  "instruction": "Drive north."
+                },
+                {
+                  "name": "",
+                  "m": 1614,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 1287,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 553,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 52,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 0,
+                  "type": "arrive",
+                  "modifier": "left",
+                  "instruction": "Your destination is on the left."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "i": 1,
+          "km": 4.58,
+          "m": 4583,
+          "min": 14.6,
+          "crowM": 1301,
+          "ratio": 3.5,
+          "legs": [
+            {
+              "km": 4.58,
+              "summary": "Krishanpura Main Bazaar",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 634,
+                  "type": "depart",
+                  "instruction": "Drive north."
+                },
+                {
+                  "name": "",
+                  "m": 34,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 152,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 647,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 320,
+                  "type": "turn",
+                  "modifier": "slight left",
+                  "instruction": "Bear left."
+                },
+                {
+                  "name": "",
+                  "m": 169,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "waypoints": [
+        {
+          "location": [
+            76.965708,
+            29.35849
+          ],
+          "name": "",
+          "distance": 88.1
+        },
+        {
+          "location": [
+            76.963656,
+            29.370224
+          ],
+          "name": "",
+          "distance": 16.308
+        }
+      ],
+      "code": "Ok"
+    },
+    "pickupWest": {
+      "label": "PICKUP→WEST",
+      "routes": [
+        {
+          "i": 0,
+          "km": 4.67,
+          "m": 4666,
+          "min": 8.9,
+          "crowM": 2661,
+          "ratio": 1.8,
+          "legs": [
+            {
+              "km": 4.67,
+              "summary": "NH44",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 233,
+                  "type": "depart",
+                  "instruction": "Drive southwest."
+                },
+                {
+                  "name": "",
+                  "m": 533,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right to take the ramp."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 971,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto NH44/AH1/AH2/Grand Trunk Road."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 773,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "i": 1,
+          "km": 3.42,
+          "m": 3424,
+          "min": 8.1,
+          "crowM": 2661,
+          "ratio": 1.3,
+          "legs": [
+            {
+              "km": 3.42,
+              "summary": "NH44",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 233,
+                  "type": "depart",
+                  "instruction": "Drive southwest."
+                },
+                {
+                  "name": "",
+                  "m": 533,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right to take the ramp."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 971,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto NH44/AH1/AH2/Grand Trunk Road."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 68,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "waypoints": [
+        {
+          "location": [
+            76.985003,
+            29.342155
+          ],
+          "name": "",
+          "distance": 10.965
+        },
+        {
+          "location": [
+            76.965708,
+            29.35849
+          ],
+          "name": "",
+          "distance": 88.1
+        }
+      ],
+      "code": "Ok"
+    },
+    "eastDrop": {
+      "label": "EAST→DROP",
+      "routes": [
+        {
+          "i": 0,
+          "km": 4.27,
+          "m": 4269,
+          "min": 12.8,
+          "crowM": 1338,
+          "ratio": 3.2,
+          "legs": [
+            {
+              "km": 4.27,
+              "summary": "",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 145,
+                  "type": "depart",
+                  "instruction": "Drive west."
+                },
+                {
+                  "name": "",
+                  "m": 619,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 1614,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 1287,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 553,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 52,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "i": 1,
+          "km": 4.71,
+          "m": 4712,
+          "min": 15,
+          "crowM": 1338,
+          "ratio": 3.5,
+          "legs": [
+            {
+              "km": 4.71,
+              "summary": "Krishanpura Main Bazaar",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 145,
+                  "type": "depart",
+                  "instruction": "Drive west."
+                },
+                {
+                  "name": "",
+                  "m": 619,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 34,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 152,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 647,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 320,
+                  "type": "turn",
+                  "modifier": "slight left",
+                  "instruction": "Bear left."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "waypoints": [
+        {
+          "location": [
+            76.967201,
+            29.358614
+          ],
+          "name": "",
+          "distance": 12.637
+        },
+        {
+          "location": [
+            76.963656,
+            29.370224
+          ],
+          "name": "",
+          "distance": 16.308
+        }
+      ],
+      "code": "Ok"
+    },
+    "forcePickupEastWestDrop": {
+      "label": "FORCE pickup→east→west→drop",
+      "routes": [
+        {
+          "i": 0,
+          "km": 8.14,
+          "m": 8143,
+          "min": 22.1,
+          "crowM": 3720,
+          "ratio": 2.2,
+          "legs": [
+            {
+              "km": 3.44,
+              "summary": "NH44",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 233,
+                  "type": "depart",
+                  "instruction": "Drive southwest."
+                },
+                {
+                  "name": "",
+                  "m": 533,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right to take the ramp."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 971,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto NH44/AH1/AH2/Grand Trunk Road."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 166,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                }
+              ]
+            },
+            {
+              "km": 0.16,
+              "summary": "",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 145,
+                  "type": "depart",
+                  "instruction": "Drive west."
+                },
+                {
+                  "name": "",
+                  "m": 15,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 0,
+                  "type": "arrive",
+                  "modifier": "right",
+                  "instruction": "Your destination is on the right."
+                }
+              ]
+            },
+            {
+              "km": 4.55,
+              "summary": "",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 22,
+                  "type": "depart",
+                  "instruction": "Drive south."
+                },
+                {
+                  "name": "",
+                  "m": 211,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 419,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 227,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 161,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 1614,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "waypoints": [
+        {
+          "location": [
+            76.985003,
+            29.342155
+          ],
+          "name": "",
+          "distance": 10.965
+        },
+        {
+          "location": [
+            76.967201,
+            29.358614
+          ],
+          "name": "",
+          "distance": 12.637
+        },
+        {
+          "location": [
+            76.965708,
+            29.35849
+          ],
+          "name": "",
+          "distance": 88.1
+        },
+        {
+          "location": [
+            76.963656,
+            29.370224
+          ],
+          "name": "",
+          "distance": 16.308
+        }
+      ],
+      "code": "Ok"
+    },
+    "forcePickupWestDrop": {
+      "label": "FORCE pickup→west→drop (skip east)",
+      "routes": [
+        {
+          "i": 0,
+          "km": 9.21,
+          "m": 9212,
+          "min": 22.6,
+          "crowM": 3720,
+          "ratio": 2.5,
+          "legs": [
+            {
+              "km": 4.67,
+              "summary": "NH44",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 233,
+                  "type": "depart",
+                  "instruction": "Drive southwest."
+                },
+                {
+                  "name": "",
+                  "m": 533,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right to take the ramp."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 971,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto NH44/AH1/AH2/Grand Trunk Road."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 773,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                }
+              ]
+            },
+            {
+              "km": 4.55,
+              "summary": "",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 22,
+                  "type": "depart",
+                  "instruction": "Drive south."
+                },
+                {
+                  "name": "",
+                  "m": 211,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 419,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 227,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 161,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 1614,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "waypoints": [
+        {
+          "location": [
+            76.985003,
+            29.342155
+          ],
+          "name": "",
+          "distance": 10.965
+        },
+        {
+          "location": [
+            76.965708,
+            29.35849
+          ],
+          "name": "",
+          "distance": 88.1
+        },
+        {
+          "location": [
+            76.963656,
+            29.370224
+          ],
+          "name": "",
+          "distance": 16.308
+        }
+      ],
+      "code": "Ok"
+    },
+    "forcePickupEastDrop": {
+      "label": "FORCE pickup→east→drop",
+      "routes": [
+        {
+          "i": 0,
+          "km": 7.71,
+          "m": 7706,
+          "min": 20.7,
+          "crowM": 3720,
+          "ratio": 2.1,
+          "legs": [
+            {
+              "km": 3.44,
+              "summary": "NH44",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 233,
+                  "type": "depart",
+                  "instruction": "Drive southwest."
+                },
+                {
+                  "name": "",
+                  "m": 533,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right to take the ramp."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 971,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto NH44/AH1/AH2/Grand Trunk Road."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 166,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                }
+              ]
+            },
+            {
+              "km": 4.27,
+              "summary": "",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 145,
+                  "type": "depart",
+                  "instruction": "Drive west."
+                },
+                {
+                  "name": "",
+                  "m": 619,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 1614,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 1287,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 553,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 52,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "waypoints": [
+        {
+          "location": [
+            76.985003,
+            29.342155
+          ],
+          "name": "",
+          "distance": 10.965
+        },
+        {
+          "location": [
+            76.967201,
+            29.358614
+          ],
+          "name": "",
+          "distance": 12.637
+        },
+        {
+          "location": [
+            76.963656,
+            29.370224
+          ],
+          "name": "",
+          "distance": 16.308
+        }
+      ],
+      "code": "Ok"
+    },
+    "forceViaLandmarks": {
+      "label": "FORCE pickup→sabzi→kabaddi→drop",
+      "routes": [
+        {
+          "i": 0,
+          "km": 221.56,
+          "m": 221556,
+          "min": 272.1,
+          "crowM": 3720,
+          "ratio": 59.6,
+          "legs": [
+            {
+              "km": 8.19,
+              "summary": "NH44",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 233,
+                  "type": "depart",
+                  "instruction": "Drive southwest."
+                },
+                {
+                  "name": "",
+                  "m": 533,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right to take the ramp."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 971,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto NH44/AH1/AH2/Grand Trunk Road."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 5930,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                }
+              ]
+            },
+            {
+              "km": 99.92,
+              "summary": "NH44, NH9",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 12,
+                  "type": "depart",
+                  "instruction": "Drive northeast."
+                },
+                {
+                  "name": "",
+                  "m": 212,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 233,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 6166,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 9,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 2701,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto NH44/AH1/AH2/Grand Trunk Road."
+                }
+              ]
+            },
+            {
+              "km": 113.44,
+              "summary": "NH344M, NH44",
+              "steps": [
+                {
+                  "name": "Palam Village Road",
+                  "m": 608,
+                  "type": "depart",
+                  "instruction": "Drive west on Palam Village Road."
+                },
+                {
+                  "name": "",
+                  "m": 413,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "Sector 6 Road",
+                  "m": 790,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right onto Sector 6 Road."
+                },
+                {
+                  "name": "Rd. No. 224",
+                  "m": 4187,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto Rd. No. 224."
+                },
+                {
+                  "name": "Dhoolsiras Road",
+                  "m": 712,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto Dhoolsiras Road."
+                },
+                {
+                  "name": "",
+                  "m": 607,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "waypoints": [
+        {
+          "location": [
+            76.985003,
+            29.342155
+          ],
+          "name": "",
+          "distance": 10.965
+        },
+        {
+          "location": [
+            76.972759,
+            29.40773
+          ],
+          "name": "",
+          "distance": 5.852
+        },
+        {
+          "location": [
+            77.08576,
+            28.587149
+          ],
+          "name": "Palam Village Road",
+          "distance": 4.513
+        },
+        {
+          "location": [
+            76.963656,
+            29.370224
+          ],
+          "name": "",
+          "distance": 16.308
+        }
+      ],
+      "code": "Ok"
+    },
+    "sabziToKabaddi": {
+      "label": "sabzi→kabaddi (Google cross area)",
+      "routes": [
+        {
+          "i": 0,
+          "km": 99.69,
+          "m": 99685,
+          "min": 137.1,
+          "crowM": 91911,
+          "ratio": 1.1,
+          "legs": [
+            {
+              "km": 99.69,
+              "summary": "NH44, NH9",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 174,
+                  "type": "depart",
+                  "instruction": "Drive south."
+                },
+                {
+                  "name": "",
+                  "m": 296,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 5913,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 9,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 2701,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto NH44/AH1/AH2/Grand Trunk Road."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 68787,
+                  "type": "fork",
+                  "modifier": "slight right",
+                  "instruction": "Keep right to stay on NH44."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "i": 1,
+          "km": 101.81,
+          "m": 101805,
+          "min": 145.3,
+          "crowM": 91911,
+          "ratio": 1.1,
+          "legs": [
+            {
+              "km": 101.81,
+              "summary": "NH44, Satguru Ram Singh Marg",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 174,
+                  "type": "depart",
+                  "instruction": "Drive south."
+                },
+                {
+                  "name": "",
+                  "m": 296,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 5913,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 9,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 2701,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto NH44/AH1/AH2/Grand Trunk Road."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 68265,
+                  "type": "fork",
+                  "modifier": "slight right",
+                  "instruction": "Keep right to stay on NH44/AH1/AH2/Grand Trunk Road."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "waypoints": [
+        {
+          "location": [
+            76.972759,
+            29.40773
+          ],
+          "name": "",
+          "distance": 5.852
+        },
+        {
+          "location": [
+            77.08576,
+            28.587149
+          ],
+          "name": "Palam Village Road",
+          "distance": 4.513
+        }
+      ],
+      "code": "Ok"
+    },
+    "clean": {
+      "label": "CLEAN pickup→drop",
+      "routes": [
+        {
+          "i": 0,
+          "km": 7.18,
+          "m": 7182,
+          "min": 14.8,
+          "crowM": 3720,
+          "ratio": 1.9,
+          "legs": [
+            {
+              "km": 7.18,
+              "summary": "NH44",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 233,
+                  "type": "depart",
+                  "instruction": "Drive southwest."
+                },
+                {
+                  "name": "",
+                  "m": 533,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right to take the ramp."
+                },
+                {
+                  "name": "Grand Trunk Road",
+                  "m": 971,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left onto NH44/AH1/AH2/Grand Trunk Road."
+                },
+                {
+                  "name": "",
+                  "m": 11,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 3053,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "i": 1,
+          "km": 8.34,
+          "m": 8339,
+          "min": 21.7,
+          "crowM": 3720,
+          "ratio": 2.2,
+          "legs": [
+            {
+              "km": 8.34,
+              "summary": "",
+              "steps": [
+                {
+                  "name": "",
+                  "m": 233,
+                  "type": "depart",
+                  "instruction": "Drive southwest."
+                },
+                {
+                  "name": "",
+                  "m": 78,
+                  "type": "turn",
+                  "modifier": "left",
+                  "instruction": "Turn left."
+                },
+                {
+                  "name": "",
+                  "m": 2642,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 3358,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 93,
+                  "type": "turn",
+                  "modifier": "right",
+                  "instruction": "Turn right."
+                },
+                {
+                  "name": "",
+                  "m": 1330,
+                  "type": "fork",
+                  "modifier": "slight left",
+                  "instruction": "Keep left at the fork."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "waypoints": [
+        {
+          "location": [
+            76.985003,
+            29.342155
+          ],
+          "name": "",
+          "distance": 10.965
+        },
+        {
+          "location": [
+            76.963656,
+            29.370224
+          ],
+          "name": "",
+          "distance": 16.308
+        }
+      ],
+      "code": "Ok"
+    },
+    "tqEast": [
+      {
+        "class": "street",
+        "type": "residential",
+        "structure": "none",
+        "oneway": "false",
+        "dist": 12.554567931827394
+      },
+      {
+        "class": "street",
+        "type": "residential",
+        "structure": "none",
+        "oneway": "false",
+        "dist": 25.959089978050663
+      },
+      {
+        "class": "street",
+        "type": "residential",
+        "structure": "none",
+        "oneway": "false",
+        "dist": 26.01479369995432
+      },
+      {
+        "class": "street",
+        "type": "residential",
+        "structure": "none",
+        "oneway": "false",
+        "dist": 26.01479369995432
+      }
+    ],
+    "tqWest": [
+      {
+        "class": "major_rail",
+        "type": "rail",
+        "structure": "none",
+        "oneway": "false",
+        "dist": 14.76974840624375
+      }
+    ],
+    "tqMid": [
+      {
+        "class": "street",
+        "type": "residential",
+        "structure": "none",
+        "oneway": "false",
+        "dist": 13.867456590055598
+      },
+      {
+        "class": "street",
+        "type": "residential",
+        "structure": "none",
+        "oneway": "false",
+        "dist": 24.607997314551614
+      },
+      {
+        "class": "street",
+        "type": "residential",
+        "structure": "none",
+        "oneway": "false",
+        "dist": 24.64477388785561
+      },
+      {
+        "class": "street",
+        "type": "residential",
+        "structure": "none",
+        "oneway": "false",
+        "dist": 24.64477388785561
+      },
+      {
+        "class": "street",
+        "type": "unclassified",
+        "structure": "none",
+        "oneway": "false",
+        "dist": 28.298931341315328
+      }
+    ]
+  }
+}

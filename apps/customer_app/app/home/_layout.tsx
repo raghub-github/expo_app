@@ -21,7 +21,7 @@ export default function HomeLayout() {
            * (same fix as the root stack, see app/_layout.tsx). Without this, the
            * ride-booking flow (ride → ride-book → ride-pickup → ride-confirm-pickup
            * → ride-searching) leaves every earlier screen mounted and un-frozen —
-           * including their live Mapbox WebView maps — as the user pushes forward,
+           * including their live native Mapbox maps — as the user pushes forward,
            * which is real GPU/memory pressure on low-end devices, not just wasted
            * render work. Effects/subscriptions are unaffected, so live tracking
            * data is still current when a screen is popped back to.

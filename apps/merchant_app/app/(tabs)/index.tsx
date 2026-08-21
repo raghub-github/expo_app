@@ -11,9 +11,10 @@ import {
   Pressable,
   Dimensions,
   RefreshControl,
+  Alert,
 } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import { runOnJS, useSharedValue } from "react-native-reanimated";
+import { runOnJS } from "react-native-reanimated";
 import { AppText as Text } from "@/components/AppText";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useMerchantNavigate } from "@/lib/merchantNavigation";
@@ -249,34 +250,12 @@ export default function DashboardScreen() {
     [orderTab]
   );
 
-  const touchStartX = useSharedValue(0);
-  const touchStartY = useSharedValue(0);
-
   const tabSwipeGesture = useMemo(
     () =>
       Gesture.Pan()
-        .manualActivation(true)
-        .onTouchesDown((e) => {
-          "worklet";
-          const touch = e.changedTouches[0];
-          if (!touch) return;
-          touchStartX.value = touch.absoluteX;
-          touchStartY.value = touch.absoluteY;
-        })
-        .onTouchesMove((e, state) => {
-          "worklet";
-          const touch = e.changedTouches[0];
-          if (!touch) return;
-          const dx = touch.absoluteX - touchStartX.value;
-          const dy = touch.absoluteY - touchStartY.value;
-          if (Math.abs(dy) > 14 && Math.abs(dy) >= Math.abs(dx)) {
-            state.fail();
-            return;
-          }
-          if (Math.abs(dx) > 18 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-            state.activate();
-          }
-        })
+        .activeOffsetX([-18, 18])
+        .failOffsetY([-14, 14])
+        .cancelsTouchesInView(false)
         .onEnd((e) => {
           "worklet";
           const commitNext =
@@ -289,7 +268,7 @@ export default function DashboardScreen() {
             runOnJS(shiftOrderTabBySwipe)("previous");
           }
         }),
-    [shiftOrderTabBySwipe, touchStartX, touchStartY]
+    [shiftOrderTabBySwipe]
   );
 
   const handleAccept = useCallback(
@@ -387,6 +366,7 @@ export default function DashboardScreen() {
           styles.content,
           { paddingBottom: scrollBottomPadding, flexGrow: 1 },
         ]}
+        keyboardShouldPersistTaps="always"
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -440,8 +420,8 @@ export default function DashboardScreen() {
 
       <View style={[styles.section, ordersSectionFlex && styles.ordersSectionFlex]}>
         <Text style={styles.sectionTitle}>All Orders</Text>
-        <GestureDetector gesture={tabSwipeGesture}>
-          <View style={ordersSectionFlex ? styles.ordersSwipeArea : undefined}>
+        <View style={ordersSectionFlex ? styles.ordersSwipeArea : undefined}>
+          <GestureDetector gesture={tabSwipeGesture}>
             <View style={styles.tabRow}>
               <Pressable
                 onPress={() => setOrderTab("New")}
@@ -470,39 +450,57 @@ export default function DashboardScreen() {
                 </View>
               </Pressable>
             </View>
-            <View style={[styles.orderList, ordersSectionFlex && styles.orderListEmptyActive]}>
-              {recentOrders.length === 0 ? (
-                <DashboardOrdersEmptyState tab={orderTab} fillAvailable={ordersSectionFlex} />
-              ) : (
-                recentOrders.map((order) => (
-                  <LiveOrderCard
-                    key={order.id}
-                    order={order}
-                    acceptanceWindowMinutes={acceptanceWindowMinutes}
-                    storeName={
-                      order.merchantStoreName?.trim() ||
-                      (order.merchantStoreId != null
-                        ? managedStores.find((s) => s.id === order.merchantStoreId)?.store_name
-                        : null) ||
-                      selectedStore?.store_name
-                    }
-                    onAccept={() => handleAccept(order)}
-                    onReject={() => handleReject(order)}
-                    onAdvance={() => handleAdvance(order)}
-                    onNeedMoreTime={() => setPrepDelayOrder(order)}
-                    onViewDetail={() =>
-                      openOrderDetailOnce(router, order.id, {
-                        fromPath: pathname,
-                        currentPath: pathname,
-                        setReturnRoute,
-                      })
-                    }
-                  />
-                ))
-              )}
-            </View>
+          </GestureDetector>
+          <View style={[styles.orderList, ordersSectionFlex && styles.orderListEmptyActive]}>
+            {recentOrders.length === 0 ? (
+              <DashboardOrdersEmptyState tab={orderTab} fillAvailable={ordersSectionFlex} />
+            ) : (
+              recentOrders.map((order) => (
+                <LiveOrderCard
+                  key={order.id}
+                  order={order}
+                  acceptanceWindowMinutes={acceptanceWindowMinutes}
+                  storeName={
+                    order.merchantStoreName?.trim() ||
+                    (order.merchantStoreId != null
+                      ? managedStores.find((s) => s.id === order.merchantStoreId)?.store_name
+                      : null) ||
+                    selectedStore?.store_name
+                  }
+                  onAccept={() => handleAccept(order)}
+                  onReject={() => handleReject(order)}
+                  onAdvance={() => handleAdvance(order)}
+                    onMarkReady={() => {
+                      void (async () => {
+                        try {
+                          const ok = await transitionOrder(order.id, "ready");
+                          if (!ok) {
+                            Alert.alert(
+                              "Couldn't mark ready",
+                              "Please tap Order Ready again."
+                            );
+                          }
+                        } catch (e) {
+                          Alert.alert(
+                            "Couldn't mark ready",
+                            e instanceof Error ? e.message : "Please try again."
+                          );
+                        }
+                      })();
+                    }}
+                  onNeedMoreTime={() => setPrepDelayOrder(order)}
+                  onViewDetail={() =>
+                    openOrderDetailOnce(router, order.id, {
+                      fromPath: pathname,
+                      currentPath: pathname,
+                      setReturnRoute,
+                    })
+                  }
+                />
+              ))
+            )}
           </View>
-        </GestureDetector>
+        </View>
       </View>
     </ScrollView>
       <RejectOrderSheet

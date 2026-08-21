@@ -33,6 +33,8 @@ export type InAppBannerItem = {
   deepLink?: string | null;
   templateCode?: string | null;
   data?: Record<string, unknown>;
+  /** 0–1 fill for the thin bottom progress accent. */
+  progress?: number | null;
 };
 
 type Listener = () => void;
@@ -60,9 +62,33 @@ function nextId(): string {
   return `banner-${Date.now()}-${seq}`;
 }
 
+/** Order-page / admin CX sends belong in the OS shade, not the in-app pill. */
+export function isSystemShadeOnlyPush(data: Record<string, unknown> | undefined | null): boolean {
+  if (!data) return false;
+  if (data.skip_in_app_banner === true || data.skip_in_app_banner === "true") return true;
+  if (data.admin_cx === true || data.admin_cx === "true") return true;
+  const gmType = typeof data.gmType === "string" ? data.gmType : "";
+  const template =
+    (typeof data.template_code === "string" && data.template_code) ||
+    (typeof data.templateCode === "string" && data.templateCode) ||
+    gmType;
+  if (template.toUpperCase().startsWith("ADMIN_CX_")) return true;
+  return false;
+}
+
+function progressFromPush(data: Record<string, unknown>): number | null {
+  const step = Number(data.liveStep);
+  const steps = Number(data.liveSteps);
+  if (Number.isFinite(step) && Number.isFinite(steps) && steps > 0) {
+    return Math.max(0.08, Math.min(1, step / steps));
+  }
+  return null;
+}
+
 export function enqueueInAppBanner(item: Omit<InAppBannerItem, "id"> & { id?: string }): void {
   const title = item.title?.trim();
   if (!title) return;
+  if (isSystemShadeOnlyPush(item.data)) return;
   queue.push({
     id: item.id ?? nextId(),
     title,
@@ -70,6 +96,7 @@ export function enqueueInAppBanner(item: Omit<InAppBannerItem, "id"> & { id?: st
     deepLink: item.deepLink ?? null,
     templateCode: item.templateCode ?? null,
     data: item.data,
+    progress: item.progress ?? progressFromPush(item.data ?? {}),
   });
   pumpQueue();
 }
@@ -80,6 +107,7 @@ export function enqueueInAppBannerFromPush(payload: PushNotificationOpenPayload)
   const gmType = typeof data.gmType === "string" ? data.gmType : "";
   // Prep-delay / rich modals have dedicated UI — skip generic banner.
   if (gmType === "ORDER_PREP_DELAY" || gmType === "RICH") return;
+  if (isSystemShadeOnlyPush(data)) return;
 
   const title =
     (typeof data.gmTitle === "string" && data.gmTitle.trim()) ||
@@ -129,6 +157,7 @@ export function enqueueInAppBannerFromPush(payload: PushNotificationOpenPayload)
     deepLink,
     templateCode: typeof data.template_code === "string" ? data.template_code : gmType || null,
     data,
+    progress: progressFromPush(data),
   });
 }
 
@@ -176,7 +205,7 @@ type HostProps = {
 export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }: HostProps) {
   const insets = useSafeAreaInsets();
   const [item, setItem] = useState<InAppBannerItem | null>(current);
-  const translateY = useSharedValue(-88);
+  const translateY = useSharedValue(-52);
   const opacity = useSharedValue(0);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -196,7 +225,7 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
       hideTimerRef.current = null;
     }
     if (!item) {
-      translateY.value = -88;
+      translateY.value = -52;
       opacity.value = 0;
       return;
     }
@@ -205,7 +234,7 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
     opacity.value = withTiming(1, { duration: 180 });
 
     hideTimerRef.current = setTimeout(() => {
-      translateY.value = withTiming(-88, { duration: EXIT_MS });
+      translateY.value = withTiming(-52, { duration: EXIT_MS });
       opacity.value = withTiming(0, { duration: EXIT_MS }, (finished) => {
         if (finished) runOnJS(finishDismiss)();
       });
@@ -242,9 +271,17 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
         accessibilityLabel={message}
       >
         <View style={styles.dot} />
-        <Text style={styles.text} numberOfLines={2}>
+        <Text style={styles.text} numberOfLines={1}>
           {message}
         </Text>
+        <View style={styles.progressTrack} pointerEvents="none">
+          <View
+            style={[
+              styles.progressFill,
+              { width: `${Math.round((item.progress ?? 1) * 100)}%` },
+            ]}
+          />
+        </View>
       </Pressable>
     </Animated.View>
   );
@@ -253,8 +290,8 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
 const styles = StyleSheet.create({
   host: {
     position: "absolute",
-    left: 16,
-    right: 16,
+    left: 20,
+    right: 20,
     zIndex: 1000,
     elevation: 1000,
     alignItems: "center",
@@ -262,35 +299,54 @@ const styles = StyleSheet.create({
   pill: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
     backgroundColor: "#fff",
-    borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderColor: "#A7F3D0",
+    borderRadius: 999,
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    paddingBottom: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#99F6E4",
     maxWidth: "100%",
+    minHeight: 34,
+    overflow: "hidden",
     ...Platform.select({
       ios: {
         shadowColor: "#0f766e",
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.15,
-        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 6,
       },
-      android: { elevation: 8 },
+      android: { elevation: 3 },
       default: {},
     }),
   },
   dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     backgroundColor: "#0D9488",
   },
   text: {
     flexShrink: 1,
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: "700",
     color: "#111827",
+    lineHeight: 16,
+  },
+  progressTrack: {
+    position: "absolute",
+    left: 14,
+    right: 14,
+    bottom: 4,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: "#E5E7EB",
+    overflow: "hidden",
+  },
+  progressFill: {
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: "#0F172A",
   },
 });

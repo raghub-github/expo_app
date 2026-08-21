@@ -15,7 +15,7 @@ import { useOrderStore, type ActiveOrder, type ActiveOrderService } from "@/stor
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 const CHANNEL_ID = "customer_live_order";
-const BAR_LEN = 10;
+const BAR_LEN = 8;
 
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
@@ -27,16 +27,13 @@ function ongoingId(orderId: string): string {
 
 /**
  * Text progress for shade notifications (no View / CSS).
- * Uses rounded dots instead of sharp █ blocks so the bar reads like a ~30px-radius pill.
+ * Thin rounded track — reads like a 2px pill bar, not a block of █.
  */
 function progressBar(step: number, steps: number): string {
   const filled = Math.max(0, Math.min(BAR_LEN, Math.round((step / Math.max(1, steps)) * BAR_LEN)));
   const empty = BAR_LEN - filled;
-  if (filled <= 0) return "○".repeat(BAR_LEN);
-  // Soft rounded ends: ◖ ●…● ◗  + ○ track (approximates border-radius ~30 on a pill bar)
-  if (filled === 1) return `●${"○".repeat(empty)}`;
-  if (filled === 2) return `◖◗${"○".repeat(empty)}`;
-  return `◖${"●".repeat(filled - 2)}◗${"○".repeat(empty)}`;
+  if (filled <= 0) return "·".repeat(BAR_LEN);
+  return `${"●".repeat(filled)}${"·".repeat(empty)}`;
 }
 
 type LiveUi = {

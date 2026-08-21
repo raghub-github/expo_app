@@ -21,7 +21,7 @@ import {
 const FOOD_DELIVERY_ROUTE_VEHICLE = "bike";
 
 type LiveRouteState = {
-  /** Full road polyline — trimming happens in the map WebView for smooth animation. */
+  /** Full road polyline — remaining segment is trimmed before it reaches the native map. */
   coordinates: MapLatLng[];
   /** Remaining path from rider (for fit bounds / distance hints). */
   remainingCoordinates: MapLatLng[];

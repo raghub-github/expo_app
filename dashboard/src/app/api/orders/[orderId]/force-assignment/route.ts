@@ -80,11 +80,17 @@ export async function POST(
       reasonCode?: string;
       reasonText?: string;
       catalogReasonId?: number | null;
+      radiusKm?: number | null;
     };
 
     const newRiderId = Number(body.newRiderId);
     const reasonCode = String(body.reasonCode ?? "").trim();
     const reasonText = String(body.reasonText ?? "").trim();
+    const radiusKmRaw = body.radiusKm != null ? Number(body.radiusKm) : null;
+    const radiusKm =
+      radiusKmRaw != null && Number.isFinite(radiusKmRaw)
+        ? Math.min(10, Math.max(0.5, radiusKmRaw))
+        : 10;
 
     if (!Number.isFinite(newRiderId) || newRiderId < 1) {
       return NextResponse.json({ success: false, error: "Select a rider" }, { status: 400 });
@@ -106,6 +112,7 @@ export async function POST(
       catalogReasonId: body.catalogReasonId ?? null,
       actorEmail: user.email ?? null,
       actorId: systemUser?.id != null ? String(systemUser.id) : user.id,
+      radiusKm,
     });
 
     if (!result.ok) {

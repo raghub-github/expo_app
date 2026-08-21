@@ -200,7 +200,9 @@ export async function getRiderAssignmentTimeline(
       delivered_at,
       reached_merchant_skipped,
       picked_up_actor_type,
-      picked_up_actor_label
+      picked_up_actor_label,
+      distance_to_merchant_km,
+      distance_to_customer_km
     FROM order_rider_assignments
     WHERE rider_id = ${riderId}
       AND (order_core_id = ${orderCoreId} OR order_id = ${orderCoreId})
@@ -238,6 +240,70 @@ export async function getRiderAssignmentTimeline(
         ? (row.metadata as Record<string, unknown>)
         : null,
   }));
+
+  // Assigned often lacked GPS at write time — fill from assignment columns / accepted event /
+  // frozen accept pickup distance so the Assigned distance box still shows.
+  {
+    const assignedIdx = events.findIndex((e) => e.event_type === "assigned");
+    if (assignedIdx >= 0) {
+      const assigned = events[assignedIdx];
+      const accepted = events.find((e) => e.event_type === "accepted");
+      let mx =
+        assigned.merchant_distance_km != null && Number.isFinite(assigned.merchant_distance_km)
+          ? assigned.merchant_distance_km
+          : null;
+      let cx =
+        assigned.customer_distance_km != null && Number.isFinite(assigned.customer_distance_km)
+          ? assigned.customer_distance_km
+          : null;
+
+      if (mx == null && accepted?.merchant_distance_km != null) {
+        mx = Number(accepted.merchant_distance_km);
+      }
+      if (cx == null && accepted?.customer_distance_km != null) {
+        cx = Number(accepted.customer_distance_km);
+      }
+
+      const assignMx = assignment.distance_to_merchant_km;
+      const assignCx = assignment.distance_to_customer_km;
+      if (mx == null && assignMx != null && Number.isFinite(Number(assignMx))) {
+        mx = Number(assignMx);
+      }
+      if (cx == null && assignCx != null && Number.isFinite(Number(assignCx))) {
+        cx = Number(assignCx);
+      }
+
+      if (mx == null) {
+        try {
+          const snapRows = await sql`
+            SELECT billing_snapshot
+            FROM orders_core
+            WHERE id = ${orderCoreId}
+            LIMIT 1
+          `;
+          const snapRaw = (snapRows as { billing_snapshot?: unknown }[])[0]?.billing_snapshot;
+          const snap =
+            snapRaw != null && typeof snapRaw === "object"
+              ? (snapRaw as Record<string, unknown>)
+              : null;
+          const payout =
+            snap?.rider_payout_snapshot != null && typeof snap.rider_payout_snapshot === "object"
+              ? (snap.rider_payout_snapshot as Record<string, unknown>)
+              : null;
+          const pickupKm = payout != null ? Number(payout.pickupDistanceKm) : NaN;
+          if (Number.isFinite(pickupKm) && pickupKm >= 0) mx = pickupKm;
+        } catch {
+          /* keep null */
+        }
+      }
+
+      events[assignedIdx] = {
+        ...assigned,
+        merchant_distance_km: mx,
+        customer_distance_km: cx,
+      };
+    }
+  }
 
   const pickEvent = (type: string) =>
     events.find((e) => e.event_type === type)?.occurred_at ?? null;

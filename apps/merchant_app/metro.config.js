@@ -80,6 +80,18 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
       filePath: path.resolve(workspaceRoot, "node_modules/qrcode/lib/core/qrcode.js"),
     };
   }
+  if (platform === "web") {
+    if (
+      moduleName &&
+      (moduleName.includes("mapbox-gl") ||
+        moduleName.includes("@rnmapbox/maps/lib/module/web"))
+    ) {
+      return { type: "empty" };
+    }
+  }
+  if (moduleName && moduleName.includes("mapbox-gl/dist/mapbox-gl.css")) {
+    return { type: "empty" };
+  }
   if (typeof upstreamResolveRequest === "function") {
     return upstreamResolveRequest(context, moduleName, platform);
   }

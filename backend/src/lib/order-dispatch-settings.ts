@@ -119,22 +119,65 @@ export async function fetchEffectiveDispatchRadiusMeters(
   return Math.min(expanded, waveSettings.maxDispatchRadiusMeters);
 }
 
+/**
+ * Pure gate used by {@link hasNextDispatchWave} (and unit tests).
+ * Next wave is available when enabled, within maxWaves, and expansion radius is configured.
+ * Does NOT require nextRadius > currentRadius — equal/capped radii must still escalate
+ * (otherwise Wave 2/3 never run when Wave-1 pickup ≥ Wave-2 expansion after max cap).
+ */
+export function canAdvanceDispatchWave(args: {
+  enabled: boolean;
+  maxWaves: number;
+  currentWave: number;
+  /** null when expansion row missing / misconfigured */
+  nextRadiusMeters: number | null;
+}): boolean {
+  if (!args.enabled) return false;
+  const nextWave = args.currentWave + 1;
+  if (nextWave > args.maxWaves) return false;
+  return args.nextRadiusMeters != null && Number.isFinite(args.nextRadiusMeters) && args.nextRadiusMeters > 0;
+}
+
 /** Returns false when no further waves are configured beyond currentWave. */
 export async function hasNextDispatchWave(
   serviceType: DispatchServiceType,
   currentWave: number
 ): Promise<boolean> {
   const settings = await fetchDispatchWaveSettings(serviceType);
-  if (!settings.enabled) return false;
   const nextWave = currentWave + 1;
-  if (nextWave > settings.maxWaves) return false;
-
+  let nextRadiusMeters: number | null = null;
   try {
-    await fetchEffectiveDispatchRadiusMeters(serviceType, nextWave);
-    const currentRadius = await fetchEffectiveDispatchRadiusMeters(serviceType, currentWave);
-    const nextRadius = await fetchEffectiveDispatchRadiusMeters(serviceType, nextWave);
-    return nextRadius > currentRadius;
+    nextRadiusMeters = await fetchEffectiveDispatchRadiusMeters(serviceType, nextWave);
   } catch {
-    return false;
+    nextRadiusMeters = null;
   }
+
+  const ok = canAdvanceDispatchWave({
+    enabled: settings.enabled,
+    maxWaves: settings.maxWaves,
+    currentWave,
+    nextRadiusMeters,
+  });
+
+  if (ok) {
+    try {
+      const currentRadius = await fetchEffectiveDispatchRadiusMeters(serviceType, currentWave);
+      if (!(nextRadiusMeters! > currentRadius)) {
+        console.warn(
+          "[dispatch] next_wave_radius_not_larger_still_advancing",
+          JSON.stringify({
+            serviceType,
+            currentWave,
+            nextWave,
+            currentRadiusMeters: currentRadius,
+            nextRadiusMeters,
+          })
+        );
+      }
+    } catch {
+      /* ignore — advance still allowed when next radius resolves */
+    }
+  }
+
+  return ok;
 }

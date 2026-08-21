@@ -68,7 +68,24 @@ export function resolveRiderDeliveryFeeFromCore(row: {
     "deliveryFee",
     "finalDeliveryFee",
   ]);
-  if (fromBilling > 0) return round2(fromBilling);
+  const snap =
+    row.billingSnapshot != null && typeof row.billingSnapshot === "object"
+      ? (row.billingSnapshot as Record<string, unknown>)
+      : null;
+  const payoutHint =
+    snap?.rider_payout_snapshot != null && typeof snap.rider_payout_snapshot === "object"
+      ? Number((snap.rider_payout_snapshot as Record<string, unknown>).totalEarning)
+      : NaN;
+  if (
+    fromBilling > 0 &&
+    !(
+      Number.isFinite(payoutHint) &&
+      payoutHint > 0 &&
+      Math.abs(fromBilling - payoutHint) <= 0.51
+    )
+  ) {
+    return round2(fromBilling);
+  }
 
   const fare = Number(row.fareAmount);
   if (Number.isFinite(fare) && fare > 0) return round2(fare);

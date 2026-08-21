@@ -979,13 +979,34 @@ export default function OrderRightSidebar({
 
       try {
         setIsLoadingNotifications(true);
-        const res = await fetch(`/api/orders/${order.id}/notifications`, {
+        let res = await fetch(`/api/orders/${order.id}/notifications`, {
           credentials: "include",
           signal,
         });
+        // Transient auth/DB blip — one quiet retry, then silence (same as remarks).
+        if (res.status === 503 && !signal?.aborted) {
+          await new Promise((r) => setTimeout(r, 400));
+          if (!signal?.aborted) {
+            res = await fetch(`/api/orders/${order.id}/notifications`, {
+              credentials: "include",
+              signal,
+            });
+          }
+        }
         if (signal?.aborted) return;
         if (!res.ok) {
-          console.error("Failed to load notifications", await res.text());
+          const text = await res.text();
+          let code = "";
+          try {
+            code = String(JSON.parse(text)?.code ?? "");
+          } catch {
+            /* ignore */
+          }
+          if (res.status === 503 || code === "SERVICE_UNAVAILABLE") {
+            return;
+          }
+          // eslint-disable-next-line no-console
+          console.error("Failed to load notifications", text);
           return;
         }
         const json = await res.json();
@@ -996,6 +1017,7 @@ export default function OrderRightSidebar({
         setNotifications(mapNotificationsFromApi(items));
       } catch (error) {
         if (signal?.aborted || isBenignSidebarFetchError(error)) return;
+        // eslint-disable-next-line no-console
         console.error("Error loading notifications", error);
       } finally {
         if (!signal?.aborted) {

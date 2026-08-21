@@ -218,8 +218,8 @@ export function apiStatusToStage(api: string | null | undefined): OrderStage {
 export function stageTransitionToApi(from: OrderStage, to: OrderStage): string {
   if (to === "rejected") return "CANCELLED";
   if (to === "rto") return "RTO";
+  if (to === "ready") return "READY_FOR_PICKUP";
   if (from === "created" && to === "preparing") return "ACCEPTED";
-  if (from === "preparing" && to === "ready") return "READY_FOR_PICKUP";
   if (from === "ready" && to === "picked_up") return "OUT_FOR_DELIVERY";
   if (from === "picked_up" && to === "delivered") return "DELIVERED";
   return to.toUpperCase();

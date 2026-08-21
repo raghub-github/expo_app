@@ -4,6 +4,7 @@
  */
 
 import { and, eq } from "drizzle-orm";
+import { cacheDel, cacheGet, cacheSet } from "@gatimitra/redis";
 import { getDb, getSql } from "../db/client.js";
 import {
   customerRideServiceCatalog,
@@ -33,6 +34,10 @@ import {
 import { recordDispatchEvent } from "./dispatch-events.js";
 
 export type DispatchSessionStatus = "active" | "accepted" | "expired" | "cancelled";
+
+/** After wave exhaustion retry, re-run Wave 1 instead of advancing to Wave 2. */
+const DISPATCH_RETRY_REEXECUTE_KEY = (sessionId: number) =>
+  `order_dispatch:retry_reexecute:${sessionId}`;
 
 /** postgres.js bind params must be string/number — not raw Date objects. */
 function toTimestamptzParam(value: Date | string | number): string {
@@ -399,12 +404,21 @@ export async function executeDispatchWave(sessionId: number): Promise<{
     "[dispatch] wave_dispatched",
     JSON.stringify({
       orderId: target.orderId,
+      orderCoreId,
+      dispatchId: sessionId,
       serviceType: target.serviceType,
       waveNumber,
+      previousWave: waveNumber,
+      nextWave: null,
+      candidateCount: eligible.length,
+      eligibleCount: eligible.length,
+      notifiedCount: notified,
+      radiusKm: Math.round((target.effectiveRadiusMeters / 1000) * 1000) / 1000,
       configuredRadiusMeters: target.effectiveRadiusMeters,
       eligibleWithinRadius: eligible.length,
       newlyNotified: notified,
       alreadyNotifiedEarlierWaves: eligible.length - toNotify.length,
+      transitionReason: "WAVE_EXECUTE",
     })
   );
   await recordRiderNotifications(
@@ -431,6 +445,48 @@ export async function executeDispatchWave(sessionId: number): Promise<{
       dispatchRadiusMeters: target.effectiveRadiusMeters,
       riderIds: toNotify.map((r) => r.riderId),
     });
+  }
+
+  // Zero eligible riders: do not wait the full wave interval — arm next wave ASAP.
+  // Timeout / no-accept still uses the normal interval when candidates were notified.
+  if (eligible.length === 0) {
+    const serviceType = normalizeOrderServiceType(session.service_type);
+    if (serviceType && (await hasNextDispatchWave(serviceType, waveNumber))) {
+      const armed = (await sql`
+        UPDATE order_dispatch_sessions
+        SET next_wave_at = NOW(), updated_at = NOW()
+        WHERE id = ${sessionId}
+          AND status = 'active'
+          AND current_wave = ${waveNumber}
+        RETURNING id
+      `) as Array<{ id: number }>;
+      if (armed[0]?.id) {
+        console.info(
+          "[dispatch] wave_no_candidates_schedule_next",
+          JSON.stringify({
+            orderId: target.orderId,
+            orderCoreId,
+            dispatchId: sessionId,
+            waveNumber,
+            previousWave: waveNumber,
+            nextWave: waveNumber + 1,
+            candidateCount: 0,
+            eligibleCount: 0,
+            radiusKm: Math.round((target.effectiveRadiusMeters / 1000) * 1000) / 1000,
+            transitionReason: "NO_ELIGIBLE_RIDERS",
+          })
+        );
+        void recordDispatchEvent({
+          orderCoreId,
+          sessionId,
+          serviceType: target.serviceType,
+          eventType: "wave_no_candidates",
+          waveNumber,
+          radiusMeters: target.effectiveRadiusMeters,
+          metadata: { transitionReason: "NO_ELIGIBLE_RIDERS", nextWave: waveNumber + 1 },
+        });
+      }
+    }
   }
 
   return { notified, eligible: eligible.length };
@@ -469,6 +525,36 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
   const serviceType = normalizeOrderServiceType(session.service_type);
   if (!serviceType) return false;
 
+  // Exhaustion retry: re-execute Wave 1 (do not skip to Wave 2).
+  const retryReexecute = await cacheGet(DISPATCH_RETRY_REEXECUTE_KEY(sessionId));
+  if (retryReexecute) {
+    await cacheDel(DISPATCH_RETRY_REEXECUTE_KEY(sessionId));
+    const waveSettings = await fetchDispatchWaveSettings(serviceType);
+    const nextWaveAt = waveSettings.enabled
+      ? toTimestamptzParam(Date.now() + waveSettings.waveIntervalSeconds * 1000)
+      : null;
+    const claimed = (await sql`
+      UPDATE order_dispatch_sessions
+      SET last_wave_at = NOW(), next_wave_at = ${nextWaveAt}, updated_at = NOW()
+      WHERE id = ${sessionId}
+        AND status = 'active'
+        AND current_wave = 1
+      RETURNING id
+    `) as Array<{ id: number }>;
+    if (!claimed[0]?.id) return false;
+    console.info(
+      "[dispatch] retry_cycle_reexecute_wave1",
+      JSON.stringify({
+        orderCoreId,
+        dispatchId: sessionId,
+        serviceType,
+        transitionReason: "RETRY_CYCLE_WAVE1",
+      })
+    );
+    await executeDispatchWave(sessionId);
+    return true;
+  }
+
   const currentWave = Math.max(1, Number(session.current_wave) || 1);
   const canExpand = await hasNextDispatchWave(serviceType, currentWave);
   if (!canExpand) {
@@ -493,6 +579,11 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
         await sql`
           DELETE FROM order_dispatch_rider_notifications WHERE session_id = ${sessionId}
         `;
+        await cacheSet(
+          DISPATCH_RETRY_REEXECUTE_KEY(sessionId),
+          "1",
+          Math.max(3600, cfg.retryIntervalSeconds + 600)
+        );
         console.info(
           "[dispatch] retry_cycle_scheduled",
           JSON.stringify({
@@ -576,7 +667,8 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
   const waveSettings = await fetchDispatchWaveSettings(serviceType);
   const nextWaveAt = toTimestamptzParam(Date.now() + waveSettings.waveIntervalSeconds * 1000);
 
-  await sql`
+  // Idempotent CAS: ignore stale/duplicate timeout ticks for a previous wave.
+  const advanced = (await sql`
     UPDATE order_dispatch_sessions
     SET
       current_wave = ${nextWave},
@@ -584,7 +676,18 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
       next_wave_at = ${nextWaveAt},
       updated_at = NOW()
     WHERE id = ${sessionId}
-  `;
+      AND status = 'active'
+      AND current_wave = ${currentWave}
+    RETURNING id
+  `) as Array<{ id: number }>;
+
+  if (!advanced[0]?.id) {
+    console.info(
+      "[dispatch] wave_advance_skipped_stale",
+      JSON.stringify({ sessionId, orderCoreId, expectedWave: currentWave, nextWave })
+    );
+    return false;
+  }
 
   // Wave expansion audit — all values sourced live from Super Admin config.
   const [prevRadius, nextRadius] = await Promise.all([
@@ -595,13 +698,18 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
     "[dispatch] wave_expanded",
     JSON.stringify({
       orderCoreId,
+      dispatchId: sessionId,
       serviceType,
+      previousWave: currentWave,
+      nextWave,
       fromWave: currentWave,
       toWave: nextWave,
       fromRadiusMeters: prevRadius,
       toRadiusMeters: nextRadius,
+      radiusKm: nextRadius != null ? Math.round((nextRadius / 1000) * 1000) / 1000 : null,
       waitSecondsUntilNextWave: waveSettings.waveIntervalSeconds,
       maxWaves: waveSettings.maxWaves,
+      transitionReason: "WAVE_INTERVAL_ELAPSED",
     })
   );
   void recordDispatchEvent({
@@ -611,7 +719,12 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
     eventType: "wave_expanded",
     waveNumber: nextWave,
     radiusMeters: nextRadius,
-    metadata: { fromWave: currentWave, toWave: nextWave, fromRadiusMeters: prevRadius },
+    metadata: {
+      fromWave: currentWave,
+      toWave: nextWave,
+      fromRadiusMeters: prevRadius,
+      transitionReason: "WAVE_INTERVAL_ELAPSED",
+    },
   });
 
   await executeDispatchWave(sessionId);
@@ -690,8 +803,18 @@ export async function processDueDispatchWaves(limit = 25): Promise<number> {
   for (const row of due ?? []) {
     const sessionId = Number(row.id);
     if (!sessionId) continue;
-    await advanceDispatchWave(sessionId);
-    processed += 1;
+    try {
+      await advanceDispatchWave(sessionId);
+      processed += 1;
+    } catch (err) {
+      console.error(
+        "[dispatch] advanceDispatchWave failed (continuing batch)",
+        JSON.stringify({
+          sessionId,
+          message: (err as Error).message,
+        })
+      );
+    }
   }
   return processed;
 }

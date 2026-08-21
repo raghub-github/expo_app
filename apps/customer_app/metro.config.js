@@ -163,6 +163,19 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
     }
   }
 
+  if (platform === "web") {
+    if (
+      moduleName &&
+      (moduleName.includes("mapbox-gl") ||
+        moduleName.includes("@rnmapbox/maps/lib/module/web"))
+    ) {
+      return { type: "empty" };
+    }
+  }
+  if (moduleName && moduleName.includes("mapbox-gl/dist/mapbox-gl.css")) {
+    return { type: "empty" };
+  }
+
   if (defaultResolver) {
     return defaultResolver(context, moduleName, platform);
   }

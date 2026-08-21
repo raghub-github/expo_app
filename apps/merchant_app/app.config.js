@@ -125,6 +125,11 @@ module.exports = ({ config }) => ({
           ],
         },
       ],
+      // Resolve via file path — Expo's plugin resolver cannot load
+      // `@rnmapbox/maps` by package name (exports map hides app.plugin).
+      ...(fs.existsSync(path.resolve(__dirname, "node_modules/@rnmapbox/maps/app.plugin.js"))
+        ? [path.resolve(__dirname, "node_modules/@rnmapbox/maps/app.plugin.js")]
+        : []),
       // react-native-razorpay autolinks into the native binary.
       // Native checkout requires a Dev Client / EAS build — Expo Go has no Razorpay native module
       // and there is intentionally no WebView/browser fallback.

@@ -1,5 +1,8 @@
 import { getSql } from "../client";
-import { getRiderSelfieViewUrl } from "@/lib/rider-selfie-url";
+import {
+  getRiderSelfieViewUrl,
+  resolveRiderSelfieFromStored,
+} from "@/lib/rider-selfie-url";
 
 export type OrderRiderTrackingLocation = {
   latitude: number;
@@ -59,7 +62,8 @@ export async function getOrderRiderTracking(
       oc.rider_id,
       oc.order_id AS formatted_order_id,
       r.name AS rider_name,
-      r.mobile AS rider_mobile
+      r.mobile AS rider_mobile,
+      r.selfie_url AS rider_selfie_url
     FROM orders_core oc
     LEFT JOIN riders r ON r.id = oc.rider_id
     WHERE oc.id = ${orderCoreId}
@@ -74,16 +78,59 @@ export async function getOrderRiderTracking(
       ? Number(orderRow.rider_id)
       : null;
 
-  const [assignment] = riderId
-    ? await sql`
-        SELECT rider_name, rider_mobile, assignment_status
-        FROM order_rider_assignments
-        WHERE rider_id = ${riderId}
-          AND (order_core_id = ${orderCoreId} OR order_id = ${orderCoreId})
-        ORDER BY is_active DESC NULLS LAST, assignment_sequence DESC NULLS LAST, created_at DESC
-        LIMIT 1
-      `
-    : [];
+  const formattedOrderId =
+    orderRow.formatted_order_id != null && String(orderRow.formatted_order_id).trim()
+      ? String(orderRow.formatted_order_id).trim()
+      : String(orderCoreId);
+  const trackingOrderIds = [formattedOrderId, String(orderCoreId)].filter(
+    (id, index, arr) => arr.indexOf(id) === index
+  );
+
+  // Parallelize the expensive follow-ups (was a sequential waterfall).
+  const [assignment, trailRows, liveRow, curRow, selfieUrl] = await Promise.all([
+    riderId
+      ? sql`
+          SELECT rider_name, rider_mobile, assignment_status
+          FROM order_rider_assignments
+          WHERE rider_id = ${riderId}
+            AND (order_core_id = ${orderCoreId} OR order_id = ${orderCoreId})
+          ORDER BY is_active DESC NULLS LAST, assignment_sequence DESC NULLS LAST, created_at DESC
+          LIMIT 1
+        `.then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+    sql`
+      SELECT latitude, longitude, heading_degrees, created_at
+      FROM order_rider_tracking
+      WHERE order_id IN ${sql(trackingOrderIds)}
+      ORDER BY created_at DESC
+      LIMIT 40
+    `,
+    riderId
+      ? sql`
+          SELECT latitude, longitude, heading, updated_at
+          FROM rider_live_locations
+          WHERE rider_id = ${riderId}
+          LIMIT 1
+        `.then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+    riderId
+      ? sql`
+          SELECT lat, lng, heading_deg, updated_at
+          FROM rider_current_locations
+          WHERE rider_id = ${riderId}
+          LIMIT 1
+        `.then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+    (async () => {
+      if (!riderId) return null;
+      const fromRider = resolveRiderSelfieFromStored(
+        orderRow.rider_selfie_url as string | null | undefined
+      );
+      if (fromRider) return fromRider;
+      // Document-table fallback only when riders.selfie_url is empty.
+      return getRiderSelfieViewUrl(riderId).catch(() => null);
+    })(),
+  ]);
 
   const riderName =
     (assignment?.rider_name as string | null)?.trim() ||
@@ -93,22 +140,6 @@ export async function getOrderRiderTracking(
     (assignment?.rider_mobile as string | null)?.trim() ||
     (orderRow.rider_mobile as string | null)?.trim() ||
     null;
-
-  const formattedOrderId =
-    orderRow.formatted_order_id != null && String(orderRow.formatted_order_id).trim()
-      ? String(orderRow.formatted_order_id).trim()
-      : String(orderCoreId);
-  const trackingOrderIds = [formattedOrderId, String(orderCoreId)].filter(
-    (id, index, arr) => arr.indexOf(id) === index
-  );
-
-  const trailRows = await sql`
-    SELECT latitude, longitude, created_at
-    FROM order_rider_tracking
-    WHERE order_id IN ${sql(trackingOrderIds)}
-    ORDER BY created_at DESC
-    LIMIT 40
-  `;
 
   const trail = (trailRows as Record<string, unknown>[])
     .map((row) => {
@@ -121,69 +152,51 @@ export async function getOrderRiderTracking(
     .filter((p): p is OrderRiderTrackingTrailPoint => p != null)
     .reverse();
 
+  const latestTrackingRow = (trailRows as Record<string, unknown>[])[0] ?? null;
   const latestTracking = trail.length > 0 ? trail[trail.length - 1] : null;
 
   let location: OrderRiderTrackingLocation | null = null;
-
   if (latestTracking) {
-    const [headingRow] = await sql`
-      SELECT heading_degrees, created_at
-      FROM order_rider_tracking
-      WHERE order_id IN ${sql(trackingOrderIds)}
-      ORDER BY created_at DESC
-      LIMIT 1
-    `;
     location = {
       latitude: latestTracking.latitude,
       longitude: latestTracking.longitude,
       heading_degrees:
-        headingRow?.heading_degrees != null ? Number(headingRow.heading_degrees) : null,
-      updated_at: toIso(headingRow?.created_at) ?? latestTracking.created_at,
+        latestTrackingRow?.heading_degrees != null
+          ? Number(latestTrackingRow.heading_degrees)
+          : null,
+      updated_at: latestTracking.created_at,
       source: "order_tracking",
     };
   }
 
   let liveLocation: OrderRiderTrackingLocation | null = null;
-  if (riderId) {
-    const [live] = await sql`
-      SELECT latitude, longitude, heading, updated_at
-      FROM rider_live_locations
-      WHERE rider_id = ${riderId}
-      LIMIT 1
-    `;
-    const lat = parseCoord(live?.latitude);
-    const lng = parseCoord(live?.longitude);
-    const updatedAt = toIso(live?.updated_at);
+  if (liveRow) {
+    const lat = parseCoord(liveRow.latitude);
+    const lng = parseCoord(liveRow.longitude);
+    const updatedAt = toIso(liveRow.updated_at);
     if (lat != null && lng != null && updatedAt) {
       liveLocation = {
         latitude: lat,
         longitude: lng,
-        heading_degrees: live?.heading != null ? Number(live.heading) : null,
+        heading_degrees: liveRow.heading != null ? Number(liveRow.heading) : null,
         updated_at: updatedAt,
         source: "live_location",
       };
     }
+  }
 
-    // Direct table read if the compatibility view is missing / empty.
-    if (!liveLocation) {
-      const [cur] = await sql`
-        SELECT lat, lng, heading_deg, updated_at
-        FROM rider_current_locations
-        WHERE rider_id = ${riderId}
-        LIMIT 1
-      `;
-      const curLat = parseCoord(cur?.lat);
-      const curLng = parseCoord(cur?.lng);
-      const curAt = toIso(cur?.updated_at);
-      if (curLat != null && curLng != null && curAt) {
-        liveLocation = {
-          latitude: curLat,
-          longitude: curLng,
-          heading_degrees: cur?.heading_deg != null ? Number(cur.heading_deg) : null,
-          updated_at: curAt,
-          source: "live_location",
-        };
-      }
+  if (!liveLocation && curRow) {
+    const curLat = parseCoord(curRow.lat);
+    const curLng = parseCoord(curRow.lng);
+    const curAt = toIso(curRow.updated_at);
+    if (curLat != null && curLng != null && curAt) {
+      liveLocation = {
+        latitude: curLat,
+        longitude: curLng,
+        heading_degrees: curRow.heading_deg != null ? Number(curRow.heading_deg) : null,
+        updated_at: curAt,
+        source: "live_location",
+      };
     }
   }
 
@@ -194,8 +207,6 @@ export async function getOrderRiderTracking(
   } else if (liveLocation) {
     location = liveLocation;
   }
-
-  const selfieUrl = riderId ? await getRiderSelfieViewUrl(riderId).catch(() => null) : null;
 
   return {
     rider: {

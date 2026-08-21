@@ -48,13 +48,33 @@ export function resolveRiderDeliveryFeeFromBilling(row: {
   ]);
   if (fromGross > 0) return round0(fromGross);
 
+  // Net customer delivery_fee is NOT a rider base. Only use it when gross is
+  // missing (pre-subsidy migration) AND it was not overwritten by rider payout.
+  const snap =
+    row.billingSnapshot != null && typeof row.billingSnapshot === "object"
+      ? (row.billingSnapshot as Record<string, unknown>)
+      : null;
+  const payoutSnap =
+    snap?.rider_payout_snapshot != null && typeof snap.rider_payout_snapshot === "object"
+      ? (snap.rider_payout_snapshot as Record<string, unknown>)
+      : null;
+  const riderPayoutHint = payoutSnap != null ? Number(payoutSnap.totalEarning) : NaN;
   const fromBilling = parseBillingAmount(row.billingSnapshot, [
     "delivery_fee",
     "final_delivery_fee",
     "deliveryFee",
     "finalDeliveryFee",
   ]);
-  if (fromBilling > 0) return round0(fromBilling);
+  if (
+    fromBilling > 0 &&
+    !(
+      Number.isFinite(riderPayoutHint) &&
+      riderPayoutHint > 0 &&
+      Math.abs(fromBilling - riderPayoutHint) <= 0.51
+    )
+  ) {
+    return round0(fromBilling);
+  }
 
   const fare = Number(row.fareAmount);
   if (Number.isFinite(fare) && fare > 0) return round0(fare);

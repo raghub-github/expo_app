@@ -13,7 +13,11 @@ import {
   loadCoreDbItemsByOrderTextIds,
   resolveOrderItems,
 } from "@/lib/foodOrderItems";
-import { buildOrderPricingSummary, type OrderItemLineAmounts } from "@/lib/orderItemsPayload";
+import {
+  buildOrderPricingSummary,
+  customerBillReconciles,
+  type OrderItemLineAmounts,
+} from "@/lib/orderItemsPayload";
 import {
   loadCommissionSnapshotsForCoreId,
   merchantAddonUnitForLine,
@@ -391,6 +395,51 @@ export async function GET(
       billingSnap,
       core as Record<string, unknown>
     );
+
+    // Server-side CTC reconciliation (customer delivery fee — never rider payout).
+    {
+      const roundingLine = customerPricingSummary.lines.find(
+        (l) => l.key === "adjustment" && l.label === "Bill rounding"
+      );
+      const otherCharges = round2(
+        customerPricingSummary.lines
+          .filter(
+            (l) =>
+              l.kind === "charge" &&
+              !["items", "platform", "delivery", "gst", "tip", "donation", "adjustment"].includes(
+                l.key
+              ) &&
+              l.key !== "adjustment_reconcile"
+          )
+          .reduce((s, l) => s + l.amount, 0)
+      );
+      const discountSum = round2(
+        customerPricingSummary.lines
+          .filter((l) => l.kind === "discount")
+          .reduce((s, l) => s + l.amount, 0)
+      );
+      const reconcile = customerBillReconciles({
+        itemsAmount: customerPricingSummary.itemsAmountTotal,
+        platformFee: customerPricingSummary.platformFee,
+        deliveryFee: customerPricingSummary.deliveryFee,
+        gst: customerPricingSummary.gst,
+        otherCharges,
+        discounts: discountSum,
+        tip: customerPricingSummary.tipAmount,
+        donation: customerPricingSummary.donationAmount,
+        rounding: roundingLine?.amount ?? 0,
+        totalPaid: customerPricingSummary.totalOrderAmount,
+      });
+      if (!reconcile.ok) {
+        console.warn("[orders/items] customer bill reconcile mismatch", {
+          orderId: core.id,
+          expected: reconcile.expected,
+          paid: customerPricingSummary.totalOrderAmount,
+          diff: reconcile.diff,
+          deliveryFee: customerPricingSummary.deliveryFee,
+        });
+      }
+    }
 
     let commissionPercent: number | undefined;
     const needsCommissionFallback =

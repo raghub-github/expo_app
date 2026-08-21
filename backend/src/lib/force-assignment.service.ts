@@ -18,7 +18,6 @@ import {
   type DispatchOrderTarget,
   type DispatchPoolOrderRow,
 } from "./order-assignment-engine.js";
-import { fetchEffectiveDispatchRadiusMeters } from "./order-dispatch-settings.js";
 import { notifyRiderDispatchOffer } from "./rider-dispatch-notify.js";
 import { recordDispatchAssignmentAudit } from "./rider-dispatch-assignment-audit.js";
 import { publishOrderEvent, publishRiderEvent } from "../modules/realtime/publish.js";
@@ -29,6 +28,12 @@ import {
   recordRiderOrderAccepted,
 } from "./rider-ride-assignment.js";
 import { recordFoodRiderAssignedTimeline } from "./food-rider-assigned-timeline.js";
+import {
+  ADMIN_SELECTABLE_MAX_RADIUS_KM,
+  resolveForceAssignmentRadiusMeters,
+} from "./force-assignment-radius.js";
+
+export { ADMIN_SELECTABLE_MAX_RADIUS_KM, resolveForceAssignmentRadiusMeters } from "./force-assignment-radius.js";
 
 const FORCE_KEY = (orderCoreId: number) => `force_assignment:order:${orderCoreId}`;
 const FORCE_RIDER_KEY = (riderId: number) => `force_assignment:rider:${riderId}`;
@@ -206,19 +211,19 @@ async function persistForceState(state: ForceAssignmentState): Promise<void> {
   }
 }
 
-async function buildDispatchTarget(
+/** Admin force/hard-assign target — radius is always explicit (never Wave-1). */
+function buildForceDispatchTarget(
   orderCoreId: number,
   orderId: string,
   formattedOrderId: string | null,
   pickupLat: unknown,
   pickupLon: unknown,
-  /** Override wave radius (admin picker uses merchant max 10 km). */
-  radiusMetersOverride?: number
-): Promise<DispatchOrderTarget> {
+  radiusMeters: number
+): DispatchOrderTarget {
   const effectiveRadiusMeters =
-    radiusMetersOverride != null && Number.isFinite(radiusMetersOverride)
-      ? radiusMetersOverride
-      : await fetchEffectiveDispatchRadiusMeters("food", 1);
+    Number.isFinite(radiusMeters) && radiusMeters > 0
+      ? Math.round(radiusMeters)
+      : resolveForceAssignmentRadiusMeters(ADMIN_SELECTABLE_MAX_RADIUS_KM);
   return {
     orderCoreId,
     orderId,
@@ -233,9 +238,28 @@ async function buildDispatchTarget(
   };
 }
 
-/** Max merchant-centric radius for Force Assignment / admin rider picker. */
-const ADMIN_SELECTABLE_MAX_RADIUS_KM = 10;
-const ADMIN_SELECTABLE_MAX_RADIUS_METERS = ADMIN_SELECTABLE_MAX_RADIUS_KM * 1000;
+function forceAssignmentIneligibleMessage(
+  reason: string | undefined,
+  radiusKm: number
+): string {
+  switch (reason) {
+    case "outside_wave_radius":
+      return `Selected rider is outside the Force Assignment radius (${radiusKm} km)`;
+    case "no_context_offduty_or_stale_gps":
+      return "Selected rider is offline or GPS is stale — ask them to go on duty and refresh location";
+    case "subscription_blocked":
+      return "Selected rider cannot receive offers (subscription / wallet block)";
+    case "service_not_eligible":
+    case "service_not_in_duty":
+      return "Selected rider is not on duty for food delivery";
+    case "blacklisted_for_service":
+      return "Selected rider is restricted for food delivery";
+    case "assignment_limit_or_active_order":
+      return "Selected rider already has an active order";
+    default:
+      return "Selected rider is not eligible for this order";
+  }
+}
 
 /**
  * Admin Force Assignment picker: all riders with live GPS within 10 km of merchant
@@ -443,6 +467,12 @@ export type StartForceAssignmentInput = {
   adminEmail?: string | null;
   adminUserId?: string | null;
   offerSeconds?: number;
+  /**
+   * Admin Force Assignment radius in km (sheet filter / configured override).
+   * Required for eligibility — never inferred from Wave-1 auto-dispatch.
+   * Defaults to {@link ADMIN_SELECTABLE_MAX_RADIUS_KM} when omitted.
+   */
+  radiusKm?: number | null;
 };
 
 export async function startForceAssignment(
@@ -483,19 +513,55 @@ export async function startForceAssignment(
       });
     }
 
-    const target = await buildDispatchTarget(
+    // Explicit admin radius — NEVER Wave-1 auto-dispatch radius.
+    const requestedRadiusKm =
+      input.radiusKm != null && Number.isFinite(Number(input.radiusKm))
+        ? Number(input.radiusKm)
+        : ADMIN_SELECTABLE_MAX_RADIUS_KM;
+    const resolvedRadiusMeters = resolveForceAssignmentRadiusMeters(requestedRadiusKm);
+    const resolvedRadiusKm = resolvedRadiusMeters / 1000;
+
+    const target = buildForceDispatchTarget(
       input.orderCoreId,
       order.orderId.trim(),
       order.formattedOrderId,
       order.pickupLat,
-      order.pickupLon
+      order.pickupLon,
+      resolvedRadiusMeters
     );
 
-    const eligible = await evaluateRiderDispatchEligibility(input.newRiderId, target);
+    const lastRejectReason: { current?: string } = {};
+    const eligible = await evaluateRiderDispatchEligibility(input.newRiderId, target, {
+      // Admin intentionally picked this rider (may be busy); still send the offer.
+      ignoreAssignmentLimit: true,
+      lastRejectReason,
+    });
+
+    const riderDistanceKm =
+      eligible != null
+        ? Math.round((eligible.distanceMeters / 1000) * 1000) / 1000
+        : null;
+
+    console.info(
+      "[force-assignment] eligibility",
+      JSON.stringify({
+        assignmentMode: "FORCE",
+        orderCoreId: input.orderCoreId,
+        riderId: input.newRiderId,
+        requestedRadiusKm,
+        resolvedEligibilityRadiusKm: resolvedRadiusKm,
+        waveNumber: null,
+        riderDistanceKm,
+        eligible: eligible != null,
+        rejectReason: lastRejectReason.current ?? null,
+      })
+    );
+
     if (!eligible) {
-      throw Object.assign(new Error("Selected rider is not eligible for this order"), {
-        statusCode: 409,
-      });
+      throw Object.assign(
+        new Error(forceAssignmentIneligibleMessage(lastRejectReason.current, resolvedRadiusKm)),
+        { statusCode: 409 }
+      );
     }
 
     const offerSec = Math.max(30, Math.min(300, input.offerSeconds ?? DEFAULT_OFFER_SEC));
@@ -912,6 +978,8 @@ export async function adminHardAssignSpecificRider(args: {
   riderId: number;
   adminEmail?: string | null;
   adminUserId?: string | null;
+  /** Admin picker radius km — defaults to 10; never Wave-1. */
+  radiusKm?: number | null;
 }): Promise<void> {
   const force = await getForceAssignmentState(args.orderCoreId);
   if (force?.status === "pending") {
@@ -930,18 +998,50 @@ export async function adminHardAssignSpecificRider(args: {
     });
   }
 
-  const target = await buildDispatchTarget(
+  const requestedRadiusKm =
+    args.radiusKm != null && Number.isFinite(Number(args.radiusKm))
+      ? Number(args.radiusKm)
+      : ADMIN_SELECTABLE_MAX_RADIUS_KM;
+  const resolvedRadiusMeters = resolveForceAssignmentRadiusMeters(requestedRadiusKm);
+  const resolvedRadiusKm = resolvedRadiusMeters / 1000;
+
+  const target = buildForceDispatchTarget(
     args.orderCoreId,
     order.orderId.trim(),
     order.formattedOrderId,
     order.pickupLat,
-    order.pickupLon
+    order.pickupLon,
+    resolvedRadiusMeters
   );
-  const eligible = await evaluateRiderDispatchEligibility(args.riderId, target);
+  const lastRejectReason: { current?: string } = {};
+  const eligible = await evaluateRiderDispatchEligibility(args.riderId, target, {
+    ignoreAssignmentLimit: true,
+    lastRejectReason,
+  });
+
+  console.info(
+    "[force-assignment] eligibility",
+    JSON.stringify({
+      assignmentMode: "ADMIN_HARD_ASSIGN",
+      orderCoreId: args.orderCoreId,
+      riderId: args.riderId,
+      requestedRadiusKm,
+      resolvedEligibilityRadiusKm: resolvedRadiusKm,
+      waveNumber: null,
+      riderDistanceKm:
+        eligible != null
+          ? Math.round((eligible.distanceMeters / 1000) * 1000) / 1000
+          : null,
+      eligible: eligible != null,
+      rejectReason: lastRejectReason.current ?? null,
+    })
+  );
+
   if (!eligible) {
-    throw Object.assign(new Error("Selected rider is not eligible for this order"), {
-      statusCode: 409,
-    });
+    throw Object.assign(
+      new Error(forceAssignmentIneligibleMessage(lastRejectReason.current, resolvedRadiusKm)),
+      { statusCode: 409 }
+    );
   }
 
   const db = getDb();

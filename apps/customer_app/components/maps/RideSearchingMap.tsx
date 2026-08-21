@@ -1,27 +1,52 @@
-import React, { useCallback, useEffect, useMemo, useRef } from "react";
-import { StyleSheet, View, Platform } from "react-native";
-import { WebView } from "react-native-webview";
+// @ts-nocheck — native Mapbox module is loaded via require()
+import React, { useEffect, useRef, useState } from "react";
+import { Animated, StyleSheet, View } from "react-native";
 import { getConfig } from "@/config/env";
-import { buildRideSearchingMapHtml } from "@/components/maps/mapbox-web-ride-searching-html";
-import { CustomerMapUnavailable } from "@/components/maps/CustomerMapUnavailable";
-import { useMapMarkerDataUri } from "@/hooks/useMapMarkerDataUri";
 import type { NearbySupplyRider } from "@/services/rideAvailability.service";
+import {
+  NATIVE_MAP_STYLE,
+  NativeMapUnavailable,
+  VehicleMarker,
+  nativeMapUnavailableReason,
+  renderNativeMarker,
+  useCustomerNativeMapbox,
+  useRiderMarkerSource,
+} from "@/components/maps/native-map-shared";
 
 type Props = {
   center: { latitude: number; longitude: number };
   nearbyRiders?: NearbySupplyRider[];
-  /** Catalog image_key for nearby rider markers (bike, auto, cab, cab_premium). */
   riderMarkerImageKey?: string;
-  /** Keeps pickup radar above the bottom sheet (px). */
   bottomMapPadding?: number;
   style?: object;
 };
 
-function escJsString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+function SearchRadar() {
+  const scale = useRef(new Animated.Value(0.35)).current;
+  const opacity = useRef(new Animated.Value(0.65)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.parallel([
+          Animated.timing(scale, { toValue: 1.35, duration: 2400, useNativeDriver: true }),
+          Animated.timing(opacity, { toValue: 0, duration: 2400, useNativeDriver: true }),
+        ]),
+        Animated.parallel([
+          Animated.timing(scale, { toValue: 0.35, duration: 0, useNativeDriver: true }),
+          Animated.timing(opacity, { toValue: 0.65, duration: 0, useNativeDriver: true }),
+        ]),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [opacity, scale]);
+  return (
+    <View style={styles.radarHost} pointerEvents="none">
+      <Animated.View style={[styles.radarRing, { opacity, transform: [{ scale }] }]} />
+    </View>
+  );
 }
 
-/** Searching-for-rider map — Mapbox only. */
 export function RideSearchingMap({
   center,
   nearbyRiders = [],
@@ -29,103 +54,82 @@ export function RideSearchingMap({
   bottomMapPadding = 360,
   style,
 }: Props) {
-  const webRef = useRef<WebView>(null);
-  const readyRef = useRef(false);
+  const Mapbox = useCustomerNativeMapbox();
+  const cameraRef = useRef(null);
+  const [mapReady, setMapReady] = useState(false);
+  const markerSource = useRiderMarkerSource(riderMarkerImageKey);
   const initialCenterRef = useRef(center);
   const token = getConfig().mapboxAccessToken?.trim() ?? "";
-  const markerDataUri = useMapMarkerDataUri(riderMarkerImageKey);
 
-  const html = useMemo(() => {
-    if (!token || !markerDataUri) return "";
-    return buildRideSearchingMapHtml(
-      token,
-      initialCenterRef.current,
-      markerDataUri,
-      undefined,
-      bottomMapPadding
-    );
-  }, [token, markerDataUri, bottomMapPadding]);
-
-  useEffect(() => {
-    readyRef.current = false;
-  }, [html]);
-
-  const ridersPayload = useMemo(
-    () =>
-      nearbyRiders.map((r) => ({
-        riderId: r.riderId,
-        lat: r.lat,
-        lng: r.lng,
-        heading: r.heading,
-      })),
-    [nearbyRiders]
-  );
-
-  const injectMarkerIcon = useCallback(() => {
-    if (!readyRef.current || !markerDataUri) return;
-    const uri = escJsString(markerDataUri);
-    webRef.current?.injectJavaScript(
-      `window.setRiderMarkerIcon && window.setRiderMarkerIcon('${uri}'); true;`
-    );
-  }, [markerDataUri]);
-
-  const injectRiders = useCallback(() => {
-    if (!readyRef.current) return;
-    const json = JSON.stringify(ridersPayload);
-    webRef.current?.injectJavaScript(
-      `window.updateNearbyRiders && window.updateNearbyRiders(${json}); true;`
-    );
-  }, [ridersPayload]);
-
-  const syncLayers = useCallback(() => {
-    injectMarkerIcon();
-    injectRiders();
-  }, [injectMarkerIcon, injectRiders]);
-
-  useEffect(() => {
-    if (!readyRef.current) return;
-    syncLayers();
-  }, [syncLayers]);
-
-  if (!token || !html) {
-    return <CustomerMapUnavailable style={style} />;
+  if (!token || nativeMapUnavailableReason() || !Mapbox) {
+    return <NativeMapUnavailable style={style} />;
   }
 
   return (
-    <View style={[styles.fill, style]}>
-      <WebView
-        ref={webRef}
-        source={{ html }}
+    <View style={[styles.fill, style]} collapsable={false}>
+      <Mapbox.MapView
         style={styles.fill}
-        originWhitelist={["*"]}
-        javaScriptEnabled
-        domStorageEnabled
-        scrollEnabled={false}
-        nestedScrollEnabled={Platform.OS === "android"}
-        overScrollMode="never"
-        androidLayerType="hardware"
-        mixedContentMode="always"
-        allowFileAccess
-        allowUniversalAccessFromFileURLs
-        onMessage={(event) => {
-          try {
-            const msg = JSON.parse(event.nativeEvent.data) as { type?: string };
-            if (msg.type === "ready") {
-              readyRef.current = true;
-              syncLayers();
-            }
-          } catch {
-            /* ignore */
-          }
-        }}
-        onLoadEnd={() => {
-          if (readyRef.current) syncLayers();
-        }}
-      />
+        styleURL={NATIVE_MAP_STYLE}
+        logoEnabled={false}
+        attributionEnabled={false}
+        compassEnabled={false}
+        scaleBarEnabled={false}
+        scrollEnabled
+        zoomEnabled
+        pitchEnabled={false}
+        rotateEnabled={false}
+        surfaceView={false}
+        onDidFinishLoadingMap={() => setMapReady(true)}
+      >
+        <Mapbox.Camera
+          ref={cameraRef}
+          defaultSettings={{
+            centerCoordinate: [initialCenterRef.current.longitude, initialCenterRef.current.latitude],
+            zoomLevel: 14.8,
+            padding: { paddingBottom: Math.max(180, bottomMapPadding) * 0.35 },
+          }}
+        />
+        {mapReady
+          ? renderNativeMarker(
+              Mapbox,
+              "search-radar",
+              [center.longitude, center.latitude],
+              { x: 0.5, y: 0.5 },
+              <SearchRadar />
+            )
+          : null}
+        {mapReady
+          ? nearbyRiders
+              .filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lng))
+              .map((r) =>
+                renderNativeMarker(
+                  Mapbox,
+                  `search-rider-${r.riderId}`,
+                  [r.lng, r.lat],
+                  { x: 0.5, y: 0.5 },
+                  <VehicleMarker source={markerSource} headingDeg={r.heading ?? 0} size={34} />
+                )
+              )
+          : null}
+      </Mapbox.MapView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
+  radarHost: {
+    width: 160,
+    height: 160,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  radarRing: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    borderWidth: 2,
+    borderColor: "rgba(59,130,246,0.42)",
+    backgroundColor: "rgba(59,130,246,0.07)",
+  },
 });

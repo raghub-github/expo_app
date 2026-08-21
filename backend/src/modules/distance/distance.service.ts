@@ -17,6 +17,10 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 const CACHE_TTL_SEC = 10 * 60;
 const DB_CACHE_TTL_MS = 30 * 60 * 1000;
 
+/** If selected (e.g. fastest) exceeds shortest valid by more than this, reconsider. */
+const MAX_ROUTE_DIFFERENCE_KM = Number(process.env.MAX_ROUTE_DIFFERENCE_KM ?? "2.0");
+const MAX_ROUTE_DIFFERENCE_PERCENT = Number(process.env.MAX_ROUTE_DIFFERENCE_PERCENT ?? "15");
+
 export type GetRouteOptions = {
   origin: LatLng;
   destination: LatLng;
@@ -158,7 +162,13 @@ function pickBestRoute(
       route.geometry?.trim()
   );
   if (!valid.length) return null;
+
+  const byDistance = [...valid].sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
+  const shortest = byDistance[0]!;
   const bikeScale = profile === "bike" ? 0.74 : 1;
+
+  // Bike / two-wheeler: shortest practical valid road distance (never prefer longer "fast" roads).
+  // Driving: prefer fastest, but detour-guard against large unnecessary distance.
   valid.sort((a, b) => {
     if (profile === "bike") {
       const dist = (a.distance ?? 0) - (b.distance ?? 0);
@@ -169,8 +179,45 @@ function pickBestRoute(
     if (durationDelta !== 0) return durationDelta;
     return (a.distance ?? 0) - (b.distance ?? 0);
   });
-  const best = valid[0];
-  if (!best || typeof best.distance !== "number" || typeof best.duration !== "number") return null;
+
+  let best = valid[0]!;
+  if (profile === "driving" && shortest) {
+    const selectedM = best.distance ?? 0;
+    const shortestM = shortest.distance ?? 0;
+    const differenceKm = (selectedM - shortestM) / 1000;
+    const differencePercent = shortestM > 0 ? ((selectedM - shortestM) / shortestM) * 100 : 0;
+    if (
+      differenceKm > MAX_ROUTE_DIFFERENCE_KM ||
+      differencePercent > MAX_ROUTE_DIFFERENCE_PERCENT
+    ) {
+      console.warn("[distance.pickBestRoute] detour anomaly — preferring shortest valid", {
+        profile,
+        shortestCandidateDistance: shortestM,
+        selectedRouteDistance: selectedM,
+        differenceKm: Math.round(differenceKm * 1000) / 1000,
+        differencePercent: Math.round(differencePercent * 10) / 10,
+        candidateCount: valid.length,
+      });
+      best = shortest;
+    }
+  }
+
+  if (typeof best.distance !== "number" || typeof best.duration !== "number") return null;
+
+  if (process.env.NODE_ENV !== "test") {
+    console.info("[distance.pickBestRoute]", {
+      profile,
+      candidateCount: valid.length,
+      candidates: valid.map((r, i) => ({
+        index: i,
+        distanceKm: Math.round(((r.distance ?? 0) / 1000) * 100) / 100,
+        durationMin: Math.round(((r.duration ?? 0) / 60) * 10) / 10,
+      })),
+      selectedDistanceKm: Math.round((best.distance / 1000) * 100) / 100,
+      shortestCandidateKm: Math.round(((shortest.distance ?? 0) / 1000) * 100) / 100,
+    });
+  }
+
   const durationSeconds =
     profile === "bike"
       ? Math.max(60, Math.round(best.duration * bikeScale))

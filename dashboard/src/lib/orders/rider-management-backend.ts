@@ -299,6 +299,8 @@ export async function startForceAssignmentOnBackend(args: {
   catalogReasonId?: number | null;
   actorEmail?: string | null;
   actorId?: string | null;
+  /** Admin Force Assignment radius (km). Defaults to 10 on the backend. */
+  radiusKm?: number | null;
 }): Promise<
   | { ok: true; forceAssignment: ForceAssignmentBackendState }
   | { ok: false; error: string; status: number }
@@ -327,6 +329,7 @@ export async function startForceAssignmentOnBackend(args: {
         catalog_reason_id: args.catalogReasonId ?? undefined,
         actor_email: args.actorEmail ?? undefined,
         actor_id: args.actorId ?? undefined,
+        radius_km: args.radiusKm ?? undefined,
       }),
       cache: "no-store",
     });
@@ -369,11 +372,13 @@ export async function hardAssignRiderOnBackend(args: {
   riderId: number;
   actorEmail?: string | null;
   actorId?: string | null;
+  radiusKm?: number | null;
 }): Promise<RiderManagementBackendResult> {
   return postInternal("/orders/rider-hard-assign", {
     orders_core_id: args.ordersCoreId,
     rider_id: args.riderId,
     actor_email: args.actorEmail ?? undefined,
     actor_id: args.actorId ?? undefined,
+    radius_km: args.radiusKm ?? undefined,
   });
 }
