@@ -9,6 +9,7 @@ import {
 import type { OrderCustomerFeedback } from "@/lib/orders/order-customer-feedback";
 import { hasMerchantFeedback } from "@/lib/orders/order-customer-feedback";
 import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
+import { OrderPageOverlay } from "@/components/orders/OrderPageOverlay";
 
 interface Merchant {
   storeId?: number | null;
@@ -261,7 +262,7 @@ export default function MerchantDetails({
 
   return (
     <>
-      <div className="bg-white rounded-lg px-3 py-2 shadow-sm border border-[#e5e5e5] transition-all hover:shadow-md hover:border-gati-primary/20">
+      <div className="bg-white rounded-lg px-3 py-2 shadow-sm border border-[#e5e5e5] transition-all hover:shadow-md hover:border-gati-primary/20 h-full flex flex-col">
       {/* Header */}
       <div className="flex justify-between items-start mb-2 pb-1.5 border-b border-[#e5e5e5]">
         <span className="text-[13px] font-semibold text-gati-text-primary flex items-center gap-2">
@@ -278,7 +279,7 @@ export default function MerchantDetails({
       </div>
 
       {/* Body */}
-      <div className="grid gap-1">
+      <div className="grid gap-1 flex-1">
         {/* Parent Merchant Id */}
         <div className="grid grid-cols-[140px_1fr] items-start min-h-[20px]">
           <div className="text-[12px] text-gati-text-secondary font-medium">
@@ -458,25 +459,25 @@ export default function MerchantDetails({
             </button>
           </div>
         ) : null}
+      </div>
 
-        {/* More details link */}
-        <div className="mt-1 flex justify-end">
+        <div className="mt-auto flex h-7 shrink-0 items-center justify-end gap-2 border-t border-transparent pt-1">
           <button
             type="button"
-            className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 cursor-pointer whitespace-nowrap py-0.5"
+            className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 cursor-pointer whitespace-nowrap py-0.5 inline-flex items-center gap-1"
             onClick={() => setShowDetailsModal(true)}
           >
-            Explore More
+            <span>Explore More</span>
+            <i className="bi bi-chevron-right text-[10px]" />
           </button>
         </div>
-      </div>
       </div>
 
       {/* Timings modal */}
       {showTimingsModal && profile?.schedule && (
-        <div
-          className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-4"
-          onClick={(e) => {
+        <OrderPageOverlay
+          className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+          onBackdropClick={(e) => {
             if (e.target === e.currentTarget) setShowTimingsModal(false);
           }}
         >
@@ -542,14 +543,14 @@ export default function MerchantDetails({
               })}
             </div>
           </div>
-        </div>
+        </OrderPageOverlay>
       )}
 
       {/* Phone numbers modal */}
       {showPhoneModal && profile?.phones && profile.phones.length > 1 && (
-        <div
-          className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-4"
-          onClick={(e) => {
+        <OrderPageOverlay
+          className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+          onBackdropClick={(e) => {
             if (e.target === e.currentTarget) setShowPhoneModal(false);
           }}
         >
@@ -599,14 +600,14 @@ export default function MerchantDetails({
               ))}
             </div>
           </div>
-        </div>
+        </OrderPageOverlay>
       )}
 
       {/* Merchant details modal */}
       {showDetailsModal && profile && (
-        <div
-          className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-4"
-          onClick={(e) => {
+        <OrderPageOverlay
+          className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+          onBackdropClick={(e) => {
             if (e.target === e.currentTarget) setShowDetailsModal(false);
           }}
         >
@@ -702,7 +703,7 @@ export default function MerchantDetails({
               </p>
             </div>
           </div>
-        </div>
+        </OrderPageOverlay>
       )}
     </>
   );

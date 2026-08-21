@@ -9,6 +9,7 @@ type FoodLookupRow = {
   id: number;
   order_id: number | null;
   core_order_id: string | null;
+  merchant_store_id?: number | null;
 };
 
 /** Same as DB function orders_food_resolve_core_pk — orders_core.id bigint PK. */
@@ -42,6 +43,14 @@ async function coreBelongsToStore(
   return !!core && Number(core.merchant_store_id) === merchantStoreInternalId;
 }
 
+function foodBelongsToStore(
+  food: FoodLookupRow | null | undefined,
+  merchantStoreInternalId: number
+): boolean {
+  if (food?.merchant_store_id == null) return false;
+  return Number(food.merchant_store_id) === merchantStoreInternalId;
+}
+
 /**
  * Resolve dashboard order URL param to orders_core.id (for order_timelines.order_id).
  * Matches partnersite timeline lookup, with store ownership verified on orders_core only.
@@ -55,18 +64,41 @@ export async function resolveMerchantFoodOrder(
     food: FoodLookupRow | null,
     corePk: number | null
   ): Promise<ResolvedMerchantFoodOrder | null> => {
-    if (corePk == null || !Number.isFinite(corePk)) return null;
-    if (!(await coreBelongsToStore(db, corePk, merchantStoreInternalId))) return null;
+    const foodOk = foodBelongsToStore(food, merchantStoreInternalId);
+    const resolvedCore =
+      corePk != null && Number.isFinite(corePk)
+        ? corePk
+        : food?.order_id != null && Number.isFinite(Number(food.order_id))
+          ? Number(food.order_id)
+          : null;
+    if (resolvedCore == null) return null;
+    const storeOk =
+      foodOk || (await coreBelongsToStore(db, resolvedCore, merchantStoreInternalId));
+    if (!storeOk) return null;
     return {
-      coreOrderId: corePk,
+      coreOrderId: resolvedCore,
       foodRowId: food ? Number(food.id) : null,
     };
   };
 
-  // 1) partnersite path: orders_food.id
+  const foodSelect = "id, order_id, core_order_id, merchant_store_id";
+
+  // 1) partnersite path: orders_food.id (prefer this store)
+  const { data: byFoodIdStore } = await db
+    .from("orders_food")
+    .select(foodSelect)
+    .eq("id", orderIdParam)
+    .eq("merchant_store_id", merchantStoreInternalId)
+    .maybeSingle();
+  if (byFoodIdStore) {
+    const corePk = await resolveCorePkFromFoodRow(db, byFoodIdStore as FoodLookupRow);
+    const done = await finish(byFoodIdStore as FoodLookupRow, corePk);
+    if (done) return done;
+  }
+
   const { data: byFoodId } = await db
     .from("orders_food")
-    .select("id, order_id, core_order_id")
+    .select(foodSelect)
     .eq("id", orderIdParam)
     .maybeSingle();
 
@@ -77,9 +109,22 @@ export async function resolveMerchantFoodOrder(
   }
 
   // 2) orders_food.order_id = orders_core.id
+  const { data: byFoodCoreFkStore } = await db
+    .from("orders_food")
+    .select(foodSelect)
+    .eq("order_id", orderIdParam)
+    .eq("merchant_store_id", merchantStoreInternalId)
+    .maybeSingle();
+  if (byFoodCoreFkStore) {
+    const corePk =
+      (await resolveCorePkFromFoodRow(db, byFoodCoreFkStore as FoodLookupRow)) ?? orderIdParam;
+    const done = await finish(byFoodCoreFkStore as FoodLookupRow, corePk);
+    if (done) return done;
+  }
+
   const { data: byFoodCoreFk } = await db
     .from("orders_food")
-    .select("id, order_id, core_order_id")
+    .select(foodSelect)
     .eq("order_id", orderIdParam)
     .maybeSingle();
 
@@ -94,7 +139,7 @@ export async function resolveMerchantFoodOrder(
   if (await coreBelongsToStore(db, orderIdParam, merchantStoreInternalId)) {
     const { data: foodForCore } = await db
       .from("orders_food")
-      .select("id, order_id, core_order_id")
+      .select(foodSelect)
       .eq("order_id", orderIdParam)
       .maybeSingle();
     if (foodForCore) {
@@ -112,7 +157,7 @@ export async function resolveMerchantFoodOrder(
     if (textId) {
       const { data: foodByText } = await db
         .from("orders_food")
-        .select("id, order_id, core_order_id")
+        .select(foodSelect)
         .eq("core_order_id", textId)
         .maybeSingle();
       if (foodByText) {

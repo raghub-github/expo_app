@@ -38,6 +38,7 @@ import { R2Image } from "@/components/ui/R2Image";
 import { withAttachmentCacheBust, resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { MenuItemsGridSkeleton } from "@/components/ui/MenuItemsGridSkeleton";
 import { MenuItemForm, type ItemFormData } from "./MenuItemForm";
+import { MenuItemPhotoModal } from "./MenuItemPhotoModal";
 import { buildEditOptionsRefs } from "@/lib/map-menu-item-options";
 import {
   DEFAULT_ITEM_FORM_DATA,
@@ -589,6 +590,7 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
   const [editImageValidationError, setEditImageValidationError] = useState("");
   const [addImageValidating, setAddImageValidating] = useState(false);
   const [editImageValidating, setEditImageValidating] = useState(false);
+  const [photoModalItem, setPhotoModalItem] = useState<MenuItem | null>(null);
   const addImagePendingFileRef = useRef<File | null>(null);
   const editImagePendingFileRef = useRef<File | null>(null);
   /** Item id for the open edit modal; null when closed. Guards in-flight reload from overwriting another session. */
@@ -1807,11 +1809,20 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
   };
 
   const handleProcessImage = async (file: File, isEdit: boolean) => {
+    const localUrl = URL.createObjectURL(file);
     if (isEdit) {
+      setEditImagePreview((prev) => {
+        if (prev.startsWith("blob:")) URL.revokeObjectURL(prev);
+        return localUrl;
+      });
       setEditImageValidationError("");
       setEditImageValidating(true);
       editImagePendingFileRef.current = file;
     } else {
+      setImagePreview((prev) => {
+        if (prev.startsWith("blob:")) URL.revokeObjectURL(prev);
+        return localUrl;
+      });
       setAddImageValidationError("");
       setAddImageValidating(true);
       addImagePendingFileRef.current = file;
@@ -1825,36 +1836,19 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
     if (!check.valid) {
       if (isEdit) {
         setEditImageValidationError(check.error);
+        setEditImageFile(null);
       } else {
         setAddImageValidationError(check.error);
+        setAddImageFile(null);
       }
       return;
     }
     if (isEdit) {
       editImagePendingFileRef.current = null;
+      setEditImageFile(file);
     } else {
       addImagePendingFileRef.current = null;
-    }
-    const preview = URL.createObjectURL(file);
-    if (isEdit) {
-      setEditImageFile(file);
-      setEditImagePreview(preview);
-      if (editingId != null) {
-        setEditImageValidating(true);
-        try {
-          const uploadedUrl = await uploadEditItemImage(editingId, file);
-          setEditImagePreview(uploadedUrl);
-          setEditImageFile(null);
-        } catch (e) {
-          setEditImageValidationError(e instanceof Error ? e.message : "Image upload failed");
-          setEditImageFile(file);
-        } finally {
-          setEditImageValidating(false);
-        }
-      }
-    } else {
       setAddImageFile(file);
-      setImagePreview(preview);
     }
   };
 
@@ -2523,7 +2517,12 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                     className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden"
                   >
                     <div className="flex items-center gap-3 border-b border-gray-100 bg-gray-50/80 p-3">
-                      <div className="h-12 w-12 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-100">
+                      <button
+                        type="button"
+                        onClick={() => setPhotoModalItem(item)}
+                        className="h-12 w-12 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-100 cursor-pointer hover:ring-2 hover:ring-orange-300"
+                        aria-label={`View photo for ${item.item_name}`}
+                      >
                         <R2Image
                           key={`${item.id}-${itemCardImageUrl(item) ?? "none"}`}
                           src={itemCardImageUrl(item)}
@@ -2531,7 +2530,7 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                           className="h-full w-full object-cover"
                           fallbackSrc={ITEM_PLACEHOLDER_SVG}
                         />
-                      </div>
+                      </button>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-bold text-gray-900">{item.item_name}</p>
                         <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
@@ -2715,7 +2714,12 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                     className={menuItemCard}
                   >
                     <div className="flex p-2.5 h-full gap-2.5">
-                      <div className="w-14 h-14 flex-shrink-0 rounded-lg border border-gray-200 overflow-hidden bg-gray-100">
+                      <button
+                        type="button"
+                        onClick={() => setPhotoModalItem(item)}
+                        className="w-14 h-14 flex-shrink-0 rounded-lg border border-gray-200 overflow-hidden bg-gray-100 cursor-pointer hover:ring-2 hover:ring-orange-300"
+                        aria-label={`View photo for ${item.item_name}`}
+                      >
                         <R2Image
                           key={`${item.id}-${itemCardImageUrl(item) ?? "none"}`}
                           src={itemCardImageUrl(item)}
@@ -2723,7 +2727,7 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                           className="w-full h-full object-cover"
                           fallbackSrc={ITEM_PLACEHOLDER_SVG}
                         />
-                      </div>
+                      </button>
                       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
                         <div className="flex items-start justify-between gap-1 mb-0.5">
                           <div className="flex-1 min-w-0">
@@ -3664,9 +3668,11 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                 imageValidationError={editImageValidationError}
                 imageValidating={editImageValidating}
                 onNormalizeMenuItemImage={() => handleNormalizeMenuItemImage(true)}
+                pendingImageFileName={editImageFile?.name ?? null}
                 onCancel={() => {
                   editModalItemIdRef.current = null;
                   setShowEditModal(false);
+                  setEditImageFile(null);
                   setEditImageValidationError("");
                   setEditImageValidating(false);
                   editImagePendingFileRef.current = null;
@@ -4325,6 +4331,22 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
           </div>,
           document.body
         )}
+
+      <MenuItemPhotoModal
+        open={photoModalItem != null}
+        itemName={photoModalItem?.item_name ?? ""}
+        imageUrl={photoModalItem ? itemCardImageUrl(photoModalItem) : null}
+        onClose={() => setPhotoModalItem(null)}
+        onReplace={
+          photoModalItem && !menuReadOnly
+            ? () => {
+                const item = photoModalItem;
+                setPhotoModalItem(null);
+                handleOpenEditModal(item);
+              }
+            : undefined
+        }
+      />
     </div>
   );
 }

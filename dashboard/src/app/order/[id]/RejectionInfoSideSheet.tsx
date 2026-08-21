@@ -2,6 +2,7 @@
 
 import { X } from "lucide-react";
 import { OrderNum, OrderMixedText } from "@/components/orders/orders-typography";
+import { OrderPageOverlay } from "@/components/orders/OrderPageOverlay";
 
 export type RejectionInfoSideSheetEntry = {
   id: string;
@@ -92,7 +93,10 @@ export function RejectionInfoSideSheet({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[80] flex justify-end bg-black/30" onClick={onClose}>
+    <OrderPageOverlay
+      className="fixed inset-0 z-[200] flex justify-end bg-black/30 backdrop-blur-sm"
+      onBackdropClick={onClose}
+    >
       <aside
         className="flex h-full w-full max-w-md flex-col bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
@@ -131,6 +135,6 @@ export function RejectionInfoSideSheet({
           )}
         </div>
       </aside>
-    </div>
+    </OrderPageOverlay>
   );
 }

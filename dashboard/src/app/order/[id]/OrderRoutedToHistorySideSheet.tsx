@@ -166,7 +166,7 @@ export function OrderRoutedToHistorySideSheet({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[10000] flex justify-end bg-black/30"
+      className="fixed inset-0 z-[10000] flex justify-end bg-black/30 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-label="Routed To history"

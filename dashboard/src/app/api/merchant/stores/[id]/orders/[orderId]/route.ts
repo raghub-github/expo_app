@@ -3,11 +3,11 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/server";
-import { resolvePartnerPipeline } from "@/lib/partner-orders-unify";
 import {
   labelsForStatusUpdate,
   normalizeActionMode,
   normalizeActionSource,
+  orderAcceptanceSourceFromAction,
 } from "@/lib/merchantOrderFoodActions";
 import { ensureMerchantStoreDashboardAccess } from "@/lib/merchant-food-orders/store-access";
 import { loadMerchantStoreFoodOrders } from "@/lib/merchant-food-orders/load-store-food-orders";
@@ -36,6 +36,7 @@ import {
   persistMerchantCtmAtAccept,
   resolveMerchantWalletCreditAmount,
 } from "@/lib/merchant-order-ctm";
+import { broadcastMerchantIncomingResolved } from "@/lib/merchant-incoming-resolved-broadcast";
 
 export const runtime = "nodejs";
 
@@ -134,38 +135,48 @@ export async function PATCH(
         "id, order_id, order_status, merchant_store_id, food_items_total_value, preparation_time_minutes, prep_ready_by_at, preparing_at, accepted_at"
       )
       .eq("id", foodRowId)
-      .single();
+      .maybeSingle();
 
     if (fetchErr || !existing) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
 
-    const { data: coreRow } = await db
-      .from("orders_core")
-      .select("merchant_store_id")
-      .eq("id", existing.order_id as number)
-      .maybeSingle();
-    if (!coreRow || Number(coreRow.merchant_store_id) !== storeInternalId) {
-      return NextResponse.json({ error: "Order does not belong to this store" }, { status: 403 });
-    }
-
-    let currentStatus = normalizeOrderStatusForTransition(existing.order_status as string);
-    try {
-      const { data: core } = await db
+    const foodStoreId = Number(existing.merchant_store_id);
+    if (Number.isFinite(foodStoreId) && foodStoreId !== storeInternalId) {
+      const { data: coreRow } = await db
         .from("orders_core")
-        .select("status, current_status")
+        .select("merchant_store_id")
         .eq("id", existing.order_id as number)
         .maybeSingle();
-      if (core) {
-        const pipeline = resolvePartnerPipeline(
-          existing.order_status as string | null,
-          (core as { status?: string }).status ?? "assigned",
-          (core as { current_status?: string | null }).current_status ?? null
-        );
-        currentStatus = normalizeOrderStatusForTransition(pipeline);
+      if (!coreRow || Number(coreRow.merchant_store_id) !== storeInternalId) {
+        return NextResponse.json({ error: "Order does not belong to this store" }, { status: 403 });
       }
-    } catch {
-      /* fallback */
+    } else if (!Number.isFinite(foodStoreId)) {
+      const { data: coreRow } = await db
+        .from("orders_core")
+        .select("merchant_store_id")
+        .eq("id", existing.order_id as number)
+        .maybeSingle();
+      if (!coreRow || Number(coreRow.merchant_store_id) !== storeInternalId) {
+        return NextResponse.json({ error: "Order does not belong to this store" }, { status: 403 });
+      }
+    }
+
+    // Validate against orders_food.order_status — orders_core.current_status can run ahead
+    // (rider/ETA) while the merchant still needs CREATED → ACCEPTED.
+    const currentStatus = normalizeOrderStatusForTransition(existing.order_status as string);
+
+    if (newStatus === currentStatus) {
+      try {
+        const merged = await loadMerchantStoreFoodOrders(storeInternalId, {
+          ordersFoodId: foodRowId,
+          limit: 1,
+        });
+        if (merged[0]) return NextResponse.json({ order: merged[0], idempotent: true });
+      } catch {
+        /* fall through with food row */
+      }
+      return NextResponse.json({ order: existing, idempotent: true });
     }
 
     const allowed = VALID_TRANSITIONS[currentStatus] || [];
@@ -188,6 +199,8 @@ export async function PATCH(
     if (newStatus === "ACCEPTED") {
       updates.accepted_at = now;
       if (actionLabels.accepted_by_label) updates.accepted_by_label = actionLabels.accepted_by_label;
+      const acceptanceSource = orderAcceptanceSourceFromAction(actionSource);
+      if (acceptanceSource) updates.acceptance_source = acceptanceSource;
 
       const { data: storeRow } = await db
         .from("merchant_stores")
@@ -246,12 +259,25 @@ export async function PATCH(
       }
     }
 
-    const { data: updatedRow, error } = await db
+    let { data: updatedRow, error } = await db
       .from("orders_food")
       .update(updates)
       .eq("id", foodRowId)
       .select()
       .single();
+
+    if (error && String(error.message || "").toLowerCase().includes("acceptance_source")) {
+      const withoutSource = { ...updates };
+      delete withoutSource.acceptance_source;
+      const retry = await db
+        .from("orders_food")
+        .update(withoutSource)
+        .eq("id", foodRowId)
+        .select()
+        .single();
+      updatedRow = retry.data;
+      error = retry.error;
+    }
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
@@ -403,6 +429,7 @@ export async function PATCH(
           ...(newStatus === "ACCEPTED"
             ? {
                 accept_mode: actionMode,
+                acceptance_source: orderAcceptanceSourceFromAction(actionSource),
                 ...(acceptPrepMinutes != null ? { preparation_time_minutes: acceptPrepMinutes } : {}),
                 ...(acceptPrepReadyByAt ? { prep_ready_by_at: acceptPrepReadyByAt } : {}),
               }
@@ -429,15 +456,32 @@ export async function PATCH(
       previousStatus: currentStatus,
     });
 
-    const merged = await loadMerchantStoreFoodOrders(storeInternalId, {
-      ordersFoodId: foodRowId,
-      limit: 1,
-    });
-    const order = merged[0];
-    if (!order) {
-      return NextResponse.json({ error: "Order not found after update" }, { status: 404 });
+    if (newStatus === "ACCEPTED" || newStatus === "CANCELLED") {
+      void broadcastMerchantIncomingResolved({
+        storeId: storeInternalId,
+        coreId: Number(existing.order_id) || null,
+        foodId: foodRowId,
+        status: newStatus,
+      });
     }
-    return NextResponse.json({ order });
+
+    try {
+      const merged = await loadMerchantStoreFoodOrders(storeInternalId, {
+        ordersFoodId: foodRowId,
+        limit: 1,
+      });
+      const order = merged[0];
+      if (order) return NextResponse.json({ order });
+    } catch (loadErr) {
+      console.warn("[orders PATCH] reload after update failed:", loadErr);
+    }
+    return NextResponse.json({
+      order: {
+        ...updatedRow,
+        order_status: newStatus,
+        order_id: existing.order_id,
+      },
+    });
   } catch (e) {
     console.error("[PATCH /api/merchant/stores/[id]/orders/[orderId]]", e);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });

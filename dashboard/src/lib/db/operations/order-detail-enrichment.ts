@@ -34,6 +34,7 @@ import {
 import type { OrdersFoodRow } from "@/lib/types/food-orders";
 import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { listR2KeysByPrefix } from "@/lib/services/r2";
+import { resolveDisplayedAcceptanceSource } from "@/lib/merchantOrderFoodActions";
 
 export type OrderDetailEnrichment = {
   orderTimeIso: string | null;
@@ -47,6 +48,8 @@ export type OrderDetailEnrichment = {
   scheduledDeliverySummary: string | null;
   deliveryType: string | null;
   contactlessDelivery: boolean | null;
+  /** DASH-MX-PORT | PARTNERSITE | MX-APP when the store accepted. */
+  acceptanceSource: string | null;
   localityType: string | null;
   localityIsSafe: boolean | null;
   deliveredBy: string | null;
@@ -593,11 +596,21 @@ async function fetchFoodPrepMeta(orderId: number): Promise<{
   preparationTimeMinutes: number | null;
   prepTimeSource: string | null;
   prepDelayMinutes: number | null;
+  acceptanceSource: string | null;
+  acceptedByLabel: string | null;
 }> {
   const db = getDb();
+  const empty = {
+    preparationTimeMinutes: null as number | null,
+    prepTimeSource: null as string | null,
+    prepDelayMinutes: null as number | null,
+    acceptanceSource: null as string | null,
+    acceptedByLabel: null as string | null,
+  };
   try {
     const rows = await db.execute(sql`
-      SELECT preparation_time_minutes, prep_time_source, prep_delay_minutes
+      SELECT preparation_time_minutes, prep_time_source, prep_delay_minutes,
+             acceptance_source, accepted_by_label
       FROM orders_food
       WHERE order_id = ${orderId}
       LIMIT 1
@@ -608,11 +621,13 @@ async function fetchFoodPrepMeta(orderId: number): Promise<{
       prepTimeSource:
         row?.prep_time_source != null ? String(row.prep_time_source) : null,
       prepDelayMinutes: asNum(row?.prep_delay_minutes),
+      acceptanceSource: row?.acceptance_source != null ? String(row.acceptance_source) : null,
+      acceptedByLabel: row?.accepted_by_label != null ? String(row.accepted_by_label) : null,
     };
   } catch {
     try {
       const rows = await db.execute(sql`
-        SELECT preparation_time_minutes, prep_time_source
+        SELECT preparation_time_minutes, prep_time_source, prep_delay_minutes, accepted_by_label
         FROM orders_food
         WHERE order_id = ${orderId}
         LIMIT 1
@@ -622,10 +637,30 @@ async function fetchFoodPrepMeta(orderId: number): Promise<{
         preparationTimeMinutes: asNum(row?.preparation_time_minutes),
         prepTimeSource:
           row?.prep_time_source != null ? String(row.prep_time_source) : null,
-        prepDelayMinutes: null,
+        prepDelayMinutes: asNum(row?.prep_delay_minutes),
+        acceptanceSource: null,
+        acceptedByLabel: row?.accepted_by_label != null ? String(row.accepted_by_label) : null,
       };
     } catch {
-      return { preparationTimeMinutes: null, prepTimeSource: null, prepDelayMinutes: null };
+      try {
+        const rows = await db.execute(sql`
+          SELECT preparation_time_minutes, prep_time_source
+          FROM orders_food
+          WHERE order_id = ${orderId}
+          LIMIT 1
+        `);
+        const row = (rows as unknown as Record<string, unknown>[])[0];
+        return {
+          preparationTimeMinutes: asNum(row?.preparation_time_minutes),
+          prepTimeSource:
+            row?.prep_time_source != null ? String(row.prep_time_source) : null,
+          prepDelayMinutes: null,
+          acceptanceSource: null,
+          acceptedByLabel: null,
+        };
+      } catch {
+        return empty;
+      }
     }
   }
 }
@@ -1188,6 +1223,10 @@ export async function getOrderDetailEnrichment(
       scheduledDeliverySummary: scheduledSummary,
       deliveryType: deliveryTypeRaw,
       contactlessDelivery: contactless,
+      acceptanceSource: resolveDisplayedAcceptanceSource({
+        acceptanceSource: foodPrepMeta.acceptanceSource,
+        acceptedByLabel: foodPrepMeta.acceptedByLabel,
+      }),
       localityType: locality?.label ?? null,
       localityIsSafe: locality?.isSafe ?? null,
       deliveredBy:

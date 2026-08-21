@@ -126,7 +126,7 @@ export function OrderCustomerFeedbackSideSheet({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[10000] flex justify-end bg-slate-900/50 backdrop-blur-[2px]"
+      className="fixed inset-0 z-[10000] flex justify-end bg-slate-900/50 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-label={title}

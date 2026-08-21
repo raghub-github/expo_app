@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle, Loader2, RotateCcw, X } from "lucide-react";
+import { OrderPageOverlay } from "@/components/orders/OrderPageOverlay";
 import { useCancellationReasonCatalog } from "@/hooks/useCancellationReasonCatalog";
 import {
   normalizeCatalogReasonId,
@@ -259,9 +260,9 @@ export default function PersonRideRefundModal({
     }`;
 
   return (
-    <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-5"
-      onClick={(e) => {
+    <OrderPageOverlay
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-5"
+      onBackdropClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
@@ -532,6 +533,6 @@ export default function PersonRideRefundModal({
           </div>
         </div>
       </div>
-    </div>
-  );
+      </OrderPageOverlay>
+    );
 }

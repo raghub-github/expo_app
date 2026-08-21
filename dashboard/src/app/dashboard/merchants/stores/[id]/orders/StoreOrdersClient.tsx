@@ -1551,7 +1551,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
       const payload = {
         status: newStatus,
-        action_source: extra?.action_source ?? ('website' as const),
+        action_source: extra?.action_source ?? ('admin' as const),
         ...(newStatus === 'ACCEPTED' ? { accept_mode: 'manual' as const } : {}),
         ...(newStatus === 'CANCELLED'
           ? { cancel_mode: extra?.cancel_mode ?? ('manual' as const) }

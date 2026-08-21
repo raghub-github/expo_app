@@ -79,6 +79,8 @@ export type OrdersFoodRow = {
   is_high_value?: boolean | null;
   rejected_reason?: string | null;
   accepted_by_label?: string | null;
+  /** DASH-MX-PORT | PARTNERSITE | MX-APP */
+  acceptance_source?: string | null;
   cancelled_by_label?: string | null;
   /** Merchant answer: was rider in uniform? (from order_rider_assignments) */
   merchant_rider_in_uniform?: boolean | null;
