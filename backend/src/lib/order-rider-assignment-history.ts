@@ -617,7 +617,7 @@ export async function backfillAcceptTimelineDistances(input: {
       ORDER BY is_active DESC NULLS LAST, COALESCE(accepted_at, assigned_at, created_at) DESC
       LIMIT 1
     `;
-    const assignmentId = Number((rows as { id: number }[])[0]?.id ?? 0);
+    const assignmentId = Number((rows as unknown as { id: number }[])[0]?.id ?? 0);
     if (!assignmentId) return distance;
 
     const mx = distance.merchantDistanceKm ?? null;
