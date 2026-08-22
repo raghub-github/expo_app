@@ -53,8 +53,12 @@ function mapManeuverKind(
   return "unknown";
 }
 
-export function parseMapboxRouteSheet(json: Record<string, unknown>): RouteSheetData | null {
-  const route = (json.routes as Record<string, unknown>[] | undefined)?.[0];
+export function parseMapboxRouteSheet(
+  json: Record<string, unknown>,
+  selectedRouteIndex = 0
+): RouteSheetData | null {
+  const routes = json.routes as Record<string, unknown>[] | undefined;
+  const route = routes?.[selectedRouteIndex] ?? routes?.[0];
   if (!route) return null;
 
   const leg = (route.legs as Record<string, unknown>[] | undefined)?.[0];

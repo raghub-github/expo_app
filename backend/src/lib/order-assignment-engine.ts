@@ -661,9 +661,14 @@ export async function evaluateRiderDispatchEligibility(
     | "orderId"
     | "personRideVehicleTypes"
   >,
-  options?: { ignoreAssignmentLimit?: boolean }
+  options?: {
+    ignoreAssignmentLimit?: boolean;
+    /** When set, last reject reason is written here (admin / Force Assignment UX). */
+    lastRejectReason?: { current?: string };
+  }
 ): Promise<EligibleDispatchRider | null> {
   const reject = (reason: string, extra?: Partial<DispatchRiderTrace>): null => {
+    if (options?.lastRejectReason) options.lastRejectReason.current = reason;
     traceRiderDecision({
       riderId,
       serviceType: target.serviceType,

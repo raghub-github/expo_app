@@ -359,6 +359,8 @@ export const orderCxNotificationAdminRoutes: FastifyPluginAsync = async (app) =>
       target: { user_id: ctx.customerUserId },
       priority: "high",
       bypassQuietHours: true,
+      // System shade only — do not write an in-app inbox row (customer pills).
+      channel: "push",
       overrides: {
         title: overrideTitle || null,
         body: overrideBody || customMessage || null,
@@ -366,6 +368,7 @@ export const orderCxNotificationAdminRoutes: FastifyPluginAsync = async (app) =>
       },
       metadata: {
         admin_cx: true,
+        skip_in_app_banner: true,
         order_id: ctx.orderIdText,
         orders_core_pk: ctx.ordersCorePk,
         sent_by_email: b.sentByEmail ?? null,

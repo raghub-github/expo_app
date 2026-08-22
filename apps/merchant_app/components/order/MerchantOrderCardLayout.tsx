@@ -141,8 +141,8 @@ export function MerchantOrderCardLayout({
     : {};
 
   return (
-    <View style={styles.wrap}>
-      {outerBanner}
+    <View style={styles.wrap} collapsable={false}>
+      {outerBanner ? <View style={styles.bannerClip}>{outerBanner}</View> : null}
 
       <CardShell
         {...cardShellProps}

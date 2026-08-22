@@ -83,6 +83,12 @@ export async function POST(
       body.catalogReasonId != null && Number.isFinite(Number(body.catalogReasonId))
         ? Number(body.catalogReasonId)
         : null;
+    const radiusKmRaw =
+      body.radiusKm != null && Number.isFinite(Number(body.radiusKm))
+        ? Number(body.radiusKm)
+        : null;
+    const radiusKm =
+      radiusKmRaw != null ? Math.min(10, Math.max(0.5, radiusKmRaw)) : 10;
 
     if (!["cancel_only", "cancel_reassign", "assign_rider", "hard_assign"].includes(action)) {
       return NextResponse.json({ success: false, error: "Invalid action" }, { status: 400 });
@@ -131,6 +137,7 @@ export async function POST(
         riderId,
         actorEmail,
         actorId,
+        radiusKm,
       });
       if (!result.ok) {
         return NextResponse.json(

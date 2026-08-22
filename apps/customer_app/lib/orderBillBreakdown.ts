@@ -210,7 +210,27 @@ function resolveDeliveryDisplay(snapshot: Record<string, unknown>): {
   deliveryFeeOriginal: number | null;
   deliveryDisplayFree: boolean;
 } {
-  const rawDeliveryFee = num(snapshot.delivery_fee);
+  // Prefer checkout net fee; if overwritten by rider payout, restore from gross − subsidy.
+  const gross = num(snapshot.delivery_fee_gross ?? snapshot.deliveryFeeGross);
+  const subsidy = num(snapshot.delivery_subsidy ?? snapshot.deliverySubsidy);
+  const expectedNet =
+    gross > 0.005 ? Math.round(Math.max(0, gross - (subsidy > 0 ? subsidy : 0)) * 100) / 100 : null;
+  let rawDeliveryFee = num(snapshot.delivery_fee);
+  const payoutSnap =
+    snapshot.rider_payout_snapshot != null && typeof snapshot.rider_payout_snapshot === "object"
+      ? (snapshot.rider_payout_snapshot as Record<string, unknown>)
+      : null;
+  if (payoutSnap && expectedNet != null) {
+    const riderTotal = num(payoutSnap.totalEarning);
+    if (
+      riderTotal > 0.005 &&
+      Math.abs(rawDeliveryFee - riderTotal) <= 0.51 &&
+      Math.abs(rawDeliveryFee - expectedNet) > 0.51
+    ) {
+      rawDeliveryFee = expectedNet;
+    }
+  }
+
   const beforeBenefits =
     num(snapshot.deliveryFeeBeforeBenefitsInr) > 0.005
       ? num(snapshot.deliveryFeeBeforeBenefitsInr)

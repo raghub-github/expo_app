@@ -2,6 +2,8 @@
  * Parse billing_snapshot for order summary receipt (mirrors customer app orderBillBreakdown).
  */
 
+import { resolveCustomerDeliveryFeeFromBilling } from "./customer-delivery-fee.js";
+
 export type OrderBillDiscountLine = {
   label: string;
   amount: number;
@@ -202,7 +204,8 @@ function resolveDeliveryDisplay(snapshot: Record<string, unknown>): {
   deliveryFeeOriginal: number | null;
   deliveryDisplayFree: boolean;
 } {
-  const rawDeliveryFee = num(snapshot.delivery_fee);
+  // Authoritative customer fee — never rider payout (even if snapshot was corrupted).
+  const rawDeliveryFee = resolveCustomerDeliveryFeeFromBilling(snapshot);
   const beforeBenefits =
     num(snapshot.deliveryFeeBeforeBenefitsInr) > 0.005
       ? num(snapshot.deliveryFeeBeforeBenefitsInr)

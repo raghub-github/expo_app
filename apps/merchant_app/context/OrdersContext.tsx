@@ -459,24 +459,31 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         cancelMode?: "auto" | "manual";
       }
     ): Promise<boolean> => {
-      if (!token || orderStoreIds.length === 0) return false;
+      if (!token || orderStoreIds.length === 0) {
+        if (nextStatus === "ready") setError("Not signed in. Open the app again and retry.");
+        return false;
+      }
       if (orderId.startsWith("core-")) {
         setError("Order is still syncing; refresh in a moment or use Partner Site.");
         return false;
       }
       const order = ordersRef.current.find((o) => o.id === orderId);
-      if (!order || !canTransition(order, nextStatus)) return false;
+      if (!order) {
+        if (nextStatus === "ready") setError("Order not found. Pull to refresh and retry.");
+        return false;
+      }
+      if (!canTransition(order, nextStatus)) return false;
       const storeId = resolveOrderStoreId(order);
-      if (!storeId) return false;
+      if (!storeId) {
+        if (nextStatus === "ready") setError("No store selected. Retry after the store loads.");
+        return false;
+      }
 
       // Kitchen "Order Ready" can fire while pipeline is still ACCEPTED (accepted
       // but not yet PREPARING). Always resolve to READY_FOR_PICKUP from either.
       let fromStage = order.status;
       const pipeline = order.pipelineStatus.toUpperCase();
-      if (
-        nextStatus === "ready" &&
-        (pipeline === "ACCEPTED" || pipeline === "PREPARING" || fromStage === "preparing")
-      ) {
+      if (nextStatus === "ready") {
         fromStage = "preparing";
       }
 

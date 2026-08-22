@@ -6,7 +6,7 @@ import { resolveUrlForDevice } from "@/config/env";
 
 /**
  * Absolute URL for Super Admin asset `merchant.map.bike` (client key `map.bike`).
- * WebView maps need a device-reachable https URL — relative proxy paths fail silently.
+ * Native MapView Image markers need a device-reachable https URL.
  */
 export function mapbikeMarkerUri(): string {
   const raw =

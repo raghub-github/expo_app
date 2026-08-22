@@ -1,6 +1,6 @@
 import { getConfig } from "@/config/env";
 
-/** Use Mapbox WebView maps when a public token is configured (replaces Google Maps tiles). */
+/** Native Mapbox maps when a public token is configured. */
 export function shouldUseMapboxMap(): boolean {
   return !!getConfig().mapboxAccessToken?.trim();
 }

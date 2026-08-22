@@ -1230,9 +1230,8 @@ export default function PaymentDetails({
           <p className={paymentDetailRowClass}>
             <span className="text-gati-text-secondary font-medium shrink-0">Source:</span>
             <span className="text-gati-text-primary font-medium shrink-0">{resolved.source ?? '—'}</span>
-            <span className="text-gati-text-secondary shrink-0" aria-hidden>
-              |
-            </span>
+          </p>
+          <p className={paymentDetailRowClass}>
             <span className="text-gati-text-secondary font-medium shrink-0">PaymentMode:</span>
             <span className="text-gati-text-primary font-medium shrink-0">
               {resolved.paymentMode ?? '—'}

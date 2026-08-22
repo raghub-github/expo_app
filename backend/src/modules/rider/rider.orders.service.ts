@@ -43,6 +43,7 @@ import type { ActiveRiderAssignmentMilestones, RiderDistanceSnapshot } from "../
 import { resolveRiderOrderDistanceSnapshot, attachRiderOrderDistanceBreakdown } from "../../lib/rider-order-distance-snapshot.js";
 import { recordFoodRiderAssignedTimeline } from "../../lib/food-rider-assigned-timeline.js";
 import {
+  backfillAcceptTimelineDistances,
   loadActiveRiderAssignmentMilestones,
   loadActiveRiderAssignmentMilestonesForRider,
   recordRiderAssignmentMilestone,
@@ -2547,6 +2548,12 @@ async function acceptFoodOrderForRider(
   void (async () => {
     try {
       const ctx = await resolveRiderAssignmentContext(riderId, { skipAssignmentCheck: true });
+      // Capture MX/CX at accept for Assigned timeline box (outside claim TX).
+      await backfillAcceptTimelineDistances({
+        orderCorePk: preCheck.id,
+        riderId,
+        explicitGps: ctx ? { lat: ctx.lat, lng: ctx.lng } : undefined,
+      });
       if (!ctx) {
         await persistFoodRiderAcceptPayoutSnapshot(preCheck.id, riderId);
         return;
@@ -2791,6 +2798,12 @@ async function acceptParcelOrderForRider(
 
   await completeOrderDispatch(preCheck.id, "accepted");
   noteRiderOrderLocationMilestone(riderId, accepted.id, "accepted");
+  void backfillAcceptTimelineDistances({
+    orderCorePk: preCheck.id,
+    riderId,
+  }).catch((err) => {
+    console.warn("[acceptParcelOrderForRider] timeline distance backfill failed:", err);
+  });
   void notifyCustomerParcelLifecycle({
     orderIdText,
     templateCode: "PARCEL_RIDER_ON_THE_WAY",
@@ -3035,6 +3048,11 @@ async function acceptRideOrderForRider(
   void (async () => {
     try {
       const ctx = await resolveRiderAssignmentContext(riderId, { skipAssignmentCheck: true });
+      await backfillAcceptTimelineDistances({
+        orderCorePk: preCheck.id,
+        riderId,
+        explicitGps: ctx ? { lat: ctx.lat, lng: ctx.lng } : undefined,
+      });
       if (!ctx) {
         await persistRideRiderAcceptPayoutSnapshot(preCheck.id, riderId);
         return;

@@ -7,7 +7,7 @@ export type MapEdgePadding = {
   left: number;
 };
 
-/** Shared imperative map API for Mapbox WebView maps. */
+/** Shared imperative map API for native Mapbox maps. */
 export type CustomerMapRef = {
   pointForCoordinate: (coord: LatLng) => Promise<{ x: number; y: number } | null>;
   fitToCoordinates: (

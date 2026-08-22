@@ -128,6 +128,8 @@ export type LiveOrderCardProps = {
   onAccept: () => void;
   onReject: () => void;
   onAdvance: () => void;
+  /** Kitchen card — always READY_FOR_PICKUP, never generic “next stage”. */
+  onMarkReady?: () => void;
   onNeedMoreTime?: () => void;
   onViewDetail: () => void;
   onReviewPress?: () => void;
@@ -142,6 +144,7 @@ export function LiveOrderCard({
   onAccept,
   onReject,
   onAdvance,
+  onMarkReady,
   onNeedMoreTime,
   onViewDetail,
   onReviewPress,
@@ -173,6 +176,16 @@ export function LiveOrderCard({
         onReviewPress={onReviewPress}
       />
     );
+  } else if (order.status === "ready" || order.pipelineStatus === "READY_FOR_PICKUP") {
+    card = (
+      <MerchantReadyOrderCard
+        order={order}
+        storeName={storeName}
+        nowMs={clock}
+        onViewDetail={onViewDetail}
+        onItemPress={onItemPress}
+      />
+    );
   } else if (
     order.pipelineStatus === "ACCEPTED" ||
     order.pipelineStatus === "PREPARING" ||
@@ -183,21 +196,11 @@ export function LiveOrderCard({
         order={order}
         storeName={storeName}
         nowMs={clock}
-        onReady={onAdvance}
+        onReady={onMarkReady ?? onAdvance}
         onNeedMoreTime={onNeedMoreTime}
         onViewDetail={onViewDetail}
         onItemPress={onItemPress}
         loading={actionLoading}
-      />
-    );
-  } else if (order.status === "ready" || order.pipelineStatus === "READY_FOR_PICKUP") {
-    card = (
-      <MerchantReadyOrderCard
-        order={order}
-        storeName={storeName}
-        nowMs={clock}
-        onViewDetail={onViewDetail}
-        onItemPress={onItemPress}
       />
     );
   } else if (order.status === "picked_up" || order.pipelineStatus === "OUT_FOR_DELIVERY") {

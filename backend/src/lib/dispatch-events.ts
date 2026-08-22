@@ -11,6 +11,7 @@ import type { DispatchServiceType } from "./order-assignment-engine.js";
 export type DispatchEventType =
   | "session_started"
   | "wave_dispatched"
+  | "wave_no_candidates"
   | "wave_expanded"
   | "retry_scheduled"
   | "dispatch_exhausted"

@@ -56,6 +56,29 @@ export type OrderPricingLine = {
   rowBadge?: "membership";
 };
 
+/** GST tax line persisted on billing_snapshot.taxes at checkout. */
+export type OrderGstTaxLine = {
+  label: string;
+  /** Rate percent as stored/applied (e.g. 5 or 18). */
+  ratePct: number | null;
+  taxableBase: number | null;
+  amount: number;
+  taxGroup: string | null;
+};
+
+/** GST split for Customer Bill modal — from persisted billing_snapshot values. */
+export type OrderGstBreakdown = {
+  taxableAmount: number;
+  /** Effective rate % when a single rate applies; null when mixed / unknown. */
+  gstRatePct: number | null;
+  cgst: number;
+  sgst: number;
+  igst: number;
+  totalGst: number;
+  /** Individual tax rows from billing_snapshot.taxes (DB/checkout snapshot). */
+  taxLines: OrderGstTaxLine[];
+};
+
 export type OrderPricingSummary = {
   lines: OrderPricingLine[];
   itemsAmountTotal: number;
@@ -82,7 +105,213 @@ export type OrderPricingSummary = {
   cashinAmount?: number;
   /** GatiCash wallet used (payment — not a discount). */
   gatiCashUsed?: number;
+  /** Persisted GST breakdown for the GST click-through modal. */
+  gstBreakdown?: OrderGstBreakdown | null;
 };
+
+/**
+ * Customer delivery fee charged at checkout.
+ * Never uses rider_payout_snapshot / rider earnings. Reconstructs from
+ * delivery_fee_gross − delivery_subsidy when delivery_fee was overwritten.
+ */
+export function resolveCustomerDeliveryFeeFromBilling(
+  snap: Record<string, unknown> | null | undefined,
+): number {
+  if (!snap || typeof snap !== "object") return 0;
+
+  const gross = asNum(snap.delivery_fee_gross ?? snap.deliveryFeeGross);
+  const subsidyRaw = asNum(snap.delivery_subsidy ?? snap.deliverySubsidy);
+  const expectedNet =
+    gross > 0
+      ? round2(Math.max(0, gross - (subsidyRaw > 0 ? subsidyRaw : 0)))
+      : null;
+
+  const stored = asNum(snap.delivery_fee);
+  const payoutSnap =
+    snap.rider_payout_snapshot != null && typeof snap.rider_payout_snapshot === "object"
+      ? (snap.rider_payout_snapshot as Record<string, unknown>)
+      : null;
+  let riderPayout: number | null = null;
+  if (payoutSnap) {
+    const total = asNum(payoutSnap.totalEarning);
+    if (total > 0) {
+      const tip = asNum(payoutSnap.customerTipAmount);
+      const withoutTip = round2(Math.max(0, total - (tip > 0 ? tip : 0)));
+      if (Math.abs(stored - withoutTip) <= 0.51) riderPayout = withoutTip;
+      else if (Math.abs(stored - total) <= 0.51) riderPayout = round2(total);
+      else riderPayout = withoutTip > 0 ? withoutTip : round2(total);
+    }
+  }
+
+  if (
+    stored >= 0 &&
+    riderPayout != null &&
+    riderPayout > 0 &&
+    Math.abs(stored - riderPayout) <= 0.51 &&
+    expectedNet != null &&
+    Math.abs(stored - expectedNet) > 0.51
+  ) {
+    return expectedNet;
+  }
+
+  if (stored >= 0 && Number.isFinite(Number(snap.delivery_fee))) {
+    return round2(stored);
+  }
+  if (expectedNet != null) return expectedNet;
+  return 0;
+}
+
+/** Build GST modal fields from persisted billing_snapshot (orders_core JSONB). */
+export function buildGstBreakdownFromBilling(
+  snap: Record<string, unknown> | null | undefined,
+): OrderGstBreakdown | null {
+  if (!snap || typeof snap !== "object") return null;
+
+  const totalGst = round2(
+    asNum(snap.tax_total) ||
+      asNum((snap.gst_totals as Record<string, unknown> | undefined)?.total_tax) ||
+      asNum(snap.gst_total)
+  );
+
+  const gstComponents =
+    snap.gst_components && typeof snap.gst_components === "object"
+      ? (snap.gst_components as Record<string, unknown>)
+      : null;
+
+  let taxableAmount = 0;
+  if (gstComponents) {
+    for (const key of Object.keys(gstComponents)) {
+      const row = gstComponents[key];
+      if (!row || typeof row !== "object") continue;
+      taxableAmount = round2(
+        taxableAmount + asNum((row as Record<string, unknown>).taxable_value)
+      );
+    }
+  }
+
+  // Persisted tax application lines from checkout (billing engine → billing_snapshot.taxes).
+  const taxLines: OrderGstTaxLine[] = [];
+  const rates = new Set<number>();
+  let cgstFromLines = 0;
+  let sgstFromLines = 0;
+  let igstFromLines = 0;
+  let hasCgstSgstLines = false;
+
+  const taxes = Array.isArray(snap.taxes) ? snap.taxes : [];
+  for (const t of taxes) {
+    if (!t || typeof t !== "object") continue;
+    const row = t as Record<string, unknown>;
+    const amount = round2(asNum(row.amount ?? row.tax));
+    if (amount <= 0.005) continue;
+    const meta =
+      row.meta && typeof row.meta === "object"
+        ? (row.meta as Record<string, unknown>)
+        : null;
+    const rawRate = asNum(meta?.rate ?? row.rate);
+    let ratePct: number | null = null;
+    if (rawRate > 0) {
+      ratePct = rawRate > 1 ? round2(rawRate) : round2(rawRate * 100);
+      rates.add(ratePct);
+    }
+    const taxableBase = asNum(meta?.base);
+    const taxGroup = String(meta?.taxGroup ?? meta?.tax_group ?? row.tax_group ?? "").trim() || null;
+    const label = String(row.label ?? row.name ?? taxGroup ?? "GST").trim() || "GST";
+    const labelLower = label.toLowerCase();
+
+    if (labelLower.includes("cgst") || taxGroup?.toLowerCase() === "cgst") {
+      cgstFromLines = round2(cgstFromLines + amount);
+      hasCgstSgstLines = true;
+    } else if (labelLower.includes("sgst") || taxGroup?.toLowerCase() === "sgst") {
+      sgstFromLines = round2(sgstFromLines + amount);
+      hasCgstSgstLines = true;
+    } else if (labelLower.includes("igst") || taxGroup?.toLowerCase() === "igst") {
+      igstFromLines = round2(igstFromLines + amount);
+      hasCgstSgstLines = true;
+    }
+
+    taxLines.push({
+      label,
+      ratePct,
+      taxableBase: taxableBase > 0 ? round2(taxableBase) : null,
+      amount,
+      taxGroup,
+    });
+  }
+
+  if (taxableAmount <= 0.005 && totalGst <= 0.005 && taxLines.length === 0) return null;
+
+  // If gst_components taxable missing, fall back to sum of tax line bases from snapshot.
+  if (taxableAmount <= 0.005) {
+    taxableAmount = round2(
+      taxLines.reduce((s, l) => s + (l.taxableBase != null ? l.taxableBase : 0), 0)
+    );
+  }
+
+  // Single uniform rate from persisted tax lines only — never invent a default %.
+  let gstRatePct: number | null = null;
+  if (rates.size === 1) {
+    gstRatePct = [...rates][0] ?? null;
+  } else if (rates.size > 1) {
+    gstRatePct = null; // mixed — UI shows per-line rates from taxLines
+  } else if (taxableAmount > 0.005 && totalGst > 0.005) {
+    gstRatePct = round2((totalGst / taxableAmount) * 100);
+  }
+
+  // Prefer CGST/SGST/IGST rows if the snapshot stored them; else invoice split of tax_total.
+  let cgst: number;
+  let sgst: number;
+  let igst: number;
+  if (hasCgstSgstLines) {
+    cgst = cgstFromLines;
+    sgst = sgstFromLines;
+    igst = igstFromLines;
+  } else {
+    cgst = round2(totalGst / 2);
+    sgst = round2(totalGst - cgst);
+    igst = 0;
+  }
+
+  return {
+    taxableAmount: round2(taxableAmount),
+    gstRatePct,
+    cgst,
+    sgst,
+    igst,
+    totalGst,
+    taxLines,
+  };
+}
+
+/**
+ * Items + platform + customer delivery + taxes + legitimate rounding = CTC.
+ * Used for server-side reconciliation / abnormal-rounding detection.
+ */
+export function customerBillReconciles(input: {
+  itemsAmount: number;
+  platformFee: number;
+  deliveryFee: number;
+  gst: number;
+  otherCharges: number;
+  discounts: number;
+  tip: number;
+  donation: number;
+  rounding: number;
+  totalPaid: number;
+}): { ok: boolean; expected: number; diff: number } {
+  const expected = round2(
+    input.itemsAmount +
+      input.platformFee +
+      input.deliveryFee +
+      input.gst +
+      input.otherCharges +
+      input.tip +
+      input.donation +
+      input.rounding -
+      input.discounts
+  );
+  const diff = round2(input.totalPaid - expected);
+  return { ok: Math.abs(diff) < 0.02, expected, diff };
+}
 
 /** Membership free-delivery display from billing_snapshot (mirrors customer checkout). */
 export function resolveDeliveryFeeDisplayFromBilling(
@@ -92,7 +321,7 @@ export function resolveDeliveryFeeDisplayFromBilling(
     return { paid: 0, quoted: null, waived: false };
   }
 
-  const paid = round2(asNum(snap.delivery_fee));
+  const paid = resolveCustomerDeliveryFeeFromBilling(snap);
   const quotedRaw =
     asNum(snap.deliveryFeeQuotedInr) ||
     asNum(snap.delivery_fee_quoted) ||
@@ -386,9 +615,10 @@ export function buildOrderPricingSummary(
   const smallOrderFee = round2(asNum(snap.small_order_fee));
   const convenienceFee = round2(asNum(snap.convenience_fee));
   const miscFee = round2(asNum(snap.misc_fee));
-  const deliveryFee = round2(asNum(snap.delivery_fee));
+  const deliveryFee = resolveCustomerDeliveryFeeFromBilling(snap);
   const deliveryDisplay = resolveDeliveryFeeDisplayFromBilling(snap);
   const gst = round2(asNum(snap.tax_total));
+  const gstBreakdown = buildGstBreakdownFromBilling(snap);
   const tipAmount = round2(
     asNum(snap.tip_amount) || asNum(core.tip_amount) || asNum(core.tipAmount)
   );
@@ -584,6 +814,7 @@ export function buildOrderPricingSummary(
     totalOrderAmount,
     cashinAmount,
     gatiCashUsed: gatiCashUsed > 0.005 ? roundCtcMoney(gatiCashUsed) : undefined,
+    gstBreakdown,
   };
 }
 
@@ -677,6 +908,15 @@ function parsePricingSummary(pr: Record<string, unknown>): OrderPricingSummary {
     gatiCashUsed:
       pr.gatiCashUsed != null && Number(pr.gatiCashUsed) > 0
         ? Number(pr.gatiCashUsed)
+        : undefined,
+    gstBreakdown:
+      pr.gstBreakdown != null && typeof pr.gstBreakdown === "object"
+        ? {
+            ...(pr.gstBreakdown as OrderGstBreakdown),
+            taxLines: Array.isArray((pr.gstBreakdown as OrderGstBreakdown).taxLines)
+              ? (pr.gstBreakdown as OrderGstBreakdown).taxLines
+              : [],
+          }
         : undefined,
   };
 }

@@ -39,7 +39,7 @@ export type RiderSelectionSideSheetProps = {
   submitting?: boolean;
   riders: SelectableRider[];
   onClose: () => void;
-  onConfirm: (rider: SelectableRider) => void;
+  onConfirm: (rider: SelectableRider, meta: { radiusKm: number }) => void;
   onRefresh?: () => void;
 };
 
@@ -66,7 +66,7 @@ function onlineDotClass(s: string): string {
 /** Merchant-centric radius options for Force Assignment (max 10 km). */
 const FORCE_RADIUS_KM_OPTIONS = [1, 2, 3, 5, 10] as const;
 type ForceRadiusKm = (typeof FORCE_RADIUS_KM_OPTIONS)[number];
-const DEFAULT_FORCE_RADIUS_KM: ForceRadiusKm = 3;
+const DEFAULT_FORCE_RADIUS_KM: ForceRadiusKm = 10;
 
 function mxDistanceKm(r: SelectableRider): number | null {
   const km = r.distanceFromMxKm ?? r.distanceKm;
@@ -191,8 +191,8 @@ export function RiderSelectionSideSheet({
 
   const handleConfirm = useCallback(() => {
     if (!primarySelected || submitting) return;
-    onConfirm(primarySelected);
-  }, [primarySelected, submitting, onConfirm]);
+    onConfirm(primarySelected, { radiusKm });
+  }, [primarySelected, submitting, onConfirm, radiusKm]);
 
   if (!open || typeof document === "undefined") return null;
 

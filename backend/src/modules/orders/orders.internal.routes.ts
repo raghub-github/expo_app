@@ -218,6 +218,8 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
         actor_email: z.string().email().optional(),
         actor_id: z.string().max(120).optional(),
         offer_seconds: z.number().int().min(30).max(300).optional(),
+        /** Admin Force Assignment radius (km). Defaults to 10 on the service. */
+        radius_km: z.number().min(0.5).max(10).optional().nullable(),
       })
       .safeParse(req.body);
     if (!parsed.success) {
@@ -234,6 +236,7 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
         adminEmail: parsed.data.actor_email ?? null,
         adminUserId: parsed.data.actor_id ?? null,
         offerSeconds: parsed.data.offer_seconds,
+        radiusKm: parsed.data.radius_km ?? null,
       });
       return reply.send({ ok: true, forceAssignment: state });
     } catch (err) {
@@ -290,6 +293,7 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
         rider_id: z.number().int().min(1),
         actor_email: z.string().email().optional(),
         actor_id: z.string().max(120).optional(),
+        radius_km: z.number().min(0.5).max(10).optional().nullable(),
       })
       .safeParse(req.body);
     if (!parsed.success) {
@@ -304,6 +308,7 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
         riderId: parsed.data.rider_id,
         adminEmail: parsed.data.actor_email ?? null,
         adminUserId: parsed.data.actor_id ?? null,
+        radiusKm: parsed.data.radius_km ?? null,
       });
       return reply.send({ ok: true });
     } catch (err) {

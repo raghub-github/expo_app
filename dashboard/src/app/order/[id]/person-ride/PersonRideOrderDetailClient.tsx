@@ -680,8 +680,8 @@ export default function PersonRideOrderDetailClient({
               <div className="w-full md:w-1/2">
                 <TripDetailsCard order={order} />
               </div>
+              {hasAssignedRider ? (
               <div className="w-full min-h-[360px] md:w-1/2">
-                {hasAssignedRider ? (
                   <RiderRouteMap
                     key={`person-ride-map-${order.riderId}`}
                     className="h-full min-h-[360px] flex flex-col"
@@ -724,12 +724,12 @@ export default function PersonRideOrderDetailClient({
                     alwaysShowDropMarker
                     pickupPinStyle="person"
                   />
-                ) : (
-                  <div className="flex h-full min-h-[360px] items-center justify-center rounded-lg border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-[12px] text-slate-500">
-                    Route map appears when a captain is assigned.
-                  </div>
-                )}
               </div>
+              ) : (
+                <div className="flex h-full min-h-[360px] w-full items-center justify-center rounded-lg border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-[12px] text-slate-500 md:w-1/2">
+                  Route map appears when a captain is assigned.
+                </div>
+              )}
             </div>
           </div>
         </div>

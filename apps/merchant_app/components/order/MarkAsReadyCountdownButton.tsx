@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { Animated, LayoutChangeEvent, Pressable, StyleSheet, View } from "react-native";
+import { StyleSheet, TouchableOpacity, View } from "react-native";
 import {
   prepReadyCountdownLabel,
   prepReadyTimeRemainingRatio,
@@ -30,37 +30,35 @@ export function MarkAsReadyCountdownButton({
     prefix: labelPrefix,
     expiredLabel: labelPrefix,
   });
-  const fillRatio = prepReadyTimeRemainingRatio(order, nowMs);
+  const fillPct = Math.max(0, Math.min(100, prepReadyTimeRemainingRatio(order, nowMs) * 100));
   const isDark = theme === "dark";
-  const [btnWidth, setBtnWidth] = useState(0);
-  const fillWidth = useRef(new Animated.Value(0)).current;
+  const [pressed, setPressed] = useState(false);
 
-  useEffect(() => {
-    if (btnWidth <= 0) return;
-    Animated.timing(fillWidth, {
-      toValue: fillRatio * btnWidth,
-      duration: 1000,
-      useNativeDriver: false,
-    }).start();
-  }, [btnWidth, fillRatio, fillWidth]);
+  const onPressRef = useRef(onPress);
+  onPressRef.current = onPress;
+  const lockRef = useRef(false);
 
-  const onLayout = (event: LayoutChangeEvent) => {
-    const width = event.nativeEvent.layout.width;
-    if (width > 0 && width !== btnWidth) {
-      setBtnWidth(width);
-      fillWidth.setValue(fillRatio * width);
-    }
-  };
+  const handlePress = useCallback(() => {
+    if (disabled || lockRef.current) return;
+    lockRef.current = true;
+    onPressRef.current();
+    setTimeout(() => {
+      lockRef.current = false;
+    }, 450);
+  }, [disabled]);
 
   return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      onLayout={onLayout}
-      hitSlop={6}
+    <TouchableOpacity
+      activeOpacity={1}
+      delayPressIn={0}
+      disabled={!!disabled}
+      onPress={handlePress}
+      onPressIn={() => setPressed(true)}
+      onPressOut={() => setPressed(false)}
       accessibilityRole="button"
       accessibilityLabel={label}
-      style={({ pressed }) => [
+      accessibilityState={{ disabled: !!disabled }}
+      style={[
         styles.btn,
         isDark ? styles.btnDark : styles.btnLight,
         fullWidth && styles.fullWidth,
@@ -68,15 +66,18 @@ export function MarkAsReadyCountdownButton({
         pressed && !disabled && styles.pressed,
       ]}
     >
-      <Animated.View
+      <View
+        pointerEvents="none"
         style={[
           isDark ? styles.fillDark : styles.fillLight,
-          { width: fillWidth },
+          { width: `${fillPct}%` },
         ]}
       />
       {isDark ? <View pointerEvents="none" style={styles.fillSheen} /> : null}
-      <Text style={isDark ? styles.labelDark : styles.labelLight}>{label}</Text>
-    </Pressable>
+      <Text pointerEvents="none" style={isDark ? styles.labelDark : styles.labelLight}>
+        {label}
+      </Text>
+    </TouchableOpacity>
   );
 }
 
@@ -103,7 +104,7 @@ const styles = StyleSheet.create({
   },
   fullWidth: { width: "100%" },
   disabled: { opacity: 0.5 },
-  pressed: { opacity: 0.92 },
+  pressed: { opacity: 0.88 },
   fillLight: {
     position: "absolute",
     left: 0,

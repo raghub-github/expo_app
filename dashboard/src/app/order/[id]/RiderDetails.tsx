@@ -986,9 +986,16 @@ export default function RiderDetails({
     return null;
   };
 
-  const onRiderSheetConfirm = async (rider: SelectableRider) => {
+  const onRiderSheetConfirm = async (
+    rider: SelectableRider,
+    meta?: { radiusKm: number }
+  ) => {
     if (!order.orderId || sheetSubmitting) return;
     setSheetSubmitting(true);
+    const radiusKm =
+      meta?.radiusKm != null && Number.isFinite(meta.radiusKm)
+        ? Math.min(10, Math.max(0.5, meta.radiusKm))
+        : 10;
     try {
       if (sheetMode === "force") {
         const reason = resolveForceReason();
@@ -1005,6 +1012,7 @@ export default function RiderDetails({
             reasonCode: reason.code,
             reasonText: reason.text,
             catalogReasonId: reason.catalogReasonId,
+            radiusKm,
           }),
         });
         const json = (await res.json().catch(() => ({}))) as {
@@ -1038,7 +1046,11 @@ export default function RiderDetails({
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "hard_assign", riderId: rider.riderId }),
+        body: JSON.stringify({
+          action: "hard_assign",
+          riderId: rider.riderId,
+          radiusKm,
+        }),
       });
       const json = (await res.json().catch(() => ({}))) as {
         success?: boolean;
@@ -1281,42 +1293,54 @@ export default function RiderDetails({
                   ) : null}
                 </div>
               </DetailField>
-              {showStoreWaitTime ? (
-                <DetailField label="Store wait time">
-                  <span
-                    className={`inline-flex w-fit items-center rounded px-1.5 py-0.5 font-mono font-semibold ${
-                      riderWaitLive || (riderWaitDisplaySeconds ?? 0) > 0
-                        ? "bg-amber-50 text-amber-900"
-                        : "text-slate-700"
-                    }`}
-                    title="Total time rider waited at store for pickup (reached merchant until order ready)"
-                  >
-                    {formatDurationSecondsLabel(riderWaitDisplaySeconds, {
-                      live: riderWaitLive,
-                      onTimeLabel: "0:00:00",
-                    })}
-                  </span>
-                </DetailField>
-              ) : null}
-              {showRiderRating && customerFeedback?.deliveryRating != null ? (
-                <DetailField label="Cx rating">
-                  <button
-                    type="button"
-                    onClick={onOpenFeedback}
-                    className="inline-flex items-center gap-1.5 cursor-pointer group font-semibold"
-                  >
-                    <OrderNum>{customerFeedback.deliveryRating}</OrderNum>
-                    <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400 shrink-0" aria-hidden />
-                    <span className="text-[10px] text-emerald-700 group-hover:underline">
-                      Feedback
-                    </span>
-                  </button>
-                </DetailField>
-              ) : null}
-              {tipLabel ? (
-                <DetailField label="Tip received">
-                  <OrderNum className="font-bold text-emerald-700">{tipLabel}</OrderNum>
-                </DetailField>
+              {showStoreWaitTime ||
+              (showRiderRating && customerFeedback?.deliveryRating != null) ||
+              tipLabel ? (
+                <div className="col-span-2 grid grid-cols-3 gap-x-3 gap-y-1 min-w-0">
+                  {showStoreWaitTime ? (
+                    <DetailField label="Store wait time">
+                      <span
+                        className={`inline-flex w-fit items-center rounded px-1.5 py-0.5 font-mono font-semibold ${
+                          riderWaitLive || (riderWaitDisplaySeconds ?? 0) > 0
+                            ? "bg-amber-50 text-amber-900"
+                            : "text-slate-700"
+                        }`}
+                        title="Total time rider waited at store for pickup (reached merchant until order ready)"
+                      >
+                        {formatDurationSecondsLabel(riderWaitDisplaySeconds, {
+                          live: riderWaitLive,
+                          onTimeLabel: "0:00:00",
+                        })}
+                      </span>
+                    </DetailField>
+                  ) : (
+                    <div />
+                  )}
+                  {showRiderRating && customerFeedback?.deliveryRating != null ? (
+                    <DetailField label="Cx rating">
+                      <button
+                        type="button"
+                        onClick={onOpenFeedback}
+                        className="inline-flex items-center gap-1.5 cursor-pointer group font-semibold"
+                      >
+                        <OrderNum>{customerFeedback.deliveryRating}</OrderNum>
+                        <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400 shrink-0" aria-hidden />
+                        <span className="text-[10px] text-emerald-700 group-hover:underline">
+                          Feedback
+                        </span>
+                      </button>
+                    </DetailField>
+                  ) : (
+                    <div />
+                  )}
+                  {tipLabel ? (
+                    <DetailField label="Tip received">
+                      <OrderNum className="font-bold text-emerald-700">{tipLabel}</OrderNum>
+                    </DetailField>
+                  ) : (
+                    <div />
+                  )}
+                </div>
               ) : null}
             </div>
             )}
@@ -1648,7 +1672,7 @@ export default function RiderDetails({
         submitting={sheetSubmitting}
         riders={sheetRiders}
         onClose={() => setSheetOpen(false)}
-        onConfirm={(rider) => void onRiderSheetConfirm(rider)}
+        onConfirm={(rider, meta) => void onRiderSheetConfirm(rider, meta)}
         onRefresh={() => void loadEligibleRiders()}
       />
 

@@ -29,6 +29,7 @@ import {
   enqueueInAppBanner,
   enqueueInAppBannerFromPush,
   FloatingInAppBannerHost,
+  isSystemShadeOnlyPush,
   loadInbox,
   type PushNotificationOpenPayload,
 } from "@gatimitra/expo-push-kit";
@@ -321,6 +322,14 @@ function PushNotificationBootstrapInner() {
           if (item.clicked_at) continue;
           const title = (item.title ?? "").trim();
           if (!title) continue;
+          const templateCode = item.template_code ?? "";
+          if (isSystemShadeOnlyPush({
+            template_code: templateCode,
+            gmType: templateCode,
+            admin_cx: templateCode.toUpperCase().startsWith("ADMIN_CX_"),
+          })) {
+            continue;
+          }
           enqueueInAppBanner({
             id,
             title,

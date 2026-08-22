@@ -266,7 +266,18 @@ export default function RiderTimeline({
     return `${hours}:${minutes} ${ampm}`;
   };
 
-  if (riderId && loading) return null;
+  if (riderId && loading) {
+    return (
+      <div className={`space-y-2 ${className}`} aria-busy="true" aria-label="Loading delivery progress">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="flex items-center gap-2">
+            <div className="h-4 w-4 animate-pulse rounded-full bg-slate-200" />
+            <div className="h-3 flex-1 animate-pulse rounded bg-slate-100" />
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   const hasRider = riderId != null && Number.isFinite(Number(riderId)) && Number(riderId) > 0;
 

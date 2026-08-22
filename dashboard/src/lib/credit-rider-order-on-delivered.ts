@@ -36,13 +36,33 @@ export function resolveRiderDeliveryFeeFromCore(row: {
   const direct = Number(row.riderEarning);
   if (Number.isFinite(direct) && direct > 0) return round2(direct);
 
+  const fromGross = parseBillingAmount(row.billingSnapshot, [
+    "delivery_fee_gross",
+    "deliveryFeeGross",
+  ]);
+  if (fromGross > 0) return round2(fromGross);
+
   const fromBilling = parseBillingAmount(row.billingSnapshot, [
     "delivery_fee",
     "final_delivery_fee",
     "deliveryFee",
     "finalDeliveryFee",
   ]);
-  if (fromBilling > 0) return round2(fromBilling);
+  // Avoid treating corrupted customer fee (overwritten with rider payout) as base.
+  const snap =
+    row.billingSnapshot != null && typeof row.billingSnapshot === "object"
+      ? (row.billingSnapshot as Record<string, unknown>)
+      : null;
+  const payout =
+    snap?.rider_payout_snapshot != null && typeof snap.rider_payout_snapshot === "object"
+      ? Number((snap.rider_payout_snapshot as Record<string, unknown>).totalEarning)
+      : NaN;
+  if (
+    fromBilling > 0 &&
+    !(Number.isFinite(payout) && payout > 0 && Math.abs(fromBilling - payout) <= 0.51)
+  ) {
+    return round2(fromBilling);
+  }
 
   const fare = Number(row.fareAmount);
   if (Number.isFinite(fare) && fare > 0) return round2(fare);

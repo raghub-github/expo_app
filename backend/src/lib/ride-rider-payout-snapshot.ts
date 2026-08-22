@@ -14,6 +14,7 @@ import {
   resolveRidePickupFreeWaitMinutes,
   resolveRidePickupWaitingChargePerMin,
 } from "./ride-pickup-wait.js";
+import { restoreCustomerDeliveryFieldsInSnapshot } from "./customer-delivery-fee.js";
 
 export type RideRiderPayoutSnapshot = {
   baseEarning: number;
@@ -311,15 +312,20 @@ export async function writeRideRiderPayoutSnapshot(
         }
       : {};
 
+  // Customer delivery_fee is immutable after checkout. Rider payout lives only in
+  // rider_payout_snapshot / rider_earning — never overwrite delivery_fee.
+  const snapWithCustomerFee = restoreCustomerDeliveryFieldsInSnapshot(
+    prevSnap,
+    riderPayout
+  );
+
   await db
     .update(ordersCore)
     .set({
       riderEarning: String(riderPayout),
       billingSnapshot: {
-        ...prevSnap,
+        ...snapWithCustomerFee,
         rider_payout_snapshot: snapshot,
-        delivery_fee: riderPayout,
-        final_delivery_fee: riderPayout,
         ...ledgerExtra,
       },
       updatedAt: new Date(),

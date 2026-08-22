@@ -328,6 +328,15 @@ function resolveDeliveryFee(
     return { fee: fromSnap.quoted, quoted: fromSnap.quoted, waived: true };
   }
 
+  // Prefer authoritative customer fee from snapshot (never rider payout).
+  if (fromSnap.paid > 0 || fromSnap.waived) {
+    return {
+      fee: round2(Math.max(0, fromSnap.paid)),
+      quoted: fromSnap.quoted,
+      waived: fromSnap.waived,
+    };
+  }
+
   const fromBilling = asNum(billing?.delivery_fee);
   const fee =
     (fromBilling != null ? fromBilling : null) ??

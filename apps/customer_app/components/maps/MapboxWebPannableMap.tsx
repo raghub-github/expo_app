@@ -1,19 +1,24 @@
+// @ts-nocheck — native Mapbox module is loaded via require()
 import React, {
   forwardRef,
   useCallback,
-  useEffect,
   useImperativeHandle,
-  useMemo,
   useRef,
+  useState,
 } from "react";
 import { StyleSheet, View } from "react-native";
-import { WebView, type WebViewMessageEvent } from "react-native-webview";
-import { getConfig } from "@/config/env";
-import { buildPannableMapHtml } from "@/components/maps/mapbox-web-pannable-html";
 import { latitudeDeltaToZoom } from "@/components/maps/mapbox-web-shared";
-import { CustomerMapUnavailable } from "@/components/maps/CustomerMapUnavailable";
 import type { CustomerMapRef } from "@/lib/customer-map-handle";
 import { isValidMapCoordinate } from "@/lib/map-coordinates";
+import {
+  NATIVE_MAP_STYLE,
+  NativeMapUnavailable,
+  SnapDot,
+  circlePolygon,
+  nativeMapUnavailableReason,
+  renderNativeMarker,
+  useCustomerNativeMapbox,
+} from "@/components/maps/native-map-shared";
 
 export type MapRegion = {
   latitude: number;
@@ -53,149 +58,138 @@ export const MapboxWebPannableMap = forwardRef<CustomerMapRef, Props>(function M
   },
   ref
 ) {
-  const webRef = useRef<WebView>(null);
+  const Mapbox = useCustomerNativeMapbox();
+  const mapRef = useRef(null);
+  const cameraRef = useRef(null);
   const readyRef = useRef(false);
-  const pointWaiters = useRef(
-    new Map<number, (value: { x: number; y: number } | null) => void>()
-  );
-  const pointSeq = useRef(0);
-
-  const token = getConfig().mapboxAccessToken?.trim() ?? "";
-
+  const [mapReady, setMapReady] = useState(false);
+  const lastChangeRef = useRef<{ lat: number; lng: number } | null>(null);
   const originRef = useRef({
     latitude: initialRegion.latitude,
     longitude: initialRegion.longitude,
-    latitudeDelta: initialRegion.latitudeDelta ?? 0.01,
+    zoom: latitudeDeltaToZoom(initialRegion.latitudeDelta ?? 0.01),
   });
 
-  const html = useMemo(() => {
-    if (!token) return "";
-    const origin = originRef.current;
-    return buildPannableMapHtml(
-      token,
-      { latitude: origin.latitude, longitude: origin.longitude },
-      {
-        latitudeDelta: origin.latitudeDelta,
-        circleRadiusMeters,
+  const postRegion = useCallback(
+    (phase: "change" | "complete", lat: number, lng: number) => {
+      if (!readyRef.current) return;
+      if (!isValidMapCoordinate(lat, lng)) return;
+      if (phase === "change" && lastChangeRef.current) {
+        const dLat = Math.abs(lat - lastChangeRef.current.lat);
+        const dLng = Math.abs(lng - lastChangeRef.current.lng);
+        if (dLat < 1e-6 && dLng < 1e-6) return;
       }
-    );
-    // Keep the first camera; later moves use animateToRegion so panning does not reload the WebView.
-  }, [token, circleRadiusMeters]);
-
-  const injectSnapPoints = useCallback(() => {
-    if (!readyRef.current) return;
-    const json = JSON.stringify(snapPoints);
-    webRef.current?.injectJavaScript(`window.updateSnapPoints && window.updateSnapPoints(${json}); true;`);
-  }, [snapPoints]);
+      if (phase === "change") lastChangeRef.current = { lat, lng };
+      const region: MapRegion = { latitude: lat, longitude: lng };
+      if (phase === "complete") onRegionChangeComplete?.(region);
+      else onRegionChange?.(region);
+    },
+    [onRegionChange, onRegionChangeComplete]
+  );
 
   useImperativeHandle(
     ref,
     () => ({
-      pointForCoordinate: (coord) =>
-        new Promise((resolve) => {
-          if (!readyRef.current) {
-            resolve(null);
-            return;
-          }
-          const requestId = ++pointSeq.current;
-          pointWaiters.current.set(requestId, resolve);
-          webRef.current?.injectJavaScript(
-            `window.projectPoint && window.projectPoint(${coord.latitude}, ${coord.longitude}, ${requestId}); true;`
-          );
-          setTimeout(() => {
-            if (pointWaiters.current.has(requestId)) {
-              pointWaiters.current.delete(requestId);
-              resolve(null);
-            }
-          }, 1200);
-        }),
+      pointForCoordinate: async (coord) => {
+        try {
+          const pt = await mapRef.current?.getPointInView?.([coord.longitude, coord.latitude]);
+          if (!pt || pt.length < 2) return null;
+          return { x: pt[0], y: pt[1] };
+        } catch {
+          return null;
+        }
+      },
       fitToCoordinates: () => {
         /* not used on pannable maps */
       },
       animateToRegion: (region: MapRegion) => {
         if (!readyRef.current) return;
         const zoom = latitudeDeltaToZoom(region.latitudeDelta ?? 0.01);
-        webRef.current?.injectJavaScript(
-          `window.flyToCenter && window.flyToCenter(${region.latitude}, ${region.longitude}, ${zoom}); true;`
-        );
+        cameraRef.current?.setCamera?.({
+          centerCoordinate: [region.longitude, region.latitude],
+          zoomLevel: zoom,
+          animationDuration: 320,
+          animationMode: "flyTo",
+        });
       },
     }),
     []
   );
 
-  useEffect(() => {
-    injectSnapPoints();
-  }, [injectSnapPoints]);
+  const rangeCircle =
+    circleRadiusMeters && circleRadiusMeters > 0
+      ? circlePolygon(originRef.current.longitude, originRef.current.latitude, circleRadiusMeters)
+      : null;
 
-  const onMessage = useCallback(
-    (event: WebViewMessageEvent) => {
-      try {
-        const msg = JSON.parse(event.nativeEvent.data) as {
-          type?: string;
-          phase?: string;
-          latitude?: number;
-          longitude?: number;
-          id?: string;
-          requestId?: number;
-          x?: number;
-          y?: number;
-          error?: boolean;
-        };
-
-        if (msg.type === "point" && msg.requestId != null) {
-          const resolve = pointWaiters.current.get(msg.requestId);
-          if (resolve) {
-            pointWaiters.current.delete(msg.requestId);
-            if (msg.error || msg.x == null || msg.y == null) resolve(null);
-            else resolve({ x: msg.x, y: msg.y });
-          }
-          return;
-        }
-
-        if (msg.type === "region" && msg.latitude != null && msg.longitude != null) {
-          if (!isValidMapCoordinate(msg.latitude, msg.longitude)) return;
-          const region: MapRegion = {
-            latitude: msg.latitude,
-            longitude: msg.longitude,
-          };
-          if (msg.phase === "complete") onRegionChangeComplete?.(region);
-          else onRegionChange?.(region);
-          return;
-        }
-
-        if (msg.type === "snap" && msg.id) {
-          onSnapPointPress?.(msg.id);
-          return;
-        }
-
-        if (msg.type === "ready") {
-          readyRef.current = true;
-          injectSnapPoints();
-          onMapReady?.();
-        }
-      } catch {
-        /* ignore */
-      }
-    },
-    [injectSnapPoints, onMapReady, onRegionChange, onRegionChangeComplete, onSnapPointPress]
-  );
-
-  if (!token || !html) {
-    return <CustomerMapUnavailable style={style} />;
+  if (nativeMapUnavailableReason() || !Mapbox) {
+    return <NativeMapUnavailable style={style} />;
   }
 
   return (
-    <View style={[styles.fill, style]}>
-      <WebView
-        ref={webRef}
-        source={{ html }}
+    <View style={[styles.fill, style]} collapsable={false}>
+      <Mapbox.MapView
+        ref={mapRef}
         style={styles.fill}
-        originWhitelist={["*"]}
-        javaScriptEnabled
-        domStorageEnabled
-        scrollEnabled={false}
-        onMessage={onMessage}
-      />
+        styleURL={NATIVE_MAP_STYLE}
+        logoEnabled={false}
+        attributionEnabled={false}
+        compassEnabled={false}
+        scaleBarEnabled={false}
+        scrollEnabled
+        zoomEnabled
+        pitchEnabled={false}
+        rotateEnabled
+        surfaceView={false}
+        onDidFinishLoadingMap={() => {
+          readyRef.current = true;
+          setMapReady(true);
+          onMapReady?.();
+          postRegion("complete", originRef.current.latitude, originRef.current.longitude);
+        }}
+        onCameraChanged={(e) => {
+          const coords = e?.properties?.center;
+          if (!coords || coords.length < 2) return;
+          postRegion("change", coords[1], coords[0]);
+        }}
+        onMapIdle={(e) => {
+          const coords = e?.properties?.center;
+          if (!coords || coords.length < 2) return;
+          postRegion("complete", coords[1], coords[0]);
+        }}
+      >
+        <Mapbox.Camera
+          ref={cameraRef}
+          defaultSettings={{
+            centerCoordinate: [originRef.current.longitude, originRef.current.latitude],
+            zoomLevel: originRef.current.zoom,
+          }}
+          minZoomLevel={8}
+          maxZoomLevel={20}
+        />
+        {rangeCircle ? (
+          <Mapbox.ShapeSource id="cx-pin-range" shape={rangeCircle}>
+            <Mapbox.FillLayer
+              id="cx-pin-range-fill"
+              style={{ fillColor: "rgba(59,130,246,0.18)" }}
+            />
+            <Mapbox.LineLayer
+              id="cx-pin-range-line"
+              style={{ lineColor: "rgba(59,130,246,0.45)", lineWidth: 1.5 }}
+            />
+          </Mapbox.ShapeSource>
+        ) : null}
+        {mapReady
+          ? snapPoints.map((p) =>
+              renderNativeMarker(
+                Mapbox,
+                `snap-${p.id}`,
+                [p.longitude, p.latitude],
+                { x: 0.5, y: 0.5 },
+                <SnapDot selected={p.selected} onPress={() => onSnapPointPress?.(p.id)} />
+              )
+            )
+          : null}
+      </Mapbox.MapView>
     </View>
   );
 });

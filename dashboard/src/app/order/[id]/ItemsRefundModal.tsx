@@ -20,6 +20,7 @@ import {
   type OrderItemsPayload,
   type OrderItemsPricing,
   type OrderPricingLine,
+  type OrderGstBreakdown,
 } from '@/lib/orderItemsPayload';
 import {
   formatCustomisationLine,
@@ -185,6 +186,7 @@ function PricingBreakdownPanel({
   cashinAmount,
   gatiCashUsed,
   accent = 'emerald',
+  gstBreakdown = null,
 }: {
   title: string;
   lines: OrderPricingLine[];
@@ -193,7 +195,9 @@ function PricingBreakdownPanel({
   cashinAmount?: number;
   gatiCashUsed?: number;
   accent?: 'emerald' | 'blue';
+  gstBreakdown?: OrderGstBreakdown | null;
 }) {
+  const [gstModalOpen, setGstModalOpen] = useState(false);
   const totalClass = accent === 'blue' ? 'text-blue-600' : 'text-emerald-600';
   const borderClass = accent === 'blue' ? 'border-blue-100' : 'border-slate-200';
   const bgClass = accent === 'blue' ? 'bg-blue-50/60' : 'bg-slate-50';
@@ -203,48 +207,173 @@ function PricingBreakdownPanel({
       ? Number(cashinAmount)
       : Math.max(0, totalAmount - Math.max(0, gati));
   const showSplit = accent === 'blue';
+  const canOpenGst =
+    accent === 'blue' &&
+    gstBreakdown != null &&
+    gstBreakdown.totalGst > 0.005;
+
+  useEffect(() => {
+    if (!gstModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setGstModalOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [gstModalOpen]);
 
   return (
-    <div className={`rounded-md border ${borderClass} ${bgClass} p-3`}>
-      <p className="text-[11px] font-semibold text-slate-700">{title}</p>
-      <div className="mt-2 space-y-1">
-        {lines.map((line, idx) => (
-          <div
-            key={`${line.key}-${idx}`}
-            className="flex justify-between items-start gap-2 py-0.5 text-[11px] border-b border-slate-200/80 last:border-0"
-          >
-            <span className="text-slate-600 min-w-0">
-              {line.label}
-              {line.kind === 'discount' ? <DiscountTagBadge tag={line.discountTag} /> : null}
-              {line.rowBadge === 'membership' ? <MembershipBadge /> : null}
-            </span>
-            <span
-              className={`font-medium tabular-nums shrink-0 ${
-                line.kind === 'discount' ? 'text-red-600' : 'text-slate-800'
-              }`}
-            >
-              {line.kind === 'discount' ? '−' : ''}
-              {line.amount.toFixed(2)}
+    <>
+      <div className={`rounded-md border ${borderClass} ${bgClass} p-3`}>
+        <p className="text-[11px] font-semibold text-slate-700">{title}</p>
+        <div className="mt-2 space-y-1">
+          {lines.map((line, idx) => {
+            const isGst = line.key === 'gst' && line.kind === 'tax';
+            const amountText = `${line.kind === 'discount' ? '−' : ''}${line.amount.toFixed(2)}`;
+            return (
+              <div
+                key={`${line.key}-${idx}`}
+                className="flex justify-between items-start gap-2 py-0.5 text-[11px] border-b border-slate-200/80 last:border-0"
+              >
+                <span className="text-slate-600 min-w-0">
+                  {line.label}
+                  {line.kind === 'discount' ? <DiscountTagBadge tag={line.discountTag} /> : null}
+                  {line.rowBadge === 'membership' ? <MembershipBadge /> : null}
+                </span>
+                {isGst && canOpenGst ? (
+                  <button
+                    type="button"
+                    onClick={() => setGstModalOpen(true)}
+                    className="cursor-pointer font-medium tabular-nums shrink-0 text-blue-700 hover:text-blue-800 focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-500 rounded-sm"
+                    aria-label={`GST ${amountText}, open breakdown`}
+                  >
+                    <span className="border-b border-dashed border-blue-600/80 pb-px">
+                      {amountText}
+                    </span>
+                  </button>
+                ) : (
+                  <span
+                    className={`font-medium tabular-nums shrink-0 ${
+                      line.kind === 'discount' ? 'text-red-600' : 'text-slate-800'
+                    }`}
+                  >
+                    {amountText}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+          <div className="flex justify-between items-start gap-2 pt-1.5 mt-1 border-t border-slate-200 font-semibold text-slate-800 text-xs">
+            <span>{totalLabel}</span>
+            <span className={`tabular-nums text-right ${totalClass}`}>
+              ₹{totalAmount.toFixed(2)}
+              {showSplit ? (
+                <span className="block mt-1 font-medium">
+                  <CustomerCtcIconSplit
+                    cashin={cashin}
+                    gatiCashUsed={gati}
+                    formatCurrency={(n) => `₹${Number(n ?? 0).toFixed(2)}`}
+                  />
+                </span>
+              ) : null}
             </span>
           </div>
-        ))}
-        <div className="flex justify-between items-start gap-2 pt-1.5 mt-1 border-t border-slate-200 font-semibold text-slate-800 text-xs">
-          <span>{totalLabel}</span>
-          <span className={`tabular-nums text-right ${totalClass}`}>
-            ₹{totalAmount.toFixed(2)}
-            {showSplit ? (
-              <span className="block mt-1 font-medium">
-                <CustomerCtcIconSplit
-                  cashin={cashin}
-                  gatiCashUsed={gati}
-                  formatCurrency={(n) => `₹${Number(n ?? 0).toFixed(2)}`}
-                />
-              </span>
-            ) : null}
-          </span>
         </div>
       </div>
-    </div>
+
+      {gstModalOpen && gstBreakdown ? (
+        <div
+          className="fixed inset-0 z-[220] flex items-center justify-center bg-black/50 backdrop-blur-[1px] p-4"
+          role="presentation"
+          onClick={() => setGstModalOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="gst-breakdown-title"
+            className="w-full max-w-sm rounded-lg border border-slate-200 bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+              <h3 id="gst-breakdown-title" className="text-sm font-semibold text-slate-800">
+                GST Breakdown
+              </h3>
+              <button
+                type="button"
+                onClick={() => setGstModalOpen(false)}
+                className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                aria-label="Close GST breakdown"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-2 px-4 py-3 text-[12px]">
+              <div className="flex justify-between gap-3">
+                <span className="text-slate-600">Taxable Amount</span>
+                <span className="font-medium tabular-nums text-slate-900">
+                  ₹{gstBreakdown.taxableAmount.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-slate-600">GST Rate</span>
+                <span className="font-medium tabular-nums text-slate-900">
+                  {gstBreakdown.gstRatePct != null
+                    ? `${gstBreakdown.gstRatePct.toFixed(
+                        Number.isInteger(gstBreakdown.gstRatePct) ? 0 : 2
+                      )}%`
+                    : gstBreakdown.taxLines.length > 1
+                      ? "Mixed"
+                      : "—"}
+                </span>
+              </div>
+              {gstBreakdown.taxLines.length > 0 ? (
+                <div className="rounded border border-slate-100 bg-slate-50/80 px-2 py-1.5 space-y-1">
+                  {gstBreakdown.taxLines.map((line, i) => (
+                    <div
+                      key={`${line.label}-${i}`}
+                      className="flex justify-between gap-3 text-[11px]"
+                    >
+                      <span className="text-slate-600 min-w-0 truncate">
+                        {line.label}
+                        {line.ratePct != null
+                          ? ` (${line.ratePct.toFixed(
+                              Number.isInteger(line.ratePct) ? 0 : 2
+                            )}%)`
+                          : ""}
+                      </span>
+                      <span className="font-medium tabular-nums text-slate-900 shrink-0">
+                        ₹{line.amount.toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <div className="flex justify-between gap-3">
+                <span className="text-slate-600">CGST</span>
+                <span className="font-medium tabular-nums text-slate-900">
+                  ₹{gstBreakdown.cgst.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-slate-600">SGST</span>
+                <span className="font-medium tabular-nums text-slate-900">
+                  ₹{gstBreakdown.sgst.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-slate-600">IGST</span>
+                <span className="font-medium tabular-nums text-slate-900">
+                  ₹{gstBreakdown.igst.toFixed(2)}
+                </span>
+              </div>
+              <div className="mt-1 flex justify-between gap-3 border-t border-slate-200 pt-2 font-semibold text-slate-900">
+                <span>Total GST</span>
+                <span className="tabular-nums">₹{gstBreakdown.totalGst.toFixed(2)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -340,6 +469,7 @@ function BillBreakdownSwitcher({
           totalLabel: 'Merchant amount (CTM)',
           totalAmount: merchantBill.totalOrderAmount,
           accent: 'emerald' as const,
+          gstBreakdown: null as OrderGstBreakdown | null | undefined,
         }
       : {
           title: 'Customer bill - Full amount paid by customer (CTC)',
@@ -349,6 +479,7 @@ function BillBreakdownSwitcher({
           cashinAmount: customerBill.cashinAmount,
           gatiCashUsed: customerBill.gatiCashUsed,
           accent: 'blue' as const,
+          gstBreakdown: customerBill.gstBreakdown ?? null,
         };
 
   return (
@@ -376,6 +507,7 @@ function BillBreakdownSwitcher({
         cashinAmount={'cashinAmount' in active ? active.cashinAmount : undefined}
         gatiCashUsed={'gatiCashUsed' in active ? active.gatiCashUsed : undefined}
         accent={active.accent}
+        gstBreakdown={active.gstBreakdown}
       />
     </div>
   );

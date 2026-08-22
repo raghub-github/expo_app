@@ -4,6 +4,7 @@
 
 import { createHash } from "crypto";
 import { getInvoiceSignatureDataUri } from "./invoice-signature-source.js";
+import { resolveCustomerDeliveryFeeFromBilling } from "./customer-delivery-fee.js";
 
 type GstLine = {
   taxable: number;
@@ -69,7 +70,7 @@ function readGstComponent(
     gc?.[key] && typeof gc[key] === "object"
       ? (gc[key] as Record<string, unknown>)
       : null;
-  const taxable = num(raw?.taxable_value) || num(snap[feeKey]);
+  const taxable = num(raw?.taxable_value) || (key === "delivery" ? resolveCustomerDeliveryFeeFromBilling(snap) : num(snap[feeKey]));
   let gst = num(raw?.gst);
   if (gst <= 0 && taxable > 0) gst = round2(taxable * 0.18);
   const cgst = round2(gst / 2);

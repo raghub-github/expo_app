@@ -441,8 +441,6 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
 
   const { width: windowWidth } = useWindowDimensions();
   const dragX = useSharedValue(0);
-  const touchStartX = useSharedValue(0);
-  const touchStartY = useSharedValue(0);
   const pageWidthSV = useSharedValue(Math.max(280, windowWidth));
   const swipeCommitting = useSharedValue(false);
 
@@ -453,37 +451,20 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   /**
    * Sideways pan only on the order list body. Search / banners / status pills
    * stay outside this detector so the top chrome never slides with the finger.
-   * Manual activation keeps vertical list scrolling intact.
+   * activeOffsetX / failOffsetY let taps and vertical scrolling reach order cards.
    */
   const tabSwipeGesture = useMemo(
     () =>
       Gesture.Pan()
         .enabled(!isHistory)
-        .manualActivation(true)
-        .onTouchesDown((e) => {
+        .activeOffsetX([-18, 18])
+        .failOffsetY([-14, 14])
+        .cancelsTouchesInView(false)
+        .onTouchesDown((_e, state) => {
           "worklet";
-          const touch = e.changedTouches[0];
-          if (!touch) return;
-          touchStartX.value = touch.absoluteX;
-          touchStartY.value = touch.absoluteY;
           swipeCommitting.value = false;
-        })
-        .onTouchesMove((e, state) => {
-          "worklet";
-          const touch = e.changedTouches[0];
-          if (!touch) return;
           if (horizontalGestureClaimed.value) {
             state.fail();
-            return;
-          }
-          const dx = touch.absoluteX - touchStartX.value;
-          const dy = touch.absoluteY - touchStartY.value;
-          if (Math.abs(dy) > 14 && Math.abs(dy) >= Math.abs(dx)) {
-            state.fail();
-            return;
-          }
-          if (Math.abs(dx) > 18 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-            state.activate();
           }
         })
         .onUpdate((e) => {
@@ -515,7 +496,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
             dragX.value = withTiming(0, { duration: 160 });
           }
         }),
-    [dragX, isHistory, pageWidthSV, shiftTabBySwipe, swipeCommitting, touchStartX, touchStartY]
+    [dragX, isHistory, pageWidthSV, shiftTabBySwipe, swipeCommitting]
   );
 
   const swipeAreaStyle = useAnimatedStyle(() => ({
@@ -794,6 +775,21 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         onAccept={() => handleAccept(item)}
         onReject={() => handleReject(item)}
         onAdvance={() => handleAdvance(item)}
+        onMarkReady={() => {
+          void (async () => {
+            try {
+              const ok = await transitionOrder(item.id, "ready");
+              if (!ok) {
+                Alert.alert("Couldn't mark ready", "Please tap Order Ready again.");
+              }
+            } catch (e) {
+              Alert.alert(
+                "Couldn't mark ready",
+                e instanceof Error ? e.message : "Please try again."
+              );
+            }
+          })();
+        }}
         onNeedMoreTime={() => handleNeedMoreTime(item)}
         onViewDetail={() => handleViewDetail(item)}
         onReviewPress={() => handleOpenReview(item)}
@@ -913,6 +909,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
             data={filteredOrders}
             keyExtractor={(item) => item.id}
             renderItem={renderOrder}
+            keyboardShouldPersistTaps="handled"
             ListHeaderComponent={listHeader}
             contentContainerStyle={[
               styles.listContent,
