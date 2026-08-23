@@ -17,6 +17,57 @@ const baseComponents = {
   tipAmount: 0,
 };
 
+// Zero-fee components so the split is a clean percentage of the bill.
+const zeroComponents = {
+  baseFare: 100,
+  distanceFare: 0,
+  waitingCharge: 0,
+  tollCharge: 0,
+  platformFee: 0,
+  convenienceFee: 0,
+  serviceCharge: 0,
+  gatewayFee: 0,
+  taxTotal: 0,
+  couponDiscount: 0,
+  companyFundedDiscount: 0,
+  tipAmount: 0,
+};
+
+// The rider's spec, verbatim: fare ₹100, rider payout ₹80, commission ₹20.
+// CASH  → rider keeps ₹80 cash; wallet is DEBITED ₹20 (commission) only; earning is ₹80.
+// ONLINE→ wallet is CREDITED ₹80 (earning); no wallet debit.
+test("rider spec — CASH ₹100: earning 80, wallet DEBIT 20 (commission), no credit", () => {
+  const res = computeRideSettlement({
+    customerBill: 100,
+    customerPaid: 100,
+    paymentMode: "cash",
+    platformPercentage: 20,
+    riderPercentage: 80,
+    components: zeroComponents,
+  });
+  assert.equal(res.riderEarnings, 80); // earning must show +80
+  assert.equal(res.companyReceivable, 20); // commission = cxBill - rxBill
+  assert.equal(res.walletDebit, 20); // wallet goes DOWN by 20 only
+  assert.equal(res.walletCredit, 0); // wallet is NOT credited (rider holds the cash)
+  assert.equal(res.companyReceived, 0); // company recovers via the wallet debit
+});
+
+test("rider spec — ONLINE ₹100: wallet CREDIT 80 (earning), no debit", () => {
+  const res = computeRideSettlement({
+    customerBill: 100,
+    customerPaid: 100,
+    paymentMode: "online",
+    platformPercentage: 20,
+    riderPercentage: 80,
+    components: zeroComponents,
+  });
+  assert.equal(res.riderEarnings, 80);
+  assert.equal(res.companyReceivable, 20);
+  assert.equal(res.walletCredit, 80); // wallet goes UP by the full earning
+  assert.equal(res.walletDebit, 0);
+  assert.equal(res.companyReceived, 20); // company share settled from the online collection
+});
+
 test("plan example: customer bill 500, company 80, cash rider wallet debits 80 only", () => {
   const res = computeRideSettlement({
     customerBill: 500,
