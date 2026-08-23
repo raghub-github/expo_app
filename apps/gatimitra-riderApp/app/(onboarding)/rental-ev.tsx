@@ -272,11 +272,8 @@ export default function RentalEvScreen() {
   };
 
   const requestGalleryPermission = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert(tx("galleryPermissionTitle"), tx("galleryPermissionMessage"));
-      return false;
-    }
+    // Android/iOS system Photo Picker (expo-image-picker) needs no media-library
+    // permission — the user selects a single item in the OS picker. Always proceed.
     return true;
   };
 
