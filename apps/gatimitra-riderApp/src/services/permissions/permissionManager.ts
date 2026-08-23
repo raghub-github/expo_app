@@ -164,19 +164,10 @@ class PermissionManager {
    * Request media library permission (for KYC document uploads)
    */
   async requestMediaLibrary(): Promise<PermissionResult> {
-    try {
-      // Use wrapper to handle errors gracefully
-      const { requestMediaLibraryPermissions } = await import("./mediaLibraryWrapper");
-      const result = await requestMediaLibraryPermissions();
-      return {
-        status: this.normalizeStatus(result.status),
-        canAskAgain: result.canAskAgain,
-      };
-    } catch (error) {
-      console.warn("Error requesting media library (non-critical):", error);
-      // Return denied instead of throwing - don't block the app
-      return { status: "denied", canAskAgain: false };
-    }
+    // Gallery selection uses expo-image-picker's system Photo Picker, which needs
+    // NO broad media permission (we removed READ_MEDIA_IMAGES/VIDEO + expo-media-library).
+    // Access is therefore always available — report granted so no flow blocks on it.
+    return { status: "granted", canAskAgain: false };
   }
 
   /**
@@ -246,16 +237,9 @@ class PermissionManager {
       camera = { status: "undetermined" };
     }
 
-    // Get media library permission using wrapper
-    let mediaLibraryStatus = "undetermined" as PermissionStatus;
-    try {
-      const { getMediaLibraryPermissions } = await import("./mediaLibraryWrapper");
-      const result = await getMediaLibraryPermissions();
-      mediaLibraryStatus = this.normalizeStatus(result.status);
-    } catch (error) {
-      // Silently fail - media library not available in Expo Go
-      console.warn("Could not check media library permissions (non-critical):", error);
-    }
+    // Gallery selection uses the system Photo Picker (no broad media permission),
+    // so media-library access is always available.
+    const mediaLibraryStatus = "granted" as PermissionStatus;
 
     let backgroundRunningStatus: PermissionStatus = "undetermined";
     try {

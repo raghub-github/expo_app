@@ -425,23 +425,12 @@ export function RiderTicketChatScreen() {
 
   const openAttachmentPicker = useCallback(async () => {
     try {
-      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!perm.granted && perm.status !== "undetermined") {
-        Alert.alert(
-          t("profile.supportFlow.photoPermission", "Permission needed"),
-          t(
-            "profile.supportFlow.photoPermissionMsg",
-            "Allow photo access to attach proof.",
-          ),
-        );
-        return;
-      }
+      // System Photo Picker — no media-library permission required (no `legacy`).
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
         allowsMultipleSelection: true,
         selectionLimit: 5,
         quality: 0.85,
-        ...(Platform.OS === "android" ? { legacy: true } : {}),
       });
       if (result.canceled || !result.assets?.length) return;
       const picked = result.assets

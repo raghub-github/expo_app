@@ -95,20 +95,12 @@ export const RaiseTicketSubmitForm = forwardRef<RaiseTicketSubmitFormHandle, Pro
   }, [previewUri, previewSlot, onPhotoPreviewChange]);
 
   const pickImage = async (slot: number, allowsEditing: boolean) => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert(
-        t("profile.supportFlow.photoPermission", "Permission needed"),
-        t("profile.supportFlow.photoPermissionMsg", "Allow photo access to attach proof."),
-      );
-      return;
-    }
+    // System Photo Picker — no media-library permission required (no `legacy`).
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
       quality: 0.85,
       allowsEditing,
       allowsMultipleSelection: false,
-      ...(Platform.OS === "android" ? { legacy: true } : {}),
     });
     if (result.canceled || !result.assets[0]?.uri) return;
     setPreviewSlot(slot);

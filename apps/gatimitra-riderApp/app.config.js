@@ -69,11 +69,12 @@ module.exports = {
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
-        "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE",
+        // No READ_MEDIA_IMAGES / READ_MEDIA_VIDEO / *_EXTERNAL_STORAGE — these are the
+        // broad photo/video permissions Play Console rejects. Gallery selection uses
+        // expo-image-picker's system Photo Picker (no broad media permission). Legacy
+        // storage perms that libraries still merge in are stripped by
+        // ./plugins/withTrimmedAndroidPermissions. CAMERA stays for KYC capture.
         "CAMERA",
-        "READ_MEDIA_IMAGES",
-        "READ_MEDIA_VIDEO",
         "POST_NOTIFICATIONS",
         "VIBRATE",
         "RECEIVE_BOOT_COMPLETED",
@@ -131,14 +132,9 @@ module.exports = {
       ],
       // Mapbox — runtime token via resolveMapboxPublicToken(); download token for native builds
       "@rnmapbox/maps",
-      [
-        "expo-media-library",
-        {
-          photosPermission: "Allow GatiMitra to access your photos to upload KYC documents and profile pictures.",
-          savePhotosPermission: "Allow GatiMitra to save photos.",
-          isAccessMediaLocationEnabled: false
-        }
-      ],
+      // expo-media-library removed — the app never reads/saves the device media
+      // library. Image selection uses expo-image-picker's system Photo Picker,
+      // so no broad media permission is needed (Play-Store compliant).
       [
         "expo-notifications",
         {
@@ -171,7 +167,10 @@ module.exports = {
       [
         "expo-camera",
         {
-          cameraPermission: "GatiMitra needs camera access for live selfie verification during onboarding."
+          cameraPermission: "GatiMitra needs camera access for live selfie verification during onboarding.",
+          // App only takes photos / scans barcodes — never records A/V, so don't
+          // request the microphone permission (RECORD_AUDIO). Google-recommended.
+          recordAudioAndroid: false
         }
       ],
       "@react-native-community/datetimepicker",
@@ -188,6 +187,10 @@ module.exports = {
           },
         },
       ],
+      // MUST be last: strips broad/sensitive permissions (RECORD_AUDIO,
+      // READ/WRITE_EXTERNAL_STORAGE, READ_MEDIA_*) that libraries inject but no
+      // Rider feature needs, so the AAB doesn't trigger Play justification prompts.
+      "./plugins/withTrimmedAndroidPermissions",
     ],
     experiments: {
       typedRoutes: false,
