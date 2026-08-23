@@ -940,6 +940,31 @@ export const riderApi = {
   },
 
   /**
+   * Create (or reuse) a dynamic UPI QR for online collection on a completed ride.
+   * The passenger scans + pays the exact fare; the backend qr_code.credited webhook
+   * finalizes the settlement. Idempotent server-side.
+   */
+  async createRideOnlineQr(orderId: string) {
+    const client = createApiClient();
+    const responseSchema = z.object({
+      ok: z.literal(true),
+      orderId: z.string(),
+      qrId: z.string(),
+      qrImageUrl: z.string(),
+      amount: z.number(),
+      reused: z.boolean(),
+    });
+    return client.request<z.infer<typeof responseSchema>>(
+      `/v1/rider/orders/${orderId}/ride/online-qr`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        responseSchema,
+      }
+    );
+  },
+
+  /**
    * Get earnings summary
    */
   async getEarningsSummary() {

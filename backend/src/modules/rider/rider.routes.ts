@@ -3615,6 +3615,53 @@ export async function riderRoutes(app: FastifyInstance) {
     }
   );
 
+  // Rider requests a dynamic UPI QR for online collection on a completed ride.
+  // Backend creates a single-use, fixed-amount Razorpay QR tied to the ride; the
+  // passenger scans + pays; the qr_code.credited webhook finalizes settlement.
+  app.post(
+    "/orders/:id/ride/online-qr",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            orderId: z.string(),
+            qrId: z.string(),
+            qrImageUrl: z.string(),
+            amount: z.number(),
+            reused: z.boolean(),
+          }),
+          400: z.object({ error: z.string(), code: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
+          502: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      try {
+        const { createRideOnlineQr } = await import("../rides/ride-online-qr.service.js");
+        return await createRideOnlineQr({ riderId, orderRef: id });
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        const status = err.statusCode ?? 500;
+        const payload: { error: string; code?: string } = {
+          error: err.message || "Could not create payment QR",
+        };
+        if (err.code) payload.code = err.code;
+        return reply.status(status as 409).send(payload);
+      }
+    }
+  );
+
   app.post(
     "/orders/:id/ride/toll",
     {
