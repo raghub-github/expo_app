@@ -3565,6 +3565,56 @@ export async function riderRoutes(app: FastifyInstance) {
     }
   );
 
+  // Rider picks CASH or ONLINE at the collect-payment step of a completed ride.
+  // Records the choice on orders_core.payment_method so the correct settlement path
+  // runs next (cash → confirm-cash-collected; online → rider-presented QR). Frozen
+  // once the ride is settled (one-winner lock).
+  app.post(
+    "/orders/:id/ride/select-payment-method",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: z.object({ method: z.enum(["cash", "online"]) }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            orderId: z.string(),
+            paymentMethod: z.enum(["cash", "online"]),
+            customerBill: z.number(),
+            changed: z.boolean(),
+          }),
+          400: z.object({ error: z.string(), code: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const { method } = req.body as { method: "cash" | "online" };
+      try {
+        const { selectRidePaymentMethodForRider } = await import(
+          "../rides/ride-payment-method-selection.service.js"
+        );
+        return await selectRidePaymentMethodForRider({ riderId, orderRef: id, method });
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        const status = err.statusCode ?? 500;
+        const payload: { error: string; code?: string } = {
+          error: err.message || "Could not select payment method",
+        };
+        if (err.code) payload.code = err.code;
+        return reply.status(status as 409).send(payload);
+      }
+    }
+  );
+
   app.post(
     "/orders/:id/ride/toll",
     {

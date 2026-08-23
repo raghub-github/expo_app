@@ -915,6 +915,31 @@ export const riderApi = {
   },
 
   /**
+   * Rider picks how the passenger will pay for a COMPLETED ride (cash or online).
+   * Records the choice on the order so the correct settlement path runs next.
+   * Rejected once the ride is already settled (one-winner lock). Idempotent.
+   */
+  async selectRidePaymentMethod(orderId: string, method: "cash" | "online") {
+    const client = createApiClient();
+    const responseSchema = z.object({
+      ok: z.literal(true),
+      orderId: z.string(),
+      paymentMethod: z.enum(["cash", "online"]),
+      customerBill: z.number(),
+      changed: z.boolean(),
+    });
+    return client.request<z.infer<typeof responseSchema>>(
+      `/v1/rider/orders/${orderId}/ride/select-payment-method`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ method }),
+        responseSchema,
+      }
+    );
+  },
+
+  /**
    * Get earnings summary
    */
   async getEarningsSummary() {
