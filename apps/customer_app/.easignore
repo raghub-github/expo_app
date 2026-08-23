@@ -1,27 +1,49 @@
-# Other apps in the monorepo (archive is created from git root)
-apps/gatimitra-riderApp/
-apps/merchant_app/
-backend/
-dashboard/
-partnersite/
-merchant_db/
-services/
-packages/**/node_modules/
+# apps/customer_app/.easignore
+# EAS archives from the monorepo GIT ROOT, so every path here is git-root-relative.
+# Goal: upload ONLY what the customer build needs (apps/customer_app + shared packages/),
+# not the whole monorepo. Without complete exclusions EAS uploaded ~304 MB (all the other
+# apps + web projects + infra + docs), which failed on upload (ECONNRESET).
+#
+# Root-level dirs are ANCHORED with a leading "/" so a bare name never strips an identically
+# named subdir INSIDE apps/customer_app (e.g. its own components/, lib/, hooks/).
 
-node_modules/
-android/
-ios/
-.expo/
-.expo-shared/
-.gradle/
-dist/
-build/
-out/
-.cache/
-.next/
-tmp/
-temp/
-logs/
+# --- Other apps / web projects (not needed for the customer build) ---
+/apps/gatimitra-riderApp/
+/apps/merchant_app/
+/rider-web/
+/cxsite/
+
+# --- Backend / dashboards / web / infra (never needed for a mobile build) ---
+/backend/
+/dashboard/
+/dashboards/
+/partnersite/
+/services/
+/infra/
+/docs/
+/scripts/
+/merchant_db/
+/.github/
+
+# --- node_modules anywhere (EAS installs deps on the builder) ---
+**/node_modules/
+
+# --- Native dirs: managed workflow; EAS runs expo prebuild ---
+/apps/customer_app/android/
+/apps/customer_app/ios/
+
+# --- Caches / build artifacts ---
+**/.expo/
+**/.expo-shared/
+**/.gradle/
+**/.next/
+**/.cache/
+**/build/
+**/dist/
+**/out/
+**/tmp/
+**/temp/
+**/logs/
 *.log
 *.tgz
 *.zip
@@ -30,14 +52,18 @@ logs/
 *.aab
 *.ipa
 *.keystore
-.DS_Store
-Thumbs.db
+
+# --- Env files (secrets) — keep examples ---
 **/.env
 **/.env.*
 !**/.env.example
+
+# --- Editor / OS / tests ---
 .vscode/
 .idea/
-__tests__/
-*.test.*
-*.spec.*
-coverage/
+.DS_Store
+Thumbs.db
+**/__tests__/
+**/*.test.*
+**/*.spec.*
+**/coverage/
