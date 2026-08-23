@@ -37,6 +37,7 @@ import { IncomingRideOrderHost } from "@/src/components/orders/IncomingRideOrder
 import { SubscriptionDutyBlockedSheetHost } from "@/src/components/subscription/SubscriptionDutyBlockedSheetHost";
 import { RiderPaymentSuccessSheet } from "@/src/components/ui/RiderPaymentSuccessSheet";
 import { ActiveOrderResumeBootstrap } from "@/src/components/orders/ActiveOrderResumeBootstrap";
+import { ActiveOrderKeepAwakeGate } from "@/src/hooks/useActiveOrderKeepAwake";
 import { RiderPostDeliveryTipHost } from "@/src/components/orders/RiderPostDeliveryTipHost";
 import { RiderToastHost } from "@/src/components/RiderToastHost";
 import { initializeMapbox } from "@/src/services/maps/mapbox";
@@ -142,6 +143,8 @@ function RootLayoutNav() {
           <RiderPendingReferralResume />
           <RiderDutyLocationPing />
           <ActiveOrderResumeBootstrap />
+          {/* Keep the screen awake ONLY while an active order (Food/Parcel/Ride) exists. */}
+          <ActiveOrderKeepAwakeGate />
           <RiderDispatchKeepAlive />
           <PreventServicesRealtime />
           <ServiceRestrictedSheet />
