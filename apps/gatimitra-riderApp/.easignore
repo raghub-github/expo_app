@@ -1,32 +1,46 @@
-# Other apps in the monorepo (archive is created from git root)
-apps/customer_app/
-apps/merchant_app/
-backend/
-dashboard/
-partnersite/
-merchant_db/
-services/
-packages/**/node_modules/
+# apps/gatimitra-riderApp/.easignore
+# EAS archives from the monorepo GIT ROOT, so every path here is git-root-relative.
+# Goal: upload ONLY what the rider build needs (apps/gatimitra-riderApp + shared packages/),
+# not the whole monorepo. Root-level dirs are ANCHORED with a leading "/" so a bare name never
+# strips an identically named subdir INSIDE the rider app (e.g. its own src/, scripts/).
 
-# Force EAS to run expo prebuild (regenerates icons + native config). Never upload stale native dirs.
-apps/gatimitra-riderApp/android/
-apps/gatimitra-riderApp/ios/
-android/
-ios/
+# --- Other apps / web projects (not needed for the rider build) ---
+/apps/customer_app/
+/apps/merchant_app/
+/rider-web/
+/cxsite/
 
-# Minimal exclusions - only what's absolutely unnecessary
-node_modules/
-.expo/
-.expo-shared/
-.gradle/
-dist/
-build/
-out/
-.cache/
-.next/
-tmp/
-temp/
-logs/
+# --- Backend / dashboards / web / infra (never needed for a mobile build) ---
+/backend/
+/dashboard/
+/dashboards/
+/partnersite/
+/services/
+/infra/
+/docs/
+/scripts/
+/merchant_db/
+/.github/
+
+# --- node_modules anywhere (EAS installs deps on the builder) ---
+**/node_modules/
+
+# --- Native dirs: managed workflow; EAS runs expo prebuild (regenerates icons + native config) ---
+/apps/gatimitra-riderApp/android/
+/apps/gatimitra-riderApp/ios/
+
+# --- Caches / build artifacts ---
+**/.expo/
+**/.expo-shared/
+**/.gradle/
+**/.next/
+**/.cache/
+**/build/
+**/dist/
+**/out/
+**/tmp/
+**/temp/
+**/logs/
 *.log
 *.tgz
 *.zip
@@ -35,32 +49,22 @@ logs/
 *.aab
 *.ipa
 *.keystore
-.DS_Store
-Thumbs.db
 
-# Documentation files (not needed for build)
-*.md
-!README.md
-# Explicitly exclude deleted documentation files
-MAPBOX_FIX.md
-MAPBOX_TOKEN_FIX.md
-
-# Environment files
+# --- Env files (secrets) — keep examples ---
 .env*
 !env.example
+!**/.env.example
 
-# IDE and editor files
+# --- Editor / OS / tests ---
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# Test files
-__tests__/
-*.test.*
-*.spec.*
-
-# Coverage reports
-coverage/
-.nyc_output/
+.DS_Store
+Thumbs.db
+**/__tests__/
+**/*.test.*
+**/*.spec.*
+**/coverage/
+**/.nyc_output/
