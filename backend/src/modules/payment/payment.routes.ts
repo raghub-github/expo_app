@@ -154,6 +154,56 @@ export async function paymentRoutes(app: FastifyInstance) {
       });
 
       try {
+        // Rider-presented ride QR was paid → finalize the online ride settlement.
+        // Backend-authoritative: the client never confirms this payment.
+        if (event === "qr_code.credited") {
+          const qrNode = payloadEnvelope?.qr_code as Record<string, unknown> | undefined;
+          const qrEntity = (qrNode?.entity as Record<string, unknown> | undefined) ?? qrNode;
+          const paymentEntity = extractEntity("payment");
+          const qrId = String(qrEntity?.id ?? "");
+          const razorpayPaymentId = paymentEntity?.id ? String(paymentEntity.id) : null;
+          const amountPaise = Number(paymentEntity?.amount ?? qrEntity?.payment_amount ?? 0);
+          if (!qrId) {
+            await logPaymentEvent(db, {
+              eventType: "WEBHOOK_REJECTED_INVALID_PAYLOAD",
+              source: "webhook",
+              payload: { event, eventId, reason: "missing qr id", durationMs: Date.now() - startedAtMs },
+            });
+            return reply.status(400).send({ error: "invalid_payload" });
+          }
+          const { finalizeRideOnlineQrPayment } = await import(
+            "../rides/ride-online-qr.service.js"
+          );
+          try {
+            const res = await finalizeRideOnlineQrPayment({ qrId, razorpayPaymentId, amountPaise });
+            await markWebhookProcessed(db, eventId);
+            await logPaymentEvent(db, {
+              eventType: "WEBHOOK_HANDLED_OK",
+              source: "webhook",
+              razorpayPaymentId: razorpayPaymentId ?? undefined,
+              payload: {
+                event,
+                eventId,
+                handler: "ride_online_qr",
+                orderId: res.orderId,
+                alreadyDone: res.alreadyDone,
+                durationMs: Date.now() - startedAtMs,
+              },
+            });
+          } catch (err) {
+            await logPaymentEvent(db, {
+              eventType: "WEBHOOK_HANDLER_FAILED",
+              source: "webhook",
+              razorpayPaymentId: razorpayPaymentId ?? undefined,
+              failureMessage: (err as Error)?.message ?? "unknown",
+              payload: { event, eventId, handler: "ride_online_qr", durationMs: Date.now() - startedAtMs },
+            });
+            // Do not 500 — ack so Razorpay stops retrying a payload we can't process;
+            // reconciliation/admin can recover. (Matches the existing handlers' posture.)
+          }
+          return reply.send({ ok: true });
+        }
+
         if (event === "payment.captured" || event === "order.paid") {
           const paymentEntity = extractEntity("payment");
           const razorpayOrderId = String(paymentEntity?.order_id ?? "");

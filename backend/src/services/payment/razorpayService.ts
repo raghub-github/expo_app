@@ -435,3 +435,68 @@ export async function fetchRazorpayAccountMethods(): Promise<unknown> {
   return res.json();
 }
 
+export interface CreateQrCodeParams {
+  /** Fixed amount in paise (₹100 = 10000). */
+  amountPaise: number;
+  /** Human-readable description shown to the payer. */
+  description: string;
+  /** Epoch SECONDS after which the QR auto-closes (must be in the future). */
+  closeBy: number;
+  /** Reference id echoed back on the qr_code.credited webhook (notes). */
+  notes: Record<string, string>;
+}
+
+export interface CreateQrCodeResponse {
+  id: string; // qr_...
+  entity: string;
+  image_url: string;
+  payment_amount: number;
+  status: string;
+  close_by: number;
+  notes: Record<string, string>;
+}
+
+/**
+ * Create a Razorpay single-use, fixed-amount dynamic UPI QR tied to one ride.
+ *
+ * The passenger scans it and pays EXACTLY payment_amount — they cannot alter the
+ * amount or the ride reference (§29–30). Settlement is finalized only by the
+ * `qr_code.credited` webhook (backend-authoritative), never by the client.
+ *
+ * Requires the "QR Codes" API to be enabled on the Razorpay account. If it is not,
+ * this throws and the caller should fall back to a UPI payment link.
+ */
+export async function createRazorpayQrCode(
+  params: CreateQrCodeParams
+): Promise<CreateQrCodeResponse> {
+  const env = getEnv();
+  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+    throw new Error("Razorpay credentials not configured");
+  }
+  const auth = Buffer.from(
+    `${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`
+  ).toString("base64");
+
+  const res = await fetch("https://api.razorpay.com/v1/payments/qr_codes", {
+    method: "POST",
+    headers: { Authorization: `Basic ${auth}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      type: "upi_qr",
+      usage: "single_use",
+      fixed_amount: true,
+      payment_amount: Math.round(params.amountPaise),
+      description: params.description.slice(0, 200),
+      close_by: Math.round(params.closeBy),
+      notes: params.notes,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw Object.assign(
+      new Error(`Razorpay QR ${res.status}: ${text.slice(0, 240)}`),
+      { statusCode: res.status === 400 ? 400 : 502, code: "QR_CREATE_FAILED" }
+    );
+  }
+  return (await res.json()) as CreateQrCodeResponse;
+}
+

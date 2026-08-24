@@ -7,6 +7,7 @@ import {
   ScrollView,
   ActivityIndicator,
   TouchableOpacity,
+  Image,
   ImageBackground,
   Linking,
   Platform,
@@ -154,6 +155,53 @@ export function RidePaymentWaitingScreen() {
       Alert.alert(t("common.error", "Something went wrong"), String(message));
     },
   });
+
+  // Rider chose "Online" this session → we show the QR (kept in local state; the ride
+  // is finalized backend-side by the qr_code.credited webhook, which flips the order to
+  // settled and triggers the success-navigation effect above).
+  const [onlineChosen, setOnlineChosen] = useState(false);
+  const [qrInfo, setQrInfo] = useState<{ qrImageUrl: string; amount: number } | null>(null);
+
+  const qrMutation = useMutation({
+    mutationFn: async () => riderApi.createRideOnlineQr(orderId),
+    onSuccess: (data) => {
+      setQrInfo({ qrImageUrl: data.qrImageUrl, amount: data.amount });
+    },
+    onError: (err) => {
+      Alert.alert(
+        t("common.error", "Something went wrong"),
+        String(
+          (err as { message?: string })?.message ??
+            t("orders.ridePaymentWait.qrError", "Could not create the payment QR. Please try again.")
+        )
+      );
+    },
+  });
+
+  const selectMutation = useMutation({
+    mutationFn: async (method: "cash" | "online") =>
+      riderApi.selectRidePaymentMethod(orderId, method),
+    onSuccess: async (_res, method) => {
+      if (method === "cash") {
+        // Refresh so order.paymentMethod becomes cash → the cash card renders.
+        await queryClient.invalidateQueries({ queryKey: ["rider", "orders", "detail", orderId] });
+      } else {
+        setOnlineChosen(true);
+        qrMutation.mutate();
+      }
+    },
+    onError: (err) => {
+      Alert.alert(
+        t("common.error", "Something went wrong"),
+        String(
+          (err as { message?: string })?.message ??
+            t("orders.ridePaymentWait.selectError", "Could not set the payment method. Please try again.")
+        )
+      );
+    },
+  });
+
+  const selectingMethod = selectMutation.isPending || qrMutation.isPending;
 
   const displayId = params.displayId?.trim() || order?.formattedOrderId || orderId;
   const earningBreakdown = useMemo(
@@ -387,8 +435,98 @@ export function RidePaymentWaitingScreen() {
                 </TouchableOpacity>
               </View>
             </View>
+          ) : !onlineChosen ? (
+            <View style={styles.cashCard}>
+              <View style={styles.cashTextCol}>
+                <Text style={styles.cashTitle}>
+                  {t(
+                    "orders.ridePaymentWait.chooseTitle",
+                    "Collect {{amount}} — how is the passenger paying?",
+                    { amount: formatFare(fareAmount) }
+                  )}
+                </Text>
+                <Text style={styles.cashSub}>
+                  {t(
+                    "orders.ridePaymentWait.chooseSub",
+                    "Cash if they hand you money, or Online to show a UPI QR."
+                  )}
+                </Text>
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+                  <TouchableOpacity
+                    style={[styles.cashCta, { flex: 1 }, selectingMethod && styles.cashCtaDisabled]}
+                    onPress={() => selectMutation.mutate("cash")}
+                    disabled={selectingMethod}
+                    activeOpacity={0.85}
+                    accessibilityRole="button"
+                    accessibilityLabel={t("orders.ridePaymentWait.chooseCash", "Cash")}
+                  >
+                    <Ionicons name="cash-outline" size={18} color="#fff" />
+                    <Text style={styles.cashCtaLabel}>
+                      {t("orders.ridePaymentWait.chooseCash", "Cash")}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.cashCta,
+                      { flex: 1, backgroundColor: MINT_DARK },
+                      selectingMethod && styles.cashCtaDisabled,
+                    ]}
+                    onPress={() => selectMutation.mutate("online")}
+                    disabled={selectingMethod}
+                    activeOpacity={0.85}
+                    accessibilityRole="button"
+                    accessibilityLabel={t("orders.ridePaymentWait.chooseOnline", "Online")}
+                  >
+                    {selectingMethod ? (
+                      <ActivityIndicator color="#fff" size="small" />
+                    ) : (
+                      <>
+                        <Ionicons name="qr-code-outline" size={18} color="#fff" />
+                        <Text style={styles.cashCtaLabel}>
+                          {t("orders.ridePaymentWait.chooseOnline", "Online")}
+                        </Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
           ) : (
             <>
+              {qrInfo ? (
+                <View style={[styles.cashCard, { flexDirection: "column", alignItems: "center" }]}>
+                  <Text style={[styles.cashTitle, { textAlign: "center" }]}>
+                    {t(
+                      "orders.ridePaymentWait.qrTitle",
+                      "Ask the passenger to scan & pay {{amount}}",
+                      { amount: formatFare(qrInfo.amount) }
+                    )}
+                  </Text>
+                  <Image
+                    source={{ uri: qrInfo.qrImageUrl }}
+                    style={{ width: 220, height: 220, marginTop: 12 }}
+                    resizeMode="contain"
+                    accessibilityLabel="Payment QR code"
+                  />
+                  <Text style={[styles.cashSub, { marginTop: 8, textAlign: "center" }]}>
+                    {t(
+                      "orders.ridePaymentWait.qrSub",
+                      "This confirms automatically once they pay."
+                    )}
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.liveCard}>
+                  <View style={styles.liveIconWrap}>
+                    <ActivityIndicator color={MINT} size="small" />
+                  </View>
+                  <View style={styles.liveTextCol}>
+                    <Text style={styles.liveTitle}>
+                      {t("orders.ridePaymentWait.qrLoading", "Generating QR…")}
+                    </Text>
+                  </View>
+                </View>
+              )}
               <View style={styles.liveCard}>
                 <View style={styles.liveIconWrap}>
                   <ActivityIndicator color={MINT} size="small" />
