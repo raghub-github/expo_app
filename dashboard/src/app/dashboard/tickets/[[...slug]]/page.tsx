@@ -31,7 +31,7 @@ export default async function TicketsPage() {
     }
 
     const { user, error } = await resolveSupabaseUser({ maxAttempts: 1, retryDelayMs: 0 });
-    if (!user?.email) {
+    if (!user?.id) {
       if (error && isTransientAuthBlip(error)) {
         return <TicketsWorkspaceClient />;
       }

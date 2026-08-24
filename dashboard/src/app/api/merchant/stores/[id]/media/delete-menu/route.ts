@@ -6,27 +6,14 @@
  * If neither fileId nor r2Key is provided, all MENU_REFERENCE files for this store are deleted.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { authenticateMerchantStoreOperator } from "@/lib/merchant-store-route-auth";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import { deleteDocument } from "@/lib/services/r2";
+import { extractR2KeyFromProxyUrl } from "@/lib/r2-proxy-url";
 
 export const runtime = "nodejs";
-
-function extractR2KeyFromProxyUrl(url: string): string {
-  try {
-    const fakeOrigin = "https://local.invalid";
-    const u = url.startsWith("http://") || url.startsWith("https://")
-      ? new URL(url)
-      : new URL(url, fakeOrigin);
-    const key = u.searchParams.get("key");
-    return key ? decodeURIComponent(key) : "";
-  } catch {
-    return "";
-  }
-}
 
 export async function DELETE(
   request: NextRequest,
@@ -42,35 +29,13 @@ export async function DELETE(
       );
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 401 }
-      );
-    }
-
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
-    if (!allowed) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Merchant dashboard access required",
-          code: "MERCHANT_ACCESS_REQUIRED",
-        },
-        { status: 403 }
-      );
-    }
+    const operator = await authenticateMerchantStoreOperator(request);
+    if (!operator.ok) return operator.response;
+    const user = operator.user;
 
     const areaManagerId = await resolveMerchantListAreaManagerId({
       supabaseAuthId: user.id,
-      email: user.email,
+      email: user.email ?? "",
     });
 
     const store = await getMerchantStoreById(storeId, areaManagerId);

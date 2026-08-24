@@ -11,11 +11,15 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(path.join(root, "package.json"));
 const nextBin = require.resolve("next/dist/bin/next");
 
-const heapFlag = "--max-old-space-size=8192";
-const existing = (process.env.NODE_OPTIONS ?? "").trim();
-process.env.NODE_OPTIONS = existing.includes("--max-old-space-size")
-  ? existing
-  : [existing, heapFlag].filter(Boolean).join(" ");
+let nodeOptions = (process.env.NODE_OPTIONS ?? "").trim();
+if (!nodeOptions.includes("--max-old-space-size")) {
+  nodeOptions = [nodeOptions, "--max-old-space-size=8192"].filter(Boolean).join(" ");
+}
+// Webpack pack ENOENT must not abort Node (Next logs ⨯ unhandledRejection then Windows 3221226505).
+if (!nodeOptions.includes("--unhandled-rejections")) {
+  nodeOptions = [nodeOptions, "--unhandled-rejections=warn"].filter(Boolean).join(" ");
+}
+process.env.NODE_OPTIONS = nodeOptions;
 
 const extraArgs = process.argv.slice(2);
 const result = spawnSync(

@@ -5,15 +5,23 @@
  */
 
 import { getDb } from "@/lib/db/client";
-import { areaManagers, systemUsers } from "@/lib/db/schema";
+import { areaManagers } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { isSuperAdmin } from "@/lib/permissions/engine";
+import type { NextRequest } from "next/server";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { getAuthUserSafe } from "@/lib/auth/resolve-supabase-user";
+import {
+  DASHBOARD_IDENTITY_EMAIL_COOKIE,
+  peekDashboardIdentity,
+  rememberDashboardIdentity,
+} from "@/lib/auth/auth-identity-cache";
 import {
   isNetworkOrTransientError,
   isTimeoutOrAbortError,
 } from "@/lib/auth/session-errors";
+import { cookies, headers } from "next/headers";
 
 export type ManagerType = "MERCHANT" | "RIDER";
 
@@ -52,6 +60,50 @@ export function getManagerTypeFromRole(primaryRole: string): ManagerType | null 
   if (primaryRole === "AREA_MANAGER_MERCHANT") return "MERCHANT";
   if (primaryRole === "AREA_MANAGER_RIDER") return "RIDER";
   return null;
+}
+
+function isSuperAdminRole(primaryRole: string | null | undefined): boolean {
+  const role = String(primaryRole || "").trim().toUpperCase();
+  return role === "SUPER_ADMIN" || role === "SUPERADMIN";
+}
+
+async function resolveDashboardEmail(user: {
+  id: string;
+  email?: string | null;
+}): Promise<string | undefined> {
+  const direct = user.email?.trim();
+  if (direct?.includes("@")) return direct;
+  const cached = peekDashboardIdentity(user.id)?.email?.trim();
+  if (cached?.includes("@")) return cached;
+  let fromCookie = "";
+  try {
+    fromCookie =
+      (await cookies()).get(DASHBOARD_IDENTITY_EMAIL_COOKIE)?.value?.trim().toLowerCase() ?? "";
+  } catch {
+    fromCookie = "";
+  }
+  if (!fromCookie.includes("@")) {
+    try {
+      const header = (await headers()).get("cookie") ?? "";
+      const match = header.match(
+        new RegExp(`(?:^|;\\s*)${DASHBOARD_IDENTITY_EMAIL_COOKIE}=([^;]+)`, "i")
+      );
+      if (match?.[1]) {
+        fromCookie = decodeURIComponent(match[1]).trim().toLowerCase();
+      }
+    } catch {
+      fromCookie = "";
+    }
+  }
+  if (fromCookie.includes("@")) {
+    rememberDashboardIdentity(user.id, {
+      email: fromCookie,
+      systemUserNumericId: 0,
+      primaryRole: "",
+    });
+    return fromCookie;
+  }
+  return undefined;
 }
 
 /**
@@ -130,10 +182,12 @@ export async function getAreaManagerFromAuth(
   supabaseAuthId: string,
   email: string | null | undefined
 ): Promise<ResolvedAreaManager | null> {
-  const systemUser = await getSystemUserByEmail(email ?? undefined);
+  const systemUser = await resolveSystemUserForSupabaseAuth(supabaseAuthId, email);
   if (!systemUser) return null;
 
-  const superAdmin = await isSuperAdmin(supabaseAuthId, email ?? "");
+  const superAdmin =
+    isSuperAdminRole(systemUser.primary_role) ||
+    (await isSuperAdmin(supabaseAuthId, email || systemUser.email || ""));
   if (superAdmin) {
     // Super admin can access area-manager APIs; no area scope (list all). Use managerType from role or default MERCHANT for UI.
     const roleType = getManagerTypeFromRole(systemUser.primary_role) ?? "MERCHANT";
@@ -169,9 +223,20 @@ export async function getAreaManagerFromAuth(
   // Fallback: user has area manager role but no area_managers row yet
   const managerType = getManagerTypeFromRole(systemUser.primary_role);
   if (managerType) {
-    // Return a virtual "area manager" with id 0 so callers can still scope by role
-    // but no area_manager_id filter (or use systemUserId as scope). Prefer creating area_managers row.
-    return null;
+    return {
+      areaManager: {
+        id: 0,
+        userId: systemUser.id,
+        managerType,
+        areaCode: null,
+        localityCode: null,
+        city: null,
+        status: "ACTIVE",
+      },
+      systemUserId: systemUser.id,
+      primaryRole: systemUser.primary_role,
+      managerType,
+    };
   }
 
   return null;
@@ -184,9 +249,16 @@ export async function getAreaManagerFromAuth(
  *
  * `getAuthUser` may throw `TypeError: fetch failed` when Supabase Auth is unreachable —
  * we catch that and fall back to cookie-session resolve (same as page protection).
+ *
+ * Do not pass cookie-bound `supabase.auth.getUser()` from OTP routes. That refresh
+ * can blank `sb-*` cookies and log the dashboard user out mid-registration.
+ * Omit the callback so this uses cookie-safe `getAuthenticatedApiUser`.
+ * Pass the incoming NextRequest as the second argument so compile/refresh
+ * races do not 401 a live dashboard session.
  */
 export async function requireAreaManagerApiAuth(
-  getAuthUser?: () => Promise<{ id: string; email?: string } | null>
+  getAuthUser?: () => Promise<{ id: string; email?: string } | null>,
+  request?: NextRequest
 ): Promise<
   | { resolved: ResolvedAreaManager; error?: never }
   | { error: Response; resolved?: never }
@@ -205,10 +277,36 @@ export async function requireAreaManagerApiAuth(
       user = null;
     }
   }
-  if (!user?.email) {
+  if (!user?.id) {
+    const auth = await getAuthenticatedApiUser(request);
+    if (auth.ok) {
+      user = { id: auth.user.id, email: auth.user.email };
+    } else if (auth.status === 503 || auth.status === 499) {
+      return { error: authFailureResponse(auth) };
+    }
+  }
+  if (!user?.id) {
     user = await getAuthUserSafe();
   }
-  if (!user?.email) {
+  if (!user?.id) {
+    let cookieHeader = "";
+    try {
+      cookieHeader = request?.headers.get("cookie") ?? (await headers()).get("cookie") ?? "";
+    } catch {
+      cookieHeader = request?.headers.get("cookie") ?? "";
+    }
+    if (/(?:^|;\s*)sb-/.test(cookieHeader)) {
+      return {
+        error: new Response(
+          JSON.stringify({
+            success: false,
+            error: "Service temporarily unavailable",
+            code: "SERVICE_UNAVAILABLE",
+          }),
+          { status: 503, headers: { "Content-Type": "application/json" } }
+        ),
+      };
+    }
     return {
       error: new Response(
         JSON.stringify({ success: false, error: "Not authenticated", code: "SESSION_REQUIRED" }),
@@ -217,7 +315,18 @@ export async function requireAreaManagerApiAuth(
     };
   }
 
-  const resolved = await getAreaManagerFromAuth(user.id, user.email);
+  const email = await resolveDashboardEmail(user);
+  let resolved = await getAreaManagerFromAuth(user.id, email || user.email);
+  if (!resolved) {
+    const fallbackUser = await getAuthUserSafe();
+    if (fallbackUser?.id && fallbackUser.id !== user.id) {
+      const fallbackEmail = await resolveDashboardEmail(fallbackUser);
+      resolved = await getAreaManagerFromAuth(
+        fallbackUser.id,
+        fallbackEmail || fallbackUser.email
+      );
+    }
+  }
   if (!resolved) {
     return {
       error: new Response(
@@ -240,6 +349,7 @@ export async function requireAreaManagerApiAuth(
 export function requireMerchantManager(
   resolved: ResolvedAreaManager
 ): Response | null {
+  if (resolved.isSuperAdmin) return null;
   if (resolved.managerType !== "MERCHANT") {
     return new Response(
       JSON.stringify({

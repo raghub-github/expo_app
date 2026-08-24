@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { merchantKeys } from '@/lib/query-keys';
+import { readPartnerLastParentId } from '@/lib/partner-selected-store';
 
 export type PartnerResolveSessionStore = {
   id: number;
@@ -26,8 +27,11 @@ export type PartnerResolveSessionData = {
   stores: PartnerResolveSessionStore[];
 };
 
-async function fetchPartnerResolveSession(): Promise<PartnerResolveSessionData> {
-  const res = await fetch('/api/merchant-auth/resolve-session', { credentials: 'include' });
+async function fetchPartnerResolveSession(
+  parentId?: string | null
+): Promise<PartnerResolveSessionData> {
+  const q = parentId?.trim() ? `?parent_id=${encodeURIComponent(parentId.trim())}` : '';
+  const res = await fetch(`/api/merchant-auth/resolve-session${q}`, { credentials: 'include' });
   const data = (await res.json().catch(() => ({}))) as PartnerResolveSessionData & { error?: string };
   if (!res.ok || !data.success) {
     throw new Error(data.error ?? 'Failed to resolve session');
@@ -39,10 +43,22 @@ async function fetchPartnerResolveSession(): Promise<PartnerResolveSessionData> 
 }
 
 /** Cached merchant stores list — shared by sidebar, top bar, and pages. */
-export function usePartnerResolveSession(options?: { enabled?: boolean }) {
+export function usePartnerResolveSession(options?: {
+  enabled?: boolean;
+  parentId?: string | number | null;
+}) {
+  const [lastParentId, setLastParentId] = useState('');
+  useEffect(() => {
+    setLastParentId(readPartnerLastParentId());
+  }, []);
+  const preferredParentId =
+    options?.parentId != null && String(options.parentId).trim()
+      ? String(options.parentId).trim()
+      : lastParentId;
+
   return useQuery({
-    queryKey: merchantKeys.resolveSession(),
-    queryFn: fetchPartnerResolveSession,
+    queryKey: merchantKeys.resolveSession(preferredParentId || null),
+    queryFn: () => fetchPartnerResolveSession(preferredParentId || null),
     enabled: options?.enabled ?? true,
     staleTime: 5 * 60 * 1000,
     gcTime: 10 * 60 * 1000,

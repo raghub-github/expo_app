@@ -54,6 +54,7 @@ import {
   type ModifierGroupRow,
   type MenuImageUploadStatus,
 } from "@/services/menuApi";
+import { isGroceryStoreType } from "@/lib/menu-store-type";
 import { resolveImageUrl } from "@/services/outletApi";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { MenuItemImageLimitBox } from "@/components/menu/MenuItemImageLimitBox";
@@ -346,7 +347,15 @@ export default function AddEditItemScreen() {
   const [categoryFormOrder, setCategoryFormOrder] = useState("");
   const [categoryFormCuisineId, setCategoryFormCuisineId] = useState<number | null>(null);
   const [categoryUiConfig, setCategoryUiConfig] = useState<CategoryUiConfig | null>(null);
+  const [storeTypeHint, setStoreTypeHint] = useState<string | null>(null);
+  const isGroceryItemForm =
+    categoryUiConfig?.item_form?.variant === "grocery" ||
+    (categoryUiConfig?.item_form?.variant !== "standard" && isGroceryStoreType(storeTypeHint));
+  const showFoodAttrs = !isGroceryItemForm;
+  const showItemCuisineField =
+    Boolean(categoryUiConfig?.cuisine_field.visible) && !isGroceryItemForm;
   const [menuCuisineOptions, setMenuCuisineOptions] = useState<MenuCuisineOption[]>([]);
+  const [expiryDate, setExpiryDate] = useState("");
   const [menuCuisineCatalog, setMenuCuisineCatalog] = useState<MenuCuisineOption[]>([]);
   const [showAddCatalogCuisineModal, setShowAddCatalogCuisineModal] = useState(false);
   const [linkingCatalogCuisine, setLinkingCatalogCuisine] = useState(false);
@@ -413,13 +422,14 @@ export default function AddEditItemScreen() {
           fetchMenuCuisinesAndCatalog(storeId, token).catch(() => ({ cuisines: [], catalog: [] })),
         ]);
         if (!cancelled) {
+          if (cfg?.store_type) setStoreTypeHint(cfg.store_type);
           setCategoryUiConfig(cfg);
           setMenuCuisineOptions(cuisinesData.cuisines);
           setMenuCuisineCatalog(cuisinesData.catalog);
         }
       } catch {
         if (!cancelled) {
-          setCategoryUiConfig(null);
+          // Keep storeTypeHint so grocery form still works if category-config fails.
           setMenuCuisineOptions([]);
         }
       }
@@ -588,6 +598,25 @@ export default function AddEditItemScreen() {
     fetchStoreProfile(storeId, token)
       .then((r) => {
         if (cancelled) return;
+        if (r.store_type) {
+          setStoreTypeHint(r.store_type);
+          // Seed item_form immediately from store_type (don't wait for category-config).
+          const grocery = isGroceryStoreType(r.store_type);
+          setCategoryUiConfig((prev) => ({
+            store_type: r.store_type,
+            cuisine_field: prev?.cuisine_field ?? {
+              visible: false,
+              required_for_root: false,
+              inherit_on_subcategory: true,
+            },
+            allow_create_custom_cuisine: prev?.allow_create_custom_cuisine ?? false,
+            item_form: {
+              variant: grocery ? "grocery" : "standard",
+              show_expiry: grocery,
+              show_food_attrs: !grocery,
+            },
+          }));
+        }
         if (r.cuisine_types?.length) setStoreCuisines(r.cuisine_types);
         const storePack = r.packaging_charge_amount ?? null;
         setStoreDefaultPackaging(storePack != null && storePack > 0 ? storePack : null);
@@ -682,6 +711,11 @@ export default function AddEditItemScreen() {
     setFibreVal(itemData.fibre != null ? String(itemData.fibre) : "");
     setFibreUnit(itemData.fibre_unit ?? "mg");
     setSelectedAllergens(itemData.allergens ?? []);
+    setExpiryDate(
+      typeof (itemData as { expiry_date?: string | null }).expiry_date === "string"
+        ? String((itemData as { expiry_date: string }).expiry_date).slice(0, 10)
+        : ""
+    );
     setSelectedTags(itemData.item_tags ?? []);
     setImages(itemData.images ?? []);
     setAuthorized(true);
@@ -861,7 +895,7 @@ export default function AddEditItemScreen() {
 
     const prepMins = parseOptionalNonNegativeNumber(prepTimeMinutes);
     let packagingOut: number | null = null;
-    if (packagingEnabled) {
+    if (!isGroceryItemForm && packagingEnabled) {
       const packagingNum = parseOptionalNonNegativeNumber(packagingCharges);
       if (packagingNum === null) {
         Alert.alert("Packaging", "Enter a valid packaging amount (₹), or turn off packaging for this item.");
@@ -873,15 +907,15 @@ export default function AddEditItemScreen() {
     const payload: MenuItemPayload = {
       item_name: itemName.trim(),
       item_description: description.trim() || null,
-      food_type: foodType,
+      food_type: isGroceryItemForm ? null : foodType,
       category_id: categoryIdNumber,
-      cuisine_type: cuisineType.trim() || null,
+      cuisine_type: showItemCuisineField ? cuisineType.trim() || null : null,
       base_price: base,
       selling_price: selling,
       preparation_time_minutes: prepMins ?? null,
-      packaging_charges: packagingOut,
-      serves_label: servesLabel || null,
-      serves: servesNumber,
+      packaging_charges: isGroceryItemForm ? null : packagingOut,
+      serves_label: isGroceryItemForm ? null : servesLabel || null,
+      serves: isGroceryItemForm ? null : servesNumber,
       item_size_value: parseOptionalNonNegativeNumber(itemSizeValue || ""),
       item_size_unit: itemSizeUnit || null,
       available_for_delivery: availableForDelivery,
@@ -896,8 +930,12 @@ export default function AddEditItemScreen() {
       fat_unit: fatUnit,
       fibre: parseOptionalNonNegativeNumber(fibreVal || ""),
       fibre_unit: fibreUnit,
-      allergens: selectedAllergens.length ? selectedAllergens : null,
-      item_tags: selectedTags.length ? selectedTags : null,
+      allergens: isGroceryItemForm ? null : selectedAllergens.length ? selectedAllergens : null,
+      item_tags: isGroceryItemForm ? null : selectedTags.length ? selectedTags : null,
+      expiry_date:
+        isGroceryItemForm && expiryDate.trim() && /^\d{4}-\d{2}-\d{2}$/.test(expiryDate.trim())
+          ? expiryDate.trim()
+          : null,
     };
 
     setSaveInProgress(true);
@@ -920,7 +958,9 @@ export default function AddEditItemScreen() {
       } else {
         const created = await createMutation.mutateAsync(payload);
         try {
-          await ensureStoreCuisinesLinkedForItemNames(storeId, token, cuisineType);
+          if (showItemCuisineField) {
+            await ensureStoreCuisinesLinkedForItemNames(storeId, token, cuisineType);
+          }
         } catch {
           /* non-fatal */
         }
@@ -1006,6 +1046,7 @@ export default function AddEditItemScreen() {
     proteinVal, proteinUnit, carbsVal, carbsUnit, fatVal, fatUnit,
     fibreVal, fibreUnit, selectedAllergens, selectedTags, router,
     createMutation, updateMutation, itemData?.approval_status, itemData,
+    isGroceryItemForm, showItemCuisineField, expiryDate,
   ]);
 
   const handleSaveConfirm = useCallback(() => {
@@ -1737,6 +1778,7 @@ export default function AddEditItemScreen() {
         </BottomModal>
 
         {/* ── Cuisine (optional; from store onboarding) ── */}
+        {showItemCuisineField ? (
         <View style={styles.section}>
           <DropdownField
             label="Cuisine (optional)"
@@ -1755,7 +1797,9 @@ export default function AddEditItemScreen() {
             }}
           />
         </View>
+        ) : null}
 
+        {categoryUiConfig?.cuisine_field.visible && !isGroceryItemForm ? (
         <BottomModal visible={showCuisineModal} title="Select cuisine" onClose={() => setShowCuisineModal(false)}>
           <TouchableOpacity
             style={modalStyles.optionRow}
@@ -1775,6 +1819,7 @@ export default function AddEditItemScreen() {
             </TouchableOpacity>
           ))}
         </BottomModal>
+        ) : null}
 
         {/* ── Item name ── */}
         <View style={styles.section}>
@@ -1793,6 +1838,8 @@ export default function AddEditItemScreen() {
         </View>
 
         {/* ── Serves info ── */}
+        {showFoodAttrs ? (
+        <>
         <DropdownField
           label="Serves info, select no. of people"
           value={servesLabel}
@@ -1801,7 +1848,7 @@ export default function AddEditItemScreen() {
         />
         <Text style={styles.helperText}>Number of adults who can be served with 1 item</Text>
 
-        {/* ── Item size ── */}
+        {/* ── Item size (food stores) ── */}
         <ValueUnitField
           label="Item size"
           value={itemSizeValue}
@@ -1811,6 +1858,8 @@ export default function AddEditItemScreen() {
           placeholder="Eg. 4"
           helperText="Size of the item e.g. Paneer Tikka, 8 pieces"
         />
+        </>
+        ) : null}
 
         <SectionDivider />
 
@@ -1840,6 +1889,7 @@ export default function AddEditItemScreen() {
         </View>
 
         {/* ── Food type ── */}
+        {showFoodAttrs ? (
         <View style={styles.foodTypeRow}>
           {FOOD_TYPES.map((t) => (
             <TouchableOpacity
@@ -1855,6 +1905,7 @@ export default function AddEditItemScreen() {
             </TouchableOpacity>
           ))}
         </View>
+        ) : null}
 
         <SectionDivider />
 
@@ -1898,9 +1949,13 @@ export default function AddEditItemScreen() {
 
         {/* ── Prep / ETA & packaging (store defaults; editable per item only) ── */}
         <View style={styles.section}>
-          <Text style={styles.sectionHeading}>Prep / ETA & packaging</Text>
+          <Text style={styles.sectionHeading}>
+            {isGroceryItemForm ? "Prep / ETA" : "Prep / ETA & packaging"}
+          </Text>
           <Text style={styles.sectionSubheading}>
-            Prep defaults from your store; override here if this item is different. Packaging is optional per item and does not change your store default.
+            {isGroceryItemForm
+              ? "Prep defaults from your store; override here if this item is different."
+              : "Prep defaults from your store; override here if this item is different. Packaging is optional per item and does not change your store default."}
           </Text>
           <View style={styles.fieldWrap}>
             <Text style={styles.fieldLabel}>Prep / ETA (minutes)</Text>
@@ -1913,6 +1968,33 @@ export default function AddEditItemScreen() {
               keyboardType="number-pad"
             />
           </View>
+          {isGroceryItemForm ? (
+            <>
+            <View style={styles.fieldWrap}>
+              <Text style={styles.fieldLabel}>Expiry date (optional)</Text>
+              <TextInput
+                style={styles.textInput}
+                value={expiryDate}
+                onChangeText={setExpiryDate}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor={GatiMitraMerchant.textTertiary}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Text style={styles.helperText}>Product best-before / expiry</Text>
+            </View>
+            <ValueUnitField
+              label="Item size"
+              value={itemSizeValue}
+              onChangeValue={setItemSizeValue}
+              unit={itemSizeUnit}
+              onPressUnit={() => setShowSizeUnitModal(true)}
+              placeholder="Eg. 500"
+              helperText="Optional — e.g. 1 L, 500 grams, 12 piece"
+            />
+            </>
+          ) : (
+            <>
           <View style={styles.packagingToggleRow}>
             <View style={{ flex: 1, paddingRight: 12 }}>
               <Text style={styles.fieldLabel}>Packaging charge for this item</Text>
@@ -1955,6 +2037,8 @@ export default function AddEditItemScreen() {
               />
             </View>
           ) : null}
+            </>
+          )}
         </View>
 
         <SectionDivider />
@@ -2057,20 +2141,24 @@ export default function AddEditItemScreen() {
         </View>
 
         {/* ── Allergens ── */}
+        {showFoodAttrs ? (
         <DropdownField
           label="Allergens"
           value={allergensLabel}
           placeholder="Eg. Milk"
           onPress={() => setShowAllergensModal(true)}
         />
+        ) : null}
 
         {/* ── Tags ── */}
+        {showFoodAttrs ? (
         <DropdownField
           label="Select item tags"
           value={tagsLabel}
           placeholder="Select item tags"
           onPress={() => setShowTagsModal(true)}
         />
+        ) : null}
       </ScrollView>
 
       {/* ── Sticky footer ── */}

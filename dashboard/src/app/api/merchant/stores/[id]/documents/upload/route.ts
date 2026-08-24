@@ -3,10 +3,7 @@
  * Upload a document file (image/PDF) for a doc type. File goes to R2, URL saved in merchant_store_documents.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
-import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { authenticateMerchantStoreForId } from "@/lib/merchant-store-route-auth";
 import { getSql } from "@/lib/db/client";
 import { ensureMerchantStoreDocumentsStep4JsonColumns } from "@/lib/db/ensure-step4-resubmission-flags-column";
 import {
@@ -189,46 +186,11 @@ export async function POST(
       );
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 401 }
-      );
-    }
+    const access = await authenticateMerchantStoreForId(request, storeId);
+    if (!access.ok) return access.response;
+    const user = access.user;
     const uploadedBy = user.id;
-    const uploadedByEmail = user.email;
-
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
-    if (!allowed) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Merchant dashboard access required",
-          code: "MERCHANT_ACCESS_REQUIRED",
-        },
-        { status: 403 }
-      );
-    }
-
-    const areaManagerId = await resolveMerchantListAreaManagerId({
-      supabaseAuthId: user.id,
-      email: user.email,
-    });
-
-    const store = await getMerchantStoreById(storeId, areaManagerId);
-    if (!store) {
-      return NextResponse.json(
-        { success: false, error: "Store not found" },
-        { status: 404 }
-      );
-    }
+    const uploadedByEmail = user.email ?? "";
 
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
@@ -265,31 +227,36 @@ export async function POST(
 
     // Use external merchant/child codes in the key so URLs match the
     // docs-style paths (docs/merchants/GMMP.../stores/GMMC.../onboarding/documents/...).
-    let parentIdForPath =
-      typeof store.parent_id === "number" && Number.isFinite(store.parent_id)
-        ? store.parent_id
-        : null;
-    if (parentIdForPath == null) {
-      const sqlFallback = getSql();
-      const parentRows = await sqlFallback`
-        SELECT parent_id
-        FROM merchant_stores
-        WHERE id = ${storeId}
-        LIMIT 1
-      `;
-      const parentRow = Array.isArray(parentRows) ? parentRows[0] : parentRows;
-      if (parentRow && (parentRow as { parent_id?: unknown }).parent_id != null) {
-        const parsed = Number((parentRow as { parent_id: unknown }).parent_id);
-        if (Number.isFinite(parsed)) parentIdForPath = parsed;
-      }
+    const sqlLookup = getSql();
+    const storeRows = await sqlLookup`
+      SELECT store_id, parent_id
+      FROM merchant_stores
+      WHERE id = ${storeId}
+      LIMIT 1
+    `;
+    const storeRow = (Array.isArray(storeRows) ? storeRows[0] : storeRows) as
+      | { store_id?: string | null; parent_id?: number | null }
+      | undefined;
+    if (!storeRow) {
+      return NextResponse.json(
+        { success: false, error: "Store not found" },
+        { status: 404 }
+      );
     }
-    if (parentIdForPath == null) {
+
+    let parentIdForPath =
+      typeof storeRow.parent_id === "number" && Number.isFinite(storeRow.parent_id)
+        ? storeRow.parent_id
+        : storeRow.parent_id != null
+          ? Number(storeRow.parent_id)
+          : null;
+    if (parentIdForPath == null || !Number.isFinite(parentIdForPath)) {
       return NextResponse.json(
         { success: false, error: "Parent id not found for store", code: "PARENT_ID_MISSING" },
         { status: 400 }
       );
     }
-    const storeCode = String(store.store_id || storeId);
+    const storeCode = String(storeRow.store_id || storeId);
     const timestamp = Date.now();
     const ext = extensionFromUploadFile(file);
 

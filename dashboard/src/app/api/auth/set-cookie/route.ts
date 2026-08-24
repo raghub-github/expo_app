@@ -17,6 +17,11 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { recordFailedLogin, recordLogin } from "@/lib/auth/user-management";
 import { getSystemUserById } from "@/lib/db/operations/users";
 import { getIpAddress, getUserAgent } from "@/lib/audit/logger";
+import {
+  rememberDashboardIdentity,
+  DASHBOARD_IDENTITY_EMAIL_COOKIE,
+  dashboardIdentityEmailCookieOptions,
+} from "@/lib/auth/auth-identity-cache";
 
 export const runtime = "nodejs";
 
@@ -121,6 +126,19 @@ export async function POST(request: NextRequest) {
       }
 
       systemUserId = validation.systemUserId ?? null;
+      const authId = data.session.user?.id;
+      if (authId && systemUserId) {
+        rememberDashboardIdentity(authId, {
+          email,
+          systemUserNumericId: systemUserId,
+          primaryRole: validation.primaryRole || "",
+        });
+        response.cookies.set(
+          DASHBOARD_IDENTITY_EMAIL_COOKIE,
+          email.trim().toLowerCase(),
+          dashboardIdentityEmailCookieOptions()
+        );
+      }
     }
 
     if (data.session) {

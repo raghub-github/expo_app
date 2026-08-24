@@ -20,6 +20,8 @@ import {
   storeVerificationStepLabel,
 } from "@/lib/merchants/store-verification-path";
 import { useStoreVerificationLiveSync } from "@/hooks/useStoreVerificationLiveSync";
+import { useOnboardingStoreTypes } from "@/hooks/useOnboardingStoreTypes";
+import { formatStoreTypeLabel } from "@/lib/onboarding-store-types";
 import { DynamicRejectedFields } from "@/components/verification/DynamicRejectedFields";
 
 type RejectedDocKey = "pan" | "aadhaar" | "fssai" | "gst" | "bank_proof";
@@ -236,23 +238,8 @@ type FilePreviewState = {
   fallbackUrl?: string | null;
 };
 
-const STORE_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "RESTAURANT", label: "Restaurant" },
-  { value: "CAFE", label: "Cafe" },
-  { value: "BAKERY", label: "Bakery" },
-  { value: "CLOUD_KITCHEN", label: "Cloud Kitchen" },
-  { value: "GROCERY", label: "Grocery" },
-  { value: "PHARMA", label: "Pharma" },
-  { value: "STATIONERY", label: "Stationery" },
-  { value: "ELECTRONICS_ECOMMERCE", label: "Electronics and E-commerce" },
-  { value: "OTHERS", label: "Others" },
-];
-
 function storeTypeLabel(value: string): string {
-  const v = String(value || "").trim();
-  if (!v) return "—";
-  const hit = STORE_TYPE_OPTIONS.find((o) => o.value === v);
-  return hit?.label || v;
+  return formatStoreTypeLabel(value) || "—";
 }
 
 function pickNonEmpty(...vals: unknown[]): string {
@@ -493,6 +480,7 @@ function safeReturnPath(raw: string | null | undefined, fallback: string): strin
 function AmResubmitOnboardingInner() {
   const router = useRouter();
   const searchParams = useAppSearchParams();
+  const { options: storeTypeOptions } = useOnboardingStoreTypes("OTHERS");
   const storeInternalId = Number(searchParams.get("storeInternalId") || "");
   const parentIdParam = (searchParams.get("parentId") || "").trim();
   const verificationFixStep = Number(searchParams.get("verification_fix_step") || "4") || 4;
@@ -1878,7 +1866,7 @@ function AmResubmitOnboardingInner() {
                       <option value="" disabled>
                         Select store type
                       </option>
-                      {STORE_TYPE_OPTIONS.map((opt) => (
+                      {storeTypeOptions.map((opt) => (
                         <option key={opt.value} value={opt.value}>
                           {opt.label}
                         </option>

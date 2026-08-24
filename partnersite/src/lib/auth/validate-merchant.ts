@@ -17,6 +17,7 @@ export interface MerchantValidationResult {
   merchantParentId?: number;
   parentMerchantId?: string;
   email?: string;
+  phone?: string;
   /** When valid, parent status for UI (blocked/suspended banner, disable child registration). */
   approvalStatus?: string;
   registrationStatus?: string;
@@ -71,6 +72,8 @@ function toValidationResult(row: ParentRow): MerchantValidationResult {
       error: blockReason,
       merchantParentId: row.id,
       parentMerchantId: row.parent_merchant_id,
+      email: row.owner_email ?? undefined,
+      phone: row.registered_phone ?? undefined,
     };
   }
   return {
@@ -78,10 +81,30 @@ function toValidationResult(row: ParentRow): MerchantValidationResult {
     merchantParentId: row.id,
     parentMerchantId: row.parent_merchant_id,
     email: row.owner_email ?? undefined,
+    phone: row.registered_phone ?? undefined,
     approvalStatus: row.approval_status ?? undefined,
     registrationStatus: row.registration_status ?? undefined,
     isActive: row.is_active ?? undefined,
   };
+}
+
+/** Session email/phone must not belong to a different parent than the candidate. */
+function sessionIdentityAgreesWithParent(
+  user: { email?: string | null; phone?: string | null },
+  parent: { email?: string | null; phone?: string | null }
+): boolean {
+  const sessionEmail = String(user.email || "").trim().toLowerCase();
+  const parentEmail = String(parent.email || "").trim().toLowerCase();
+  if (sessionEmail && parentEmail && sessionEmail !== parentEmail) return false;
+
+  const sessionPhone = String(user.phone || "").trim();
+  const parentPhone = String(parent.phone || "").trim();
+  if (sessionPhone && parentPhone) {
+    const s = normalizePhoneForLookup(sessionPhone);
+    const p = normalizePhoneForLookup(parentPhone);
+    if (s.tenDigit && p.tenDigit && s.tenDigit !== p.tenDigit) return false;
+  }
+  return true;
 }
 
 /** If parent has no supabase_user_id yet, attach this session so later lookups resolve by id. */
@@ -90,6 +113,13 @@ async function maybeLinkSupabaseUserId(parentId: number, supabaseUserId: string 
   if (!uid || !Number.isFinite(parentId) || parentId < 1) return;
   try {
     const supabase = getSupabaseAdmin();
+    const { data: taken } = await supabase
+      .from("merchant_parents")
+      .select("id")
+      .eq("supabase_user_id", uid)
+      .neq("id", parentId)
+      .maybeSingle();
+    if (taken) return;
     await supabase
       .from("merchant_parents")
       .update({ supabase_user_id: uid })
@@ -113,27 +143,43 @@ function sessionOwnsParent(
   parent: ParentRow,
   user: { id?: string | null; email?: string | null; phone?: string | null }
 ): boolean {
-  const uid = String(user.id || "").trim();
   const email = String(user.email || "").trim().toLowerCase();
-  const ownsByUserId =
-    !!uid && !!parent.supabase_user_id && String(parent.supabase_user_id) === uid;
   const ownsByEmail =
     !!email &&
     !!parent.owner_email &&
     String(parent.owner_email).trim().toLowerCase() === email;
 
-  if (ownsByUserId || ownsByEmail) return true;
-
   const phone = String(user.phone || "").trim();
-  if (!phone) return false;
-  const { e164, tenDigit } = normalizePhoneForLookup(phone);
-  if (!tenDigit) return false;
-  const parentE164 = String(parent.registered_phone || "").trim();
-  const parentTen = String(parent.registered_phone_normalized || "").replace(/\D/g, "").slice(-10);
-  if (parentE164 && (parentE164 === e164 || parentE164.replace(/\D/g, "").slice(-10) === tenDigit)) {
-    return true;
+  let ownsByPhone = false;
+  if (phone) {
+    const { e164, tenDigit } = normalizePhoneForLookup(phone);
+    if (tenDigit) {
+      const parentE164 = String(parent.registered_phone || "").trim();
+      const parentTen = String(parent.registered_phone_normalized || "").replace(/\D/g, "").slice(-10);
+      if (parentE164 && (parentE164 === e164 || parentE164.replace(/\D/g, "").slice(-10) === tenDigit)) {
+        ownsByPhone = true;
+      } else if (parentTen && parentTen === tenDigit) {
+        ownsByPhone = true;
+      }
+    }
   }
-  if (parentTen && parentTen === tenDigit) return true;
+
+  // Email / phone are the source of truth after a new parent is created with a
+  // different inbox or number than an older Auth UUID still sitting on another row.
+  if (ownsByEmail || ownsByPhone) return true;
+
+  const uid = String(user.id || "").trim();
+  const ownsByUserId =
+    !!uid && !!parent.supabase_user_id && String(parent.supabase_user_id) === uid;
+  if (ownsByUserId) {
+    const sessionHasIdentity = !!(email || phone);
+    // Cookie JWTs often omit email/phone; Auth UUID is enough to keep the reload session.
+    if (!sessionHasIdentity) return true;
+    return sessionIdentityAgreesWithParent(user, {
+      email: parent.owner_email,
+      phone: parent.registered_phone,
+    });
+  }
   return false;
 }
 
@@ -148,7 +194,7 @@ export async function validateMerchantBySupabaseUserId(
     const supabase = getSupabaseAdmin();
     const { data: rows, error } = await supabase
       .from("merchant_parents")
-      .select("id, parent_merchant_id, owner_email, is_active, approval_status, registration_status, supabase_user_id")
+      .select("id, parent_merchant_id, owner_email, is_active, approval_status, registration_status, supabase_user_id, registered_phone, registered_phone_normalized")
       .eq("supabase_user_id", supabaseUserId.trim())
       .order("id", { ascending: false })
       .limit(1);
@@ -237,7 +283,7 @@ export async function validateMerchantForLogin(email: string): Promise<MerchantV
     // Prefer newest parent when the same email registered more than once
     const { data: rows, error } = await supabase
       .from("merchant_parents")
-      .select("id, parent_merchant_id, owner_email, is_active, approval_status, registration_status, supabase_user_id")
+      .select("id, parent_merchant_id, owner_email, is_active, approval_status, registration_status, supabase_user_id, registered_phone, registered_phone_normalized")
       .ilike("owner_email", normalized)
       .order("id", { ascending: false })
       .limit(1);
@@ -262,8 +308,8 @@ export async function validateMerchantForLogin(email: string): Promise<MerchantV
 
 /**
  * Validate merchant from session user.
- * supabase_user_id is authoritative for the active session — try it before phone/email
- * so a stale or shared phone number cannot resolve to a different merchant_parents row.
+ * Email / phone of this session win over a stale supabase_user_id still linked
+ * to an older parent (common after registering a new parent from the same browser).
  */
 export async function validateMerchantFromSession(user: {
   id: string;
@@ -274,12 +320,6 @@ export async function validateMerchantFromSession(user: {
   const hasEmail = !!user.email?.trim();
   const hasPhone = !!user.phone?.trim();
 
-  if (hasId) {
-    const byId = await validateMerchantBySupabaseUserId(user.id);
-    if (byId.isValid) return byId;
-    // Blocked/suspended parent linked to this auth user — don't fall through to another parent.
-    if (byId.merchantParentId != null && byId.error) return byId;
-  }
   if (hasEmail && user.email) {
     const byEmail = await validateMerchantForLogin(user.email);
     if (byEmail.isValid) {
@@ -299,6 +339,13 @@ export async function validateMerchantFromSession(user: {
       return byPhone;
     }
     if (byPhone.merchantParentId != null && byPhone.error) return byPhone;
+  }
+  if (hasId) {
+    const byId = await validateMerchantBySupabaseUserId(user.id);
+    if (sessionIdentityAgreesWithParent(user, byId)) {
+      if (byId.isValid) return byId;
+      if (byId.merchantParentId != null && byId.error) return byId;
+    }
   }
 
   return {
@@ -352,7 +399,8 @@ export async function validateMerchantFromSessionPreferParent(
     email?: string | null;
     phone?: string | null;
   },
-  preferredParentId?: number | string | null
+  preferredParentId?: number | string | null,
+  opts?: { requirePreferred?: boolean }
 ): Promise<MerchantValidationResult> {
   const preferredRaw =
     preferredParentId == null || preferredParentId === ""
@@ -391,14 +439,25 @@ export async function validateMerchantFromSessionPreferParent(
   // Preferred differed from default session parent — switch only if session owns preferred.
   try {
     const parent = await loadPreferredParent(preferredRaw);
-    if (!parent || !sessionOwnsParent(parent, user)) return base;
-    const result = toValidationResult(parent);
-    if (result.isValid && result.merchantParentId != null) {
-      await maybeLinkSupabaseUserId(result.merchantParentId, user.id);
+    if (parent && sessionOwnsParent(parent, user)) {
+      const result = toValidationResult(parent);
+      if (result.isValid && result.merchantParentId != null) {
+        await maybeLinkSupabaseUserId(result.merchantParentId, user.id);
+      }
+      return result;
     }
-    return result;
   } catch (e) {
     console.error("[validateMerchantFromSessionPreferParent] Error:", e);
     return base;
   }
+
+  if (opts?.requirePreferred && preferredRaw != null) {
+    return {
+      isValid: false,
+      error:
+        "This login belongs to a different parent account. Sign in with the email or mobile used for this registration.",
+    };
+  }
+
+  return base;
 }

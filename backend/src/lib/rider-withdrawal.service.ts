@@ -422,7 +422,7 @@ export async function listRiderPayoutsForAdmin(limit = 200): Promise<Record<stri
         wr.account_holder_name,
         wr.bank_acc,
         wr.ifsc,
-        r.full_name AS rider_name,
+        COALESCE(NULLIF(BTRIM(r.name), ''), r.mobile) AS rider_name,
         r.mobile AS rider_mobile
       FROM withdrawal_requests wr
       JOIN riders r ON r.id = wr.rider_id
@@ -430,8 +430,9 @@ export async function listRiderPayoutsForAdmin(limit = 200): Promise<Record<stri
       LIMIT ${limit}
     `;
     return rows as Record<string, unknown>[];
-  } catch {
-    return [];
+  } catch (e) {
+    console.error("[listRiderPayoutsForAdmin]", e);
+    throw e;
   }
 }
 

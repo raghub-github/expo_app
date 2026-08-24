@@ -12,7 +12,8 @@ import { useState, useEffect, useRef, useCallback, useMemo, Suspense } from 'rea
 import dynamic from 'next/dynamic';
 import axios from 'axios';
 import { Loader2, Menu, X, HelpCircle, CheckCircle2, Download } from 'lucide-react';
-import MerchantHelpTicket from '@/components/MerchantHelpTicket';
+import NeedHelpBadge from '@/components/NeedHelpBadge';
+import { openMxNeedHelp } from '@/lib/openMxNeedHelp';
 import { createClient } from '@/lib/supabase/client';
 import { useSearchParams } from 'next/navigation';
 import { verificationStepToPartnerStep } from '@/lib/onboarding/verification-step-map';
@@ -34,6 +35,15 @@ import {
   storeDescriptionValidationMessage,
 } from '@/lib/store-description';
 import { MERCHANT_AGREEMENT_UNAVAILABLE_MESSAGE } from '@/lib/merchant-agreement-template-constants';
+import { useOnboardingStoreTypes } from '@/hooks/useOnboardingStoreTypes';
+import { isOtherStoreType } from '@/lib/onboarding-store-types';
+import { SearchableSelect } from '@/components/ui/SearchableSelect';
+import { allStoresPickerHref } from '@/lib/partner-all-stores-href';
+import {
+  clearPartnerLastParentId,
+  clearPartnerStoreSelection,
+  persistPartnerLastParentId,
+} from '@/lib/partner-selected-store';
 import {
   menuReferenceEntryStatusesFromRejectionDetail,
   resolvePartnerMenuImageVerificationTag,
@@ -54,6 +64,93 @@ import {
   getOnboardingAssetsGalleryPath,
   type R2OnboardingDocType,
 } from '@/lib/r2-paths';
+
+function isFatalOnboardingAuthCode(code: unknown): boolean {
+  const c = String(code ?? "").toUpperCase();
+  return c === "SESSION_INVALID" || c === "DEVICE_SESSION_INVALID";
+}
+
+function isRetryableOnboardingAuth(status: number, code: unknown): boolean {
+  const c = String(code ?? "").toUpperCase();
+  if (isFatalOnboardingAuthCode(c)) return false;
+  return (
+    status === 503 ||
+    c === "SERVICE_UNAVAILABLE" ||
+    c === "SESSION_REQUIRED" ||
+    (status === 401 && c !== "SESSION_INVALID")
+  );
+}
+
+type RegisterStoreProgressPayload = {
+  success?: boolean;
+  error?: unknown;
+  code?: unknown;
+  message?: unknown;
+  progress?: any;
+  storeOnboardingClosed?: boolean;
+  store?: { approval_status?: string };
+};
+
+async function fetchRegisterStoreProgress(
+  url: string,
+  init?: RequestInit
+): Promise<{ res: Response; payload: RegisterStoreProgressPayload }> {
+  const attempts = 3;
+  let res: Response | null = null;
+  let payload: RegisterStoreProgressPayload = {};
+  for (let i = 0; i < attempts; i++) {
+    res = await fetch(url, {
+      credentials: "include",
+      cache: "no-store",
+      ...init,
+    });
+    payload = (await res.json().catch(() => ({}))) as RegisterStoreProgressPayload;
+    if (!isRetryableOnboardingAuth(res.status, payload.code) || i === attempts - 1) {
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+  }
+  return { res: res!, payload };
+}
+
+/** Only a confirmed dead token should bounce to login — that URL clears cookies. */
+function forceOnboardingReLogin() {
+  if (typeof window === "undefined") return;
+  try {
+    clearPartnerStoreSelection();
+  } catch {
+    /* ignore */
+  }
+  const next = window.location.pathname + window.location.search;
+  window.location.replace(
+    `/auth?reason=session_invalid&redirect=${encodeURIComponent(next)}`
+  );
+}
+
+/** Parent or child was deleted — leave the wizard instead of restoring a ghost form. */
+function leaveMissingOnboarding(kind: "parent" | "store", parentKey?: string | null) {
+  if (typeof window === "undefined") return;
+  const key = (parentKey || "").trim();
+  if (key) clearOnboardingResume(key);
+  try {
+    clearPartnerStoreSelection();
+  } catch {
+    /* ignore */
+  }
+  if (kind === "parent") {
+    try {
+      clearPartnerLastParentId();
+    } catch {
+      /* ignore */
+    }
+    window.location.replace("/auth/register?reason=parent_removed");
+    return;
+  }
+  const picker = allStoresPickerHref(key || null);
+  const u = new URL(picker, window.location.origin);
+  u.searchParams.set("notice", "store_removed");
+  window.location.replace(`${u.pathname}${u.search}`);
+}
 
 function onboardingDocTypeForUploadKey(fieldKey: string): R2OnboardingDocType {
   switch (fieldKey) {
@@ -231,9 +328,9 @@ interface DocumentData {
 
 function normalizeStep4ActiveSection(raw: unknown): string | undefined {
   if (typeof raw !== 'string' || !raw.trim()) return undefined;
-  if (raw === 'optional') return 'licence';
-  const valid = new Set(['pan', 'aadhar', 'licence', 'gst', 'bank', 'other']);
-  return valid.has(raw) ? raw : undefined;
+  const t = raw.trim();
+  if (t === 'optional') return 'LICENCE';
+  return t;
 }
 
 interface StoreSetupData {
@@ -297,7 +394,6 @@ const StoreRegistrationForm = () => {
   const [showSuccess, setShowSuccess] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
-  const [showHelpModal, setShowHelpModal] = useState(false);
   const mainScrollRef = useRef<HTMLDivElement>(null);
   const [generatedStoreId, setGeneratedStoreId] = useState<string>('');
   const [parentInfo, setParentInfo] = useState<{
@@ -328,6 +424,7 @@ const StoreRegistrationForm = () => {
   const geolocateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchParams = useSearchParams();
   const selectedStorePublicId = searchParams?.get('store_id');
+  const parentIdParam = searchParams?.get('parent_id');
   const forceNewOnboarding = searchParams?.get('new') === '1';
   const urlWantsVerificationFix =
     !!selectedStorePublicId &&
@@ -337,11 +434,13 @@ const StoreRegistrationForm = () => {
       return raw != null && String(raw).trim() !== '';
     })();
 
+  // Persist last parent only after we confirm the row still exists (see fetchParentInfo).
+
   // Never auto-open this wizard. Require Add Store (`new=1`) or an explicit store resume (`store_id`).
   useEffect(() => {
     if (forceNewOnboarding || selectedStorePublicId) return;
-    window.location.replace("/partners/all-stores?picker=1");
-  }, [forceNewOnboarding, selectedStorePublicId]);
+    window.location.replace(allStoresPickerHref(parentIdParam));
+  }, [forceNewOnboarding, selectedStorePublicId, parentIdParam]);
 
   const verificationSaveThanksTitle = 'Updates saved';
   const verificationSaveThanksMessage =
@@ -374,6 +473,7 @@ const StoreRegistrationForm = () => {
     longitude: null,
     landmark: '',
   });
+  const { options: storeTypeOptions } = useOnboardingStoreTypes("OTHERS");
 
   const [documents, setDocuments] = useState<DocumentData>({
     pan_number: '',
@@ -469,12 +569,8 @@ const StoreRegistrationForm = () => {
 
   const buildPostLoginVerificationSubmittedUrl = useCallback(() => {
     const sid = (selectedStorePublicId || currentStoreId || draftStorePublicId || '').trim();
-    const q = new URLSearchParams();
-    q.set('verification_updates_submitted', '1');
-    q.set('picker', '1');
-    if (sid) q.set('highlight_store', sid);
-    return `/partners/all-stores?${q.toString()}`;
-  }, [selectedStorePublicId, currentStoreId, draftStorePublicId]);
+    return allStoresPickerHref(parentIdParam, sid, { verificationSubmitted: true });
+  }, [parentIdParam, selectedStorePublicId, currentStoreId, draftStorePublicId]);
 
   const showVerificationNotice = useCallback(
     (
@@ -531,25 +627,39 @@ const StoreRegistrationForm = () => {
     // Step 1 data (legal_business_name is kept in sync with store_display_name)
     if (saved.step1) {
       const step1 = saved.step1 as Record<string, unknown>;
-      const displayName = (step1.store_display_name as string) ?? '';
-      const storeName = typeof step1.store_name === 'string' ? step1.store_name : '';
+      const pickStr = (incoming: unknown, prev: string) => {
+        const s = incoming == null ? "" : String(incoming).trim();
+        return s || prev;
+      };
+      const displayNameRaw = (step1.store_display_name as string) ?? "";
+      const storeNameRaw = typeof step1.store_name === "string" ? step1.store_name : "";
       setFormData((prev): FormData => {
-        const merged = { ...prev, ...step1, legal_business_name: displayName } as FormData;
-        const o = merged.owner_full_name;
+        const phones = Array.isArray(step1.store_phones)
+          ? (step1.store_phones as string[]).filter((p) => String(p || "").trim())
+          : prev.store_phones;
+        const storeName = pickStr(step1.store_name, prev.store_name);
+        const displayName = pickStr(step1.store_display_name, prev.store_display_name);
+        const owner = pickStr(step1.owner_full_name, prev.owner_full_name);
         return {
-          ...merged,
-          owner_full_name: o != null && String(o).trim() !== '' ? String(o).trim() : prev.owner_full_name,
-        };
+          ...prev,
+          ...step1,
+          store_name: storeName,
+          owner_full_name: owner,
+          store_display_name: displayName,
+          legal_business_name: pickStr(step1.legal_business_name, displayName || prev.legal_business_name),
+          store_description: pickStr(step1.store_description, prev.store_description),
+          store_email: pickStr(step1.store_email, prev.store_email),
+          store_type: pickStr(step1.store_type, prev.store_type),
+          custom_store_type: pickStr(step1.custom_store_type, prev.custom_store_type),
+          store_phones: phones.length ? phones : prev.store_phones,
+        } as FormData;
       });
-      if (
-        displayName.trim() &&
-        storeName.trim() &&
-        displayName.trim() !== storeName.trim()
-      ) {
+      if (displayNameRaw.trim() && storeNameRaw.trim() && displayNameRaw.trim() !== storeNameRaw.trim()) {
         setDisplayNameManuallyEdited(true);
       }
       if (saved.step1.store_phones && Array.isArray(saved.step1.store_phones)) {
-        setStorePhonesInput(saved.step1.store_phones.join(', '));
+        const joined = saved.step1.store_phones.filter((p: unknown) => String(p || "").trim()).join(", ");
+        if (joined) setStorePhonesInput(joined);
       }
     }
 
@@ -761,7 +871,6 @@ const StoreRegistrationForm = () => {
     };
   }, []);
 
-  const parentIdParam = searchParams?.get('parent_id');
   useEffect(() => {
     const fetchParentInfo = async () => {
       const parentId = parentIdParam;
@@ -786,6 +895,7 @@ const StoreRegistrationForm = () => {
         }
 
         if (data) {
+          persistPartnerLastParentId(String(data.id));
           const ownerFromParent =
             typeof data.owner_name === 'string' && data.owner_name.trim()
               ? data.owner_name.trim()
@@ -804,12 +914,8 @@ const StoreRegistrationForm = () => {
             });
           }
         } else {
-          setParentInfo({
-            id: isNumericParentId ? Number(parentId) : null,
-            name: null,
-            parent_merchant_id: parentId,
-            owner_name: null,
-          });
+          leaveMissingOnboarding("parent", parentId);
+          return;
         }
       }
     };
@@ -929,7 +1035,7 @@ const StoreRegistrationForm = () => {
       try {
         const parentKey = (parentIdParam || '').trim();
         if (!forceNewOnboarding && !selectedStorePublicId) {
-          window.location.replace("/partners/all-stores?picker=1");
+          window.location.replace(allStoresPickerHref(parentIdParam));
           return;
         }
         const sessionResume = parentKey ? readOnboardingResume(parentKey) : null;
@@ -961,7 +1067,7 @@ const StoreRegistrationForm = () => {
               window.location.href = `/partners/dashboard?storeId=${encodeURIComponent(storePublicId)}`;
               return true;
             }
-            window.location.href = `/partners/all-stores?picker=1&highlight_store=${encodeURIComponent(storePublicId)}`;
+            window.location.href = allStoresPickerHref(parentIdParam, storePublicId);
             return true;
           } catch {
             return false;
@@ -981,30 +1087,27 @@ const StoreRegistrationForm = () => {
           progressParams.set('resetDraft', '1');
         }
         const url = `/api/auth/register-store-progress?${progressParams.toString()}`;
-        const res = await fetch(url);
-        const payload = await res.json();
+        const { res, payload } = await fetchRegisterStoreProgress(url);
         
         if (!res.ok) {
-          if (payload.code === 'SESSION_INVALID' || res.status === 401) {
-            console.log('User not authenticated, redirecting to login');
-            if (typeof window !== 'undefined') {
-              window.location.href = '/auth?redirect=' + encodeURIComponent(window.location.pathname + window.location.search);
-            }
+          const failCode = String(payload.code ?? "").toUpperCase();
+          if (isFatalOnboardingAuthCode(failCode)) {
+            forceOnboardingReLogin();
             return;
           }
-          // Session exists but is not linked to a merchant_parents row (wrong login / AM staff / unlinked).
-          if (payload.code === 'MERCHANT_NOT_FOUND' || res.status === 403) {
-            const msg = String(payload.error || 'No merchant account found for this login.');
-            if (typeof window !== 'undefined') {
-              window.location.href =
-                '/auth?redirect=' +
-                encodeURIComponent(window.location.pathname + window.location.search) +
-                '&error=' +
-                encodeURIComponent(msg);
-            }
+          if (failCode === "MERCHANT_NOT_FOUND") {
+            leaveMissingOnboarding("parent", parentKey);
+            return;
+          }
+          if (failCode === "STORE_NOT_FOUND" || failCode === "STORE_PARENT_MISMATCH") {
+            leaveMissingOnboarding("store", parentKey);
             return;
           }
           console.warn('Failed to load progress:', payload.error);
+          if (storeId) {
+            leaveMissingOnboarding("store", parentKey);
+            return;
+          }
           if (sessionResume && !urlWantsVerificationFix) {
             setStepStateOnly(sessionResume.step);
             if (sessionResume.storePublicId) {
@@ -1027,7 +1130,7 @@ const StoreRegistrationForm = () => {
             return;
           }
           if (approval !== 'REJECTED') {
-            window.location.href = `/partners/all-stores?picker=1&highlight_store=${encodeURIComponent(storeId)}`;
+            window.location.href = allStoresPickerHref(parentIdParam, storeId);
             return;
           }
         }
@@ -1092,7 +1195,7 @@ const StoreRegistrationForm = () => {
           return;
         }
 
-        if (sessionResume && !urlWantsVerificationFix) {
+        if (sessionResume && !urlWantsVerificationFix && !selectedStorePublicId) {
           setStepStateOnly(sessionResume.step);
           if (sessionResume.storePublicId) {
             setCurrentStoreId(sessionResume.storePublicId);
@@ -1151,7 +1254,7 @@ const StoreRegistrationForm = () => {
                 return;
               }
               if (approval !== 'REJECTED') {
-                window.location.href = `/partners/all-stores?picker=1&highlight_store=${encodeURIComponent(existingStore.store_id)}`;
+                window.location.href = allStoresPickerHref(parentIdParam, existingStore.store_id);
                 return;
               }
             }
@@ -1170,27 +1273,42 @@ const StoreRegistrationForm = () => {
             ) {
               setDisplayNameManuallyEdited(true);
             }
-            setFormData((prev) => ({
-              ...prev,
-              store_name: existingStore.store_name ?? prev.store_name,
-              owner_full_name:
-                typeof ownerFromDb === 'string' && ownerFromDb.trim() ? ownerFromDb.trim() : prev.owner_full_name,
-              store_display_name: displayName,
-              legal_business_name: displayName,
-              store_description: existingStore.store_description ?? prev.store_description,
-              store_type: existingStore.store_type ?? prev.store_type,
-              custom_store_type: (existingStore as any).custom_store_type ?? prev.custom_store_type,
-              store_email: existingStore.store_email ?? prev.store_email,
-              store_phones: Array.isArray(existingStore.store_phones) ? existingStore.store_phones : prev.store_phones,
-              full_address: existingStore.full_address ?? prev.full_address,
-              city: existingStore.city ?? prev.city,
-              state: existingStore.state ?? prev.state,
-              postal_code: existingStore.postal_code ?? prev.postal_code,
-              country: existingStore.country ?? prev.country,
-              latitude: typeof existingStore.latitude === 'number' ? existingStore.latitude : prev.latitude,
-              longitude: typeof existingStore.longitude === 'number' ? existingStore.longitude : prev.longitude,
-              landmark: existingStore.landmark ?? prev.landmark,
-            }));
+            setFormData((prev) => {
+              const pick = (incoming: unknown, fallback: string) => {
+                const s = incoming == null ? "" : String(incoming).trim();
+                return s || fallback;
+              };
+              const phones = Array.isArray(existingStore.store_phones)
+                ? existingStore.store_phones.filter((p: unknown) => String(p || "").trim())
+                : prev.store_phones;
+              const display = pick(displayName, prev.store_display_name);
+              return {
+                ...prev,
+                store_name: pick(existingStore.store_name, prev.store_name),
+                owner_full_name:
+                  typeof ownerFromDb === "string" && ownerFromDb.trim()
+                    ? ownerFromDb.trim()
+                    : prev.owner_full_name,
+                store_display_name: display,
+                legal_business_name: display,
+                store_description: pick(existingStore.store_description, prev.store_description),
+                store_type: pick(existingStore.store_type, prev.store_type),
+                custom_store_type: pick(
+                  (existingStore as { custom_store_type?: string | null }).custom_store_type,
+                  prev.custom_store_type
+                ),
+                store_email: pick(existingStore.store_email, prev.store_email),
+                store_phones: phones.length ? phones : prev.store_phones,
+                full_address: pick(existingStore.full_address, prev.full_address),
+                city: pick(existingStore.city, prev.city),
+                state: pick(existingStore.state, prev.state),
+                postal_code: pick(existingStore.postal_code, prev.postal_code),
+                country: pick(existingStore.country, prev.country),
+                latitude: typeof existingStore.latitude === "number" ? existingStore.latitude : prev.latitude,
+                longitude: typeof existingStore.longitude === "number" ? existingStore.longitude : prev.longitude,
+                landmark: pick(existingStore.landmark, prev.landmark),
+              };
+            });
             
             if (Array.isArray(existingStore.store_phones)) {
               setStorePhonesInput(existingStore.store_phones.join(', '));
@@ -1439,6 +1557,9 @@ const StoreRegistrationForm = () => {
               }
               stepRestoredRef.current = true;
             }
+          } else {
+            leaveMissingOnboarding("store", parentKey);
+            return;
           }
         }
       } catch (err) {
@@ -1599,7 +1720,9 @@ const StoreRegistrationForm = () => {
             entry_id?: string;
             verification_status?: string | null;
           }>;
-          const urls = rawFiles.map((f) => f.file_url).filter(Boolean) as string[];
+          const urls = rawFiles
+            .map((f) => (f.file_url ? proxyUrlForDocumentUploadResult(String(f.file_url)) : null))
+            .filter((u): u is string => Boolean(u));
           const names = rawFiles.map((f) => f.file_name ?? '').filter(Boolean);
           const ids = rawFiles
             .map((f) => f.id)
@@ -1607,7 +1730,11 @@ const StoreRegistrationForm = () => {
           const at = data.attachment_type;
           if (at === 'images') {
             const imgRows = rawFiles.filter((f) => f.file_url);
-            setMenuUploadedImageUrls(imgRows.map((f) => String(f.file_url)));
+            setMenuUploadedImageUrls(
+              imgRows
+                .map((f) => proxyUrlForDocumentUploadResult(String(f.file_url)))
+                .filter(Boolean)
+            );
             setMenuUploadedImageNames(imgRows.map((f) => f.file_name ?? ''));
             setMenuUploadIds(
               imgRows
@@ -2056,7 +2183,9 @@ const StoreRegistrationForm = () => {
           console.info("[register-store] Menu stored in R2 | bucket:", rb, "| prefix:", prefix ?? "(n/a)");
         }
         const ids = rows.map((r) => r.id);
-        const urls = rows.map((r) => r.file_url);
+        const urls = rows
+          .map((r) => (r.file_url ? proxyUrlForDocumentUploadResult(r.file_url) : ""))
+          .filter(Boolean);
         const names = rows.map((r) => r.file_name ?? "");
         if (kind === "pdf") {
           setMenuUploadedPdfUrl(urls[0] ?? null);
@@ -2129,7 +2258,9 @@ const StoreRegistrationForm = () => {
           );
         }
         const ids = rows.map((r) => r.id);
-        const urls = rows.map((r) => r.file_url).filter(Boolean) as string[];
+        const urls = rows
+          .map((r) => (r.file_url ? proxyUrlForDocumentUploadResult(r.file_url) : ""))
+          .filter(Boolean) as string[];
         const names = rows.map((r) => r.file_name ?? "");
         const eids = rows.map((r) => (typeof r.entry_id === "string" ? r.entry_id : ""));
         const vss = rows.map((r) =>
@@ -2153,12 +2284,15 @@ const StoreRegistrationForm = () => {
 
   const handleMenuImageUpload = (files: File[]) => {
     if (menuImageUploading) return;
-    const validImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
     const validFiles: File[] = [];
     const rejected: string[] = [];
 
     files.forEach((file) => {
-      if (!validImageTypes.includes(file.type)) {
+      const mime = (file.type || "").toLowerCase();
+      const isImage =
+        ["image/jpeg", "image/png", "image/webp", "image/jpg"].includes(mime) ||
+        /\.(jpe?g|png|webp)$/i.test(file.name || "");
+      if (!isImage) {
         rejected.push(`${file.name} (invalid image type)`);
         return;
       }
@@ -2363,8 +2497,11 @@ const StoreRegistrationForm = () => {
   };
 
   const handleReuploadRejectedMenuImage = async (idx: number, file: File) => {
-    const validImageTypes = ["image/jpeg", "image/png", "image/webp", "image/jpg"];
-    if (!validImageTypes.includes(file.type)) {
+    const mime = (file.type || "").toLowerCase();
+    const isImage =
+      ["image/jpeg", "image/png", "image/webp", "image/jpg"].includes(mime) ||
+      /\.(jpe?g|png|webp)$/i.test(file.name || "");
+    if (!isImage) {
       setMenuUploadError("Only JPG, PNG, WEBP allowed.");
       return;
     }
@@ -2872,11 +3009,12 @@ const StoreRegistrationForm = () => {
               ? currentStep + 1
               : currentStep;
 
-          // Save to progress table (single source of truth; no duplicates)
-          const progressRes = await fetch('/api/auth/register-store-progress', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+          const { res: progressRes, payload: progressPayload } = await fetchRegisterStoreProgress(
+            '/api/auth/register-store-progress',
+            {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
               currentStep: currentStep,
               nextStep: nextStepEffective,
               markStepComplete: markStepCompleteEffective,
@@ -2889,22 +3027,18 @@ const StoreRegistrationForm = () => {
                   : undefined,
               formDataPatch: stepPatch,
               storePublicId: currentStoreId || draftStorePublicId || (typeof searchParams?.get === 'function' ? searchParams.get('store_id') ?? undefined : undefined) || undefined,
-              parentId: parentIdParam ? Number(parentIdParam) : undefined,
+              parentId: parentIdParam?.trim() || undefined,
               registrationStatus: 'IN_PROGRESS',
             }),
-          });
-
-          const progressPayload = await progressRes.json();
+            }
+          );
           
           if (!progressRes.ok) {
-            if (progressPayload.code === 'SESSION_INVALID' || progressRes.status === 401) {
-              console.log('User not authenticated, redirecting to login');
-              if (typeof window !== 'undefined') {
-                window.location.href = '/auth?redirect=' + encodeURIComponent(window.location.pathname + window.location.search);
-              }
+            if (isFatalOnboardingAuthCode(progressPayload.code)) {
+              forceOnboardingReLogin();
               return { success: false, error: 'Authentication required' };
             }
-            throw new Error(progressPayload.error || 'Failed to save progress');
+            throw new Error(String(progressPayload.error || 'Failed to save progress'));
           }
 
           // Update store ID from database response and persist so refresh loads same progress
@@ -2951,10 +3085,12 @@ const StoreRegistrationForm = () => {
       try {
         const verificationFixSave =
           verificationLock != null && verificationLock.partnerStep === opts.currentStep;
-        const res = await fetch('/api/auth/register-store-progress', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        const { res, payload: errorPayload } = await fetchRegisterStoreProgress(
+          '/api/auth/register-store-progress',
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
             currentStep: opts.currentStep,
             nextStep: verificationFixSave ? opts.currentStep : opts.nextStep,
             markStepComplete: verificationFixSave ? false : opts.markStepComplete,
@@ -2966,40 +3102,27 @@ const StoreRegistrationForm = () => {
                 : undefined,
             formDataPatch: opts.formDataPatch,
             storePublicId: currentStoreId || draftStorePublicId || undefined,
-            parentId: parentIdParam ? Number(parentIdParam) : undefined,
+            parentId: parentIdParam?.trim() || undefined,
             registrationStatus: 'IN_PROGRESS',
           }),
-        });
+          }
+        );
         
         // Handle network errors
         if (!res.ok) {
           let errorMessage = 'Failed to save progress';
-          try {
-            const errorPayload = await res.json();
-            if (errorPayload.code === 'SESSION_INVALID' || res.status === 401) {
-              if (typeof window !== 'undefined') {
-                window.location.href = '/auth?redirect=' + encodeURIComponent(window.location.pathname + window.location.search);
-              }
-              return { success: false, error: 'Authentication required' };
-            }
-            errorMessage = errorPayload.error || errorPayload.message || `HTTP ${res.status}: ${res.statusText}`;
-          } catch (parseError) {
-            // If JSON parsing fails, use status text
-            errorMessage = `HTTP ${res.status}: ${res.statusText || 'Unknown error'}`;
+          if (isFatalOnboardingAuthCode(errorPayload.code)) {
+            forceOnboardingReLogin();
+            return { success: false, error: 'Authentication required' };
           }
+          errorMessage = String(errorPayload.error || errorPayload.message || `HTTP ${res.status}: ${res.statusText}`);
           // Don't throw for non-critical errors - just log and return
           console.warn('Progress save failed (non-critical):', errorMessage);
           return { success: false, error: errorMessage };
         }
         
         // Parse successful response
-        let payload;
-        try {
-          payload = await res.json();
-        } catch (parseError) {
-          console.warn('Failed to parse progress response (non-critical):', parseError);
-          return { success: false, error: 'Invalid response format' };
-        }
+        let payload = errorPayload;
         
         const stepStore = payload?.progress?.form_data?.step_store;
         if (stepStore?.storePublicId && stepStore.storePublicId !== currentStoreId) {
@@ -3836,7 +3959,10 @@ const StoreRegistrationForm = () => {
   const handleViewStore = () => {
     // Always land on All Stores picker after successful child onboarding.
     // Never open register-store / dashboard / public store from this button.
-    window.location.href = "/partners/all-stores?picker=1";
+    window.location.href = allStoresPickerHref(
+      parentIdParam || parentInfo?.id || parentInfo?.parent_merchant_id,
+      selectedStorePublicId || currentStoreId || draftStorePublicId
+    );
   };
 
   const stepLabels = [
@@ -4069,7 +4195,7 @@ const StoreRegistrationForm = () => {
                 ) : null}
                 <button
                   type="button"
-                  onClick={() => { window.location.href = '/partners/all-stores?picker=1'; }}
+                  onClick={() => { window.location.href = allStoresPickerHref(parentIdParam || parentInfo?.id || parentInfo?.parent_merchant_id, selectedStorePublicId || currentStoreId || draftStorePublicId); }}
                   className="hidden sm:inline-flex text-xs sm:text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-1.5 sm:px-3 rounded-lg hover:bg-indigo-100"
                 >
                   ← All Stores
@@ -4077,7 +4203,7 @@ const StoreRegistrationForm = () => {
                 <button
                   type="button"
                   onClick={() => setShowLogoutConfirm(true)}
-                  className="hidden sm:inline-flex text-xs sm:text-sm font-medium text-slate-600 hover:text-slate-900"
+                  className="hidden sm:inline-flex text-xs sm:text-sm font-medium text-white bg-red-600 border border-red-600 px-2 py-1.5 sm:px-3 rounded-lg hover:bg-red-700"
                 >
                   Logout
                 </button>
@@ -4093,39 +4219,35 @@ const StoreRegistrationForm = () => {
             </div>
           </div>
         ) : (
-        <div className="flex items-center justify-between gap-2">
-          {/* Left: logo; on mobile PID below logo, on desktop title + parent */}
-          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-            <img src="/logo.png" alt="GatiMitra" className="h-8 sm:h-9 w-auto object-contain shrink-0" />
-            <div className="min-w-0 flex-1">
-                <>
-              {/* Desktop up to lg: title + parent in header; on lg+ they move to sidebar */}
-              <div className="hidden sm:block lg:hidden">
-                <h1 className="text-base font-bold text-slate-800 truncate">Register New Store</h1>
-                {parentInfo && (
-                  <div className="text-xs text-slate-600 truncate">
-                    Parent: <span className="font-semibold text-indigo-700">{parentInfo.name}</span>
-                    <span className="text-slate-500 ml-1">(PID: {parentInfo.parent_merchant_id})</span>
-                  </div>
+        <div className="flex items-center justify-between gap-2 sm:gap-3">
+          <img src="/logo.png" alt="GatiMitra" className="h-8 sm:h-9 w-auto object-contain shrink-0" />
+          <div className="flex items-center justify-end gap-2 sm:gap-3 min-w-0">
+            {parentInfo && (
+              <div className="hidden sm:flex items-center gap-3 shrink-0 whitespace-nowrap rounded-lg bg-slate-50 border border-slate-200 px-3 py-1.5">
+                <p className="text-xs text-slate-700">
+                  <span className="text-[10px] uppercase tracking-wide text-slate-500 font-medium">Parent Name</span>
+                  {" "}
+                  <span className="font-semibold text-slate-800">{parentInfo.name ?? '—'}</span>
+                </p>
+                <div className="w-px h-4 bg-slate-200 shrink-0" aria-hidden />
+                <p className="text-xs text-slate-700">
+                  <span className="text-[10px] uppercase tracking-wide text-slate-500 font-medium">Parent ID (PID)</span>
+                  {" "}
+                  <span className="font-mono font-bold text-indigo-700">{parentInfo.parent_merchant_id ?? '—'}</span>
+                </p>
+              </div>
+            )}
+            {parentInfo && (
+              <div className="sm:hidden min-w-0 text-[11px] text-slate-600 truncate text-right space-y-0.5">
+                <div>PID: {parentInfo.parent_merchant_id}</div>
+                {(currentStoreId || draftStorePublicId) && (
+                  <div className="font-mono font-semibold text-indigo-700">Store ID: {currentStoreId || draftStorePublicId}</div>
                 )}
               </div>
-              {/* Mobile only: PID and Store ID below logo */}
-              {parentInfo && (
-                <div className="sm:hidden text-[11px] text-slate-600 truncate mt-0.5 space-y-0.5">
-                  <div>PID: {parentInfo.parent_merchant_id}</div>
-                  {(currentStoreId || draftStorePublicId) && (
-                    <div className="font-mono font-semibold text-indigo-700">Store ID: {currentStoreId || draftStorePublicId}</div>
-                  )}
-                </div>
-              )}
-                </>
-            </div>
-          </div>
-          {/* Right: mobile = Burger only; desktop = All Stores + Logout (Help is in sidebar) */}
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            )}
             <button
               type="button"
-              onClick={() => { window.location.href = '/partners/all-stores?picker=1'; }}
+              onClick={() => { window.location.href = allStoresPickerHref(parentIdParam || parentInfo?.id || parentInfo?.parent_merchant_id, selectedStorePublicId || currentStoreId || draftStorePublicId); }}
               className="hidden sm:inline-flex text-xs sm:text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-1.5 sm:px-3 rounded-lg hover:bg-indigo-100"
             >
               ← All Stores
@@ -4133,11 +4255,10 @@ const StoreRegistrationForm = () => {
             <button
               type="button"
               onClick={() => setShowLogoutConfirm(true)}
-              className="hidden sm:inline-flex text-xs sm:text-sm font-medium text-slate-600 hover:text-slate-900"
+              className="hidden sm:inline-flex text-xs sm:text-sm font-medium text-white bg-red-600 border border-red-600 px-2 py-1.5 sm:px-3 rounded-lg hover:bg-red-700"
             >
               Logout
             </button>
-            {/* Mobile/tablet: burger menu - always visible on small screens */}
             <button
               type="button"
               onClick={() => setShowMobileMenu(true)}
@@ -4165,7 +4286,7 @@ const StoreRegistrationForm = () => {
             <div className="p-4 space-y-3 overflow-y-auto hide-scrollbar">
               <button
                 type="button"
-                onClick={() => { setShowMobileMenu(false); window.location.href = '/partners/all-stores?picker=1'; }}
+                onClick={() => { setShowMobileMenu(false); window.location.href = allStoresPickerHref(parentIdParam || parentInfo?.id || parentInfo?.parent_merchant_id, selectedStorePublicId || currentStoreId || draftStorePublicId); }}
                 className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-indigo-200 bg-indigo-50 text-indigo-700 font-semibold hover:bg-indigo-100 hover:border-indigo-300 shadow-sm transition-colors"
               >
                 <span aria-hidden="true">←</span>
@@ -4199,29 +4320,13 @@ const StoreRegistrationForm = () => {
 
       {/* Body: reserve space for fixed header (pt-14); sidebar fixed, main scrollable only */}
       <div className="flex-1 flex min-h-0 min-w-0 overflow-hidden pt-14">
-        {/* Sidebar - fixed position so it never scrolls; parent info + title at top, then steps + Help */}
+        {/* Sidebar - fixed position so it never scrolls; title + store ID at top, then steps + Help */}
         <aside className="fixed left-0 top-14 bottom-0 w-14 min-w-[3.5rem] sm:w-52 md:w-56 lg:w-60 flex-none bg-white border-r border-slate-200 flex flex-col py-2 sm:py-3 overflow-hidden z-20">
-          {/* Title + Parent Name & Parent ID (PID) – visible whenever sidebar shows labels (sm+) */}
-          <div className="hidden sm:block flex-none border-b border-slate-200 pb-2 mb-1 px-2 sm:px-3 space-y-2">
+          {/* Title + Store ID – parent identity lives in the header */}
+          <div className="hidden sm:block flex-none border-b border-slate-200 pb-2 mb-1 px-2 sm:px-3 space-y-1">
             <h2 className="text-sm font-bold text-slate-800 truncate">Register New Store</h2>
-            {parentInfo && (
-              <div className="rounded-lg bg-slate-50 border border-slate-200 p-2 space-y-1.5">
-                <div>
-                  <p className="text-[10px] uppercase tracking-wide text-slate-500 font-medium">Parent Name</p>
-                  <p className="text-xs font-semibold text-slate-800 truncate mt-0.5" title={parentInfo.name ?? undefined}>
-                    {parentInfo.name ?? '—'}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-wide text-slate-500 font-medium">Parent ID (PID)</p>
-                  <p className="text-xs font-mono font-bold text-indigo-700 truncate mt-0.5" title={parentInfo.parent_merchant_id ?? undefined}>
-                    {parentInfo.parent_merchant_id ?? '—'}
-                  </p>
-                </div>
-              </div>
-            )}
             {(currentStoreId || draftStorePublicId) && (
-              <p className="text-[11px] sm:text-xs text-slate-600 truncate pt-1 border-t border-slate-100">
+              <p className="text-[11px] sm:text-xs text-slate-600 truncate">
                 <span className="font-medium text-slate-500">Store ID</span>
                 <span className="ml-1 font-mono font-semibold text-indigo-700">{currentStoreId || draftStorePublicId}</span>
               </p>
@@ -4271,7 +4376,7 @@ const StoreRegistrationForm = () => {
             </div>
             <button
               type="button"
-              onClick={() => setShowHelpModal(true)}
+              onClick={() => openMxNeedHelp()}
               className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 text-sm font-medium"
               title="Help"
             >
@@ -4443,12 +4548,10 @@ const StoreRegistrationForm = () => {
         </div>
       )}
 
-      {/* Raise a ticket form - same as header Help; opens from sidebar Help; uses same API/DB */}
-      <MerchantHelpTicket
-        pageContext="store-onboarding"
+      {/* Inner-page Help & Support sidesheet — opened from sidebar Help */}
+      <NeedHelpBadge
         hideTrigger
-        open={showHelpModal}
-        onOpenChange={setShowHelpModal}
+        storeId={currentStoreId || draftStorePublicId || undefined}
       />
 
       {/* Scrollable content — step 1 stays plain white, no phantom scroll when it fits */}
@@ -4522,25 +4625,27 @@ const StoreRegistrationForm = () => {
                   <label className="block text-xs font-medium text-slate-600 mb-1.5 tracking-wide">
                     Store Type *
                   </label>
-                  <select
-                    name="store_type"
+                  <SearchableSelect
                     value={formData.store_type}
-                    onChange={handleInputChange}
-                    className="w-full px-3.5 py-3 text-sm border border-slate-200/90 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 hover:border-indigo-200 transition-all"
-                    required
-                  >
-                    <option value="RESTAURANT">Restaurant</option>
-                    <option value="CAFE">Cafe</option>
-                    <option value="BAKERY">Bakery</option>
-                    <option value="CLOUD_KITCHEN">Cloud Kitchen</option>
-                    <option value="GROCERY">Grocery</option>
-                    <option value="PHARMA">Pharma</option>
-                    <option value="STATIONERY">Stationery</option>
-                    <option value="ELECTRONICS_ECOMMERCE">Electronics and E-commerce</option>
-                    <option value="OTHERS">Others</option>
-                  </select>
+                    placeholder="Select store type"
+                    searchPlaceholder="Search store type"
+                    triggerClassName="w-full px-3.5 py-3 text-sm border border-slate-200/90 rounded-xl bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)] focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400 hover:border-indigo-200 transition-all"
+                    options={
+                      formData.store_type &&
+                      !storeTypeOptions.some((o) => o.value === formData.store_type)
+                        ? [...storeTypeOptions, { value: formData.store_type, label: formData.store_type }]
+                        : storeTypeOptions
+                    }
+                    onChange={(value) => {
+                      setFormData((prev) => ({
+                        ...prev,
+                        store_type: value,
+                        custom_store_type: value === "OTHERS" ? prev.custom_store_type : "",
+                      }));
+                    }}
+                  />
                 </div>
-                {formData.store_type === 'OTHERS' ? (
+                {isOtherStoreType(formData.store_type) ? (
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1.5 tracking-wide">
                       Custom Store Type *

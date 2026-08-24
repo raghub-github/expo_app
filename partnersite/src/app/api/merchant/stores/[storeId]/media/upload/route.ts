@@ -19,7 +19,7 @@ import {
   deleteFromR2,
   deleteFromR2ByPrefix,
   r2KeyFromMenuMediaRow,
-  signedPublicUrlForMenuR2Key,
+  toStoredDocumentUrl,
   uploadWithKey,
 } from "@/lib/r2";
 
@@ -271,7 +271,9 @@ export async function POST(
             { status: 502 }
           );
         }
-        const publicUrl = await signedPublicUrlForMenuR2Key(r2Key);
+        const publicUrl =
+          toStoredDocumentUrl(r2Key) ||
+          `/api/attachments/proxy?key=${encodeURIComponent(r2Key.replace(/^\/+/, ""))}`;
 
         const { error: insertError } = await db.from("merchant_store_media_files").insert({
           store_id: store.id,
@@ -281,6 +283,7 @@ export async function POST(
           original_file_name: file.name || safeBase,
           r2_key: r2Key,
           public_url: publicUrl,
+          menu_url: publicUrl,
           mime_type: imgMime,
           file_size_bytes: file.size,
           version_no: 1,
@@ -416,7 +419,9 @@ export async function POST(
       );
     }
 
-    const publicUrl = await signedPublicUrlForMenuR2Key(r2Key);
+    const publicUrl =
+      toStoredDocumentUrl(r2Key) ||
+      `/api/attachments/proxy?key=${encodeURIComponent(r2Key.replace(/^\/+/, ""))}`;
 
     const { error: insertError } = await db.from("merchant_store_media_files").insert({
       store_id: store.id,
@@ -426,6 +431,7 @@ export async function POST(
       original_file_name: file.name || fallbackName,
       r2_key: r2Key,
       public_url: publicUrl,
+      menu_url: publicUrl,
       mime_type: (file.type && file.type.trim()) || mimeType,
       file_size_bytes: fileBuffer.length,
       version_no: 1,

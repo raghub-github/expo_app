@@ -15,7 +15,7 @@ export type MerchantOrderAcceptanceSettings = {
 
 const DEFAULTS: MerchantOrderAcceptanceSettings = {
   store_type: "GENERAL",
-  acceptance_window_minutes: 5,
+  acceptance_window_minutes: 15,
   alert_sound_enabled: true,
   alert_sound_url: null,
   alert_sound_repeat_count: 1,
@@ -126,10 +126,10 @@ export async function loadMerchantOrderAcceptanceSettings(
 
   const repeatRaw = Number(row.alert_sound_repeat_count ?? 1);
   const repeat = Number.isFinite(repeatRaw) ? Math.max(1, Math.min(25, Math.floor(repeatRaw))) : 1;
-  const windowRaw = Number(row.acceptance_window_minutes ?? 5);
+  const windowRaw = Number(row.acceptance_window_minutes ?? 15);
   const windowMins = Number.isFinite(windowRaw)
     ? Math.max(1, Math.min(180, Math.floor(windowRaw)))
-    : 5;
+    : 15;
 
   return {
     store_type: storeType,
@@ -150,10 +150,17 @@ export async function patchMerchantOrderAcceptanceSoundSlot(
   merchantStoreId: number,
   slot: number
 ): Promise<{ ok: true; alert_sound_slot_choice: number }> {
-  const c = Math.max(0, Math.min(2, Math.floor(slot)));
+  const cRequested = Math.max(0, Math.min(2, Math.floor(slot)));
   const settings = await loadMerchantOrderAcceptanceSettings(sql, merchantStoreId);
+  const firstFilled = settings.alert_sound_urls_by_slot.findIndex((u) => u != null);
+  const c =
+    settings.alert_sound_urls_by_slot[cRequested] != null
+      ? cRequested
+      : firstFilled >= 0
+        ? firstFilled
+        : 0;
   if (!settings.alert_sound_urls_by_slot[c]) {
-    throw new Error("empty_sound_slot");
+    return { ok: true as const, alert_sound_slot_choice: 0 };
   }
 
   const existing = await sql`
@@ -223,10 +230,10 @@ export async function loadPlatformOrderAcceptanceSettingsForCategory(
 
   const repeatRaw = Number(row.alert_sound_repeat_count ?? 1);
   const repeat = Number.isFinite(repeatRaw) ? Math.max(1, Math.min(25, Math.floor(repeatRaw))) : 1;
-  const windowRaw = Number(row.acceptance_window_minutes ?? 5);
+  const windowRaw = Number(row.acceptance_window_minutes ?? 15);
   const windowMins = Number.isFinite(windowRaw)
     ? Math.max(1, Math.min(180, Math.floor(windowRaw)))
-    : 5;
+    : 15;
 
   return {
     store_type: normalized,

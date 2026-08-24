@@ -6,11 +6,8 @@
  * Each document reject emails the merchant and clears step-4 agent verification so they can resubmit.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
+import { authenticateMerchantStoreForId } from "@/lib/merchant-store-route-auth";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import { ensureMerchantStoreDocumentsStep4JsonColumns } from "@/lib/db/ensure-step4-resubmission-flags-column";
 import {
@@ -82,46 +79,12 @@ export async function POST(
       );
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 401 }
-      );
-    }
+    const access = await authenticateMerchantStoreForId(request, storeId);
+    if (!access.ok) return access.response;
+    const user = access.user;
+    const store = access.store;
 
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
-    if (!allowed) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Merchant dashboard access required",
-          code: "MERCHANT_ACCESS_REQUIRED",
-        },
-        { status: 403 }
-      );
-    }
-
-    const areaManagerId = await resolveMerchantListAreaManagerId({
-      supabaseAuthId: user.id,
-      email: user.email,
-    });
-
-    const store = await getMerchantStoreById(storeId, areaManagerId);
-    if (!store) {
-      return NextResponse.json(
-        { success: false, error: "Store not found" },
-        { status: 404 }
-      );
-    }
-
-    const systemUser = await getSystemUserByEmail(user.email);
+    const systemUser = user.email ? await getSystemUserByEmail(user.email) : null;
     const verifiedBy = systemUser?.id ?? null;
 
     const body = await request.json().catch(() => ({}));

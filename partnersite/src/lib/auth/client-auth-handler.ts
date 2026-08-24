@@ -27,12 +27,18 @@ export function shouldSignOut(error: ClientAuthError): boolean {
     return false;
   }
 
-  return (
+  // Stale localStorage refresh while httpOnly cookies still work — do not sign out.
+  if (
     errorCode === 'refresh_token_not_found' ||
+    errorMessage.includes('refresh token not found')
+  ) {
+    return false;
+  }
+
+  return (
     errorCode === 'invalid_refresh_token' ||
     errorCode === 'session_invalid' ||
     errorMessage.includes('invalid refresh token') ||
-    errorMessage.includes('refresh token not found') ||
     errorMessage.includes('session invalid')
   );
 }
@@ -58,9 +64,8 @@ export async function refreshAuthIfNeeded(): Promise<boolean> {
     }
     
     if (!session) {
-      // Don't log this as an error - it's normal when user is not authenticated
-      console.log('[client-auth] No session found, user needs to login');
-      return false;
+      // httpOnly cookies can still be valid when the browser client has no local session.
+      return true;
     }
     
     // Check if token is close to expiry (within 5 minutes)

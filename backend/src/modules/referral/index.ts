@@ -21,6 +21,7 @@ export {
   applyMerchantReferralForParent,
   pickMerchantReferralCode,
   merchantReferralPublicMessage,
+  ensureMerchantParentOwnReferralCode,
 } from "./referral.onboarding.js";
 export {
   REFERRAL_SERVICE_DISABLED,
@@ -43,5 +44,6 @@ export {
   generateSecureReferralCode,
   regenerateReferralCode,
   getOrCreateReferralCode,
+  ensureReferralCodeAlways,
   findExistingReferralCode,
 } from "./referral.codes.js";

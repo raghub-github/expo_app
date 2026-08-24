@@ -26,6 +26,33 @@ const merchantApiProxyTarget = normalizeDevBackendProxyTarget(
 /** Monorepo root — used for standalone tracing and Turbopack (must match per Next.js 16). */
 const monorepoRoot = path.join(__dirname, "..");
 
+type WebpackCompilerKind = "client" | "nodejs" | "edge";
+
+/**
+ * Webpack pack cache must stay off OneDrive (this repo is under Desktop\OneDrive)
+ * and off %TEMP% (Storage Sense / AV delete packs while webpack still stats them →
+ * ENOENT unhandledRejection, then the Windows 3221226505 abort).
+ * Client / Node server / Edge (proxy) MUST use unique cache names — sharing
+ * "dashboard-server" between nodejs + edge-server caused Fast Refresh full reloads
+ * that looked like random logouts.
+ */
+function webpackFilesystemCache(kind: WebpackCompilerKind) {
+  const root =
+    process.platform === "win32"
+      ? path.join(
+          process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"),
+          "gatimitra-dashboard-webpack"
+        )
+      : path.join(os.homedir(), ".cache", "gatimitra-dashboard-webpack");
+  return {
+    type: "filesystem" as const,
+    name: `dashboard-${kind}`,
+    cacheDirectory: path.join(root, kind),
+    compression: false as const,
+    maxAge: 1000 * 60 * 60 * 24 * 7,
+  };
+}
+
 /** Legacy top-level paths from the removed `(dashboard)` route group → `/dashboard/*`. */
 const LEGACY_DASHBOARD_REDIRECTS = [
   "merchants",
@@ -72,22 +99,18 @@ const nextConfig: NextConfig = {
   },
   // Mapbox is loaded from CDN, no webpack config needed
 
-  webpack: (config, { dev, isServer }) => {
+  webpack: (config, { dev, isServer, nextRuntime }) => {
     const onOneDrive = process.platform === "win32" && __dirname.includes("OneDrive");
+    const compilerKind: WebpackCompilerKind = !isServer
+      ? "client"
+      : nextRuntime === "edge"
+        ? "edge"
+        : "nodejs";
     if (dev) {
       // In-memory webpack cache OOMs this dashboard (Next restarts: "used memory threshold").
-      // OneDrive/.next pack files also lock; keep the cache off OneDrive in %TEMP%.
-      config.cache = {
-        type: "filesystem",
-        cacheDirectory: path.join(os.tmpdir(), "gatimitra-dashboard-webpack"),
-        compression: false,
-      };
+      config.cache = webpackFilesystemCache(compilerKind);
     } else if (onOneDrive) {
-      config.cache = {
-        type: "filesystem",
-        cacheDirectory: path.join(os.tmpdir(), "gatimitra-dashboard-webpack"),
-        compression: false,
-      };
+      config.cache = webpackFilesystemCache(compilerKind);
     }
     // Prevent postgres (Node-only) from entering the client bundle if imported accidentally.
     if (!isServer) {

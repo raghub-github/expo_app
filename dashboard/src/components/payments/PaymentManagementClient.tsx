@@ -157,30 +157,32 @@ export function PaymentManagementClient() {
       const query = party === "rider" ? "?party=rider" : "";
       const res = await fetch(`/api/super-admin/payment-payouts${query}`, { cache: "no-store" });
       const data = await readApiJson(res);
-      if (res.ok && data.success) {
-        const rows = (data.payouts as MerchantPayoutRow[]) ?? [];
-        setPayouts(rows);
-        setPgInputs((prev) => {
-          const next = { ...prev };
-          for (const row of rows) {
-            if (row.id != null && next[row.id] === undefined) {
-              next[row.id] = row.pg_transaction_id ?? "";
-            }
-          }
-          return next;
-        });
-        setUtrInputs((prev) => {
-          const next = { ...prev };
-          for (const row of rows) {
-            if (row.id != null && next[row.id] === undefined) {
-              next[row.id] = row.utr_reference ?? "";
-            }
-          }
-          return next;
-        });
+      if (!res.ok || !data.success) {
+        toast.error(String(data.error ?? "Failed to load withdrawals"));
+        return;
       }
-    } catch {
-      /* ignore */
+      const rows = (data.payouts as MerchantPayoutRow[]) ?? [];
+      setPayouts(rows);
+      setPgInputs((prev) => {
+        const next = { ...prev };
+        for (const row of rows) {
+          if (row.id != null && next[row.id] === undefined) {
+            next[row.id] = row.pg_transaction_id ?? "";
+          }
+        }
+        return next;
+      });
+      setUtrInputs((prev) => {
+        const next = { ...prev };
+        for (const row of rows) {
+          if (row.id != null && next[row.id] === undefined) {
+            next[row.id] = row.utr_reference ?? "";
+          }
+        }
+        return next;
+      });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to load withdrawals");
     }
   }, [party]);
 
@@ -489,7 +491,7 @@ export function PaymentManagementClient() {
           {/* Table header */}
           <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
             <h2 className="text-sm font-semibold text-gray-900">
-              Merchant withdrawals{" "}
+              {party === "rider" ? "Rider withdrawals" : "Merchant withdrawals"}{" "}
               <span className="font-normal text-gray-500">
                 ({stats.pendingCount} Pending • {stats.completedCount} Completed • {stats.rejectedCount} Rejected • {stats.holdCount} Hold)
               </span>

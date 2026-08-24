@@ -11,7 +11,7 @@ export const parentMerchantSchema = z.object({
   registered_phone_normalized: z.string().optional(),
   alternate_phone: z.string().optional(),
   brand_name: z.string().optional(),
-  business_category: z.string().optional(),
+  business_category: z.string().trim().min(1, "Business category is required"),
   is_active: z.boolean().optional(),
   registration_status: z.enum(['VERIFIED', 'SUSPENDED']).optional(),
   address_line1: z.string().optional(),

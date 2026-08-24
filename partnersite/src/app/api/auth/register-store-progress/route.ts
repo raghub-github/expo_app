@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { validateMerchantFromSessionPreferParent } from "@/lib/auth/validate-merchant";
 import { createClient } from "@supabase/supabase-js";
 import { logAuthError, shouldClearSession } from "@/lib/auth/auth-error-handler";
+import {
+  partnerMissingUserStatus,
+  requestHasPartnerAuthCookies,
+  resolvePartnerUser,
+} from "@/lib/auth/resolve-partner-user";
 import { extractR2KeyFromUrl, deleteFromR2, toStoredDocumentUrl } from "@/lib/r2";
 import { menuSpreadsheetMimeFromFileName } from "@/lib/r2-paths";
 import { entriesWithRowMetaFromImageRows, fileNameFromMenuStoredUrl } from "@/lib/menu-reference-image-bundle";
@@ -96,34 +100,50 @@ function getSupabaseAdmin() {
   });
 }
 
+function partnerProgressAuthFailure(
+  req: NextRequest,
+  resolved: Awaited<ReturnType<typeof resolvePartnerUser>>,
+  context: string
+) {
+  const userError = resolved.error;
+  if (
+    userError &&
+    typeof userError === "object" &&
+    "message" in userError &&
+    (userError as { message?: string }).message !== "Auth session missing!"
+  ) {
+    logAuthError(context, userError as { code?: string; message?: string });
+  }
+  const hasCookies = requestHasPartnerAuthCookies(req);
+  if (
+    !hasCookies &&
+    shouldClearSession(userError as { code?: string; message?: string })
+  ) {
+    return NextResponse.json(
+      { success: false, error: "Session invalid", code: "SESSION_INVALID" },
+      { status: 401 }
+    );
+  }
+  const mapped = partnerMissingUserStatus(hasCookies, userError);
+  return NextResponse.json(
+    { success: false, error: mapped.error, code: mapped.code },
+    { status: mapped.status }
+  );
+}
+
 export async function GET(req: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError) {
-      // Only log actual errors, not missing sessions
-      if (userError.message !== 'Auth session missing!') {
-        logAuthError('register-store-progress-GET', userError);
-      }
-      if (shouldClearSession(userError)) {
-        return NextResponse.json({ 
-          success: false, 
-          error: "Session invalid", 
-          code: "SESSION_INVALID" 
-        }, { status: 401 });
-      }
-      return NextResponse.json({ 
-        success: false, 
-        error: userError.message || "Authentication failed" 
-      }, { status: 401 });
-    }
+    const resolved = await resolvePartnerUser({
+      cookieReader: {
+        get: (name) => req.cookies.get(name),
+        getAll: () => req.cookies.getAll(),
+      },
+      cookieHeader: req.headers.get("cookie"),
+    });
+    const user = resolved.user;
 
     if (!user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+      return partnerProgressAuthFailure(req, resolved, "register-store-progress-GET");
     }
 
     const preferredParentRaw = req.nextUrl.searchParams.get("parent_id");
@@ -133,7 +153,8 @@ export async function GET(req: NextRequest) {
         email: user.email ?? null,
         phone: user.phone ?? null,
       },
-      preferredParentRaw
+      preferredParentRaw,
+      { requirePreferred: !!preferredParentRaw }
     );
 
     if (!validation.isValid || validation.merchantParentId == null) {
@@ -177,7 +198,18 @@ export async function GET(req: NextRequest) {
         .eq("store_id", storePublicId)
         .maybeSingle();
 
-      if (closedStore?.id && Number(closedStore.parent_id) !== Number(parentId)) {
+      if (!closedStore?.id) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "This store is no longer available. It may have been removed.",
+            code: "STORE_NOT_FOUND",
+          },
+          { status: 404 },
+        );
+      }
+
+      if (Number(closedStore.parent_id) !== Number(parentId)) {
         return NextResponse.json(
           {
             success: false,
@@ -423,23 +455,27 @@ export async function GET(req: NextRequest) {
       if (storeRow) {
         const formData = (progress.form_data || {}) as Record<string, unknown>;
         const step1 = (formData.step1 || {}) as Record<string, unknown>;
-        const strOrEmpty = (v: unknown) => (typeof v === "string" ? v.trim() : v != null ? String(v).trim() : "");
-        const preferNonEmptyDb = (dbVal: unknown, progVal: unknown): string => {
-          const d = strOrEmpty(dbVal);
-          if (d) return typeof dbVal === "string" ? dbVal.trim() : String(dbVal).trim();
-          const p = strOrEmpty(progVal);
-          return p;
+        const preferFilled = (dbVal: unknown, progVal: unknown): unknown => {
+          const filled = (v: unknown) => {
+            if (v == null) return false;
+            if (typeof v === "string") return v.trim() !== "";
+            if (Array.isArray(v)) return v.some((x) => String(x ?? "").trim() !== "");
+            return true;
+          };
+          if (filled(dbVal)) return dbVal;
+          if (filled(progVal)) return progVal;
+          return dbVal ?? progVal;
         };
         const mergedStep1 = {
           ...step1,
-          store_name: storeRow.store_name ?? step1.store_name,
-          owner_full_name: preferNonEmptyDb(storeRow.owner_full_name, step1.owner_full_name),
-          store_display_name: storeRow.store_display_name ?? step1.store_display_name,
-          store_description: storeRow.store_description ?? step1.store_description,
-          store_email: storeRow.store_email ?? step1.store_email,
-          store_phones: storeRow.store_phones ?? step1.store_phones,
-          store_type: storeRow.store_type ?? step1.store_type,
-          custom_store_type: storeRow.custom_store_type ?? step1.custom_store_type,
+          store_name: preferFilled(storeRow.store_name, step1.store_name),
+          owner_full_name: preferFilled(storeRow.owner_full_name, step1.owner_full_name),
+          store_display_name: preferFilled(storeRow.store_display_name, step1.store_display_name),
+          store_description: preferFilled(storeRow.store_description, step1.store_description),
+          store_email: preferFilled(storeRow.store_email, step1.store_email),
+          store_phones: preferFilled(storeRow.store_phones, step1.store_phones),
+          store_type: preferFilled(storeRow.store_type, step1.store_type),
+          custom_store_type: preferFilled(storeRow.custom_store_type, step1.custom_store_type),
         };
         progress = { ...progress, form_data: { ...formData, step1: mergedStep1 } } as ProgressRow;
       }
@@ -1003,32 +1039,17 @@ async function resolveStoreLocationServiceable(
 
 export async function PUT(req: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError) {
-      // Only log actual errors, not missing sessions
-      if (userError.message !== 'Auth session missing!') {
-        logAuthError('register-store-progress-PUT', userError);
-      }
-      if (shouldClearSession(userError)) {
-        return NextResponse.json({ 
-          success: false, 
-          error: "Session invalid", 
-          code: "SESSION_INVALID" 
-        }, { status: 401 });
-      }
-      return NextResponse.json({ 
-        success: false, 
-        error: userError.message || "Authentication failed" 
-      }, { status: 401 });
-    }
+    const resolved = await resolvePartnerUser({
+      cookieReader: {
+        get: (name) => req.cookies.get(name),
+        getAll: () => req.cookies.getAll(),
+      },
+      cookieHeader: req.headers.get("cookie"),
+    });
+    const user = resolved.user;
 
     if (!user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+      return partnerProgressAuthFailure(req, resolved, "register-store-progress-PUT");
     }
 
     let body: Record<string, unknown>;
@@ -1060,7 +1081,11 @@ export async function PUT(req: NextRequest) {
       },
       preferredParentFromBody == null || preferredParentFromBody === ""
         ? null
-        : (preferredParentFromBody as string | number)
+        : (preferredParentFromBody as string | number),
+      {
+        requirePreferred:
+          preferredParentFromBody != null && String(preferredParentFromBody).trim() !== "",
+      }
     );
 
     if (!validation.isValid || validation.merchantParentId == null) {

@@ -1683,6 +1683,58 @@ export const riderOnboardingDocumentTypes = pgTable(
   })
 );
 
+export const merchantOnboardingDocumentTypes = pgTable(
+  "merchant_onboarding_document_types",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    code: text("code").notNull(),
+    label: text("label").notNull(),
+    hint: text("hint"),
+    formSection: text("form_section").notNull().default("LICENCE"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    codeUq: uniqueIndex("merchant_onboarding_document_types_code_uq").on(table.code),
+  })
+);
+
+export const merchantStoreTypeDocumentMap = pgTable(
+  "merchant_store_type_document_map",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    storeType: text("store_type").notNull(),
+    documentCode: text("document_code").notNull(),
+    isMandatory: boolean("is_mandatory").notNull().default(false),
+    isActive: boolean("is_active").notNull().default(true),
+    displayOrder: integer("display_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    storeDocUq: uniqueIndex("merchant_store_type_document_map_uq").on(
+      table.storeType,
+      table.documentCode
+    ),
+    storeIdx: index("merchant_store_type_document_map_store_idx").on(
+      table.storeType,
+      table.isActive,
+      table.displayOrder
+    ),
+  })
+);
+
+export const merchantStoreTypeOnboardingFlags = pgTable(
+  "merchant_store_type_onboarding_flags",
+  {
+    storeType: text("store_type").primaryKey(),
+    cuisineListEnabled: boolean("cuisine_list_enabled").notNull().default(false),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  }
+);
+
 /**
  * Rider service activation - per-rider per-service status; driven by Service Activation Engine
  */

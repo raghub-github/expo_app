@@ -18,7 +18,8 @@ export async function HEAD(request: NextRequest) {
     if (!meta) {
       return new NextResponse(null, { status: 404 });
     }
-    const contentType = meta.contentType || "application/octet-stream";
+    const { contentTypeFromR2Key } = await import("@/lib/r2-proxy-url");
+    const contentType = contentTypeFromR2Key(key, meta.contentType || null);
     const headers: Record<string, string> = {
       "Content-Type": contentType,
       "Cache-Control": "private, max-age=3600",
@@ -51,12 +52,14 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const contentType = result.contentType || "application/octet-stream";
+    const { contentTypeFromR2Key } = await import("@/lib/r2-proxy-url");
+    const contentType = contentTypeFromR2Key(key, result.contentType || null);
     return new NextResponse(result.buffer as any, {
       status: 200,
       headers: {
         "Content-Type": contentType,
         "Cache-Control": "private, max-age=3600",
+        "Content-Disposition": "inline",
       },
     });
   } catch (e) {

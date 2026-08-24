@@ -105,6 +105,11 @@ export async function POST(
     const fat_unit = bodyOptionalStr(body.fat_unit) ?? "mg";
     const fibre = bodyNumOrNull(body.fibre);
     const fibre_unit = bodyOptionalStr(body.fibre_unit) ?? "mg";
+    const available_quantity = bodyNumOrNull(body.available_quantity);
+    const low_stock_threshold = bodyNumOrNull(body.low_stock_threshold);
+    const expiryRaw = bodyOptionalStr(body.expiry_date);
+    const expiry_date =
+      expiryRaw && /^\d{4}-\d{2}-\d{2}$/.test(expiryRaw) ? expiryRaw : null;
 
     const sql = getSql();
     const [row] = await sql`
@@ -116,7 +121,8 @@ export async function POST(
         weight_per_serving, weight_per_serving_unit, calories_kcal,
         protein, protein_unit, carbohydrates, carbohydrates_unit,
         fat, fat_unit, fibre, fibre_unit,
-        in_stock, is_active, is_popular, is_recommended,
+        in_stock, available_quantity, low_stock_threshold, expiry_date,
+        is_active, is_popular, is_recommended,
         has_customizations, has_addons, has_variants,
         approval_status, approved_at, approved_by,
         created_at, updated_at
@@ -148,6 +154,9 @@ export async function POST(
         ${fibre},
         ${fibre_unit},
         ${in_stock},
+        ${available_quantity},
+        ${low_stock_threshold},
+        ${expiry_date},
         ${is_active},
         ${is_popular},
         ${is_recommended},

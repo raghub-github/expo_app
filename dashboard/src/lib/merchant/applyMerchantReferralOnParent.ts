@@ -28,10 +28,10 @@ export async function applyMerchantReferralOnParentCreate(opts: {
   source?: ApplySource;
   referredPhone?: string | null;
   createIfMissing?: boolean;
-}): Promise<{ ok: boolean; status?: number; error?: string }> {
+}): Promise<{ ok: boolean; status?: number; error?: string; referralCode?: string | null }> {
   const code = String(opts.referralCode ?? "").trim().toUpperCase();
   const parentPk = opts.parentPk;
-  if (!code || parentPk == null || parentPk === "") return { ok: true };
+  if (parentPk == null || parentPk === "") return { ok: true };
   const secret = internalSecret();
   const base = backendBase();
   if (!secret || !base) {
@@ -46,7 +46,7 @@ export async function applyMerchantReferralOnParentCreate(opts: {
         "X-Internal-Secret": secret,
       },
       body: JSON.stringify({
-        referralCode: code,
+        ...(code ? { referralCode: code } : {}),
         parentMerchantId: parentPk,
         source: opts.source ?? "manual",
         referredPhone: opts.referredPhone ?? undefined,
@@ -56,11 +56,21 @@ export async function applyMerchantReferralOnParentCreate(opts: {
       signal: AbortSignal.timeout(8_000),
     });
     if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        code?: string;
+        referralCode?: string | null;
+      };
       console.warn("[referral] apply-onboarding failed", res.status, body);
-      return { ok: false, status: res.status, error: body.code || body.error };
+      return {
+        ok: false,
+        status: res.status,
+        error: body.code || body.error,
+        referralCode: body.referralCode ?? null,
+      };
     }
-    return { ok: true, status: res.status };
+    const body = (await res.json().catch(() => ({}))) as { referralCode?: string | null };
+    return { ok: true, status: res.status, referralCode: body.referralCode ?? null };
   } catch (err) {
     console.warn("[referral] apply-onboarding error", err);
     return { ok: false, error: "apply_failed" };

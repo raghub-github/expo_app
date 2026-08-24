@@ -4,21 +4,16 @@
  * Same Policy Center modes as partnersite register-store, for AM child onboarding
  * and any dashboard merchant document flow.
  */
-import { NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { NextRequest, NextResponse } from "next/server";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { getSql } from "@/lib/db/client";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-    }
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) return authFailureResponse(auth);
 
     const sql = getSql();
     const rows = (await sql`

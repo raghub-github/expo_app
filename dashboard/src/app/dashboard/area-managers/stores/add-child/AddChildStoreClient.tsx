@@ -7,7 +7,13 @@ import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Menu, X, Loader2 } from "lucide-react";
 import Step3MenuUpload, { MenuUploadMode } from "@/components/onboarding/Step3MenuUpload";
+import { toAttachmentProxyUrl } from "@/lib/r2-proxy-url";
 import Step4Documents, { Step4Patch, Step4SectionKey } from "@/components/onboarding/Step4Documents";
+import { useOnboardingStoreTypes } from "@/hooks/useOnboardingStoreTypes";
+import { SearchableSelect } from "@/components/ui/SearchableSelect";
+import { useMerchantStoreDocumentRequirements } from "@/hooks/useMerchantStoreDocumentRequirements";
+import { isDocMandatory, resolveMerchantDocs } from "@/lib/merchant-onboarding-docs";
+import { defaultCuisineListEnabled } from "@/lib/onboarding-store-types";
 import Step5StoreSetup, {
   StoreSetupData as Step5StoreSetupData,
   normalizeStoreHours,
@@ -15,7 +21,9 @@ import Step5StoreSetup, {
 import PreviewPage from "@/components/onboarding/preview";
 import {
   asRecord,
+  flattenPanVerifiedData,
   mergeGstFetchedIntoVerifiedDetails,
+  pickPanFetchedInfo,
   verifiedDetailsForUi,
 } from "@/lib/merchant-doc-auto-verification";
 import { clearOnboardingDocumentClientStorage } from "@/lib/onboarding/clear-document-client-storage";
@@ -36,6 +44,18 @@ const STEP1_LABEL_CLASS = "block text-xs font-medium text-slate-600 mb-1.5 track
 const mapboxToken = typeof process !== "undefined" ? (process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "") : "";
 const disableCurrentLocationButton = typeof process !== "undefined" && process.env.NEXT_PUBLIC_DISABLE_CURRENT_LOCATION === "true";
 const MAX_MENU_IMAGE_BYTES = 12 * 1024 * 1024;
+const MENU_IMAGE_NAME_RE = /\.(jpe?g|png|webp|gif)$/i;
+
+function isMenuImageFile(file: File): boolean {
+  const mime = (file.type || "").toLowerCase();
+  if (mime.startsWith("image/")) return true;
+  return MENU_IMAGE_NAME_RE.test(file.name || "");
+}
+
+function toClientMenuProxyUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return toAttachmentProxyUrl(value);
+}
 
 const STEP_LABELS = [
   "Store Informations",
@@ -107,8 +127,24 @@ export function AddChildStoreClient() {
   const [ownerFullName, setOwnerFullName] = useState("");
   const [storeDisplayName, setStoreDisplayName] = useState("");
   const [displayNameManuallyEdited, setDisplayNameManuallyEdited] = useState(false);
-  const [storeType, setStoreType] = useState("RESTAURANT");
+  const [progressLoadDone, setProgressLoadDone] = useState(
+    () => !storeInternalIdParam || !parentIdParam
+  );
+  const [storeType, setStoreType] = useState(() =>
+    storeInternalIdParam ? "" : "RESTAURANT"
+  );
   const [customStoreType, setCustomStoreType] = useState("");
+  const { options: storeTypeOptions } = useOnboardingStoreTypes("OTHERS");
+  const { docs: catalogDocs, cuisineListEnabled, loaded: cuisineFlagLoaded } =
+    useMerchantStoreDocumentRequirements(
+      storeInternalIdParam && !progressLoadDone ? "" : storeType
+    );
+  const showCuisineList = cuisineFlagLoaded
+    ? cuisineListEnabled
+    : defaultCuisineListEnabled(storeType);
+  const catalogResolvedDocs = resolveMerchantDocs(catalogDocs, storeType);
+  const aadhaarDocMandatory = isDocMandatory(catalogResolvedDocs, "AADHAAR");
+  const gstDocMandatory = isDocMandatory(catalogResolvedDocs, "GST");
   const [storeEmail, setStoreEmail] = useState("");
   const [storePhonesInput, setStorePhonesInput] = useState("");
   const [storeDescription, setStoreDescription] = useState("");
@@ -119,7 +155,6 @@ export function AddChildStoreClient() {
   const [createdStoreId, setCreatedStoreId] = useState<string | null>(null);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const mainScrollRef = useRef<HTMLDivElement>(null);
-  const [progressLoadDone, setProgressLoadDone] = useState(() => !storeInternalIdParam || !parentIdParam);
 
   const [locationInputMode, setLocationInputMode] = useState<"gps" | "search">("gps");
   const [searchQuery, setSearchQuery] = useState("");
@@ -204,6 +239,7 @@ export function AddChildStoreClient() {
   // Step 4: documents/bank patch (kept in parent so global footer can save)
   const [step4Patch, setStep4Patch] = useState<Step4Patch | null>(null);
   const [step4Section, setStep4Section] = useState<Step4SectionKey>("PAN");
+  const [step4SectionOrder, setStep4SectionOrder] = useState<Step4SectionKey[]>([]);
   const [step4InitialForm, setStep4InitialForm] = useState<Step4Patch | null>(null);
   const [step4InitialDocUrls, setStep4InitialDocUrls] = useState<Record<string, string>>({});
   const [step4RequiredValid, setStep4RequiredValid] = useState(false);
@@ -247,7 +283,13 @@ export function AddChildStoreClient() {
       try {
         const query = new URLSearchParams({ storeInternalId: String(internalId) });
         if (parentId != null && Number.isFinite(parentId)) query.set("parentId", String(parentId));
-        const res = await fetch(`/api/area-manager/child-store-progress?${query.toString()}`, { credentials: "include" });
+        const loadProgress = () =>
+          fetch(`/api/area-manager/child-store-progress?${query.toString()}`, { credentials: "include" });
+        let res = await loadProgress();
+        if (res.status === 401 || res.status === 503) {
+          await new Promise((r) => setTimeout(r, 400));
+          res = await loadProgress();
+        }
         const json = await res.json().catch(() => ({}));
         if (cancelled) return;
         if (!res.ok) {
@@ -273,18 +315,25 @@ export function AddChildStoreClient() {
         }
         if (progress?.form_data?.step1 && typeof progress.form_data.step1 === "object") {
           const s1 = progress.form_data.step1 as Record<string, unknown>;
-          if (typeof s1.store_name === "string") setStoreName(s1.store_name);
-          if (typeof s1.owner_full_name === "string") setOwnerFullName(s1.owner_full_name);
-          if (typeof s1.store_display_name === "string") {
+          const take = (v: unknown, setter: (s: string) => void) => {
+            if (typeof v === "string" && v.trim()) setter(v);
+          };
+          take(s1.store_name, setStoreName);
+          take(s1.owner_full_name, setOwnerFullName);
+          if (typeof s1.store_display_name === "string" && s1.store_display_name.trim()) {
             setStoreDisplayName(s1.store_display_name);
             setDisplayNameManuallyEdited(true);
           }
-          if (typeof s1.store_type === "string") setStoreType(s1.store_type);
-          if (typeof s1.custom_store_type === "string") setCustomStoreType(s1.custom_store_type);
-          if (typeof s1.store_email === "string") setStoreEmail(s1.store_email);
-          if (Array.isArray(s1.store_phones)) setStorePhonesInput((s1.store_phones as string[]).join(", "));
-          else if (typeof s1.store_phones === "string") setStorePhonesInput(s1.store_phones);
-          if (typeof s1.store_description === "string") setStoreDescription(s1.store_description);
+          take(s1.store_type, setStoreType);
+          take(s1.custom_store_type, setCustomStoreType);
+          take(s1.store_email, setStoreEmail);
+          if (Array.isArray(s1.store_phones)) {
+            const joined = (s1.store_phones as string[]).filter((p) => String(p || "").trim()).join(", ");
+            if (joined) setStorePhonesInput(joined);
+          } else if (typeof s1.store_phones === "string" && s1.store_phones.trim()) {
+            setStorePhonesInput(s1.store_phones);
+          }
+          take(s1.store_description, setStoreDescription);
         }
         if (progress?.form_data?.step2 && typeof progress.form_data.step2 === "object") {
           const s2 = progress.form_data.step2 as Record<string, unknown>;
@@ -310,20 +359,18 @@ export function AddChildStoreClient() {
             modeRaw === "PDF" ? "PDF" : modeRaw === "CSV" ? "CSV" : "IMAGE";
           setMenuUploadMode(mode);
           setMenuUploadedImageUrls(
-            Array.isArray(s3.menuImageUrls) ? (s3.menuImageUrls as string[]) : []
+            (Array.isArray(s3.menuImageUrls) ? (s3.menuImageUrls as unknown[]) : [])
+              .map((u) => toClientMenuProxyUrl(u))
+              .filter((u): u is string => Boolean(u))
           );
           setMenuUploadedImageNames(
             Array.isArray(s3.menuImageNames) ? (s3.menuImageNames as string[]) : []
           );
-          setMenuUploadedSpreadsheetUrl(
-            typeof s3.menuSpreadsheetUrl === "string" ? s3.menuSpreadsheetUrl : null
-          );
+          setMenuUploadedSpreadsheetUrl(toClientMenuProxyUrl(s3.menuSpreadsheetUrl));
           setMenuUploadedSpreadsheetFileName(
             typeof s3.menuSpreadsheetName === "string" ? s3.menuSpreadsheetName : null
           );
-          setMenuUploadedPdfUrl(
-            typeof s3.menuPdfUrl === "string" ? s3.menuPdfUrl : null
-          );
+          setMenuUploadedPdfUrl(toClientMenuProxyUrl(s3.menuPdfUrl));
           setMenuUploadedPdfFileName(
             typeof s3.menuPdfFileName === "string" ? s3.menuPdfFileName : null
           );
@@ -413,14 +460,32 @@ export function AddChildStoreClient() {
             ...(prev ?? {}),
             pan_number:
               typeof s4.pan_number === "string" ? (s4.pan_number as string) : prev?.pan_number,
-            pan_holder_name:
-              typeof s4.pan_holder_name === "string"
-                ? (s4.pan_holder_name as string)
-                : prev?.pan_holder_name,
+            pan_holder_name: (() => {
+              const fromProgress =
+                typeof s4.pan_holder_name === "string" ? s4.pan_holder_name.trim() : "";
+              if (fromProgress) return fromProgress;
+              const details =
+                s4.pan_verified_details && typeof s4.pan_verified_details === "object"
+                  ? flattenPanVerifiedData(s4.pan_verified_details)
+                  : prev?.pan_verified_details ?? null;
+              return pickPanFetchedInfo(details).registered_name || prev?.pan_holder_name;
+            })(),
             pan_is_verified:
               typeof s4.pan_is_verified === "boolean"
                 ? (s4.pan_is_verified as boolean)
                 : prev?.pan_is_verified,
+            pan_verified_at:
+              s4.pan_verified_at != null
+                ? String(s4.pan_verified_at)
+                : prev?.pan_verified_at ?? null,
+            pan_verification_method:
+              typeof s4.pan_verification_method === "string"
+                ? (s4.pan_verification_method as string)
+                : prev?.pan_verification_method ?? null,
+            pan_verified_details:
+              s4.pan_verified_details && typeof s4.pan_verified_details === "object"
+                ? flattenPanVerifiedData(s4.pan_verified_details)
+                : prev?.pan_verified_details ?? null,
             aadhar_number:
               typeof s4.aadhar_number === "string"
                 ? (s4.aadhar_number as string)
@@ -539,10 +604,20 @@ export function AddChildStoreClient() {
                   typeof d.pan_document_number === "string"
                     ? (d.pan_document_number as string)
                     : prev?.pan_number,
-                pan_holder_name:
-                  typeof d.pan_holder_name === "string"
-                    ? (d.pan_holder_name as string)
-                    : prev?.pan_holder_name,
+                pan_holder_name: (() => {
+                  const fromCol =
+                    typeof d.pan_holder_name === "string" ? d.pan_holder_name.trim() : "";
+                  if (fromCol) return fromCol;
+                  const details = flattenPanVerifiedData(
+                    verifiedDetailsForUi(
+                      Boolean(d.pan_is_verified),
+                      d.pan_document_metadata,
+                      null,
+                      asRecord(d.extracted_data_summary).pan,
+                    ) ?? prev?.pan_verified_details ?? {},
+                  );
+                  return pickPanFetchedInfo(details).registered_name || prev?.pan_holder_name;
+                })(),
                 pan_is_verified: Boolean(d.pan_is_verified) || prev?.pan_is_verified,
                 pan_verified_at:
                   d.pan_verified_at != null
@@ -552,12 +627,16 @@ export function AddChildStoreClient() {
                   typeof d.pan_verification_method === "string"
                     ? (d.pan_verification_method as string)
                     : prev?.pan_verification_method ?? null,
-                pan_verified_details: verifiedDetailsForUi(
-                  Boolean(d.pan_is_verified),
-                  d.pan_document_metadata,
-                  typeof d.pan_holder_name === "string" ? d.pan_holder_name : null,
-                  asRecord(d.extracted_data_summary).pan,
-                ) ?? prev?.pan_verified_details ?? null,
+                pan_verified_details: (() => {
+                  const raw = verifiedDetailsForUi(
+                    Boolean(d.pan_is_verified),
+                    d.pan_document_metadata,
+                    typeof d.pan_holder_name === "string" ? d.pan_holder_name : null,
+                    asRecord(d.extracted_data_summary).pan,
+                  );
+                  if (!raw) return prev?.pan_verified_details ?? null;
+                  return flattenPanVerifiedData(raw);
+                })(),
                 aadhar_number:
                   typeof d.aadhaar_document_number === "string"
                     ? (d.aadhaar_document_number as string)
@@ -940,9 +1019,15 @@ export function AddChildStoreClient() {
     try {
       const query = new URLSearchParams({ storeInternalId: String(storeInternalId) });
       query.set("parentId", String(parentId));
-      const res = await fetch(`/api/area-manager/child-store-progress?${query.toString()}`, {
-        credentials: "include",
-      });
+      const loadProgress = () =>
+        fetch(`/api/area-manager/child-store-progress?${query.toString()}`, {
+          credentials: "include",
+        });
+      let res = await loadProgress();
+      if (res.status === 401 || res.status === 503) {
+        await new Promise((r) => setTimeout(r, 400));
+        res = await loadProgress();
+      }
       const json = await res.json().catch(() => ({}));
       if (!res.ok) return;
       const progress = json?.progress;
@@ -1298,12 +1383,18 @@ export function AddChildStoreClient() {
       if (isUpdatingExisting) {
         body.storeInternalId = storeInternalId;
       }
-      const res = await fetch("/api/area-manager/merchant-stores", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(body),
-      });
+      const postStore = () =>
+        fetch("/api/area-manager/merchant-stores", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(body),
+        });
+      let res = await postStore();
+      if (res.status === 401 || res.status === 503) {
+        await new Promise((r) => setTimeout(r, 400));
+        res = await postStore();
+      }
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json?.error ?? "Failed to save store");
       const id = json?.data?.id;
@@ -1326,17 +1417,23 @@ export function AddChildStoreClient() {
   const saveProgress = useCallback(
     async (currentStep: number, formDataPatch: Record<string, unknown>) => {
       if (!storeInternalId || !parentId || !Number.isFinite(storeInternalId)) return;
-      const res = await fetch("/api/area-manager/child-store-progress", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          storeInternalId,
-          parentId,
-          currentStep,
-          formDataPatch,
-        }),
-      });
+      const postProgress = () =>
+        fetch("/api/area-manager/child-store-progress", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            storeInternalId,
+            parentId,
+            currentStep,
+            formDataPatch,
+          }),
+        });
+      let res = await postProgress();
+      if (res.status === 401 || res.status === 503) {
+        await new Promise((r) => setTimeout(r, 400));
+        res = await postProgress();
+      }
       if (!res.ok) {
         const json = await res.json().catch(() => ({} as any));
         throw new Error(json?.error ?? "Failed to save progress");
@@ -1346,56 +1443,7 @@ export function AddChildStoreClient() {
   );
 
   const toProxyAttachmentUrl = useCallback((value: unknown): string | null => {
-    if (typeof value !== "string") return null;
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-
-    // Never persist local preview URLs in DB.
-    if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) return null;
-
-    if (trimmed.includes("/api/attachments/proxy") || trimmed.includes("/v1/attachments/proxy")) {
-      try {
-        const u = new URL(
-          trimmed.startsWith("http://") || trimmed.startsWith("https://")
-            ? trimmed
-            : `https://local.invalid${trimmed.startsWith("/") ? "" : "/"}${trimmed}`,
-        );
-        const key = u.searchParams.get("key");
-        if (key?.trim()) {
-          return `/api/attachments/proxy?key=${encodeURIComponent(key.trim())}`;
-        }
-      } catch {
-        /* fall through */
-      }
-      if (trimmed.startsWith("/v1/attachments/proxy")) {
-        return trimmed.replace("/v1/attachments/proxy", "/api/attachments/proxy");
-      }
-      if (trimmed.startsWith("/api/attachments/proxy")) return trimmed;
-    }
-
-    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-      try {
-        const u = new URL(trimmed);
-        // Presigned R2 / CDN URL → stable proxy key (pathname after optional bucket).
-        const path = u.pathname.replace(/^\/+/, "");
-        const docsIdx = path.toLowerCase().indexOf("docs/merchants/");
-        if (docsIdx >= 0) {
-          return `/api/attachments/proxy?key=${encodeURIComponent(path.slice(docsIdx))}`;
-        }
-        const merIdx = path.toLowerCase().indexOf("merchants/");
-        if (merIdx >= 0) {
-          const rest = path.slice(merIdx);
-          const key = rest.toLowerCase().startsWith("docs/") ? rest : `docs/${rest}`;
-          return `/api/attachments/proxy?key=${encodeURIComponent(key)}`;
-        }
-      } catch {
-        return null;
-      }
-      return null;
-    }
-
-    // Treat as raw R2 key and normalize to proxy URL.
-    return `/api/attachments/proxy?key=${encodeURIComponent(trimmed.replace(/^\/+/, ""))}`;
+    return toClientMenuProxyUrl(value);
   }, []);
 
   const extractAttachmentKey = useCallback((value: unknown): string | null => {
@@ -1413,6 +1461,138 @@ export function AddChildStoreClient() {
       return null;
     }
   }, [toProxyAttachmentUrl]);
+
+  type MenuMediaRow = {
+    id?: number;
+    public_url?: string;
+    original_file_name?: string;
+  };
+
+  const postMenuMedia = useCallback(
+    async (kind: "IMAGE" | "PDF" | "CSV", files: File[]): Promise<MenuMediaRow[]> => {
+      if (!storeInternalId || !Number.isFinite(storeInternalId)) {
+        throw new Error("Store is not ready for menu upload.");
+      }
+      const formData = new FormData();
+      if (kind === "IMAGE") {
+        files.slice(0, 5).forEach((file) => formData.append("files", file));
+      } else {
+        formData.append("file", files[0]);
+      }
+      formData.append(
+        "source_entity",
+        kind === "IMAGE"
+          ? "ONBOARDING_MENU_IMAGE"
+          : kind === "PDF"
+            ? "ONBOARDING_MENU_PDF"
+            : "ONBOARDING_MENU_SHEET"
+      );
+      const postUpload = () =>
+        fetch(`/api/merchant/stores/${storeInternalId}/media/upload`, {
+          method: "POST",
+          body: formData,
+          credentials: "include",
+        });
+      let res = await postUpload();
+      if (res.status === 503 || res.status === 401) {
+        await new Promise((r) => setTimeout(r, 400));
+        res = await postUpload();
+      }
+      const data = await res.json().catch(() => ({}));
+      const rows = Array.isArray(data?.files) ? data.files : [];
+      if (!res.ok || !data?.success || rows.length === 0) {
+        const code = typeof data?.code === "string" ? data.code : "";
+        if (code === "SESSION_REQUIRED" || data?.error === "Not authenticated") {
+          throw new Error("Couldn't upload right now. Wait a moment and try again.");
+        }
+        throw new Error(data?.error || "Menu upload failed. Please try again.");
+      }
+      return rows as MenuMediaRow[];
+    },
+    [storeInternalId]
+  );
+
+  const applyMenuUploadRows = useCallback(
+    (kind: "IMAGE" | "PDF" | "CSV", rows: MenuMediaRow[], fallbackNames: string[]) => {
+      const mapped = rows
+        .map((row, index) => {
+          const url = toClientMenuProxyUrl(row.public_url) || "";
+          const name =
+            typeof row.original_file_name === "string" && row.original_file_name
+              ? row.original_file_name
+              : fallbackNames[index] || "menu-file";
+          const id =
+            row.id != null && Number.isFinite(Number(row.id))
+              ? Number(row.id)
+              : Date.now() + index;
+          return { url, name, id };
+        })
+        .filter((row) => row.url);
+
+      if (kind === "IMAGE") {
+        const urls = mapped.map((r) => r.url);
+        const names = mapped.map((r) => r.name);
+        const ids = mapped.map((r) => r.id);
+        setMenuUploadedImageUrls(urls);
+        setMenuUploadedImageNames(names);
+        setMenuUploadIds(ids);
+        setMenuImageFiles([]);
+        return {
+          step3: {
+            menuUploadMode: "IMAGE" as const,
+            menuImageUrls: urls,
+            menuImageNames: names,
+            menuUploadIds: ids,
+            menuSpreadsheetUrl: null,
+            menuSpreadsheetName: null,
+            menuPdfUrl: null,
+            menuPdfFileName: null,
+          },
+        };
+      }
+      if (kind === "CSV") {
+        const urls = mapped.map((r) => r.url);
+        const names = mapped.map((r) => r.name);
+        const ids = mapped.map((r) => r.id);
+        setMenuUploadedSpreadsheetUrl(urls[0] ?? null);
+        setMenuUploadedSpreadsheetFileName(names[0] ?? null);
+        setMenuUploadIds(ids);
+        setMenuSpreadsheetFile(null);
+        return {
+          step3: {
+            menuUploadMode: "CSV" as const,
+            menuSpreadsheetUrl: urls[0] ?? null,
+            menuSpreadsheetName: names[0] ?? null,
+            menuUploadIds: ids,
+            menuImageUrls: [],
+            menuImageNames: [],
+            menuPdfUrl: null,
+            menuPdfFileName: null,
+          },
+        };
+      }
+      const urls = mapped.map((r) => r.url);
+      const names = mapped.map((r) => r.name);
+      const ids = mapped.map((r) => r.id);
+      setMenuUploadedPdfUrl(urls[0] ?? null);
+      setMenuUploadedPdfFileName(names[0] ?? null);
+      setMenuUploadIds(ids);
+      setMenuPdfFile(null);
+      return {
+        step3: {
+          menuUploadMode: "PDF" as const,
+          menuPdfUrl: urls[0] ?? null,
+          menuPdfFileName: names[0] ?? null,
+          menuUploadIds: ids,
+          menuImageUrls: [],
+          menuImageNames: [],
+          menuSpreadsheetUrl: null,
+          menuSpreadsheetName: null,
+        },
+      };
+    },
+    []
+  );
 
   const getStep2Patch = useCallback((): Record<string, unknown> => ({
     step2: {
@@ -1501,171 +1681,36 @@ export function AddChildStoreClient() {
           menuPdfFile !== null;
 
         if (hasNewFiles) {
-          const formData = new FormData();
-
-          if (menuUploadMode === "IMAGE") {
-            if (menuImageFiles.length === 0) {
-              throw new Error("Please select at least one menu image.");
-            }
-            menuImageFiles.slice(0, 5).forEach((file) => {
-              formData.append("files", file);
-            });
-          } else if (menuUploadMode === "CSV" && menuSpreadsheetFile) {
-            formData.append("file", menuSpreadsheetFile);
-          } else if (menuUploadMode === "PDF" && menuPdfFile) {
-            formData.append("file", menuPdfFile);
-          } else {
+          const kind =
+            menuUploadMode === "IMAGE" ? "IMAGE" : menuUploadMode === "PDF" ? "PDF" : "CSV";
+          const filesToUpload =
+            kind === "IMAGE"
+              ? menuImageFiles.slice(0, 5)
+              : kind === "CSV" && menuSpreadsheetFile
+                ? [menuSpreadsheetFile]
+                : kind === "PDF" && menuPdfFile
+                  ? [menuPdfFile]
+                  : [];
+          if (filesToUpload.length === 0) {
             throw new Error("No file selected for upload.");
           }
-
-          formData.append(
-            "source_entity",
-            menuUploadMode === "IMAGE"
-              ? "ONBOARDING_MENU_IMAGE"
-              : menuUploadMode === "PDF"
-              ? "ONBOARDING_MENU_PDF"
-              : "ONBOARDING_MENU_SHEET"
+          const rows = await postMenuMedia(kind, filesToUpload);
+          step3Patch = applyMenuUploadRows(
+            kind,
+            rows,
+            filesToUpload.map((f) => f.name)
           );
-          const res = await fetch(
-            `/api/merchant/stores/${storeInternalId}/media/upload`,
-            {
-              method: "POST",
-              body: formData,
-              credentials: "include",
-            }
-          );
-          const data = await res.json().catch(() => ({}));
-          const files = Array.isArray(data?.files) ? data.files : [];
-          if (!res.ok || !data?.success || files.length === 0) {
-            throw new Error(
-              data?.error || "Menu upload failed. Please try again."
-            );
-          }
-
-          if (menuUploadMode === "IMAGE") {
-            const urls: string[] = [];
-            const names: string[] = [];
-            const ids: number[] = [];
-
-            (files as { id?: number; public_url?: string; original_file_name?: string }[]).forEach(
-              (file, index) => {
-                const url =
-                  typeof file.public_url === "string" ? file.public_url : "";
-                const name =
-                  typeof file.original_file_name === "string"
-                    ? file.original_file_name
-                    : menuImageFiles[index]?.name ?? "menu-image";
-                const id =
-                  file.id != null && Number.isFinite(Number(file.id))
-                    ? Number(file.id)
-                    : Date.now() + index;
-
-                if (url) {
-                  urls.push(url);
-                  names.push(name);
-                  ids.push(id);
-                }
-              }
-            );
-
-            setMenuUploadedImageUrls(urls);
-            setMenuUploadedImageNames(names);
-            setMenuUploadIds(ids);
-            setMenuImageFiles([]);
-            step3Patch = {
-              step3: {
-                menuUploadMode: "IMAGE",
-                menuImageUrls: urls,
-                menuImageNames: names,
-                menuUploadIds: ids,
-                menuSpreadsheetUrl: null,
-                menuSpreadsheetName: null,
-                menuPdfUrl: null,
-                menuPdfFileName: null,
-              },
-            };
-          } else if (menuUploadMode === "CSV") {
-            const file = (files as {
-              id?: number;
-              public_url?: string;
-              original_file_name?: string;
-            }[])[0];
-            const uploadedUrl =
-              file && typeof file.public_url === "string" ? file.public_url : "";
-            const uploadedName =
-              file && typeof file.original_file_name === "string"
-                ? file.original_file_name
-                : menuSpreadsheetFile?.name ?? "menu-sheet";
-            const uploadedId =
-              file && file.id != null && Number.isFinite(Number(file.id))
-                ? Number(file.id)
-                : Date.now();
-
-            const urls = [uploadedUrl];
-            const names = [uploadedName];
-            const ids = [uploadedId];
-            setMenuUploadedSpreadsheetUrl(urls[0] ?? null);
-            setMenuUploadedSpreadsheetFileName(names[0] ?? null);
-            setMenuUploadIds(ids);
-            setMenuSpreadsheetFile(null);
-            step3Patch = {
-              step3: {
-                menuUploadMode: "CSV",
-                menuSpreadsheetUrl: urls[0] ?? null,
-                menuSpreadsheetName: names[0] ?? null,
-                menuUploadIds: ids,
-                menuImageUrls: [],
-                menuImageNames: [],
-                menuPdfUrl: null,
-                menuPdfFileName: null,
-              },
-            };
-          } else {
-            const file = (files as {
-              id?: number;
-              public_url?: string;
-              original_file_name?: string;
-            }[])[0];
-            const uploadedUrl =
-              file && typeof file.public_url === "string" ? file.public_url : "";
-            const uploadedName =
-              file && typeof file.original_file_name === "string"
-                ? file.original_file_name
-                : menuPdfFile?.name ?? "menu-pdf";
-            const uploadedId =
-              file && file.id != null && Number.isFinite(Number(file.id))
-                ? Number(file.id)
-                : Date.now();
-
-            const urls = [uploadedUrl];
-            const names = [uploadedName];
-            const ids = [uploadedId];
-            setMenuUploadedPdfUrl(urls[0] ?? null);
-            setMenuUploadedPdfFileName(names[0] ?? null);
-            setMenuUploadIds(ids);
-            setMenuPdfFile(null);
-            step3Patch = {
-              step3: {
-                menuUploadMode: "PDF",
-                menuPdfUrl: urls[0] ?? null,
-                menuPdfFileName: names[0] ?? null,
-                menuUploadIds: ids,
-                menuImageUrls: [],
-                menuImageNames: [],
-                menuSpreadsheetUrl: null,
-                menuSpreadsheetName: null,
-              },
-            };
-          }
         } else {
           step3Patch = {
             step3: {
               menuUploadMode,
-              menuImageUrls: menuUploadedImageUrls,
+              menuImageUrls: menuUploadedImageUrls
+                .map((u) => toClientMenuProxyUrl(u))
+                .filter((u): u is string => Boolean(u)),
               menuImageNames: menuUploadedImageNames,
-              menuSpreadsheetUrl: menuUploadedSpreadsheetUrl,
+              menuSpreadsheetUrl: toClientMenuProxyUrl(menuUploadedSpreadsheetUrl),
               menuSpreadsheetName: menuUploadedSpreadsheetFileName,
-              menuPdfUrl: menuUploadedPdfUrl,
+              menuPdfUrl: toClientMenuProxyUrl(menuUploadedPdfUrl),
               menuPdfFileName: menuUploadedPdfFileName,
               menuUploadIds,
             },
@@ -1694,11 +1739,15 @@ export function AddChildStoreClient() {
         setStep(6);
         return;
       }
-      if (!step5StoreSetup || !step5StoreSetup.cuisine_types || step5StoreSetup.cuisine_types.length === 0) {
+      if (
+        showCuisineList &&
+        (!step5StoreSetup || !step5StoreSetup.cuisine_types || step5StoreSetup.cuisine_types.length === 0)
+      ) {
         setErr("Please select at least one cuisine before continuing.");
         return;
       }
       if (
+        !step5StoreSetup ||
         !Number.isFinite(step5StoreSetup.delivery_radius_km) ||
         step5StoreSetup.delivery_radius_km < 1 ||
         step5StoreSetup.delivery_radius_km > 8
@@ -1812,8 +1861,6 @@ export function AddChildStoreClient() {
         let fmtFssai = "";
         let fmtDrug = "";
 
-        const upperStoreType = (storeType || "").toUpperCase();
-
         if (step4Section === "PAN") {
           if (step4Patch?.pan_number && step4Patch.pan_number.trim()) {
             fmtPan = docFormatValidators.pan(step4Patch.pan_number.toUpperCase());
@@ -1823,14 +1870,10 @@ export function AddChildStoreClient() {
             fmtAadhaar = docFormatValidators.aadhar(step4Patch.aadhar_number);
           }
         } else if (step4Section === "LICENCE") {
-          if (upperStoreType !== "PHARMA" &&
-              step4Patch?.fssai_number &&
-              step4Patch.fssai_number.trim()) {
+          if (step4Patch?.fssai_number && step4Patch.fssai_number.trim()) {
             fmtFssai = docFormatValidators.fssai(step4Patch.fssai_number);
           }
-          if (upperStoreType === "PHARMA" &&
-              step4Patch?.drug_license_number &&
-              step4Patch.drug_license_number.trim()) {
+          if (step4Patch?.drug_license_number && step4Patch.drug_license_number.trim()) {
             fmtDrug = docFormatValidators.drug(step4Patch.drug_license_number);
           }
         } else if (step4Section === "GST") {
@@ -1936,25 +1979,22 @@ export function AddChildStoreClient() {
             docPayload.gst_verification_method = null;
           }
         }
-        if (upperStoreType === "PHARMA") {
-          const drugNumber = normaliseDocNumber(step4Patch?.drug_license_number);
-          if (drugNumber) {
-            docPayload.drug_license_document_number = drugNumber;
-          }
+        const drugNumber = normaliseDocNumber(step4Patch?.drug_license_number);
+        if (drugNumber) {
+          docPayload.drug_license_document_number = drugNumber;
           if (legalBusinessName) {
             docPayload.drug_license_document_name = legalBusinessName;
           }
-        } else {
-          const fssaiNumber = normaliseDocNumber(step4Patch?.fssai_number);
-          if (fssaiNumber) {
-            docPayload.fssai_document_number = fssaiNumber;
-          }
-          if (step4Patch?.fssai_expiry_date) {
-            docPayload.fssai_expiry_date = step4Patch.fssai_expiry_date;
-          }
-          if (legalBusinessName) {
-            docPayload.fssai_document_name = legalBusinessName;
-          }
+        }
+        const fssaiNumber = normaliseDocNumber(step4Patch?.fssai_number);
+        if (fssaiNumber) {
+          docPayload.fssai_document_number = fssaiNumber;
+        }
+        if (step4Patch?.fssai_expiry_date) {
+          docPayload.fssai_expiry_date = step4Patch.fssai_expiry_date;
+        }
+        if (fssaiNumber && legalBusinessName) {
+          docPayload.fssai_document_name = legalBusinessName;
         }
 
         // Other licences: Trade, Shop & Establishment, Udyam, Other
@@ -2100,16 +2140,11 @@ export function AddChildStoreClient() {
           aadhar_number: aadhaarNumber ?? step4Patch?.aadhar_number,
           gst_number: gstNumber ?? step4Patch?.gst_number,
           drug_license_number:
-            storeType.toUpperCase() === "PHARMA"
-              ? normaliseDocNumber(step4Patch?.drug_license_number) ??
-                step4Patch?.drug_license_number
-              : step4Patch?.drug_license_number,
+            normaliseDocNumber(step4Patch?.drug_license_number) ??
+            step4Patch?.drug_license_number,
           drug_license_expiry_date: step4Patch?.drug_license_expiry_date ?? null,
           fssai_number:
-            upperStoreType !== "PHARMA"
-              ? normaliseDocNumber(step4Patch?.fssai_number) ??
-                step4Patch?.fssai_number
-              : step4Patch?.fssai_number,
+            normaliseDocNumber(step4Patch?.fssai_number) ?? step4Patch?.fssai_number,
           fssai_expiry_date: step4Patch?.fssai_expiry_date ?? null,
           pharmacist_registration_number:
             step4Patch?.pharmacist_registration_number ?? null,
@@ -2132,7 +2167,8 @@ export function AddChildStoreClient() {
         //   keep progress.current_step = 4.
         // - When the user has completed BANK and the UI moves to Step 5,
         //   persist current_step = 5 so the AM dashboard resumes at Operational details.
-        const sectionOrder: Step4SectionKey[] = ["PAN", "AADHAAR", "LICENCE", "GST", "BANK"];
+        const sectionOrder: Step4SectionKey[] =
+          step4SectionOrder.length > 0 ? step4SectionOrder : ["PAN"];
         const idx = sectionOrder.indexOf(step4Section);
         const isLeavingBank = idx === sectionOrder.length - 1 || idx === -1;
         const progressStepNumber = isLeavingBank ? 5 : 4;
@@ -2468,25 +2504,21 @@ export function AddChildStoreClient() {
                         </div>
                         <div>
                           <label className={STEP1_LABEL_CLASS}>Store Type *</label>
-                          <select
+                          <SearchableSelect
                             value={storeType}
-                            onChange={(e) => {
-                              setStoreType(e.target.value);
-                              if (e.target.value !== "OTHERS") setCustomStoreType("");
+                            placeholder="Select store type"
+                            searchPlaceholder="Search store type"
+                            triggerClassName={STEP1_FIELD_CLASS}
+                            options={
+                              storeType && !storeTypeOptions.some((o) => o.value === storeType)
+                                ? [...storeTypeOptions, { value: storeType, label: storeType }]
+                                : storeTypeOptions
+                            }
+                            onChange={(value) => {
+                              setStoreType(value);
+                              if (value !== "OTHERS") setCustomStoreType("");
                             }}
-                            className={STEP1_FIELD_CLASS}
-                            required
-                          >
-                            <option value="RESTAURANT">Restaurant</option>
-                            <option value="CAFE">Cafe</option>
-                            <option value="BAKERY">Bakery</option>
-                            <option value="CLOUD_KITCHEN">Cloud Kitchen</option>
-                            <option value="GROCERY">Grocery</option>
-                            <option value="PHARMA">Pharma</option>
-                            <option value="STATIONERY">Stationery</option>
-                            <option value="ELECTRONICS_ECOMMERCE">Electronics and E-commerce</option>
-                            <option value="OTHERS">Others</option>
-                          </select>
+                          />
                         </div>
                         {storeType === "OTHERS" ? (
                           <div>
@@ -2902,11 +2934,13 @@ export function AddChildStoreClient() {
                     isCsvDragActive={isCsvDragActive}
                     setIsCsvDragActive={setIsCsvDragActive}
                     onMenuImageUpload={(files) => {
-                      if (!files?.length) return;
+                      if (!files?.length || actionLoading || menuRemoveLoading) return;
                       setMenuUploadError("");
-                      const validImageFiles = files
-                        .filter((file) => file.type.startsWith("image/"))
-                        .slice(0, 5);
+                      const validImageFiles = files.filter(isMenuImageFile);
+                      if (validImageFiles.length === 0) {
+                        setMenuUploadError("Please choose JPG, PNG, or WEBP images.");
+                        return;
+                      }
                       const oversizeImage = validImageFiles.find(
                         (file) => file.size >= MAX_MENU_IMAGE_BYTES
                       );
@@ -2916,15 +2950,87 @@ export function AddChildStoreClient() {
                         );
                         return;
                       }
-                      setMenuImageFiles(validImageFiles);
+                      const remaining = Math.max(0, 5 - menuUploadedImageUrls.length);
+                      const toAdd = validImageFiles.slice(0, remaining);
+                      if (toAdd.length === 0) {
+                        setMenuUploadError("Maximum 5 images allowed.");
+                        return;
+                      }
+                      setMenuUploadMode("IMAGE");
+                      if (storeInternalId && Number.isFinite(storeInternalId)) {
+                        setActionLoading(true);
+                        void postMenuMedia("IMAGE", toAdd)
+                          .then(async (rows) => {
+                            const patch = applyMenuUploadRows(
+                              "IMAGE",
+                              rows,
+                              toAdd.map((f) => f.name)
+                            );
+                            await saveProgress(3, patch);
+                          })
+                          .catch((e) => {
+                            setMenuUploadError(
+                              e instanceof Error ? e.message : "Menu image upload failed."
+                            );
+                            setMenuImageFiles((prev) => [...prev, ...toAdd].slice(0, remaining));
+                          })
+                          .finally(() => {
+                            setActionLoading(false);
+                            if (imageUploadInputRef.current) imageUploadInputRef.current.value = "";
+                          });
+                      } else {
+                        setMenuImageFiles((prev) => [...prev, ...toAdd].slice(0, remaining));
+                      }
                     }}
                     onMenuPdfUpload={(file) => {
+                      if (!file || actionLoading || menuRemoveLoading) return;
                       setMenuUploadError("");
-                      setMenuPdfFile(file);
+                      setMenuUploadMode("PDF");
+                      if (storeInternalId && Number.isFinite(storeInternalId)) {
+                        setActionLoading(true);
+                        void postMenuMedia("PDF", [file])
+                          .then(async (rows) => {
+                            const patch = applyMenuUploadRows("PDF", rows, [file.name]);
+                            await saveProgress(3, patch);
+                          })
+                          .catch((e) => {
+                            setMenuUploadError(
+                              e instanceof Error ? e.message : "PDF upload failed."
+                            );
+                            setMenuPdfFile(file);
+                          })
+                          .finally(() => {
+                            setActionLoading(false);
+                            if (pdfUploadInputRef.current) pdfUploadInputRef.current.value = "";
+                          });
+                      } else {
+                        setMenuPdfFile(file);
+                      }
                     }}
                     onMenuSpreadsheetUpload={(file) => {
+                      if (!file || actionLoading || menuRemoveLoading) return;
                       setMenuUploadError("");
-                      setMenuSpreadsheetFile(file);
+                      setMenuUploadMode("CSV");
+                      if (storeInternalId && Number.isFinite(storeInternalId)) {
+                        setActionLoading(true);
+                        void postMenuMedia("CSV", [file])
+                          .then(async (rows) => {
+                            const patch = applyMenuUploadRows("CSV", rows, [file.name]);
+                            await saveProgress(3, patch);
+                          })
+                          .catch((e) => {
+                            setMenuUploadError(
+                              e instanceof Error ? e.message : "Spreadsheet upload failed."
+                            );
+                            setMenuSpreadsheetFile(file);
+                          })
+                          .finally(() => {
+                            setActionLoading(false);
+                            if (csvUploadInputRef.current) csvUploadInputRef.current.value = "";
+                          });
+                      } else {
+                        setMenuSpreadsheetFile(file);
+                      }
                     }}
                     imageUploadInputRef={imageUploadInputRef}
                     pdfUploadInputRef={pdfUploadInputRef}
@@ -3133,8 +3239,10 @@ export function AddChildStoreClient() {
                   initialDocUrls={step4InitialDocUrls}
                   onRequiredValidChange={setStep4RequiredValid}
                   onDigilockerInFlightChange={setAadhaarDigilockerInFlight}
+                  onVisibleSectionsChange={setStep4SectionOrder}
                   onPrevious={() => {
-                    const sectionOrder: Step4SectionKey[] = ["PAN", "AADHAAR", "LICENCE", "GST", "BANK"];
+                    const sectionOrder: Step4SectionKey[] =
+                      step4SectionOrder.length > 0 ? step4SectionOrder : ["PAN"];
                     const idx = sectionOrder.indexOf(step4Section);
                     if (idx > 0) {
                       setStep4Section(sectionOrder[idx - 1]);
@@ -3158,9 +3266,11 @@ export function AddChildStoreClient() {
                   continueLabel={
                     step4Section === "AADHAAR" && aadhaarDigilockerInFlight
                       ? "Waiting for DigiLocker…"
-                      : step4Section === "AADHAAR"
+                      : step4Section === "AADHAAR" && !aadhaarDocMandatory
                       ? "Skip / Save & Continue"
                       : step4Section === "GST" &&
+                        !gstDocMandatory &&
+                        step4RequiredValid &&
                         (!step4Patch?.gst_number || !step4Patch.gst_number.trim()) &&
                         !step4Patch?.gst_is_verified
                       ? "Skip / Save & Continue"
@@ -3174,6 +3284,7 @@ export function AddChildStoreClient() {
                 <Step5StoreSetup
                   initialStoreSetup={step5StoreSetup ?? undefined}
                   storeInternalId={storeInternalId}
+                  showCuisineList={showCuisineList}
                   onMediaUploadingChange={setMediaUploading}
                   onChange={setStep5StoreSetup}
                   onDeleteBanner={async (currentBannerUrl) => {

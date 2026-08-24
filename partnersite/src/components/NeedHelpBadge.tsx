@@ -66,7 +66,11 @@ const NeedHelpBadge: React.FC<{
   inline?: boolean;
   variant?: "pill" | "headerLink";
   className?: string;
-}> = ({ inline = false, variant = "pill", className }) => {
+  /** Mount the sidesheet without the “Need a hand!” trigger (open via `openMxNeedHelp`). */
+  hideTrigger?: boolean;
+  /** Prefer this store id over header switcher / localStorage (e.g. child onboarding). */
+  storeId?: string;
+}> = ({ variant = "pill", className, hideTrigger = false, storeId: storeIdProp }) => {
   const router = useRouter();
   const session = useMerchantSession() ?? SESSION_OUTSIDE_PROVIDER;
   const [open, setOpen] = useState(false);
@@ -87,7 +91,11 @@ const NeedHelpBadge: React.FC<{
   const [loadingOrders, setLoadingOrders] = useState(false);
   const [ordersError, setOrdersError] = useState<string | null>(null);
 
-  const selectedStoreId = readSelectedStoreId();
+  const resolveStoreId = useCallback(
+    () => (storeIdProp?.trim() || readSelectedStoreId()),
+    [storeIdProp],
+  );
+  const selectedStoreId = resolveStoreId();
 
   const readCachedSections = useCallback((): HelpSection[] | null => {
     if (typeof window === "undefined") return null;
@@ -253,7 +261,7 @@ const NeedHelpBadge: React.FC<{
       subject: string,
       orderOverride?: { formattedOrderId?: string; coreOrderId?: number },
     ) => {
-      const storeId = readSelectedStoreId();
+      const storeId = resolveStoreId();
       if (!session.isAuthenticated) {
         setMessage({ type: "error", text: "Please sign in to contact support." });
         return;
@@ -329,11 +337,11 @@ const NeedHelpBadge: React.FC<{
         setLoading(false);
       }
     },
-    [session.isAuthenticated, orderHelpContext],
+    [session.isAuthenticated, orderHelpContext, resolveStoreId],
   );
 
   const loadOrdersForPick = useCallback(async () => {
-    const storeId = readSelectedStoreId();
+    const storeId = resolveStoreId();
     if (!storeId) {
       setOrdersError("Select a store from the header switcher first.");
       setOrderPickRows([]);
@@ -363,7 +371,7 @@ const NeedHelpBadge: React.FC<{
     } finally {
       setLoadingOrders(false);
     }
-  }, []);
+  }, [resolveStoreId]);
 
   const beginOrderPick = useCallback(
     (draft: PendingTicketDraft) => {
@@ -494,7 +502,7 @@ const NeedHelpBadge: React.FC<{
     } catch {
       /* ignore */
     }
-    const sid = readSelectedStoreId();
+    const sid = resolveStoreId();
     const q = new URLSearchParams({ ticket: String(createdTicket.id) });
     if (sid) q.set("storeId", sid);
     router.push(`/partners/support-inbox?${q.toString()}`);
@@ -506,6 +514,7 @@ const NeedHelpBadge: React.FC<{
 
   return (
     <>
+      {!hideTrigger ? (
       <button
         type="button"
         aria-label="Need help — contact support"
@@ -519,6 +528,7 @@ const NeedHelpBadge: React.FC<{
         <Headphones size={16} className="text-blue-600 flex-shrink-0" />
         <span className="whitespace-nowrap text-xs sm:text-sm">Need a hand!</span>
       </button>
+      ) : null}
 
       {open && (
         <div className="fixed inset-0 z-[2200]" role="dialog" aria-modal="true" aria-labelledby="help-sheet-title">

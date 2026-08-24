@@ -22,7 +22,7 @@ module.exports = ({ config }) => ({
     ...appJson.expo,
     ...config?.expo,
     scheme: config?.expo?.scheme || appJson.expo.scheme || "gatimitra-merchant",
-    // Partner Control app icon (mxappicon.png — keep source resolution as-is).
+    // Partner launcher: circular mark with safe-zone padding (see scripts/generate-launcher-icon.mjs).
     icon: "./assets/mxappicon.png",
     splash: {
       ...(appJson.expo.splash || {}),
@@ -59,7 +59,8 @@ module.exports = ({ config }) => ({
       package: "com.gatimitra.partner",
       icon: "./assets/mxappicon.png",
       adaptiveIcon: {
-        foregroundImage: "./assets/mxappicon.png",
+        // Transparent foreground already inset to ~66% safe zone — do not rely on launcher crop.
+        foregroundImage: "./assets/adaptive-icon.png",
         backgroundColor: "#0B241C",
       },
       ...(hasGoogleServices ? { googleServicesFile: "./google-services.json" } : {}),

@@ -747,6 +747,7 @@ export async function merchantRoutes(app: FastifyInstance) {
             state: z.string().optional().nullable(),
             postal_code: z.string().nullable(),
             cuisine_types: z.array(z.string()).nullable(),
+            store_type: z.string().nullable().optional(),
             operational_status: z.string().nullable(),
             avg_preparation_time_minutes: z.number().nullable(),
             packaging_charge_amount: z.number().nullable().optional(),

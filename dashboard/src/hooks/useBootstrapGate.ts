@@ -13,6 +13,8 @@ import { hydrateBrowserSupabaseFromCookies } from "@/lib/auth/hydrate-browser-su
 
 /** Module-level dedupe so dashboard + order routes never double-fetch bootstrap. */
 let bootstrapInFlight: Promise<void> | null = null;
+let lastFocusRevalidateAt = 0;
+const FOCUS_REVALIDATE_MIN_MS = 5 * 60 * 1000;
 
 const BOOTSTRAP_MAX_AGE_MS = 10 * 60 * 1000;
 /** Skip network bootstrap revalidation when local cache is newer than this. */
@@ -187,15 +189,17 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
     };
   }, [queryClient, isStandaloneOrderRoute]);
 
-  // When the tab is focused again, soft-revalidate bootstrap so superadmin access
-  // changes show up without requiring a full re-login.
+  // When the tab is focused again, soft-revalidate bootstrap at most every 5m.
+  // Do NOT invalidate permissions/dashboard-access on every focus — that caused
+  // parallel auth storms (and logout) when switching dashboard pages quickly.
   useEffect(() => {
     if (!authReady || isStandaloneOrderRoute) return;
     const onFocus = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (now - lastFocusRevalidateAt < FOCUS_REVALIDATE_MIN_MS) return;
+      lastFocusRevalidateAt = now;
       scheduleBootstrapRevalidate(queryClient);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.permissions() });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.dashboardAccess() });
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);

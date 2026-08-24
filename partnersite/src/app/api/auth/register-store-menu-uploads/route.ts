@@ -1,7 +1,7 @@
 /**
  * Menu Setup uploads (registration step 3): one attachment type per store (images max 5, or one PDF, or one CSV).
  * R2: `.../stores/{storePublicId}/onboarding/menu/{fileName}` (flat, like documents/ & bank/).
- * DB: `r2_key`, `public_url`, and `menu_url` all store the app proxy URL (`/api/attachments/proxy?key=...`).
+ * DB: `r2_key` is the R2 object key; `public_url` and `menu_url` are `/api/attachments/proxy?key=...`.
  * GET: list by store_id
  * POST: upload → R2 → save menu_url; rollback R2 on DB fail
  * DELETE: remove one by id (R2 + DB)
@@ -637,7 +637,14 @@ export async function POST(req: NextRequest) {
               source_entity: "ONBOARDING_MENU_IMAGE",
               source_entity_id: null,
               original_file_name: displayName,
-              r2_key: urlForDb,
+              r2_key:
+                newUploadedKeys[0] ||
+                r2KeyFromMenuMediaRow({
+                  menu_url: urlForDb,
+                  public_url: urlForDb,
+                  r2_key: newUploadedKeys[0] ?? null,
+                }) ||
+                null,
               public_url: urlForDb,
               menu_url: urlForDb,
               menu_reference_image_urls: mergedDeduped,
@@ -763,10 +770,17 @@ export async function POST(req: NextRequest) {
           media_scope: "MENU_REFERENCE",
           source_entity: "ONBOARDING_MENU_IMAGE",
           source_entity_id: null,
-          original_file_name: displayName,
-          r2_key: urlForDb,
-          public_url: urlForDb,
-          menu_url: urlForDb,
+              original_file_name: displayName,
+              r2_key:
+                newUploadedKeys[0] ||
+                r2KeyFromMenuMediaRow({
+                  menu_url: urlForDb,
+                  public_url: urlForDb,
+                  r2_key: newUploadedKeys[0] ?? null,
+                }) ||
+                null,
+              public_url: urlForDb,
+              menu_url: urlForDb,
           menu_reference_image_urls: merged,
           mime_type: "image/*",
           file_size_bytes: null,
@@ -866,7 +880,7 @@ export async function POST(req: NextRequest) {
       source_entity: sheetSource,
       source_entity_id: null as string | null,
       original_file_name: file.name || (attachmentType === "pdf" ? "menu-reference.pdf" : "menu-reference-sheet"),
-      r2_key: urlForDb,
+      r2_key: storedKey,
       public_url: urlForDb,
       menu_url: urlForDb,
       mime_type: mimeForDb,

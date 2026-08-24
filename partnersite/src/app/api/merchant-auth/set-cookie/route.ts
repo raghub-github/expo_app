@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { initializeSession } from "@/lib/auth/session-manager";
-import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
+import { validateMerchantFromSessionPreferParent } from "@/lib/auth/validate-merchant";
 import {
   replaceSessionForDevice,
   generateDeviceId,
@@ -62,6 +62,7 @@ export async function POST(request: NextRequest) {
         refresh_token?: string;
         device_id?: string;
         login_method?: string;
+        parent_id?: number | string;
       };
       try {
         body = await request.json();
@@ -76,6 +77,7 @@ export async function POST(request: NextRequest) {
         refresh_token,
         device_id: bodyDeviceId,
         login_method: bodyLoginMethod,
+        parent_id: bodyParentId,
       } = body ?? {};
       if (!access_token || !refresh_token) {
         return NextResponse.json(
@@ -85,23 +87,20 @@ export async function POST(request: NextRequest) {
       }
 
       const cookieStore = await cookies();
-      const response = NextResponse.json({ success: true });
-      const supabase = createServerClient(
-        supabaseUrl,
-        supabaseAnonKey,
-        {
-          cookies: {
-            getAll() {
-              return cookieStore.getAll();
-            },
-            setAll(cookiesToSet) {
-              cookiesToSet.forEach(({ name, value, options }) => {
-                applyCookieOptions(cookieStore, response, name, value, options ?? {});
-              });
-            },
+      const pendingCookies: Array<{ name: string; value: string; options: Record<string, unknown> }> =
+        [];
+      const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+        cookies: {
+          getAll() {
+            return cookieStore.getAll();
           },
-        }
-      );
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              pendingCookies.push({ name, value, options: options ?? {} });
+            });
+          },
+        },
+      });
 
       const { data, error } = await supabase.auth.setSession({
         access_token,
@@ -119,7 +118,12 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const validation = await validateMerchantFromSession(data.session.user);
+      const requirePreferred = bodyParentId != null && String(bodyParentId).trim() !== "";
+      const validation = await validateMerchantFromSessionPreferParent(
+        data.session.user,
+        bodyParentId ?? null,
+        { requirePreferred }
+      );
       if (!validation.isValid) {
         await supabase.auth.signOut().catch(() => {});
         return NextResponse.json(
@@ -129,6 +133,14 @@ export async function POST(request: NextRequest) {
       }
 
       const merchantId = validation.merchantParentId!;
+      const response = NextResponse.json({
+        success: true,
+        parentId: merchantId,
+        parentMerchantId: validation.parentMerchantId ?? null,
+      });
+      for (const c of pendingCookies) {
+        applyCookieOptions(cookieStore, response, c.name, c.value, c.options);
+      }
       const deviceIdCookieName = deviceIdCookie();
       const cookieDeviceId = cookieStore.get(deviceIdCookieName)?.value?.trim();
       const deviceId = (bodyDeviceId && String(bodyDeviceId).trim()) || cookieDeviceId || generateDeviceId();

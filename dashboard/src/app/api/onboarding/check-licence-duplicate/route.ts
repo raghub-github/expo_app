@@ -5,8 +5,7 @@
  * Instant uniqueness check for FSSAI / Drug Licence numbers across stores.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { authenticateMerchantStoreOperator } from "@/lib/merchant-store-route-auth";
 import { getSql } from "@/lib/db/client";
 
 export const runtime = "nodejs";
@@ -29,21 +28,8 @@ function normalizeDrug(raw: string): string {
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-    }
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "AREA_MANAGER"));
-    if (!allowed) {
-      return NextResponse.json({ error: "Access required" }, { status: 403 });
-    }
+    const operator = await authenticateMerchantStoreOperator(request);
+    if (!operator.ok) return operator.response;
 
     const { searchParams } = new URL(request.url);
     const kind = String(searchParams.get("kind") || "")

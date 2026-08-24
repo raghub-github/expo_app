@@ -8,10 +8,8 @@
  * proxy URL (`/api/attachments/proxy?key=...`) in `merchant_stores`. Response `url` is a time-limited signed URL for clients that need it.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { authenticateMerchantStoreForId } from "@/lib/merchant-store-route-auth";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getMerchantStoreById, updateMerchantStore } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import { uploadWithKey, getSignedUrlFromKey, deleteDocument } from "@/lib/services/r2";
@@ -25,21 +23,26 @@ import { buildStoreOnboardingMediaR2Key, buildStoreProfileMediaR2Key, getR2Merch
 
 export const runtime = "nodejs";
 
-async function assertStoreAccess(storeId: number) {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error || !user?.email) return { ok: false as const, status: 401, error: "Not authenticated" };
-  const superAdmin = await isSuperAdmin(user.id, user.email);
-  const allowed =
-    superAdmin || (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
-  if (!allowed) return { ok: false as const, status: 403, error: "Forbidden" };
+async function assertStoreAccess(request: NextRequest, storeId: number) {
+  const access = await authenticateMerchantStoreForId(request, storeId);
+  if (!access.ok) {
+    const status = access.response.status;
+    return {
+      ok: false as const,
+      status,
+      error:
+        status === 401
+          ? "Not authenticated"
+          : status === 404
+            ? "Store not found"
+            : "Forbidden",
+    };
+  }
   const areaManagerId = await resolveMerchantListAreaManagerId({
-      supabaseAuthId: user.id,
-      email: user.email,
-    });
-  const store = await getMerchantStoreById(storeId, areaManagerId);
-  if (!store) return { ok: false as const, status: 404, error: "Store not found" };
-  return { ok: true as const, store, areaManagerId };
+    supabaseAuthId: access.user.id,
+    email: access.user.email ?? "",
+  });
+  return { ok: true as const, store: access.store, areaManagerId };
 }
 
 async function resolveParentIdForPath(
@@ -72,7 +75,7 @@ export async function POST(
     if (!Number.isFinite(storeId)) {
       return NextResponse.json({ success: false, error: "Invalid store id" }, { status: 400 });
     }
-    const access = await assertStoreAccess(storeId);
+    const access = await assertStoreAccess(request, storeId);
     if (!access.ok) {
       return NextResponse.json({ success: false, error: access.error }, { status: access.status });
     }

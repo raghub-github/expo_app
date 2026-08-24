@@ -6,11 +6,7 @@
  * merchant_store_documents so refresh restores verified state.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
-import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { authenticateMerchantStoreForId } from "@/lib/merchant-store-route-auth";
 import { getSql } from "@/lib/db/client";
 import { backendFetch } from "@/lib/notif-backend";
 import {
@@ -19,6 +15,8 @@ import {
   pickBankFetchedInfo,
   flattenBankVerifiedData,
   pickGstFetchedBusinessInfo,
+  pickPanFetchedInfo,
+  flattenPanVerifiedData,
   pickUpiFetchedInfo,
   type DocAutoVerificationPayload,
 } from "@/lib/merchant-doc-auto-verification";
@@ -44,45 +42,12 @@ type BackendOutcome = {
   detail?: string | null;
 };
 
-async function assertStoreAccess(storeIdNum: number) {
-  const supabase = await createServerSupabaseClient();
-  let {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
-  if (error || !user?.email) {
-    try {
-      await supabase.auth.getSession();
-    } catch {
-      /* ignore */
-    }
-    const retry = await supabase.auth.getUser();
-    user = retry.data.user;
-    error = retry.error;
+async function assertStoreAccess(storeIdNum: number, request?: NextRequest) {
+  const access = await authenticateMerchantStoreForId(request, storeIdNum);
+  if (!access.ok) {
+    return { ok: false as const, response: access.response };
   }
-  if (error || !user?.email) {
-    return { ok: false as const, status: 401, error: "Not authenticated" };
-  }
-  const allowed =
-    (await isSuperAdmin(user.id, user.email)) ||
-    (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT")) ||
-    (await hasDashboardAccessByAuth(user.id, user.email, "AREA_MANAGER"));
-  if (!allowed) {
-    return { ok: false as const, status: 403, error: "Dashboard access required" };
-  }
-  let areaManagerId: number | null = null;
-  if (!(await isSuperAdmin(user.id, user.email))) {
-    const systemUser = await getSystemUserByEmail(user.email);
-    if (systemUser) {
-      const am = await getAreaManagerByUserId(systemUser.id);
-      if (am) areaManagerId = am.id;
-    }
-  }
-  const store = await getMerchantStoreById(storeIdNum, areaManagerId);
-  if (!store) {
-    return { ok: false as const, status: 404, error: "Store not found" };
-  }
-  return { ok: true as const, storeIdNum, store };
+  return { ok: true as const, storeIdNum };
 }
 
 export async function POST(request: NextRequest) {
@@ -95,10 +60,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Invalid store id" }, { status: 400 });
     }
 
-    const access = await assertStoreAccess(storeInternalId);
-    if (!access.ok) {
-      return NextResponse.json({ success: false, error: access.error }, { status: access.status });
-    }
+    const access = await assertStoreAccess(storeInternalId, request);
+    if (!access.ok) return access.response;
 
     let path: string;
     let payload: Record<string, unknown>;
@@ -247,6 +210,9 @@ export async function POST(request: NextRequest) {
     const status = String(data.status ?? "").toLowerCase();
     if (status === "verified" || status === "manual_review") {
       let verifiedData = (data.verified_data ?? {}) as Record<string, unknown>;
+      if (docKind === "pan") {
+        verifiedData = flattenPanVerifiedData(verifiedData);
+      }
       const verifiedAt = new Date().toISOString();
       const pendingReview = status === "manual_review";
       const method = "CASHFREE_AUTO" as const;
@@ -289,9 +255,7 @@ export async function POST(request: NextRequest) {
         );
 
         if (docKind === "pan") {
-          const registered = String(
-            verifiedData.registered_name ?? verifiedData.name_provided ?? "",
-          ).trim();
+          const registered = pickPanFetchedInfo(verifiedData).registered_name ?? "";
           const meta = mergeAutoVerificationMetadata(existing?.pan_document_metadata, autoPayload);
           await sql`
             INSERT INTO public.merchant_store_documents (store_id)
@@ -305,7 +269,10 @@ export async function POST(request: NextRequest) {
               pan_rejection_reason = NULL,
               pan_verification_method = ${method},
               pan_document_number = COALESCE(${documentNumber}, pan_document_number),
-              pan_holder_name = COALESCE(${registered || null}, pan_holder_name),
+              pan_holder_name = CASE
+                WHEN ${registered || null} IS NOT NULL THEN ${registered || null}
+                ELSE pan_holder_name
+              END,
               pan_document_metadata = ${JSON.stringify(meta)}::jsonb,
               last_verification_id = ${verificationId},
               last_provider_reference = ${providerReference},

@@ -110,6 +110,23 @@ export async function POST(request: NextRequest) {
     });
   });
 
+  for (const name of ["gm_auth_email", "gm_portal_toggle_access"]) {
+    cookieStore.set(name, "", {
+      maxAge: 0,
+      expires: new Date(0),
+      path: "/",
+      httpOnly: true,
+      sameSite: "lax",
+    });
+    response.cookies.set(name, "", {
+      maxAge: 0,
+      expires: new Date(0),
+      path: "/",
+      httpOnly: true,
+      sameSite: "lax",
+    });
+  }
+
   console.log("[logout] All cookies cleared, session expired");
   return response;
 }

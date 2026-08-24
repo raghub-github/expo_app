@@ -50,6 +50,7 @@ export const DEFAULT_ITEM_FORM_DATA: ItemFormData = {
   item_tags: "",
   is_active: true,
   allergens: "",
+  expiry_date: "",
   category_id: null,
   customizations: [],
   variants: [],
@@ -163,6 +164,14 @@ export function mapMenuItemToEditForm(
     item_tags: itemTagsToFormString(source.item_tags),
     is_active: source.is_active !== false,
     allergens: allergensToFormString(source.allergens),
+    expiry_date:
+      typeof source.expiry_date === "string"
+        ? source.expiry_date.slice(0, 10)
+        : source.expiry_date instanceof Date
+          ? source.expiry_date.toISOString().slice(0, 10)
+          : source.expiry_date != null
+            ? String(source.expiry_date).slice(0, 10)
+            : "",
     category_id: parseNullableInt(source.category_id),
     customizations,
     variants,

@@ -109,6 +109,8 @@ export interface Step5StoreSetupProps {
   onDeleteGalleryImage?: (index: number, url: string) => void | Promise<void>;
   storeInternalId?: number | null;
   onMediaUploadingChange?: (uploading: boolean) => void;
+  /** When false, hide cuisine picker (store type flag from super-admin). */
+  showCuisineList?: boolean;
 }
 
 const MAX_GALLERY_IMAGES = 5;
@@ -264,6 +266,7 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
     onDeleteGalleryImage,
     storeInternalId,
     onMediaUploadingChange,
+    showCuisineList = true,
   } = props;
 
   const [storeSetup, setStoreSetup] = useState<StoreSetupData>(() => ({
@@ -898,6 +901,7 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                 </p>
               </div>
 
+              {showCuisineList ? (
               <div className="rounded-lg sm:rounded-xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-2 mb-2 sm:mb-3">
                   <div>
@@ -974,6 +978,7 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                   )}
                 </div>
               </div>
+              ) : null}
             </div>
 
             <div className="border border-slate-200 rounded-lg p-3 sm:p-4 bg-white shadow-sm">

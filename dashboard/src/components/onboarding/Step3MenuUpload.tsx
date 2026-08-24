@@ -168,7 +168,7 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
             <input
               ref={imageUploadInputRef}
               type="file"
-              accept="image/jpeg,image/jpg,image/png,image/webp"
+              accept="image/jpeg,image/jpg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
               multiple
               className="hidden"
               onChange={(e) => onMenuImageUpload(Array.from(e.target.files || []))}

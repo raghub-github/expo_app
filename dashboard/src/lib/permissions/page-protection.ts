@@ -11,14 +11,19 @@
  */
 
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import { resolveSupabaseUser } from "@/lib/auth/resolve-supabase-user";
+import {
+  peekDashboardIdentity,
+  rememberDashboardIdentity,
+  DASHBOARD_IDENTITY_EMAIL_COOKIE,
+} from "../auth/auth-identity-cache";
 import {
   isNetworkOrTransientError,
   isRefreshTokenAlreadyUsed,
   isTimeoutOrAbortError,
 } from "@/lib/auth/session-errors";
 import {
-  isSuperAdmin,
   getDashboardTypeFromPath,
   hasAccessPointAction,
   getUserPermissions,
@@ -44,7 +49,30 @@ function rethrowIfNextControlFlow(err: unknown): void {
 async function getAuthenticatedUser() {
   try {
     const { user, error } = await resolveSupabaseUser({ maxAttempts: 2 });
-    return { user, error };
+    if (!user?.id) return { user, error };
+    if (typeof user.email === "string" && user.email.includes("@")) {
+      return { user, error };
+    }
+    const cached = peekDashboardIdentity(user.id);
+    let email = cached?.email;
+    if (!email) {
+      try {
+        const store = await cookies();
+        const v = store.get(DASHBOARD_IDENTITY_EMAIL_COOKIE)?.value?.trim().toLowerCase();
+        if (v?.includes("@")) email = v;
+      } catch {
+        /* cookies() can throw outside a request */
+      }
+    }
+    if (!email) return { user, error };
+    if (!cached?.email) {
+      rememberDashboardIdentity(user.id, {
+        email,
+        systemUserNumericId: 0,
+        primaryRole: "",
+      });
+    }
+    return { user: { ...user, email }, error };
   } catch (err) {
     rethrowIfNextControlFlow(err);
     if (isTransientPageAuthFailure(err)) {
@@ -70,23 +98,21 @@ export async function requireSuperAdminAccess(
 ): Promise<void> {
   const { user, error } = await getAuthenticatedUser();
 
-  if (error || !user?.email) {
+  if (error || !user?.id) {
     if (error && isTransientPageAuthFailure(error)) {
       redirect(redirectTo);
     }
-    if (!user?.email) {
+    if (!user?.id) {
       redirect("/login");
     }
     redirect(redirectTo);
   }
 
-  let userIsSuperAdmin = await isSuperAdmin(user.id, user.email);
-  if (!userIsSuperAdmin) {
-    // One retry — permissions cache/DB can blip under Payments page load pressure.
-    await new Promise((r) => setTimeout(r, 250));
-    userIsSuperAdmin = await isSuperAdmin(user.id, user.email);
+  const userPerms = await getUserPermissions(user.id, user.email);
+  if (!userPerms) {
+    redirect(redirectTo);
   }
-  if (!userIsSuperAdmin) {
+  if (!userPerms.isSuperAdmin) {
     redirect(redirectTo);
   }
 }
@@ -98,7 +124,7 @@ export async function requireSuperAdminAccess(
 export async function getDefaultOrdersDashboardHref(): Promise<string | null> {
   const { user, error } = await getAuthenticatedUser();
 
-  if (error || !user?.email) {
+  if (error || !user?.id) {
     if (error && isTransientPageAuthFailure(error)) {
       return "/dashboard";
     }
@@ -137,11 +163,11 @@ export async function requireAnyDashboardAccess(
 ): Promise<void> {
   const { user, error } = await getAuthenticatedUser();
 
-  if (error || !user?.email) {
+  if (error || !user?.id) {
     if (error && isTransientPageAuthFailure(error)) {
       redirect("/dashboard");
     }
-    if (!user?.email) {
+    if (!user?.id) {
       redirect(redirectTo);
     }
     redirect("/dashboard");
@@ -150,7 +176,7 @@ export async function requireAnyDashboardAccess(
   const userPerms = await getUserPermissions(user.id, user.email);
   if (!userPerms) {
     console.warn(
-      `[requireAnyDashboardAccess] permissions unavailable for ${user.email}; soft-fail to /dashboard`
+      `[requireAnyDashboardAccess] permissions unavailable for ${user.email ?? user.id}; soft-fail to /dashboard`
     );
     redirect("/dashboard");
   }
@@ -178,11 +204,11 @@ export async function requireDashboardAccess(
 ): Promise<void> {
   const { user, error } = await getAuthenticatedUser();
 
-  if (error || !user?.email) {
+  if (error || !user?.id) {
     if (error && isTransientPageAuthFailure(error)) {
       redirect(redirectTo);
     }
-    if (!user?.email) {
+    if (!user?.id) {
       redirect("/login");
     }
     redirect(redirectTo);
@@ -193,7 +219,7 @@ export async function requireDashboardAccess(
     // Authenticated but permissions unavailable (DB timeout / pool pressure).
     // NEVER send to /login — that was the Payments auto-logout bug.
     console.warn(
-      `[requireDashboardAccess] permissions unavailable for ${user.email}; soft-fail to ${redirectTo}`
+      `[requireDashboardAccess] permissions unavailable for ${user.email ?? user.id}; soft-fail to ${redirectTo}`
     );
     redirect(redirectTo);
   }
@@ -247,11 +273,11 @@ export async function checkDashboardAccess(
 
     // Transient Auth blip after idle — do not treat as "no access" (that forces
     // requireSuperAdminAccess → redirect and looks like a crash on All).
-    if ((!user?.email) && error && isTransientPageAuthFailure(error)) {
+    if ((!user?.id) && error && isTransientPageAuthFailure(error)) {
       return true;
     }
 
-    if (error || !user?.email) {
+    if (error || !user?.id) {
       return false;
     }
 
@@ -288,7 +314,7 @@ export async function checkDashboardAccessPointAction(
 ): Promise<boolean> {
   try {
     const { user, error } = await getAuthenticatedUser();
-    if (error || !user?.email) {
+    if (error || !user?.id) {
       return false;
     }
 

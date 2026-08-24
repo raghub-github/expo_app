@@ -1,51 +1,46 @@
-import { NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getSystemUserByAuthId, getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
-import { isSuperAdmin } from "@/lib/permissions/engine";
+import { NextRequest, NextResponse } from "next/server";
+import { authFailureResponse, getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { getUserPermissions } from "@/lib/permissions/engine";
 
-export async function requireSuperAdminApi() {
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-
-  if (userError || !user) {
-    if (userError && isInvalidRefreshToken(userError)) {
-      await signOutIfSessionDead(supabase, userError);
-      return {
-        ok: false as const,
-        response: NextResponse.json(
-          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-          { status: 401 }
-        ),
-      };
-    }
+export async function requireSuperAdminApi(request?: NextRequest) {
+  const auth = await getAuthenticatedApiUser(request);
+  if (!auth.ok) {
+    return { ok: false as const, response: authFailureResponse(auth) };
+  }
+  const { user } = auth;
+  if (!user?.id) {
     return {
       ok: false as const,
-      response: NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 }),
+      response: NextResponse.json(
+        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
+        { status: 401 }
+      ),
     };
   }
 
-  const systemUser =
-    (user.id ? await getSystemUserByAuthId(user.id) : null) ??
-    (user.email ? await getSystemUserByEmail(user.email) : null);
-
-  if (!systemUser) {
+  const perms = await getUserPermissions(user.id, user.email ?? "");
+  if (!perms) {
     return {
       ok: false as const,
-      response: NextResponse.json({ success: false, error: "User not found" }, { status: 404 }),
+      response: NextResponse.json(
+        {
+          success: false,
+          error: "Service temporarily unavailable",
+          code: "SERVICE_UNAVAILABLE",
+        },
+        { status: 503 }
+      ),
+    };
+  }
+  if (!perms.isSuperAdmin) {
+    return {
+      ok: false as const,
+      response: NextResponse.json(
+        { success: false, error: "Super admin only", code: "FORBIDDEN" },
+        { status: 403 }
+      ),
     };
   }
 
-  const ok = await isSuperAdmin(user.id, user.email ?? systemUser.email);
-  if (!ok) {
-    return {
-      ok: false as const,
-      response: NextResponse.json({ success: false, error: "Super admin only" }, { status: 403 }),
-    };
-  }
-
-  return { ok: true as const, systemUserId: systemUser.id };
+  return { ok: true as const, systemUserId: perms.systemUserId };
 }

@@ -28,6 +28,11 @@ import {
   getBootstrapMemoryTtlMs,
   getBootstrapRedisTtlSeconds,
 } from "@/lib/auth/bootstrap-cache";
+import {
+  rememberDashboardIdentity,
+  DASHBOARD_IDENTITY_EMAIL_COOKIE,
+  dashboardIdentityEmailCookieOptions,
+} from "@/lib/auth/auth-identity-cache";
 
 export const runtime = "nodejs";
 
@@ -117,7 +122,7 @@ export async function GET(request: NextRequest) {
           status: "pending_system_user" as const,
         },
       };
-      await setCachedBootstrap(user.id, unlinkedBody);
+      // Do not cache a miss — cookie JWT often omits email on the first request.
       const response = NextResponse.json(unlinkedBody);
       response.cookies.set("gm_portal_toggle_access", "0", {
         path: "/",
@@ -214,6 +219,18 @@ export async function GET(request: NextRequest) {
     };
     await setCachedBootstrap(user.id, body);
     const response = NextResponse.json(body);
+    if (mapped.email) {
+      rememberDashboardIdentity(user.id, {
+        email: mapped.email,
+        systemUserNumericId: mapped.id,
+        primaryRole: mapped.primary_role,
+      });
+      response.cookies.set(
+        DASHBOARD_IDENTITY_EMAIL_COOKIE,
+        mapped.email.trim().toLowerCase(),
+        dashboardIdentityEmailCookieOptions()
+      );
+    }
     response.cookies.set("gm_portal_toggle_access", userPerms?.canTogglePortal ? "1" : "0", {
       path: "/",
       httpOnly: true,

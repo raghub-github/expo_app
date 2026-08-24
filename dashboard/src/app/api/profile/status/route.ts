@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { getUserAvatarUrl } from "@/lib/user-avatar";
 import {
@@ -19,16 +19,18 @@ function isLiveStatus(v: unknown): v is UserLiveStatus {
   return typeof v === "string" && (LIVE as string[]).includes(v);
 }
 
-export async function GET(_req: NextRequest) {
+export async function GET(req: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user || !user.email) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(req);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
+    }
+    const { user } = auth;
+    if (!user.email) {
+      return NextResponse.json(
+        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
+        { status: 401 }
+      );
     }
 
     const systemUser = await getSystemUserByEmail(user.email);
@@ -88,14 +90,16 @@ export async function GET(_req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user || !user.email) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(req);
+    if (!auth.ok) {
+      return authFailureResponse(auth);
+    }
+    const { user } = auth;
+    if (!user.email) {
+      return NextResponse.json(
+        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
+        { status: 401 }
+      );
     }
 
     const systemUser = await getSystemUserByEmail(user.email);

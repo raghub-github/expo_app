@@ -95,12 +95,12 @@ export function LoginPageShell({
             <div
               className={`mx-auto w-full ${
                 isWide
-                  ? 'flex h-full flex-col items-center justify-center'
+                  ? 'flex h-full min-h-0 flex-col'
                   : `flex min-h-full flex-col justify-center ${isSignup ? 'py-4 sm:py-5' : 'py-6 sm:py-8'}`
               } ${contentMaxWidthClass}`}
             >
               {isWide ? (
-                children
+                <div className="flex h-full min-h-0 w-full flex-col">{children}</div>
               ) : (
                 <div
                   className={`w-full rounded-2xl border-2 border-slate-200 bg-white shadow-sm ${

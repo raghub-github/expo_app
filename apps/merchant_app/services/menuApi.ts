@@ -75,6 +75,7 @@ export type ListItemsResponse = { items: MenuItemRow[]; total: number };
 /** Store profile for item form defaults (cuisines, prep time, packaging, delivery). */
 export type StoreProfile = {
   cuisine_types: string[] | null;
+  store_type: string | null;
   avg_preparation_time_minutes: number | null;
   packaging_charge_amount: number | null;
   delivery_charge_per_km: number | null;
@@ -94,6 +95,7 @@ export async function fetchStoreProfile(
     if (res.status === 404) {
       return {
         cuisine_types: null,
+        store_type: null,
         avg_preparation_time_minutes: null,
         packaging_charge_amount: null,
         delivery_charge_per_km: null,
@@ -104,6 +106,7 @@ export async function fetchStoreProfile(
   }
   const data = (await res.json()) as {
     cuisine_types?: string[] | null;
+    store_type?: string | null;
     avg_preparation_time_minutes?: number | null;
     packaging_charge_amount?: number | null;
     delivery_charge_per_km?: number | null;
@@ -111,6 +114,7 @@ export async function fetchStoreProfile(
   };
   return {
     cuisine_types: data.cuisine_types ?? null,
+    store_type: data.store_type ?? null,
     avg_preparation_time_minutes: data.avg_preparation_time_minutes ?? null,
     packaging_charge_amount: data.packaging_charge_amount ?? null,
     delivery_charge_per_km: data.delivery_charge_per_km ?? null,
@@ -127,6 +131,11 @@ export type CategoryUiConfig = {
   };
   /** Plan allows linking more cuisines from cuisine_master (not free-text creation). */
   allow_create_custom_cuisine: boolean;
+  item_form?: {
+    variant: "grocery" | "standard";
+    show_expiry: boolean;
+    show_food_attrs: boolean;
+  };
 };
 
 export type MenuCuisineOption = {
@@ -854,6 +863,11 @@ export type MenuItemPayload = {
   fibre_unit?: string | null;
   allergens?: string[] | null;
   item_tags?: string[] | null;
+  available_quantity?: number | null;
+  low_stock_threshold?: number | null;
+  /** YYYY-MM-DD — grocery product expiry */
+  expiry_date?: string | null;
+  in_stock?: boolean;
 };
 
 export async function createMenuItem(

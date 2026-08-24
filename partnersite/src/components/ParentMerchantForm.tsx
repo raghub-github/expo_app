@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { parentMerchantSchema, ParentMerchantInput } from '@/lib/validation/parentMerchantSchema';
 import { MerchantReferralCodeField, type MerchantReferralCodeFieldHandle } from '@/components/MerchantReferralCodeField';
+import { useOnboardingStoreTypes } from '@/hooks/useOnboardingStoreTypes';
 import {
   peekPendingMerchantReferral,
   pickMerchantReferralCode,
@@ -21,6 +22,7 @@ function getParentId() {
 }
 
 export default function ParentMerchantForm({ verifiedPhone, onSuccess }: { verifiedPhone?: string, onSuccess: (data: any) => void }) {
+  const { options: businessCategoryOptions } = useOnboardingStoreTypes("OTHER");
   const parentId = getParentId();
   const [step, setStep] = useState(() => {
     if (typeof window !== 'undefined' && parentId) {
@@ -336,14 +338,15 @@ export default function ParentMerchantForm({ verifiedPhone, onSuccess }: { verif
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white appearance-none text-sm"
                 >
                   <option value="" className="text-gray-400">Select Category</option>
-                  <option value="Food">Food</option>
-                  <option value="Pharma">Pharma</option>
-                  <option value="Grocery">Grocery</option>
-                  <option value="Stationary">Stationary</option>
-                  <option value="Bakery">Bakery</option>
-                  <option value="Electronics">Electronics</option>
-                  <option value="Fashion">Fashion</option>
-                  <option value="Home Decor">Home Decor</option>
+                  {businessCategoryOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                  {form.business_category &&
+                  !businessCategoryOptions.some((o) => o.value === form.business_category) ? (
+                    <option value={form.business_category}>{form.business_category}</option>
+                  ) : null}
                 </select>
               </div>
               

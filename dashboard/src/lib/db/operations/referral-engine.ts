@@ -60,6 +60,22 @@ export async function getReferralSettingsAdmin() {
   return row ? serialize(row) : null;
 }
 
+export function publicReferralFlagFromSettings(
+  settings: Record<string, unknown> | null,
+  userType: "customer" | "rider" | "merchant"
+): { referralEnabled: boolean; configVersion: number } {
+  if (!settings) return { referralEnabled: false, configVersion: 0 };
+  const masterOn = settings.enabled === true;
+  const configVersion = num(settings.config_version, 0);
+  const audienceOn =
+    userType === "customer"
+      ? settings.customer_referral_enabled === true
+      : userType === "rider"
+        ? settings.rider_referral_enabled === true
+        : settings.merchant_referral_enabled === true;
+  return { referralEnabled: masterOn && audienceOn, configVersion };
+}
+
 export async function listReferralRewardRulesAdmin(userType?: "customer" | "rider" | "merchant") {
   const sql = getSql();
   if (userType) {

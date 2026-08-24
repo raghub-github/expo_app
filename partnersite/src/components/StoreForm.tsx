@@ -1,6 +1,8 @@
 "use client";
 import React from 'react';
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { useOnboardingStoreTypes } from '@/hooks/useOnboardingStoreTypes';
+import { SearchableSelect } from '@/components/ui/SearchableSelect';
 
 // Step 1 & 2: Basic Info & Location
 interface StoreFormState {
@@ -90,6 +92,7 @@ interface DocumentData {
 export default function StoreForm({ parentId, onSuccess }: { parentId: number; onSuccess: (data: any) => void }) {
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState<StoreFormState>({ ...initialForm });
+  const { options: storeTypeOptions } = useOnboardingStoreTypes("OTHERS");
   const [storeConfig, setStoreConfig] = useState<StoreConfig>({
     banner: null,
     banner_preview: '',
@@ -527,21 +530,24 @@ export default function StoreForm({ parentId, onSuccess }: { parentId: number; o
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">Store Type *</label>
-              <select 
-                name="store_type" 
-                value={formData.store_type} 
-                onChange={handleInputChange} 
-                className="w-full px-4 py-3 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" 
-                required
-              >
-                <option value="RESTAURANT">Restaurant</option>
-                <option value="CAFE">Cafe</option>
-                <option value="BAKERY">Bakery</option>
-                <option value="CLOUD_KITCHEN">Cloud Kitchen</option>
-                <option value="GROCERY">Grocery</option>
-                <option value="PHARMA">Pharma</option>
-                <option value="STATIONERY">Stationery</option>
-              </select>
+              <SearchableSelect
+                value={formData.store_type}
+                placeholder="Select store type"
+                searchPlaceholder="Search store type"
+                triggerClassName="w-full px-4 py-3 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                options={
+                  formData.store_type &&
+                  !storeTypeOptions.some((o) => o.value === formData.store_type)
+                    ? [...storeTypeOptions, { value: formData.store_type, label: formData.store_type }]
+                    : storeTypeOptions
+                }
+                onChange={(value) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    store_type: value,
+                  }))
+                }
+              />
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">Store Email *</label>

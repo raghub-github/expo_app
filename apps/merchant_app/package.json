@@ -15,7 +15,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "generate:icons": "node ./scripts/generate-app-icons.mjs",
+    "generate:icons": "node ./scripts/generate-launcher-icon.mjs && node ./scripts/preview-launcher-masks.mjs && node ./scripts/generate-app-icons.mjs",
     "build": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

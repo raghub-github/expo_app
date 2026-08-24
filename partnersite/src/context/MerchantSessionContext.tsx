@@ -65,8 +65,10 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
   const inFlightRef = useRef<Promise<void> | null>(null);
   const lastFetchAtRef = useRef(0);
   const lastUnavailableAtRef = useRef(0);
+  const userRef = useRef<MerchantSessionUser | null>(null);
   const FOCUS_MIN_INTERVAL_MS = 30_000;
   const UNAVAILABLE_BACKOFF_MS = 20_000;
+  userRef.current = user;
 
   const fetchSession = useCallback(async (options?: { background?: boolean; force?: boolean }) => {
     const background = options?.background === true;
@@ -136,6 +138,18 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
             timeRemainingFormatted: sessionData.session?.timeRemainingFormatted,
           });
         } else {
+          const code = String(sessionData.code || "").toUpperCase();
+          const hasSbCookie =
+            typeof document !== "undefined" && /(?:^|;\s*)sb-/.test(document.cookie);
+          // Compile / cookie-miss probes — do not wipe a live session.
+          if (
+            code === "SESSION_REQUIRED" ||
+            code === "UNAUTHENTICATED" ||
+            (sessionRes.status === 401 && !FATAL_SESSION_CODES.has(code))
+          ) {
+            lastUnavailableAtRef.current = Date.now();
+            if (userRef.current || hasSbCookie) return;
+          }
           setUser(null);
           setParent(null);
           setSessionStatus({

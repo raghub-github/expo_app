@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
+import { validateMerchantFromSessionPreferParent } from "@/lib/auth/validate-merchant";
 import { isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { hasActiveSessionForDevice, replaceSessionForDevice, generateDeviceId } from "@/lib/auth/merchant-session-db";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
@@ -45,11 +45,15 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const validation = await validateMerchantFromSession({
-      id: user.id,
-      email: user.email ?? null,
-      phone: user.phone ?? null,
-    });
+    const preferredParent = request.nextUrl.searchParams.get("parent_id");
+    const validation = await validateMerchantFromSessionPreferParent(
+      {
+        id: user.id,
+        email: user.email ?? null,
+        phone: user.phone ?? null,
+      },
+      preferredParent
+    );
 
     if (!validation.isValid || validation.merchantParentId == null) {
       console.warn("[resolve-session] Merchant validation failed (403):", validation.error, "user id:", user.id);
