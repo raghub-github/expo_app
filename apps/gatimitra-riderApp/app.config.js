@@ -203,6 +203,9 @@ module.exports = {
           },
         },
       ],
+      // 16 KB page-size compliance: force 16 KB-aligned ML Kit face-detection (16.1.7)
+      // so expo-face-detector's prebuilt .so no longer fails Play's 16 KB check.
+      "./plugins/withMlKitFaceDetection16kb",
       // MUST be last: strips broad/sensitive permissions (RECORD_AUDIO,
       // READ/WRITE_EXTERNAL_STORAGE, READ_MEDIA_*) that libraries inject but no
       // Rider feature needs, so the AAB doesn't trigger Play justification prompts.
