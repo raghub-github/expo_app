@@ -713,7 +713,7 @@ export default function AddEditItemScreen() {
     setSelectedAllergens(itemData.allergens ?? []);
     setExpiryDate(
       typeof (itemData as { expiry_date?: string | null }).expiry_date === "string"
-        ? String((itemData as { expiry_date: string }).expiry_date).slice(0, 10)
+        ? String((itemData as { expiry_date?: string | null }).expiry_date).slice(0, 10)
         : ""
     );
     setSelectedTags(itemData.item_tags ?? []);
