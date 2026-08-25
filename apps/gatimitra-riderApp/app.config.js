@@ -16,6 +16,9 @@ const APP_ICON_NATIVE = "./assets/icon.png";
 const APP_ADAPTIVE_FOREGROUND = "./assets/adaptive-icon.png";
 const APP_ICON_BG = "#C4E8D1";
 const SPLASH_BG = "#C4E8D1";
+// Native splash icon (Android 12 splash API + iOS). Required so expo-splash-screen
+// generates the splashscreen_logo drawable; the JS wordmark splash takes over after.
+const SPLASH_LOGO = "./assets/images/onlylogo.png";
 
 const googleServicesFile = path.resolve(__dirname, "google-services.json");
 const hasGoogleServices = fs.existsSync(googleServicesFile);
@@ -130,8 +133,14 @@ module.exports = {
           isIosBackgroundLocationEnabled: true,
         },
       ],
-      // Mapbox — runtime token via resolveMapboxPublicToken(); download token for native builds
-      "@rnmapbox/maps",
+      // Mapbox — runtime token via resolveMapboxPublicToken(); download token for native builds.
+      // Resolve via file path — Expo's plugin resolver cannot load `@rnmapbox/maps`
+      // by package name (its exports map hides app.plugin). Same fix as customer/merchant.
+      ...(fs.existsSync(path.resolve(__dirname, "node_modules/@rnmapbox/maps/app.plugin.js"))
+        ? [path.resolve(__dirname, "node_modules/@rnmapbox/maps/app.plugin.js")]
+        : fs.existsSync(path.resolve(__dirname, "../../node_modules/@rnmapbox/maps/app.plugin.js"))
+          ? [path.resolve(__dirname, "../../node_modules/@rnmapbox/maps/app.plugin.js")]
+          : []),
       // expo-media-library removed — the app never reads/saves the device media
       // library. Image selection uses expo-image-picker's system Photo Picker,
       // so no broad media permission is needed (Play-Store compliant).
@@ -177,12 +186,19 @@ module.exports = {
       [
         "expo-splash-screen",
         {
+          // An `image` is REQUIRED: with only resizeMode/backgroundColor, the plugin
+          // still emits a values.xml reference to @drawable/splashscreen_logo but never
+          // generates the drawable → `resource drawable/splashscreen_logo not found`
+          // at :app:processReleaseResources. The JS wordmark splash takes over at runtime.
+          image: SPLASH_LOGO,
           resizeMode: "contain",
           backgroundColor: SPLASH_BG,
           android: {
+            image: SPLASH_LOGO,
             backgroundColor: SPLASH_BG,
           },
           ios: {
+            image: SPLASH_LOGO,
             backgroundColor: SPLASH_BG,
           },
         },
@@ -205,7 +221,7 @@ module.exports = {
       /** LAN dev: backend /otp/request + MSG91 (same as customer/merchant). Set in .env.local */
       EXPO_PUBLIC_PHONE_OTP_USE_BACKEND: process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND || null,
       eas: {
-        projectId: "48aaf6a2-8617-458c-9e5a-cfa9418fbde3"
+        projectId: "0e25d2e5-3a5a-4d35-bf85-7e4173005824"
       },
       mapboxPublicToken:
         process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ||
@@ -227,6 +243,6 @@ module.exports = {
         process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ||
         null,
     },
-    owner: "raghubhunia"
+    owner: "raghubhunia53s-team"
   }
 };
