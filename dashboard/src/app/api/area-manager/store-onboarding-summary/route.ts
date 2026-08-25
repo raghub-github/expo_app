@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { requireAreaManagerApiAuth, requireMerchantManager } from "@/lib/area-manager/auth";
 import { getMerchantStoreByIdOnly } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
@@ -8,12 +7,7 @@ export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const getAuthUser = async () => {
-      const { data } = await supabase.auth.getUser();
-      return data?.user ?? null;
-    };
-    const authResult = await requireAreaManagerApiAuth(getAuthUser);
+    const authResult = await requireAreaManagerApiAuth(undefined, req);
     if (authResult.error) return authResult.error;
     const err = requireMerchantManager(authResult.resolved);
     if (err) return err;

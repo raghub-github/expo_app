@@ -368,6 +368,10 @@ export async function POST(req: NextRequest) {
       in_stock: body.in_stock ?? true,
       available_quantity: body.available_quantity ?? null,
       low_stock_threshold: body.low_stock_threshold ?? null,
+      expiry_date: (() => {
+        const raw = body.expiry_date == null ? null : String(body.expiry_date).trim().slice(0, 10)
+        return raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null
+      })(),
       has_customizations: hasCustomizations,
       has_addons: hasAddons,
       has_variants: body.has_variants ?? false,
@@ -379,6 +383,8 @@ export async function POST(req: NextRequest) {
           ? null
           : Number(body.packaging_charges),
       serves: body.serves ?? 1,
+      item_size_value: parseOptNum(body.item_size_value),
+      item_size_unit: body.item_size_unit ?? null,
       is_active: body.is_active ?? true,
       allergens: allergens.length ? allergens : null,
       item_tags,
@@ -507,6 +513,7 @@ export async function PATCH(req: NextRequest) {
       body.tax_percentage === undefined &&
       body.available_quantity === undefined &&
       body.low_stock_threshold === undefined &&
+      body.expiry_date === undefined &&
       body.has_customizations === undefined &&
       body.has_addons === undefined &&
       body.has_variants === undefined &&
@@ -552,12 +559,23 @@ export async function PATCH(req: NextRequest) {
       if (body.selling_price != null) proposed.selling_price = Number(body.selling_price)
       if (body.discount_percentage !== undefined) proposed.discount_percentage = body.discount_percentage ?? 0
       if (body.tax_percentage !== undefined) proposed.tax_percentage = body.tax_percentage ?? 0
+      if (body.available_quantity !== undefined) proposed.available_quantity = body.available_quantity ?? null
+      if (body.low_stock_threshold !== undefined) proposed.low_stock_threshold = body.low_stock_threshold ?? null
+      if (body.expiry_date !== undefined) {
+        const raw = body.expiry_date == null ? null : String(body.expiry_date).trim().slice(0, 10)
+        proposed.expiry_date = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null
+      }
       if (body.preparation_time_minutes !== undefined) proposed.preparation_time_minutes = body.preparation_time_minutes ?? 15
       if (body.packaging_charges !== undefined) {
         proposed.packaging_charges =
           body.packaging_charges === null ? null : Number(body.packaging_charges)
       }
       if (body.serves !== undefined) proposed.serves = body.serves ?? 1
+      if (body.item_size_value !== undefined) {
+        const n = Number(body.item_size_value)
+        proposed.item_size_value = Number.isFinite(n) && n >= 0 ? n : null
+      }
+      if (body.item_size_unit !== undefined) proposed.item_size_unit = body.item_size_unit ?? null
       if (body.is_active !== undefined) proposed.is_active = body.is_active ?? true
       if (body.allergens !== undefined) {
         const allergens = Array.isArray(body.allergens) ? body.allergens : (typeof body.allergens === 'string' ? body.allergens.split(',').map((a: string) => a.trim()).filter(Boolean) : [])
@@ -694,6 +712,7 @@ export async function PATCH(req: NextRequest) {
       body.tax_percentage !== undefined ||
       body.available_quantity !== undefined ||
       body.low_stock_threshold !== undefined ||
+      body.expiry_date !== undefined ||
       body.has_customizations !== undefined ||
       body.has_addons !== undefined ||
       body.has_variants !== undefined ||
@@ -702,6 +721,8 @@ export async function PATCH(req: NextRequest) {
       body.preparation_time_minutes !== undefined ||
       body.packaging_charges !== undefined ||
       body.serves !== undefined ||
+      body.item_size_value !== undefined ||
+      body.item_size_unit !== undefined ||
       body.is_active !== undefined ||
       body.allergens !== undefined ||
       body.item_image_url !== undefined ||
@@ -738,6 +759,11 @@ export async function PATCH(req: NextRequest) {
 
       // Only update fields that are explicitly sent to avoid wiping existing data (e.g. description, image_url)
       const updatePayload: Record<string, unknown> = { updated_at: new Date().toISOString() }
+      const patchOptNum = (v: unknown): number | null => {
+        if (v === null || v === '') return null
+        const n = Number(v)
+        return Number.isFinite(n) && n >= 0 ? n : null
+      }
       if (body.category_id !== undefined) updatePayload.category_id = body.category_id ?? null
       if (body.item_name !== undefined) updatePayload.item_name = body.item_name
       if (body.item_description !== undefined) updatePayload.item_description = body.item_description ?? null
@@ -754,6 +780,10 @@ export async function PATCH(req: NextRequest) {
       }
       if (body.available_quantity !== undefined) updatePayload.available_quantity = body.available_quantity ?? null
       if (body.low_stock_threshold !== undefined) updatePayload.low_stock_threshold = body.low_stock_threshold ?? null
+      if (body.expiry_date !== undefined) {
+        const raw = body.expiry_date == null ? null : String(body.expiry_date).trim().slice(0, 10)
+        updatePayload.expiry_date = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null
+      }
       if (body.has_customizations !== undefined) updatePayload.has_customizations = body.has_customizations ?? false
       if (body.has_addons !== undefined) updatePayload.has_addons = body.has_addons ?? false
       if (body.has_variants !== undefined) updatePayload.has_variants = body.has_variants ?? false
@@ -765,6 +795,8 @@ export async function PATCH(req: NextRequest) {
           body.packaging_charges === null ? null : Number(body.packaging_charges)
       }
       if (body.serves !== undefined) updatePayload.serves = body.serves ?? 1
+      if (body.item_size_value !== undefined) updatePayload.item_size_value = patchOptNum(body.item_size_value)
+      if (body.item_size_unit !== undefined) updatePayload.item_size_unit = body.item_size_unit ?? null
       if (body.is_active !== undefined) updatePayload.is_active = body.is_active ?? true
       if (body.allergens !== undefined) {
         const allergens = Array.isArray(body.allergens) ? body.allergens : (typeof body.allergens === 'string' ? body.allergens.split(',').map((a: string) => a.trim()).filter(Boolean) : [])
@@ -777,11 +809,6 @@ export async function PATCH(req: NextRequest) {
             ? body.item_tags.split(',').map((t: string) => t.trim()).filter(Boolean)
             : []
         updatePayload.item_tags = tags.length ? tags : null
-      }
-      const patchOptNum = (v: unknown): number | null => {
-        if (v === null || v === '') return null
-        const n = Number(v)
-        return Number.isFinite(n) && n >= 0 ? n : null
       }
       if (body.available_for_delivery !== undefined) {
         updatePayload.available_for_delivery = Boolean(body.available_for_delivery)

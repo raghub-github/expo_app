@@ -68,14 +68,15 @@ export const authCacheConfig: CacheConfig = {
 };
 
 /**
- * Permissions cache config — short stale + focus refetch so superadmin access
- * grants appear quickly on the target user's dashboard.
+ * Permissions cache config — align with STATIC so page switches do not
+ * re-hit /api/auth/permissions (+ parallel bootstrap/dashboard-access).
+ * Soft revalidate on focus is handled (throttled) in useBootstrapGate.
  */
 export const permissionsCacheConfig: CacheConfig = {
-  staleTime: 15 * 1000, // 15 seconds
+  staleTime: 10 * 60 * 1000, // 10 minutes – matches bootstrap window
   gcTime: 24 * 60 * 60 * 1000, // 24 hours
-  refetchOnMount: true,
-  refetchOnWindowFocus: true,
+  refetchOnMount: false,
+  refetchOnWindowFocus: false,
   persist: true,
   persistMaxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
 };

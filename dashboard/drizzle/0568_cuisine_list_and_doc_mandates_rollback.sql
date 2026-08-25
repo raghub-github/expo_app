@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS merchant_store_type_onboarding_flags;

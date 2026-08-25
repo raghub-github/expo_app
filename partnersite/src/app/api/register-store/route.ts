@@ -11,6 +11,7 @@ import { upsertStoreCuisines } from '@/lib/cuisines';
 import { parseMenuReferenceImageUrls, stableEntryIdForUrl } from '@/lib/menu-reference-image-bundle';
 import { markMerchantResubmittedForRejectedSteps } from '@/lib/onboarding/verification-resubmission';
 import { maskAadhaarNumber } from '@/lib/mask-aadhaar';
+import { applyMerchantReferralOnParentCreate } from '@/lib/applyMerchantReferralOnParent';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -1146,6 +1147,21 @@ export async function POST(req: NextRequest) {
     } catch (progressError) {
       console.warn('[register-store] Failed to mark progress as completed:', progressError);
       // Don't fail the entire registration if this update fails
+    }
+
+    try {
+      const referral = await applyMerchantReferralOnParentCreate({
+        parentPk: parentId,
+        source: 'manual',
+        referredPhone: (storeData as { store_phones?: string[] } | null)?.store_phones?.[0] ?? null,
+      });
+      if (!referral.ok) {
+        console.warn('[register-store] parent referral code not allocated', referral);
+      } else {
+        console.log('[register-store] parent referral code ready', parentMerchantId, referral.referralCode ?? 'ok');
+      }
+    } catch (referralErr) {
+      console.warn('[register-store] parent referral code ensure failed', referralErr);
     }
 
     // 7. Send welcome email in-request so it reliably executes on serverless runtimes

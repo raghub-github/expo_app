@@ -28,6 +28,8 @@ import {
   saveParentRegisterDraft,
 } from "@/lib/auth/register-draft-storage";
 import { MerchantReferralCodeField, type MerchantReferralCodeFieldHandle } from "@/components/MerchantReferralCodeField";
+import { useOnboardingStoreTypes } from "@/hooks/useOnboardingStoreTypes";
+import { isOtherStoreType } from "@/lib/onboarding-store-types";
 import {
   parseMerchantReferralFromPath,
   peekPendingMerchantReferral,
@@ -35,6 +37,7 @@ import {
   storePendingMerchantReferral,
   clearPendingMerchantReferral,
 } from "@/lib/pendingMerchantReferral";
+import { persistPartnerSession } from "@/lib/auth/persist-partner-session";
 
 type Step = 1 | 2 | 3;
 
@@ -75,6 +78,18 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0); // Cooldown in seconds (email)
   const [mobileResendCooldown, setMobileResendCooldown] = useState(0); // Cooldown for Resend SMS
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const u = new URL(window.location.href);
+    if (u.searchParams.get("reason") !== "parent_removed") return;
+    toast.error("That merchant account is no longer available. Register again to continue.", {
+      duration: PARTNER_AUTH_TOAST_MS,
+    });
+    u.searchParams.delete("reason");
+    const qs = u.searchParams.toString();
+    window.history.replaceState({}, "", `${u.pathname}${qs ? `?${qs}` : ""}`);
+  }, []);
 
   // Cooldown timer effect (email)
   useEffect(() => {
@@ -146,11 +161,13 @@ export default function RegisterPage() {
 
   const emailVerifyInFlightRef = useRef(false);
   const lastEmailOtpRef = useRef("");
+  const sessionTokensRef = useRef<{ access_token: string; refresh_token: string } | null>(null);
   const mobileVerifyInFlightRef = useRef(false);
   const lastMobileOtpRef = useRef("");
   const restoreAttemptedRef = useRef(false);
   const referralHydratedRef = useRef(false);
   const referralFieldRef = useRef<MerchantReferralCodeFieldHandle>(null);
+  const { options: businessCategoryOptions } = useOnboardingStoreTypes("OTHER");
 
   // Capture deep-link / pending referral before any auth step so refresh and login keep it.
   useEffect(() => {
@@ -230,6 +247,12 @@ export default function RegisterPage() {
         const sessionPhone = session?.user?.phone
           ? normalizePhone(session.user.phone)
           : "";
+        if (session?.access_token && session.refresh_token) {
+          sessionTokensRef.current = {
+            access_token: session.access_token,
+            refresh_token: session.refresh_token,
+          };
+        }
 
         if (!sessionUserId && !draft?.emailUserId) return;
 
@@ -240,7 +263,10 @@ export default function RegisterPage() {
           );
           const checkData = await checkRes.json();
           if (cancelled) return;
-          if (checkData.exists) return;
+          if (checkData.exists) {
+            sessionTokensRef.current = null;
+            return;
+          }
         }
 
         const uid = draft?.emailUserId || sessionUserId;
@@ -263,9 +289,15 @@ export default function RegisterPage() {
           if (draft.merchant_type) setMerchantType(draft.merchant_type);
           if (draft.brand_name) setBrandName(draft.brand_name);
           if (draft.business_category) {
-            const known = ["RESTAURANT", "CLOUD_KITCHEN", "CAFE", "BAKERY", "OTHER"];
-            if (known.includes(draft.business_category)) {
-              setBusinessCategory(draft.business_category);
+            const code = draft.business_category.trim();
+            const upper = code.toUpperCase();
+            if (isOtherStoreType(upper)) {
+              setBusinessCategory("OTHER");
+              if (draft.business_category_other) {
+                setBusinessCategoryOther(draft.business_category_other);
+              }
+            } else if (/^[A-Z][A-Z0-9_]*$/.test(upper)) {
+              setBusinessCategory(upper);
               if (draft.business_category_other) {
                 setBusinessCategoryOther(draft.business_category_other);
               }
@@ -410,10 +442,15 @@ export default function RegisterPage() {
           return;
         }
         const uid = result.data?.session?.user?.id;
+        const access_token = result.data?.session?.access_token;
+        const refresh_token = result.data?.session?.refresh_token;
         if (!uid) {
           lastEmailOtpRef.current = "";
           setError("Verification succeeded but session was not created. Please try again.");
           return;
+        }
+        if (access_token && refresh_token) {
+          sessionTokensRef.current = { access_token, refresh_token };
         }
         setEmailUserId(uid);
         setVerifiedEmail(em);
@@ -553,6 +590,11 @@ export default function RegisterPage() {
           setError(typeof result.error === "string" ? result.error : "Invalid or expired OTP.");
           return;
         }
+        const access_token = result.data?.session?.access_token;
+        const refresh_token = result.data?.session?.refresh_token;
+        if (access_token && refresh_token) {
+          sessionTokensRef.current = { access_token, refresh_token };
+        }
         setStep(3);
       } catch {
         lastMobileOtpRef.current = "";
@@ -600,6 +642,10 @@ export default function RegisterPage() {
     const altPhone = alternate_phone.trim();
     if (altPhone && !/^\+?[0-9]{10,15}$/.test(altPhone.replace(/\s/g, ""))) {
       setError("Alternate phone must be 10–15 digits (optional + prefix).");
+      return;
+    }
+    if (!business_category.trim()) {
+      setError("Business category is required.");
       return;
     }
     if (business_category === "OTHER" && !business_category_other.trim()) {
@@ -662,18 +708,32 @@ export default function RegisterPage() {
       // Never carry another account's selected store into this session
       clearPartnerStoreSelection();
       clearParentRegisterDraft();
-      const parentId =
-        data?.data?.parent_id ??
-        data?.parent_id ??
-        data?.data?.parent_merchant_id ??
-        data?.parent_merchant_id;
+      const parentPk = data?.data?.parent_id ?? data?.parent_id;
+      const parentPublicId = data?.data?.parent_merchant_id ?? data?.parent_merchant_id;
+      const parentId = parentPk ?? parentPublicId;
       toast.success("Congratulations - Your Parent Account created Successfully", {
         duration: 4000,
       });
       if (parentId != null && String(parentId).trim()) {
-        // Brief pause so toast is visible before hard navigation
+        const tokens = sessionTokensRef.current;
+        const sessionOk = await persistPartnerSession({
+          parentId: parentPk ?? parentId,
+          loginMethod: "register",
+          accessToken: tokens?.access_token,
+          refreshToken: tokens?.refresh_token,
+        });
         await new Promise((r) => setTimeout(r, 600));
-        window.location.href = "/partners/all-stores?picker=1";
+        if (sessionOk) {
+          window.location.replace("/partners/all-stores?picker=1");
+        } else {
+          try {
+            const { partnerLogoutLocal } = await import("@/lib/auth/partner-logout");
+            await partnerLogoutLocal({ redirectToLogin: false, clearStoreSelection: true });
+          } catch {
+            /* ignore */
+          }
+          window.location.replace("/auth?registered=1");
+        }
         return;
       }
       router.push("/auth?registered=1");
@@ -729,7 +789,7 @@ export default function RegisterPage() {
           <RegisterFormHeader step={step} subtitle={stepSubtitle} otpMode={showOtpForm} />
         ) : null}
 
-        <div className={step === 3 ? "mt-0 w-full" : showOtpForm ? "mt-3 w-full" : "mt-5 w-full"}>
+        <div className={step === 3 ? "mt-0 flex h-full min-h-0 w-full flex-col" : showOtpForm ? "mt-3 w-full" : "mt-5 w-full"}>
         {/* Step 1: Email → OTP */}
         {step === 1 && (
           <div className={showOtpForm ? "space-y-4" : "space-y-5"}>
@@ -958,8 +1018,8 @@ export default function RegisterPage() {
 
         {/* Step 3: Full parent details — wide compact grid (2–3 fields / row) */}
         {step === 3 && (
-          <div className="mx-auto w-full max-w-5xl overflow-hidden">
-            <div className="rounded-2xl border-2 border-slate-200 bg-white px-5 py-5 sm:px-7 sm:py-6 shadow-sm">
+          <div className="flex h-full min-h-0 w-full flex-col">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto rounded-2xl border-2 border-slate-200 bg-white px-5 py-5 shadow-sm sm:px-7 sm:py-6">
               <RegisterFormHeader step={step} subtitle={stepSubtitle} compact />
               <div className="mt-3">
           <form onSubmit={handleSubmitDetails} className="space-y-5">
@@ -1028,9 +1088,12 @@ export default function RegisterPage() {
               }`}
             >
               <div>
-                <label className={LABEL_COMPACT}>Business Category</label>
+                <label className={LABEL_COMPACT}>
+                  Business Category <span className="text-red-500">*</span>
+                </label>
                 <select
                   value={business_category}
+                  required
                   onChange={(e) => {
                     const next = e.target.value;
                     setBusinessCategory(next);
@@ -1039,11 +1102,15 @@ export default function RegisterPage() {
                   className={FIELD_CLASS_COMPACT}
                 >
                   <option value="">Select</option>
-                  <option value="RESTAURANT">Restaurant</option>
-                  <option value="CLOUD_KITCHEN">Cloud Kitchen</option>
-                  <option value="CAFE">Cafe</option>
-                  <option value="BAKERY">Bakery</option>
-                  <option value="OTHER">Other</option>
+                  {businessCategoryOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                  {business_category &&
+                  !businessCategoryOptions.some((o) => o.value === business_category) ? (
+                    <option value={business_category}>{business_category}</option>
+                  ) : null}
                 </select>
               </div>
               {business_category === "OTHER" ? (

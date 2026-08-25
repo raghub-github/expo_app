@@ -117,7 +117,7 @@ export const MerchantReferralCodeField = forwardRef<MerchantReferralCodeFieldHan
           const known = configVersionRef.current;
           const qs =
             known == null
-              ? "userType=merchant&fresh=1"
+              ? "userType=merchant"
               : `userType=merchant&sinceVersion=${known}`;
           const res = await fetch(`/api/referral/config?${qs}`, {
             cache: "no-store",

@@ -26,7 +26,7 @@ export async function PATCH(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> }
 ) {
-  const gate = await requireSuperAdminApi();
+  const gate = await requireSuperAdminApi(req);
   if (!gate.ok) return gate.response;
   const { id: idRaw } = await ctx.params;
   const id = Number(idRaw);
@@ -64,10 +64,10 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   ctx: { params: Promise<{ id: string }> }
 ) {
-  const gate = await requireSuperAdminApi();
+  const gate = await requireSuperAdminApi(req);
   if (!gate.ok) return gate.response;
   const { id: idRaw } = await ctx.params;
   const id = Number(idRaw);

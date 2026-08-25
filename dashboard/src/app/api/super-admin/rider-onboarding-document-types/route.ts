@@ -23,7 +23,7 @@ const postSchema = z.object({
 });
 
 export async function GET(req: NextRequest) {
-  const gate = await requireSuperAdminApi();
+  const gate = await requireSuperAdminApi(req);
   if (!gate.ok) return gate.response;
   const captureGroup = req.nextUrl.searchParams.get("captureGroup");
   try {
@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const gate = await requireSuperAdminApi();
+  const gate = await requireSuperAdminApi(req);
   if (!gate.ok) return gate.response;
   let body: unknown;
   try {

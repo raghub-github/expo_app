@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useMemo, type ReactNode } from 'react';
-import { Loader2, ChevronDown } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { R2Image } from "@/components/R2Image";
 import { refreshAuthIfNeeded } from "@/lib/auth/client-auth-handler";
@@ -11,8 +11,21 @@ import {
   maskAadhaarNumber,
   normalizeAadhaarVerifiedDetails,
 } from "@/lib/mask-aadhaar";
-import { pickGstFetchedBusinessInfo, pickBankFetchedInfo, pickUpiFetchedInfo } from "@/lib/merchant-doc-auto-verification";
+import { pickGstFetchedBusinessInfo, pickBankFetchedInfo, pickUpiFetchedInfo, pickPanFetchedInfo, flattenPanVerifiedData } from "@/lib/merchant-doc-auto-verification";
 import { rejectionDetailForDocType } from "@/lib/merchant-store-document-rejection";
+import { useMerchantStoreDocumentRequirements } from "@/hooks/useMerchantStoreDocumentRequirements";
+import {
+  coerceToNavCode,
+  hasDoc,
+  isDocMandatory,
+  onboardingNavDocs,
+  partnerFormKey,
+  PHARMA_DOC_CODES,
+  resolveMerchantDocs,
+  shortDocNavLabel,
+  showPharmaLicence,
+  storeTypeDocsSidebarHint,
+} from "@/lib/merchant-onboarding-docs";
 
 /** Cashfree requires https:// — DigiLocker return page notifies the opener via postMessage. */
 function digilockerRedirectUrl(): string {
@@ -387,12 +400,27 @@ interface StoreSetupData {
   [key: string]: any;
 }
 
-type DocActiveSection = 'pan' | 'aadhar' | 'licence' | 'gst' | 'bank' | 'other';
+type DocActiveSection = string;
 
-function normalizeStep4ActiveSection(raw: string): DocActiveSection | null {
-  const section = raw === 'optional' ? 'licence' : raw;
-  const valid = new Set<DocActiveSection>(['pan', 'aadhar', 'licence', 'gst', 'bank', 'other']);
-  return valid.has(section as DocActiveSection) ? (section as DocActiveSection) : null;
+function normalizeStep4ActiveSection(raw: string): string | null {
+  const t = (raw || '').trim();
+  if (!t) return null;
+  const section = t === 'optional' ? 'licence' : t;
+  const aliases: Record<string, string> = {
+    pan: 'PAN',
+    aadhar: 'AADHAAR',
+    aadhaar: 'AADHAAR',
+    licence: 'LICENCE',
+    license: 'LICENCE',
+    gst: 'GST',
+    bank: 'BANK_PROOF',
+    bank_proof: 'BANK_PROOF',
+    other: 'OTHER',
+    optional: 'LICENCE',
+  };
+  const mapped = aliases[section.toLowerCase()];
+  if (mapped) return mapped;
+  return section.toUpperCase();
 }
 
 /** Which Store Documents tabs have open admin rejections (for verification-fix lock). */
@@ -401,8 +429,8 @@ function rejectedDocSectionsFromDocuments(
   bankRejectionExtra?: string | null
 ): DocActiveSection[] {
   const out: DocActiveSection[] = [];
-  if (adminRejectionText(d, 'pan_rejection_reason')) out.push('pan');
-  if (adminRejectionText(d, 'aadhaar_rejection_reason')) out.push('aadhar');
+  if (adminRejectionText(d, 'pan_rejection_reason')) out.push('PAN');
+  if (adminRejectionText(d, 'aadhaar_rejection_reason')) out.push('AADHAAR');
 
   const detailRoot =
     (d.step4_rejection_details && typeof d.step4_rejection_details === 'object'
@@ -412,31 +440,40 @@ function rejectedDocSectionsFromDocuments(
       ? d.step_rejection_detail
       : null);
 
-  const licenceRejected = Boolean(
-    adminRejectionText(d, 'fssai_rejection_reason') ||
-      adminRejectionText(d, 'drug_license_rejection_reason') ||
-      adminRejectionText(d, 'pharmacist_certificate_rejection_reason') ||
-      adminRejectionText(d, 'pharmacy_council_registration_rejection_reason') ||
-      adminRejectionText(d, 'trade_license_rejection_reason') ||
-      adminRejectionText(d, 'shop_establishment_rejection_reason') ||
-      adminRejectionText(d, 'udyam_rejection_reason') ||
-      adminRejectionText(d, 'other_rejection_reason') ||
-      rejectionDetailForDocType(detailRoot, 'fssai') ||
-      rejectionDetailForDocType(detailRoot, 'drug_license') ||
-      rejectionDetailForDocType(detailRoot, 'pharmacist_certificate') ||
-      rejectionDetailForDocType(detailRoot, 'pharmacy_council_registration') ||
-      rejectionDetailForDocType(detailRoot, 'trade_license') ||
-      rejectionDetailForDocType(detailRoot, 'shop_establishment') ||
-      rejectionDetailForDocType(detailRoot, 'udyam') ||
-      rejectionDetailForDocType(detailRoot, 'other')
-  );
-  if (licenceRejected) out.push('licence');
+  if (adminRejectionText(d, 'fssai_rejection_reason') || rejectionDetailForDocType(detailRoot, 'fssai')) {
+    out.push('FSSAI');
+  }
+  if (
+    adminRejectionText(d, 'drug_license_rejection_reason') ||
+    adminRejectionText(d, 'pharmacist_certificate_rejection_reason') ||
+    adminRejectionText(d, 'pharmacy_council_registration_rejection_reason') ||
+    rejectionDetailForDocType(detailRoot, 'drug_license') ||
+    rejectionDetailForDocType(detailRoot, 'pharmacist_certificate') ||
+    rejectionDetailForDocType(detailRoot, 'pharmacy_council_registration')
+  ) {
+    out.push('RETAIL_DRUG_LICENSE');
+  }
+  if (adminRejectionText(d, 'trade_license_rejection_reason') || rejectionDetailForDocType(detailRoot, 'trade_license')) {
+    out.push('TRADE_LICENSE');
+  }
+  if (
+    adminRejectionText(d, 'shop_establishment_rejection_reason') ||
+    rejectionDetailForDocType(detailRoot, 'shop_establishment')
+  ) {
+    out.push('SHOP_ACT');
+  }
+  if (adminRejectionText(d, 'udyam_rejection_reason') || rejectionDetailForDocType(detailRoot, 'udyam')) {
+    out.push('UDYAM');
+  }
+  if (adminRejectionText(d, 'other_rejection_reason') || rejectionDetailForDocType(detailRoot, 'other')) {
+    out.push('OTHER');
+  }
 
   if (
     adminRejectionText(d, 'gst_rejection_reason') ||
     rejectionDetailForDocType(detailRoot, 'gst')
   ) {
-    out.push('gst');
+    out.push('GST');
   }
 
   const bankFromDoc = adminRejectionText(d, 'bank_proof_rejection_reason');
@@ -445,14 +482,14 @@ function rejectedDocSectionsFromDocuments(
       ? bankRejectionExtra.trim()
       : null;
   if (bankFromDoc || bankExtra || rejectionDetailForDocType(detailRoot, 'bank_proof')) {
-    out.push('bank');
+    out.push('BANK_PROOF');
   }
 
   // PAN / Aadhaar from structured detail when reason string is empty
-  if (!out.includes('pan') && rejectionDetailForDocType(detailRoot, 'pan')) out.unshift('pan');
-  if (!out.includes('aadhar') && rejectionDetailForDocType(detailRoot, 'aadhaar')) {
-    const panIdx = out.indexOf('pan');
-    out.splice(panIdx >= 0 ? panIdx + 1 : 0, 0, 'aadhar');
+  if (!out.includes('PAN') && rejectionDetailForDocType(detailRoot, 'pan')) out.unshift('PAN');
+  if (!out.includes('AADHAAR') && rejectionDetailForDocType(detailRoot, 'aadhaar')) {
+    const panIdx = out.indexOf('PAN');
+    out.splice(panIdx >= 0 ? panIdx + 1 : 0, 0, 'AADHAAR');
   }
 
   return out;
@@ -528,7 +565,14 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   storeType = '',
   initialStep = 'documents',
 }) => {
-  const showOtherDocs = (storeType || '').toUpperCase() === 'OTHERS';
+  const catalogStoreType = storeType || businessType;
+  const { docs: fetchedDocs, cuisineListEnabled: showCuisineList, loaded: catalogLoaded, fetchFailed: catalogFetchFailed } =
+    useMerchantStoreDocumentRequirements(catalogStoreType);
+  const resolvedDocs = useMemo(
+    () => resolveMerchantDocs(fetchedDocs, catalogStoreType),
+    [fetchedDocs, catalogStoreType]
+  );
+  const navDocs = useMemo(() => onboardingNavDocs(resolvedDocs), [resolvedDocs]);
   const [currentStep, setCurrentStep] = useState<'documents' | 'store-setup'>(initialStep);
   
   // Reset currentStep when initialStep prop changes (e.g., navigating between steps)
@@ -537,10 +581,13 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
       setCurrentStep(initialStep);
     }
   }, [initialStep]);
-  const [activeSection, setActiveSection] = useState<DocActiveSection>('pan');
-  const docSectionOrder: DocActiveSection[] = showOtherDocs
-    ? ['pan', 'aadhar', 'licence', 'gst', 'bank', 'other']
-    : ['pan', 'aadhar', 'licence', 'gst', 'bank'];
+  const [activeSection, setActiveSection] = useState<DocActiveSection>('PAN');
+  const docSectionOrder: DocActiveSection[] = navDocs.map((d) => d.code);
+  const formKey = partnerFormKey(activeSection, resolvedDocs);
+  const gstIsMandatory = isDocMandatory(resolvedDocs, 'GST');
+  const aadhaarIsMandatory = isDocMandatory(resolvedDocs, 'AADHAAR');
+  const panIsMandatory = isDocMandatory(resolvedDocs, 'PAN');
+  const fssaiIsMandatory = isDocMandatory(resolvedDocs, 'FSSAI');
   // Sidebar may only open sections already reached via Save & Continue (not skip ahead).
   const [maxReachedSectionIdx, setMaxReachedSectionIdx] = useState(0);
   useEffect(() => {
@@ -548,24 +595,28 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     if (idx >= 0) {
       setMaxReachedSectionIdx((prev) => Math.max(prev, idx));
     }
-  }, [activeSection, showOtherDocs]);
+  }, [activeSection, docSectionOrder.join('|')]);
   const goToSectionFromSidebar = (section: DocActiveSection) => {
     const idx = docSectionOrder.indexOf(section);
     if (idx > maxReachedSectionIdx) return;
     setActiveSection(section);
   };
+  useEffect(() => {
+    if (!navDocs.length) return;
+    const coerced = coerceToNavCode(activeSection, navDocs);
+    if (coerced !== activeSection) setActiveSection(coerced);
+  }, [navDocs.map((d) => d.code).join('|')]);
   const [showValidationModal, setShowValidationModal] = useState(false);
   const [validationMessage, setValidationMessage] = useState('');
   const [validationType, setValidationType] = useState<'warning' | 'error' | 'info'>('warning');
   const [docFormatErrors, setDocFormatErrors] = useState<Record<string, string>>({});
   const [replaceImageConfirm, setReplaceImageConfirm] = useState<{ onConfirm: () => void } | null>(null);
-  const [showOptionalExtraDocuments, setShowOptionalExtraDocuments] = useState(false);
   const [docPreviewPayload, setDocPreviewPayload] = useState<DocPreviewPayload | null>(null);
   const [documentSaving, setDocumentSaving] = useState(false);
   /** After a failed Save on Bank tab, outline empty required fields until the user edits. */
   const [bankRequiredHighlight, setBankRequiredHighlight] = useState(false);
   useEffect(() => {
-    if (activeSection !== 'bank') setBankRequiredHighlight(false);
+    if (formKey !== 'bank') setBankRequiredHighlight(false);
   }, [activeSection]);
 
   const isNewFileSelected = (fieldName: keyof DocumentData) => {
@@ -756,17 +807,8 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
       .trim()
       .toUpperCase()
       .replace(/\s+/g, '');
-    const bt = (businessType || storeType || '').toUpperCase().replace(/\s+/g, '_');
-    const food = [
-      'RESTAURANT',
-      'CAFE',
-      'BAKERY',
-      'CLOUD_KITCHEN',
-      'FOOD_TRUCK',
-      'ICE_CREAM_PARLOR',
-      'GROCERY',
-    ].includes(bt);
-    const pharma = bt === 'PHARMA';
+    const food = hasDoc(resolvedDocs, "FSSAI");
+    const pharma = showPharmaLicence(resolvedDocs);
     const reqId = ++licenceDupReqRef.current;
     const timers: Array<ReturnType<typeof setTimeout>> = [];
 
@@ -850,6 +892,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     storePublicId,
     storeType,
     businessType,
+    resolvedDocs,
   ]);
 
   const panMode = (docModes['pan'] as 'manual' | 'auto' | 'hybrid' | 'disabled') || 'manual';
@@ -878,8 +921,8 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     const num = (documents.pan_number || '').trim().toUpperCase();
     if (panVerifiedNumberRef.current && panVerifiedNumberRef.current === num) {
       if (panVerify.state === 'verified' && documents.pan_is_verified) return;
-      const details = panVerifiedDetailsRef.current || { pan_status: 'VALID' };
-      const registered = typeof details.registered_name === 'string' ? details.registered_name : '';
+      const details = flattenPanVerifiedData(panVerifiedDetailsRef.current || { pan_status: 'VALID' });
+      const registered = pickPanFetchedInfo(details).registered_name || '';
       setPanVerify({ state: 'verified', details });
       setDocuments((prev) => ({
         ...prev,
@@ -1234,10 +1277,11 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
           digilockerPopupRef.current.close();
           digilockerPopupRef.current = null;
         }
-        const details = (data.verifiedData as Record<string, unknown>) || {};
+        let details = (data.verifiedData as Record<string, unknown>) || {};
+        if (kind === 'pan') details = flattenPanVerifiedData(details);
         setter({ state: 'verified', details });
         if (kind === 'pan') {
-          const registered = (details as { registered_name?: string })?.registered_name;
+          const registered = pickPanFetchedInfo(details).registered_name || '';
           const panNum = (documents.pan_number || '').trim().toUpperCase();
           panVerifiedNumberRef.current = panNum || null;
           panVerifiedDetailsRef.current = details;
@@ -1395,11 +1439,20 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     if (aadhaarPollRef.current) clearInterval(aadhaarPollRef.current);
   }, []);
 
-  /** Human-readable fetched details from the provider (status etc.; names omitted for auto-verify UI). */
+  /** Human-readable fetched details from the provider (ITD PAN holder name, GST legal name, bank name, etc.). */
   const verifiedDetailRows = (details?: Record<string, unknown>): Array<[string, string]> => {
     if (!details) return [];
+    const flattened = flattenPanVerifiedData(details);
+    if (
+      !String(flattened.registered_name ?? '').trim() &&
+      String(documents.pan_holder_name ?? '').trim()
+    ) {
+      flattened.registered_name = String(documents.pan_holder_name).trim();
+    }
     const pick: Array<[string, string]> = [];
     const label: Record<string, string> = {
+      registered_name: 'PAN holder name',
+      father_name: "Father's name",
       name_match_result: 'Name match',
       name_match_score: 'Name match score',
       legal_name_of_business: 'Legal Name of Business',
@@ -1421,6 +1474,10 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
       type: 'Type',
     };
     const preferredOrder = [
+      'registered_name',
+      'father_name',
+      'pan_status',
+      'type',
       'legal_name_of_business',
       'principal_place_address',
       'date_of_registration',
@@ -1437,7 +1494,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     ];
     const seen = new Set<string>();
     for (const k of preferredOrder) {
-      const v = details[k];
+      const v = flattened[k];
       if (v == null || typeof v === 'object') continue;
       const l = label[k];
       if (!l || seen.has(l)) continue;
@@ -1452,16 +1509,10 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
       pick.push([l, display]);
       seen.add(l);
     }
-    for (const [k, v] of Object.entries(details)) {
+    for (const [k, v] of Object.entries(flattened)) {
       if (v == null || typeof v === 'object') continue;
-      // Never surface holder/registered names in auto-verify success UI
-      if (
-        k === 'registered_name' ||
-        k === 'name_provided' ||
-        k === 'name' ||
-        k === 'full_name' ||
-        k === 'aadhaar_name'
-      ) {
+      // Do not surface the name we sent for matching — only ITD registered name.
+      if (k === 'name_provided' || k === 'aadhaar_name') {
         continue;
       }
       const l = label[k];
@@ -1583,14 +1634,23 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     return adminRejectionText(d, 'gst_rejection_reason');
   }, [documents]);
 
-  const rejectedDocSections = useMemo(
-    () =>
-      rejectedDocSectionsFromDocuments(
-        documents as Record<string, unknown>,
-        verificationBankRejectionReason
-      ),
-    [documents, verificationBankRejectionReason]
-  );
+  const rejectedDocSections = useMemo(() => {
+    const raw = rejectedDocSectionsFromDocuments(
+      documents as Record<string, unknown>,
+      verificationBankRejectionReason
+    );
+    if (!navDocs.length) return [] as DocActiveSection[];
+    const seen = new Set<string>();
+    const out: DocActiveSection[] = [];
+    for (const code of raw) {
+      const nav = coerceToNavCode(code, navDocs);
+      if (!seen.has(nav) && navDocs.some((d) => d.code === nav)) {
+        seen.add(nav);
+        out.push(nav);
+      }
+    }
+    return out;
+  }, [documents, verificationBankRejectionReason, navDocs]);
   const rejectedDocSectionSet = useMemo(
     () => new Set<DocActiveSection>(rejectedDocSections),
     [rejectedDocSections]
@@ -1684,7 +1744,14 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           if (initAny.pan_is_verified != null) next.pan_is_verified = Boolean(initAny.pan_is_verified);
           if (initAny.pan_verified_at != null) next.pan_verified_at = initAny.pan_verified_at;
           if (initAny.pan_verification_method != null) next.pan_verification_method = initAny.pan_verification_method;
-          if (initAny.pan_verified_details != null) next.pan_verified_details = initAny.pan_verified_details;
+          if (initAny.pan_verified_details != null) {
+            const flattened = flattenPanVerifiedData(initAny.pan_verified_details);
+            next.pan_verified_details = flattened;
+            const registered = pickPanFetchedInfo(flattened).registered_name || '';
+            if (registered && !String(next.pan_holder_name || '').trim()) {
+              next.pan_holder_name = registered;
+            }
+          }
           if (initAny.gst_is_verified != null) next.gst_is_verified = Boolean(initAny.gst_is_verified);
           if (initAny.gst_verified_at != null) next.gst_verified_at = initAny.gst_verified_at;
           if (initAny.gst_verification_method != null) next.gst_verification_method = initAny.gst_verification_method;
@@ -1754,10 +1821,17 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         if (init.pan_is_verified && typeof initialDocuments.pan_number === 'string') {
           const panNum = initialDocuments.pan_number.trim().toUpperCase();
           panVerifiedNumberRef.current = panNum || null;
-          const details =
+          const details = flattenPanVerifiedData(
             (init.pan_verified_details && typeof init.pan_verified_details === 'object'
               ? (init.pan_verified_details as Record<string, unknown>)
-              : null) || { pan_status: 'VALID' };
+              : null) || { pan_status: 'VALID' },
+          );
+          if (
+            !String(details.registered_name ?? '').trim() &&
+            String(initialDocuments.pan_holder_name ?? '').trim()
+          ) {
+            details.registered_name = String(initialDocuments.pan_holder_name).trim();
+          }
           panVerifiedDetailsRef.current = details;
           setPanVerify({ state: 'verified', details });
         }
@@ -1845,10 +1919,10 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 (typeof init.udyam_number === 'string' && init.udyam_number.trim())
             );
             const gstStarted = Boolean(typeof init.gst_number === 'string' && init.gst_number.trim());
-            if (bankStarted) setActiveSection('bank');
-            else if (licenceStarted) setActiveSection('licence');
-            else if (gstStarted) setActiveSection('gst');
-            else if (panDone) setActiveSection('aadhar');
+            if (bankStarted) setActiveSection(coerceToNavCode('BANK_PROOF', navDocs));
+            else if (licenceStarted) setActiveSection(coerceToNavCode('LICENCE', navDocs));
+            else if (gstStarted) setActiveSection(coerceToNavCode('GST', navDocs));
+            else if (panDone) setActiveSection(coerceToNavCode('AADHAAR', navDocs));
           }
         }
       }
@@ -2063,14 +2137,9 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     upiQr: useRef<HTMLInputElement>(null) as React.RefObject<HTMLInputElement | null>,
   };
 
-  const isFoodBusiness = () => {
-    const foodBusinessTypes = ['RESTAURANT', 'CAFE', 'BAKERY', 'CLOUD_KITCHEN', 'FOOD_TRUCK', 'ICE_CREAM_PARLOR'];
-    return businessType && foodBusinessTypes.includes(businessType.toUpperCase());
-  };
+  const isFoodBusiness = () => hasDoc(resolvedDocs, 'FSSAI');
 
-  const isPharmaBusiness = () => {
-    return businessType && businessType.toUpperCase() === 'PHARMA';
-  };
+  const isPharmaBusiness = () => showPharmaLicence(resolvedDocs);
 
   const getDocUrlKey = (fileKey: string) => (fileKey === 'other_document_file' ? 'other_document_file_url' : `${fileKey}_url`);
   const hasDocFileOrUrl = (fileKey: keyof DocumentData) => {
@@ -2218,7 +2287,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
   };
 
   const validateDocumentSection = () => {
-    if (activeSection === 'pan') {
+    if (formKey === 'pan') {
       // PAN rules depend on the admin policy mode:
       //   manual   → name + number + card image (agent reviews by hand)
       //   auto     → name + number + MUST be automatically verified; no upload path
@@ -2241,59 +2310,67 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       }
       // manual / disabled → classic evidence upload required
       return hasDocFileOrUrl('pan_image');
-    } else if (activeSection === 'aadhar') {
-      // Fully optional — hybrid/auto DigiLocker must never block Skip / Continue.
+    } else if (formKey === 'aadhar') {
+      // Fully optional unless Super Admin marked Aadhaar mandatory for this store type.
       const num = (documents.aadhar_number || '').replace(/\s/g, '').trim();
+      if (aadhaarIsMandatory && !num && !documents.aadhaar_is_verified) return false;
       if (!num && !documents.aadhar_holder_name?.trim()) return true;
       // Only block if they typed an invalid number (clear the field to skip).
       if (num && documentFormatValidators.aadhar(num)) return false;
       return true;
-    } else if (activeSection === 'licence') {
+    } else if (formKey === 'licence') {
       if (licenceDup.fssai || licenceDup.drug || licenceDup.checkingFssai || licenceDup.checkingDrug) {
         return false;
       }
-      if (isPharmaBusiness()) {
+      if (PHARMA_DOC_CODES.has(activeSection) || (isPharmaBusiness() && activeSection === 'LICENCE')) {
         return !!(documents.drug_license_number && hasDocFileOrUrl('drug_license_image') && documents.drug_license_expiry_date) &&
                !!(documents.pharmacist_registration_number && hasDocFileOrUrl('pharmacist_certificate') && hasDocFileOrUrl('pharmacy_council_registration') && documents.pharmacist_expiry_date) &&
                !docFormatErrors.drug_license_number &&
                licenceDup.drugOk;
       }
-      if (isFoodBusiness()) {
+      if (activeSection === 'FSSAI' || (isFoodBusiness() && activeSection === 'LICENCE')) {
         const fssaiOk = documents.fssai_number && hasDocFileOrUrl('fssai_image') && documents.fssai_expiry_date;
         const fssaiFormatOk = !documents.fssai_number || !documentFormatValidators.fssai(documents.fssai_number);
+        if (fssaiIsMandatory) {
+          return !!(fssaiOk && fssaiFormatOk && !docFormatErrors.fssai_number && licenceDup.fssaiOk);
+        }
+        const started = !!documents.fssai_number || hasDocFileOrUrl('fssai_image');
+        if (!started) return true;
         return !!(fssaiOk && fssaiFormatOk && !docFormatErrors.fssai_number && licenceDup.fssaiOk);
       }
-      // Optional-but-recommended licences: if any field is started, require the full set.
       const tradeStarted = !!documents.trade_license_number || hasDocFileOrUrl('trade_license_document') || !!documents.trade_license_expiry_date;
-      if (tradeStarted) {
+      if (activeSection === 'TRADE_LICENSE' || (tradeStarted && activeSection !== 'SHOP_ACT' && activeSection !== 'UDYAM' && activeSection !== 'OTHER')) {
         const tradeOk =
           !!documents.trade_license_number &&
           !documentFormatValidators.tradeLicense(documents.trade_license_number) &&
           hasDocFileOrUrl('trade_license_document') &&
           !!documents.trade_license_expiry_date;
-        if (!tradeOk) return false;
+        if (activeSection === 'TRADE_LICENSE' || tradeStarted) {
+          if (!tradeOk && (isDocMandatory(resolvedDocs, 'TRADE_LICENSE') || tradeStarted)) return false;
+        }
       }
       const shopStarted = !!documents.shop_establishment_number || hasDocFileOrUrl('shop_establishment_document') || !!documents.shop_establishment_expiry_date;
-      if (shopStarted) {
+      if (activeSection === 'SHOP_ACT' || shopStarted) {
         const shopOk =
           !!documents.shop_establishment_number &&
           !documentFormatValidators.shopEstablishment(documents.shop_establishment_number) &&
           hasDocFileOrUrl('shop_establishment_document');
-        // Expiry date is optional here (some certificates don't have expiry); if provided, must be valid date string (handled by input).
-        if (!shopOk) return false;
+        if (activeSection === 'SHOP_ACT' && isDocMandatory(resolvedDocs, 'SHOP_ACT') && !shopOk) return false;
+        if (shopStarted && !shopOk) return false;
       }
       const udyamStarted = !!documents.udyam_number || hasDocFileOrUrl('udyam_document');
-      if (udyamStarted) {
+      if (activeSection === 'UDYAM' || udyamStarted) {
         const udyamOk =
           !!documents.udyam_number &&
           !documentFormatValidators.udyam(documents.udyam_number) &&
           hasDocFileOrUrl('udyam_document');
-        if (!udyamOk) return false;
+        if (activeSection === 'UDYAM' && isDocMandatory(resolvedDocs, 'UDYAM') && !udyamOk) return false;
+        if (udyamStarted && !udyamOk) return false;
       }
       return true;
-    } else if (activeSection === 'gst') {
+    } else if (formKey === 'gst') {
       const gstNum = (documents.gst_number || '').trim();
-      if (!gstNum && !hasDocFileOrUrl('gst_image')) return true;
+      if (!gstNum && !hasDocFileOrUrl('gst_image')) return !gstIsMandatory;
       if (gstNum && documentFormatValidators.gst(gstNum)) return false;
       if (gstNum && isElectronic(gstMode)) {
         const gstVerified = gstVerify.state === 'verified' || Boolean((documents as { gst_is_verified?: boolean }).gst_is_verified);
@@ -2301,13 +2378,13 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         if (gstMode === 'hybrid' && !gstVerified && !hasDocFileOrUrl('gst_image')) return false;
       }
       return true;
-    } else if (activeSection === 'other') {
+    } else if (formKey === 'other') {
       // "Other docs" tab mirrors optional recommended validations too.
       if (documents.trade_license_number && documentFormatValidators.tradeLicense(documents.trade_license_number)) return false;
       if (documents.shop_establishment_number && documentFormatValidators.shopEstablishment(documents.shop_establishment_number)) return false;
       if (documents.udyam_number && documentFormatValidators.udyam(documents.udyam_number)) return false;
       return true;
-    } else if (activeSection === 'bank') {
+    } else if (formKey === 'bank') {
       const bank = (documents.bank || {}) as {
         payout_method?: string;
         account_holder_name?: string;
@@ -2353,14 +2430,13 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         return hasUpiQrFileOrUrl();
       }
       return hasUpiQrFileOrUrl();
-    } else if (activeSection === 'other') {
-      return true;
     }
     return true;
   };
 
   const showDocumentValidationError = (section: DocActiveSection) => {
-    if (section === 'pan') {
+    const key = partnerFormKey(section, resolvedDocs);
+    if (key === 'pan') {
       if ((panMode === 'auto' || panMode === 'hybrid') && panVerify.state !== 'verified' && !hasDocFileOrUrl('pan_image')) {
         setValidationMessage(
           panVerify.state === 'failed' || panVerify.state === 'manual'
@@ -2370,9 +2446,9 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       } else {
         setValidationMessage('Please fill all required fields in the PAN section before proceeding.');
       }
-    } else if (section === 'aadhar') {
+    } else if (key === 'aadhar') {
       setValidationMessage('Please fill all required fields in the Aadhar section before proceeding.');
-    } else if (section === 'bank') {
+    } else if (key === 'bank') {
       const missing = getBankPayoutMissingLabels();
       if (missing.length > 0) {
         setValidationMessage(
@@ -2383,7 +2459,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           'Please correct your bank details (check IFSC and account number format) before continuing.'
         );
       }
-    } else if (section === 'licence') {
+    } else if (key === 'licence') {
       if (licenceDup.fssai || licenceDup.drug) {
         setValidationMessage(
           licenceDup.fssai ||
@@ -2395,12 +2471,12 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       } else if (isPharmaBusiness()) {
         setValidationMessage('Please fill all required pharma documents before proceeding.');
       } else if (isFoodBusiness()) {
-        setValidationMessage('FSSAI certificate is required for food businesses.');
+        setValidationMessage('FSSAI is mandatory for this store type.');
       } else {
         setValidationMessage('');
         return false;
       }
-    } else if (section === 'gst') {
+    } else if (key === 'gst') {
       const gstBlocked =
         !!documents.gst_number?.trim() &&
         isElectronic(gstMode) &&
@@ -2432,20 +2508,20 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
   const handleDocumentSaveAndContinue = async () => {
     const formatResult = validateDocFormats();
     if (!formatResult.valid) {
-      if (activeSection === 'bank') setBankRequiredHighlight(true);
+      if (formKey === 'bank') setBankRequiredHighlight(true);
       setValidationMessage(formatResult.firstError || 'Please correct the invalid document format(s) before proceeding.');
       setValidationType('error');
       setShowValidationModal(true);
       return;
     }
     if (!validateDocumentSection()) {
-      if (activeSection === 'bank') setBankRequiredHighlight(true);
+      if (formKey === 'bank') setBankRequiredHighlight(true);
       showDocumentValidationError(activeSection);
       return;
     }
 
     if (
-      activeSection === 'aadhar' &&
+      formKey === 'aadhar' &&
       aadhaarVerify.state === 'verifying'
     ) {
       setValidationMessage(
@@ -2457,7 +2533,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     }
 
     setDocumentSaving(true);
-    if (activeSection === 'bank') setBankRequiredHighlight(false);
+    if (formKey === 'bank') setBankRequiredHighlight(false);
     try {
       const savedPatch = onDocumentSave ? await onDocumentSave(documents) : undefined;
       const patchArg: Record<string, unknown> | undefined =
@@ -2486,43 +2562,12 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         }
         return;
       }
-      if (activeSection === 'pan') {
-        nextSection = 'aadhar';
-      } else if (activeSection === 'aadhar') {
-        nextSection = 'licence';
-      } else if (activeSection === 'licence') {
-        nextSection = 'gst';
-      } else if (activeSection === 'gst') {
-        nextSection = 'bank';
-      } else if (activeSection === 'bank') {
-        if (showOtherDocs) nextSection = 'other';
-        else {
-          if (onDocumentComplete) onDocumentComplete(documents, patchArg);
-          return;
-        }
-      } else if (activeSection === 'other') {
-        let shouldProceed = true;
-        if (isPharmaBusiness()) {
-          if (!documents.drug_license_number || !hasDocFileOrUrl('drug_license_image') || !documents.drug_license_expiry_date ||
-              !documents.pharmacist_registration_number || !hasDocFileOrUrl('pharmacist_certificate') ||
-              !hasDocFileOrUrl('pharmacy_council_registration') || !documents.pharmacist_expiry_date) {
-            setValidationMessage('All pharma documents are required. Please complete all fields.');
-            setValidationType('error');
-            setShowValidationModal(true);
-            shouldProceed = false;
-          }
-        } else if (isFoodBusiness()) {
-          if (!documents.fssai_number || !hasDocFileOrUrl('fssai_image') || !documents.fssai_expiry_date) {
-            setValidationMessage('FSSAI certificate is required for food businesses. Please complete this section.');
-            setValidationType('error');
-            setShowValidationModal(true);
-            shouldProceed = false;
-          }
-        }
-        if (shouldProceed) {
-          setShowValidationModal(false);
-          if (onDocumentComplete) onDocumentComplete(documents, patchArg);
-        }
+      const order = docSectionOrder.length > 0 ? docSectionOrder : ['PAN'];
+      const currentIndex = order.indexOf(activeSection);
+      if (currentIndex >= 0 && currentIndex < order.length - 1) {
+        nextSection = order[currentIndex + 1]!;
+      } else {
+        if (onDocumentComplete) onDocumentComplete(documents, patchArg);
         return;
       }
 
@@ -2910,18 +2955,19 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
   };
 
   const handleStoreSetupSaveAndContinue = () => {
-    // Validate cuisines (required, max 10)
-    if (!storeSetup.cuisine_types || storeSetup.cuisine_types.length === 0) {
-      setValidationType('error');
-      setValidationMessage('Please select at least one cuisine. You can select up to 10 cuisines.');
-      setShowValidationModal(true);
-      return;
-    }
-    if (storeSetup.cuisine_types.length > 10) {
-      setValidationType('error');
-      setValidationMessage('You can select a maximum of 10 cuisines. For more cuisines, please upgrade your plan.');
-      setShowValidationModal(true);
-      return;
+    if (showCuisineList) {
+      if (!storeSetup.cuisine_types || storeSetup.cuisine_types.length === 0) {
+        setValidationType('error');
+        setValidationMessage('Please select at least one cuisine. You can select up to 10 cuisines.');
+        setShowValidationModal(true);
+        return;
+      }
+      if (storeSetup.cuisine_types.length > 10) {
+        setValidationType('error');
+        setValidationMessage('You can select a maximum of 10 cuisines. For more cuisines, please upgrade your plan.');
+        setShowValidationModal(true);
+        return;
+      }
     }
 
     // Validate Store Features (at least one required)
@@ -3011,9 +3057,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         }
         return;
       }
-      const sectionOrder: DocActiveSection[] = showOtherDocs
-        ? ['pan', 'aadhar', 'licence', 'gst', 'bank', 'other']
-        : ['pan', 'aadhar', 'licence', 'gst', 'bank'];
+      const sectionOrder: DocActiveSection[] = docSectionOrder.length > 0 ? docSectionOrder : ['PAN'];
       const currentIndex = sectionOrder.indexOf(activeSection);
       if (currentIndex > 0) {
         setActiveSection(sectionOrder[currentIndex - 1]);
@@ -3240,9 +3284,26 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             </svg>
           </div>
           <div>
-            <p className="text-sm font-semibold text-indigo-900">PAN Card (Mandatory)</p>
+            <p className="text-sm font-semibold text-indigo-900">
+              PAN Card {panIsMandatory ? '(Mandatory)' : '(Optional)'}
+            </p>
             <p className="text-xs text-indigo-700 mt-0.5">
               PAN number is verified automatically — no card image needed when it verifies. Format: ABCDE1234F
+            </p>
+          </div>
+        </div>
+      </div>
+      <div className="rounded-xl bg-amber-50/80 border border-amber-100 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-amber-900">Note</p>
+            <p className="text-xs text-amber-800 mt-0.5">
+              PAN must be valid and belong to the business owner or authorized signatory.
             </p>
           </div>
         </div>
@@ -3413,21 +3474,6 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         </div>
         )}
       </div>
-      <div className="rounded-xl bg-amber-50/80 border border-amber-100 p-4">
-        <div className="flex items-start gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-            </svg>
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-amber-900">Note</p>
-            <p className="text-xs text-amber-800 mt-0.5">
-              PAN must be valid and belong to the business owner or authorized signatory.
-            </p>
-          </div>
-        </div>
-      </div>
     </div>
   );
 
@@ -3455,6 +3501,19 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           </div>
         </div>
       </div>
+      {!isElectronic(aadhaarMode) && (
+      <div className="rounded-xl bg-amber-50/80 border border-amber-100 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" /></svg>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-amber-900">Note</p>
+            <p className="text-xs text-amber-800 mt-0.5">Both sides must be clear and readable.</p>
+          </div>
+        </div>
+      </div>
+      )}
       <div className={`grid grid-cols-1 ${isElectronic(aadhaarMode) ? '' : 'md:grid-cols-2'} gap-4 sm:gap-5`}>
         {!isElectronic(aadhaarMode) && (
         <div>
@@ -3669,19 +3728,6 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           </div>
         </div>
       )}
-      {!isElectronic(aadhaarMode) && (
-      <div className="rounded-xl bg-amber-50/80 border border-amber-100 p-4">
-        <div className="flex items-start gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" /></svg>
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-amber-900">Note</p>
-            <p className="text-xs text-amber-800 mt-0.5">Both sides must be clear and readable.</p>
-          </div>
-        </div>
-      </div>
-      )}
     </div>
   );
 
@@ -3700,7 +3746,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         </AdminRejectionBanner>
       )}
       {/* Show banner only for Food/Pharma businesses (mandatory docs), hide for optional */}
-      {(isFoodBusiness() || isPharmaBusiness()) && (
+      {(activeSection === 'FSSAI' || PHARMA_DOC_CODES.has(activeSection)) && (
           <div className={`rounded-lg border p-2.5 ${
           isFoodBusiness() ? 'bg-rose-50/80 border-rose-100' : 'bg-violet-50/80 border-violet-100'
         }`}>
@@ -3716,13 +3762,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               <p className={`text-sm font-semibold ${
                 isFoodBusiness() ? 'text-yellow-800' : 'text-violet-900'
               }`}>
-                {isFoodBusiness() ? 'FSSAI Certificate (Mandatory)' : 'Pharma Documents (Mandatory)'}
+                {isFoodBusiness() || activeSection === 'FSSAI'
+                  ? `FSSAI Certificate ${fssaiIsMandatory ? '(Mandatory)' : '(Optional)'}`
+                  : 'Pharma Documents (Mandatory)'}
               </p>
               <p className={`text-xs mt-0.5 ${
                 isFoodBusiness() ? 'text-yellow-700' : 'text-violet-700'
               }`}>
                 {isFoodBusiness()
-                  ? `FSSAI license is mandatory for ${businessType.toLowerCase()} as per food safety regulations.`
+                  ? (fssaiIsMandatory ? 'FSSAI is mandatory for this store type.' : 'FSSAI is optional for this store type.')
                   : 'Drug License and Pharmacist details mandatory for pharmacy as per drug regulations.'}
               </p>
             </div>
@@ -3730,8 +3778,30 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         </div>
       )}
       
+      {(activeSection === 'FSSAI' || PHARMA_DOC_CODES.has(activeSection)) && (
+      <div className="rounded-xl bg-indigo-50/80 border border-indigo-100 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-indigo-900">Note</p>
+            <p className="text-xs text-indigo-700 mt-0.5">
+              {PHARMA_DOC_CODES.has(activeSection)
+                ? 'Pharma documents are mandatory. Store cannot operate without valid Drug License and Pharmacist details.'
+                : fssaiIsMandatory
+                ? 'FSSAI is mandatory for this store type.'
+                : 'Add FSSAI if you have a food licence, or skip this step.'}
+            </p>
+          </div>
+        </div>
+      </div>
+      )}
+
       {/* Pharma-specific Documents */}
-      {isPharmaBusiness() && (
+      {PHARMA_DOC_CODES.has(activeSection) && (
         <>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             {/* Left: numbers + dates */}
@@ -3987,7 +4057,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       )}
 
       {/* FSSAI (for food businesses) */}
-      {isFoodBusiness() && (() => {
+      {activeSection === 'FSSAI' && (() => {
         const fssaiUnlocked =
           licenceDup.fssaiOk &&
           !licenceDup.checkingFssai &&
@@ -4035,7 +4105,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               )}
               {!docFormatErrors.fssai_number && !licenceDup.checkingFssai && (
               <p className="text-xs text-gray-500 mt-2">
-                Required for food businesses as per FSSAI regulations (14 digits)
+                {fssaiIsMandatory ? "FSSAI number must be 14 digits." : "Optional. FSSAI number must be 14 digits."}
               </p>
               )}
             </div>
@@ -4103,42 +4173,18 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         );
       })()}
 
-      {/* Other documents (optional) — shown on this page like AM */}
-      <div
-        className={`pt-1 ${
-          isFoodBusiness() &&
-          !(
-            licenceDup.fssaiOk &&
-            !licenceDup.checkingFssai &&
-            !licenceDup.fssai &&
-            !docFormatErrors.fssai_number
-          )
-            ? 'opacity-50 pointer-events-none'
-            : ''
-        }`}
-      >
+      {(activeSection === 'TRADE_LICENSE' ||
+        activeSection === 'SHOP_ACT' ||
+        activeSection === 'UDYAM' ||
+        activeSection === 'OTHER' ||
+        activeSection === 'OTHERS' ||
+        (partnerFormKey(activeSection, resolvedDocs) === 'licence' &&
+          activeSection !== 'FSSAI' &&
+          !PHARMA_DOC_CODES.has(activeSection))) && (
+      <div className="pt-1">
         {renderOtherDocumentsSection()}
       </div>
-
-      <div className="rounded-xl bg-indigo-50/80 border border-indigo-100 p-4">
-        <div className="flex items-start gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-            </svg>
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-indigo-900">Note</p>
-            <p className="text-xs text-indigo-700 mt-0.5">
-              {isPharmaBusiness()
-                ? 'Pharma documents are mandatory. Store cannot operate without valid Drug License and Pharmacist details.'
-                : isFoodBusiness()
-                ? 'FSSAI is mandatory for food businesses.'
-                : 'Optional documents help with faster verification and service access.'}
-            </p>
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 
@@ -4161,16 +4207,44 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             </svg>
           </div>
           <div>
-            <h4 className="text-sm font-semibold text-purple-900">GST Certificate (Optional)</h4>
+            <h4 className="text-sm font-semibold text-purple-900">
+              GST Certificate {gstIsMandatory ? '(Mandatory)' : '(Optional)'}
+            </h4>
             <p className="text-xs text-purple-800 mt-0.5">
-              GST registration is optional for many small businesses. If you have a GSTIN, enter it below
-              {isElectronic(gstMode) ? ' — we can verify it instantly with Cashfree when electronic verification is enabled.' : '.'}
+              {isElectronic(gstMode)
+                ? gstIsMandatory
+                  ? 'GSTIN is required for this store type.'
+                  : 'Optional — Cashfree verify GSTIN, or skip and continue anytime.'
+                : gstIsMandatory
+                  ? 'GSTIN is required for this store type.'
+                  : 'Optional — enter GSTIN and upload certificate, or skip anytime.'}
             </p>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-purple-200/50">
+      <div className="rounded-xl bg-indigo-50/80 border border-indigo-100 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+            </svg>
+          </div>
           <div>
+            <p className="text-sm font-semibold text-indigo-900">Note</p>
+            <p className="text-xs text-indigo-700 mt-0.5">
+              {gstIsMandatory
+                ? 'GST is mandatory for this store type. Enter a valid GSTIN to continue.'
+                : 'GST may be required based on turnover. You can skip this step if you do not have a GSTIN yet.'}
+            </p>
+          </div>
+        </div>
+      </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-purple-200/50">
+          <div className="md:col-span-2 space-y-2">
+            <label className="block text-xs font-medium text-slate-700">
+              GSTIN {isElectronic(gstMode) ? '(if providing)' : ''}
+            </label>
             <div className="relative">
               {(() => {
                 const isGstValid = !!String(documents.gst_number || '').trim() && !docFormatErrors.gst_number;
@@ -4181,8 +4255,8 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                       name="gst_number"
                       value={documents.gst_number || ''}
                       onChange={handleDocumentInputChange}
-                      placeholder="GSTIN (15 characters)"
-                      className={`w-full px-3 py-2 pr-10 text-sm border rounded-xl bg-white focus:outline-none focus:ring-2 ${
+                      placeholder="15 CHARACTER GSTIN"
+                      className={`w-full px-3 py-2 pr-10 text-sm border rounded-xl bg-white uppercase focus:outline-none focus:ring-2 ${
                         isGstValid
                           ? 'border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200'
                           : 'border-slate-300 focus:border-indigo-500 focus:ring-indigo-500'
@@ -4194,11 +4268,16 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               })()}
             </div>
             {docFormatErrors.gst_number && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.gst_number}</p>}
-            <p className="text-xs text-gray-500 mt-2">Leave blank and tap Skip to continue without GST</p>
+            {!gstIsMandatory && (
+              <p className="text-xs text-slate-500">
+                Leave blank and tap Skip to continue without GST
+              </p>
+            )}
           </div>
 
-          {isElectronic(gstMode) && !!String(documents.gst_number || '').trim() && (
-            <div>
+          {/* Match AM dashboard + PAN: show Verify whenever policy is auto/hybrid (not only after typing). */}
+          {isElectronic(gstMode) && (
+            <div className="md:col-span-2">
               {gstVerify.state === 'verified' || (documents as { gst_is_verified?: boolean }).gst_is_verified ? (
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
                   <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
@@ -4215,7 +4294,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                       ))}
                     </dl>
                   )}
-                  <p className="mt-1.5 text-xs text-emerald-700">No certificate upload needed.</p>
+                  <p className="mt-1.5 text-xs text-emerald-700">No certificate upload needed. You can continue.</p>
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
@@ -4264,7 +4343,8 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             gstVerify.state !== 'verified' &&
             (!isElectronic(gstMode) ||
               gstVerify.state === 'failed' ||
-              gstVerify.state === 'manual') && (
+              gstVerify.state === 'manual' ||
+              uploadAllowedFor(gstMode, gstVerify)) && (
             <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
               {isElectronic(gstMode) &&
                 (gstVerify.state === 'failed' || gstVerify.state === 'manual') && (
@@ -4313,7 +4393,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             </div>
           )}
 
-          {(!isElectronic(gstMode) || gstVerify.state === 'failed' || gstVerify.state === 'manual' || hasDocFileOrUrl('gst_image')) &&
+          {(uploadAllowedFor(gstMode, gstVerify) || hasDocFileOrUrl('gst_image')) &&
             gstVerify.state !== 'verified' &&
             !(documents as { gst_is_verified?: boolean }).gst_is_verified && (
             <div className="space-y-2 md:col-span-2">
@@ -4351,22 +4431,6 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               )}
             </div>
           )}
-        </div>
-      </div>
-
-      <div className="rounded-xl bg-indigo-50/80 border border-indigo-100 p-4">
-        <div className="flex items-start gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-            </svg>
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-indigo-900">Note</p>
-            <p className="text-xs text-indigo-700 mt-0.5">
-              You can skip this section if you are not GST-registered. If you enter a GSTIN and automatic verification is enabled, you must verify before continuing.
-            </p>
-          </div>
         </div>
       </div>
     </div>
@@ -4705,24 +4769,11 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
 
   const renderOtherDocumentsSection = () => (
     <div className="space-y-2 sm:space-y-2.5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0 space-y-0.5">
-          <p className="text-xs sm:text-sm font-semibold text-gray-700">Other licences &amp; extra documents</p>
-          <p className="text-[10px] sm:text-xs text-slate-500">Optional — trade licence, shop &amp; establishment, Udyam, or another document</p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setShowOptionalExtraDocuments((v) => !v)}
-          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] sm:text-xs font-medium text-slate-600 hover:bg-slate-50 hover:border-slate-300"
-          aria-expanded={showOptionalExtraDocuments}
-        >
-          {showOptionalExtraDocuments ? 'Hide' : 'Show'}
-          <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${showOptionalExtraDocuments ? 'rotate-180' : ''}`} aria-hidden />
-        </button>
-      </div>
-      {showOptionalExtraDocuments && (
+      {activeSection === 'TRADE_LICENSE' ? (
         <>
-          <h4 className="text-xs sm:text-sm font-semibold text-gray-700">Other licences (optional but recommended)</h4>
+          <p className="text-xs sm:text-sm font-semibold text-gray-700">
+            Trade Licence {isDocMandatory(resolvedDocs, 'TRADE_LICENSE') ? '(Mandatory)' : '(Optional)'}
+          </p>
       {/* Trade licence */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5 items-start">
         <div>
@@ -4780,7 +4831,13 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         </div>
         <div />
       </div>
-
+        </>
+      ) : null}
+      {activeSection === 'SHOP_ACT' ? (
+        <>
+          <p className="text-xs sm:text-sm font-semibold text-gray-700">
+            Shop &amp; Establishment {isDocMandatory(resolvedDocs, 'SHOP_ACT') ? '(Mandatory)' : '(Optional)'}
+          </p>
       {/* Shop & establishment */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5 items-start pt-1">
         <div>
@@ -4838,7 +4895,13 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         </div>
         <div />
       </div>
-
+        </>
+      ) : null}
+      {activeSection === 'UDYAM' ? (
+        <>
+          <p className="text-xs sm:text-sm font-semibold text-gray-700">
+            Udyam {isDocMandatory(resolvedDocs, 'UDYAM') ? '(Mandatory)' : '(Optional)'}
+          </p>
       {/* Udyam */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5 items-start pt-1">
         <div>
@@ -4890,6 +4953,10 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         </div>
       </div>
 
+        </>
+      ) : null}
+      {(activeSection === 'OTHER' || activeSection === 'OTHERS') ? (
+        <>
           <h4 className="text-xs sm:text-sm font-semibold text-gray-700 pt-1">Other Document (Optional)</h4>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5">
         <div>
@@ -4960,17 +5027,34 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         )}
       </div>
         </>
-      )}
+      ) : null}
     </div>
   );
 
   const renderDocumentStepContent = () => {
-    switch (activeSection) {
+    if (catalogLoaded && catalogFetchFailed) {
+      return (
+        <p className="text-sm text-slate-600">
+          Could not load documents for this store type. Refresh the page, or ask Super Admin
+          to configure documents under RX / MX Documents type → Merchant.
+        </p>
+      );
+    }
+    if (catalogLoaded && navDocs.length === 0) {
+      return (
+        <p className="text-sm text-slate-600">
+          No documents are configured for this store type. Ask Super Admin to add
+          documents under RX / MX Documents type → Merchant.
+        </p>
+      );
+    }
+    switch (formKey) {
       case 'pan':
         return renderPanSection();
       case 'aadhar':
         return renderAadharSection();
       case 'licence':
+      case 'other':
         return renderLicenceSection();
       case 'gst':
         return renderGstSection();
@@ -5003,61 +5087,42 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               <p className="mt-0.5 text-xs text-slate-600">Upload required documents for verification.</p>
               <div className="mt-3 rounded-lg bg-indigo-50/80 border border-indigo-100 p-2.5">
                 <p className="text-xs font-semibold text-indigo-900">{businessType.replace('_', ' ')}</p>
-                {isFoodBusiness() ? (
-                  <p className="mt-0.5 text-[11px] text-indigo-700">FSSAI mandatory for food.</p>
-                ) : isPharmaBusiness() ? (
+                {isPharmaBusiness() ? (
                   <p className="mt-0.5 text-[11px] text-indigo-700">Drug License & Pharmacist mandatory.</p>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => goToSectionFromSidebarLocked('licence')}
-                    disabled={
-                      verificationDocFixActive
-                        ? !rejectedDocSectionSet.has('licence')
-                        : docSectionOrder.indexOf('licence') > maxReachedSectionIdx
-                    }
-                    className="mt-0.5 text-[11px] text-indigo-700 hover:text-indigo-900 hover:underline text-left disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
-                  >
-                    Optional docs recommended.
-                  </button>
+                  <p className="mt-0.5 text-[11px] text-indigo-700">{storeTypeDocsSidebarHint(resolvedDocs)}</p>
                 )}
               </div>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
               <p className="px-2 py-1 text-xs font-medium text-slate-500">Sections</p>
-              {(['pan', 'aadhar', 'licence', 'gst', 'bank'] as const).map((section) => {
+              {!catalogLoaded ? (
+                <p className="px-3 py-2 text-xs text-slate-400">Loading documents…</p>
+              ) : null}
+              {navDocs.map((doc) => {
+                const section = doc.code;
                 const isActive = activeSection === section;
                 const sIdx = docSectionOrder.indexOf(section);
                 const lockedByProgress = sIdx > maxReachedSectionIdx;
                 const lockedByVerificationFix =
-                  verificationDocFixActive && !rejectedDocSectionSet.has(section);
+                  verificationDocFixActive &&
+                  rejectedDocSectionSet.size > 0 &&
+                  !rejectedDocSectionSet.has(section);
                 const locked = verificationDocFixActive
                   ? lockedByVerificationFix
                   : lockedByProgress;
+                const key = partnerFormKey(section, resolvedDocs);
                 const showRejected =
-                  section === 'pan'
+                  key === 'pan'
                     ? !!docRejection.pan
-                    : section === 'aadhar'
+                    : key === 'aadhar'
                       ? !!docRejection.aadhaar
-                      : section === 'licence'
+                      : key === 'licence' || key === 'other'
                         ? optionalRejectionItems.length > 0
-                        : section === 'gst'
+                        : key === 'gst'
                           ? !!gstRejectionReason
                           : !!docRejection.bank_proof;
-                const sectionLabel =
-                  section === 'pan'
-                    ? 'PAN'
-                    : section === 'aadhar'
-                      ? 'Aadhaar'
-                      : section === 'licence'
-                        ? isPharmaBusiness()
-                          ? 'Drug Lic.'
-                          : isFoodBusiness()
-                            ? 'FSSAI'
-                            : 'OTHERS'
-                        : section === 'gst'
-                          ? 'GST'
-                          : 'Bank';
+                const sectionLabel = shortDocNavLabel(doc);
                 return (
                 <button
                   key={section}
@@ -5116,15 +5181,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                     actionLoading ||
                     documentSaving ||
                     !validateDocumentSection() ||
-                    (activeSection === 'aadhar' && aadhaarVerify.state === 'verifying')
+                    (formKey === 'aadhar' && aadhaarVerify.state === 'verifying')
                   }
                   title={
-                    activeSection === 'aadhar' && aadhaarVerify.state === 'verifying'
+                    formKey === 'aadhar' && aadhaarVerify.state === 'verifying'
                       ? 'Finish DigiLocker verification first — skip is locked while it is running'
                       : !validateDocumentSection()
-                      ? activeSection === 'aadhar'
+                      ? formKey === 'aadhar'
                         ? 'Clear invalid Aadhaar number to skip, or enter a valid 12-digit number'
-                        : activeSection === 'gst'
+                        : formKey === 'gst'
                           ? !(documents.gst_number || '').trim()
                             ? 'Clear invalid GSTIN to skip, or enter a valid 15-character GSTIN'
                             : 'Verify GSTIN or upload certificate to continue'
@@ -5142,13 +5207,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                   )}
                   {actionLoading || documentSaving
                     ? 'Saving...'
-                    : activeSection === 'aadhar' && aadhaarVerify.state === 'verifying'
+                    : formKey === 'aadhar' && aadhaarVerify.state === 'verifying'
                     ? 'Waiting for DigiLocker…'
-                    : activeSection === 'aadhar' &&
+                    : formKey === 'aadhar' &&
+                      !aadhaarIsMandatory &&
                       aadhaarVerify.state !== 'verified' &&
                       !(documents as { aadhaar_is_verified?: boolean }).aadhaar_is_verified
                     ? 'Skip / Save & Continue'
-                    : activeSection === 'gst' &&
+                    : formKey === 'gst' &&
+                      !gstIsMandatory &&
                       gstVerify.state !== 'verified' &&
                       !(documents as { gst_is_verified?: boolean }).gst_is_verified &&
                       !(documents.gst_number || '').trim()
@@ -5379,6 +5446,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                   <p className="text-xs text-gray-500 mt-1">Multiple images (JPG, PNG) · Max {MAX_GALLERY_IMAGES}</p>
                 </div>
 
+                {showCuisineList ? (
                 <div className="rounded-lg sm:rounded-xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-2 mb-2 sm:mb-3">
                     <div>
@@ -5441,6 +5509,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                     )}
                   </div>
                 </div>
+                ) : null}
               </div>
 
               {/* Right Column - Operating Hours */}

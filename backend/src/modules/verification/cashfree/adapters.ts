@@ -73,6 +73,47 @@ export function cashfreeRejectReason(
   return `${docLabel} was not verified by Cashfree (invalid number or not found).`;
 }
 
+function firstNonEmptyString(...vals: unknown[]): string | null {
+  for (const v of vals) {
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+function unwrapCashfreeBody(body: unknown): Record<string, unknown> {
+  if (!body || typeof body !== "object") return {};
+  const o = body as Record<string, unknown>;
+  const nested = o.data;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return { ...o, ...(nested as Record<string, unknown>) };
+  }
+  return o;
+}
+
+/** Name as per ITD PAN — never `name_provided` (that is the name we sent). */
+export function panHolderNameFromCashfreeBody(body: unknown): string | null {
+  const b = unwrapCashfreeBody(body);
+  const provided = firstNonEmptyString(b.name_provided);
+  const maybeName = firstNonEmptyString(b.name);
+  // Cashfree sometimes returns ITD name as `name` (not `registered_name`).
+  // Only trust it when it differs from the name we sent for matching.
+  const nameIfNotOurs =
+    maybeName &&
+    (!provided || maybeName.toUpperCase() !== provided.toUpperCase())
+      ? maybeName
+      : null;
+  return firstNonEmptyString(
+    b.registered_name,
+    b.registered_nam,
+    b.name_pan_card,
+    b.name_on_pan,
+    b.pan_name,
+    b.full_name,
+    b.pan_holder_name,
+    nameIfNotOurs,
+  );
+}
+
 /** Small helper — Cashfree pre-signed S3 URLs carry `X-Amz-Expires=86400`. */
 function parseS3Expiry(url: string | null | undefined): string | null {
   if (!url) return null;
@@ -96,23 +137,28 @@ function parseS3Expiry(url: string | null | undefined): string | null {
 export function adaptPan(call: ProviderCall<{
   pan?: string;
   type?: string;
+  pan_type?: string;
   reference_id?: number | string;
   name_provided?: string | null;
   registered_name?: string | null;
   registered_nam?: string | null; // Cashfree typo in some docs/samples
+  name_pan_card?: string | null;
+  name_on_pan?: string | null;
+  pan_name?: string | null;
+  full_name?: string | null;
   father_name?: string | null;
   valid?: boolean;
   pan_status?: string | null;
   status?: string | null;
+  aadhaar_seeding_status?: string | null;
   message?: unknown;
   name_match_score?: string | number | null;
   name_match_result?: string | null;
 }>, args: NormalizeCommonArgs): NormalizedVerification {
   // Production sometimes returns an empty/non-object body on edge failures —
   // never throw here (that becomes a 500 after Cashfree already debited).
-  const b = (call.responseBody && typeof call.responseBody === "object"
-    ? call.responseBody
-    : {}) as NonNullable<typeof call.responseBody>;
+  const b = unwrapCashfreeBody(call.responseBody) as NonNullable<typeof call.responseBody> &
+    Record<string, unknown>;
 
   const panStatus = String(b.pan_status ?? b.status ?? "").toUpperCase();
   const isValid =
@@ -132,10 +178,8 @@ export function adaptPan(call: ProviderCall<{
     }
   }
 
-  const registered =
-    (typeof b.registered_name === "string" && b.registered_name) ||
-    (typeof b.registered_nam === "string" && b.registered_nam) ||
-    null;
+  const registered = panHolderNameFromCashfreeBody(b);
+  const panType = firstNonEmptyString(b.type, b.pan_type);
   const statusReason =
     typeof b.message === "string" ? b.message
       : b.message == null ? null
@@ -151,13 +195,14 @@ export function adaptPan(call: ProviderCall<{
     businessIdentifier: typeof b.pan === "string" ? b.pan : null,
     verifiedData: {
       pan: b.pan ?? null,
-      type: b.type ?? null,
+      type: panType,
       name_provided: b.name_provided ?? null,
       registered_name: registered,
-      father_name: b.father_name ?? null,
+      father_name: firstNonEmptyString(b.father_name),
       name_match_score: b.name_match_score ?? null,
       name_match_result: b.name_match_result ?? null,
       pan_status: b.pan_status ?? b.status ?? null,
+      aadhaar_seeding_status: firstNonEmptyString(b.aadhaar_seeding_status),
     },
     rawRequest: call.requestBody,
     rawResponse: call.responseBody ?? {},

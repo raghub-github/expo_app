@@ -4,7 +4,8 @@ import React, { useState, useEffect } from 'react'
 import { useMerchantSession } from '@/context/MerchantSessionContext'
 import { useApprovedPartnerStores } from '@/hooks/usePartnerResolveSession'
 import { prefetchPartnerRouteData } from '@/lib/partner-route-prefetch'
-import { readPartnerSelectedStoreId } from '@/lib/partner-selected-store'
+import { allStoresPickerHref } from '@/lib/partner-all-stores-href'
+import { readPartnerLastParentId, readPartnerSelectedStoreId } from '@/lib/partner-selected-store'
 import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
@@ -267,7 +268,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
   const goToAllStores = () => {
     setStoreDropdownOpen(false);
     setMobileMenuOpen(false);
-    window.location.href = '/partners/all-stores?picker=1';
+    window.location.href = allStoresPickerHref(readPartnerLastParentId() || undefined);
   };
 
   const handleLogout = async () => {

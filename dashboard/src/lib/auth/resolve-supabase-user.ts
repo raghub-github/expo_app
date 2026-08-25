@@ -11,7 +11,7 @@
  * 4. On Auth unreachable / abort / refresh race: keep serving the cookie user.
  */
 import type { Session, User } from "@supabase/supabase-js";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import {
   isInvalidRefreshToken,
@@ -22,6 +22,7 @@ import {
 } from "@/lib/auth/session-errors";
 import {
   isCookieAccessTokenUsable,
+  parseCookieHeaderPairs,
   readCookieAccessSession,
   type CookieAccessSession,
 } from "@/lib/auth/read-cookie-access-session";
@@ -76,6 +77,11 @@ function readCachedResolvedUser(): User | null {
     return null;
   }
   return lastResolvedUser.user;
+}
+
+/** Process-local identity from a recent successful resolve (compile-race fallback). */
+export function peekCachedResolvedUser(): User | null {
+  return readCachedResolvedUser();
 }
 
 function readSessionFromCookieReader(reader: ResolveCookieReader | null | undefined): CookieAccessSession | null {
@@ -389,12 +395,57 @@ export async function resolveSupabaseUser(options?: {
 /**
  * Safe auth user for API `requireAreaManagerApiAuth` getters.
  * Never throws — network failures fall back to cookie session.
+ * Reads the raw Cookie header when next/headers `cookies()` is empty (compile races).
  */
 export async function getAuthUserSafe(): Promise<{
   id: string;
   email?: string;
 } | null> {
-  const { user } = await resolveSupabaseUser({ maxAttempts: 2, retryDelayMs: 200 });
+  let cookieReader: ResolveCookieReader | null = null;
+  try {
+    const store = await cookies();
+    const hdrs = await headers();
+    const header = hdrs.get("cookie") ?? "";
+    const fromStore = store.getAll();
+    const pairs =
+      fromStore.some((c) => c.name.startsWith("sb-") && c.value)
+        ? fromStore
+        : parseCookieHeaderPairs(header);
+    if (pairs.length > 0) {
+      cookieReader = {
+        get: (name: string) => pairs.find((c) => c.name === name),
+        getAll: () => pairs,
+      };
+    }
+  } catch {
+    cookieReader = null;
+  }
+
+  const { user } = await resolveSupabaseUser({
+    maxAttempts: 2,
+    retryDelayMs: 200,
+    cookieReader,
+  });
   if (!user?.id) return null;
-  return { id: user.id, email: user.email ?? undefined };
+  const jwtEmail = user.email?.trim();
+  if (jwtEmail?.includes("@")) {
+    return { id: user.id, email: jwtEmail };
+  }
+  try {
+    const { peekDashboardIdentity, DASHBOARD_IDENTITY_EMAIL_COOKIE } = await import(
+      "@/lib/auth/auth-identity-cache"
+    );
+    const cached = peekDashboardIdentity(user.id)?.email?.trim();
+    if (cached?.includes("@")) {
+      return { id: user.id, email: cached };
+    }
+    const cookieEmail =
+      cookieReader?.get(DASHBOARD_IDENTITY_EMAIL_COOKIE)?.value?.trim().toLowerCase() ?? "";
+    if (cookieEmail.includes("@")) {
+      return { id: user.id, email: cookieEmail };
+    }
+  } catch {
+    /* identity cookie is optional */
+  }
+  return { id: user.id, email: jwtEmail || undefined };
 }

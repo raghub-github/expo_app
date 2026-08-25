@@ -224,7 +224,10 @@ export function installDashboardAuthFetchGuard(): void {
       if (
         code === "SERVICE_UNAVAILABLE" ||
         code === "REQUEST_ABORTED" ||
-        code === "FORBIDDEN"
+        code === "FORBIDDEN" ||
+        code === "SESSION_REQUIRED" ||
+        code === "UNAUTHENTICATED" ||
+        !code
       ) {
         return response;
       }

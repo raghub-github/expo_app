@@ -5,21 +5,15 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { requireAreaManagerApiAuth, requireMerchantManager } from "@/lib/area-manager/auth";
 import { apiErrorResponse } from "@/lib/api-errors";
+import { createIsolatedOtpClient } from "@/lib/supabase/isolated-otp-client";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const getAuthUser = async () => {
-      const { data } = await supabase.auth.getUser();
-      return data?.user ?? null;
-    };
-    const authResult = await requireAreaManagerApiAuth(getAuthUser);
+    const authResult = await requireAreaManagerApiAuth();
     if (authResult.error) return authResult.error;
     const err = requireMerchantManager(authResult.resolved);
     if (err) return err;
@@ -35,13 +29,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Enter the verification code from your email" }, { status: 400 });
     }
 
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!url || !anonKey) {
+    const anon = createIsolatedOtpClient();
+    if (!anon) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
-
-    const anon = createClient(url, anonKey, { auth: { persistSession: false } });
     const { data, error } = await anon.auth.verifyOtp({
       email: raw,
       token,

@@ -102,16 +102,11 @@ export default function LoginPage() {
             authenticated?: boolean;
           } | null;
           if (body?.authenticated === true) {
-            // Prevent a second bounce if dashboard sends us back once.
-            if (sessionStorage.getItem("gm_login_autoredirect") === "1") {
-              sessionStorage.removeItem("gm_login_autoredirect");
-              await supabase.auth.signOut({ scope: "local" });
-              return;
-            }
-            sessionStorage.setItem("gm_login_autoredirect", "1");
             const redirectParam = searchParams.get("redirect");
             const redirectTo =
-              redirectParam?.startsWith("/") && !redirectParam.startsWith("//")
+              redirectParam?.startsWith("/") &&
+              !redirectParam.startsWith("//") &&
+              !redirectParam.startsWith("/login")
                 ? redirectParam
                 : "/dashboard";
             window.location.replace(redirectTo);

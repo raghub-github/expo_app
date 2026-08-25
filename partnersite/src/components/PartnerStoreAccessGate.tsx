@@ -4,8 +4,10 @@ import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   clearPartnerStoreSelection,
+  readPartnerLastParentId,
   readPartnerSelectedStoreId,
 } from '@/lib/partner-selected-store';
+import { allStoresPickerHref } from '@/lib/partner-all-stores-href';
 import { PartnerContentSkeleton } from '@/components/PageSkeleton';
 import { usePartnerResolveSession } from '@/hooks/usePartnerResolveSession';
 
@@ -20,8 +22,6 @@ type ResolvePayload = {
 const FATAL_AUTH_CODES = new Set([
   'SESSION_INVALID',
   'DEVICE_SESSION_INVALID',
-  'SESSION_REQUIRED',
-  'MERCHANT_NOT_FOUND',
 ]);
 
 /**
@@ -79,7 +79,7 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
         const stores = cachedSession.stores;
         if (stores.length === 0) {
           clearPartnerStoreSelection();
-          if (!cancelled) window.location.href = '/partners/all-stores?picker=1';
+          if (!cancelled) window.location.href = allStoresPickerHref(readPartnerLastParentId() || undefined);
           return;
         }
         const owned = new Set(stores.map((s) => String(s.store_id || '').trim()).filter(Boolean));
@@ -87,7 +87,7 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
         if (selected && !owned.has(selected)) {
           clearPartnerStoreSelection();
           if (!cancelled) {
-            router.replace('/partners/all-stores?picker=1');
+            router.replace(allStoresPickerHref(readPartnerLastParentId() || undefined));
             setAllowed(true);
             setPendingGate(false);
           }
@@ -101,7 +101,9 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
       }
 
       try {
-        const res = await fetch('/api/merchant-auth/resolve-session', { credentials: 'include' });
+        const lastParent = readPartnerLastParentId();
+        const q = lastParent ? `?parent_id=${encodeURIComponent(lastParent)}` : '';
+        const res = await fetch(`/api/merchant-auth/resolve-session${q}`, { credentials: 'include' });
         const data = (await res.json().catch(() => ({}))) as ResolvePayload;
 
         if (res.status === 503 || data.code === 'SERVICE_UNAVAILABLE') {
@@ -112,27 +114,17 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
           return;
         }
 
-        const fatal =
-          res.status === 401 ||
-          (res.ok === false && FATAL_AUTH_CODES.has(String(data.code || ''))) ||
-          (!data?.success && FATAL_AUTH_CODES.has(String(data.code || '')));
+        const fatal = FATAL_AUTH_CODES.has(String(data.code || ''));
 
-        if (fatal || (!res.ok && res.status !== 503)) {
-          if (res.status === 401 || FATAL_AUTH_CODES.has(String(data.code || ''))) {
-            if (!cancelled) {
-              clearPartnerStoreSelection();
-              window.location.href = '/auth';
-            }
-            return;
-          }
+        if (fatal) {
           if (!cancelled) {
-            setAllowed(true);
-            setPendingGate(false);
+            clearPartnerStoreSelection();
+            window.location.href = '/auth';
           }
           return;
         }
 
-        if (!data?.success) {
+        if (!res.ok || !data?.success) {
           if (!cancelled) {
             setAllowed(true);
             setPendingGate(false);
@@ -144,7 +136,7 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
 
         if (stores.length === 0) {
           clearPartnerStoreSelection();
-          if (!cancelled) window.location.href = '/partners/all-stores?picker=1';
+          if (!cancelled) window.location.href = allStoresPickerHref(readPartnerLastParentId() || undefined);
           return;
         }
 
@@ -153,7 +145,7 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
         if (selected && !owned.has(selected)) {
           clearPartnerStoreSelection();
           if (!cancelled) {
-            router.replace('/partners/all-stores?picker=1');
+            router.replace(allStoresPickerHref(readPartnerLastParentId() || undefined));
             setAllowed(true);
             setPendingGate(false);
           }

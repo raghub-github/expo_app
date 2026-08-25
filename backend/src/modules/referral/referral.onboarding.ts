@@ -20,6 +20,7 @@ import {
   type ApplyReferralInput,
   type ApplyReferralResult,
 } from "./referral.tracking.service.js";
+import { ensureReferralCodeAlways } from "./referral.codes.js";
 
 export type MerchantReferralPublicError =
   | "invalid_code"
@@ -192,6 +193,20 @@ export async function resolveMerchantParentPk(
     LIMIT 1
   `.catch(() => [] as Array<{ id: string; phone: string | null }>);
   return row ? { id: Number(row.id), phone: row.phone } : null;
+}
+
+/** Own share code for a parent — always allocated, independent of the service toggle. */
+export async function ensureMerchantParentOwnReferralCode(
+  parentMerchantId: number | string,
+): Promise<string | null> {
+  const parent = await resolveMerchantParentPk(parentMerchantId);
+  if (!parent) return null;
+  try {
+    return await ensureReferralCodeAlways("merchant", parent.id);
+  } catch (err) {
+    console.warn("[referral] ensure parent own code failed", (err as Error).message);
+    return null;
+  }
 }
 
 export async function applyMerchantReferralForParent(opts: {

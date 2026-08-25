@@ -3,15 +3,7 @@
 import { useRef } from "react";
 import { CloudUpload, Eye, X } from "lucide-react";
 import type { StepRejectionFieldMeta } from "@/lib/merchants/step-rejection-fields";
-
-const STORE_TYPE_OPTIONS = [
-  { value: "RESTAURANT", label: "Restaurant" },
-  { value: "CAFE", label: "Cafe" },
-  { value: "CLOUD_KITCHEN", label: "Cloud kitchen" },
-  { value: "BAKERY", label: "Bakery" },
-  { value: "SWEETS", label: "Sweets" },
-  { value: "OTHERS", label: "Others" },
-];
+import { useOnboardingStoreTypes } from "@/hooks/useOnboardingStoreTypes";
 
 export type DynamicFieldValues = Record<string, string>;
 export type DynamicDocState = {
@@ -285,6 +277,7 @@ export function DynamicRejectedFields({
   fileInputRefs,
   bannerInputRef,
 }: Props) {
+  const { options: liveStoreTypes } = useOnboardingStoreTypes("OTHERS");
   if (!fields.length) return null;
 
   return (
@@ -295,7 +288,10 @@ export function DynamicRejectedFields({
         const oldDisplay = formatPrevious(field.previousValue);
         const oldMedia = previousUrl(field.previousValue);
         const type = field.fieldType || "text";
-        const options = field.selectOptions || (type === "select" ? STORE_TYPE_OPTIONS : []);
+        const options =
+          key === "store_type"
+            ? liveStoreTypes
+            : field.selectOptions || (type === "select" ? liveStoreTypes : []);
 
         return (
           <div
@@ -540,7 +536,7 @@ export function DynamicRejectedFields({
                       <option value="" disabled>
                         Select…
                       </option>
-                      {(options.length ? options : STORE_TYPE_OPTIONS).map((opt) => (
+                      {(options.length ? options : liveStoreTypes).map((opt) => (
                         <option key={opt.value} value={opt.value}>
                           {opt.label}
                         </option>

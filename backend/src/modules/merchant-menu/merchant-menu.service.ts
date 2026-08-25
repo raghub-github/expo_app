@@ -922,6 +922,9 @@ export async function listItems(
            merchant_menu_items.serves_label,
            merchant_menu_items.item_size_value,
            merchant_menu_items.item_size_unit,
+           merchant_menu_items.available_quantity,
+           merchant_menu_items.low_stock_threshold,
+           merchant_menu_items.expiry_date,
            merchant_menu_items.approval_status,
            merchant_menu_items.rejection_reason,
            COALESCE(merchant_menu_items.is_locked_by_plan, FALSE) AS is_locked_by_plan,
@@ -1032,6 +1035,7 @@ export async function getItem(
            weight_per_serving, weight_per_serving_unit, calories_kcal,
            protein, protein_unit, carbohydrates, carbohydrates_unit,
            fat, fat_unit, fibre, fibre_unit, item_tags,
+           available_quantity, low_stock_threshold, expiry_date,
            approval_status, approved_at, approved_by, rejection_reason
     FROM merchant_menu_items
     WHERE id = ${itemId} AND store_id = ${storeIdNum}
@@ -1286,6 +1290,10 @@ export type ItemBodyFields = {
   fibre_unit?: string | null;
   allergens?: string[] | null;
   item_tags?: string[] | null;
+  available_quantity?: number | null;
+  low_stock_threshold?: number | null;
+  /** YYYY-MM-DD — grocery product expiry */
+  expiry_date?: string | null;
   /**
    * Unified, schema-driven attributes.
    * If omitted, FOOD attributes are computed from legacy columns (backwards compatible).
@@ -1314,6 +1322,7 @@ export async function createItem(
       weight_per_serving, weight_per_serving_unit, calories_kcal,
       protein, protein_unit, carbohydrates, carbohydrates_unit,
       fat, fat_unit, fibre, fibre_unit, allergens, item_tags,
+      available_quantity, low_stock_threshold, expiry_date,
       approval_status, approved_at, approved_by
     )
     VALUES (
@@ -1326,6 +1335,7 @@ export async function createItem(
       ${body.protein ?? null}, ${body.protein_unit ?? null}, ${body.carbohydrates ?? null}, ${body.carbohydrates_unit ?? null},
       ${body.fat ?? null}, ${body.fat_unit ?? null}, ${body.fibre ?? null}, ${body.fibre_unit ?? null},
       ${body.allergens ?? null}, ${body.item_tags ?? null},
+      ${body.available_quantity ?? null}, ${body.low_stock_threshold ?? null}, ${body.expiry_date ?? null},
       ${approvalStatus}::merchant_menu_item_approval_status, ${approvedAt}, ${approvedBy}
     )
     RETURNING id, item_id
@@ -1359,7 +1369,8 @@ export async function updateItem(
            item_size_value, item_size_unit, available_for_delivery,
            weight_per_serving, weight_per_serving_unit, calories_kcal,
            protein, protein_unit, carbohydrates, carbohydrates_unit,
-           fat, fat_unit, fibre, fibre_unit, item_tags
+           fat, fat_unit, fibre, fibre_unit, item_tags,
+           available_quantity, low_stock_threshold, expiry_date
     FROM merchant_menu_items WHERE id = ${itemId} AND store_id = ${storeIdNum}
   `;
   if (!existing) return false;
@@ -1400,6 +1411,9 @@ export async function updateItem(
       fibre = ${v("fibre", e.fibre)},
       fibre_unit = ${v("fibre_unit", e.fibre_unit)},
       item_tags = ${v("item_tags", e.item_tags)},
+      available_quantity = ${v("available_quantity", e.available_quantity)},
+      low_stock_threshold = ${v("low_stock_threshold", e.low_stock_threshold)},
+      expiry_date = ${v("expiry_date", e.expiry_date)},
       updated_at = NOW()
     WHERE id = ${itemId} AND store_id = ${storeIdNum}
   `;

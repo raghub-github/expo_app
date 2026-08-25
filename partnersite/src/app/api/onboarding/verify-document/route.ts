@@ -277,7 +277,13 @@ export async function POST(request: NextRequest) {
           pickBankFetchedInfo,
           pickUpiFetchedInfo,
           flattenBankVerifiedData,
+          pickPanFetchedInfo,
+          flattenPanVerifiedData,
         } = await import("@/lib/merchant-doc-auto-verification");
+
+        if (docKind === "pan") {
+          verifiedData = flattenPanVerifiedData(verifiedData);
+        }
 
         const method = "CASHFREE_AUTO" as const;
         const autoPayload = {
@@ -326,9 +332,7 @@ export async function POST(request: NextRequest) {
         };
 
         if (docKind === "pan") {
-          const registered = String(
-            verifiedData.registered_name ?? verifiedData.name_provided ?? "",
-          ).trim();
+          const registered = pickPanFetchedInfo(verifiedData).registered_name ?? "";
           patch.pan_is_verified = true;
           patch.pan_verified_at = verifiedAt;
           patch.pan_rejection_reason = null;

@@ -71,6 +71,12 @@ export async function fetchBootstrapAndSeedCache(
             const errBody = safeParseJson<{ code?: string }>(text, "Bootstrap error");
             if (isHardSessionDeathCode(errBody?.code)) {
               redirectToLoginOnSessionExpired({ reason: errBody.code ?? "session_invalid" });
+              return false;
+            }
+            // SESSION_REQUIRED is a compile/cookie-miss race — retry like 503.
+            if (errBody?.code === "SESSION_REQUIRED" && attempt < maxAttempts) {
+              await new Promise((r) => setTimeout(r, 400 * attempt));
+              continue;
             }
           } catch {
             /* non-JSON 401 */

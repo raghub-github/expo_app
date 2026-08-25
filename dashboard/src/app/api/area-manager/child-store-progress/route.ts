@@ -5,11 +5,11 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { requireAreaManagerApiAuth, requireMerchantManager } from "@/lib/area-manager/auth";
 import { getMerchantStoreByIdOnly, getMerchantStoreForProgress, getMerchantStoreStep1Fields, getParentDetailsByParentId } from "@/lib/db/operations/merchant-stores";
 import { getChildStoreProgress, upsertChildStoreProgress } from "@/lib/db/operations/child-store-progress";
 import { getSql } from "@/lib/db/client";
+import { toAttachmentProxyUrl } from "@/lib/r2-proxy-url";
 
 export const runtime = "nodejs";
 
@@ -19,6 +19,11 @@ type MenuImageBundleEntry = {
   file_name?: string;
   verification_status?: string;
 };
+
+function menuProxyUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  return toAttachmentProxyUrl(value.trim());
+}
 
 function parseMenuImageBundle(value: unknown): MenuImageBundleEntry[] {
   if (Array.isArray(value)) return value as MenuImageBundleEntry[];
@@ -35,12 +40,7 @@ function parseMenuImageBundle(value: unknown): MenuImageBundleEntry[] {
 
 export async function GET(req: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const getAuthUser = async () => {
-      const { data } = await supabase.auth.getUser();
-      return data?.user ?? null;
-    };
-    const authResult = await requireAreaManagerApiAuth(getAuthUser);
+    const authResult = await requireAreaManagerApiAuth(undefined, req);
     if (authResult.error) return authResult.error;
     const err = requireMerchantManager(authResult.resolved);
     if (err) return err;
@@ -135,18 +135,26 @@ export async function GET(req: NextRequest) {
     const step1FromStore = await getMerchantStoreStep1Fields(storeInternalId);
     if (step1FromStore) {
       const existingStep1 = (formDataWithStepStore.step1 as Record<string, unknown>) ?? {};
+      const filled = (v: unknown) => {
+        if (v == null) return false;
+        if (typeof v === "string") return v.trim() !== "";
+        if (Array.isArray(v)) return v.some((x) => String(x ?? "").trim() !== "");
+        return true;
+      };
+      const preferFilled = (dbVal: unknown, progVal: unknown) =>
+        filled(dbVal) ? dbVal : filled(progVal) ? progVal : dbVal ?? progVal;
       formDataWithStepStore = {
         ...formDataWithStepStore,
         step1: {
           ...existingStep1,
-          store_name: step1FromStore.store_name ?? existingStep1.store_name,
-          owner_full_name: step1FromStore.owner_full_name ?? existingStep1.owner_full_name,
-          store_display_name: step1FromStore.store_display_name ?? existingStep1.store_display_name,
-          store_description: step1FromStore.store_description ?? existingStep1.store_description,
-          store_email: step1FromStore.store_email ?? existingStep1.store_email,
-          store_phones: step1FromStore.store_phones ?? existingStep1.store_phones,
-          store_type: step1FromStore.store_type ?? existingStep1.store_type,
-          custom_store_type: step1FromStore.custom_store_type ?? existingStep1.custom_store_type,
+          store_name: preferFilled(step1FromStore.store_name, existingStep1.store_name),
+          owner_full_name: preferFilled(step1FromStore.owner_full_name, existingStep1.owner_full_name),
+          store_display_name: preferFilled(step1FromStore.store_display_name, existingStep1.store_display_name),
+          store_description: preferFilled(step1FromStore.store_description, existingStep1.store_description),
+          store_email: preferFilled(step1FromStore.store_email, existingStep1.store_email),
+          store_phones: preferFilled(step1FromStore.store_phones, existingStep1.store_phones),
+          store_type: preferFilled(step1FromStore.store_type, existingStep1.store_type),
+          custom_store_type: preferFilled(step1FromStore.custom_store_type, existingStep1.custom_store_type),
         },
       };
     }
@@ -182,11 +190,15 @@ export async function GET(req: NextRequest) {
 
       const imageBundle = imageRow ? parseMenuImageBundle(imageRow.menu_reference_image_urls) : [];
       const imageUrls = imageBundle
-        .map((entry) => (typeof entry.url === "string" ? entry.url : ""))
+        .map((entry) => menuProxyUrl(entry.url) || "")
         .filter(Boolean);
       const imageNames = imageBundle
         .map((entry) => (typeof entry.file_name === "string" ? entry.file_name : ""))
         .filter(Boolean);
+      const pdfProxy = menuProxyUrl(pdfRow?.public_url) || menuProxyUrl(pdfRow?.r2_key);
+      const sheetProxy = menuProxyUrl(sheetRow?.public_url) || menuProxyUrl(sheetRow?.r2_key);
+      const imageRowId =
+        imageRow?.id != null && Number.isFinite(Number(imageRow.id)) ? Number(imageRow.id) : null;
 
       const step3FromDb: Record<string, unknown> = {
         menuUploadMode: imageUrls.length
@@ -198,14 +210,14 @@ export async function GET(req: NextRequest) {
               : ((formDataWithStepStore.step3 as Record<string, unknown> | undefined)?.menuUploadMode ?? "IMAGE"),
         menuImageUrls: imageUrls,
         menuImageNames: imageNames,
-        menuPdfUrl: pdfRow?.public_url ?? null,
+        menuPdfUrl: pdfProxy,
         menuPdfFileName: pdfRow?.original_file_name ?? null,
         menuPdfR2Key: pdfRow?.r2_key ?? null,
-        menuSpreadsheetUrl: sheetRow?.public_url ?? null,
+        menuSpreadsheetUrl: sheetProxy,
         menuSpreadsheetName: sheetRow?.original_file_name ?? null,
         menuSpreadsheetR2Key: sheetRow?.r2_key ?? null,
-        // Keep only numeric ids (used by existing UI in a few places).
         menuUploadIds: [
+          imageRowId,
           pdfRow?.id != null && Number.isFinite(Number(pdfRow.id)) ? Number(pdfRow.id) : null,
           sheetRow?.id != null && Number.isFinite(Number(sheetRow.id)) ? Number(sheetRow.id) : null,
         ].filter((v): v is number => v != null),
@@ -422,12 +434,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const getAuthUser = async () => {
-      const { data } = await supabase.auth.getUser();
-      return data?.user ?? null;
-    };
-    const authResult = await requireAreaManagerApiAuth(getAuthUser);
+    const authResult = await requireAreaManagerApiAuth(undefined, req);
     if (authResult.error) return authResult.error;
     const err = requireMerchantManager(authResult.resolved);
     if (err) return err;

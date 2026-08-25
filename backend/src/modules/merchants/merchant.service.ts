@@ -785,6 +785,7 @@ export async function getMerchantAboutPayload(storeId: string) {
     state: (store as { state?: string | null }).state ?? null,
     postal_code: store.postal_code ?? null,
     cuisine_types: store.cuisine_types ?? null,
+    store_type: (store as { store_type?: string | null }).store_type ?? null,
     operational_status: store.operational_status ?? null,
     avg_preparation_time_minutes: store.avg_preparation_time_minutes ?? null,
     packaging_charge_amount: (store as { packaging_charge_amount?: number | null }).packaging_charge_amount ?? null,

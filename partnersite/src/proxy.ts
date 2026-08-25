@@ -20,6 +20,7 @@ import {
   isFatalRefreshTokenError,
   isRefreshTokenAlreadyUsed,
 } from "@/lib/auth/session-errors";
+import { readCookieAccessSession } from "@/lib/auth/read-cookie-access-session";
 
 /** Build path + search for redirect param, stripping OAuth code/state so login URL stays clean. */
 function redirectPathWithoutOAuthParams(pathname: string, search: string): string {
@@ -64,6 +65,7 @@ export async function proxy(request: NextRequest) {
   // Merchant auth lives under /api/merchant-auth/ to avoid being shadowed by NextAuth catch-all at /api/auth/[...nextauth].
   if (
     pathname.startsWith("/api/merchant-auth/") ||
+    pathname.startsWith("/api/attachments/proxy") ||
     pathname === "/api/auth/resolve-session" ||
     pathname === "/api/auth/merchant-session" ||
     pathname === "/api/auth/set-cookie"
@@ -153,7 +155,7 @@ export async function proxy(request: NextRequest) {
       request.cookies.has("sb-refresh-token") ||
       request.cookies.getAll().some((c) => c.name.startsWith("sb-"));
 
-    const publicRoutes = ["/auth", "/api/auth", "/api/referral", "/merchant-ref"];
+    const publicRoutes = ["/auth", "/api/auth", "/api/onboarding", "/api/referral", "/merchant-ref"];
     const isPublicRoute = publicRoutes.some((r) => pathname.startsWith(r));
     const isLoginPage =
       pathname === "/auth" ||
@@ -183,33 +185,47 @@ export async function proxy(request: NextRequest) {
     let sessionError: { message?: string; code?: string; status?: number } | null = null;
 
     if (hasAuthCookie) {
-      try {
-        const userResult = (await supabase.auth.getUser().catch((err: unknown) => ({
-          data: { user: null },
-          error: {
-            message:
-              err && typeof err === "object" && "message" in err
-                ? String((err as { message: unknown }).message)
-                : "fetch failed",
-            code: "NETWORK_ERROR",
+      const cookieSession = readCookieAccessSession({
+        get: (name) => request.cookies.get(name),
+        getAll: () => request.cookies.getAll(),
+      });
+      if (cookieSession?.user?.id) {
+        session = {
+          user: {
+            id: cookieSession.user.id,
+            email: cookieSession.user.email,
+            phone: cookieSession.user.phone,
           },
-        }))) as unknown as {
-          data?: { user?: { id: string; email?: string; phone?: string } | null };
-          error?: { message?: string; code?: string; status?: number };
         };
-        const user = userResult.data?.user ?? null;
-        sessionError = userResult.error ?? null;
-        if (
-          sessionError &&
-          (sessionError.status === 408 ||
-            /timeout|abort|request_timeout/i.test(String(sessionError.message ?? "")))
-        ) {
-          sessionError = { message: "Session check timeout", code: "TIMEOUT" };
+      } else {
+        try {
+          const userResult = (await supabase.auth.getUser().catch((err: unknown) => ({
+            data: { user: null },
+            error: {
+              message:
+                err && typeof err === "object" && "message" in err
+                  ? String((err as { message: unknown }).message)
+                  : "fetch failed",
+              code: "NETWORK_ERROR",
+            },
+          }))) as unknown as {
+            data?: { user?: { id: string; email?: string; phone?: string } | null };
+            error?: { message?: string; code?: string; status?: number };
+          };
+          const user = userResult.data?.user ?? null;
+          sessionError = userResult.error ?? null;
+          if (
+            sessionError &&
+            (sessionError.status === 408 ||
+              /timeout|abort|request_timeout/i.test(String(sessionError.message ?? "")))
+          ) {
+            sessionError = { message: "Session check timeout", code: "TIMEOUT" };
+          }
+          if (user) session = { user: { id: user.id, email: user.email, phone: user.phone } };
+        } catch {
+          session = null;
+          sessionError = { message: "Session check failed", code: "NETWORK_ERROR" };
         }
-        if (user) session = { user: { id: user.id, email: user.email, phone: user.phone } };
-      } catch {
-        session = null;
-        sessionError = { message: "Session check failed", code: "NETWORK_ERROR" };
       }
     }
 
@@ -251,7 +267,9 @@ export async function proxy(request: NextRequest) {
             redirectPathWithoutOAuthParams(pathname, request.nextUrl.search || "")
           );
         }
-        clearAuthCookiesOn(response);
+        // Child onboarding reload must keep cookies. getUser() races during compile
+        // used to wipe a live session here and bounce the merchant to login.
+        return response;
       }
     }
 

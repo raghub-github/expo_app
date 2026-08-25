@@ -29,6 +29,13 @@ export function asRecord(v: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
+function firstNonEmptyString(...vals: unknown[]): string | null {
+  for (const v of vals) {
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return null;
+}
+
 /** Read nested auto_verification blob from a document metadata JSONB column. */
 export function readAutoVerificationFromMetadata(
   metadata: unknown,
@@ -190,6 +197,64 @@ export function mergeGstFetchedIntoVerifiedDetails(
   if (picked.effective_registration_date) {
     base.date_of_registration = picked.effective_registration_date;
   }
+  return base;
+}
+
+/** Fields fetched from Cashfree PAN verify (ITD name — not the name we sent). */
+export type PanFetchedInfo = {
+  registered_name: string | null;
+  father_name: string | null;
+  pan_status: string | null;
+  type: string | null;
+};
+
+export function pickPanFetchedInfo(verifiedData: unknown): PanFetchedInfo {
+  const d = asRecord(verifiedData);
+  const nested = asRecord(d.data);
+  const raw = {
+    ...asRecord(d.raw_response),
+    ...asRecord(d.rawResponse),
+    ...asRecord(d.raw),
+  };
+  const src = { ...raw, ...nested, ...d };
+  const provided = firstNonEmptyString(src.name_provided);
+  const maybeName = firstNonEmptyString(src.name);
+  const nameIfNotOurs =
+    maybeName &&
+    (!provided || maybeName.toUpperCase() !== provided.toUpperCase())
+      ? maybeName
+      : null;
+  const registered = firstNonEmptyString(
+    src.registered_name,
+    src.name_pan_card,
+    src.name_on_pan,
+    src.pan_name,
+    src.full_name,
+    src.pan_holder_name,
+    nameIfNotOurs,
+  );
+  return {
+    registered_name: registered,
+    father_name: firstNonEmptyString(src.father_name),
+    pan_status: firstNonEmptyString(src.pan_status, src.status),
+    type: firstNonEmptyString(src.type, src.pan_type),
+  };
+}
+
+export function flattenPanVerifiedData(verifiedData: unknown): Record<string, unknown> {
+  const d = asRecord(verifiedData);
+  const base = {
+    ...asRecord(d.raw_response),
+    ...asRecord(d.rawResponse),
+    ...asRecord(d.raw),
+    ...asRecord(d.data),
+    ...d,
+  };
+  const picked = pickPanFetchedInfo(base);
+  if (picked.registered_name) base.registered_name = picked.registered_name;
+  if (picked.father_name) base.father_name = picked.father_name;
+  if (picked.pan_status) base.pan_status = picked.pan_status;
+  if (picked.type) base.type = picked.type;
   return base;
 }
 

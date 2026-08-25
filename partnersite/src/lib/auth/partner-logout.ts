@@ -1,4 +1,4 @@
-import { clearPartnerStoreSelection } from "@/lib/partner-selected-store";
+import { clearPartnerStoreSelection, clearPartnerLastParentId } from "@/lib/partner-selected-store";
 import { clearPushSessionDismissed } from "@/lib/browser-push/partner-push-state";
 
 /** localStorage key — other tabs listen via `storage` and redirect to login. */
@@ -18,6 +18,7 @@ export async function partnerLogoutLocal(options?: {
   if (clearStore) {
     try {
       clearPartnerStoreSelection();
+      clearPartnerLastParentId();
     } catch {
       /* ignore */
     }

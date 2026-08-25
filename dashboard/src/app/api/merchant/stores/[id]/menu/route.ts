@@ -96,6 +96,7 @@ export async function GET(
              category_id, food_type, spice_level, cuisine_type,
              base_price, selling_price, discount_percentage, tax_percentage,
              in_stock, out_of_stock_manual, out_of_stock_until, out_of_stock_updated_at,
+             available_quantity, low_stock_threshold, expiry_date,
              is_active, is_deleted, display_order,
              has_customizations,
              (
@@ -209,6 +210,7 @@ export async function GET(
         id: storeId,
         store_id: (store as any).store_id ?? null,
         store_name: (store as any).store_name ?? null,
+        store_type: (store as any).store_type ?? null,
         avg_preparation_time_minutes: (store as any).avg_preparation_time_minutes ?? null,
         packaging_charge_amount: (store as any).packaging_charge_amount ?? null,
       },

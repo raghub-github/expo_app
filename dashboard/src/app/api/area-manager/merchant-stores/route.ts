@@ -4,7 +4,6 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { requireAreaManagerApiAuth, requireMerchantManager } from "@/lib/area-manager/auth";
 import { createMerchantStoreChild, getNextChildStoreId, getMerchantStoreByIdOnly, updateMerchantStore } from "@/lib/db/operations/merchant-stores";
 import { upsertChildStoreProgress } from "@/lib/db/operations/child-store-progress";
@@ -16,12 +15,7 @@ export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const getAuthUser = async () => {
-      const { data } = await supabase.auth.getUser();
-      return data?.user ?? null;
-    };
-    const authResult = await requireAreaManagerApiAuth(getAuthUser);
+    const authResult = await requireAreaManagerApiAuth(undefined, req);
     if (authResult.error) return authResult.error;
     const err = requireMerchantManager(authResult.resolved);
     if (err) return err;

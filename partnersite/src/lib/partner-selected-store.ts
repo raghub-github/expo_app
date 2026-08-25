@@ -16,6 +16,37 @@ export const PARTNER_PENDING_ORDERS_REFRESH = 'partner-pending-orders-refresh';
 
 const INCOMING_MODAL_SUPPRESS_KEY = 'partner_incoming_modal_auto_suppressed_v1';
 const MANAGED_STORES_KEY = 'partnerManagedStoreIds';
+const LAST_PARENT_KEY = 'partnerLastParentId';
+
+/** Last parent opened from child onboarding / All Stores (`parent_id` query). */
+export function persistPartnerLastParentId(parentId: string | number | null | undefined): void {
+  if (typeof window === 'undefined') return;
+  const v = parentId == null ? '' : String(parentId).trim();
+  try {
+    if (!v) sessionStorage.removeItem(LAST_PARENT_KEY);
+    else sessionStorage.setItem(LAST_PARENT_KEY, v);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readPartnerLastParentId(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    return (sessionStorage.getItem(LAST_PARENT_KEY) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+export function clearPartnerLastParentId(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.removeItem(LAST_PARENT_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
 /** Merchant closed accept modal with X — block auto-popup until floating bar tap. */
 export function setPartnerIncomingModalSuppressed(storeId: string): void {

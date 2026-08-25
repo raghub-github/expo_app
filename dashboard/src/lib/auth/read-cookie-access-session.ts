@@ -36,8 +36,6 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
 function userFromJwtClaims(claims: Record<string, unknown>, accessToken: string): User | null {
   const sub = typeof claims.sub === "string" ? claims.sub : null;
   if (!sub) return null;
-  const email = typeof claims.email === "string" ? claims.email : undefined;
-  const exp = typeof claims.exp === "number" ? claims.exp : undefined;
   const userMeta =
     claims.user_metadata && typeof claims.user_metadata === "object"
       ? (claims.user_metadata as Record<string, unknown>)
@@ -46,17 +44,31 @@ function userFromJwtClaims(claims: Record<string, unknown>, accessToken: string)
     claims.app_metadata && typeof claims.app_metadata === "object"
       ? (claims.app_metadata as Record<string, unknown>)
       : {};
+  const metaEmail =
+    typeof userMeta.email === "string" && userMeta.email.includes("@")
+      ? userMeta.email
+      : undefined;
+  const email =
+    typeof claims.email === "string" && claims.email.includes("@")
+      ? claims.email
+      : metaEmail;
+  const phone =
+    typeof claims.phone === "string" && claims.phone.trim()
+      ? claims.phone
+      : typeof userMeta.phone === "string" && userMeta.phone.trim()
+        ? userMeta.phone
+        : undefined;
 
   return {
     id: sub,
     email,
+    phone,
     aud: typeof claims.aud === "string" ? claims.aud : "authenticated",
     role: typeof claims.role === "string" ? claims.role : "authenticated",
     app_metadata: appMeta,
     user_metadata: userMeta,
     created_at: "",
     updated_at: undefined,
-    // Keep exp available for usability checks via a synthetic field path if needed
     factors: undefined,
   } as User;
 }
@@ -138,6 +150,18 @@ export function isCookieAccessTokenUsable(session: CookieAccessSession | null | 
 /**
  * Local cookie session read — no Auth network, no getSession() warning.
  */
+export function parseCookieHeaderPairs(header: string): Array<{ name: string; value: string }> {
+  const out: Array<{ name: string; value: string }> = [];
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx <= 0) continue;
+    const name = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    if (name) out.push({ name, value });
+  }
+  return out;
+}
+
 export function readCookieAccessSession(cookieStore: {
   get: (name: string) => { value: string } | undefined;
   getAll?: () => Array<{ name: string; value: string }>;
@@ -167,13 +191,22 @@ export function readCookieAccessSession(cookieStore: {
   const payload = parseSessionJson(raw);
   if (!payload?.access_token) return null;
 
-  const user =
+  const claims = decodeJwtPayload(payload.access_token);
+  const fromJwt = claims ? userFromJwtClaims(claims, payload.access_token) : null;
+  const fromPayload =
     payload.user && typeof payload.user === "object" && payload.user.id
       ? payload.user
-      : (() => {
-          const claims = decodeJwtPayload(payload.access_token!);
-          return claims ? userFromJwtClaims(claims, payload.access_token!) : null;
-        })();
+      : null;
+  const user = fromPayload
+    ? {
+        ...fromPayload,
+        email:
+          typeof fromPayload.email === "string" && fromPayload.email.includes("@")
+            ? fromPayload.email
+            : fromJwt?.email,
+        phone: fromPayload.phone || fromJwt?.phone,
+      }
+    : fromJwt;
   if (!user) return null;
 
   return {
@@ -182,4 +215,21 @@ export function readCookieAccessSession(cookieStore: {
     expiresAt: payload.expires_at,
     user,
   };
+}
+
+/** True when the request carries any Supabase auth cookie (even if JWT parse fails). */
+export function hasSupabaseAuthCookies(cookieStore: {
+  get: (name: string) => { value: string } | undefined;
+  getAll?: () => Array<{ name: string; value: string }>;
+}): boolean {
+  try {
+    const named =
+      cookieStore.get("sb-access-token")?.value ||
+      cookieStore.get("sb-refresh-token")?.value;
+    if (named) return true;
+    const all = typeof cookieStore.getAll === "function" ? cookieStore.getAll() : [];
+    return all.some((c) => c.name.startsWith("sb-") && Boolean(c.value));
+  } catch {
+    return false;
+  }
 }

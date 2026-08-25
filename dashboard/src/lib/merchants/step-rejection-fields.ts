@@ -82,12 +82,10 @@ const DOC_UPLOAD: RejectedFieldUploadConfig = {
   maxBytes: 20 * 1024 * 1024,
 };
 
+import { FALLBACK_ONBOARDING_STORE_TYPES } from "@/lib/onboarding-store-types";
+
 const STORE_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "RESTAURANT", label: "Restaurant" },
-  { value: "CAFE", label: "Cafe" },
-  { value: "CLOUD_KITCHEN", label: "Cloud kitchen" },
-  { value: "BAKERY", label: "Bakery" },
-  { value: "SWEETS", label: "Sweets" },
+  ...FALLBACK_ONBOARDING_STORE_TYPES,
   { value: "OTHERS", label: "Others" },
 ];
 

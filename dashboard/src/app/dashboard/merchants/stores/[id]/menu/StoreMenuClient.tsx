@@ -9,6 +9,12 @@ import { useAppPathname, useAppParams, useAppSearchParams } from "@/hooks/useApp
 import { useRouter } from "next/navigation";
 import { useStoreContext } from "../StoreContext";
 import {
+  isGroceryStoreType,
+  itemFormVariantForStoreType,
+  readCachedStoreType,
+  writeCachedStoreType,
+} from "@/lib/menu-store-type";
+import {
   merchantStoreHref,
   resolveEffectiveStoreId,
   storeIdFromPathname,
@@ -91,19 +97,22 @@ async function throwMenuApiError(res: Response, fallback: string): Promise<never
   throw new Error(typeof (j as { error?: string }).error === "string" ? (j as { error: string }).error : fallback);
 }
 
-function nutritionPayloadFromForm(form: ItemFormData) {
+function nutritionPayloadFromForm(form: ItemFormData, opts?: { omitTags?: boolean }) {
   const parseOpt = (s: string): number | null => {
     const t = String(s ?? "").trim();
     if (!t) return null;
     const n = Number(t.replace(/,/g, ""));
     return Number.isFinite(n) && n >= 0 ? n : null;
   };
-  const tags = form.item_tags
-    ? String(form.item_tags)
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean)
-    : [];
+  const tags =
+    opts?.omitTags
+      ? []
+      : form.item_tags
+        ? String(form.item_tags)
+            .split(",")
+            .map((x) => x.trim())
+            .filter(Boolean)
+        : [];
   return {
     available_for_delivery: form.available_for_delivery !== false,
     weight_per_serving: parseOpt(form.weight_per_serving),
@@ -315,14 +324,30 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
   const storeMenuDefaults = useMemo(() => {
     const s = (
       data as {
-        store?: { avg_preparation_time_minutes?: number | null; packaging_charge_amount?: number | null };
+        store?: {
+          store_type?: string | null;
+          avg_preparation_time_minutes?: number | null;
+          packaging_charge_amount?: number | null;
+        };
       } | null
     )?.store;
     return {
+      store_type: s?.store_type ?? null,
       avg_preparation_time_minutes: s?.avg_preparation_time_minutes ?? null,
       packaging_charge_amount: s?.packaging_charge_amount ?? null,
     };
   }, [data]);
+
+  const resolvedStoreType = useMemo(() => {
+    const fromMenu = storeMenuDefaults.store_type;
+    if (fromMenu && String(fromMenu).trim()) return String(fromMenu);
+    return readCachedStoreType(storeId);
+  }, [storeMenuDefaults.store_type, storeId]);
+
+  useEffect(() => {
+    if (resolvedStoreType) writeCachedStoreType(storeId, resolvedStoreType);
+  }, [storeId, resolvedStoreType]);
+
   const [addCreatedItemId, setAddCreatedItemId] = useState<number | null>(null);
   const [addModalKey, setAddModalKey] = useState(0);
   const initialAddVariantsRef = useRef<number[]>([]);
@@ -574,8 +599,32 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
   const [categoryUiConfig, setCategoryUiConfig] = useState<{
     cuisine_field: { visible: boolean; required_for_root: boolean; inherit_on_subcategory: boolean };
     allow_create_custom_cuisine: boolean;
+    item_form?: { variant: "grocery" | "standard"; show_expiry: boolean; show_food_attrs: boolean };
     limits?: { max_cuisines: number | null; current_custom_cuisine_count: number };
-  } | null>(null);
+  } | null>(() => {
+    const cached = readCachedStoreType(storeId);
+    if (!cached) return null;
+    const grocery = isGroceryStoreType(cached);
+    return {
+      cuisine_field: { visible: false, required_for_root: false, inherit_on_subcategory: true },
+      allow_create_custom_cuisine: false,
+      item_form: {
+        variant: grocery ? "grocery" : "standard",
+        show_expiry: grocery,
+        show_food_attrs: !grocery,
+      },
+    };
+  });
+
+  const itemFormVariant = useMemo((): "grocery" | "standard" => {
+    if (categoryUiConfig?.item_form?.variant === "grocery" || categoryUiConfig?.item_form?.variant === "standard") {
+      return categoryUiConfig.item_form.variant;
+    }
+    return itemFormVariantForStoreType(resolvedStoreType);
+  }, [categoryUiConfig?.item_form?.variant, resolvedStoreType]);
+
+  const isGroceryItemForm = itemFormVariant === "grocery";
+
   const [cuisineOptions, setCuisineOptions] = useState<
     Array<{ id: number; name: string; is_system_defined: boolean }>
   >([]);
@@ -651,24 +700,52 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
 
   useEffect(() => {
     let cancelled = false;
+    // Seed grocery/standard immediately from store_type (menu payload or cache) — don't wait for category-config.
+    if (resolvedStoreType) {
+      const grocery = isGroceryStoreType(resolvedStoreType);
+      setCategoryUiConfig((prev) => ({
+        cuisine_field: prev?.cuisine_field ?? {
+          visible: false,
+          required_for_root: false,
+          inherit_on_subcategory: true,
+        },
+        allow_create_custom_cuisine: prev?.allow_create_custom_cuisine ?? false,
+        item_form: {
+          variant: grocery ? "grocery" : "standard",
+          show_expiry: grocery,
+          show_food_attrs: !grocery,
+        },
+        limits: prev?.limits,
+      }));
+    }
     (async () => {
       try {
         const res = await fetch(`/api/merchant/stores/${storeId}/menu/category-config`, {
           credentials: "include",
         });
         const cfg = (await res.json().catch(() => null)) as {
+          store_type?: string | null;
           cuisine_field?: { visible?: boolean; required_for_root?: boolean; inherit_on_subcategory?: boolean };
           allow_create_custom_cuisine?: boolean;
+          item_form?: { variant?: string; show_expiry?: boolean; show_food_attrs?: boolean };
           limits?: { max_cuisines?: number | null; current_custom_cuisine_count?: number };
         } | null;
-        if (cancelled || !res.ok || !cfg?.cuisine_field) return;
+        if (cancelled || !res.ok || !cfg) return;
+        if (cfg.store_type) writeCachedStoreType(storeId, cfg.store_type);
+        const grocery =
+          cfg.item_form?.variant === "grocery" || isGroceryStoreType(cfg.store_type ?? resolvedStoreType);
         setCategoryUiConfig({
           cuisine_field: {
-            visible: Boolean(cfg.cuisine_field.visible),
-            required_for_root: Boolean(cfg.cuisine_field.required_for_root),
-            inherit_on_subcategory: Boolean(cfg.cuisine_field.inherit_on_subcategory),
+            visible: Boolean(cfg.cuisine_field?.visible),
+            required_for_root: Boolean(cfg.cuisine_field?.required_for_root),
+            inherit_on_subcategory: Boolean(cfg.cuisine_field?.inherit_on_subcategory ?? true),
           },
           allow_create_custom_cuisine: Boolean(cfg.allow_create_custom_cuisine),
+          item_form: {
+            variant: grocery ? "grocery" : "standard",
+            show_expiry: grocery || Boolean(cfg.item_form?.show_expiry),
+            show_food_attrs: grocery ? false : cfg.item_form?.show_food_attrs !== false,
+          },
           limits: cfg.limits
             ? {
                 max_cuisines:
@@ -680,13 +757,13 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
             : undefined,
         });
       } catch {
-        if (!cancelled) setCategoryUiConfig(null);
+        /* keep seeded item_form from store_type */
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [storeId]);
+  }, [storeId, resolvedStoreType]);
 
   const parseCuisineRows = (
     rows: unknown
@@ -1275,28 +1352,37 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
     try {
       if (addCreatedItemId != null) {
         const packagingPayload = packagingPayloadForForm(addForm);
+        const isGrocery = isGroceryItemForm;
         const payload = {
           item_name: addForm.item_name.trim(),
           item_description: addForm.item_description?.trim() || null,
           category_id: addForm.category_id,
-          food_type: addForm.food_type || null,
-          spice_level: addForm.spice_level || null,
-          cuisine_type: addForm.cuisine_type || null,
+          food_type: isGrocery ? null : addForm.food_type || null,
+          spice_level: isGrocery ? null : addForm.spice_level || null,
+          cuisine_type:
+            !isGrocery && categoryUiConfig?.cuisine_field.visible ? addForm.cuisine_type || null : null,
           base_price: addForm.base_price ? Number(addForm.base_price) : 0,
           selling_price: addForm.selling_price ? Number(addForm.selling_price) : Number(addForm.base_price),
           discount_percentage: 0,
           in_stock: Boolean(addForm.in_stock),
+          available_quantity: addForm.available_quantity !== "" ? Number(addForm.available_quantity) : null,
+          low_stock_threshold: addForm.low_stock_threshold !== "" ? Number(addForm.low_stock_threshold) : null,
           is_active: Boolean(addForm.is_active),
           is_popular: Boolean(addForm.is_popular),
           is_recommended: Boolean(addForm.is_recommended),
           preparation_time_minutes: addForm.preparation_time_minutes ?? null,
-          packaging_charges: packagingPayload,
-          serves: addForm.serves ?? null,
-          serves_label: addForm.serves_label || null,
+          packaging_charges: isGrocery ? null : packagingPayload,
+          serves: isGrocery ? null : addForm.serves ?? null,
+          serves_label: isGrocery ? null : addForm.serves_label || null,
           item_size_value: addForm.item_size_value ? Number(addForm.item_size_value) : null,
           item_size_unit: addForm.item_size_unit || null,
-          allergens: addForm.allergens ? String(addForm.allergens).split(",").map((s) => s.trim()).filter(Boolean) : [],
-          ...nutritionPayloadFromForm(addForm),
+          allergens: isGrocery
+            ? null
+            : addForm.allergens
+              ? String(addForm.allergens).split(",").map((s) => s.trim()).filter(Boolean)
+              : [],
+          expiry_date: isGrocery && addForm.expiry_date ? addForm.expiry_date : null,
+          ...nutritionPayloadFromForm(addForm, { omitTags: isGrocery }),
         };
         const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${addCreatedItemId}`, {
           method: "PUT",
@@ -1317,9 +1403,11 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
           else setAddImageFile(null);
         }
         try {
-          const { linked, skippedMessages } = await ensureStoreCuisinesLinkedForItemNames(storeId, addForm.cuisine_type);
-          if (linked > 0) await loadStoreCuisines();
-          if (skippedMessages.length > 0) toast(skippedMessages.slice(0, 2).join(" ") + (skippedMessages.length > 2 ? " …" : ""));
+          if (categoryUiConfig?.cuisine_field.visible) {
+            const { linked, skippedMessages } = await ensureStoreCuisinesLinkedForItemNames(storeId, addForm.cuisine_type);
+            if (linked > 0) await loadStoreCuisines();
+            if (skippedMessages.length > 0) toast(skippedMessages.slice(0, 2).join(" ") + (skippedMessages.length > 2 ? " …" : ""));
+          }
         } catch {
           /* non-fatal */
         }
@@ -1329,16 +1417,20 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
       }
 
       const packagingPayload = packagingPayloadForForm(addForm);
+      const isGrocery = isGroceryItemForm;
       const payload = {
         item_name: addForm.item_name.trim(),
         item_description: addForm.item_description?.trim() || null,
         category_id: addForm.category_id,
-        food_type: addForm.food_type || null,
-        spice_level: addForm.spice_level || null,
-        cuisine_type: addForm.cuisine_type || null,
+        food_type: isGrocery ? null : addForm.food_type || null,
+        spice_level: isGrocery ? null : addForm.spice_level || null,
+        cuisine_type:
+          !isGrocery && categoryUiConfig?.cuisine_field.visible ? addForm.cuisine_type || null : null,
         base_price: Number(addForm.base_price),
         selling_price: addForm.selling_price ? Number(addForm.selling_price) : Number(addForm.base_price),
         in_stock: Boolean(addForm.in_stock),
+        available_quantity: addForm.available_quantity !== "" ? Number(addForm.available_quantity) : null,
+        low_stock_threshold: addForm.low_stock_threshold !== "" ? Number(addForm.low_stock_threshold) : null,
         is_active: Boolean(addForm.is_active),
         is_popular: Boolean(addForm.is_popular),
         is_recommended: Boolean(addForm.is_recommended),
@@ -1346,18 +1438,21 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
         has_addons: false,
         has_variants: false,
         preparation_time_minutes: addForm.preparation_time_minutes ?? null,
-        packaging_charges: packagingPayload,
-        serves: addForm.serves ?? null,
-        serves_label: addForm.serves_label || null,
+        packaging_charges: isGrocery ? null : packagingPayload,
+        serves: isGrocery ? null : addForm.serves ?? null,
+        serves_label: isGrocery ? null : addForm.serves_label || null,
         item_size_value: addForm.item_size_value ? Number(addForm.item_size_value) : null,
         item_size_unit: addForm.item_size_unit || null,
-        allergens: addForm.allergens
-          ? String(addForm.allergens)
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean)
-          : null,
-        ...nutritionPayloadFromForm(addForm),
+        allergens: isGrocery
+          ? null
+          : addForm.allergens
+            ? String(addForm.allergens)
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean)
+            : null,
+        expiry_date: isGrocery && addForm.expiry_date ? addForm.expiry_date : null,
+        ...nutritionPayloadFromForm(addForm, { omitTags: isGrocery }),
       };
       const res = await fetch(`/api/merchant/stores/${storeId}/menu/items`, {
         method: "POST",
@@ -1412,9 +1507,11 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
         }
       }
       try {
-        const { linked, skippedMessages } = await ensureStoreCuisinesLinkedForItemNames(storeId, addForm.cuisine_type);
-        if (linked > 0) await loadStoreCuisines();
-        if (skippedMessages.length > 0) toast(skippedMessages.slice(0, 2).join(" ") + (skippedMessages.length > 2 ? " …" : ""));
+        if (categoryUiConfig?.cuisine_field.visible) {
+          const { linked, skippedMessages } = await ensureStoreCuisinesLinkedForItemNames(storeId, addForm.cuisine_type);
+          if (linked > 0) await loadStoreCuisines();
+          if (skippedMessages.length > 0) toast(skippedMessages.slice(0, 2).join(" ") + (skippedMessages.length > 2 ? " …" : ""));
+        }
       } catch {
         /* non-fatal */
       }
@@ -1620,29 +1717,38 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
       })();
       const discountNum = Number(String(editForm.discount_percentage ?? "0").replace(/,/g, ""));
       const taxNum = Number(String(editForm.tax_percentage ?? "0").replace(/,/g, ""));
+      const isGrocery = isGroceryItemForm;
       const payload = {
         item_name: editForm.item_name.trim(),
         item_description: editForm.item_description?.trim() || null,
         category_id: editForm.category_id,
-        food_type: editForm.food_type || null,
-        spice_level: editForm.spice_level || null,
-        cuisine_type: editForm.cuisine_type || null,
+        food_type: isGrocery ? null : editForm.food_type || null,
+        spice_level: isGrocery ? null : editForm.spice_level || null,
+        cuisine_type:
+          !isGrocery && categoryUiConfig?.cuisine_field.visible ? editForm.cuisine_type || null : null,
         base_price: editForm.base_price ? Number(editForm.base_price) : 0,
         selling_price: editForm.selling_price ? Number(editForm.selling_price) : (editForm.base_price ? Number(editForm.base_price) : 0),
         discount_percentage: Number.isFinite(discountNum) ? discountNum : 0,
         tax_percentage: Number.isFinite(taxNum) ? taxNum : 0,
         in_stock: Boolean(editForm.in_stock),
+        available_quantity: editForm.available_quantity !== "" ? Number(editForm.available_quantity) : null,
+        low_stock_threshold: editForm.low_stock_threshold !== "" ? Number(editForm.low_stock_threshold) : null,
         is_active: Boolean(editForm.is_active),
         is_popular: Boolean(editForm.is_popular),
         is_recommended: Boolean(editForm.is_recommended),
         preparation_time_minutes: editForm.preparation_time_minutes ?? null,
-        packaging_charges: packagingPayload,
-        serves: editForm.serves ?? null,
-        serves_label: editForm.serves_label || null,
+        packaging_charges: isGrocery ? null : packagingPayload,
+        serves: isGrocery ? null : editForm.serves ?? null,
+        serves_label: isGrocery ? null : editForm.serves_label || null,
         item_size_value: editForm.item_size_value ? Number(editForm.item_size_value) : null,
         item_size_unit: editForm.item_size_unit || null,
-        allergens: editForm.allergens ? String(editForm.allergens).split(",").map((s) => s.trim()).filter(Boolean) : [],
-        ...nutritionPayloadFromForm(editForm),
+        allergens: isGrocery
+          ? null
+          : editForm.allergens
+            ? String(editForm.allergens).split(",").map((s) => s.trim()).filter(Boolean)
+            : [],
+        expiry_date: isGrocery && editForm.expiry_date ? editForm.expiry_date : null,
+        ...nutritionPayloadFromForm(editForm, { omitTags: isGrocery }),
       };
       const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${editingId}`, {
         method: "PUT",
@@ -1675,13 +1781,15 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
       await reloadEditItemFromServer(editingId);
       await refreshMenu();
       try {
-        const { linked, skippedMessages } = await ensureStoreCuisinesLinkedForItemNames(
-          storeId,
-          editForm.cuisine_type
-        );
-        if (linked > 0) await loadStoreCuisines();
-        if (skippedMessages.length > 0) {
-          toast(skippedMessages.slice(0, 2).join(" ") + (skippedMessages.length > 2 ? " …" : ""));
+        if (categoryUiConfig?.cuisine_field.visible) {
+          const { linked, skippedMessages } = await ensureStoreCuisinesLinkedForItemNames(
+            storeId,
+            editForm.cuisine_type
+          );
+          if (linked > 0) await loadStoreCuisines();
+          if (skippedMessages.length > 0) {
+            toast(skippedMessages.slice(0, 2).join(" ") + (skippedMessages.length > 2 ? " …" : ""));
+          }
         }
       } catch {
         /* non-fatal */
@@ -3618,6 +3726,8 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                 imageSlotsLeft={imageSlotsLeft}
                 storeDefaults={storeMenuDefaults}
                 storeId={storeId}
+                showCuisineField={Boolean(categoryUiConfig?.cuisine_field.visible)}
+                itemFormVariant={itemFormVariant}
                 currentItemId={addCreatedItemId != null ? String(addCreatedItemId) : undefined}
                 imageValidationError={addImageValidationError}
                 imageValidating={addImageValidating}
@@ -3665,6 +3775,8 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                 imageLimit={imageLimit}
                 imageSlotsLeft={imageSlotsLeft}
                 storeDefaults={storeMenuDefaults}
+                showCuisineField={Boolean(categoryUiConfig?.cuisine_field.visible)}
+                itemFormVariant={itemFormVariant}
                 imageValidationError={editImageValidationError}
                 imageValidating={editImageValidating}
                 onNormalizeMenuItemImage={() => handleNormalizeMenuItemImage(true)}

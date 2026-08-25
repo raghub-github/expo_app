@@ -1,8 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { isFatalRefreshTokenError, isNetworkOrTransientError, isRefreshTokenAlreadyUsed } from "@/lib/auth/session-errors";
+import { isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
+import {
+  partnerMissingUserStatus,
+  requestHasPartnerAuthCookies,
+  resolvePartnerUser,
+} from "@/lib/auth/resolve-partner-user";
 import { toStoredDocumentUrl } from "@/lib/r2";
 import {
   getSessionMetadata,
@@ -25,89 +29,35 @@ function getSupabaseAdmin() {
   });
 }
 
-const maxGetUserAttempts = 1;
-
-/** GET /api/merchant-auth/merchant-session — Supabase-based merchant session. */
-export async function GET() {
+/** GET /api/merchant-auth/merchant-session — cookie-first merchant session. */
+export async function GET(req: NextRequest) {
   return runWithQuietAuthTimeoutErrors(async () => {
   try {
-    const supabase = await createServerSupabaseClient();
-    let user: {
-      id: string;
-      email?: string;
-      phone?: string;
-      name?: string;
-      avatar_url?: string;
-    } | null = null;
-    let userError: unknown = null;
-
-    for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
-      try {
-        const result = await supabase.auth.getUser();
-        const u = result.data?.user;
-        const meta = (u?.user_metadata ?? {}) as Record<string, unknown>;
-        const avatarRaw = meta.avatar_url ?? meta.picture;
-        const nameRaw = meta.full_name ?? meta.name;
-        user = u
-          ? {
-              id: u.id,
-              email: u.email ?? undefined,
-              phone: u.phone ?? undefined,
-              name: typeof nameRaw === "string" && nameRaw.trim() ? nameRaw.trim() : undefined,
-              avatar_url:
-                typeof avatarRaw === "string" && avatarRaw.trim() ? avatarRaw.trim() : undefined,
-            }
-          : null;
-        userError = result.error ?? null;
-      } catch (err) {
-        user = null;
-        userError = err;
-      }
-
-      if (!userError && user) break;
-      if (userError && isRefreshTokenAlreadyUsed(userError)) break;
-      if (userError && isFatalRefreshTokenError(userError)) break;
-      if (userError && isNetworkOrTransientError(userError)) break;
-      break;
-    }
-
-    // Treat timeout / empty 408-style auth failures as unavailable (not logged-out).
-    const errMsg =
-      userError && typeof userError === "object" && "message" in userError
-        ? String((userError as { message?: unknown }).message ?? "").toLowerCase()
-        : "";
-    const looksLikeTimeout =
-      errMsg.includes("timeout") ||
-      errMsg.includes("abort") ||
-      errMsg.includes("408") ||
-      errMsg.includes("request_timeout");
+    const resolved = await resolvePartnerUser({
+      cookieReader: {
+        get: (name) => req.cookies.get(name),
+        getAll: () => req.cookies.getAll(),
+      },
+      cookieHeader: req.headers.get("cookie"),
+    });
+    let user = resolved.user
+      ? {
+          id: resolved.user.id,
+          email: resolved.user.email ?? undefined,
+          phone: resolved.user.phone ?? undefined,
+          name: undefined as string | undefined,
+          avatar_url: undefined as string | undefined,
+        }
+      : null;
+    const userError = resolved.error;
 
     if (userError || !user) {
-      if (userError && isRefreshTokenAlreadyUsed(userError)) {
-        return NextResponse.json(
-          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
-          { status: 503 }
-        );
-      }
-      if (userError && isFatalRefreshTokenError(userError)) {
-        return NextResponse.json(
-          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-          { status: 401 }
-        );
-      }
-      if ((userError && isNetworkOrTransientError(userError)) || looksLikeTimeout) {
-        return NextResponse.json(
-          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
-          { status: 503 }
-        );
-      }
+      const mapped = partnerMissingUserStatus(requestHasPartnerAuthCookies(req), userError);
       return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 200 }
+        { success: false, error: mapped.error, code: mapped.code },
+        { status: mapped.status === 503 ? 503 : mapped.code === "SESSION_INVALID" ? 401 : 200 }
       );
     }
-
-    // getUser() already validates/refreshes — do not call getSession() (second refresh race).
 
     const validation = await validateMerchantFromSession({
       id: user.id,

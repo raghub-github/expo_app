@@ -1,7 +1,8 @@
 /**
  * Generates the Android notification small icon for GatiMitra Partner.
  *
- * Launcher icons use assets/images/splash-logo.png directly (see app.config.js).
+ * Launcher / adaptive icons: `npm run generate:icons` runs
+ * `generate-launcher-icon.mjs` first (safe-zone adaptive + mxappicon).
  */
 import fs from "node:fs";
 import path from "node:path";

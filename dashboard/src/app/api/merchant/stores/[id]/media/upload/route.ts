@@ -3,12 +3,16 @@
  * Upload menu file (image, CSV, XLS) to R2 and register in merchant_store_media_files.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { authenticateMerchantStoreOperator } from "@/lib/merchant-store-route-auth";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import { uploadWithKey, deleteDocument } from "@/lib/services/r2";
+import {
+  toAttachmentProxyUrl,
+  extractR2KeyFromProxyUrl,
+  contentTypeFromR2Key,
+} from "@/lib/r2-proxy-url";
 import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
@@ -61,17 +65,8 @@ function canonicalSheetMime(fileName: string): string {
   return "text/csv";
 }
 
-function extractR2KeyFromProxyUrl(url: string): string {
-  try {
-    const fakeOrigin = "https://local.invalid";
-    const u = url.startsWith("http://") || url.startsWith("https://")
-      ? new URL(url)
-      : new URL(url, fakeOrigin);
-    const key = u.searchParams.get("key");
-    return key ? decodeURIComponent(key) : "";
-  } catch {
-    return "";
-  }
+function mimeForMenuFile(file: File, r2Key: string, fallback?: string | null): string {
+  return contentTypeFromR2Key(r2Key, (fallback && fallback.trim()) || file.type || null);
 }
 
 export async function POST(
@@ -89,35 +84,13 @@ export async function POST(
       );
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 401 }
-      );
-    }
-
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
-    if (!allowed) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Merchant dashboard access required",
-          code: "MERCHANT_ACCESS_REQUIRED",
-        },
-        { status: 403 }
-      );
-    }
+    const operator = await authenticateMerchantStoreOperator(request);
+    if (!operator.ok) return operator.response;
+    const user = operator.user;
 
     const areaManagerId = await resolveMerchantListAreaManagerId({
       supabaseAuthId: user.id,
-      email: user.email,
+      email: user.email ?? "",
     });
 
     const store = await getMerchantStoreById(storeId, areaManagerId);
@@ -291,8 +264,9 @@ export async function POST(
         for (const f of effectiveFiles) {
           const ext = f.name.split(".").pop()?.toLowerCase() || "bin";
           const r2Key = `${menuBasePath}/menu-ref-img_${randomUUID()}.${ext}`;
-          await uploadWithKey(f, r2Key);
-          const publicUrl = `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
+          const uploadMime = mimeForMenuFile(f, r2Key);
+          await uploadWithKey(f, r2Key, uploadMime);
+          const publicUrl = toAttachmentProxyUrl(r2Key) || `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
           uploadedBundleEntries.push({
             id: randomUUID(),
             url: publicUrl,
@@ -368,10 +342,11 @@ export async function POST(
         // Replace only same type for PDF/SHEET.
         for (const row of rows) {
           if (!row.r2_key) continue;
+          const keyToDelete = extractR2KeyFromProxyUrl(row.r2_key) || row.r2_key;
           try {
-            await deleteDocument(row.r2_key);
+            await deleteDocument(keyToDelete);
           } catch (e) {
-            console.warn("[media/upload] R2 delete failed for key:", row.r2_key, e);
+            console.warn("[media/upload] R2 delete failed for key:", keyToDelete, e);
           }
         }
         await sql`
@@ -403,11 +378,11 @@ export async function POST(
             uploadMime = canonicalSheetMime(`x.${sheetExt}`);
           }
 
-          await uploadWithKey(f, r2Key);
+          await uploadWithKey(f, r2Key, uploadMime);
 
-          const publicUrl = `/api/attachments/proxy?key=${encodeURIComponent(
-            r2Key
-          )}`;
+          const publicUrl =
+            toAttachmentProxyUrl(r2Key) ||
+            `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
           const inserted = await sql`
             INSERT INTO merchant_store_media_files (
               store_id, media_scope, source_entity, original_file_name, r2_key, public_url, menu_url, menu_reference_image_urls,
@@ -449,9 +424,18 @@ export async function POST(
         }
       }
     } catch (e) {
-      console.error("[POST /api/merchant/stores/[id]/media/upload] insert failed:", e);
+      const message = e instanceof Error ? e.message : String(e);
+      console.error("[POST /api/merchant/stores/[id]/media/upload] failed:", e);
+      const looksLikeMissingTable =
+        /merchant_store_media_files/i.test(message) &&
+        /(does not exist|undefined table|42703|42P01)/i.test(message);
       return NextResponse.json(
-        { success: false, error: "Upload succeeded but failed to save record. Table merchant_store_media_files may not exist." },
+        {
+          success: false,
+          error: looksLikeMissingTable
+            ? "Upload succeeded but failed to save record. Table merchant_store_media_files may not exist."
+            : `Menu upload failed: ${message}`.slice(0, 400),
+        },
         { status: 500 }
       );
     }

@@ -34,6 +34,7 @@ import {
   classifyMerchantReferralError,
   merchantReferralPublicMessage,
   previewReferralCode,
+  ensureMerchantParentOwnReferralCode,
 } from "./referral.onboarding.js";
 import {
   httpStatusForReferralApplyError,
@@ -236,7 +237,7 @@ export async function referralRoutes(app: FastifyInstance) {
     {
       schema: {
         body: z.object({
-          referralCode: z.string().min(3).max(32),
+          referralCode: z.string().min(3).max(32).optional(),
           parentMerchantId: z.union([z.number().int().positive(), z.string().min(1).max(32)]),
           source: z
             .enum(["deep_link", "play_install_referrer", "manual", "share_sheet", "unknown"])
@@ -251,15 +252,25 @@ export async function referralRoutes(app: FastifyInstance) {
         return reply.code(403).send({ ok: false, error: "forbidden" });
       }
       const body = req.body as {
-        referralCode: string;
+        referralCode?: string;
         parentMerchantId: number | string;
         source?: "deep_link" | "play_install_referrer" | "manual" | "share_sheet" | "unknown";
         referredPhone?: string;
         createIfMissing?: boolean;
       };
+      const ownCode = await ensureMerchantParentOwnReferralCode(body.parentMerchantId);
+      const applyCode = String(body.referralCode ?? "").trim();
+      if (!applyCode) {
+        return {
+          ok: true,
+          skipped: true,
+          reason: "no_code",
+          referralCode: ownCode,
+        };
+      }
       const result = await applyMerchantReferralForParent({
         parentMerchantId: body.parentMerchantId,
-        referralCode: body.referralCode,
+        referralCode: applyCode,
         source: body.source ?? "manual",
         referredPhone: body.referredPhone ?? null,
         ip: req.ip,
@@ -267,7 +278,7 @@ export async function referralRoutes(app: FastifyInstance) {
         createIfMissing: body.createIfMissing,
       });
       if ("skipped" in result && result.skipped) {
-        return { ok: true, skipped: true, reason: result.reason };
+        return { ok: true, skipped: true, reason: result.reason, referralCode: ownCode };
       }
       if (!result.ok) {
         const status = httpStatusForReferralApplyError(result.error);
@@ -277,13 +288,14 @@ export async function referralRoutes(app: FastifyInstance) {
         return reply.code(status).send({
           ok: false,
           error: extra?.error ?? result.error,
+          referralCode: ownCode,
           publicError: classifyMerchantReferralError(result.error),
           message: extra?.userMessage ?? merchantReferralPublicMessage(result.error),
           flags: result.flags,
           ...(extra ?? {}),
         });
       }
-      return result;
+      return { ...result, referralCode: ownCode };
     },
   );
 

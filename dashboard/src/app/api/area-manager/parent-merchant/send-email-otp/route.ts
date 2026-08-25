@@ -5,38 +5,30 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { requireAreaManagerApiAuth, requireMerchantManager } from "@/lib/area-manager/auth";
 import { apiErrorResponse } from "@/lib/api-errors";
+import { isValidEmail, normalizeEmail } from "@/lib/valid-email";
+import { createIsolatedOtpClient } from "@/lib/supabase/isolated-otp-client";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const getAuthUser = async () => {
-      const { data } = await supabase.auth.getUser();
-      return data?.user ?? null;
-    };
-    const authResult = await requireAreaManagerApiAuth(getAuthUser);
+    const authResult = await requireAreaManagerApiAuth();
     if (authResult.error) return authResult.error;
     const err = requireMerchantManager(authResult.resolved);
     if (err) return err;
 
     const body = await req.json();
-    const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-    if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
+    const email = typeof body?.email === "string" ? normalizeEmail(body.email) : "";
+    if (!isValidEmail(email)) {
       return NextResponse.json({ error: "Valid email is required" }, { status: 400 });
     }
 
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!url || !anonKey) {
+    const anon = createIsolatedOtpClient();
+    if (!anon) {
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
-
-    const anon = createClient(url, anonKey, { auth: { persistSession: false } });
     const { error } = await anon.auth.signInWithOtp({
       email,
       options: { shouldCreateUser: true },

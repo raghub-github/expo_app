@@ -22,6 +22,16 @@ export type CategoryUiConfig = {
   };
   /** When true, merchant may link more cuisines from `cuisine_master` (plan limits apply). No free-text new cuisines. */
   allow_create_custom_cuisine: boolean;
+  /**
+   * Item form profile by store type.
+   * - grocery: simplified fields + expiry_date
+   * - standard: existing food form (CLOUD_KITCHEN, CAFE, BAKERY, RESTAURANT, …)
+   */
+  item_form: {
+    variant: "grocery" | "standard";
+    show_expiry: boolean;
+    show_food_attrs: boolean;
+  };
   limits: PlanLimits & {
     current_category_count: number;
     current_subcategory_count: number;
@@ -30,12 +40,60 @@ export type CategoryUiConfig = {
   };
 };
 
+export function isGroceryStoreType(storeType: string | null | undefined): boolean {
+  return normalizeStoreTypeForCuisineFlag(storeType) === "GROCERY";
+}
+
 export function isFoodStoreType(storeType: string | null | undefined): boolean {
   const t = (storeType ?? "").trim().toUpperCase();
   if (!t) return false;
   if (t === "FOOD" || t === "RESTAURANT") return true;
   if (t.includes("FOOD")) return true;
   return false;
+}
+
+function normalizeStoreTypeForCuisineFlag(storeType: string | null | undefined): string {
+  return (storeType ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_");
+}
+
+/** Defaults when no super-admin row exists yet — keep in sync with dashboard onboarding-store-types. */
+const DEFAULT_CUISINE_ENABLED_STORE_TYPES = new Set([
+  "FOOD",
+  "RESTAURANT",
+  "CAFE",
+  "BAKERY",
+  "CLOUD_KITCHEN",
+  "FOOD_TRUCK",
+  "ICE_CREAM_PARLOR",
+  "GROCERY",
+]);
+
+export function defaultCuisineEnabledForStoreType(storeType: string | null | undefined): boolean {
+  return DEFAULT_CUISINE_ENABLED_STORE_TYPES.has(normalizeStoreTypeForCuisineFlag(storeType));
+}
+
+/**
+ * Super-admin "Cuisine list in onboarding" flag for this store type.
+ * Same flag gates category cuisine_id and the item cuisine picker.
+ */
+export async function isCuisineEnabledForStoreType(
+  storeType: string | null | undefined
+): Promise<boolean> {
+  const t = normalizeStoreTypeForCuisineFlag(storeType);
+  if (!t) return false;
+  try {
+    const sql = getSql();
+    const [row] = await sql<{ cuisine_list_enabled: boolean }[]>`
+      SELECT cuisine_list_enabled
+      FROM merchant_store_type_onboarding_flags
+      WHERE UPPER(REPLACE(REPLACE(BTRIM(store_type), ' ', '_'), '-', '_')) = ${t}
+      LIMIT 1
+    `;
+    if (row) return row.cuisine_list_enabled === true;
+  } catch {
+    /* table may not exist yet */
+  }
+  return defaultCuisineEnabledForStoreType(t);
 }
 
 export async function getMerchantParentIdForStore(storeIdNum: number): Promise<number | null> {
@@ -144,32 +202,28 @@ export async function countLinkedCuisinesForStore(storeIdNum: number): Promise<n
 }
 
 export async function buildCategoryUiConfig(storeIdNum: number, storeType: string | null): Promise<CategoryUiConfig> {
-  const sql = getSql();
-  const [st] = await sql<{ cuisine_types: unknown }[]>`
-    SELECT cuisine_types FROM merchant_stores WHERE id = ${storeIdNum} LIMIT 1
-  `;
-  const tags = st?.cuisine_types;
-  const hasStoreCuisineTags =
-    Array.isArray(tags) &&
-    tags.some((x: unknown) => {
-      if (typeof x === "string") return x.trim().length > 0;
-      return x != null && String(x).trim().length > 0;
-    });
-
-  const limits = await getEffectivePlanLimits(storeIdNum);
-  const counts = await countLiveCategories(storeIdNum);
-  const linkedCuisines = await countLinkedCuisinesForStore(storeIdNum);
-  const food = isFoodStoreType(storeType) || Boolean(hasStoreCuisineTags);
+  const grocery = isGroceryStoreType(storeType);
+  const [limits, counts, linkedCuisines, cuisineEnabled] = await Promise.all([
+    getEffectivePlanLimits(storeIdNum),
+    countLiveCategories(storeIdNum),
+    countLinkedCuisinesForStore(storeIdNum),
+    isCuisineEnabledForStoreType(storeType),
+  ]);
 
   return {
     store_type: storeType,
     cuisine_field: {
-      visible: food,
-      required_for_root: food,
+      visible: cuisineEnabled,
+      required_for_root: cuisineEnabled,
       inherit_on_subcategory: true,
     },
     allow_create_custom_cuisine:
-      food && (limits.max_cuisines == null || linkedCuisines < limits.max_cuisines),
+      cuisineEnabled && (limits.max_cuisines == null || linkedCuisines < limits.max_cuisines),
+    item_form: {
+      variant: grocery ? "grocery" : "standard",
+      show_expiry: grocery,
+      show_food_attrs: !grocery,
+    },
     limits: {
       ...limits,
       current_category_count: counts.total,
@@ -243,7 +297,7 @@ export async function validateCategoryCreate(opts: {
 }): Promise<{ cuisine_id: number | null }> {
   const limits = await getEffectivePlanLimits(opts.storeIdNum);
   const counts = await countLiveCategories(opts.storeIdNum);
-  const food = isFoodStoreType(opts.storeType);
+  const cuisineEnabled = await isCuisineEnabledForStoreType(opts.storeType);
   const sql = getSql();
 
   if (limits.max_menu_categories != null && counts.total >= limits.max_menu_categories) {
@@ -273,7 +327,7 @@ export async function validateCategoryCreate(opts: {
         400
       );
     }
-    if (food) {
+    if (cuisineEnabled) {
       const cid = p.cuisine_id != null ? Number(p.cuisine_id) : opts.cuisine_id ?? null;
       if (cid == null) {
         throw new CategoryRuleError(
@@ -288,17 +342,25 @@ export async function validateCategoryCreate(opts: {
     return { cuisine_id: null };
   }
 
-  if (food) {
+  if (cuisineEnabled) {
     const cid = opts.cuisine_id ?? null;
     if (cid == null) {
-      throw new CategoryRuleError("cuisine_required", "cuisine_id is required for FOOD / restaurant stores", 400);
+      throw new CategoryRuleError(
+        "cuisine_required",
+        "cuisine_id is required when cuisine list is enabled for this store type",
+        400
+      );
     }
     await assertCuisineLinkedToStore({ storeIdNum: opts.storeIdNum, cuisineId: cid });
     return { cuisine_id: cid };
   }
 
   if (opts.cuisine_id != null) {
-    throw new CategoryRuleError("cuisine_not_allowed", "cuisine_id is only allowed for FOOD / restaurant stores", 400);
+    throw new CategoryRuleError(
+      "cuisine_not_allowed",
+      "cuisine_id is only allowed when cuisine list is enabled for this store type",
+      400
+    );
   }
   return { cuisine_id: null };
 }
@@ -311,7 +373,7 @@ export async function validateCategoryUpdate(opts: {
   /** if undefined, skip cuisine change validation */
 }): Promise<void> {
   if (opts.cuisine_id === undefined) return;
-  const food = isFoodStoreType(opts.storeType);
+  const cuisineEnabled = await isCuisineEnabledForStoreType(opts.storeType);
   const sql = getSql();
 
   const [row] = await sql<{ cuisine_id: number | null; parent_category_id: number | null }[]>`
@@ -323,18 +385,26 @@ export async function validateCategoryUpdate(opts: {
   if (!row) return;
 
   const nextCuisine = opts.cuisine_id;
-  if (!food && nextCuisine != null) {
-    throw new CategoryRuleError("cuisine_not_allowed", "cuisine_id is only allowed for FOOD / restaurant stores", 400);
+  if (!cuisineEnabled && nextCuisine != null) {
+    throw new CategoryRuleError(
+      "cuisine_not_allowed",
+      "cuisine_id is only allowed when cuisine list is enabled for this store type",
+      400
+    );
   }
 
-  if (!food) return;
+  if (!cuisineEnabled) return;
 
   const oldC = row.cuisine_id != null ? Number(row.cuisine_id) : null;
   const newC = nextCuisine;
   if (oldC === newC) return;
 
-  if (food && row.parent_category_id == null && newC === null) {
-    throw new CategoryRuleError("cuisine_required", "cuisine_id cannot be removed for FOOD / restaurant categories", 400);
+  if (cuisineEnabled && row.parent_category_id == null && newC === null) {
+    throw new CategoryRuleError(
+      "cuisine_required",
+      "cuisine_id cannot be removed when cuisine list is enabled for this store type",
+      400
+    );
   }
 
   if (row.parent_category_id != null) {

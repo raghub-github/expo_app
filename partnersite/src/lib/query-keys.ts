@@ -5,7 +5,10 @@
 
 export const merchantKeys = {
   all: ['merchant'] as const,
-  resolveSession: () => [...merchantKeys.all, 'resolve-session'] as const,
+  resolveSession: (parentId?: string | number | null) =>
+    parentId == null || String(parentId).trim() === ''
+      ? ([...merchantKeys.all, 'resolve-session'] as const)
+      : ([...merchantKeys.all, 'resolve-session', String(parentId).trim()] as const),
   storeRecord: (storeId: string) => [...merchantKeys.all, 'store-record', storeId] as const,
   foodOrders: (storeId: string) => [...merchantKeys.all, 'food-orders', storeId] as const,
   orderHistory: (storeId: string) => [...merchantKeys.all, 'order-history', storeId] as const,

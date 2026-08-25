@@ -175,6 +175,15 @@ const nutritionalFields = {
   fibre_unit: z.string().max(10).optional().nullable(),
   allergens: z.array(z.string()).optional().nullable(),
   item_tags: z.array(z.string()).optional().nullable(),
+  available_quantity: z.number().int().min(0).optional().nullable(),
+  low_stock_threshold: z.number().int().min(0).optional().nullable(),
+  /** YYYY-MM-DD — primarily for GROCERY items */
+  expiry_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .nullable(),
+  in_stock: z.boolean().optional(),
 };
 
 const itemCreateSchema = z.object({
@@ -435,6 +444,7 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           const access = await getStore(req, reply, req.params.storeId);
           if (!access) return;
           const storeType = await resolveStoreType(access.storeIdNum);
+          // item_form is sync from store_type; remaining fields load in parallel inside buildCategoryUiConfig
           const config = await buildCategoryUiConfig(access.storeIdNum, storeType);
           return reply.send(config);
         }

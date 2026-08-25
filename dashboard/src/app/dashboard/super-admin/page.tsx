@@ -208,10 +208,10 @@ const adminOptions: AdminOption[] = [
     bgColor: "bg-teal-50 hover:bg-teal-100",
   },
   {
-    name: "Rider document types",
+    name: "RX / MX Documents type",
     href: "/dashboard/super-admin/rider-onboarding-document-types",
     Icon: RiderDocumentTypesIcon,
-    description: "Manage DL, RC, rental proof and other upload documents for rider onboarding",
+    description: "Rider (RX) and merchant (MX) onboarding document types per store type.",
     color: "text-sky-700",
     bgColor: "bg-sky-50 hover:bg-sky-100",
   },

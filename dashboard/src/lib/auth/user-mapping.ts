@@ -13,6 +13,7 @@
 import { getDb, getSql } from "../db/client";
 import { eq, and, isNull, sql, type InferSelectModel } from "drizzle-orm";
 import { systemUsers } from "../db/schema";
+import { peekDashboardIdentity } from "./auth-identity-cache";
 
 type SystemUserRow = InferSelectModel<typeof systemUsers>;
 
@@ -51,8 +52,10 @@ export async function resolveSystemUserForSupabaseAuth(
     const byAuth = await getSystemUserByAuthId(id);
     if (byAuth) return byAuth;
   }
-  if (email?.trim()) {
-    return getSystemUserByEmail(email);
+  const resolvedEmail =
+    email?.trim() || (id ? peekDashboardIdentity(id)?.email : "") || "";
+  if (resolvedEmail) {
+    return getSystemUserByEmail(resolvedEmail);
   }
   return null;
 }

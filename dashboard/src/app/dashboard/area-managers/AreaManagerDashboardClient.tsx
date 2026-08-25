@@ -493,7 +493,7 @@ export function AreaManagerDashboardClient() {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <h2 className="text-2xl font-bold text-gray-900">Store Overview</h2>
           <Link
-            href={`/dashboard/area-managers/stores/register-parent?returnTo=${encodeURIComponent("/dashboard/area-managers")}`}
+            href={`/dashboard/area-managers/stores/register-parent?returnTo=${encodeURIComponent("/dashboard/area-managers/stores?filter=parent")}`}
             className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-purple-600 bg-white px-4 py-2 text-sm font-medium text-purple-600 hover:bg-purple-50"
           >
             <Plus className="h-4 w-4" />

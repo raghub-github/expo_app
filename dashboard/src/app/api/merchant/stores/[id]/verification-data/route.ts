@@ -3,16 +3,13 @@
  * Full store data for step-by-step verification (all fields needed for each step).
  */
 import { NextRequest, NextResponse } from "next/server";
-import { resolveMerchantApiActor } from "@/lib/merchant-food-orders/store-access";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
+import { authenticateMerchantStoreForId } from "@/lib/merchant-store-route-auth";
 import {
   canRevealStoreLegalDocs,
   redactStoreAgreement,
   redactStoreBankAccounts,
   redactStoreLegalDocuments,
 } from "@/lib/merchants/store-legal-docs-access";
-import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { resolveAssignedAreaManagersForStoreVerification } from "@/lib/db/operations/parent-area-managers";
 import { getSql } from "@/lib/db/client";
 import { mapRowToMenuMediaFile, type MenuMediaFile } from "@/lib/merchant-menu-media";
@@ -22,7 +19,7 @@ import { listPendingOnboardingResubmissions } from "@/lib/db/operations/onboardi
 export const runtime = "nodejs";
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -35,45 +32,10 @@ export async function GET(
       );
     }
 
-    const actor = await resolveMerchantApiActor();
-    if (!actor.ok) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: actor.error,
-          code: actor.status === 503 ? "SERVICE_UNAVAILABLE" : "SESSION_REQUIRED",
-        },
-        { status: actor.status }
-      );
-    }
-    const user = { id: actor.id, email: actor.email };
-
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
-    if (!allowed) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Merchant dashboard access required",
-          code: "MERCHANT_ACCESS_REQUIRED",
-        },
-        { status: 403 }
-      );
-    }
-
-    const areaManagerId = await resolveMerchantListAreaManagerId({
-      supabaseAuthId: user.id,
-      email: user.email,
-    });
-
-    const store = await getMerchantStoreById(storeId, areaManagerId);
-    if (!store) {
-      return NextResponse.json(
-        { success: false, error: "Store not found" },
-        { status: 404 }
-      );
-    }
+    const access = await authenticateMerchantStoreForId(request, storeId);
+    if (!access.ok) return access.response;
+    const user = { id: access.user.id, email: access.user.email ?? "" };
+    const store = access.store;
 
     const storePayload = {
       id: store.id,

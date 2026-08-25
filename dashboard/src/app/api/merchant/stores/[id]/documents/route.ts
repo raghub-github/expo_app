@@ -6,10 +6,7 @@
  * Update store document numbers (agent verification edits).
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
-import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { authenticateMerchantStoreForId } from "@/lib/merchant-store-route-auth";
 import { getSql } from "@/lib/db/client";
 import { ensureMerchantStoreDocumentsStep4JsonColumns } from "@/lib/db/ensure-step4-resubmission-flags-column";
 import { rejectionDetailForDocType, rejectionRequiresNewFileUpload } from "@/lib/merchant-store-document-rejection";
@@ -26,7 +23,7 @@ import { maskAadhaarNumber } from "@/lib/mask-aadhaar";
 export const runtime = "nodejs";
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -39,38 +36,8 @@ export async function GET(
       );
     }
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
-    }
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "AREA_MANAGER"));
-    if (!allowed) {
-      return NextResponse.json(
-        { success: false, error: "Merchant dashboard access required" },
-        { status: 403 }
-      );
-    }
-    const areaManagerId = await resolveMerchantListAreaManagerId({
-      supabaseAuthId: user.id,
-      email: user.email,
-    });
-    const store = await getMerchantStoreById(storeId, areaManagerId);
-    if (!store) {
-      return NextResponse.json(
-        { success: false, error: "Store not found" },
-        { status: 404 }
-      );
-    }
+    const access = await authenticateMerchantStoreForId(request, storeId);
+    if (!access.ok) return access.response;
 
     const sql = getSql();
     const docRows = await sql`
@@ -190,35 +157,8 @@ export async function PATCH(
       );
     }
 
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
-    }
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "AREA_MANAGER"));
-    if (!allowed) {
-      return NextResponse.json(
-        { success: false, error: "Merchant dashboard access required" },
-        { status: 403 }
-      );
-    }
-    const areaManagerId = await resolveMerchantListAreaManagerId({
-      supabaseAuthId: user.id,
-      email: user.email,
-    });
-    const store = await getMerchantStoreById(storeId, areaManagerId);
-    if (!store) {
-      return NextResponse.json(
-        { success: false, error: "Store not found" },
-        { status: 404 }
-      );
-    }
+    const access = await authenticateMerchantStoreForId(request, storeId);
+    if (!access.ok) return access.response;
 
     const body = await request.json().catch(() => ({}));
     const updates: Record<string, unknown> = {};

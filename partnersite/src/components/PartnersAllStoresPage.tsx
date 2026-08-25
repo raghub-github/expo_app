@@ -18,8 +18,14 @@ import {
 } from "@/lib/onboarding/store-onboarding-status";
 import type { PartnerVerificationStepRejection } from "@/lib/onboarding/partner-verification-rejections";
 import { normalizeMerchantStoreMediaUrl } from "@/lib/r2";
-import { clearPartnerStoreSelection, persistPartnerSelectedStoreId } from "@/lib/partner-selected-store";
+import {
+  clearPartnerStoreSelection,
+  persistPartnerLastParentId,
+  persistPartnerSelectedStoreId,
+  readPartnerLastParentId,
+} from "@/lib/partner-selected-store";
 import { merchantKeys } from "@/lib/query-keys";
+import { allStoresPickerHref } from "@/lib/partner-all-stores-href";
 
 type StoreItem = {
   store_id: string;
@@ -61,6 +67,7 @@ export function PartnersAllStoresPage() {
 
   const applyResolved = useCallback(
     (result: ResolveData) => {
+      if (result.parentId != null) persistPartnerLastParentId(result.parentId);
       setData(result);
       setStatus("home");
 
@@ -83,7 +90,15 @@ export function PartnersAllStoresPage() {
   );
 
   const resolveSession = useCallback(async () => {
-    const cached = queryClient.getQueryData<ResolveData>(merchantKeys.resolveSession());
+    const preferredParentId =
+      (typeof window !== "undefined"
+        ? new URL(window.location.href).searchParams.get("parent_id")?.trim() || ""
+        : "") ||
+      readPartnerLastParentId();
+    if (preferredParentId) persistPartnerLastParentId(preferredParentId);
+
+    const sessionKey = merchantKeys.resolveSession(preferredParentId || null);
+    const cached = queryClient.getQueryData<ResolveData>(sessionKey);
     if (cached?.success) {
       applyResolved(cached);
     } else {
@@ -91,9 +106,12 @@ export function PartnersAllStoresPage() {
     }
     try {
       const result = await queryClient.fetchQuery({
-        queryKey: merchantKeys.resolveSession(),
+        queryKey: sessionKey,
         queryFn: async () => {
-          const res = await fetch("/api/merchant-auth/resolve-session", { credentials: "include" });
+          const q = preferredParentId
+            ? `?parent_id=${encodeURIComponent(preferredParentId)}`
+            : "";
+          const res = await fetch(`/api/merchant-auth/resolve-session${q}`, { credentials: "include" });
           if (res.status === 404) {
             const err = new Error("NOT_FOUND") as Error & { status: number; body?: ResolveData };
             err.status = 404;
@@ -120,6 +138,15 @@ export function PartnersAllStoresPage() {
         },
         staleTime: 5 * 60 * 1000,
       });
+      if (result.parentId != null) persistPartnerLastParentId(result.parentId);
+      if (typeof window !== "undefined" && result.parentId != null) {
+        const u = new URL(window.location.href);
+        if (!u.searchParams.get("parent_id")) {
+          u.searchParams.set("parent_id", String(result.parentId));
+          const qs = u.searchParams.toString();
+          window.history.replaceState({}, "", `${u.pathname}${qs ? `?${qs}` : ""}`);
+        }
+      }
       applyResolved(result);
     } catch (e) {
       const err = e as Error & {
@@ -138,7 +165,6 @@ export function PartnersAllStoresPage() {
         }
         const code = result.code;
         const fatalAuth =
-          err.status === 401 ||
           code === "SESSION_INVALID" ||
           code === "DEVICE_SESSION_INVALID" ||
           code === "MERCHANT_NOT_FOUND";
@@ -173,6 +199,20 @@ export function PartnersAllStoresPage() {
   useEffect(() => {
     resolveSession();
   }, [resolveSession]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const u = new URL(window.location.href);
+    const notice = u.searchParams.get("notice");
+    if (notice === "store_removed") {
+      toast.error("This store is no longer available. It was removed with the parent account.", {
+        duration: 5500,
+      });
+      u.searchParams.delete("notice");
+      const qs = u.searchParams.toString();
+      window.history.replaceState({}, "", `${u.pathname}${qs ? `?${qs}` : ""}`);
+    }
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -360,25 +400,25 @@ export function PartnersAllStoresPage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50/50 flex flex-col">
       <header className="shrink-0">
-        <div className="px-3 sm:px-6 pt-3 sm:pt-4">
-          <div className="mx-auto max-w-6xl flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <img src="/onlylogo.png" alt="GatiMitra" className="h-8 w-auto sm:h-9 object-contain" />
+        <div className="px-3 sm:px-4 pt-3 sm:pt-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <img src="/onlylogo.png" alt="GatiMitra" className="h-8 w-auto sm:h-9 object-contain shrink-0" />
               <span className="hidden sm:inline text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Partner
               </span>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
+              <NeedHelpBadge inline variant="pill" />
               <button
                 type="button"
                 onClick={() => setShowLogoutModal(true)}
-                className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/90 backdrop-blur-sm px-3 py-2 text-xs sm:text-sm font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300"
+                className="flex items-center gap-2 rounded-lg border border-red-600 bg-red-600 px-3 py-2 text-xs sm:text-sm font-medium text-white hover:bg-red-700 hover:border-red-700"
               >
                 <LogOut className="h-4 w-4" />
                 <span className="hidden sm:inline">Sign out</span>
               </button>
-              <NeedHelpBadge inline variant="pill" />
             </div>
           </div>
         </div>
@@ -438,7 +478,7 @@ export function PartnersAllStoresPage() {
                       ? Math.min(...openRej.map((r) => Number(r.step_number)))
                       : 4;
                   router.push(
-                    `/auth/resubmit-onboarding?store_id=${encodeURIComponent(storeId)}&parent_id=${encodeURIComponent(String(parentId))}&verification_fix_step=${fixStep}&returnTo=${encodeURIComponent("/partners/all-stores?picker=1")}`
+                    `/auth/resubmit-onboarding?store_id=${encodeURIComponent(storeId)}&parent_id=${encodeURIComponent(String(parentId))}&verification_fix_step=${fixStep}&returnTo=${encodeURIComponent(allStoresPickerHref(parentId))}`
                   );
                 }}
               />
@@ -483,7 +523,7 @@ export function PartnersAllStoresPage() {
                           ? Math.min(...openRej.map((r) => Number(r.step_number)))
                           : 4;
                       router.push(
-                        `/auth/resubmit-onboarding?store_id=${encodeURIComponent(store.store_id)}&parent_id=${encodeURIComponent(String(parentId))}&verification_fix_step=${fixStep}&returnTo=${encodeURIComponent("/partners/all-stores?picker=1")}`
+                        `/auth/resubmit-onboarding?store_id=${encodeURIComponent(store.store_id)}&parent_id=${encodeURIComponent(String(parentId))}&verification_fix_step=${fixStep}&returnTo=${encodeURIComponent(allStoresPickerHref(parentId))}`
                       );
                       return;
                     }

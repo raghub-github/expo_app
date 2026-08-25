@@ -67,22 +67,12 @@ export function toMenuProxyUrl(
 export function toEnumStoreType(raw: string | undefined): string | null {
   if (!raw) return null;
   const normalized = raw.toUpperCase().replace(/\s+/g, "_");
-  const allowed: Record<string, string> = {
-    RESTAURANT: "RESTAURANT",
-    CAFE: "CAFE",
-    BAKERY: "BAKERY",
-    CLOUD_KITCHEN: "CLOUD_KITCHEN",
-    GROCERY: "GROCERY",
-    PHARMA: "PHARMA",
-    STATIONERY: "STATIONERY",
-    ELECTRONICS_ECOMMERCE: "ELECTRONICS_ECOMMERCE",
-    OTHERS: "OTHERS",
-    // Legacy / alias values seen in older rows
-    FOOD: "RESTAURANT",
-    GENERAL: "OTHERS",
-  };
-  // Never return an unknown label — invalid enum aborts merchant_stores INSERT.
-  return allowed[normalized] ?? null;
+  if (!normalized || normalized === "RIDER") return null;
+  if (normalized === "OTHER") return "OTHERS";
+  // Pass through any catalog/enum code. A hardcoded 8-type allowlist was
+  // silently rewriting Fashion/Garage/etc. to RESTAURANT on save.
+  if (!/^[A-Z][A-Z0-9_]*$/.test(normalized)) return null;
+  return normalized;
 }
 
 export type ProgressFlags = {

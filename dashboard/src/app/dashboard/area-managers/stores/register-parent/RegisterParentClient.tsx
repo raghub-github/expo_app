@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, type InputHTMLAttributes, type ReactNode } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, type InputHTMLAttributes, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { createPortal } from "react-dom";
 import {
   ArrowLeft,
   ArrowRight,
@@ -14,13 +15,14 @@ import {
   ImageIcon,
   Loader2,
   CheckCircle,
+  CircleAlert,
   Store,
   Building2,
   LayoutGrid,
   ChevronDown,
+  Search,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { toast } from "sonner";
 import {
   resetParentOnboardingProgress,
@@ -29,6 +31,9 @@ import {
   setParentOnboardingSubtitle,
 } from "@/lib/parent-onboarding-chrome";
 import { MerchantReferralCodeField, type MerchantReferralCodeFieldHandle } from "@/components/merchant/MerchantReferralCodeField";
+import { useOnboardingStoreTypes } from "@/hooks/useOnboardingStoreTypes";
+import { isValidEmail, normalizeEmail } from "@/lib/valid-email";
+import { CelebrationCrackers } from "@/components/onboarding/CelebrationCrackers";
 
 const EMAIL_OTP_LENGTH = 8;
 const PHONE_OTP_LENGTH = 6;
@@ -42,15 +47,14 @@ const PHONE_ALREADY_REGISTERED_MSG =
   "Already registered. Try with a different number.";
 const EMAIL_RATE_LIMIT_MSG =
   "Email rate limit exceeded. Please wait 5 minutes before requesting a new code.";
-const SESSION_EXPIRED_MSG =
-  "Your dashboard session expired. Refresh the page, then complete registration again.";
-const DEFAULT_RETURN = "/dashboard/area-managers/stores?filter=parent";
+const STORES_AFTER_SUCCESS = "/dashboard/area-managers/stores?filter=parent";
 
 function registerApiErrorMessage(data: unknown, fallback: string): string {
   const rec = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
   const raw = typeof rec.error === "string" ? rec.error : fallback;
+  // SESSION_REQUIRED here is usually a compile/cookie race, not a real logout.
   if (rec.code === "SESSION_REQUIRED" || raw === "Not authenticated") {
-    return SESSION_EXPIRED_MSG;
+    return "Couldn't complete this step. Wait a few seconds and try again.";
   }
   return raw;
 }
@@ -134,23 +138,6 @@ const initialFormState: RegisterParentFormState = {
 function normalizePhone10(input: string): string {
   const digits = input.replace(/\D/g, "");
   return digits.length > 10 ? digits.slice(-10) : digits;
-}
-
-function safeReturnPath(value: string | null, fallback: string): string {
-  if (!value) return fallback;
-  if (value.startsWith("/") && !value.startsWith("//")) return value;
-  try {
-    const u = new URL(
-      value,
-      typeof window !== "undefined" ? window.location.origin : "http://localhost"
-    );
-    if (typeof window !== "undefined" && u.origin === window.location.origin) {
-      return `${u.pathname}${u.search}${u.hash}`;
-    }
-  } catch {
-    /* ignore */
-  }
-  return fallback;
 }
 
 function formatCountdownMmSs(totalSeconds: number): string {
@@ -270,6 +257,164 @@ function SelectWrap({
   );
 }
 
+function DownwardSelect({
+  value,
+  options,
+  placeholder,
+  onChange,
+  icon: Icon,
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  placeholder: string;
+  onChange: (value: string) => void;
+  icon: LucideIcon;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const selected = options.find((o) => o.value === value);
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter(
+      (o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q)
+    );
+  }, [options, query]);
+
+  const placeMenu = useCallback(() => {
+    const el = btnRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos({ top: r.bottom + 4, left: r.left, width: r.width });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    placeMenu();
+    const onReposition = () => placeMenu();
+    window.addEventListener("resize", onReposition);
+    window.addEventListener("scroll", onReposition, true);
+    return () => {
+      window.removeEventListener("resize", onReposition);
+      window.removeEventListener("scroll", onReposition, true);
+    };
+  }, [open, placeMenu]);
+
+  useEffect(() => {
+    if (!open) {
+      setQuery("");
+      return;
+    }
+    const t = window.setTimeout(() => searchRef.current?.focus(), 0);
+    return () => window.clearTimeout(t);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (btnRef.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <div className="relative">
+        <Icon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+        <button
+          ref={btnRef}
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          className={`${FIELD_CLASS_COMPACT} pl-10 pr-9 text-left ${
+            value ? "text-slate-800" : "text-slate-400"
+          }`}
+        >
+          {selected?.label ?? placeholder}
+        </button>
+        <ChevronDown
+          className={`pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 transition-transform ${
+            open ? "rotate-180" : ""
+          }`}
+        />
+      </div>
+      {open && pos && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              ref={menuRef}
+              role="listbox"
+              style={{
+                position: "fixed",
+                top: pos.top,
+                left: pos.left,
+                width: Math.max(pos.width, 220),
+                zIndex: 90,
+              }}
+              className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg"
+            >
+              <div className="border-b border-slate-100 p-1.5">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                  <input
+                    ref={searchRef}
+                    type="search"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    placeholder="Search category"
+                    className="w-full rounded-md border border-slate-200 bg-slate-50 py-1.5 pl-7 pr-2 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-[#00A88F] focus:bg-white"
+                  />
+                </div>
+              </div>
+              <div className="max-h-40 overflow-y-auto overscroll-contain py-1">
+                {filtered.length === 0 ? (
+                  <p className="px-3 py-2 text-sm text-slate-500">No matching category</p>
+                ) : (
+                  filtered.map((opt) => {
+                    const active = opt.value === value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        role="option"
+                        aria-selected={active}
+                        onClick={() => {
+                          onChange(opt.value);
+                          setOpen(false);
+                        }}
+                        className={`flex w-full px-3 py-1.5 text-left text-sm hover:bg-slate-50 ${
+                          active ? "bg-emerald-50 font-medium text-[#00A88F]" : "text-slate-800"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+    </>
+  );
+}
+
 function isValidStep(s: unknown): s is StepType {
   return (
     s === "email" ||
@@ -377,12 +522,12 @@ function PartnerSignupHeader({
 
 export function RegisterParentClient() {
   const router = useRouter();
-  const searchParams = useAppSearchParams();
-  const returnTo = safeReturnPath(searchParams.get("returnTo"), DEFAULT_RETURN);
 
   const [showDraftChoice, setShowDraftChoice] = useState(false);
   const [step, setStep] = useState<StepType>("email");
   const [email, setEmail] = useState("");
+  const emailIsValid = isValidEmail(email);
+  const emailHasInput = email.trim().length > 0;
   const [otpDigits, setOtpDigits] = useState<string[]>(() =>
     Array(EMAIL_OTP_LENGTH).fill("")
   );
@@ -396,6 +541,7 @@ export function RegisterParentClient() {
     string | null
   >(null);
   const [form, setForm] = useState<RegisterParentFormState>(initialFormState);
+  const { options: businessCategoryOptions } = useOnboardingStoreTypes("OTHER");
   const setError = (
     msg: string | null | ((prev: string | null) => string | null)
   ) => {
@@ -418,8 +564,12 @@ export function RegisterParentClient() {
   const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const phoneOtpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const successRedirectRef = useRef(false);
+  const submittingRef = useRef(false);
 
-  // On mount: if draft exists, show continue / start new
+  // On mount: if draft exists, show continue / start new.
+  // Do not restore supabase_user_id here — that id is applied only if the AM
+  // chooses Continue. Restoring it eagerly reused a previous login and the
+  // register API then failed a unique constraint (shown as a phone/email dup).
   useEffect(() => {
     try {
       const raw =
@@ -428,9 +578,6 @@ export function RegisterParentClient() {
           : null;
       const draft = raw ? JSON.parse(raw) : null;
       setShowDraftChoice(!!(draft?.verifiedEmail));
-      if (draft?.supabase_user_id) {
-        setVerifiedSupabaseUserId(draft.supabase_user_id);
-      }
     } catch {
       setShowDraftChoice(false);
     }
@@ -499,15 +646,16 @@ export function RegisterParentClient() {
     return () => URL.revokeObjectURL(url);
   }, [storeLogoFile]);
 
-  // After success: brief pause then navigate back
+  // After success always land on Parent Stores, even if the AM opened this
+  // flow from the area-manager dashboard (`returnTo=/dashboard/area-managers`).
   useEffect(() => {
     if (!registerSuccess || successRedirectRef.current) return;
     successRedirectRef.current = true;
     const t = setTimeout(() => {
-      router.replace(returnTo);
-    }, 1400);
+      router.replace(STORES_AFTER_SUCCESS);
+    }, 1100);
     return () => clearTimeout(t);
-  }, [registerSuccess, router, returnTo]);
+  }, [registerSuccess, router]);
 
   const setOtpDigit = useCallback((index: number, value: string) => {
     const digit = value.replace(/\D/g, "").slice(-1);
@@ -599,8 +747,8 @@ export function RegisterParentClient() {
 
   const handleSendEmailOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    const raw = email.trim().toLowerCase();
-    if (!raw || !/^\S+@\S+\.\S+$/.test(raw)) {
+    const raw = normalizeEmail(email);
+    if (!isValidEmail(raw)) {
       toast.error("Enter a valid email address", { duration: TOAST_MS });
       return;
     }
@@ -939,7 +1087,7 @@ export function RegisterParentClient() {
       setError("Owner email is required");
       return false;
     }
-    if (!/^\S+@\S+\.\S+$/.test(form.owner_email)) {
+    if (!isValidEmail(form.owner_email)) {
       setError("Enter a valid email address");
       return false;
     }
@@ -949,6 +1097,7 @@ export function RegisterParentClient() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submittingRef.current || loading) return;
     if (!validateProfile()) return;
     let validatedReferralCode: string | undefined;
     if (referralServiceAvailable) {
@@ -960,6 +1109,7 @@ export function RegisterParentClient() {
       validatedReferralCode = checked?.ok ? checked.code ?? undefined : undefined;
     }
     setError(null);
+    submittingRef.current = true;
     setLoading(true);
     try {
       const phone = form.registered_phone.replace(/\D/g, "").slice(-10);
@@ -984,7 +1134,7 @@ export function RegisterParentClient() {
         fd.set("registered_phone", registered_phone);
         if (alternate_phone) fd.set("alternate_phone", alternate_phone);
         if (form.brand_name?.trim()) fd.set("brand_name", form.brand_name.trim());
-        if (business_category) fd.set("business_category", business_category);
+        fd.set("business_category", business_category || "");
         fd.set("address_line1", form.address_line1?.trim() ?? "");
         fd.set("city", form.city?.trim() ?? "");
         fd.set("state", form.state?.trim() ?? "");
@@ -1051,6 +1201,7 @@ export function RegisterParentClient() {
     } catch {
       setError("Network error. Please try again.");
     } finally {
+      submittingRef.current = false;
       setLoading(false);
     }
   };
@@ -1070,10 +1221,15 @@ export function RegisterParentClient() {
         if (draft.registered_phone && !restoredForm.registered_phone) {
           restoredForm.registered_phone = draft.registered_phone;
         }
-        const knownCats = ["RESTAURANT", "CLOUD_KITCHEN", "CAFE", "BAKERY", "OTHER", ""];
+        const knownCats = [
+          ...businessCategoryOptions.map((o) => o.value),
+          "OTHER",
+          "",
+        ];
         if (
           restoredForm.business_category &&
-          !knownCats.includes(restoredForm.business_category)
+          !knownCats.includes(restoredForm.business_category) &&
+          !/^[A-Z][A-Z0-9_]*$/.test(restoredForm.business_category)
         ) {
           restoredForm.business_category_other =
             restoredForm.business_category_other || restoredForm.business_category;
@@ -1215,6 +1371,7 @@ export function RegisterParentClient() {
           >
             {registerSuccess ? (
               <div className="flex flex-col items-center justify-center py-10 text-center sm:py-14">
+                <CelebrationCrackers active />
                 <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
                   <CheckCircle className="h-10 w-10" />
                 </div>
@@ -1225,7 +1382,7 @@ export function RegisterParentClient() {
                   Parent partner has been registered successfully. Redirecting…
                 </p>
                 <Link
-                  href={returnTo}
+                  href={STORES_AFTER_SUCCESS}
                   className="mt-6 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-500/25 hover:bg-emerald-700"
                 >
                   Done
@@ -1258,7 +1415,7 @@ export function RegisterParentClient() {
 
                 {/* Email */}
                 {!showDraftChoice && step === "email" && (
-                  <form onSubmit={handleSendEmailOtp} className="space-y-4">
+                  <form onSubmit={handleSendEmailOtp} className="space-y-4" noValidate>
                     <div>
                       <label className={REGISTER_LABEL_CLASS}>
                         Partner email address *
@@ -1273,14 +1430,34 @@ export function RegisterParentClient() {
                             setError(null);
                           }}
                           placeholder="partner@example.com"
-                          className={`${REGISTER_FIELD_CLASS} pl-11`}
+                          className={`${REGISTER_FIELD_CLASS} pl-11 pr-11 ${
+                            emailHasInput && !emailIsValid
+                              ? "border-red-300 focus:border-red-400 focus:ring-red-200"
+                              : emailIsValid
+                                ? "border-[#00A88F] focus:border-[#00A88F]"
+                                : ""
+                          }`}
                           autoComplete="email"
+                          inputMode="email"
+                          aria-invalid={emailHasInput && !emailIsValid}
                         />
+                        {emailHasInput ? (
+                          emailIsValid ? (
+                            <CheckCircle className="pointer-events-none absolute right-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-[#00A88F]" />
+                          ) : (
+                            <CircleAlert className="pointer-events-none absolute right-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-red-500" />
+                          )
+                        ) : null}
                       </div>
+                      {emailHasInput && !emailIsValid ? (
+                        <p className="mt-1.5 text-xs text-red-600">
+                          Enter a valid email, e.g. name@company.com
+                        </p>
+                      ) : null}
                     </div>
                     <button
                       type="submit"
-                      disabled={loading || resendCooldown > 0}
+                      disabled={loading || resendCooldown > 0 || !emailIsValid}
                       className={REGISTER_PRIMARY_BTN}
                     >
                       {loading ? (
@@ -1353,9 +1530,9 @@ export function RegisterParentClient() {
                         disabled={resendCooldown > 0 || loading}
                         onClick={async () => {
                           if (resendCooldown > 0) return;
-                          const raw = email.trim().toLowerCase();
-                          if (!raw || !/^\S+@\S+\.\S+$/.test(raw)) {
-                            toast.error("Invalid email", { duration: TOAST_MS });
+                          const raw = normalizeEmail(email);
+                          if (!isValidEmail(raw)) {
+                            toast.error("Enter a valid email address", { duration: TOAST_MS });
                             return;
                           }
                           setError(null);
@@ -1740,21 +1917,25 @@ export function RegisterParentClient() {
                             Business Category
                             <RequiredMark />
                           </label>
-                          <SelectWrap icon={LayoutGrid}>
-                            <select
-                              name="business_category"
-                              value={form.business_category}
-                              onChange={handleChange}
-                              className={`${FIELD_CLASS_COMPACT} appearance-none pl-10 pr-9`}
-                            >
-                              <option value="">Select category</option>
-                              <option value="RESTAURANT">Restaurant</option>
-                              <option value="CLOUD_KITCHEN">Cloud Kitchen</option>
-                              <option value="CAFE">Cafe</option>
-                              <option value="BAKERY">Bakery</option>
-                              <option value="OTHER">Other</option>
-                            </select>
-                          </SelectWrap>
+                          <DownwardSelect
+                            icon={LayoutGrid}
+                            value={form.business_category}
+                            placeholder="Select category"
+                            options={[
+                              ...businessCategoryOptions,
+                              ...(form.business_category &&
+                              !businessCategoryOptions.some((o) => o.value === form.business_category)
+                                ? [{ value: form.business_category, label: form.business_category }]
+                                : []),
+                            ]}
+                            onChange={(value) =>
+                              setForm((prev) => ({
+                                ...prev,
+                                business_category: value,
+                                ...(value !== "OTHER" ? { business_category_other: "" } : {}),
+                              }))
+                            }
+                          />
                         </div>
                         {form.business_category === "OTHER" ? (
                           <div>

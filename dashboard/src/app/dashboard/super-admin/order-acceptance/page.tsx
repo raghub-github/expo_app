@@ -14,7 +14,7 @@ type Row = {
 };
 
 const DEFAULT_ROW: Omit<Row, "store_type"> = {
-  acceptance_window_minutes: 5,
+  acceptance_window_minutes: 15,
   alert_sound_enabled: true,
   alert_sound_url: null,
   alert_sound_url_2: null,
@@ -71,6 +71,8 @@ export default function SuperAdminOrderAcceptancePage() {
   const [newType, setNewType] = useState("");
   const [uploadingKey, setUploadingKey] = useState<string | null>(null);
   const [savingRow, setSavingRow] = useState<string | null>(null);
+  const [deletingRow, setDeletingRow] = useState<string | null>(null);
+  const [applyingAll, setApplyingAll] = useState(false);
   const [originalByType, setOriginalByType] = useState<Record<string, Row>>({});
   const [playingPreviewKey, setPlayingPreviewKey] = useState<string | null>(null);
 
@@ -160,16 +162,104 @@ export default function SuperAdminOrderAcceptancePage() {
     return data.url;
   }, []);
 
-  const addNew = useCallback(() => {
+  const addNew = useCallback(async () => {
     const t = newType.trim().toUpperCase();
     if (!t) return;
     if (rows.some((r) => r.store_type === t)) {
       setMsg("Store type already exists");
       return;
     }
-    setRows((prev) => [...prev, { store_type: t, ...DEFAULT_ROW }].sort((a, b) => a.store_type.localeCompare(b.store_type)));
+    const row: Row = { store_type: t, ...DEFAULT_ROW };
+    const ok = await upsert(row);
+    if (!ok) return;
+    setRows((prev) => [...prev, row].sort((a, b) => a.store_type.localeCompare(b.store_type)));
     setNewType("");
-  }, [newType, rows]);
+  }, [newType, rows, upsert]);
+
+  const removeType = useCallback(async (r: Row) => {
+    const type = r.store_type;
+    const ok = window.confirm(
+      `Remove store type "${type}"?\n\nThis deletes the type from the database and removes its alert sounds from storage.`
+    );
+    if (!ok) return;
+
+    if (playingPreviewKey?.startsWith(`${type}:`)) {
+      stopSoundPreview();
+      setPlayingPreviewKey(null);
+    }
+
+    setDeletingRow(type);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/super-admin/order-acceptance-settings`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          store_type: type,
+          alert_sound_url: r.alert_sound_url,
+          alert_sound_url_2: r.alert_sound_url_2,
+          alert_sound_url_3: r.alert_sound_url_3,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !data.ok) {
+        setMsg(data.error || "Remove failed");
+        return;
+      }
+      setRows((prev) => prev.filter((x) => x.store_type !== type));
+      setOriginalByType((prev) => {
+        const next = { ...prev };
+        delete next[type];
+        return next;
+      });
+      setMsg(`Removed ${type}`);
+    } finally {
+      setDeletingRow(null);
+    }
+  }, [playingPreviewKey]);
+
+  const applySourceToAll = useCallback(async () => {
+    const source =
+      rows.find((r) => r.store_type.toUpperCase() === "RESTAURANT" && (r.alert_sound_url || r.alert_sound_url_2 || r.alert_sound_url_3))
+      ?? rows.find((r) => r.alert_sound_url || r.alert_sound_url_2 || r.alert_sound_url_3);
+    if (!source) {
+      setMsg("Upload a sound on one type first (e.g. RESTAURANT), then apply to all.");
+      return;
+    }
+    const ok = window.confirm(
+      `Copy ${source.store_type} sounds to every store type and set acceptance time to 15 minutes?\n\nEach type gets its own R2 copy. Changing one later will not break the others.`
+    );
+    if (!ok) return;
+    setApplyingAll(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/super-admin/order-acceptance-settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "apply_source_to_all",
+          source_store_type: source.store_type,
+          acceptance_window_minutes: 15,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        sourceType?: string;
+        updated?: string[];
+      };
+      if (!res.ok || !data.ok) {
+        setMsg(data.error || "Apply failed");
+        return;
+      }
+      await load();
+      setMsg(
+        `Copied ${data.sourceType} sounds to ${(data.updated ?? []).length} types · 15 min window`
+      );
+    } finally {
+      setApplyingAll(false);
+    }
+  }, [load, rows]);
 
   const canAdd = useMemo(() => newType.trim().length > 0, [newType]);
 
@@ -192,14 +282,14 @@ export default function SuperAdminOrderAcceptancePage() {
   /** Fixed columns: no wrap; horizontal scroll on narrow viewports */
   const rowGridClass =
     "grid gap-x-2 gap-y-1 px-3 py-2 items-center min-h-[52px] " +
-    "grid-cols-[minmax(72px,100px)_42px_36px_minmax(200px,1fr)_38px_64px]";
+    "grid-cols-[minmax(72px,100px)_42px_36px_minmax(200px,1fr)_38px_92px]";
 
   const headerGridClass =
     "grid gap-x-2 px-3 py-2 border-b border-gray-100 bg-gray-50 text-[10px] font-semibold uppercase tracking-wide text-gray-600 " +
-    "grid-cols-[minmax(72px,100px)_42px_36px_minmax(200px,1fr)_38px_64px]";
+    "grid-cols-[minmax(72px,100px)_42px_36px_minmax(200px,1fr)_38px_92px]";
 
   return (
-    <div className="p-4 sm:p-6">
+    <div className="px-3 py-3 sm:px-4">
       <div className="rounded-xl border border-gray-200 bg-white p-3 sm:p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
@@ -214,21 +304,31 @@ export default function SuperAdminOrderAcceptancePage() {
             </div>
             <button
               type="button"
-              disabled={!canAdd}
-              onClick={addNew}
+              disabled={!canAdd || savingRow != null}
+              onClick={() => void addNew()}
               className="h-9 shrink-0 cursor-pointer rounded-lg bg-gray-900 px-3 text-xs font-semibold text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Add
             </button>
           </div>
-          <button
-            type="button"
-            disabled={loading}
-            onClick={() => void load()}
-            className="h-9 shrink-0 cursor-pointer rounded-lg border border-gray-200 px-3 text-xs font-medium hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {loading ? "Loading..." : "Refresh"}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={applyingAll || loading || rows.length === 0}
+              onClick={() => void applySourceToAll()}
+              className="h-9 shrink-0 cursor-pointer rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-xs font-medium text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {applyingAll ? "Applying…" : "Copy sounds + 15 min to all"}
+            </button>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => void load()}
+              className="h-9 shrink-0 cursor-pointer rounded-lg border border-gray-200 px-3 text-xs font-medium hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loading ? "Loading..." : "Refresh"}
+            </button>
+          </div>
         </div>
         {msg ? <p className="mt-2 text-xs text-gray-700">{msg}</p> : null}
       </div>
@@ -241,7 +341,7 @@ export default function SuperAdminOrderAcceptancePage() {
             <div className="text-center">On</div>
             <div>Sounds (3)</div>
             <div className="text-center">Rep</div>
-            <div className="text-right">Save</div>
+            <div className="text-right">Actions</div>
           </div>
 
           <div className="divide-y divide-gray-100">
@@ -402,13 +502,13 @@ export default function SuperAdminOrderAcceptancePage() {
                     className="w-full rounded border border-gray-200 px-1 py-1 text-center text-xs tabular-nums"
                   />
                 </div>
-                <div className="flex justify-end">
+                <div className="flex justify-end gap-1">
                   <button
                     type="button"
-                    disabled={!isDirty(r) || savingRow === r.store_type}
+                    disabled={!isDirty(r) || savingRow === r.store_type || deletingRow === r.store_type}
                     onClick={() => void upsert(r)}
                     className={`inline-flex min-h-8 cursor-pointer items-center justify-center rounded-lg px-2.5 py-1 text-xs font-semibold text-white transition disabled:cursor-not-allowed ${
-                      !isDirty(r) || savingRow === r.store_type
+                      !isDirty(r) || savingRow === r.store_type || deletingRow === r.store_type
                         ? "bg-gray-300"
                         : "bg-gray-900 hover:bg-gray-800"
                     }`}
@@ -417,6 +517,20 @@ export default function SuperAdminOrderAcceptancePage() {
                       <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
                     ) : (
                       "Save"
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deletingRow === r.store_type || savingRow === r.store_type}
+                    onClick={() => void removeType(r)}
+                    className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-600 hover:border-red-200 hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    title={`Remove ${r.store_type}`}
+                    aria-label={`Remove store type ${r.store_type}`}
+                  >
+                    {deletingRow === r.store_type ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden />
                     )}
                   </button>
                 </div>

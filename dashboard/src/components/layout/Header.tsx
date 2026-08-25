@@ -536,6 +536,7 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/super-admin/store-onboarding-fee": "Onboarding fee & Mx Agreement",
   "/dashboard/super-admin/ticket-settings": "Ticket Management",
   "/dashboard/super-admin/order-acceptance": "Order acceptance settings",
+  "/dashboard/super-admin/rider-onboarding-document-types": "RX / MX Documents type",
   "/dashboard/super-admin/cancellation-reasons": "Cancellation reasons",
   "/dashboard/super-admin/rider-assignment-controls": "Rider Assignment Controls",
   "/dashboard/super-admin/rule-engine": "Financial Rule Engine",

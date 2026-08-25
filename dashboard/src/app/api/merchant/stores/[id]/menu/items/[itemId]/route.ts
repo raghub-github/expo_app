@@ -109,7 +109,8 @@ export async function GET(
       SELECT id, item_id, item_name, item_description, item_image_url, short_name, category_id,
              food_type, spice_level, cuisine_type, base_price, selling_price,
              discount_percentage, tax_percentage,
-             in_stock, is_active, is_deleted, display_order,
+             in_stock, available_quantity, low_stock_threshold, expiry_date,
+             is_active, is_deleted, display_order,
              has_customizations, has_addons, has_variants,
              is_popular, is_recommended,
              COALESCE(preparation_time_minutes, preparation_time, 15)::integer AS preparation_time_minutes,
@@ -307,7 +308,8 @@ export async function PUT(
              base_price, selling_price, discount_percentage, tax_percentage,
              preparation_time_minutes, packaging_charges, serves, serves_label,
              short_name, display_order, item_size_value, item_size_unit, available_for_delivery,
-             in_stock, is_active, is_popular, is_recommended, allergens,
+             in_stock, available_quantity, low_stock_threshold, expiry_date,
+             is_active, is_popular, is_recommended, allergens,
              weight_per_serving, weight_per_serving_unit, calories_kcal,
              protein, protein_unit, carbohydrates, carbohydrates_unit,
              fat, fat_unit, fibre, fibre_unit, item_tags,
@@ -360,6 +362,13 @@ export async function PUT(
     const has_customizations = mergeBool(body.has_customizations, e.has_customizations);
     const has_addons = mergeBool(body.has_addons, e.has_addons);
     const has_variants = mergeBool(body.has_variants, e.has_variants);
+    const available_quantity = mergeNumNullable(body.available_quantity, e.available_quantity);
+    const low_stock_threshold = mergeNumNullable(body.low_stock_threshold, e.low_stock_threshold);
+    let expiry_date = e.expiry_date;
+    if (body.expiry_date !== undefined) {
+      const raw = body.expiry_date == null ? null : String(body.expiry_date).trim().slice(0, 10);
+      expiry_date = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
+    }
 
     await sql`
       UPDATE merchant_menu_items
@@ -383,6 +392,9 @@ export async function PUT(
           item_size_unit = ${item_size_unit},
           available_for_delivery = ${available_for_delivery},
           in_stock = ${in_stock},
+          available_quantity = ${available_quantity},
+          low_stock_threshold = ${low_stock_threshold},
+          expiry_date = ${expiry_date},
           is_active = ${is_active},
           is_popular = ${is_popular},
           is_recommended = ${is_recommended},

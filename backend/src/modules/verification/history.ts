@@ -974,17 +974,36 @@ async function projectOutcomeToDocuments(
             provider_reference: r.provider_reference,
           },
         };
-        const registered =
-          outcome.verifiedData && typeof (outcome.verifiedData as { registered_name?: unknown }).registered_name === "string"
-            ? String((outcome.verifiedData as { registered_name: string }).registered_name)
-            : null;
+        const vd = (outcome.verifiedData && typeof outcome.verifiedData === "object"
+          ? (outcome.verifiedData as Record<string, unknown>)
+          : {}) as Record<string, unknown>;
+        const registeredRaw = [
+          vd.registered_name,
+          vd.name_pan_card,
+          vd.name_on_pan,
+          vd.pan_name,
+          vd.full_name,
+          vd.pan_holder_name,
+          // Cashfree sometimes returns ITD name as `name` (not name_provided).
+          typeof vd.name === "string" &&
+          typeof vd.name_provided === "string" &&
+          vd.name.trim().toUpperCase() !== vd.name_provided.trim().toUpperCase()
+            ? vd.name
+            : typeof vd.name === "string" && !vd.name_provided
+              ? vd.name
+              : null,
+        ].find((v) => typeof v === "string" && v.trim());
+        const registered = typeof registeredRaw === "string" ? registeredRaw.trim() : null;
         await sql`
           UPDATE public.merchant_store_documents
              SET pan_is_verified = ${verified},
                  pan_verified_at = ${verified ? new Date().toISOString() : null},
                  pan_rejection_reason = ${verified ? null : outcome.statusReason},
                  pan_verification_method = ${verified ? method : null},
-                 pan_holder_name = COALESCE(${registered}, pan_holder_name),
+                 pan_holder_name = CASE
+                   WHEN ${registered} IS NOT NULL THEN ${registered}
+                   ELSE pan_holder_name
+                 END,
                  pan_document_metadata = ${JSON.stringify(nextMeta)}::text::jsonb,
                  last_verification_id = ${r.verification_id},
                  last_provider_reference = ${r.provider_reference},

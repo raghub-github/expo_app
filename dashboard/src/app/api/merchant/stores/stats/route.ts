@@ -19,17 +19,11 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(auth.body, { status: auth.status });
     }
     const { user } = auth;
-
-    if (!user.email) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 401 }
-      );
-    }
+    const userEmail = user.email ?? "";
 
     const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
+      (await isSuperAdmin(user.id, userEmail)) ||
+      (await hasDashboardAccessByAuth(user.id, userEmail, "MERCHANT"));
     if (!allowed) {
       return NextResponse.json(
         {
@@ -43,7 +37,7 @@ export async function GET(request: NextRequest) {
 
     const areaManagerId = await resolveMerchantListAreaManagerId({
       supabaseAuthId: user.id,
-      email: user.email,
+      email: userEmail,
     });
 
     const fromDate = request.nextUrl.searchParams.get("fromDate")?.trim() || undefined;

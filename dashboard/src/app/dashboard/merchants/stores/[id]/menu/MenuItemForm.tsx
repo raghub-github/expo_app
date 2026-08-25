@@ -69,6 +69,8 @@ export interface ItemFormData {
   item_tags: string;
   is_active: boolean;
   allergens: string;
+  /** YYYY-MM-DD — grocery product expiry (optional). */
+  expiry_date: string;
   category_id: number | null;
   customizations: Customization[];
   variants: Variant[];
@@ -99,6 +101,13 @@ interface ItemFormProps {
   imageLimit?: number | null;
   imageSlotsLeft?: number | null;
   maxCuisinesPerItem?: number | null;
+  /** When false, hide item-level cuisine picker (store-type cuisine flag off). */
+  showCuisineField?: boolean;
+  /**
+   * - standard: restaurant/cafe/bakery/cloud kitchen form (unchanged)
+   * - grocery: simplified fields + expiry date
+   */
+  itemFormVariant?: "standard" | "grocery";
   imageValidationError?: string;
   imageValidating?: boolean;
   /** Optional: center 1:1 crop + resize after validation failed (dashboard normalizes client-side). */
@@ -146,6 +155,8 @@ export function MenuItemForm({
   imageLimit = null,
   imageSlotsLeft = null,
   maxCuisinesPerItem = null,
+  showCuisineField = true,
+  itemFormVariant = "standard",
   imageValidationError,
   imageValidating = false,
   onNormalizeMenuItemImage,
@@ -153,6 +164,9 @@ export function MenuItemForm({
   storeDefaults,
   onVariantRemoved,
 }: ItemFormProps) {
+  const isGrocery = itemFormVariant === "grocery";
+  const showFoodAttrs = !isGrocery;
+  const showItemCuisine = showCuisineField && !isGrocery;
   const [activeSection, setActiveSection] = useState<"main" | "customization">("main");
   const [cuisineSearch, setCuisineSearch] = useState("");
   const [cuisineViewMore, setCuisineViewMore] = useState(false);
@@ -813,6 +827,7 @@ export function MenuItemForm({
                 )}
               </div>
             </div>
+            {showFoodAttrs ? (
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-xs font-medium text-gray-600">Food type</label>
@@ -845,6 +860,8 @@ export function MenuItemForm({
                 </select>
               </div>
             </div>
+            ) : null}
+            {showItemCuisine ? (
             <div>
               <label className="text-xs font-medium text-gray-600">
                 Cuisine {maxCuisinesPerItem != null && <span className="text-gray-500 font-normal">(max {maxCuisinesPerItem})</span>}
@@ -949,6 +966,7 @@ export function MenuItemForm({
                 </p>
               )}
             </div>
+            ) : null}
             <div className="flex gap-3 items-start">
               <div className="flex-shrink-0">
                 <label className="text-xs font-medium text-gray-600 block mb-1">Image</label>
@@ -1066,6 +1084,8 @@ export function MenuItemForm({
                   value={formData.item_description || ""}
                   onChange={(e) => setFormData({ ...formData, item_description: e.target.value })}
                 />
+                {showFoodAttrs ? (
+                  <>
                 <label className="text-xs font-medium text-gray-600 mt-1 block">Allergens (comma)</label>
                 <input
                   type="text"
@@ -1074,6 +1094,8 @@ export function MenuItemForm({
                   value={formData.allergens || ""}
                   onChange={(e) => setFormData({ ...formData, allergens: e.target.value })}
                 />
+                  </>
+                ) : null}
               </div>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
@@ -1153,6 +1175,47 @@ export function MenuItemForm({
                   </p>
                 )}
               </div>
+              {isGrocery ? (
+              <div>
+                <label className="text-xs font-medium text-gray-600">Expiry date</label>
+                <input
+                  type="date"
+                  className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                  value={formData.expiry_date || ""}
+                  onChange={(e) => setFormData({ ...formData, expiry_date: e.target.value })}
+                />
+                <p className="text-[10px] text-gray-500 mt-0.5">Optional — product best-before / expiry</p>
+              </div>
+              ) : null}
+              {isGrocery ? (
+              <div>
+                <label className="text-xs font-medium text-gray-600">Item size</label>
+                <div className="flex gap-1.5">
+                  <input
+                    type="number"
+                    min={0}
+                    className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                    value={formData.item_size_value}
+                    onChange={(e) => setFormData({ ...formData, item_size_value: e.target.value })}
+                    placeholder="e.g. 500"
+                  />
+                  <select
+                    className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                    value={formData.item_size_unit}
+                    onChange={(e) => setFormData({ ...formData, item_size_unit: e.target.value })}
+                  >
+                    <option value="">Unit</option>
+                    {SIZE_UNITS.map((u) => (
+                      <option key={u} value={u}>
+                        {u}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              ) : null}
+              {showFoodAttrs ? (
+              <>
               <div>
                 <label className="text-xs font-medium text-gray-600">Serves (label)</label>
                 <select
@@ -1199,7 +1262,10 @@ export function MenuItemForm({
                   </select>
                 </div>
               </div>
+              </>
+              ) : null}
             </div>
+            {showFoodAttrs ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-gray-100">
               <div className="sm:col-span-2">
                 <div className="flex items-center justify-between gap-3 max-w-md">
@@ -1268,6 +1334,7 @@ export function MenuItemForm({
                 )}
               </div>
             </div>
+            ) : null}
             <div className="space-y-2 pt-2 border-t border-gray-100">
               <p className="text-xs font-semibold text-gray-800">Delivery & nutrition (optional)</p>
               <div className="flex items-center justify-between gap-3 max-w-md">
@@ -1441,6 +1508,7 @@ export function MenuItemForm({
                   View more (carbs, fat, fibre)
                 </button>
               )}
+              {showFoodAttrs ? (
               <div>
                 <label className="text-xs font-medium text-gray-600">Item tags (comma-separated)</label>
                 <input
@@ -1451,6 +1519,7 @@ export function MenuItemForm({
                   onChange={(e) => setFormData({ ...formData, item_tags: e.target.value })}
                 />
               </div>
+              ) : null}
             </div>
             <div className="flex flex-wrap gap-4 pt-1 border-t border-gray-100">
               <p className="w-full text-[10px] text-gray-500 -mb-1">

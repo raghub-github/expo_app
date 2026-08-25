@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { isTimeoutOrAbortError, isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { listCustomers, getCustomerByCustomerId } from "@/lib/db/operations/customers";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { hasDashboardAccessByAuth, getUserPermissions } from "@/lib/permissions/engine";
 import { logAPICall } from "@/lib/auth/activity-tracker";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { getRedisClient } from "@/lib/redis";
@@ -27,15 +27,26 @@ export async function GET(request: NextRequest) {
     }
     const { user } = auth;
 
-    // Check if user is super admin or has CUSTOMER dashboard access (in parallel)
-    const [userIsSuperAdmin, hasDashboardAccess] = await Promise.all([
-      isSuperAdmin(user.id, user.email ?? ""),
-      hasDashboardAccessByAuth(user.id, user.email ?? "", "CUSTOMER"),
-    ]);
-
-    if (!userIsSuperAdmin && !hasDashboardAccess) {
+    const perms = await getUserPermissions(user.id, user.email ?? "");
+    if (!perms) {
       return NextResponse.json(
-        { success: false, error: "Insufficient permissions. You need access to the Customer dashboard." },
+        {
+          success: false,
+          error: "Service temporarily unavailable",
+          code: "SERVICE_UNAVAILABLE",
+        },
+        { status: 503 }
+      );
+    }
+    const hasDashboardAccess = await hasDashboardAccessByAuth(
+      user.id,
+      user.email ?? "",
+      "CUSTOMER"
+    );
+
+    if (!perms.isSuperAdmin && !hasDashboardAccess) {
+      return NextResponse.json(
+        { success: false, error: "Insufficient permissions. You need access to the Customer dashboard.", code: "FORBIDDEN" },
         { status: 403 }
       );
     }
@@ -54,8 +65,9 @@ export async function GET(request: NextRequest) {
       sortOrder: (searchParams.get("sortOrder") || "desc") as "asc" | "desc",
     };
 
-    // Get system user ID
-    const systemUser = await getSystemUserByEmail(user.email ?? "");
+    const systemUser = perms.systemUserId
+      ? { id: perms.systemUserId }
+      : await getSystemUserByEmail(user.email ?? "");
     if (!systemUser) {
       return NextResponse.json(
         { success: false, error: "User not found in system" },

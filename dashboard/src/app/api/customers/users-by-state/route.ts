@@ -4,34 +4,40 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { getUserPermissions, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { getCustomerUsersByState } from "@/lib/db/operations/customer-users-by-state";
 
 export const runtime = "nodejs";
 
-export async function GET(_request: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
     }
+    const { user } = auth;
 
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
+    const perms = await getUserPermissions(user.id, user.email ?? "");
+    if (!perms) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Service temporarily unavailable",
+          code: "SERVICE_UNAVAILABLE",
+        },
+        { status: 503 }
+      );
+    }
     const hasDashboardAccess = await hasDashboardAccessByAuth(
       user.id,
       user.email ?? "",
       "CUSTOMER"
     );
 
-    if (!userIsSuperAdmin && !hasDashboardAccess) {
+    if (!perms.isSuperAdmin && !hasDashboardAccess) {
       return NextResponse.json(
-        { success: false, error: "Insufficient permissions." },
+        { success: false, error: "Insufficient permissions.", code: "FORBIDDEN" },
         { status: 403 }
       );
     }

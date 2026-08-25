@@ -38,7 +38,22 @@ export function isSessionExpiredError(error: AuthError | null): boolean {
 }
 
 export function shouldClearSession(error: AuthError | null): boolean {
-  return isRefreshTokenError(error) || isSessionExpiredError(error);
+  if (!error) return false;
+  const errorCode = error.code?.toLowerCase() || "";
+  const errorMessage = error.message?.toLowerCase() || "";
+  if (
+    errorCode === "refresh_token_already_used" ||
+    errorMessage.includes("already used")
+  ) {
+    return false;
+  }
+  if (
+    errorCode === "refresh_token_not_found" ||
+    errorMessage.includes("refresh token not found")
+  ) {
+    return false;
+  }
+  return isSessionExpiredError(error) || errorCode === "invalid_refresh_token";
 }
 
 export function getErrorRedirectPath(error: AuthError | null, currentPath: string): string {

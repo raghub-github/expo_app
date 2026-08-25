@@ -77,6 +77,7 @@ import {
   isValidPartnerStoreId,
   persistPartnerManagedStoreIds,
   clearPartnerManagedStoreIds,
+  readPartnerLastParentId,
   readPartnerManagedStoreIds,
   readPartnerSelectedStoreId,
   switchPartnerActiveOutlet,
@@ -86,6 +87,7 @@ import { isStoreDelisted, isStoreOpsLockedUntilVerified } from '@/lib/store-deli
 import { StoreDelistedBlockedDialog } from '@/components/StoreDelistedBlockedDialog';
 import { mapMerchantAppDeepLinkToPartnersite } from '@/lib/mapMerchantAppDeepLink';
 import { STORE_SETTINGS_TAB_LABELS } from '@/lib/store-settings-tabs';
+import { allStoresPickerHref } from '@/lib/partner-all-stores-href';
 import {
   migrateDeviceOrderAlertsFromServer,
   syncFoodOrdersUiNotifyFromDevice,
@@ -1528,7 +1530,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const goToAllStores = () => {
     setSheet(null);
     // ?picker=1 keeps the hub visible even when only one child (add / manage stores).
-    window.location.href = '/partners/all-stores?picker=1';
+    window.location.href = allStoresPickerHref(readPartnerLastParentId() || undefined);
   };
 
   const clearPartnerLocalStorage = () => {
@@ -2722,7 +2724,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-slate-200/90 bg-white py-2 text-xs font-semibold text-slate-800 shadow-sm ring-1 ring-slate-100 transition hover:border-sky-200/80 hover:bg-sky-50/60 hover:text-sky-950"
                   onClick={() => {
                     setSheet(null);
-                    router.push('/partners/all-stores?picker=1');
+                    router.push(allStoresPickerHref(readPartnerLastParentId() || undefined));
                   }}
                 >
                   View all outlets

@@ -173,6 +173,13 @@ async function writeProfileIfEmpty(
       WHERE id = ${userId}
         AND (referral_code IS NULL OR length(TRIM(referral_code)) < 3)
     `.catch(() => undefined);
+  } else if (userType === "merchant") {
+    await sql`
+      UPDATE merchant_parents
+      SET referral_code = ${normalized}
+      WHERE id = ${userId}
+        AND (referral_code IS NULL OR length(TRIM(referral_code)) < 3)
+    `.catch(() => undefined);
   }
 }
 
@@ -204,6 +211,10 @@ async function restorePublishedProfileCode(
 /**
  * Reuse the user's existing code when present; only generate for users who
  * genuinely have none. Never rotates a code that is already in circulation.
+ *
+ * Profile / share (`/me`) still respects the Super Admin service toggle.
+ * Signup must call `ensureReferralCodeAlways` so a code exists even when
+ * tracking is OFF — applying someone else's code stays gated separately.
  */
 export async function getOrCreateReferralCode(
   userType: ReferralUserType,
@@ -219,6 +230,22 @@ export async function getOrCreateReferralCode(
   }
   if (settings && !referralTrackingEnabled(settings, userType)) {
     throw new Error(REFERRAL_SERVICE_DISABLED);
+  }
+  return allocateUniqueReferralCode(userType, userId);
+}
+
+/**
+ * Always reuse or allocate a code. Used at parent-merchant registration so
+ * every new parent has a shareable code regardless of the referral toggle.
+ */
+export async function ensureReferralCodeAlways(
+  userType: ReferralUserType,
+  userId: number,
+): Promise<string> {
+  const existing = await findExistingReferralCode(userType, userId);
+  if (existing) {
+    await syncUnifiedCode(userType, userId, existing);
+    return existing;
   }
   return allocateUniqueReferralCode(userType, userId);
 }
@@ -284,6 +311,13 @@ async function persistCode(
     await sql`UPDATE riders SET referral_code = ${code} WHERE id = ${userId}`.catch(
       () => undefined,
     );
+  } else if (userType === "merchant") {
+    await sql`
+      UPDATE merchant_parents
+      SET referral_code = ${code}
+      WHERE id = ${userId}
+        AND (referral_code IS NULL OR length(TRIM(referral_code)) < 3)
+    `.catch(() => undefined);
   }
 }
 

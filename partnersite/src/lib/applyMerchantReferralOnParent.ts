@@ -14,11 +14,12 @@ export type ApplyOnboardingResult = {
   ok: boolean;
   status?: number;
   error?: string;
+  referralCode?: string | null;
 };
 
 /**
- * After merchant_parents insert, attribute a referral to the parent PK.
- * Never fails parent registration — apply is retry-safe / idempotent.
+ * After merchant_parents insert, allocate the parent's own share code and
+ * optionally attribute a referrer. Never fails parent registration.
  */
 export async function applyMerchantReferralOnParentCreate(opts: {
   parentPk: number | string | null | undefined;
@@ -29,7 +30,7 @@ export async function applyMerchantReferralOnParentCreate(opts: {
 }): Promise<ApplyOnboardingResult> {
   const code = String(opts.referralCode ?? "").trim().toUpperCase();
   const parentPk = opts.parentPk;
-  if (!code || parentPk == null || parentPk === "") return { ok: true };
+  if (parentPk == null || parentPk === "") return { ok: true };
   const secret = internalSecret();
   if (!secret) {
     console.warn("[referral] skip apply-onboarding: missing X-Internal-Secret");
@@ -43,7 +44,7 @@ export async function applyMerchantReferralOnParentCreate(opts: {
         "X-Internal-Secret": secret,
       },
       body: JSON.stringify({
-        referralCode: code,
+        ...(code ? { referralCode: code } : {}),
         parentMerchantId: parentPk,
         source: opts.source ?? "manual",
         referredPhone: opts.referredPhone ?? undefined,
@@ -55,16 +56,21 @@ export async function applyMerchantReferralOnParentCreate(opts: {
       console.warn("[referral] apply-onboarding unreachable");
       return { ok: false, error: "unreachable" };
     }
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      code?: string;
+      referralCode?: string | null;
+    };
     if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
       console.warn("[referral] apply-onboarding failed", res.status, body);
       return {
         ok: false,
         status: res.status,
         error: body.code || body.error,
+        referralCode: body.referralCode ?? null,
       };
     }
-    return { ok: true, status: res.status };
+    return { ok: true, status: res.status, referralCode: body.referralCode ?? null };
   } catch (err) {
     console.warn("[referral] apply-onboarding error", err);
     return { ok: false, error: "apply_failed" };

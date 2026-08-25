@@ -6,11 +6,7 @@
  * via the backend so completion does not depend on webhooks.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
-import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { authenticateMerchantStoreForId } from "@/lib/merchant-store-route-auth";
 import { getSql } from "@/lib/db/client";
 import { backendFetch } from "@/lib/notif-backend";
 
@@ -36,32 +32,6 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: false, error: "storeId required" }, { status: 400 });
     }
 
-    const supabase = await createServerSupabaseClient();
-    let {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      try {
-        await supabase.auth.getSession();
-      } catch {
-        /* ignore */
-      }
-      const retry = await supabase.auth.getUser();
-      user = retry.data.user;
-      error = retry.error;
-    }
-    if (error || !user?.email) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-    }
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "AREA_MANAGER"));
-    if (!allowed) {
-      return NextResponse.json({ success: false, error: "Dashboard access required" }, { status: 403 });
-    }
-
     const sql = getSql();
     const storeRows = (await sql`
       SELECT id FROM public.merchant_stores WHERE store_id = ${storePublicId} LIMIT 1
@@ -71,18 +41,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: false, error: "Store not found" }, { status: 404 });
     }
 
-    let areaManagerId: number | null = null;
-    if (!(await isSuperAdmin(user.id, user.email))) {
-      const systemUser = await getSystemUserByEmail(user.email);
-      if (systemUser) {
-        const am = await getAreaManagerByUserId(systemUser.id);
-        if (am) areaManagerId = am.id;
-      }
-    }
-    const store = await getMerchantStoreById(storeIdNum, areaManagerId);
-    if (!store) {
-      return NextResponse.json({ success: false, error: "Store not found" }, { status: 404 });
-    }
+    const access = await authenticateMerchantStoreForId(req, storeIdNum);
+    if (!access.ok) return access.response;
 
     if (docKindParam === "aadhaar") {
       const poll = await backendFetch("/v1/verification/poll/digilocker", {

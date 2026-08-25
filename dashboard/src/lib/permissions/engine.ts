@@ -29,6 +29,7 @@ import {
   getSystemUserByAuthId,
   isUserAccountActive,
 } from "../auth/user-mapping";
+import { rememberDashboardIdentity, peekDashboardIdentity } from "../auth/auth-identity-cache";
 import { dashboardAccess, dashboardAccessPoints, type DashboardType, type AccessPointGroup, type ActionType } from "../db/schema";
 import { getDashboardTypeFromPath, isOpenDashboardPath } from "./path-mapping";
 import { supabaseAdmin } from "../supabase/server";
@@ -262,8 +263,13 @@ export async function getUserPermissions(
       return null;
     }
     
+    let resolvedEmail = (email || "").trim();
+    if (!resolvedEmail.includes("@") && supabaseAuthId?.trim()) {
+      resolvedEmail = peekDashboardIdentity(supabaseAuthId)?.email ?? "";
+    }
+
     // Check request-level cache
-    const cacheKey = `perms:${supabaseAuthId}:${email || ''}`;
+    const cacheKey = `perms:${supabaseAuthId}:${resolvedEmail || email || ""}`;
     const cached = permissionsCache.get(cacheKey);
     const now = Date.now();
     if (cached && (now - cached.timestamp) < PERMISSIONS_CACHE_TTL) {
@@ -273,6 +279,9 @@ export async function getUserPermissions(
     // 1. Resolve system user: unique index on system_user_id (auth uid) first, then email
     let systemUser =
       supabaseAuthId?.trim() ? await getSystemUserByAuthId(supabaseAuthId.trim()) : null;
+    if (!systemUser && resolvedEmail) {
+      systemUser = await getSystemUserByEmail(resolvedEmail);
+    }
     if (!systemUser && email?.trim()) {
       systemUser = await getSystemUserByEmail(email.trim());
     }
@@ -280,18 +289,28 @@ export async function getUserPermissions(
       // Fallback: resolve email from Supabase Auth by auth id (e.g. when session email was missing)
       try {
         const { data: { user: authUser } } = await supabaseAdmin.auth.admin.getUserById(supabaseAuthId);
-        const resolvedEmail = authUser?.email;
-        if (resolvedEmail?.trim()) {
-          systemUser = await getSystemUserByEmail(resolvedEmail.trim());
+        const fromAdmin = authUser?.email?.trim();
+        if (fromAdmin) {
+          resolvedEmail = fromAdmin;
+          systemUser = await getSystemUserByEmail(fromAdmin);
         }
       } catch {
         // Ignore; systemUser stays null
       }
     }
     if (!systemUser) {
-      permissionsCache.set(cacheKey, { data: null, timestamp: now });
+      // Do not cache a miss when email was absent — cookie JWT often omits it.
+      if (resolvedEmail || email?.trim()) {
+        permissionsCache.set(cacheKey, { data: null, timestamp: now });
+      }
       return null;
     }
+
+    rememberDashboardIdentity(supabaseAuthId, {
+      email: systemUser.email,
+      systemUserNumericId: systemUser.id,
+      primaryRole: systemUser.primary_role,
+    });
     
     const systemUserId = systemUser.id;
     

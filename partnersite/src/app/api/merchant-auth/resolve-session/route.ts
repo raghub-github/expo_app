@@ -1,7 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
+import { validateMerchantFromSessionPreferParent } from "@/lib/auth/validate-merchant";
+import { partnerUserErrorStatus, resolvePartnerUser } from "@/lib/auth/resolve-partner-user";
 import { isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { hasActiveSessionForDevice, replaceSessionForDevice, generateDeviceId, touchSessionLastSeen } from "@/lib/auth/merchant-session-db";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
@@ -20,17 +20,20 @@ function getSupabaseAdmin() {
 /**
  * GET /api/merchant-auth/resolve-session
  * Requires valid Supabase session + device_id cookie (set by set-cookie after login).
+ * Optional `parent_id` (numeric PK or GMMP…) selects that parent when the session owns it.
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    const resolved = await resolvePartnerUser();
+    const user = resolved.user;
+    const userError = resolved.error;
 
     if (userError || !user) {
-      if (userError && isNetworkOrTransientError(userError)) {
+      const mapped = partnerUserErrorStatus(userError);
+      if (mapped) {
         return NextResponse.json(
-          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
-          { status: 503 }
+          { success: false, error: mapped.error, code: mapped.code },
+          { status: mapped.status }
         );
       }
       return NextResponse.json(
@@ -39,11 +42,15 @@ export async function GET() {
       );
     }
 
-    const validation = await validateMerchantFromSession({
-      id: user.id,
-      email: user.email ?? null,
-      phone: user.phone ?? null,
-    });
+    const preferredParent = request.nextUrl.searchParams.get("parent_id");
+    const validation = await validateMerchantFromSessionPreferParent(
+      {
+        id: user.id,
+        email: user.email ?? null,
+        phone: user.phone ?? null,
+      },
+      preferredParent
+    );
 
     if (!validation.isValid || validation.merchantParentId == null) {
       return NextResponse.json(

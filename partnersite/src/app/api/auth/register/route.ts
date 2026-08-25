@@ -127,6 +127,14 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    const resolvedBusinessCategory =
+      business_category && String(business_category).trim() ? String(business_category).trim() : "";
+    if (!resolvedBusinessCategory) {
+      return NextResponse.json(
+        { success: false, error: "Business category is required." },
+        { status: 400 }
+      );
+    }
     const merchantType = merchant_type && MERCHANT_TYPE_VALUES.includes(merchant_type as any)
       ? (merchant_type as (typeof MERCHANT_TYPE_VALUES)[number])
       : "LOCAL";
@@ -139,7 +147,7 @@ export async function POST(request: NextRequest) {
     const { data: existingByEmail } = await db
       .from("merchant_parents")
       .select("id, parent_merchant_id")
-      .eq("owner_email", normalizedEmail)
+      .ilike("owner_email", normalizedEmail)
       .maybeSingle();
     if (existingByEmail) {
       return NextResponse.json(
@@ -177,61 +185,127 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Link phone to this Supabase user so they can login with phone OTP (same user)
-    try {
-      await db.auth.admin.updateUserById(email_user_id, {
-        phone: normalizedPhone,
-        phone_confirm: true,
-      });
-    } catch (linkErr) {
-      console.warn("[auth/register] Could not link phone to Supabase user:", linkErr);
-      // Continue — we still store phone in merchant_parents; login by phone validated by phone number
-    }
-
-    // Generate parent_merchant_id (GMMP1001, GMMP1002, ...)
-    const { data: lastRow } = await db
+    // OTP can return an Auth user already linked to another parent (unique on
+    // supabase_user_id). Do not block a new business — drop the login link.
+    let supabaseUserId: string | null = email_user_id;
+    const { data: existingByAuth } = await db
       .from("merchant_parents")
-      .select("parent_merchant_id")
-      .like("parent_merchant_id", "GMMP%")
-      .order("parent_merchant_id", { ascending: false })
-      .limit(1)
+      .select("id, parent_merchant_id, owner_email, registered_phone")
+      .eq("supabase_user_id", email_user_id)
       .maybeSingle();
-    let nextNum = 1001;
-    if (lastRow?.parent_merchant_id) {
-      const match = String(lastRow.parent_merchant_id).match(/^GMMP(\d+)$/);
-      if (match) nextNum = parseInt(match[1], 10) + 1;
+    if (existingByAuth) {
+      const sameEmail =
+        String(existingByAuth.owner_email || "").trim().toLowerCase() === normalizedEmail;
+      const existingDigits = String(existingByAuth.registered_phone || "").replace(/\D/g, "").slice(-10);
+      const samePhone = existingDigits === tenDigitPhone;
+      if (sameEmail || samePhone) {
+        return NextResponse.json(
+          { success: false, error: "This account is already registered. Please login." },
+          { status: 409 }
+        );
+      }
+      console.warn(
+        "[auth/register] supabase_user_id already on",
+        existingByAuth.parent_merchant_id,
+        "- saving parent without that login"
+      );
+      supabaseUserId = null;
     }
-    const parent_merchant_id = `GMMP${nextNum}`;
 
-    const { data: insertData, error: insertError } = await db
-      .from("merchant_parents")
-      .insert({
-        parent_merchant_id,
-        parent_name: parent_name!.trim(),
-        merchant_type: merchantType,
-        owner_name: String(owner_name).trim(),
-        owner_email: normalizedEmail,
-        registered_phone: normalizedPhone,
-        registered_phone_normalized: tenDigitPhone,
-        alternate_phone: alternatePhoneNormalized,
-        brand_name: brand_name && String(brand_name).trim() ? String(brand_name).trim() : null,
-        business_category: business_category && String(business_category).trim() ? String(business_category).trim() : null,
-        is_active: true,
-        registration_status: "VERIFIED",
-        approval_status: "APPROVED",
-        address_line1: address_line1 && String(address_line1).trim() ? String(address_line1).trim() : null,
-        city: city && String(city).trim() ? String(city).trim() : null,
-        state: state && String(state).trim() ? String(state).trim() : null,
-        pincode: pincode && String(pincode).trim() ? String(pincode).trim() : null,
-        store_logo: null,
-        created_by_name: String(owner_name).trim(),
-        supabase_user_id: email_user_id,
-      })
-      .select("id, parent_merchant_id, owner_email")
-      .single();
+    // Link phone to this Supabase user so they can login with phone OTP (same user)
+    if (supabaseUserId) {
+      try {
+        await db.auth.admin.updateUserById(email_user_id, {
+          phone: normalizedPhone,
+          phone_confirm: true,
+        });
+      } catch (linkErr) {
+        console.warn("[auth/register] Could not link phone to Supabase user:", linkErr);
+      }
+    }
 
-    if (insertError) {
+    const parentPayload = {
+      parent_name: parent_name!.trim(),
+      merchant_type: merchantType,
+      owner_name: String(owner_name).trim(),
+      owner_email: normalizedEmail,
+      registered_phone: normalizedPhone,
+      registered_phone_normalized: tenDigitPhone,
+      alternate_phone: alternatePhoneNormalized,
+      brand_name: brand_name && String(brand_name).trim() ? String(brand_name).trim() : null,
+      business_category: resolvedBusinessCategory,
+      is_active: true,
+      registration_status: "VERIFIED",
+      approval_status: "APPROVED",
+      address_line1: address_line1 && String(address_line1).trim() ? String(address_line1).trim() : null,
+      city: city && String(city).trim() ? String(city).trim() : null,
+      state: state && String(state).trim() ? String(state).trim() : null,
+      pincode: pincode && String(pincode).trim() ? String(pincode).trim() : null,
+      store_logo: null,
+      created_by_name: String(owner_name).trim(),
+    };
+
+    async function nextParentMerchantId(): Promise<string> {
+      const { data: lastRow } = await db
+        .from("merchant_parents")
+        .select("parent_merchant_id")
+        .like("parent_merchant_id", "GMMP%")
+        .order("parent_merchant_id", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      let nextNum = 1001;
+      if (lastRow?.parent_merchant_id) {
+        const match = String(lastRow.parent_merchant_id).match(/^GMMP(\d+)$/);
+        if (match) nextNum = parseInt(match[1], 10) + 1;
+      }
+      return `GMMP${nextNum}`;
+    }
+
+    let insertData: { id: number; parent_merchant_id: string; owner_email: string | null } | null = null;
+    let insertError: { code?: string; message?: string; details?: string } | null = null;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const parent_merchant_id = await nextParentMerchantId();
+      const result = await db
+        .from("merchant_parents")
+        .insert({
+          ...parentPayload,
+          parent_merchant_id,
+          supabase_user_id: supabaseUserId,
+        })
+        .select("id, parent_merchant_id, owner_email")
+        .single();
+      insertError = result.error;
+      if (!result.error && result.data) {
+        insertData = result.data;
+        break;
+      }
+      const code = result.error?.code || "";
+      const details = `${result.error?.message || ""} ${result.error?.details || ""}`.toLowerCase();
+      const idClash = details.includes("parent_merchant_id");
+      const authClash = code === "23505" && details.includes("supabase_user_id");
+      if (authClash) {
+        supabaseUserId = null;
+        continue;
+      }
+      if (idClash) continue;
+      break;
+    }
+
+    if (!insertData) {
       console.error("[auth/register] merchant_parents insert error:", insertError);
+      const details = `${insertError?.message || ""} ${insertError?.details || ""}`.toLowerCase();
+      if (insertError?.code === "23505" && details.includes("registered_phone")) {
+        return NextResponse.json(
+          { success: false, error: "This mobile number is already registered." },
+          { status: 409 }
+        );
+      }
+      if (insertError?.code === "23505" && (details.includes("owner_email") || details.includes("email"))) {
+        return NextResponse.json(
+          { success: false, error: "This email is already registered. Please login." },
+          { status: 409 }
+        );
+      }
       return NextResponse.json(
         { success: false, error: "Registration failed. Please try again." },
         { status: 500 }
@@ -267,12 +341,21 @@ export async function POST(request: NextRequest) {
       console.error("[auth/register] parent welcome email error:", mailErr);
     }
 
-    await applyMerchantReferralOnParentCreate({
+    const referral = await applyMerchantReferralOnParentCreate({
       parentPk: insertData.id,
       referralCode,
       source: referralSource,
       referredPhone: normalizedPhone,
     });
+    if (!referral.ok) {
+      console.warn("[auth/register] parent referral code not allocated", referral);
+    } else {
+      console.log(
+        "[auth/register] parent referral code ready",
+        insertData.parent_merchant_id,
+        referral.referralCode ?? "ok"
+      );
+    }
 
     return NextResponse.json({
       success: true,

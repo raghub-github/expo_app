@@ -17,6 +17,7 @@ export interface UserValidationResult {
   systemUserId?: number;
   email?: string;
   hasRoles?: boolean;
+  primaryRole?: string;
 }
 
 /**
@@ -85,6 +86,7 @@ export async function validateUserForLogin(
         systemUserId: systemUser.id,
         email: systemUser.email,
         hasRoles: true,
+        primaryRole: systemUser.primary_role,
       };
     }
 
@@ -148,6 +150,7 @@ export async function validateUserForLogin(
       systemUserId: systemUser.id,
       email: systemUser.email,
       hasRoles: true,
+      primaryRole: systemUser.primary_role,
     };
   } catch (error) {
     console.error("[validateUserForLogin] ===== ERROR ===== Validation error:", error);

@@ -25,8 +25,8 @@ export async function resolveMerchantApiActor(): Promise<MerchantApiActor> {
     const mapped = await resolveSystemUserForSupabaseAuth(authUser.id, undefined);
     email = (mapped?.email ?? "").trim();
   }
-  if (!email) {
-    return { ok: false, error: "Not authenticated", status: 401 };
+  if (!email && !(await isSuperAdmin(authUser.id, undefined))) {
+    return { ok: true, id: authUser.id, email: "" };
   }
   return { ok: true, id: authUser.id, email };
 }

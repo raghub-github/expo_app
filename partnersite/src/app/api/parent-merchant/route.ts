@@ -93,12 +93,15 @@ export async function POST(req: NextRequest) {
         performed_by: '',
         performed_by_email: '',
       });
-      await applyMerchantReferralOnParentCreate({
+      const referral = await applyMerchantReferralOnParentCreate({
         parentPk: inserted[0]?.id,
         referralCode: data.referralCode,
         source: 'manual',
         referredPhone: data.registered_phone,
       });
+      if (!referral.ok) {
+        console.warn('[parent-merchant] referral code not allocated', referral);
+      }
       return NextResponse.json({
         success: true,
         parent_merchant_id: inserted[0]?.parent_merchant_id,

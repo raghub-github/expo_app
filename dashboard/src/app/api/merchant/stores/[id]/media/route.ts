@@ -3,8 +3,7 @@
  * POST /api/merchant/stores/[id]/media/upload - upload menu file (image, CSV, XLS)
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { authenticateMerchantStoreOperator } from "@/lib/merchant-store-route-auth";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
@@ -28,35 +27,13 @@ export async function GET(
     const scope =
       request.nextUrl.searchParams.get("scope") || "MENU_REFERENCE";
 
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 401 }
-      );
-    }
-
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
-    if (!allowed) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Merchant dashboard access required",
-          code: "MERCHANT_ACCESS_REQUIRED",
-        },
-        { status: 403 }
-      );
-    }
+    const operator = await authenticateMerchantStoreOperator(request);
+    if (!operator.ok) return operator.response;
+    const user = operator.user;
 
     const areaManagerId = await resolveMerchantListAreaManagerId({
       supabaseAuthId: user.id,
-      email: user.email,
+      email: user.email ?? "",
     });
 
     const store = await getMerchantStoreById(storeId, areaManagerId);

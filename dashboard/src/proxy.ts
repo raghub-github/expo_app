@@ -59,6 +59,45 @@ function clearSupabaseAuthCookies(response: NextResponse, request: NextRequest):
   }
 }
 
+function unauthenticatedLoginRedirect(request: NextRequest, pathname: string): NextResponse {
+  const redirectUrl = new URL("/login", request.url);
+  const search = request.nextUrl.search;
+  const redirectTarget =
+    pathname === "/"
+      ? "/dashboard"
+      : `${pathname}${search && search !== "?" ? search : ""}`;
+  if (redirectTarget.startsWith("/") && !redirectTarget.startsWith("//")) {
+    redirectUrl.searchParams.set("redirect", redirectTarget);
+  }
+  return NextResponse.redirect(redirectUrl);
+}
+
+function recoverUnifiedSessionIfJwtUsable(
+  request: NextRequest,
+  cookieManager: {
+    get: (name: string) => { value: string } | undefined;
+    set: (
+      name: string,
+      value: string,
+      options: {
+        maxAge: number;
+        path: string;
+        httpOnly?: boolean;
+        sameSite?: string;
+        secure?: boolean;
+      }
+    ) => void;
+  }
+): boolean {
+  const cookieSession = readCookieAccessSession({
+    get: (name) => request.cookies.get(name),
+    getAll: () => request.cookies.getAll(),
+  });
+  if (!isCookieAccessTokenUsable(cookieSession)) return false;
+  initializeSession(cookieManager);
+  return true;
+}
+
 function deadSessionRedirect(
   request: NextRequest,
   normalizedRedirectPath: string,
@@ -73,8 +112,7 @@ function deadSessionRedirect(
     return res;
   }
   if (!pathname.startsWith("/login") && !pathname.startsWith("/auth/callback")) {
-    const redirectUrl = request.nextUrl.clone();
-    redirectUrl.pathname = "/login";
+    const redirectUrl = new URL("/login", request.url);
     redirectUrl.searchParams.set("redirect", normalizedRedirectPath);
     redirectUrl.searchParams.set("reason", "session_invalid");
     redirectUrl.searchParams.set("expired", "1");
@@ -181,7 +219,8 @@ async function probeAuthUserForPageNavigation(
 function isDeadRefreshError(error: { message?: string; code?: string } | null): boolean {
   if (!error) return false;
   if (isRefreshTokenAlreadyUsed(error)) return false;
-  if (isRefreshTokenNotFound(error)) return true;
+  // Parallel refresh loser — do not wipe the winner's cookies.
+  if (isRefreshTokenNotFound(error)) return false;
   const msg = (error.message ?? "").toLowerCase();
   return msg.includes("invalid refresh token");
 }
@@ -244,10 +283,12 @@ export async function proxy(request: NextRequest) {
       },
     });
 
+    const cookieHeader = request.headers.get("cookie") ?? "";
     const hasAuthCookie =
       request.cookies.has("sb-access-token") ||
       request.cookies.has("sb-refresh-token") ||
-      request.cookies.getAll().some((c) => c.name.startsWith("sb-"));
+      request.cookies.getAll().some((c) => c.name.startsWith("sb-")) ||
+      /(?:^|;\s*)sb-/.test(cookieHeader);
 
     // Let auth API routes handle their own session exchange / cookie writes.
     if (
@@ -304,15 +345,17 @@ export async function proxy(request: NextRequest) {
       const validity = checkSessionValidity(metadata);
 
       // Missing partner cookies (first login after deploy / legacy): create once.
-      // Expired idle/rolling/absolute: force re-login — never re-init.
+      // Expired idle/rolling/absolute: re-init if the Auth JWT is still usable.
       if (!metadata || validity.reason === "no_session") {
         initializeSession(cookieManager);
       } else if (!validity.isValid) {
         if (debugProxy) {
           console.log("[proxy] Unified session expired:", validity.reason);
         }
-        expireSession(cookieManager);
-        return deadSessionRedirect(request, normalizedRedirectPath, pathname);
+        if (!recoverUnifiedSessionIfJwtUsable(request, cookieManager)) {
+          expireSession(cookieManager);
+          return deadSessionRedirect(request, normalizedRedirectPath, pathname);
+        }
       } else if (
         isMeaningfulActivityRequest(pathname, request.method, request.nextUrl.search)
       ) {
@@ -324,6 +367,7 @@ export async function proxy(request: NextRequest) {
 
     let session: { user: { id: string; email?: string }; [key: string]: unknown } | null = null;
     let sessionError: { message?: string; code?: string } | null = null;
+    let authProbeTimedOut = false;
 
     try {
       type AuthUserResult = {
@@ -380,6 +424,7 @@ export async function proxy(request: NextRequest) {
           sessionError.message?.includes("fetch failed") ||
           sessionError.message?.toLowerCase().includes("connect timeout"))
       ) {
+        authProbeTimedOut = true;
         session = null;
         sessionError = null;
       }
@@ -393,6 +438,7 @@ export async function proxy(request: NextRequest) {
         error.code === "ECONNREFUSED" ||
         error.code === "UND_ERR_CONNECT_TIMEOUT";
       if (isFetchError) {
+        authProbeTimedOut = true;
         session = null;
         sessionError = null;
       } else {
@@ -409,19 +455,47 @@ export async function proxy(request: NextRequest) {
         sessionError.message?.includes("refresh_token_already_used");
       const isInvalidRefresh = (sessionError.message ?? "").toLowerCase().includes("invalid refresh token");
 
-      if (isAlreadyUsed) {
+      if (isAlreadyUsed || isRefreshTokenNotFound) {
         sessionError = null;
-      } else if (isRefreshTokenNotFound || isInvalidRefresh) {
-        return deadSessionRedirect(request, normalizedRedirectPath, pathname);
+      } else if (isInvalidRefresh) {
+        const cookieSession = readCookieAccessSession({
+          get: (name) => request.cookies.get(name),
+          getAll: () => request.cookies.getAll(),
+        });
+        if (!isCookieAccessTokenUsable(cookieSession)) {
+          return deadSessionRedirect(request, normalizedRedirectPath, pathname);
+        }
+        sessionError = null;
       }
     }
 
-    const publicRoutes = ["/login", "/auth", "/api/auth", "/api/health"];
+    const publicRoutes = [
+      "/login",
+      "/auth",
+      "/api/auth",
+      "/api/health",
+      "/api/onboarding",
+    ];
     const isPublicRoute = publicRoutes.some((route) => pathname.startsWith(route));
 
     if (!session && !isPublicRoute) {
       if (debugProxy) {
         console.log("[proxy] No Supabase session, redirecting to login");
+      }
+      // Auth probe timeout/network miss during compile: cookies may exist but
+      // getUser hung. Never bounce the user to login or 401 SESSION_REQUIRED.
+      if (authProbeTimedOut) {
+        if (pathname.startsWith("/api/")) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: "Service temporarily unavailable",
+              code: "SERVICE_UNAVAILABLE",
+            },
+            { status: 503, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        return continueRequest(request);
       }
       if (pathname.startsWith("/api/")) {
         return NextResponse.json(
@@ -429,10 +503,7 @@ export async function proxy(request: NextRequest) {
           { status: 401, headers: { "Content-Type": "application/json" } }
         );
       }
-      const redirectUrl = request.nextUrl.clone();
-      redirectUrl.pathname = "/login";
-      redirectUrl.searchParams.set("redirect", normalizedRedirectPath);
-      return NextResponse.redirect(redirectUrl);
+      return unauthenticatedLoginRedirect(request, pathname);
     }
 
     if (session && pathname === "/login") {
@@ -499,8 +570,10 @@ export async function proxy(request: NextRequest) {
         if (debugProxy) {
           console.log("[proxy] Unified session expired:", validity.reason);
         }
-        expireSession(cookieManager);
-        return deadSessionRedirect(request, normalizedRedirectPath, pathname);
+        if (!recoverUnifiedSessionIfJwtUsable(request, cookieManager)) {
+          expireSession(cookieManager);
+          return deadSessionRedirect(request, normalizedRedirectPath, pathname);
+        }
       } else if (
         isMeaningfulActivityRequest(pathname, request.method, request.nextUrl.search)
       ) {
