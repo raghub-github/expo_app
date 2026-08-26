@@ -150,6 +150,35 @@ function compactAddress(raw: string): { line1: string; landmark?: string } {
   };
 }
 
+// ── Screen-render coalescing for the 800ms location tracker ──────────────────
+// The foreground tracker emits a fix every ~800ms (or every 2m). Pushing every
+// emit into React state re-renders this whole (large) screen — even while the
+// rider is standing still — which manifests as the map + trip-details section
+// blinking ~once a second. We coalesce insignificant/stationary emits so the
+// screen only re-renders on meaningful movement (≥ ~2m), a heading change, a
+// status transition, or a staleness cap (so distance/ETA stay fresh). GPS
+// collection + backend location sync are unaffected (they run in the tracker);
+// the marker stays smooth because it is interpolated downstream. §16 of the spec
+// explicitly allows throttling the UI render while keeping the GPS/DB cadence.
+const COALESCE_MIN_MOVE_M = 2;
+const COALESCE_MIN_HEADING_DEG = 8;
+const COALESCE_MAX_STALE_MS = 2000;
+
+function coalesceHaversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const R = 6371000;
+  const dLat = ((bLat - aLat) * Math.PI) / 180;
+  const dLng = ((bLng - aLng) * Math.PI) / 180;
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((aLat * Math.PI) / 180) * Math.cos((bLat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+
+function coalesceHeadingDeltaDeg(a: number, b: number): number {
+  const d = Math.abs(((a - b + 540) % 360) - 180);
+  return d;
+}
+
 export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const isFoodOrder = mode === "food";
   const { t } = useTranslation();
@@ -585,7 +614,37 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     pickup?.address,
   ]);
 
-  useEffect(() => tracker.subscribe(setTrackerState), [tracker]);
+  const lastEmittedFixRef = useRef<{ lat: number; lng: number; heading?: number; atMs: number } | null>(null);
+  useEffect(() => {
+    return tracker.subscribe((next) => {
+      setTrackerState((prev) => {
+        const nextFix = next.status === "tracking" ? next.lastFix : undefined;
+        const prevFix = prev.status === "tracking" ? prev.lastFix : undefined;
+        // Always update on a status transition or first/last fix appearing/vanishing.
+        if (next.status !== prev.status || !nextFix || !prevFix) {
+          lastEmittedFixRef.current = nextFix
+            ? { lat: nextFix.lat, lng: nextFix.lng, heading: nextFix.headingDeg, atMs: Date.now() }
+            : null;
+          return next;
+        }
+        const last = lastEmittedFixRef.current;
+        const now = Date.now();
+        const movedM = last ? coalesceHaversineM(last.lat, last.lng, nextFix.lat, nextFix.lng) : Infinity;
+        const headingDelta =
+          last?.heading != null && nextFix.headingDeg != null
+            ? coalesceHeadingDeltaDeg(last.heading, nextFix.headingDeg)
+            : 0;
+        const stale = last ? now - last.atMs : Infinity;
+        // Rider effectively stationary + fresh enough → skip the re-render (return the
+        // same reference so React bails out). Prevents the ~1s idle screen blink.
+        if (movedM < COALESCE_MIN_MOVE_M && headingDelta < COALESCE_MIN_HEADING_DEG && stale < COALESCE_MAX_STALE_MS) {
+          return prev;
+        }
+        lastEmittedFixRef.current = { lat: nextFix.lat, lng: nextFix.lng, heading: nextFix.headingDeg, atMs: now };
+        return next;
+      });
+    });
+  }, [tracker]);
   useEffect(() => {
     void tracker.start();
     return () => {
