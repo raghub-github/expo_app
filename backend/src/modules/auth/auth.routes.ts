@@ -1290,7 +1290,14 @@ export async function authRoutes(app: FastifyInstance) {
       }
 
       const ip = riderLoginIp(req);
-      const loginGeo = await riderSessionLoginGeo(req);
+      // Geo is best-effort audit data only. Its internal HTTP calls are already
+      // timeout-bounded, but an outer cap guarantees login never stalls behind a
+      // slow/hung geo lookup (DNS stall, service degradation) — it degrades to
+      // no-geo rather than pushing the request toward the client's 15s timeout.
+      const loginGeo = await Promise.race([
+        riderSessionLoginGeo(req),
+        new Promise<RiderLoginGeo>((resolve) => setTimeout(() => resolve({}), 2500)),
+      ]).catch(() => ({} as RiderLoginGeo));
 
       try {
         await applyRiderDeviceLoginPolicy(sql, {
