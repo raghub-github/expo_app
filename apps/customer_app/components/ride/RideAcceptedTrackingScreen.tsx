@@ -765,32 +765,58 @@ export function RideAcceptedTrackingScreen({
     );
   }
 
+  // Memoize the map element so high-frequency, map-irrelevant re-renders of this screen
+  // (the 1s pickup-wait `waitTick`, trip-details toggles, cancel-flow state, etc.) do
+  // NOT re-render the map — which was the source of the ~1s map/details blink. The
+  // element is rebuilt only when a real map input changes (center, route, rider/pickup/
+  // drop position, heading, marker image, nav mode, highlight zones). The inline handlers
+  // only call stable setters/refs, so they need no extra deps.
+  const trackingMapElement = useMemo(
+    () => (
+      <MapboxWebRideTrackingMap
+        key={`${order.orderId}-${rideInProgress ? "nav" : "pickup"}`}
+        ref={mapRef}
+        style={StyleSheet.absoluteFill}
+        center={mapCenter}
+        routeCoordinates={mapRouteCoordinates}
+        riderPosition={mapRiderPos}
+        riderHeading={riderHeading}
+        pickupPosition={pickupPoint}
+        dropPosition={dropPoint}
+        riderMarkerImageKey={riderMarkerImageKey}
+        navigationMode={rideInProgress}
+        highlightPickupZone={highlightPickupZone}
+        highlightDropZone={highlightDropZone}
+        geofenceRadiusM={FOOD_DELIVERY_GEOFENCE_RADIUS_M}
+        onMapReady={() => setMapReady(true)}
+        onRegionChangeComplete={() => setMapFrameTick((t) => t + 1)}
+        onUserPan={() => {
+          userDisabledFollowRef.current = true;
+        }}
+      />
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      order.orderId,
+      rideInProgress,
+      mapCenter,
+      mapRouteCoordinates,
+      mapRiderPos,
+      riderHeading,
+      pickupPoint,
+      dropPoint,
+      riderMarkerImageKey,
+      highlightPickupZone,
+      highlightDropZone,
+    ]
+  );
+
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
 
       <View style={[styles.mapSection, rideInProgress && styles.mapSectionNav, styles.mapSectionFlex]}>
-        <MapboxWebRideTrackingMap
-          key={`${order.orderId}-${rideInProgress ? "nav" : "pickup"}`}
-          ref={mapRef}
-          style={StyleSheet.absoluteFill}
-          center={mapCenter}
-          routeCoordinates={mapRouteCoordinates}
-          riderPosition={mapRiderPos}
-          riderHeading={riderHeading}
-          pickupPosition={pickupPoint}
-          dropPosition={dropPoint}
-          riderMarkerImageKey={riderMarkerImageKey}
-          navigationMode={rideInProgress}
-          highlightPickupZone={highlightPickupZone}
-          highlightDropZone={highlightDropZone}
-          geofenceRadiusM={FOOD_DELIVERY_GEOFENCE_RADIUS_M}
-          onMapReady={() => setMapReady(true)}
-          onRegionChangeComplete={() => setMapFrameTick((t) => t + 1)}
-          onUserPan={() => {
-            userDisabledFollowRef.current = true;
-          }}
-        />
+        {trackingMapElement}
         {!mapReady ? (
           <View style={[StyleSheet.absoluteFillObject, styles.mapLoadingOverlay]}>
             <ActivityIndicator size="small" color={GREEN} />
