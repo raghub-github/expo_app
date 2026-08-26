@@ -62,6 +62,19 @@ function createPool(): ReturnType<typeof postgres> {
     keep_alive: 10,
     connection: {
       statement_timeout: 15_000,
+      // Auto-reap leaked transactions. Without this, a request that aborts
+      // mid-transaction (client timeout / dropped socket) can leave the pooler's
+      // server connection stuck "idle in transaction" indefinitely — we observed
+      // several such connections open 15+ hours, each pinning a pooler slot until
+      // the effective pool was exhausted and new queries (e.g. rider OTP verify)
+      // queued forever with no statement running (so statement_timeout never fired).
+      // Postgres terminates any transaction idle past this, freeing the connection.
+      // All our transactions are sub-second, so 30s only ever hits a genuine leak.
+      idle_in_transaction_session_timeout: 30_000,
+      // Fail fast on lock contention instead of burning the whole statement_timeout
+      // budget waiting on a row lock (kept under statement_timeout so callers get a
+      // clear lock error, not a generic 15s statement abort).
+      lock_timeout: 8_000,
       application_name: "gatimitra-backend",
     },
     // Required for PgBouncer transaction mode (Supabase :6543).
