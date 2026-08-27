@@ -21,11 +21,15 @@ import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import {
   isRiderAuthError,
+  isRiderSessionConflict,
   riderAuthService,
+  type RiderSessionConflict,
 } from "@/src/services/auth/auth.service";
 import { resetSessionRevokedFlag } from "@/src/services/sessionEvents";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { getRiderLoginGeoFromDevice } from "@/src/lib/getRiderLoginGeoFromDevice";
+import { AnotherDeviceLoggedInSheet } from "@/src/components/auth/AnotherDeviceLoggedInSheet";
+import type { Session } from "@gatimitra/contracts";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useAppAssetSource } from "@/src/components/AppAssetImage";
@@ -152,6 +156,9 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
   const [deviceSessionRetry, setDeviceSessionRetry] = useState(false);
+  // Single-device conflict (§5/§6): set when OTP succeeded but another device is active.
+  const [sessionConflict, setSessionConflict] = useState<RiderSessionConflict | null>(null);
+  const [takeoverBusy, setTakeoverBusy] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const riderHero = useAppAssetSource(RX.auth.hero);
@@ -237,6 +244,47 @@ export default function LoginScreen() {
     }
   };
 
+  /** Shared post-session handoff — store the session and route by onboarding status. */
+  const proceedAfterSession = async (session: Session) => {
+    resetSessionRevokedFlag();
+    await setSession(session);
+
+    const status = await riderAuthService.getRiderStatus(session.accessToken);
+    const riderId =
+      status.riderId ??
+      session.riderId ??
+      session.userId.replace(/^usr_/, "");
+
+    if (riderId) {
+      await setOnboardingData({ riderId });
+    }
+
+    if (status.onboardingStatus === "approved") {
+      router.replace("/(tabs)/orders");
+    } else if (
+      status.onboardingStatus === "pending_approval" &&
+      status.paymentCompleted === true
+    ) {
+      router.replace("/(onboarding)/pending");
+    } else if (
+      !status.exists ||
+      status.onboardingStatus === "not_started" ||
+      status.onboardingStatus == null
+    ) {
+      // Fresh rider — always enter via referral screen (self-gates on dashboard toggle).
+      // Clear a stale auto-skip so Rider Referral ON is not permanently bypassed.
+      await setOnboardingData({
+        ...(riderId ? { riderId } : {}),
+        referralPromptHandled: false,
+        skippedReferral: false,
+      });
+      router.replace("/(onboarding)/referral");
+    } else {
+      // Mid-onboarding resume (in_progress, etc.)
+      router.replace("/");
+    }
+  };
+
   const onVerifyOtp = async () => {
     if (!otp.trim() || otp.trim().length !== OTP_LENGTH) {
       setError(`Please enter a valid ${OTP_LENGTH}-digit OTP`);
@@ -251,9 +299,9 @@ export default function LoginScreen() {
       const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
       const otpValue = otp.trim();
 
-      let session;
+      let result;
       try {
-        session = await riderAuthService.verifyOtp({
+        result = await riderAuthService.verifyOtp({
           phoneE164: normalizedPhone,
           otp: otpValue,
           deviceId,
@@ -273,48 +321,50 @@ export default function LoginScreen() {
         throw verifyError;
       }
 
-      resetSessionRevokedFlag();
-      await setSession(session);
-
-      const status = await riderAuthService.getRiderStatus(session.accessToken);
-      const riderId =
-        status.riderId ??
-        session.riderId ??
-        session.userId.replace(/^usr_/, "");
-
-      if (riderId) {
-        await setOnboardingData({ riderId });
+      // OTP verified. Another device active → show the confirmation sheet, do NOT log in (§1, §36).
+      if (isRiderSessionConflict(result)) {
+        setSessionConflict(result);
+        return;
       }
 
-      if (status.onboardingStatus === "approved") {
-        router.replace("/(tabs)/orders");
-      } else if (
-        status.onboardingStatus === "pending_approval" &&
-        status.paymentCompleted === true
-      ) {
-        router.replace("/(onboarding)/pending");
-      } else if (
-        !status.exists ||
-        status.onboardingStatus === "not_started" ||
-        status.onboardingStatus == null
-      ) {
-        // Fresh rider — always enter via referral screen (self-gates on dashboard toggle).
-        // Clear a stale auto-skip so Rider Referral ON is not permanently bypassed.
-        await setOnboardingData({
-          ...(riderId ? { riderId } : {}),
-          referralPromptHandled: false,
-          skippedReferral: false,
-        });
-        router.replace("/(onboarding)/referral");
-      } else {
-        // Mid-onboarding resume (in_progress, etc.)
-        router.replace("/");
-      }
+      await proceedAfterSession(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : t("login.failedVerify"));
     } finally {
       setBusy(false);
     }
+  };
+
+  /** "Mark Logout" (§8): confirmed takeover — revoke the other device, activate this one. */
+  const onMarkLogout = async () => {
+    if (!sessionConflict || takeoverBusy) return;
+    setTakeoverBusy(true);
+    setError(null);
+    try {
+      const deviceId = await getOrCreateDeviceId();
+      const loginGeo = await getRiderLoginGeoFromDevice();
+      const session = await riderAuthService.takeoverDeviceSession({
+        takeoverToken: sessionConflict.takeoverToken,
+        deviceId,
+        loginGeo,
+      });
+      setSessionConflict(null);
+      await proceedAfterSession(session);
+    } catch (e) {
+      // Keep the sheet open with a retryable error — never falsely log in (§35).
+      setError(e instanceof Error ? e.message : "Could not switch devices. Please try again.");
+    } finally {
+      setTakeoverBusy(false);
+    }
+  };
+
+  /** "Cancel" (§7): abort — no session created, old device untouched. */
+  const onCancelConflict = () => {
+    if (takeoverBusy) return;
+    setSessionConflict(null);
+    setError(null);
+    // The OTP was consumed server-side; require a fresh code to try again.
+    setOtp("");
   };
 
   const onRetryOtp = async () => {
@@ -341,13 +391,18 @@ export default function LoginScreen() {
       const deviceId = await getOrCreateDeviceId();
       const loginGeo = await getRiderLoginGeoFromDevice();
       const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
-      const session = await riderAuthService.exchangeRiderFromCurrentSupabaseSession({
+      const result = await riderAuthService.exchangeRiderFromCurrentSupabaseSession({
         phoneE164: normalizedPhone,
         deviceId,
         loginGeo,
       });
+      if (isRiderSessionConflict(result)) {
+        setDeviceSessionRetry(false);
+        setSessionConflict(result);
+        return;
+      }
       resetSessionRevokedFlag();
-      await setSession(session);
+      await setSession(result);
       setDeviceSessionRetry(false);
       router.replace("/");
     } catch (e) {
@@ -567,6 +622,14 @@ export default function LoginScreen() {
           )}
         </View>
       </View>
+
+      <AnotherDeviceLoggedInSheet
+        visible={sessionConflict != null}
+        existingSession={sessionConflict?.existingSession ?? null}
+        busy={takeoverBusy}
+        onMarkLogout={onMarkLogout}
+        onCancel={onCancelConflict}
+      />
     </View>
   );
 }

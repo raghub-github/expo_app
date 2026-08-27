@@ -30,6 +30,16 @@ import { riders, userProfiles, customers } from "../../db/schema.js";
 import { eq } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 import { applyRiderDeviceLoginPolicy, RiderDeviceChangeLimitError } from "../../lib/rider-device-change-policy.js";
+import {
+  findConflictingRiderSession,
+  buildRiderSessionConflictBody,
+  type RiderSessionConflictBody,
+} from "../../lib/rider-session-conflict.js";
+import {
+  issueRiderTakeoverToken,
+  verifyRiderTakeoverToken,
+} from "../../lib/rider-takeover-token.js";
+import { performRiderDeviceTakeover } from "../../lib/rider-session-takeover.js";
 import { markDeviceSessionActive } from "../../lib/device-session-cache.js";
 import { resolveRiderLoginGeoForSession, type RiderLoginGeo } from "../../lib/login-geo.js";
 import {
@@ -45,6 +55,51 @@ const RiderLoginGeoSchema = z
     village: z.string().max(128).optional(),
   })
   .optional();
+
+/**
+ * Backward-compat gate: only clients that understand the SESSION_CONFLICT flow (the new
+ * rider app, which sends this header) get the confirmation behavior. Older apps in the
+ * field don't handle 409, so they fall through to the existing silent auto-takeover and
+ * keep working during the rollout window. Header presence is enough (value ignored).
+ */
+function riderClientIsConflictAware(req: { headers: Record<string, unknown> }): boolean {
+  const h = req.headers["x-gm-rider-conflict-aware"];
+  const v = Array.isArray(h) ? h[0] : h;
+  return typeof v === "string" && v.trim().length > 0;
+}
+
+/**
+ * Single-device gate (§5, §36): when the rider already has an active session on ANOTHER
+ * device, return the 409 SESSION_CONFLICT body (carrying a short-lived pending-takeover
+ * token) instead of logging in. Returns null when this device may log in directly — a
+ * client that predates this flow, the review-bypass phone, the same device, or no non-stale
+ * other device. Never revokes anything here; takeover is explicit via /rider/session/takeover.
+ */
+async function riderLoginConflictOrNull(
+  sql: ReturnType<typeof getSql>,
+  args: {
+    userId: string;
+    riderId: number;
+    deviceId: string;
+    phoneE164: string;
+    bypass: boolean;
+    clientAware: boolean;
+  },
+): Promise<RiderSessionConflictBody | null> {
+  if (args.bypass || !args.clientAware) return null;
+  const conflict = await findConflictingRiderSession(sql, {
+    userId: args.userId,
+    deviceId: args.deviceId,
+  });
+  if (!conflict) return null;
+  const takeoverToken = await issueRiderTakeoverToken({
+    userId: args.userId,
+    riderId: args.riderId,
+    deviceId: args.deviceId,
+    phoneE164: args.phoneE164,
+  });
+  return buildRiderSessionConflictBody(conflict, takeoverToken);
+}
 
 async function riderSessionLoginGeo(
   req: { headers: Record<string, unknown>; ip?: string },
@@ -67,6 +122,20 @@ const RiderLoginDeviceMetaSchema = z
     appVersion: z.string().max(32).optional(),
   })
   .optional();
+
+/** 409 body returned by every rider login path when another device is active (§21). */
+const SessionConflictResponseSchema = z.object({
+  code: z.literal("SESSION_CONFLICT"),
+  error: z.string(),
+  message: z.string(),
+  existingSession: z.object({
+    sessionId: z.string(),
+    deviceLabel: z.string(),
+    platform: z.string(),
+    lastActiveAt: z.string().nullable(),
+  }),
+  takeoverToken: z.string(),
+});
 
 function riderLoginIp(req: { headers: Record<string, unknown>; ip?: string }): string | null {
   return (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? req.ip ?? null;
@@ -835,6 +904,7 @@ export async function authRoutes(app: FastifyInstance) {
           404: z.object({ error: z.string(), message: z.string() }).optional(),
           // Base shape used by the OTP-attempt limit (too_many_attempts); rider device-change
           // rejections add the optional fields below — Fastify strips anything undeclared here.
+          409: SessionConflictResponseSchema,
           429: z.object({
             error: z.string(),
             message: z.string().optional(),
@@ -1299,6 +1369,19 @@ export async function authRoutes(app: FastifyInstance) {
         new Promise<RiderLoginGeo>((resolve) => setTimeout(() => resolve({}), 2500)),
       ]).catch(() => ({} as RiderLoginGeo));
 
+      // Single-device gate (§1, §5, §36): OTP already succeeded above. If another device
+      // is active, do NOT create a session or revoke anything — return SESSION_CONFLICT so
+      // the app can show the "Another Device Is Logged In" sheet and let the rider confirm.
+      const deviceConflict = await riderLoginConflictOrNull(sql, {
+        userId,
+        riderId,
+        deviceId,
+        phoneE164,
+        bypass: Boolean(verifyBypass),
+        clientAware: riderClientIsConflictAware(req),
+      });
+      if (deviceConflict) return reply.code(409).send(deviceConflict);
+
       try {
         await applyRiderDeviceLoginPolicy(sql, {
           userId,
@@ -1372,6 +1455,7 @@ export async function authRoutes(app: FastifyInstance) {
           200: SessionSchema,
           400: z.object({ error: z.string() }),
           401: z.object({ error: z.string() }),
+          409: SessionConflictResponseSchema,
           429: z.object({
             error: z.string(),
             message: z.string().optional(),
@@ -1443,6 +1527,17 @@ export async function authRoutes(app: FastifyInstance) {
       const ip = riderLoginIp(req);
       const loginGeo = await riderSessionLoginGeo(req, clientLoginGeo);
 
+      // Single-device gate (§5, §36) — see /otp/verify. Supabase OTP already verified above.
+      const exchangeConflict = await riderLoginConflictOrNull(sql, {
+        userId,
+        riderId,
+        deviceId,
+        phoneE164,
+        bypass: false,
+        clientAware: riderClientIsConflictAware(req),
+      });
+      if (exchangeConflict) return reply.code(409).send(exchangeConflict);
+
       try {
         await applyRiderDeviceLoginPolicy(sql, {
           userId,
@@ -1492,6 +1587,125 @@ export async function authRoutes(app: FastifyInstance) {
         role: "rider",
         userId,
         riderId: riderId.toString(),
+      };
+    },
+  );
+
+  /**
+   * Confirmed single-device takeover (§8, §22). Called after the rider taps "Mark Logout"
+   * on the SESSION_CONFLICT sheet. Verifies the short-lived pending-takeover token (which
+   * proves OTP was completed on THIS device — §30), atomically revokes the other device(s)
+   * and creates this device's session (§10, reusing applyRiderDeviceLoginPolicy), emits
+   * SESSION_REVOKED to the old device (§27), and returns the real rider session. Idempotent
+   * for repeat taps — a second call from the now-active device is a same-device no-op (§20).
+   */
+  app.post(
+    "/rider/session/takeover",
+    {
+      schema: {
+        body: z.object({
+          takeoverToken: z.string().min(10),
+          deviceId: z.string().min(6),
+          device: RiderLoginDeviceMetaSchema,
+          loginGeo: RiderLoginGeoSchema,
+        }),
+        response: {
+          200: SessionSchema,
+          401: z.object({ error: z.string(), message: z.string().optional() }),
+          429: z
+            .object({ error: z.string(), message: z.string().optional() })
+            .passthrough(),
+          503: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const body = req.body as {
+        takeoverToken: string;
+        deviceId: string;
+        device?: {
+          deviceType?: string;
+          deviceModel?: string;
+          os?: string;
+          osVersion?: string;
+          appVersion?: string;
+        };
+        loginGeo?: RiderLoginGeo;
+      };
+
+      let claims: Awaited<ReturnType<typeof verifyRiderTakeoverToken>>;
+      try {
+        claims = await verifyRiderTakeoverToken(body.takeoverToken);
+      } catch {
+        return reply.code(401).send({
+          error: "invalid_takeover_token",
+          message: "Your confirmation expired. Please verify OTP again.",
+        });
+      }
+      // §23/§30: the token binds the exact rider + device that passed OTP — a client can
+      // never take over on behalf of a different device than the one it verified on.
+      if (claims.deviceId !== body.deviceId) {
+        return reply.code(401).send({
+          error: "device_mismatch",
+          message: "Device mismatch. Please verify OTP again.",
+        });
+      }
+
+      const sql = getSql();
+      const ip = riderLoginIp(req);
+      const loginGeo =
+        body.loginGeo ?? (await riderSessionLoginGeo(req).catch(() => ({} as RiderLoginGeo)));
+
+      try {
+        await performRiderDeviceTakeover(sql, {
+          userId: claims.userId,
+          riderId: claims.riderId,
+          deviceId: claims.deviceId,
+          ip,
+          loginGeo,
+          device: body.device ?? undefined,
+        });
+      } catch (err: unknown) {
+        if (err instanceof RiderDeviceChangeLimitError) {
+          const windowLabel = err.limitType === "24h" ? "24 hours" : "30 days";
+          return reply.code(429).send({
+            error: "device_change_limit_exceeded",
+            message: `You've changed devices ${err.currentCount} times in the last ${windowLabel}. Try again after ${err.retryAt.toLocaleString("en-IN")}.`,
+            limitType: err.limitType,
+            currentCount: err.currentCount,
+            limit: err.limit,
+            retryAt: err.retryAt.toISOString(),
+            retryAfterSec: Math.max(0, Math.round((err.retryAt.getTime() - Date.now()) / 1000)),
+          });
+        }
+        req.log?.error?.({ err }, "Rider device takeover failed");
+        return reply.code(503).send({
+          error: "device_session_unavailable",
+          message: "Could not switch devices. Please try again.",
+        });
+      }
+
+      const expiresInSec = 60 * 60 * 24 * 7;
+      const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
+      const accessToken = await issueSupabaseCompatibleJwt({
+        jwtSecret: env.SUPABASE_JWT_SECRET,
+        sub: claims.userId,
+        role: "rider",
+        phoneE164: claims.phoneE164,
+        deviceId: claims.deviceId,
+        exp: expiresAt,
+      });
+
+      req.log?.info?.(
+        { userId: claims.userId, deviceId: claims.deviceId },
+        "Rider device takeover: session switched",
+      );
+      return {
+        accessToken,
+        expiresAt,
+        role: "rider",
+        userId: claims.userId,
+        riderId: claims.riderId.toString(),
       };
     },
   );
@@ -2080,6 +2294,7 @@ export async function authRoutes(app: FastifyInstance) {
         response: {
           200: SessionSchema,
           400: z.object({ error: z.string() }),
+          409: SessionConflictResponseSchema,
           429: z.object({
             error: z.string(),
             message: z.string().optional(),
@@ -2193,6 +2408,17 @@ export async function authRoutes(app: FastifyInstance) {
 
         const ip = riderLoginIp(req);
         const loginGeo = await riderSessionLoginGeo(req);
+
+        // Single-device gate (§5, §36) — see /otp/verify. MSG91 token already verified above.
+        const msg91Conflict = await riderLoginConflictOrNull(sql, {
+          userId,
+          riderId,
+          deviceId,
+          phoneE164,
+          bypass: false,
+          clientAware: riderClientIsConflictAware(req),
+        });
+        if (msg91Conflict) return reply.code(409).send(msg91Conflict);
 
         try {
           await applyRiderDeviceLoginPolicy(sql, {

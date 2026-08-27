@@ -11,7 +11,7 @@
     "start": "cross-env NODE_OPTIONS=--max-old-space-size=4096 node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "echo \"(backend) no lint configured\"",
-    "test": "node --import tsx/esm --test \"src/**/*.test.ts\"",
+    "test": "node --import tsx/esm --experimental-test-module-mocks --test \"src/**/*.test.ts\"",
     "audit:order-tables": "tsx scripts/audit-order-tables.ts",
     "db:verify-orders-core": "tsx scripts/verify-orders-core-schema.ts",
     "db:generate": "drizzle-kit generate",
