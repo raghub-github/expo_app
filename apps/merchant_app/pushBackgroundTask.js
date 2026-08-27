@@ -21,13 +21,31 @@ if (!isExpoGo()) {
   try {
     const Notifications = require("expo-notifications");
     Notifications.setNotificationHandler({
-      handleNotification: async () => ({
-        shouldShowAlert: true,
-        shouldPlaySound: true,
-        shouldSetBadge: true,
-        shouldShowBanner: true,
-        shouldShowList: true,
-      }),
+      handleNotification: async (notification) => {
+        const data = notification?.request?.content?.data ?? {};
+        const t = String(data.type ?? data.notificationType ?? "").toLowerCase();
+        const isIdleStatus =
+          t === "live_orders" ||
+          t === "store_online" ||
+          t === "merchant_go_online" ||
+          t === "merchant_waiting_for_order";
+        if (isIdleStatus) {
+          return {
+            shouldShowAlert: false,
+            shouldPlaySound: false,
+            shouldSetBadge: false,
+            shouldShowBanner: false,
+            shouldShowList: false,
+          };
+        }
+        return {
+          shouldShowAlert: true,
+          shouldPlaySound: true,
+          shouldSetBadge: true,
+          shouldShowBanner: true,
+          shouldShowList: true,
+        };
+      },
     });
   } catch {
     /* missing native module */

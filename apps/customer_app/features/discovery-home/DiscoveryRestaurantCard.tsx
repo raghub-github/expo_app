@@ -18,6 +18,7 @@ import { usePreventServicesAtPin } from "@/hooks/usePreventServicesAtPin";
 import { resolveMerchantFoodHeroPrimaryUri } from "@/lib/merchantHeroMedia";
 import { StoreOpenStatusBadge } from "@/components/home/StoreOpenStatusBadge";
 import { formatMerchantDeliveryTime } from "@/lib/merchantDeliveryTime";
+import { formatMerchantDistanceKm } from "@/lib/merchantDistance";
 import { formatCardOfferLine, RATING_PILL_GREEN } from "@/lib/merchantOfferBadge";
 import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
 import { useStoreBookmarkMutations, useStoreBookmarks } from "@/hooks/useStoreBookmarks";
@@ -26,15 +27,12 @@ import { DiscoveryColors, DISCOVERY_PAGE_PAD, DISCOVERY_RESTAURANT_CARD_H } from
 const IMG = 96;
 const RADIUS = 14;
 
+/** Distance (m/km) when known; otherwise "Near & Fast" — never "0.0km". */
 function formatDistanceArea(merchant: MerchantSummary): string {
-  const km =
-    merchant.distanceKm != null && Number.isFinite(merchant.distanceKm)
-      ? `${merchant.distanceKm >= 10 ? merchant.distanceKm.toFixed(0) : merchant.distanceKm.toFixed(1)}km`
-      : null;
+  const distance = formatMerchantDistanceKm(merchant.distanceKm) ?? "Near & Fast";
   const area = merchant.cuisines?.[0]?.trim() || null;
-  if (km && area) return `${km}, ${area}`;
-  if (km) return km;
-  return area ?? "";
+  if (area) return `${distance}, ${area}`;
+  return distance;
 }
 
 function formatOfferBadge(offerText: string | null | undefined): string | null {

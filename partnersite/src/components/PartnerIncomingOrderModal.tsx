@@ -29,6 +29,7 @@ import {
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
 import { fetchPartnerPendingNewOrdersCount, invalidatePartnerPendingCountCache } from '@/lib/partner-pending-count-fetch';
 import { requestPartnerAcceptanceTimeoutSync } from '@/lib/partner-acceptance-timeout-sync-client';
+import { isPartnerSelfPickupOrder } from '@/lib/partner-delivery-type';
 import {
   hasShownPartnerOrderActionToast,
   markPartnerOrderActionToastShown,
@@ -539,22 +540,8 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   }, [reloadAcceptanceSettings]);
 
   useEffect(() => {
-    if (!storeId) return;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(storeId)}`, { credentials: 'include' });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) return;
-        const maxPrep =
-          typeof data.max_preparation_time_minutes === 'number' && data.max_preparation_time_minutes >= PREP_TIME_MIN
-            ? Math.min(PREP_TIME_MAX, Math.floor(data.max_preparation_time_minutes))
-            : PREP_TIME_MAX;
-        setMaxPrepMinutes(maxPrep);
-      } catch {
-        /* non-fatal */
-      }
-    })();
-  }, [storeId]);
+    setMaxPrepMinutes(PREP_TIME_MAX);
+  }, []);
 
   useEffect(() => {
     if (!storeId) return;
@@ -1025,6 +1012,13 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   }, [secondsLeft]);
 
   const isBig = isBulkOrderFlag(modalOrder);
+  const isSelfPickupOrder = isPartnerSelfPickupOrder(modalOrder);
+  const incomingFulfillmentLabel = isSelfPickupOrder
+    ? 'Self-Pick-Up'
+    : 'GatiMitra delivery';
+  const incomingFulfillmentSuffix = modalOrder?.order_type
+    ? ` · ${String(modalOrder.order_type).replace(/_/g, ' ')}`
+    : '';
 
   const stepPrep = useCallback(
     (delta: number) => {
@@ -1406,18 +1400,18 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       {modalOrder && !rejectOpen
         ? portal(
             <div
-              className={`${incomingLora.variable} ${incomingPoppins.variable} partner-incoming-modal pointer-events-none fixed inset-0 z-[110]`}
+              className={`${incomingLora.variable} ${incomingPoppins.variable} partner-incoming-modal pointer-events-none fixed inset-0 z-[1050]`}
               role="dialog"
               aria-modal="true"
               aria-labelledby="partner-incoming-title"
             >
               <div
-                className="pointer-events-auto absolute inset-y-0 right-0 bg-stone-950/55 backdrop-blur-[3px]"
+                className="pointer-events-auto absolute inset-0 bg-stone-950/55 backdrop-blur-[3px]"
                 style={{ left: 'var(--mx-partner-sidebar-w, 0px)' }}
                 aria-hidden
               />
               <div
-                className="pointer-events-none absolute inset-y-0 right-0 flex items-end justify-center p-2 sm:items-start sm:justify-center sm:px-4 sm:pb-4 sm:pt-[4.75rem]"
+                className="pointer-events-none absolute inset-0 flex items-end justify-center p-2 sm:items-start sm:justify-center sm:px-4 sm:pb-4 sm:pt-[4.75rem]"
                 style={{ left: 'var(--mx-partner-sidebar-w, 0px)' }}
               >
               <div className="pointer-events-auto relative w-full max-w-2xl">
@@ -1425,17 +1419,25 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                   {/* Header */}
                   <div className="flex shrink-0 items-center justify-between gap-2 border-b border-stone-200/80 bg-white px-4 py-2.5 sm:px-5">
                     <div className="min-w-0">
+                      <div className="mb-1">
+                        <MiniOrderId
+                          formattedOrderId={modalOrder.formatted_order_id}
+                          fallbackOrderId={modalOrder.order_id}
+                        />
+                      </div>
                       <h2
                         id="partner-incoming-title"
                         className="text-[15px] font-semibold tracking-tight text-stone-900"
                       >
                         {pendingCount === 1 ? '1 new order' : `${pendingCount} new orders`}
                       </h2>
-                      <p className="incoming-num mt-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-700">
-                        GatiMitra delivery
-                        {modalOrder.order_type
-                          ? ` · ${String(modalOrder.order_type).replace(/_/g, ' ')}`
-                          : ''}
+                      <p
+                        className={`incoming-num mt-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] ${
+                          isSelfPickupOrder ? 'text-amber-800' : 'text-emerald-700'
+                        }`}
+                      >
+                        {incomingFulfillmentLabel}
+                        {incomingFulfillmentSuffix}
                       </p>
                       {orderStoreAddress ? (
                         <p className="mt-1 flex items-start gap-1 text-[11px] font-semibold leading-snug text-sky-800">
@@ -1541,12 +1543,8 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                           : undefined
                       }
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <MiniOrderId
-                          formattedOrderId={modalOrder.formatted_order_id}
-                          fallbackOrderId={modalOrder.order_id}
-                        />
-                        {kitchenNotes.length > 0 ? (
+                      {kitchenNotes.length > 0 ? (
+                        <div className="mb-1.5 flex justify-end">
                           <button
                             type="button"
                             onClick={() => setKitchenNoteOpen(true)}
@@ -1556,10 +1554,10 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
                             <span className="incoming-num">{kitchenNotes.length}</span>
                             <span>Customer note added</span>
                           </button>
-                        ) : null}
-                      </div>
+                        </div>
+                      ) : null}
 
-                      <p className="mt-1 text-[13px] leading-snug text-stone-700">
+                      <p className="mt-0.5 text-[13px] leading-snug text-stone-700">
                         {modalOrder.customer_name ? (
                           <span className="font-medium text-stone-900">
                             {(() => {
@@ -1751,7 +1749,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       />
 
       {dialogsReady && kitchenNoteOpen && kitchenNotes.length > 0 ? (
-        <Dialog open onClose={() => setKitchenNoteOpen(false)} className="relative z-[120]">
+        <Dialog open onClose={() => setKitchenNoteOpen(false)} className="relative z-[1100]">
           <div className="fixed inset-0 bg-stone-950/45 backdrop-blur-[1px]" aria-hidden />
           <div className="fixed inset-0 flex items-center justify-center p-3">
             <Dialog.Panel

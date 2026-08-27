@@ -182,8 +182,14 @@ export function MerchantMarketInsightsCard({
         <div className="flex flex-1 items-center justify-center px-4 min-h-0">
           <p className="text-sm text-slate-500 text-center max-w-xs leading-relaxed">
             {matchScope === "locality"
-              ? "No competitors in your pincode yet. Add a valid postal code on the store profile."
-              : "No competitors in your city yet. Overlap builds as customers order from multiple stores."}
+              ? data?.locality?.postal_code
+                ? "No other stores share your pincode yet."
+                : "No competitors in your pincode yet. Add a valid postal code on the store profile."
+              : data?.locality?.city
+                ? (data.locality.stores_in_area ?? 0) <= 1
+                  ? "No other stores in your city yet."
+                  : "No competitors matched yet. Overlap builds as customers order from multiple stores."
+                : "No competitors in your city yet. Set the store city on the profile to match peers."}
           </p>
         </div>
       ) : (

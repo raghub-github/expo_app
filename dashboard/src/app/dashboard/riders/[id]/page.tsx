@@ -86,6 +86,7 @@ interface WithdrawalEntry {
   ifsc: string;
   accountHolderName: string;
   transactionId: string | null;
+  failureReason?: string | null;
   processedAt: string | null;
   createdAt: string;
   updatedAt: string;

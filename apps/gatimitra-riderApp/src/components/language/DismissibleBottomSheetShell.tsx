@@ -11,6 +11,7 @@ import {
   type KeyboardEvent,
   type ViewStyle,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   KEYBOARD_CLEARANCE,
@@ -36,6 +37,8 @@ type DismissibleBottomSheetShellProps = {
   minHeightRatio?: number;
   sheetStyle?: ViewStyle;
   showOuterHandle?: boolean;
+  /** Circular X above the sheet on the dimmed backdrop (Zomato / Swiggy style). */
+  showFloatingClose?: boolean;
   bottomOffset?: number;
   sheetBottomPadding?: number;
   keyboardAware?: boolean;
@@ -61,6 +64,22 @@ export function useSheetKeyboardState(): SheetKeyboardContextValue {
   return useContext(SheetKeyboardContext);
 }
 
+function SheetFloatingCloseButton({ onPress }: { onPress: () => void }) {
+  return (
+    <View style={styles.floatingCloseRow} pointerEvents="box-none">
+      <Pressable
+        onPress={onPress}
+        hitSlop={12}
+        style={styles.floatingCloseBtn}
+        accessibilityRole="button"
+        accessibilityLabel="Close"
+      >
+        <Ionicons name="close" size={22} color="#374151" />
+      </Pressable>
+    </View>
+  );
+}
+
 export function DismissibleBottomSheetShell({
   visible,
   onDismiss,
@@ -69,6 +88,7 @@ export function DismissibleBottomSheetShell({
   minHeightRatio,
   sheetStyle,
   showOuterHandle = true,
+  showFloatingClose = false,
   bottomOffset = 0,
   sheetBottomPadding,
   keyboardAware = false,
@@ -272,6 +292,7 @@ export function DismissibleBottomSheetShell({
             },
           ]}
         >
+          {showFloatingClose ? <SheetFloatingCloseButton onPress={onDismiss} /> : null}
           {showOuterHandle ? <View style={styles.handle} /> : null}
           <View
             style={[
@@ -431,6 +452,7 @@ export function DismissibleBottomSheetShell({
           useFitContent && !pinSheetAboveKeyboard && styles.anchorFitContent,
         ]}
       >
+        {showFloatingClose ? <SheetFloatingCloseButton onPress={onDismiss} /> : null}
         {showOuterHandle && !pinSheetAboveKeyboard ? <View style={styles.handle} /> : null}
         <View
           style={[
@@ -575,6 +597,27 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "rgba(255, 255, 255, 0.85)",
     marginBottom: 8,
+  },
+  floatingCloseRow: {
+    alignItems: "center",
+    marginBottom: 12,
+    zIndex: 2,
+  },
+  floatingCloseBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    ...(Platform.OS === "android"
+      ? { elevation: 6 }
+      : {
+          shadowColor: "#000",
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.18,
+          shadowRadius: 6,
+        }),
   },
   sheet: {
     width: "100%",

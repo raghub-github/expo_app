@@ -104,7 +104,7 @@ export function orderRecordToBillPayload(
     taxInvoiceNumber: order.taxInvoiceNumber ?? null,
     customerName: order.customerName?.trim() || null,
     dropAddress: order.dropAddress?.trim() || null,
-    pickupOtp: order.pickupOtp?.trim() || null,
+    pickupOtp: order.deliveryType === "SELF_PICKUP" ? null : order.pickupOtp?.trim() || null,
     items: (order.lineItems ?? []).map(mapLineItem),
     pricing: resolveOrderBillPricing(order),
     store,

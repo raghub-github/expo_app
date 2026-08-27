@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { View, StyleSheet } from "react-native";
+import { Alert, Pressable, StyleSheet, View } from "react-native";
+import { AppText as Text } from "@/components/AppText";
 import type { OrderRecord, LineItem } from "@/hooks/useOrders";
 import { useOrderSpeech } from "@/hooks/useOrderSpeech";
 import { useMerchantPrintContext } from "@/hooks/useMerchantPrintContext";
@@ -9,6 +10,7 @@ import { MerchantOrderCardLayout } from "@/components/order/MerchantOrderCardLay
 import { MerchantOrderActionsSheet } from "@/components/order/MerchantOrderActionsSheet";
 import { OrderCustomerBottomSheet } from "@/components/order/OrderCustomerBottomSheet";
 import { OrderTimelineSheet } from "@/components/order/OrderTimelineSheet";
+import { CompleteSelfPickupSheet } from "@/components/order/CompleteSelfPickupSheet";
 import { formatOrderDateTime } from "@/components/order/orderFormatters";
 import { resolvePreparedAtForHandover } from "@/lib/orderHandoverTimeline";
 import { resolvePreparedLateMinutes } from "@/lib/order-prep-time";
@@ -19,6 +21,7 @@ import { RiderAssignPendingCard } from "@/components/order/RiderAssignPendingCar
 import { MerchantAssignedRiderRow } from "@/components/order/MerchantAssignedRiderRow";
 import { useNearbyDispatchRiders } from "@/hooks/useNearbyDispatchRiders";
 import { shouldShowPendingRiderAssign } from "@/lib/orderAssignedRider";
+import { useOrdersContext } from "@/context/OrdersContext";
 
 function parseOrdersFoodId(orderId: string): number | null {
   const n = parseInt(orderId, 10);
@@ -43,14 +46,21 @@ export function MerchantReadyOrderCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [customerOpen, setCustomerOpen] = useState(false);
+  const [selfPickupOpen, setSelfPickupOpen] = useState(false);
+  const [selfPickupLoading, setSelfPickupLoading] = useState(false);
   const { speaking, speak } = useOrderSpeech();
   const printContext = useMerchantPrintContext();
+  const { completeSelfPickup } = useOrdersContext();
 
   const placedAt = formatOrderDateTime(order.createdAt);
+  const isSelfPickup = order.deliveryType === "SELF_PICKUP";
 
   const ordersFoodId = parseOrdersFoodId(order.id);
   const showPendingRider = shouldShowPendingRiderAssign(order, ["ready"]);
-  const { summary: nearbyRiderSummary } = useNearbyDispatchRiders(ordersFoodId, showPendingRider);
+  const { summary: nearbyRiderSummary } = useNearbyDispatchRiders(
+    ordersFoodId,
+    showPendingRider
+  );
 
   const preparedLateMins = useMemo(
     () =>
@@ -72,6 +82,10 @@ export function MerchantReadyOrderCard({
       }),
     [order]
   );
+
+  const orderLabel =
+    order.formattedOrderId?.trim() ||
+    (order.ordersCoreId != null ? `#${order.ordersCoreId}` : `#${order.id}`);
 
   return (
     <>
@@ -103,9 +117,23 @@ export function MerchantReadyOrderCard({
               preparedAt={preparedAtForTimeline}
               handedOverAt={order.handedOverToRiderAt}
               pickedUpAt={order.riderPickedUpAt}
-              pickupOtp={order.pickupOtp}
+              pickupOtp={isSelfPickup ? null : order.pickupOtp}
               nowMs={nowMs}
+              isSelfPickup={isSelfPickup}
             />
+            {isSelfPickup ? (
+              <Pressable
+                onPress={() => setSelfPickupOpen(true)}
+                style={({ pressed }) => [
+                  styles.completeBtn,
+                  pressed && styles.completeBtnPressed,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Complete pickup enter OTP"
+              >
+                <Text style={styles.completeBtnText}>Complete pickup (enter OTP)</Text>
+              </Pressable>
+            ) : null}
           </View>
         }
         riderContent={
@@ -139,10 +167,47 @@ export function MerchantReadyOrderCard({
         order={order}
         onClose={() => setTimelineOpen(false)}
       />
+
+      <CompleteSelfPickupSheet
+        visible={selfPickupOpen}
+        loading={selfPickupLoading}
+        orderLabel={orderLabel}
+        onClose={() => {
+          if (!selfPickupLoading) setSelfPickupOpen(false);
+        }}
+        onConfirm={async (otp) => {
+          setSelfPickupLoading(true);
+          try {
+            await completeSelfPickup(order.id, otp);
+            setSelfPickupOpen(false);
+          } catch (e) {
+            Alert.alert(
+              "Could not complete pickup",
+              e instanceof Error ? e.message : "Invalid OTP or request failed"
+            );
+          } finally {
+            setSelfPickupLoading(false);
+          }
+        }}
+      />
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  timelineWrap: { paddingHorizontal: 14, paddingVertical: 8 },
+  timelineWrap: { paddingHorizontal: 14, paddingVertical: 8, gap: 8 },
+  completeBtn: {
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: "#16A34A",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+  },
+  completeBtnPressed: { opacity: 0.88 },
+  completeBtnText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
 });

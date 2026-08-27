@@ -610,6 +610,12 @@ export default function PersonRideOrderDetailClient({
   ]);
 
   const hasAssignedRider = order?.riderId != null && order.riderId > 0;
+  const rideTerminal =
+    order != null &&
+    ["delivered", "cancelled", "completed"].includes(
+      normalizeStatus(order.currentStatus ?? order.status)
+    );
+  const showLiveRiderMap = hasAssignedRider && !rideTerminal;
 
   const tripStartedAt = useMemo(() => {
     if (!order) return null;
@@ -677,11 +683,11 @@ export default function PersonRideOrderDetailClient({
             </div>
 
             <div className="flex flex-col gap-3 md:flex-row md:items-stretch">
-              <div className="w-full md:w-1/2">
+              <div className="w-full md:w-1/2 md:max-w-[50%] md:shrink-0">
                 <TripDetailsCard order={order} />
               </div>
-              {hasAssignedRider ? (
-              <div className="w-full min-h-[360px] md:w-1/2">
+              {showLiveRiderMap ? (
+              <div className="w-full min-h-[360px] md:w-1/2 md:shrink-0">
                   <RiderRouteMap
                     key={`person-ride-map-${order.riderId}`}
                     className="h-full min-h-[360px] flex flex-col"
@@ -725,11 +731,11 @@ export default function PersonRideOrderDetailClient({
                     pickupPinStyle="person"
                   />
               </div>
-              ) : (
-                <div className="flex h-full min-h-[360px] w-full items-center justify-center rounded-lg border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-[12px] text-slate-500 md:w-1/2">
+              ) : !hasAssignedRider ? (
+                <div className="flex h-full min-h-[360px] w-full items-center justify-center rounded-lg border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-[12px] text-slate-500 md:w-1/2 md:max-w-[50%]">
                   Route map appears when a captain is assigned.
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
         </div>

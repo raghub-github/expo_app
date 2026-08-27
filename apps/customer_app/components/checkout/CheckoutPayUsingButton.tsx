@@ -1,31 +1,35 @@
 import { Pressable, View, Text, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { CheckoutPaymentMethodLogo } from "@/components/checkout/CheckoutPaymentMethodLogo";
-import { payInstrumentShortLabel, type CheckoutPayMethodItem } from "@/lib/razorpayPaymentMethods";
 import { StoreFonts } from "@/constants/storeTypography";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
+import { GatiMitraColors } from "@/constants/gatimitra";
 
 type Props = {
-  instrument: CheckoutPayMethodItem;
+  /** Opens Razorpay Standard Checkout (full method list). */
   onPress: () => void;
+  disabled?: boolean;
 };
 
-export function CheckoutPayUsingButton({ instrument, onPress }: Props) {
+/**
+ * Footer "Pay using" — payment methods are chosen inside Razorpay Checkout,
+ * not a separate in-app sheet (keeps parity with gateway-supported instruments).
+ */
+export function CheckoutPayUsingButton({ onPress, disabled }: Props) {
   const dark = useMerchantUiDark();
-  const label = payInstrumentShortLabel(instrument);
   const muted = dark ? MerchantDarkPalette.textMuted : "#6B7280";
   const title = dark ? MerchantDarkPalette.text : "#111827";
 
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       accessibilityRole="button"
-      accessibilityLabel={`Pay using ${label}`}
-      style={({ pressed }) => [styles.hit, pressed && styles.pressed]}
+      accessibilityLabel="Pay using UPI, cards and more"
+      style={({ pressed }) => [styles.hit, pressed && styles.pressed, disabled && styles.disabled]}
     >
       <View style={styles.row}>
-        <View style={styles.logoWrap} pointerEvents="none">
-          <CheckoutPaymentMethodLogo logoKey={instrument.logoKey} size={28} />
+        <View style={[styles.logoWrap, dark && styles.logoWrapDark]} pointerEvents="none">
+          <Ionicons name="card-outline" size={18} color={GatiMitraColors.deepMintStart} />
         </View>
         <View style={styles.textCol}>
           <View style={styles.captionRow}>
@@ -35,7 +39,7 @@ export function CheckoutPayUsingButton({ instrument, onPress }: Props) {
             <Ionicons name="caret-up" size={10} color={muted} />
           </View>
           <Text style={[styles.method, { color: title }]} numberOfLines={1}>
-            {label}
+            UPI, Cards & more
           </Text>
         </View>
       </View>
@@ -49,6 +53,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   pressed: { opacity: 0.72 },
+  disabled: { opacity: 0.5 },
   row: {
     flexDirection: "row",
     flexWrap: "nowrap",
@@ -58,12 +63,16 @@ const styles = StyleSheet.create({
   logoWrap: {
     width: 28,
     height: 28,
-    backgroundColor: "transparent",
-    borderWidth: 0,
-    overflow: "visible",
-    elevation: 0,
-    shadowOpacity: 0,
-    shadowColor: "transparent",
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+  },
+  logoWrapDark: {
+    backgroundColor: "rgba(22, 163, 74, 0.18)",
+    borderColor: "rgba(134, 239, 172, 0.35)",
   },
   textCol: {
     flexGrow: 1,

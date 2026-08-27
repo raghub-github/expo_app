@@ -39,9 +39,10 @@ export function CustomerPermissionSheetsHost() {
   const promptSmsPermissionIfNeeded = useSmsPermissionStore((s) => s.promptSmsPermissionIfNeeded);
   const recheckAfterAppActive = useSmsPermissionStore((s) => s.recheckAfterAppActive);
 
+  const accessToken = useAuthStore((s) => s.session?.accessToken ?? null);
   const isAuth = segments[0] === "(auth)";
   const isOnboarding = segments[0] === "(onboarding)";
-  const canShow = !isAuth && !isOnboarding;
+  const canShow = Boolean(accessToken) && !isAuth && !isOnboarding;
 
   const finishActiveLocationBootstrap = useCallback(async () => {
     if (useSmsPermissionStore.getState().blocksLocation) return;

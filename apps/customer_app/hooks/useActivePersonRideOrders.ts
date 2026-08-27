@@ -32,6 +32,7 @@ function orderDetailToSummary(detail: OrderDetail): OrderSummary {
     totalAmount: detail.totalAmount,
     createdAt: detail.createdAt,
     paymentStatus: detail.paymentStatus ?? null,
+    paymentMethod: detail.paymentMethod ?? null,
     checkoutMetadata: detail.checkoutMetadata ?? null,
     pickupLat: detail.pickupLat ?? null,
     pickupLng: detail.pickupLng ?? null,
@@ -155,6 +156,7 @@ export function useActivePersonRideOrders(enabled = true) {
   const hasDueFare = dueFareRide != null;
 
   return {
+    orders: rows,
     activeRides,
     dueFareRide,
     trackingRide,

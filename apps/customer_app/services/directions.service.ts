@@ -55,6 +55,12 @@ const VEHICLE_ROUTE_CONFIG: Record<string, VehicleRouteConfig> = {
     durationScale: 1.18,
     backendProfile: "driving",
   },
+  ev_auto: {
+    mapboxProfiles: ["driving-traffic", "driving"],
+    optimizeFor: "fastest_time",
+    durationScale: 1.18,
+    backendProfile: "driving",
+  },
   "cab-economy": {
     mapboxProfiles: ["driving-traffic", "driving"],
     optimizeFor: "fastest_time",

@@ -141,8 +141,6 @@ void (async () => {
       // Drop stale Wi‑Fi IPs left from a previous network (e.g. 10.25.x → 10.205.x).
       if (isStaleLanApiOverride(stored)) {
         await AsyncStorage.removeItem(API_URL_OVERRIDE_KEY);
-        // eslint-disable-next-line no-console
-        console.log("[env] cleared stale API base URL override:", stored);
         return;
       }
       setRuntimeApiBaseUrl(stored);
@@ -282,9 +280,11 @@ export default function RootLayout() {
         await hydrateLocation();
         // SMS first on Android — never fire GPS / Location Accuracy over the SMS sheet.
         if (useSmsPermissionStore.getState().allowInFlight) return "deferred";
-        const smsOk = await useSmsPermissionStore.getState().promptSmsPermissionIfNeeded();
-        if (!smsOk && useSmsPermissionStore.getState().blocksLocation) {
-          return "deferred";
+        if (useAuthStore.getState().session?.accessToken) {
+          const smsOk = await useSmsPermissionStore.getState().promptSmsPermissionIfNeeded();
+          if (!smsOk && useSmsPermissionStore.getState().blocksLocation) {
+            return "deferred";
+          }
         }
         // Permission only — do not push GPS as Current Location before reconcile.
         await promptLocationPermissionIfNeeded({ force: true, skipDeviceFetch: true });

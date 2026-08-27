@@ -9,6 +9,7 @@ export type RideFareQuoteBilling = {
   convenienceFee: number;
   taxTotal: number;
   tipAmount: number;
+  discountTotal?: number;
   charges?: Array<{ label: string; amount: number; kind?: string }>;
   taxes?: Array<{ label: string; amount: number }>;
   breakdownSteps?: Array<{ step: string; amount: number }>;
@@ -97,6 +98,7 @@ export type RideFareQuoteBatchResult =
   | {
       ok: true;
       quotes: Record<string, RideFareQuote>;
+      fareOffsets?: Record<string, { parentCatalogCode: string; discountInr: number }>;
       timings?: {
         geoMs: number;
         configMs: number;
@@ -152,8 +154,9 @@ export async function getRideFareQuoteBatch(params: {
           })
         | { ok: false; code: string; message: string }
       >;
+      fareOffsets?: Record<string, { parentCatalogCode: string; discountInr: number }>;
       timings?: RideFareQuoteBatchResult extends { ok: true; timings?: infer T } ? T : never;
-    }>(`${RIDES_PREFIX}/quote-batch`, body, { signal: params.signal, timeout: 15_000 });
+    }>(`${RIDES_PREFIX}/quote-batch`, body, { signal: params.signal, timeout: 12_000 });
 
     if (!data?.ok || !data.quotes) return { ok: false, error: "Quote batch unavailable" };
 
@@ -178,12 +181,21 @@ export async function getRideFareQuoteBatch(params: {
       quotes[code] = mapQuotePayload(q);
     }
 
-    return { ok: true, quotes, timings: data.timings };
+    return { ok: true, quotes, fareOffsets: data.fareOffsets, timings: data.timings };
   } catch (err: unknown) {
     if (isAbortError(err)) return { ok: false, error: "aborted", code: "ABORTED" };
-    const axiosErr = err as { response?: { data?: { error?: string; code?: string } } };
+    const axiosErr = err as {
+      code?: string;
+      message?: string;
+      response?: { data?: { error?: string; code?: string } };
+    };
     const message = axiosErr.response?.data?.error ?? "Could not fetch ride fares";
-    const code = axiosErr.response?.data?.code;
+    const network =
+      axiosErr.code === "ERR_NETWORK" ||
+      axiosErr.code === "ECONNABORTED" ||
+      axiosErr.code === "ETIMEDOUT" ||
+      /network|fetch failed|timeout/i.test(String(axiosErr.message ?? ""));
+    const code = axiosErr.response?.data?.code ?? (network ? "NETWORK" : undefined);
     return { ok: false, error: message, code };
   }
 }

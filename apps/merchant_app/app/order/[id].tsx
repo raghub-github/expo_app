@@ -356,6 +356,8 @@ export default function OrderDetailScreen() {
 
   const isGatiMitraDelivery =
     String(order?.delivery_type ?? "").toUpperCase() === "GATIMITRA_RIDER";
+  const isSelfPickupOrder =
+    String(order?.delivery_type ?? "").toUpperCase() === "SELF_PICKUP";
 
   const hasActiveDisplayRider = Boolean(
     displayRider &&
@@ -377,12 +379,14 @@ export default function OrderDetailScreen() {
   );
 
   const showDeliveryPartner = useMemo(() => {
-    if (!order || !isGatiMitraDelivery) return false;
+    if (!order) return false;
+    if (isSelfPickupOrder) return true;
+    if (!isGatiMitraDelivery) return false;
     if (showPendingAssign) return true;
     const isTerminal = stage === "delivered" || stage === "rejected" || stage === "rto";
     if (isTerminal) return hasMeaningfulRiderRecord(order, ridersLog);
     return orderEverHadRiderAssignment(order, ridersLog);
-  }, [isGatiMitraDelivery, order, ridersLog, showPendingAssign, stage]);
+  }, [isGatiMitraDelivery, isSelfPickupOrder, order, ridersLog, showPendingAssign, stage]);
 
   const headerSubtitle = useMemo(() => {
     if (!order) return "";

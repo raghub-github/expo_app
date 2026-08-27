@@ -280,6 +280,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const [navSheetExpanded, setNavSheetExpanded] = useState(true);
   const [adminCancelSheetOpen, setAdminCancelSheetOpen] = useState(false);
   const [adminCancelPenaltyAmount, setAdminCancelPenaltyAmount] = useState<number | null>(null);
+  const [adminCancelByType, setAdminCancelByType] = useState<string | null>(null);
   const [waitTick, setWaitTick] = useState(() => Date.now());
   const hadActiveOrderRef = useRef(false);
   const adminCancelHandledRef = useRef(false);
@@ -305,6 +306,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     adminCancelHandledRef.current = false;
     setAdminCancelSheetOpen(false);
     setAdminCancelPenaltyAmount(null);
+    setAdminCancelByType(null);
     setDeliveryProof(null);
     setDeliveryOtpSheetOpen(false);
     setDeliveryPhotoUploading(false);
@@ -357,6 +359,9 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     setOtpSheetOpen(false);
     setDeliveryOtpSheetOpen(false);
     setAdminCancelPenaltyAmount(resolveRiderCancellationPenaltyAmount(order));
+    setAdminCancelByType(
+      unassignedByAdmin ? "admin" : order?.cancelledByType?.trim() || null
+    );
     setAdminCancelSheetOpen(true);
     void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
     queryClient.removeQueries({ queryKey: ["rider", "orders", "detail", orderId] });
@@ -2101,6 +2106,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           visible
           orderIdLabel={order?.formattedOrderId?.trim() || orderId}
           penaltyAmount={adminCancelPenaltyAmount}
+          cancelledByType={adminCancelByType}
           onDismiss={handleAdminCancelDismiss}
         />
       </View>

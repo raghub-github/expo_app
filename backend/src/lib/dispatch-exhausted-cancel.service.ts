@@ -83,6 +83,56 @@ export async function cancelDispatchExhaustedOrder(
     }
     if (row.food_cancelled_at != null) return { cancelled: false, reason: "already_cancelled" };
 
+    // Self-pick-up never needs a rider — do not cancel with NO_RIDER_AVAILABLE.
+    // Only admin / customer cancel, or merchant accept-timeout, may end these orders.
+    const fulfillmentRows = (await sql`
+      SELECT delivery_type, billing_snapshot, checkout_metadata
+      FROM orders_core
+      WHERE id = ${orderCoreId}
+      LIMIT 1
+    `) as Array<{
+      delivery_type: string | null;
+      billing_snapshot: unknown;
+      checkout_metadata: unknown;
+    }>;
+    const fulfillment = fulfillmentRows[0];
+    const dt = String(fulfillment?.delivery_type ?? "").trim().toLowerCase();
+    const billing =
+      fulfillment?.billing_snapshot && typeof fulfillment.billing_snapshot === "object"
+        ? (fulfillment.billing_snapshot as Record<string, unknown>)
+        : null;
+    const billed = String(billing?.deliveryType ?? billing?.delivery_type ?? "")
+      .trim()
+      .toLowerCase();
+    const checkout =
+      fulfillment?.checkout_metadata && typeof fulfillment.checkout_metadata === "object"
+        ? (fulfillment.checkout_metadata as Record<string, unknown>)
+        : null;
+    const meta = String(checkout?.deliveryType ?? checkout?.delivery_type ?? "")
+      .trim()
+      .toLowerCase();
+    const isSelfPickup =
+      dt === "self_pickup" ||
+      dt === "takeaway" ||
+      dt === "take_away" ||
+      dt === "pickup" ||
+      billed === "self_pickup" ||
+      billing?.isSelfPickup === true ||
+      meta === "self_pickup" ||
+      meta === "takeaway";
+    if (isSelfPickup) {
+      await sql`
+        UPDATE order_dispatch_sessions
+        SET status = 'expired', completed_at = NOW(), next_wave_at = NULL, updated_at = NOW()
+        WHERE order_core_id = ${orderCoreId} AND status IN ('active', 'accepted')
+      `;
+      console.info(
+        "[dispatch] exhausted_cancel_skipped_self_pickup",
+        JSON.stringify({ orderCoreId })
+      );
+      return { cancelled: false, reason: "self_pickup" };
+    }
+
     const foodId = Number(row.food_id ?? 0) || 0;
     if (!foodId) return { cancelled: false, reason: "no_food_row" };
     const merchantStoreId = Number(row.merchant_store_id ?? 0) || 0;
@@ -266,11 +316,12 @@ export async function cancelDispatchExhaustedOrder(
           oc.order_id,
           oc.formatted_order_id,
           c.customer_id AS customer_user_id,
-          s.user_id AS merchant_user_id,
+          mp.parent_merchant_id AS merchant_user_id,
           s.store_display_name AS store_name
         FROM orders_core oc
         LEFT JOIN customers c ON c.id = oc.customer_id
         LEFT JOIN merchant_stores s ON s.id = ${merchantStoreId}
+        LEFT JOIN merchant_parents mp ON mp.id = s.parent_id
         WHERE oc.id = ${orderCoreId}
         LIMIT 1
       `) as Array<{

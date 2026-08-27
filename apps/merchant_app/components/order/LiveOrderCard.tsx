@@ -69,7 +69,7 @@ function DeliveryBadge({ deliveryType }: { deliveryType: DeliveryType }) {
     bg = "#DCFCE7";
     color = STATUS_GREEN;
   } else if (deliveryType === "SELF_PICKUP") {
-    label = "Self Pickup";
+    label = "Self-Pick-Up";
     bg = "#FEF3C7";
     color = "#92400E";
   }
@@ -266,7 +266,9 @@ function LiveOrderCardDefault({
   const timer = formatTimerSince(order.createdAt, nowMs);
 
   const showPickupOtp =
-    (order.status === "ready" || order.status === "picked_up") && !!order.pickupOtp;
+    order.deliveryType !== "SELF_PICKUP" &&
+    (order.status === "ready" || order.status === "picked_up") &&
+    !!order.pickupOtp;
   const showRtoOtp = order.status === "rto" && !!order.rtoOtp;
   const { visible: visibleItems, moreCount } = sliceOrderLineItems(order.lineItems);
   const customerLabel = formatOrderCardCustomerLabel(

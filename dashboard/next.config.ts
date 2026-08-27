@@ -46,10 +46,15 @@ function webpackFilesystemCache(kind: WebpackCompilerKind) {
       : path.join(os.homedir(), ".cache", "gatimitra-dashboard-webpack");
   return {
     type: "filesystem" as const,
-    name: `dashboard-${kind}`,
+    // Bump when webpack graph / Next / supabase deps change so packs are not reused stale.
+    name: `dashboard-${kind}-v3`,
+    version: "pure-expr-v3",
     cacheDirectory: path.join(root, kind),
     compression: false as const,
     maxAge: 1000 * 60 * 60 * 24 * 7,
+    buildDependencies: {
+      config: [path.join(__dirname, "next.config.ts")],
+    },
   };
 }
 
@@ -70,7 +75,15 @@ const LEGACY_DASHBOARD_REDIRECTS = [
 ] as const;
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["postgres", "drizzle-orm"],
+  // Keep Node-only / heavy auth packages out of the webpack graph where possible.
+  // Stops AuthAdminApi + PureExpressionDependency failures when the pack cache is stale.
+  serverExternalPackages: [
+    "postgres",
+    "drizzle-orm",
+    "@supabase/supabase-js",
+    "@supabase/ssr",
+    "@supabase/auth-js",
+  ],
   output: "standalone",
   // Trace from the MONOREPO ROOT, not dashboard/. In an npm-workspaces repo
   // `next` (and most other deps) gets hoisted to `../node_modules`; tracing
@@ -109,8 +122,16 @@ const nextConfig: NextConfig = {
     if (dev) {
       // In-memory webpack cache OOMs this dashboard (Next restarts: "used memory threshold").
       config.cache = webpackFilesystemCache(compilerKind);
+      // Corrupted packs + PureExpressionDependency: skip inner-graph pure tracking in dev.
+      config.optimization = {
+        ...config.optimization,
+        innerGraph: false,
+        usedExports: false,
+      };
     } else if (onOneDrive) {
-      config.cache = webpackFilesystemCache(compilerKind);
+      // Prod on OneDrive: filesystem packs race sync + reference missing compiled config;
+      // causes ENOENT on .next/server/pages-manifest.json after a "successful" compile.
+      config.cache = false;
     }
     // Prevent postgres (Node-only) from entering the client bundle if imported accidentally.
     if (!isServer) {
@@ -118,6 +139,14 @@ const nextConfig: NextConfig = {
         ...config.resolve.alias,
         postgres: false,
       };
+      if (dev) {
+        // Dev compiles layout slowly under OneDrive + filesystem cache; default
+        // chunkLoadTimeout (~120s) surfaces as ChunkLoadError before the chunk is ready.
+        config.output = {
+          ...config.output,
+          chunkLoadTimeout: 300_000,
+        };
+      }
     }
     return config;
   },

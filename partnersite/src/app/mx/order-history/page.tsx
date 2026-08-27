@@ -88,6 +88,30 @@ function formatItemsSummary(order: OrdersFoodRow): string {
   return totalQty > 0 ? `${totalQty} item${totalQty === 1 ? '' : 's'}` : '—';
 }
 
+/** CSV export: every line item, pipe-separated (no "+N more"). */
+function formatItemsSummaryForExport(order: OrdersFoodRow): string {
+  const raw = order.items;
+  if (Array.isArray(raw) && raw.length > 0) {
+    return raw
+      .map((row) => {
+        const it = row as Record<string, unknown>;
+        const name = String(it.name ?? it.item_name ?? 'Item').trim() || 'Item';
+        const qty = Number(it.quantity ?? 1) || 1;
+        return `${qty} x ${name}`;
+      })
+      .join(' | ');
+  }
+  const totalQty = computeOrderItemQuantityCount(order);
+  return totalQty > 0 ? `${totalQty} item${totalQty === 1 ? '' : 's'}` : '';
+}
+
+/** Mask phone for customer-details CSV: first 2 + xxxxxx + last 2. */
+function maskPhoneForExport(phone: string | null | undefined): string {
+  const digits = String(phone ?? '').replace(/\D/g, '');
+  if (digits.length < 4) return digits ? `${digits.slice(0, 2)}xxxxxx` : '';
+  return `${digits.slice(0, 2)}xxxxxx${digits.slice(-2)}`;
+}
+
 function formatListTime(iso: string) {
   const d = new Date(iso);
   const time = d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
@@ -539,12 +563,12 @@ function OrderHistoryInner() {
             o.created_at,
             (o.customer_name || '').replace(/,/g, ' '),
             String(o.food_items_total_value ?? ''),
-            formatItemsSummary(o).replace(/,/g, ' '),
+            formatItemsSummaryForExport(o).replace(/,/g, ' '),
           ];
           return cells.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',');
         }),
       ];
-      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+      const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -559,7 +583,7 @@ function OrderHistoryInner() {
 
   const downloadCustomerDetailsCsv = useCallback(() => {
     const rows = filteredOrders;
-    const header = ['order_id', 'formatted_id', 'created_at', 'customer_name', 'customer_phone', 'customer_email'];
+    const header = ['order_id', 'formatted_id', 'created_at', 'customer_name', 'customer_phone'];
     const lines = [
       header.join(','),
       ...rows.map((o) => {
@@ -568,13 +592,12 @@ function OrderHistoryInner() {
           o.formatted_order_id || '',
           o.created_at,
           (o.customer_name || '').replace(/,/g, ' '),
-          (o.customer_phone || '').replace(/,/g, ' '),
-          (o.customer_email || '').replace(/,/g, ' '),
+          maskPhoneForExport(o.customer_phone),
         ];
         return cells.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',');
       }),
     ];
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

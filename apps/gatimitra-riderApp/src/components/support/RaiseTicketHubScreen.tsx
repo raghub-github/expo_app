@@ -185,19 +185,21 @@ export function RaiseTicketHubScreen() {
             </Text>
           </View>
         ) : (
-          postLoginGroups.map((g, index) => (
-            <RaiseTicketCategoryCard
-              key={g.group_code}
-              title={g.group_name}
-              description={
-                g.group_description?.trim() ||
-                t("profile.supportHub.tapToContinue", "Tap to choose your issue")
-              }
-              icon={iconForHelpGroup(g)}
-              gradient={gradientForHelpGroup(g, index)}
-              onPress={() => openGroup(g)}
-            />
-          ))
+          <View style={styles.categoryList}>
+            {postLoginGroups.map((g, index) => (
+              <RaiseTicketCategoryCard
+                key={g.group_code}
+                title={g.group_name}
+                description={
+                  g.group_description?.trim() ||
+                  t("profile.supportHub.tapToContinue", "Tap to choose your issue")
+                }
+                icon={iconForHelpGroup(g)}
+                gradient={gradientForHelpGroup(g, index)}
+                onPress={() => openGroup(g)}
+              />
+            ))}
+          </View>
         )}
 
         {!loading && (groupsQ.isError || preLoginTopicsQ.isError) && !isPreLoginHub ? (
@@ -220,6 +222,10 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 28,
     flexGrow: 1,
+  },
+  categoryList: {
+    gap: 14,
+    paddingBottom: 8,
   },
   center: { paddingVertical: 48, alignItems: "center", gap: 12 },
   loadingText: { fontSize: 14, color: "#64748B" },

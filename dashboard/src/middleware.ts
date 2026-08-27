@@ -225,7 +225,7 @@ function isDeadRefreshError(error: { message?: string; code?: string } | null): 
   return msg.includes("invalid refresh token");
 }
 
-export async function proxy(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   const normalizedRedirectPath = pathname === "/" ? "/dashboard" : pathname;
   const canTogglePortal = request.cookies.get("gm_portal_toggle_access")?.value === "1";

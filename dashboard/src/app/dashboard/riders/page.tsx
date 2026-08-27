@@ -16,6 +16,8 @@ import { useRiderAccessQuery } from '@/hooks/queries/useRiderAccessQuery';
 import type { RiderListEntry, RiderSummary } from '@/types/rider-dashboard';
 import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
 import { formatRiderOrderDisplayId } from '@/lib/riders/format-rider-order-display-id';
+import { resolveRiderOrderWalletEntryType } from '@/lib/riders/rider-wallet-credit-display';
+import { buildTicketDetailHref } from '@/lib/tickets/ticket-path-utils';
 import { formatRiderOrderStatusDisplayLabel, resolveRiderDashboardOrderStatusKey, resolveRiderDashboardOrderStatusLabel, type RiderDashboardOrderStatusInput } from '@/lib/riders/rider-order-status-display';
 import {
   buildRiderDetailUrl,
@@ -1486,7 +1488,20 @@ export default function RidersPage() {
                                   <div className="flex items-center gap-2 min-w-[140px]">
                                     <OrderTypeIcon orderType={order.orderType} />
                                     <div className="min-w-0 leading-tight">
-                                      <p className="text-xs font-semibold text-gray-900 truncate">{formatRiderOrderDisplayId(order)}</p>
+                                      {(() => {
+                                        const publicId = formatRiderOrderDisplayId(order);
+                                        return (
+                                          <Link
+                                            href={`/order/${encodeURIComponent(publicId)}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-xs font-semibold text-blue-700 hover:text-blue-900 hover:underline truncate block"
+                                            title="Open order in new tab"
+                                          >
+                                            {publicId}
+                                          </Link>
+                                        );
+                                      })()}
                                       <p className="text-[10px] text-gray-500 truncate">{formatOrderTypeLabel(order.orderType)}</p>
                                     </div>
                                   </div>
@@ -1664,18 +1679,35 @@ export default function RidersPage() {
                 onPageChange={setWithdrawalsPage}
                 onPageSizeChange={(s) => { setWithdrawalsPageSize(s); setWithdrawalsPage(1); }}
                 onClearFilters={clearWithdrawalsFilters}
-                renderItem={(withdrawal) => (
-                  <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                    <div>
+                renderItem={(withdrawal) => {
+                  const uiStatus = riderWithdrawalUiStatus(withdrawal.status);
+                  const rejectionReason =
+                    typeof withdrawal.failureReason === "string" ? withdrawal.failureReason.trim() : "";
+                  return (
+                  <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_auto] items-start gap-3 p-3 bg-gray-50 rounded-lg">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-gray-900 truncate">
+                        {riderWithdrawalRowTitle(uiStatus)}
+                      </p>
                       <p className="font-medium text-gray-900">₹{Number(withdrawal.amount || 0).toFixed(2)}</p>
-                      <p className="text-sm text-gray-500">{withdrawal.bankAcc} • {withdrawal.status}</p>
+                      <p className="text-sm text-gray-500 truncate">{withdrawal.bankAcc} • {uiStatus}</p>
                     </div>
-                    <div className="text-right">
-                      <StatusBadge status={withdrawal.status} />
+                    <div className="min-w-0 self-center text-center">
+                      {uiStatus === "rejected" && rejectionReason ? (
+                        <p className="text-xs font-medium text-red-700 break-words" title={rejectionReason}>
+                          {rejectionReason}
+                        </p>
+                      ) : (
+                        <span className="text-xs text-gray-400">—</span>
+                      )}
+                    </div>
+                    <div className="text-right shrink-0">
+                      <StatusBadge status={uiStatus} />
                       <p className="text-xs text-gray-500 mt-1">{new Date(withdrawal.createdAt).toLocaleDateString()}</p>
                     </div>
                   </div>
-                )}
+                  );
+                }}
                 emptyMessage="No withdrawals found"
               />
             );
@@ -1748,7 +1780,21 @@ export default function RidersPage() {
                         <tbody className="bg-white divide-y divide-gray-100">
                           {displayedTickets.map((ticket: { id: number; ticketId?: string; orderId?: number; subject: string; category: string; priority: string; status: string; message?: string; createdAt: string }) => (
                             <tr key={ticket.id} className="hover:bg-gray-50/80 transition-colors">
-                              <td className="px-3 py-2 font-mono text-gray-900">{ticket.ticketId?.trim() || "—"}</td>
+                              <td className="px-3 py-2 font-mono text-gray-900">
+                                {ticket.ticketId?.trim() || ticket.id != null ? (
+                                  <Link
+                                    href={buildTicketDetailHref(ticket.id, "")}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-700 hover:text-blue-900 hover:underline font-medium"
+                                    title="Open ticket in new tab"
+                                  >
+                                    {ticket.ticketId?.trim() || `TKT-${ticket.id}`}
+                                  </Link>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
                               <td className="px-3 py-2 text-gray-700">{ticket.orderId != null ? `#${ticket.orderId}` : "—"}</td>
                               <td className="px-3 py-2"><StatusBadge status={ticket.status} /></td>
                               <td className="px-3 py-2 font-medium text-gray-900 max-w-[140px] truncate" title={ticket.subject}>{ticket.subject}</td>
@@ -1928,7 +1974,35 @@ export default function RidersPage() {
                                     <span className="font-mono font-semibold text-gray-900">{penalty.id}</span>
                                   </td>
                                   <td className="py-1.5 px-1.5 align-middle min-w-0">
-                                    <span className="font-mono text-gray-600">{penalty.orderId != null ? penalty.orderId : '—'}</span>
+                                    <span className="font-mono text-gray-600">
+                                      {penalty.orderId != null
+                                        ? (() => {
+                                            const publicId = formatRiderOrderDisplayId({
+                                              id: Number(penalty.orderId),
+                                              formattedOrderId:
+                                                (penalty as { formattedOrderId?: string | null })
+                                                  .formattedOrderId ?? null,
+                                              orderId:
+                                                (penalty as { orderPublicId?: string | null })
+                                                  .orderPublicId ?? null,
+                                              displayOrderId:
+                                                (penalty as { displayOrderId?: string | null })
+                                                  .displayOrderId ?? null,
+                                            });
+                                            return (
+                                              <Link
+                                                href={`/order/${encodeURIComponent(publicId)}`}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="text-blue-700 hover:text-blue-900 hover:underline"
+                                                title="Open order in new tab"
+                                              >
+                                                {publicId}
+                                              </Link>
+                                            );
+                                          })()
+                                        : "—"}
+                                    </span>
                                   </td>
                                   <td className="py-1.5 px-1.5 align-middle min-w-0 overflow-hidden">
                                     <span className="block capitalize text-gray-900 truncate" title={typeLabel}>{typeLabel}</span>
@@ -3232,6 +3306,7 @@ function exportOrdersCsv(
 function orderWalletEntryType(
   order: {
     status: string;
+    orderType?: string;
     riderEarning?: number | string | null;
     walletCredited?: boolean;
     walletDebited?: boolean;
@@ -3240,13 +3315,7 @@ function orderWalletEntryType(
   },
   _extra = 0
 ): "Credit" | "Debit" | "Pending" | "—" {
-  if (order.walletCredited === true) return "Credit";
-  if (order.walletDebited === true) return "Debit";
-
-  const status = String(order.status || "").toLowerCase();
-  if (status === "cancelled" || status === "failed") return "—";
-
-  return "Pending";
+  return resolveRiderOrderWalletEntryType(order);
 }
 
 function WalletEntryBadge({ entry }: { entry: "Credit" | "Debit" | "Pending" | "—" }) {
@@ -3260,6 +3329,30 @@ function WalletEntryBadge({ entry }: { entry: "Credit" | "Debit" | "Pending" | "
     return <span className="text-xs font-medium text-red-700">Debit</span>;
   }
   return <span className="text-xs font-medium text-amber-700">Pending</span>;
+}
+
+function riderWithdrawalUiStatus(status: unknown): string {
+  const raw = String(status ?? "").trim().toLowerCase();
+  if (raw === "failed") return "rejected";
+  return raw || "—";
+}
+
+function riderWithdrawalRowTitle(status: string): string {
+  switch (status) {
+    case "rejected":
+      return "Withdrawal Rejected";
+    case "completed":
+      return "Withdrawal to Bank";
+    case "processing":
+      return "Withdrawal Processing";
+    case "pending":
+      return "Withdrawal Requested";
+    case "cancelled":
+    case "aborted":
+      return "Withdrawal Cancelled";
+    default:
+      return "Withdrawal";
+  }
 }
 
 function StatusBadge({ status }: { status: string }) {

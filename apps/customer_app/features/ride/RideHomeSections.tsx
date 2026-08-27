@@ -11,10 +11,11 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import type { HomeBannerOffer } from "@/services/offers.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { formatRideOfferSubline } from "@/lib/ride-offers";
+import { formatRideOfferSubline, filterRideBookFeaturedOffers } from "@/lib/ride-offers";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { getAppAssetUrl, useAppAssetsStore } from "@/store/appAssetsStore";
 import { CX } from "@/lib/appAssetKeys";
+import { filledRideHomeBannerKeys, rideHomeBannerKeyForIndex } from "@/lib/rideHomeBannerSlots";
 import { prefetchFoodHomeImageUri } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchCriticalRideAssetImagesSync } from "@/lib/rideCriticalAssets";
 
@@ -26,14 +27,13 @@ const CARD_H = 148;
 const AUTO_MS = 5000;
 const LOOP_SCROLL_MS = 420;
 
-const OFFER_ASSET_KEYS = [CX.ride.banner, CX.home.promoRideOffer1, CX.home.promoRideOffer2] as const;
-
 type Slide = {
   id: string;
   title: string;
   titleAccent: string;
   sub: string;
   assetKey: string;
+  accentDark?: boolean;
 };
 
 const DEFAULT_SLIDES: Slide[] = [
@@ -60,12 +60,29 @@ const DEFAULT_SLIDES: Slide[] = [
   },
 ];
 
-function offerToSlide(offer: HomeBannerOffer, index: number): Slide {
+function offerToSlide(offer: HomeBannerOffer, assetKey: string): Slide {
   const title = offer.title?.trim() || "Ride offer";
+  if (/✨/.test(title) || /^free ride\b/i.test(title)) {
+    return {
+      id: offer.id,
+      title: "",
+      titleAccent: title,
+      accentDark: true,
+      sub: formatRideOfferSubline(offer.sub, {
+        minFare: offer.min_order_amount,
+        maxDiscount: offer.max_discount_amount,
+        discountValue: offer.discount_value,
+        discountPercentage: offer.discount_percentage,
+        promoType: offer.promo_type,
+        maxKm: offer.max_km,
+        firstNCompleted: offer.first_n_completed,
+      }),
+      assetKey,
+    };
+  }
   const parts = title.split(/\s+/);
   const accent = parts.length > 2 ? parts.slice(-2).join(" ") : parts[parts.length - 1] ?? title;
   const lead = parts.length > 2 ? `${parts.slice(0, -2).join(" ")} ` : "";
-  const artKey = OFFER_ASSET_KEYS[index % OFFER_ASSET_KEYS.length] ?? CX.ride.banner;
   return {
     id: offer.id,
     title: lead,
@@ -73,8 +90,13 @@ function offerToSlide(offer: HomeBannerOffer, index: number): Slide {
     sub: formatRideOfferSubline(offer.sub, {
       minFare: offer.min_order_amount,
       maxDiscount: offer.max_discount_amount,
+      discountValue: offer.discount_value,
+      discountPercentage: offer.discount_percentage,
+      promoType: offer.promo_type,
+      maxKm: offer.max_km,
+      firstNCompleted: offer.first_n_completed,
     }),
-    assetKey: artKey,
+    assetKey,
   };
 }
 
@@ -106,11 +128,15 @@ function PromoSlideCard({
       <View style={promoStyles.textCol}>
         <AppText style={promoStyles.title} numberOfLines={2}>
           {slide.title}
-          <AppText style={promoStyles.titleAccent}>{slide.titleAccent}</AppText>
+          <AppText style={[promoStyles.titleAccent, slide.accentDark && promoStyles.titleAccentDark]}>
+            {slide.titleAccent}
+          </AppText>
         </AppText>
-        <AppText style={promoStyles.sub} numberOfLines={2}>
-          {slide.sub}
-        </AppText>
+        {slide.sub ? (
+          <AppText style={promoStyles.sub} numberOfLines={2}>
+            {slide.sub}
+          </AppText>
+        ) : null}
         <View style={promoStyles.ctaBtn}>
           <AppText style={promoStyles.ctaText}>Book Now</AppText>
         </View>
@@ -146,10 +172,18 @@ export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
   const assets = useAppAssetsStore((s) => s.assets);
 
   const slides = useMemo(() => {
-    const platform = offers.filter((o) => o.kind === "platform").slice(0, 10);
-    if (platform.length > 0) return platform.map(offerToSlide);
-    return DEFAULT_SLIDES;
-  }, [offers]);
+    const bannerKeys = filledRideHomeBannerKeys();
+    const platform = filterRideBookFeaturedOffers(offers).filter((o) => o.source_offer_id > 0);
+    if (platform.length > 0) {
+      return platform.slice(0, 10).map((offer, index) =>
+        offerToSlide(offer, rideHomeBannerKeyForIndex(index, bannerKeys))
+      );
+    }
+    return DEFAULT_SLIDES.map((slide, index) => ({
+      ...slide,
+      assetKey: rideHomeBannerKeyForIndex(index, bannerKeys),
+    }));
+  }, [offers, assets]);
 
   const loopSlides = useMemo(() => {
     if (slides.length <= 1) return slides;
@@ -290,6 +324,7 @@ const promoStyles = StyleSheet.create({
   textCol: { maxWidth: "58%", paddingLeft: 18, paddingRight: 8, paddingVertical: 16, zIndex: 2 },
   title: { fontSize: 22, fontWeight: "800", color: "#111827", letterSpacing: -0.4, lineHeight: 26 },
   titleAccent: { color: GatiMitraColors.deepMintStart },
+  titleAccentDark: { color: "#064E3B", fontWeight: "800" },
   sub: { marginTop: 4, fontSize: 12, fontWeight: "500", color: "#6B7280", lineHeight: 17 },
   ctaBtn: {
     alignSelf: "flex-start",

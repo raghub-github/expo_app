@@ -93,15 +93,17 @@ function PushNotificationBootstrapInner() {
       const orderId = typeof data.orderId === "string" ? data.orderId : "";
       if (!orderId) return;
       const additionalMinutes = Number(data.additionalMinutes);
+      const extraMins =
+        Number.isFinite(additionalMinutes) && additionalMinutes > 0 ? additionalMinutes : 5;
       const etaMinutes = Number(data.etaMinutes);
       const gmMessage = typeof data.gmMessage === "string" ? data.gmMessage.trim() : "";
       const message =
         gmMessage ||
         buildPrepDelayMessage(
-          Number.isFinite(additionalMinutes) ? additionalMinutes : 5,
+          extraMins,
           Number.isFinite(etaMinutes) ? etaMinutes : null
         );
-      showPrepDelayBanner(orderId, message, 20_000);
+      showPrepDelayBanner(orderId, message, 20_000, extraMins);
     },
     [showPrepDelayBanner]
   );

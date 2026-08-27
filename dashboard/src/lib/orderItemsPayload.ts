@@ -283,8 +283,8 @@ export function buildGstBreakdownFromBilling(
 }
 
 /**
- * Items + platform + customer delivery + taxes + legitimate rounding = CTC.
- * Used for server-side reconciliation / abnormal-rounding detection.
+ * Items + platform + customer delivery + taxes + named adjustments = CTC.
+ * Used for server-side reconciliation / residual-adjustment detection.
  */
 export function customerBillReconciles(input: {
   itemsAmount: number;
@@ -295,7 +295,8 @@ export function customerBillReconciles(input: {
   discounts: number;
   tip: number;
   donation: number;
-  rounding: number;
+  /** Named residual charge/discount (never generic "rounding"). */
+  adjustment: number;
   totalPaid: number;
 }): { ok: boolean; expected: number; diff: number } {
   const expected = round2(
@@ -306,7 +307,7 @@ export function customerBillReconciles(input: {
       input.otherCharges +
       input.tip +
       input.donation +
-      input.rounding -
+      input.adjustment -
       input.discounts
   );
   const diff = round2(input.totalPaid - expected);
@@ -689,6 +690,16 @@ export function buildOrderPricingSummary(
   }
 
   pushCharge("delivery", "Delivery Fee", deliveryFee);
+  // Membership free-delivery discount needs a matching Delivery Fee charge (quoted),
+  // otherwise CTC reconciliation invents a fake positive residual.
+  if (
+    deliveryFee <= 0.005 &&
+    deliveryDisplay.waived &&
+    deliveryDisplay.quoted != null &&
+    deliveryDisplay.quoted > 0.005
+  ) {
+    pushCharge("delivery", "Delivery Fee", deliveryDisplay.quoted);
+  }
   if (gst > 0) {
     lines.push({ key: "gst", label: "GST", amount: gst, kind: "tax" });
   }
@@ -781,7 +792,9 @@ export function buildOrderPricingSummary(
     if (!isGatiResidual) {
       const label =
         diff > 0
-          ? "Bill rounding"
+          ? resolveBillChargeLabel(snap, abs, lines) ??
+            resolveNamedChargeFallbackLabel(snap, abs, lines) ??
+            "Additional charge"
           : resolveBillCreditLabel(snap, abs, lines) ??
             resolveNamedDiscountFallbackLabel(snap) ??
             "Discount";
@@ -840,6 +853,77 @@ function resolveNamedDiscountFallbackLabel(snap: Record<string, unknown>): strin
     const row = d as Record<string, unknown>;
     const label = String(row.label ?? row.step ?? row.title ?? "").trim();
     if (label) return label;
+  }
+  return null;
+}
+
+/** Exact charge label for a positive CTC residual — never "Bill rounding". */
+function resolveBillChargeLabel(
+  snap: Record<string, unknown>,
+  amount: number,
+  existingLines: OrderPricingLine[]
+): string | null {
+  const existing = new Set(existingLines.map((l) => l.label.trim().toLowerCase()));
+
+  // Quoted delivery when membership waived but Delivery Fee line was missing.
+  const deliveryDisplay = resolveDeliveryFeeDisplayFromBilling(snap);
+  if (
+    deliveryDisplay.waived &&
+    deliveryDisplay.quoted != null &&
+    Math.abs(deliveryDisplay.quoted - amount) <= 0.02 &&
+    !existing.has("delivery fee")
+  ) {
+    return "Delivery Fee";
+  }
+
+  const charges = Array.isArray(snap.charges) ? snap.charges : [];
+  for (const raw of charges) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as Record<string, unknown>;
+    if (String(row.kind ?? "charge").toLowerCase() === "discount") continue;
+    if (row.hidden === true) continue;
+    const amt = round2(Math.abs(asNum(row.amount)));
+    if (Math.abs(amt - amount) > 0.02) continue;
+    const label = String(row.label ?? row.step ?? row.title ?? "").trim();
+    if (!label) continue;
+    if (existing.has(label.toLowerCase())) continue;
+    if (String(row.label ?? "") === "__delivery_fee_waived_inr__") continue;
+    return label;
+  }
+
+  const steps = Array.isArray(snap.breakdown_steps) ? snap.breakdown_steps : [];
+  for (const step of steps) {
+    if (!step || typeof step !== "object") continue;
+    const row = step as Record<string, unknown>;
+    const amt = round2(Math.abs(asNum(row.amount)));
+    if (Math.abs(amt - amount) > 0.02) continue;
+    if (asNum(row.amount) < 0) continue;
+    const stepLabel = String(row.step ?? row.label ?? row.title ?? "").trim();
+    if (!stepLabel) continue;
+    if (existing.has(stepLabel.toLowerCase())) continue;
+    return stepLabel;
+  }
+
+  return null;
+}
+
+function resolveNamedChargeFallbackLabel(
+  snap: Record<string, unknown>,
+  amount: number,
+  existingLines: OrderPricingLine[]
+): string | null {
+  const existing = new Set(existingLines.map((l) => l.label.trim().toLowerCase()));
+  const misc = round2(asNum(snap.misc_fee));
+  if (misc > 0.005 && Math.abs(misc - amount) <= 0.02 && !existing.has("additional fee")) {
+    return "Additional fee";
+  }
+  const tip = round2(asNum(snap.tip_amount));
+  if (tip > 0.005 && Math.abs(tip - amount) <= 0.02 && !existing.has("tip")) {
+    return "Tip";
+  }
+  const donation = round2(asNum(snap.donation_amount));
+  if (donation > 0.005 && Math.abs(donation - amount) <= 0.02 && !existing.has("donation")) {
+    return "Donation";
   }
   return null;
 }

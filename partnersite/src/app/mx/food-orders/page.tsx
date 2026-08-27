@@ -26,7 +26,6 @@ import {
   XCircle,
   ChevronRight,
   Package,
-  UtensilsCrossed,
   AlertTriangle,
   Star,
   Store,
@@ -47,6 +46,7 @@ import {
   User,
   Bike,
   MoreVertical,
+  Footprints,
 } from 'lucide-react';
 import { type OrdersFoodRow, type FoodOrderStats } from '@/hooks/useFoodOrders';
 import {
@@ -56,6 +56,10 @@ import {
 } from '@/lib/food-order-stats-cache';
 import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
 import { MerchantStore } from '@/lib/merchantStore';
+import {
+  isPartnerSelfPickupOrder,
+  partnerFulfillmentLabel,
+} from '@/lib/partner-delivery-type';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import {
   PARTNER_MANAGED_STORES_CHANGED,
@@ -109,7 +113,7 @@ import { rejectReasonNeedsFollowUp } from '@/lib/merchantCancellationReasons';
 import { OrderCancellationBanner } from '@/components/orders/OrderCancellationBanner';
 import { OrderOtpSection } from '@/components/orders/OrderOtpSection';
 import { MerchantWeatherBanner } from '@/components/merchant/MerchantWeatherBanner';
-import { resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
+import { resolveOrderOtps, formatPickupOtpForMerchantDisplay, type CachedOrderOtps } from '@/lib/orderOtps';
 import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
 import {
   PARTNER_DEVICE_ORDER_ALERTS_EVENT,
@@ -232,7 +236,7 @@ function FormattedOrderId({
     const lastFour = formattedOrderId.slice(-4);
     
     return (
-      <div className="flex items-baseline gap-0.5">
+      <div className="inline-flex flex-nowrap items-baseline gap-0.5 whitespace-nowrap">
         <span className={`font-bold text-gray-900 ${classes.base}`}>
           {prefix}
         </span>
@@ -271,6 +275,7 @@ function OrdersPageContent() {
   const { followUp, beginFollowUp, dismissFollowUp, setFollowUp } = useRejectFollowUp();
   const [dispatchModal, setDispatchModal] = useState<OrdersFoodRow | null>(null);
   const [rtoModalOrder, setRtoModalOrder] = useState<OrdersFoodRow | null>(null);
+  const [selfPickupModal, setSelfPickupModal] = useState<OrdersFoodRow | null>(null);
   const [ridersLogModalOrderId, setRidersLogModalOrderId] = useState<number | null>(null);
   const [ridersLogModalOrderLabel, setRidersLogModalOrderLabel] = useState<string | null>(null);
   const [ridersLogList, setRidersLogList] = useState<RiderLogEntry[]>([]);
@@ -736,9 +741,10 @@ function OrdersPageContent() {
       setLoading(false);
     }
     const loadOnce = async (sid: string) => {
-      const url = `/api/food-orders?store_id=${encodeURIComponent(sid)}&limit=200`;
+      // Board only needs recent rows; 200+ with heavy enrich was timing out at 40s.
+      const url = `/api/food-orders?store_id=${encodeURIComponent(sid)}&limit=80`;
       const res = await fetch(url, { cache: 'no-store' });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: 'bad_json', orders: [] }));
       return { res, data, sid };
     };
     try {
@@ -757,13 +763,21 @@ function OrdersPageContent() {
       );
       const merged: OrdersFoodRow[] = [];
       const seen = new Set<number>();
+      let anyOk = false;
+      let timedOut = false;
       for (const result of batches) {
         if (!result) continue;
         const { res, data } = result;
         if (!res.ok) {
-          console.error('[FoodOrders] API error:', data.error);
+          if (res.status === 504 || data?.error === 'timeout') {
+            timedOut = true;
+            console.warn('[FoodOrders] slow load (timeout) — keeping cached orders if any');
+          } else {
+            console.error('[FoodOrders] API error:', data?.error ?? res.status);
+          }
           continue;
         }
+        anyOk = true;
         if (!Array.isArray(data.orders)) continue;
         for (const row of data.orders as OrdersFoodRow[]) {
           const key = Number(row.order_id ?? row.id);
@@ -772,6 +786,11 @@ function OrdersPageContent() {
           merged.push(row);
         }
       }
+      if (!anyOk) {
+        if (timedOut && cached?.length) return;
+        if (timedOut) toast.error('Orders are taking longer than usual — retrying…');
+        return;
+      }
       merged.sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
@@ -779,7 +798,7 @@ function OrdersPageContent() {
       queryClient.setQueryData(merchantKeys.foodOrders(cacheKey), merged);
     } catch (err) {
       console.error('[FoodOrders] fetch failed:', err);
-      toast.error('Failed to load orders');
+      if (!cached?.length) toast.error('Failed to load orders');
     } finally {
       setLoading(false);
     }
@@ -1062,6 +1081,62 @@ function OrdersPageContent() {
       }
     },
     [storeId, otpInput, rtoOtpInput]
+  );
+
+  /** Self-pickup: ask customer for Pickup OTP → Ready → Picked up → Delivered. */
+  const completeSelfPickupWithOtp = useCallback(
+    async (order: OrdersFoodRow, code: string) => {
+      const otp = code.trim();
+      if (!storeId || !otp) {
+        toast.error('Enter the 4-digit Pickup OTP from the customer');
+        return false;
+      }
+      setActionLoading(order.id);
+      try {
+        const res = await fetch(`/api/food-orders/${order.id}/complete-self-pickup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ store_id: storeId, otp }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          valid?: boolean;
+          completed?: boolean;
+          order?: OrdersFoodRow;
+          partial?: string;
+        };
+        if (!res.ok || !data.completed) {
+          toast.error(data.error || 'Invalid OTP or could not complete pickup');
+          return false;
+        }
+        setOtpVerified((prev) => ({
+          ...prev,
+          [order.id]: { ...prev[order.id], pickup: true },
+        }));
+        if (data.order) {
+          const nextOrder = mergeFoodOrderPatch(order, data.order);
+          setOrders((prev) => prev.map((o) => (o.id === order.id ? nextOrder : o)));
+          if (selectedOrder?.id === order.id) {
+            closeOrderPanel();
+          }
+        } else {
+          await fetchOrders();
+          if (selectedOrder?.id === order.id) closeOrderPanel();
+        }
+        window.dispatchEvent(new CustomEvent('partner-pending-orders-refresh'));
+        dispatchPartnerNotificationsChanged();
+        toast.success('Self-pickup completed — order delivered');
+        setSelfPickupModal(null);
+        setOtpInput('');
+        return true;
+      } catch {
+        toast.error('Failed to complete self-pickup');
+        return false;
+      } finally {
+        setActionLoading(null);
+      }
+    },
+    [storeId, selectedOrder?.id, closeOrderPanel, fetchOrders]
   );
 
   const handleStoreToggle = useCallback(() => {
@@ -2040,6 +2115,10 @@ function OrdersPageContent() {
                               onNeedMoreTime={() => setPrepDelayOrder(selectedOrder)}
                               onDispatch={() => setDispatchModal(selectedOrder)}
                               onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
+                              onCompleteSelfPickup={() => {
+                                setOtpInput('');
+                                setSelfPickupModal(selectedOrder);
+                              }}
                               onRto={() => {
                                 void fetchOtp(selectedOrder.id);
                                 setRtoOtpInput('');
@@ -2082,6 +2161,10 @@ function OrdersPageContent() {
                             setRtoModalOrder(order);
                           }}
                           onComplete={() => updateStatus(order, 'DELIVERED')}
+                          onCompleteSelfPickup={() => {
+                            setOtpInput('');
+                            setSelfPickupModal(order);
+                          }}
                           loading={actionLoading === order.id}
                           otpCode={resolveOrderOtps(order, otpCache[order.id]).pickup ?? undefined}
                           otpType="PICKUP"
@@ -2119,6 +2202,10 @@ function OrdersPageContent() {
                     onNeedMoreTime={() => setPrepDelayOrder(selectedOrder)}
                     onDispatch={() => setDispatchModal(selectedOrder)}
                     onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
+                    onCompleteSelfPickup={() => {
+                      setOtpInput('');
+                      setSelfPickupModal(selectedOrder);
+                    }}
                     onRto={() => {
                       void fetchOtp(selectedOrder.id);
                       setRtoOtpInput('');
@@ -2181,6 +2268,10 @@ function OrdersPageContent() {
                         }}
                         onRto={() => setRtoModalOrder(order)}
                         onComplete={() => updateStatus(order, 'DELIVERED')}
+                        onCompleteSelfPickup={() => {
+                          setOtpInput('');
+                          setSelfPickupModal(order);
+                        }}
                         loading={actionLoading === order.id}
                         otpCode={resolveOrderOtps(order, otpCache[order.id]).pickup ?? undefined}
                         otpType="PICKUP"
@@ -2213,6 +2304,10 @@ function OrdersPageContent() {
                         onDispatch={() => setDispatchModal(order)}
                         onRto={() => setRtoModalOrder(order)}
                         onComplete={() => updateStatus(order, 'DELIVERED')}
+                        onCompleteSelfPickup={() => {
+                          setOtpInput('');
+                          setSelfPickupModal(order);
+                        }}
                         loading={actionLoading === order.id}
                         otpCode={resolveOrderOtps(order, otpCache[order.id]).pickup ?? undefined}
                         otpType="PICKUP"
@@ -2466,6 +2561,75 @@ function OrdersPageContent() {
                 className="flex-1 py-2.5 bg-orange-600 text-white rounded-lg text-sm font-semibold hover:bg-orange-700"
               >
                 Confirm RTO
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Self-pickup: collect customer Pickup OTP → mark Picked up + Completed.
+          Overlay above topbar (blur header) but inset past sidebar (nav stays sharp). */}
+      {selfPickupModal && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[1005] flex items-end sm:items-center justify-center p-3 sm:p-4 pointer-events-none">
+          <div
+            aria-hidden
+            className="pointer-events-auto absolute inset-y-0 right-0 left-0 md:left-[var(--mx-partner-sidebar-w,14rem)] bg-black/50 backdrop-blur-md"
+          />
+          <div className="pointer-events-auto relative z-10 bg-white rounded-t-xl sm:rounded-xl shadow-xl max-w-lg w-full p-4 sm:p-5 max-h-[90vh] overflow-y-auto md:ml-[var(--mx-partner-sidebar-w,14rem)]">
+            <h3 className="mb-1 flex flex-nowrap items-baseline gap-1.5 whitespace-nowrap font-semibold text-gray-900">
+              <span className="shrink-0">Complete self-pickup —</span>
+              {selfPickupModal.formatted_order_id ? (
+                <FormattedOrderId
+                  formattedOrderId={selfPickupModal.formatted_order_id}
+                  fallbackOrderId={selfPickupModal.order_id}
+                  size="base"
+                />
+              ) : (
+                <span className="shrink-0">#{selfPickupModal.order_id}</span>
+              )}
+            </h3>
+            <p className="mb-3 text-sm leading-relaxed text-gray-600">
+              Ask the customer for the Pickup OTP shown in their app, then enter it below.
+              Correct OTP marks the order as picked up and completed.
+            </p>
+            <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50/80 p-3">
+              <label className="block text-xs font-semibold text-emerald-900 mb-1">
+                Customer Pickup OTP
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoFocus
+                maxLength={4}
+                value={otpInput}
+                onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                className="mt-1 w-full rounded-lg border border-emerald-200 px-3 py-2.5 text-lg font-mono tracking-[0.35em] text-center"
+                placeholder="••••"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelfPickupModal(null);
+                  setOtpInput('');
+                }}
+                className="flex-1 py-2.5 border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  actionLoading === selfPickupModal.id || otpInput.trim().length < 4
+                }
+                onClick={() => {
+                  void completeSelfPickupWithOtp(selfPickupModal, otpInput);
+                }}
+                className="flex-1 py-2.5 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50"
+              >
+                {actionLoading === selfPickupModal.id ? 'Completing…' : 'Confirm & complete'}
               </button>
             </div>
           </div>
@@ -2991,6 +3155,7 @@ function OrderDetailMobile({
   onNeedMoreTime,
   onDispatch,
   onComplete,
+  onCompleteSelfPickup,
   onRto,
   actionLoading,
   onOpenRidersLog,
@@ -3019,6 +3184,7 @@ function OrderDetailMobile({
   onNeedMoreTime?: () => void;
   onDispatch: () => void;
   onComplete: () => void;
+  onCompleteSelfPickup?: () => void;
   onRto: () => void;
   actionLoading: boolean;
   onOpenRidersLog?: () => void;
@@ -3042,11 +3208,8 @@ function OrderDetailMobile({
           ? 'bg-gray-100 text-gray-700'
           : 'bg-blue-100 text-blue-800';
   const totalValue = resolveMerchantCtm(order).toFixed(2);
-  const hasFlags =
-    order.requires_utensils ||
-    order.is_fragile ||
-    order.is_high_value ||
-    (order.veg_non_veg && order.veg_non_veg !== 'na');
+  const fulfillmentLabel = partnerFulfillmentLabel(order);
+  const isSelfPickup = isPartnerSelfPickupOrder(order);
   const otps = resolveOrderOtps(order, otpCache);
   const orderItems = Array.isArray(order.items) ? order.items : [];
   const previewItems = orderItems.slice(0, ORDER_ITEMS_PREVIEW_MAX);
@@ -3067,13 +3230,15 @@ function OrderDetailMobile({
           />
           {(otps.pickup || otps.rto) && (
             <div className="flex flex-wrap items-center gap-2">
-              {otps.pickup && (
+              {!isSelfPickup && otps.pickup ? (
                 <div className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 rounded-lg border border-slate-200">
                   <span className="text-[10px] font-semibold text-slate-600">Pickup</span>
-                  <span className="font-mono font-bold text-base text-gray-900 tracking-wider">{otps.pickup}</span>
+                  <span className="font-mono font-bold text-base text-gray-900 tracking-wider">
+                    {formatPickupOtpForMerchantDisplay(otps.pickup, { selfPickup: isSelfPickup })}
+                  </span>
                   {pickupVerified && <span className="text-green-600 text-xs">✓</span>}
                 </div>
-              )}
+              ) : null}
               {otps.rto && (
                 <div className="flex items-center gap-1.5 px-2.5 py-1 bg-orange-50 rounded-lg border border-orange-200">
                   <span className="text-[10px] font-semibold text-orange-700">RTO</span>
@@ -3260,21 +3425,26 @@ function OrderDetailMobile({
           );
         })()}
 
-        {/* Flags - compact */}
-        {(order.requires_utensils || (order.veg_non_veg && order.veg_non_veg !== 'na') || order.is_fragile || order.is_high_value) && (
-          <div className="rounded-lg bg-gray-50/60 p-2.5 border border-gray-100">
-            <div className="flex flex-wrap gap-1.5">
-              {order.requires_utensils && (
-                <span className="px-2 py-0.5 bg-gray-100 text-gray-700 text-[10px] rounded-md flex items-center gap-1 w-fit"><UtensilsCrossed size={10} /> Utensils</span>
-              )}
-              {order.veg_non_veg && order.veg_non_veg !== 'na' && (
-                <span className="px-2 py-0.5 bg-green-100 text-green-800 text-[10px] rounded-md w-fit">{formatVegNonVeg(order.veg_non_veg)}</span>
-              )}
-              {order.is_fragile && <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] rounded-md">Fragile</span>}
-              {order.is_high_value && <span className="px-2 py-0.5 bg-yellow-100 text-yellow-800 text-[10px] rounded-md">High value</span>}
-            </div>
+        {/* Flags - compact (fulfillment type instead of utensils) */}
+        <div className="rounded-lg bg-gray-50/60 p-2.5 border border-gray-100">
+          <div className="flex flex-wrap gap-1.5">
+            <span
+              className={`px-2 py-0.5 text-[10px] rounded-md flex items-center gap-1 w-fit font-semibold ${
+                isSelfPickup
+                  ? 'bg-amber-50 text-amber-800 ring-1 ring-amber-200'
+                  : 'bg-violet-50 text-violet-800 ring-1 ring-violet-200'
+              }`}
+            >
+              {isSelfPickup ? <Footprints size={10} /> : <Bike size={10} />}
+              {fulfillmentLabel}
+            </span>
+            {order.veg_non_veg && order.veg_non_veg !== 'na' && (
+              <span className="px-2 py-0.5 bg-green-100 text-green-800 text-[10px] rounded-md w-fit">{formatVegNonVeg(order.veg_non_veg)}</span>
+            )}
+            {order.is_fragile && <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] rounded-md">Fragile</span>}
+            {order.is_high_value && <span className="px-2 py-0.5 bg-yellow-100 text-yellow-800 text-[10px] rounded-md">High value</span>}
           </div>
-        )}
+        </div>
 
         <OrderCancellationBanner order={order} />
         <OrderOtpSection
@@ -3283,6 +3453,7 @@ function OrderDetailMobile({
           pickupVerified={pickupVerified}
           rtoVerified={rtoVerified}
           compact
+          selfPickup={isSelfPickup}
           merchantInstructions={resolveMerchantInstructionsForDisplay(order)}
         />
 
@@ -3303,6 +3474,7 @@ function OrderDetailMobile({
             onNeedMoreTime={onNeedMoreTime}
             onDispatch={onDispatch}
             onComplete={onComplete}
+            onCompleteSelfPickup={onCompleteSelfPickup}
             onRto={onRto}
             loading={actionLoading}
             otpVerified={pickupVerified}
@@ -3327,6 +3499,7 @@ function OrderCard({
   onNeedMoreTime,
   onDispatch,
   onComplete,
+  onCompleteSelfPickup,
   onRto,
   loading,
   otpCode,
@@ -3350,6 +3523,7 @@ function OrderCard({
   onNeedMoreTime?: () => void;
   onDispatch: () => void;
   onComplete: () => void;
+  onCompleteSelfPickup?: () => void;
   onRto: () => void;
   loading: boolean;
   otpCode?: string;
@@ -3367,6 +3541,7 @@ function OrderCard({
 }) {
   const status = order.order_status || 'CREATED';
   const isNew = status === 'CREATED' || status === 'NEW';
+  const isSelfPickup = isPartnerSelfPickupOrder(order);
   const isPrepPipeline = status === 'PREPARING' || status === 'ACCEPTED';
   const prepExpired =
     isPrepPipeline && nowMs != null && computePrepExpired(order, nowMs);
@@ -3457,6 +3632,22 @@ function OrderCard({
         )}
       </div>
       <div className="flex flex-wrap gap-1 mb-2">
+        {(() => {
+          const fulfillment = partnerFulfillmentLabel(order);
+          const selfPickup = isPartnerSelfPickupOrder(order);
+          return (
+            <span
+              className={`px-1.5 py-0.5 text-xs rounded flex items-center gap-0.5 font-semibold ${
+                selfPickup
+                  ? 'bg-amber-50 text-amber-800 ring-1 ring-amber-200'
+                  : 'bg-violet-50 text-violet-800 ring-1 ring-violet-200'
+              }`}
+            >
+              {selfPickup ? <Footprints size={10} /> : <Bike size={10} />}
+              {fulfillment}
+            </span>
+          );
+        })()}
         {order.veg_non_veg === 'veg' && (
           <span className="px-1.5 py-0.5 bg-green-100 text-green-700 text-xs rounded">🥗 Veg</span>
         )}
@@ -3474,11 +3665,6 @@ function OrderCard({
         {order.is_fragile && (
           <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 text-xs rounded">⚠ Fragile</span>
         )}
-        {order.requires_utensils && (
-          <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 text-xs rounded flex items-center gap-0.5">
-            <UtensilsCrossed size={10} /> Utensils
-          </span>
-        )}
       </div>
       {merchantInstructionsText ? (
         <p className="text-xs text-amber-700 mb-2 flex items-center gap-1 truncate" title={merchantInstructionsText}>
@@ -3486,9 +3672,13 @@ function OrderCard({
         </p>
       ) : null}
 
-      {(status === 'READY_FOR_PICKUP' || status === 'OUT_FOR_DELIVERY') && (otpCode || onFetchOtp) && (
-        <div className="mb-2 px-2 py-1 bg-slate-100 rounded text-xs flex items-center justify-between">
-          <span className="text-slate-600">OTP ({otpType || 'PICKUP'}):</span>
+      {(status === 'READY_FOR_PICKUP' || status === 'OUT_FOR_DELIVERY') &&
+        !isSelfPickup &&
+        (otpCode || onFetchOtp) && (
+        <div className="mb-2 px-2 py-1 bg-slate-100 rounded text-xs flex items-center justify-between gap-2">
+          <span className="text-slate-600 shrink-0">
+            {`OTP (${otpType || 'PICKUP'}):`}
+          </span>
           {otpCode ? (
             <span className="font-mono font-bold text-slate-900">{otpCode}</span>
           ) : (
@@ -3509,6 +3699,7 @@ function OrderCard({
             onNeedMoreTime={onNeedMoreTime}
             onDispatch={onDispatch}
             onComplete={onComplete}
+            onCompleteSelfPickup={onCompleteSelfPickup}
             onRto={onRto}
             loading={loading}
             otpVerified={otpVerified}
@@ -3540,6 +3731,7 @@ function OrderListRow({
   onDispatch,
   onRto,
   onComplete,
+  onCompleteSelfPickup,
   loading,
   otpCode,
   otpType,
@@ -3561,6 +3753,7 @@ function OrderListRow({
   onDispatch: () => void;
   onRto: () => void;
   onComplete: () => void;
+  onCompleteSelfPickup?: () => void;
   loading: boolean;
   otpCode?: string;
   otpType?: string;
@@ -3575,6 +3768,7 @@ function OrderListRow({
   const value = resolveMerchantCtm(order);
   const label = statusLabel ?? STATUS_LABEL[status] ?? status;
   const isNew = status === 'CREATED' || status === 'NEW';
+  const isSelfPickup = isPartnerSelfPickupOrder(order);
 
   return (
     <div
@@ -3639,11 +3833,15 @@ function OrderListRow({
         </div>
       </div>
 
-      {/* OTP Display */}
-      {(status === 'READY_FOR_PICKUP' || status === 'OUT_FOR_DELIVERY') && (otpCode || onFetchOtp) && (
+      {/* OTP Display — rider handover only (never show pickup OTP for self-pickup). */}
+      {(status === 'READY_FOR_PICKUP' || status === 'OUT_FOR_DELIVERY') &&
+        !isSelfPickup &&
+        (otpCode || onFetchOtp) && (
         <div className="shrink-0 px-3 py-1.5 bg-gradient-to-r from-slate-100 to-slate-50 rounded-lg border border-slate-200">
           <div className="flex items-center gap-2">
-            <span className="text-[10px] font-semibold text-gray-600 uppercase">OTP</span>
+            <span className="text-[10px] font-semibold text-gray-600 uppercase">
+              OTP
+            </span>
             {otpCode ? (
               <span className="font-mono font-bold text-sm text-gray-900">{otpCode}</span>
             ) : (
@@ -3670,6 +3868,7 @@ function OrderListRow({
           onNeedMoreTime={onNeedMoreTime}
           onDispatch={onDispatch}
           onComplete={onComplete}
+          onCompleteSelfPickup={onCompleteSelfPickup}
           onRto={onRto}
           loading={loading}
           otpVerified={otpVerified}
@@ -3704,6 +3903,7 @@ function ActionBtns({
   onNeedMoreTime,
   onDispatch,
   onComplete,
+  onCompleteSelfPickup,
   onRto,
   loading,
   compact,
@@ -3722,6 +3922,8 @@ function ActionBtns({
   onNeedMoreTime?: () => void;
   onDispatch: () => void;
   onComplete: () => void;
+  /** Self-pickup: open OTP sheet to complete Ready → Picked up → Delivered */
+  onCompleteSelfPickup?: () => void;
   onRto?: () => void;
   loading: boolean;
   compact?: boolean;
@@ -3738,6 +3940,7 @@ function ActionBtns({
 }) {
   const status = order.order_status || 'CREATED';
   const dis = loading;
+  const isSelfPickup = isPartnerSelfPickupOrder(order);
   const btnBase = 'rounded-xl font-medium disabled:opacity-50 min-w-0 transition-all duration-200 active:scale-[0.98] shadow-sm border border-transparent';
   const primaryFull = topRightLayout ? 'flex-[2] px-4 py-2.5 text-sm font-semibold' : '';
   const rejectHalf = topRightLayout ? 'flex-1 px-3 py-2.5 text-sm font-semibold' : '';
@@ -3831,6 +4034,32 @@ function ActionBtns({
     );
   }
   if (status === 'READY_FOR_PICKUP') {
+    if (isSelfPickup && onCompleteSelfPickup) {
+      return (
+        <div className={`flex flex-col gap-2 ${topRightLayout ? 'w-full' : ''}`}>
+          {/* Panel already renders ReadyHandoverRunningTimeline above primaryAction */}
+          {!topRightLayout ? (
+            <ReadyHandoverRunningTimeline
+              order={order}
+              nowMs={nowMs ?? Date.now()}
+              compact={compact}
+            />
+          ) : null}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onCompleteSelfPickup();
+            }}
+            disabled={dis}
+            className={`${btnBase} w-full min-h-[44px] rounded-xl px-3 py-2.5 text-sm font-semibold bg-green-600 text-white hover:bg-green-700`}
+          >
+            Complete pickup (enter OTP)
+          </button>
+          {!compact && !topRightLayout ? <RtoMenu /> : null}
+        </div>
+      );
+    }
     if (topRightLayout) return null;
     return (
       <div className={`flex flex-col gap-2 ${topRightLayout ? 'w-full' : ''}`}>
@@ -3849,11 +4078,18 @@ function ActionBtns({
       <div className={`flex flex-col gap-2 ${topRightLayout ? 'w-full' : ''}`}>
         {showMerchantComplete ? (
           <button
-            onClick={(e) => { e.stopPropagation(); onComplete(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (isSelfPickup && onCompleteSelfPickup) {
+                onCompleteSelfPickup();
+              } else {
+                onComplete();
+              }
+            }}
             disabled={dis}
             className={`${btnBase} ${topRightLayout ? 'w-full px-4 py-2.5 text-sm font-semibold' : ''} ${compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm'} bg-green-600 text-white hover:bg-green-700 hover:shadow-md border-green-700/20`}
           >
-            Mark delivered
+            {isSelfPickup ? 'Complete pickup (enter OTP)' : 'Mark delivered'}
           </button>
         ) : (
           <p

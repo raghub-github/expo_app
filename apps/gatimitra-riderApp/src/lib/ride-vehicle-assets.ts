@@ -14,6 +14,7 @@ const RIDE_TYPE_TO_IMAGE_KEY: Record<string, string> = {
   bike: "bike",
   "bike-lite": "bike",
   auto: "auto",
+  ev_auto: "auto",
   "cab-economy": "cab",
   "cab-premium": "cab_premium",
   travel: "travel",

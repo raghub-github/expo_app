@@ -167,6 +167,12 @@ export async function GET(
         metadata: meta,
         coreRow,
       });
+      const rejectionReasonRaw =
+        meta?.rejection_reason ?? meta?.rejectionReason ?? meta?.reason;
+      const rejectionReason =
+        typeof rejectionReasonRaw === "string" && rejectionReasonRaw.trim()
+          ? rejectionReasonRaw.trim()
+          : null;
       return {
         id: r.id,
         riderId: r.riderId,
@@ -178,6 +184,7 @@ export async function GET(
         refType: r.refType,
         description: r.description,
         orderId,
+        rejectionReason,
         performedByType: r.performedByType ?? "system",
         performedById: r.performedById,
         performedByEmail: r.performedByEmail ?? null,

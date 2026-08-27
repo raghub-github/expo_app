@@ -118,7 +118,30 @@ export function OrderDetailRiderCard({
   nearbySummary = null,
 }: Props) {
   const [logOpen, setLogOpen] = useState(false);
-  const isGatiMitra = String(deliveryType).toUpperCase() === "GATIMITRA_RIDER";
+  const deliveryTypeUpper = String(deliveryType).toUpperCase();
+  const isGatiMitra = deliveryTypeUpper === "GATIMITRA_RIDER";
+  const isSelfPickup = deliveryTypeUpper === "SELF_PICKUP";
+
+  if (isSelfPickup) {
+    return (
+      <View style={styles.wrap}>
+        <Text style={styles.fulfillmentHeading}>Fulfillment</Text>
+        <View style={styles.selfPickupCard}>
+          <View style={styles.selfPickupIcon}>
+            <Ionicons name="walk-outline" size={16} color="#92400E" />
+          </View>
+          <View style={styles.selfPickupBody}>
+            <Text style={styles.selfPickupTitle} numberOfLines={1}>
+              Self-Pick-Up
+            </Text>
+            <Text style={styles.selfPickupSub} numberOfLines={2}>
+              Customer will come to the store and pick up this order.
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
+  }
 
   const historyRiders = useMemo(
     () => resolveRiderHistoryExcludingCurrent(ridersLog, rider),
@@ -253,6 +276,51 @@ export function OrderDetailRiderCard({
 const styles = StyleSheet.create({
   wrap: {
     marginBottom: 4,
+  },
+  fulfillmentHeading: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    marginBottom: 8,
+  },
+  selfPickupCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#FFFBEB",
+    borderRadius: CARD_RADIUS,
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    minHeight: 52,
+  },
+  selfPickupIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#FEF3C7",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  selfPickupBody: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: "center",
+    gap: 2,
+  },
+  selfPickupTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    lineHeight: 18,
+  },
+  selfPickupSub: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#92400E",
+    lineHeight: 16,
   },
   headingRow: {
     flexDirection: "row",

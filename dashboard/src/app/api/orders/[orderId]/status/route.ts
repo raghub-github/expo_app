@@ -131,6 +131,14 @@ export async function PATCH(
       console.warn("[PATCH /api/orders/[orderId]/status] realtime publish:", pubErr);
     }
 
+    // Drop short-lived list/count caches so completed orders leave active stage tabs immediately.
+    try {
+      const { deleteCachedByPrefix } = await import("@/lib/server-cache");
+      deleteCachedByPrefix("orders_core:");
+    } catch {
+      /* ignore */
+    }
+
     return NextResponse.json({
       success: true,
       data: { status, orderId, updatedByEmail: userEmail },

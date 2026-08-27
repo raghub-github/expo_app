@@ -19,9 +19,9 @@ export type DemandZone = {
 const CELL_DEG = 0.008; // ~0.9 km
 const MIN_STORES_PER_ZONE = 1;
 const MAX_ZONES = 5;
-const CIRCLE_POINTS = 36;
 const MIN_RADIUS_M = 280;
 const RADIUS_PAD_M = 120;
+const HEX_SIDES = 6;
 
 function cellKey(lat: number, lng: number): string {
   const rLat = Math.floor(lat / CELL_DEG);
@@ -29,7 +29,7 @@ function cellKey(lat: number, lng: number): string {
   return `${rLat}:${rLng}`;
 }
 
-function circlePolygon(
+function hexagonPolygon(
   center: DemandZonePoint,
   radiusM: number
 ): [number, number][][] {
@@ -40,14 +40,28 @@ function circlePolygon(
   const dLat = radiusM / mPerDegLat;
   const dLng = radiusM / mPerDegLng;
 
-  for (let i = 0; i <= CIRCLE_POINTS; i++) {
-    const t = (i / CIRCLE_POINTS) * Math.PI * 2;
+  for (let i = 0; i < HEX_SIDES; i++) {
+    const angle = (Math.PI / 3) * i - Math.PI / 6;
     coords.push([
-      center.lng + dLng * Math.cos(t),
-      center.lat + dLat * Math.sin(t),
+      center.lng + dLng * Math.cos(angle),
+      center.lat + dLat * Math.sin(angle),
     ]);
   }
+  coords.push(coords[0]!);
   return [coords];
+}
+
+/** Flat-top hex ring around a center when H3 boundary is missing from the API. */
+export function hexRingFromCenter(
+  center: { lat: number; lng: number },
+  radiusM = 320
+): [number, number][] {
+  return hexagonPolygon(center, radiusM)[0] ?? [];
+}
+
+/** @deprecated Legacy name — kept for tests; shapes are hexagons now. */
+function circlePolygon(center: DemandZonePoint, radiusM: number): [number, number][][] {
+  return hexagonPolygon(center, radiusM);
 }
 
 /**
@@ -136,7 +150,7 @@ export function buildDemandZones(
     centroid: c.centroid,
     distanceKm: Number(c.distanceKm.toFixed(1)),
     storeCount: c.storeCount,
-    polygon: circlePolygon(c.centroid, c.radiusM),
+    polygon: hexagonPolygon(c.centroid, c.radiusM),
   }));
 }
 

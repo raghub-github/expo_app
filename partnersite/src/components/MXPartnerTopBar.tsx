@@ -3202,7 +3202,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       />
       <header
         ref={(n) => { topbarRef.current = n; }}
-        className="fixed top-0 right-0 z-[1000] grid min-h-[3.5rem] w-full shrink-0 grid-cols-[minmax(0,1fr)_auto] items-stretch bg-[#F8F9FA] left-0 md:left-[var(--mx-partner-sidebar-w,14rem)] md:w-[calc(100%-var(--mx-partner-sidebar-w,14rem))]"
+        data-mx-partner-topbar
+        className="mx-partner-topbar fixed top-0 right-0 z-[1000] grid min-h-[3.5rem] w-full shrink-0 grid-cols-[minmax(0,1fr)_auto] items-stretch bg-[#F8F9FA] left-0 md:left-[var(--mx-partner-sidebar-w,14rem)] md:w-[calc(100%-var(--mx-partner-sidebar-w,14rem))]"
       >
         {/* Page title — main heading first, subtext below */}
         <div className="relative z-[1] flex min-w-0 flex-col justify-center border-b border-gray-200/80 bg-[#F8F9FA] px-2 py-2 isolate sm:px-4 sm:pr-4">

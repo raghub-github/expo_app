@@ -2,7 +2,7 @@
  * Shared rider order queries for dashboard (orders_core + order_rider_assignments, legacy fallback).
  */
 
-import { orders, ordersCore, ordersRide } from "@/lib/db/schema";
+import { orders, ordersCore, ordersFood, ordersRide } from "@/lib/db/schema";
 import type { getDb } from "@/lib/db/client";
 import { eq, and, desc, gte, lte, sql, or, ilike } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
@@ -47,8 +47,11 @@ export type RiderRecentOrderRow = {
   externalRef?: string | null;
   displayOrderId?: string | null;
   grandTotal?: string | number | null;
+  itemTotal?: string | number | null;
+  foodItemsTotalValue?: string | number | null;
   tipAmount?: string | number | null;
   billingSnapshot?: unknown;
+  checkoutMetadata?: unknown;
   paymentStatus?: string | null;
   adminRiderPaymentClearedAt?: Date | string | null;
   walletCredited?: boolean;
@@ -118,8 +121,11 @@ function mapCoreRow(row: {
   fareAmount: string | number | null;
   riderEarning: string | number | null;
   grandTotal?: string | number | null;
+  itemTotal?: string | number | null;
+  foodItemsTotalValue?: string | number | null;
   tipAmount?: string | number | null;
   billingSnapshot?: unknown;
+  checkoutMetadata?: unknown;
   paymentStatus?: string | null;
   adminRiderPaymentClearedAt?: Date | string | null;
   createdAt: Date;
@@ -148,8 +154,11 @@ function mapCoreRow(row: {
     fareAmount: row.fareAmount,
     riderEarning: row.riderEarning,
     grandTotal: row.grandTotal ?? null,
+    itemTotal: row.itemTotal ?? null,
+    foodItemsTotalValue: row.foodItemsTotalValue ?? null,
     tipAmount: row.tipAmount ?? null,
     billingSnapshot: row.billingSnapshot ?? null,
+    checkoutMetadata: row.checkoutMetadata ?? null,
     paymentStatus: row.paymentStatus ?? null,
     adminRiderPaymentClearedAt: row.adminRiderPaymentClearedAt ?? null,
     createdAt: row.createdAt,
@@ -231,8 +240,11 @@ async function listFromOrdersCore(
       fareAmount: ordersCore.fareAmount,
       riderEarning: ordersCore.riderEarning,
       grandTotal: ordersCore.grandTotal,
+      itemTotal: ordersCore.itemTotal,
+      foodItemsTotalValue: ordersFood.foodItemsTotalValue,
       tipAmount: ordersCore.tipAmount,
       billingSnapshot: ordersCore.billingSnapshot,
+      checkoutMetadata: ordersCore.checkoutMetadata,
       paymentStatus: ordersCore.paymentStatus,
       adminRiderPaymentClearedAt: ordersRide.adminRiderPaymentClearedAt,
       createdAt: ordersCore.createdAt,
@@ -243,13 +255,15 @@ async function listFromOrdersCore(
     })
     .from(ordersCore)
     .leftJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
+    .leftJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
     .where(conditions.length > 1 ? and(...conditions) : conditions[0])
     .orderBy(desc(ordersCore.createdAt))
     .limit(filters.limit);
 
-  return enrichRiderOrdersWithAssignmentStatus(
+  return enrichRiderOrdersWithEarnings(
+    db,
     riderId,
-    await enrichRiderOrdersWithEarnings(db, riderId, rows.map(mapCoreRow))
+    await enrichRiderOrdersWithAssignmentStatus(riderId, rows.map(mapCoreRow))
   );
 }
 
@@ -358,8 +372,11 @@ export async function listRiderOrdersPaginated(
         fareAmount: ordersCore.fareAmount,
         riderEarning: ordersCore.riderEarning,
         grandTotal: ordersCore.grandTotal,
+        itemTotal: ordersCore.itemTotal,
+        foodItemsTotalValue: ordersFood.foodItemsTotalValue,
         tipAmount: ordersCore.tipAmount,
         billingSnapshot: ordersCore.billingSnapshot,
+        checkoutMetadata: ordersCore.checkoutMetadata,
         paymentStatus: ordersCore.paymentStatus,
         adminRiderPaymentClearedAt: ordersRide.adminRiderPaymentClearedAt,
         createdAt: ordersCore.createdAt,
@@ -370,15 +387,17 @@ export async function listRiderOrdersPaginated(
       })
       .from(ordersCore)
       .leftJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
+      .leftJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
       .where(whereClause)
       .orderBy(desc(ordersCore.createdAt))
       .limit(args.limit)
       .offset(args.offset);
 
     return {
-      orders: await enrichRiderOrdersWithAssignmentStatus(
+      orders: await enrichRiderOrdersWithEarnings(
+        db,
         riderId,
-        await enrichRiderOrdersWithEarnings(db, riderId, rows.map(mapCoreRow))
+        await enrichRiderOrdersWithAssignmentStatus(riderId, rows.map(mapCoreRow))
       ),
       total: Number(total) ?? 0,
       source: "core",

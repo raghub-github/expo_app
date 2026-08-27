@@ -24,6 +24,7 @@ import {
   type UserAppCategoryStoreType,
   type UserAppCategoryStatus,
 } from "@/lib/user-app-categories/shared";
+import { fetchUserAppCategoriesBootstrap } from "@/lib/user-app-categories/fetch-bootstrap";
 
 function emptyForm(store: UserAppCategoryStoreType, display_order = 0): FormState {
   return {
@@ -45,40 +46,6 @@ type FormState = {
 
 type StatusFilter = "all" | UserAppCategoryStatus;
 
-type CategoriesBootstrap = {
-  items: UserAppCategoryRow[];
-  allTab: { label: string; imageUrl: string | null };
-};
-
-const BOOTSTRAP_TIMEOUT_MS = 20_000;
-
-async function fetchUserAppCategoriesBootstrap(
-  storeType: UserAppCategoryStoreType
-): Promise<CategoriesBootstrap> {
-  const qs = new URLSearchParams({ storeType });
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), BOOTSTRAP_TIMEOUT_MS);
-  try {
-    const res = await fetch(`/api/admin/user-app-categories/bootstrap?${qs.toString()}`, {
-      credentials: "include",
-      signal: controller.signal,
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(typeof data.error === "string" ? data.error : "Failed to load categories");
-    }
-    return {
-      items: Array.isArray(data.items) ? data.items : [],
-      allTab: {
-        label: data.allTab?.label?.trim() || "All",
-        imageUrl: data.allTab?.imageUrl?.trim() || null,
-      },
-    };
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
 function CategoriesTableSkeleton() {
   return (
     <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white w-full shadow-sm">
@@ -98,7 +65,7 @@ function CategoriesTableSkeleton() {
   );
 }
 
-export default function CustomerAppCategoriesPage() {
+export default function CustomerAppCategoriesClient() {
   const router = useRouter();
   const { isSuperAdmin, loading: permLoading } = usePermissions();
   const [storeType, setStoreType] = useState<UserAppCategoryStoreType>("FOOD");
@@ -130,15 +97,18 @@ export default function CustomerAppCategoriesPage() {
   } = useQuery({
     queryKey: queryKeys.admin.userAppCategories(storeType),
     queryFn: () => fetchUserAppCategoriesBootstrap(storeType),
-    enabled: !permLoading && isSuperAdmin,
-    staleTime: 2 * 60 * 1000,
-    gcTime: 10 * 60 * 1000,
+    enabled: permLoading || isSuperAdmin,
+    staleTime: 10 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    refetchOnMount: false,
     placeholderData: (previousData) => previousData,
     retry: 1,
   });
 
   const loading = bootstrapLoading && !bootstrapData;
   const listFetching = bootstrapFetching && !!bootstrapData;
+  const displayItems =
+    items.length > 0 || !bootstrapData?.items?.length ? items : bootstrapData.items;
 
   useEffect(() => {
     if (bootstrapData?.items) {
@@ -187,6 +157,7 @@ export default function CustomerAppCategoriesPage() {
   useEffect(() => {
     setModalOpen(false);
     setInfo(null);
+    setItems([]);
   }, [storeType]);
 
   useEffect(() => {
@@ -195,13 +166,13 @@ export default function CustomerAppCategoriesPage() {
   }, [storeType]);
 
   const sortedItems = useMemo(() => {
-    const copy = [...items];
+    const copy = [...displayItems];
     copy.sort((a, b) => {
       if (a.display_order !== b.display_order) return a.display_order - b.display_order;
       return a.id - b.id;
     });
     return copy;
-  }, [items]);
+  }, [displayItems]);
 
   const filteredItems = useMemo(() => {
     let list = sortedItems;
@@ -216,14 +187,14 @@ export default function CustomerAppCategoriesPage() {
   }, [sortedItems, statusFilter, searchQuery]);
 
   const missingImageCount = useMemo(
-    () => items.filter((i) => !i.image_url || !String(i.image_url).trim()).length,
-    [items]
+    () => displayItems.filter((i) => !i.image_url || !String(i.image_url).trim()).length,
+    [displayItems]
   );
 
   const openCreate = () => {
     setEditingId(null);
     const nextOrder =
-      items.length === 0 ? 0 : Math.max(...items.map((i) => i.display_order)) + 1;
+      displayItems.length === 0 ? 0 : Math.max(...displayItems.map((i) => i.display_order)) + 1;
     setForm(emptyForm(storeType, nextOrder));
     setModalOpen(true);
     setError(null);
@@ -253,6 +224,11 @@ export default function CustomerAppCategoriesPage() {
 
   const toggleRowStatus = async (row: UserAppCategoryRow) => {
     const next: UserAppCategoryStatus = row.status === "active" ? "inactive" : "active";
+    const previous = row.status;
+    // Optimistic UI — toggle flips on first click without waiting for the network.
+    setItems((prev) =>
+      prev.map((i) => (i.id === row.id ? { ...i, status: next } : i))
+    );
     setRowBusyId(row.id);
     setError(null);
     try {
@@ -264,16 +240,20 @@ export default function CustomerAppCategoriesPage() {
       });
       const data = await res.json();
       if (!res.ok) {
+        setItems((prev) =>
+          prev.map((i) => (i.id === row.id ? { ...i, status: previous } : i))
+        );
         setError(data.error || "Could not update status");
         return;
       }
       const item = data.item as UserAppCategoryRow | undefined;
       if (item?.id === row.id) {
         setItems((prev) => prev.map((i) => (i.id === row.id ? item : i)));
-      } else {
-        await reloadCategories({ silent: true });
       }
     } catch {
+      setItems((prev) =>
+        prev.map((i) => (i.id === row.id ? { ...i, status: previous } : i))
+      );
       setError("Could not update status");
     } finally {
       setRowBusyId(null);
@@ -585,15 +565,7 @@ export default function CustomerAppCategoriesPage() {
     }
   };
 
-  if (permLoading) {
-    return (
-      <div className="p-6 flex justify-center">
-        <Loader2 className="h-6 w-6 animate-spin text-cyan-600" />
-      </div>
-    );
-  }
-
-  if (!isSuperAdmin) {
+  if (!permLoading && !isSuperAdmin) {
     return null;
   }
 
@@ -668,17 +640,17 @@ export default function CustomerAppCategoriesPage() {
         </div>
       </div>
 
-      {items.length > 0 &&
+      {displayItems.length > 0 &&
         (searchQuery.trim() !== "" || statusFilter !== "all") &&
-        filteredItems.length !== items.length && (
+        filteredItems.length !== displayItems.length && (
           <p className="text-[11px] text-gray-500">
-            Showing <strong>{filteredItems.length}</strong> of <strong>{items.length}</strong> tiles
+            Showing <strong>{filteredItems.length}</strong> of <strong>{displayItems.length}</strong> tiles
             {searchQuery.trim() ? ` matching “${searchQuery.trim()}”` : ""}
             {statusFilter !== "all" ? ` · ${statusFilter}` : ""}
           </p>
         )}
 
-      {items.length > 0 && missingImageCount > 0 && (
+      {displayItems.length > 0 && missingImageCount > 0 && (
         <p className="text-xs text-amber-900 bg-amber-50 border border-amber-100 rounded-md px-3 py-2">
           <strong>{missingImageCount}</strong> tile(s) need an image — click thumbnail or Edit.
         </p>
@@ -772,7 +744,7 @@ export default function CustomerAppCategoriesPage() {
 
       {loading ? (
         <CategoriesTableSkeleton />
-      ) : items.length === 0 ? (
+      ) : displayItems.length === 0 ? (
         <p className="text-sm text-gray-500 py-6">
           No categories for <strong>{storeType}</strong>. Use <strong>Add category</strong>.
         </p>

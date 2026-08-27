@@ -121,7 +121,7 @@ function buildCheckoutHtml(
         notes: { source: "gatimitra-customer-app-webview" },
         retry: { enabled: true, max_count: 3 },
         send_sms_hash: true,
-        remember_customer: true,
+        remember_customer: false,
         handler: function(r) {
           var u = success_url + (success_url.indexOf("?") >= 0 ? "&" : "?") +
             "razorpay_payment_id=" + encodeURIComponent(r.razorpay_payment_id) +

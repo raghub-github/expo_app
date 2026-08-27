@@ -37,7 +37,9 @@ export async function loadCustomerOrderCounts(
   }
 }
 
-/** Per-order store/platform sequence numbers for the fetched core rows (1 query). */
+/** Per-order store/platform sequence numbers for the fetched core rows only.
+ *  Avoids windowing the entire customer history (was timing out the orders board).
+ */
 export async function loadOrderOrdinalsByCoreId(
   storeId: number,
   coreIds: number[],
@@ -51,31 +53,30 @@ export async function loadOrderOrdinalsByCoreId(
 
   try {
     const rows = await sql<{ id: number; store_ordinal: number; platform_ordinal: number }[]>`
-      WITH platform_ranks AS (
-        SELECT
-          id,
-          ROW_NUMBER() OVER (
-            PARTITION BY customer_id
-            ORDER BY created_at ASC, id ASC
-          )::int AS platform_ordinal
-        FROM orders_core
-        WHERE customer_id = ANY(${custIds}::bigint[])
-      ),
-      store_ranks AS (
-        SELECT
-          id,
-          ROW_NUMBER() OVER (
-            PARTITION BY merchant_store_id, customer_id
-            ORDER BY created_at ASC, id ASC
-          )::int AS store_ordinal
-        FROM orders_core
-        WHERE merchant_store_id = ${storeId}
-          AND customer_id = ANY(${custIds}::bigint[])
-      )
-      SELECT sr.id, sr.store_ordinal, pr.platform_ordinal
-      FROM store_ranks sr
-      INNER JOIN platform_ranks pr ON pr.id = sr.id
-      WHERE sr.id = ANY(${orderIds}::bigint[])
+      SELECT
+        t.id,
+        (
+          SELECT COUNT(*)::int
+          FROM orders_core o
+          WHERE o.merchant_store_id = ${storeId}
+            AND o.customer_id = t.customer_id
+            AND (
+              o.created_at < t.created_at
+              OR (o.created_at = t.created_at AND o.id <= t.id)
+            )
+        ) AS store_ordinal,
+        (
+          SELECT COUNT(*)::int
+          FROM orders_core o
+          WHERE o.customer_id = t.customer_id
+            AND (
+              o.created_at < t.created_at
+              OR (o.created_at = t.created_at AND o.id <= t.id)
+            )
+        ) AS platform_ordinal
+      FROM orders_core t
+      WHERE t.id = ANY(${orderIds}::bigint[])
+        AND t.customer_id = ANY(${custIds}::bigint[])
     `;
 
     return {

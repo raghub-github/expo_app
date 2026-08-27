@@ -35,7 +35,7 @@ async function maskPreview(composed, name, svgInner) {
 }
 
 async function main() {
-  const fg = await sharp(path.join(assetsDir, "adaptive-icon.png")).ensureAlpha().png().toBuffer();
+  const fg = await sharp(path.join(assetsDir, "mxappicon.png")).ensureAlpha().png().toBuffer();
   const composed = await sharp({
     create: { width: CANVAS, height: CANVAS, channels: 4, background: BG },
   })

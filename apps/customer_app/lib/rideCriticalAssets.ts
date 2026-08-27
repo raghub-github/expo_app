@@ -1,17 +1,16 @@
 import { Image } from "expo-image";
 import type { AppAssetItem } from "@/services/appAssets.service";
 import { CX } from "@/lib/appAssetKeys";
+import { RIDE_HOME_BANNER_KEYS } from "@/lib/rideHomeBannerSlots";
 
 /** CMS images for ride home — promo, services grid, safety strip. */
 export const RIDE_CRITICAL_ASSET_KEYS = [
-  CX.ride.banner,
+  ...RIDE_HOME_BANNER_KEYS,
   CX.ride.bottomBanner,
   CX.ride.auto,
   CX.ride.cab,
   CX.ride.cabPremium,
   CX.ride.bike,
-  CX.home.promoRideOffer1,
-  CX.home.promoRideOffer2,
 ] as const;
 
 const prefetchedUris = new Set<string>();

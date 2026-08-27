@@ -164,6 +164,15 @@ const MARK: Record<string, (p: LogoProps) => ReactElement> = {
       </Svg>
     </LogoSlot>
   ),
+  olamoney: (p) => (
+    <LogoSlot size={p.size}>
+      <Svg width={p.size} height={p.size} viewBox="0 0 48 48">
+        <SvgText x="24" y="29" textAnchor="middle" fontSize="9" fontWeight="800" fill="#000000">
+          Ola
+        </SvgText>
+      </Svg>
+    </LogoSlot>
+  ),
   card: (p) => (
     <LogoSlot size={p.size}>
       <Ionicons name="card-outline" size={Math.round(p.size * 0.62)} color="#374151" />

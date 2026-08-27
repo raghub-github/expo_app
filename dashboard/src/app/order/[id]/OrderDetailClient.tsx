@@ -22,6 +22,7 @@ import { useIsActiveRoute } from "@/hooks/useIsActiveRoute";
 import { usePageVisible } from "@/hooks/usePageVisible";
 import { Check, ChevronDown, Copy, History, RefreshCw, X } from "lucide-react";
 import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
 import type { OrderCancellationInfo } from "@/lib/merchant-cancellation-display";
 import type { OrderCustomerFeedback } from "@/lib/orders/order-customer-feedback";
 import {
@@ -197,6 +198,8 @@ interface OrderDetail {
   dispatchedAt?: string | null;
   /** orders_food.rider_picked_up_at — rider physical pickup from store. */
   riderPickedUpAt?: string | null;
+  /** orders_food.delivered_at — completion timestamp (delivery or self-pickup). */
+  deliveredAt?: string | null;
   /** Delivery instructions from orders_food (food orders only). */
   deliveryInstructions?: string | null;
   /** ETA in seconds from creation (for timeline). */
@@ -448,6 +451,7 @@ function mapOrderCoreApiRowToDetail(row: Record<string, unknown>): OrderDetail {
     foodOrderStatus: typeof row.foodOrderStatus === "string" ? row.foodOrderStatus : null,
     dispatchedAt: row.dispatchedAt != null ? String(row.dispatchedAt) : null,
     riderPickedUpAt: row.riderPickedUpAt != null ? String(row.riderPickedUpAt) : null,
+    deliveredAt: row.deliveredAt != null ? String(row.deliveredAt) : null,
     deliveryInstructions: (row.deliveryInstructions as string | null) ?? null,
     etaSeconds: (row.etaSeconds as number | null) ?? null,
     estimatedDeliveryTime:
@@ -697,6 +701,7 @@ export default function OrderDetailClient({
   }, [order?.id]);
 
   const auth = useAuthOptional();
+  const queryClient = useQueryClient();
   const loggedInEmail = auth?.user?.email ?? null;
   const isOrderPage = useIsActiveRoute("/order");
   /** Used to pause background refresh only — never gate the initial order load. */
@@ -1436,6 +1441,18 @@ export default function OrderDetailClient({
             .catch(() => undefined);
         }
         setRefetchTrigger((t) => t + 1);
+        // Food list + stage counts must drop this order from prior active stages.
+        void queryClient.invalidateQueries({ queryKey: ["orders", "core", "food"] });
+        try {
+          for (let i = localStorage.length - 1; i >= 0; i--) {
+            const key = localStorage.key(i);
+            if (key?.startsWith("dashboard_snapshot:orders_food")) {
+              localStorage.removeItem(key);
+            }
+          }
+        } catch {
+          /* ignore */
+        }
       } else {
         setStatusUpdateError(
           typeof data.error === "string"
@@ -1457,6 +1474,7 @@ export default function OrderDetailClient({
     isUpdatingStatus,
     dispatchStage,
     loggedInEmail,
+    queryClient,
   ]);
 
   const handleRefreshOrder = useCallback(() => {
@@ -1866,6 +1884,12 @@ export default function OrderDetailClient({
   const hasAssignedRider =
     order.riderId != null && Number.isFinite(Number(order.riderId)) && Number(order.riderId) > 0;
 
+  /** Hide live map after delivery / cancel — rider card stays half-width. */
+  const showLiveRiderMap =
+    hasAssignedRider &&
+    dispatchStage !== "delivered" &&
+    dispatchStage !== "cancelled";
+
   const actionBannerMessage = resolveOrderActionBannerMessage({
     status: order.status,
     currentStatus: order.currentStatus,
@@ -2191,6 +2215,8 @@ export default function OrderDetailClient({
             initialEntries={timelineEntries}
             currentStatus={statusLabel || undefined}
             orderCreatedAt={order.createdAt ? new Date(order.createdAt) : undefined}
+            deliveryType={order.deliveryType ?? null}
+            completedAt={order.deliveredAt ?? order.dispatchedAt ?? null}
             etaAt={(() => {
               // Breach / First ETA marker — never use live estimated_delivery_time.
               if (order.firstEtaAt) return new Date(order.firstEtaAt);
@@ -2292,9 +2318,9 @@ export default function OrderDetailClient({
           </>
           )}
 
-          {/* Rider + map — keep rider card half-width; map stays visible after complete */}
+          {/* Rider + map — rider card stays md:w-1/2 even when map is hidden (delivered/cancelled) */}
           <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-stretch">
-            <div className="w-full md:w-1/2 md:min-w-0 md:shrink-0">
+            <div className="w-full md:w-1/2 md:max-w-[50%] md:min-w-0 md:shrink-0">
             <RiderDetails
               className="h-full flex flex-col"
               initialRiderTimeline={riderTimelineInitial}
@@ -2362,8 +2388,8 @@ export default function OrderDetailClient({
               }}
             />
             </div>
-            {hasAssignedRider ? (
-              <div className="w-full md:w-1/2 md:min-w-0">
+            {showLiveRiderMap ? (
+              <div className="w-full md:w-1/2 md:min-w-0 md:shrink-0">
               <RiderRouteMap
                 key={`rider-map-${order.riderId}`}
                 className="h-full flex flex-col"

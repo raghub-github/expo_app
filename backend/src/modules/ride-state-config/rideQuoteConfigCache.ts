@@ -10,6 +10,7 @@ const DEFAULT_TTL_MS = 90_000;
 const MAX_ENTRIES = 400;
 
 const store = new Map<string, Entry<unknown>>();
+const inflight = new Map<string, Promise<unknown>>();
 
 function getCached<T>(key: string): T | null {
   const e = store.get(key);
@@ -35,11 +36,22 @@ export async function cachedRideQuoteValue<T>(
 ): Promise<T> {
   const hit = getCached<T>(key);
   if (hit != null) return hit;
-  const value = await loader();
-  setCached(key, value, ttlMs);
-  return value;
+  const pending = inflight.get(key);
+  if (pending) return pending as Promise<T>;
+
+  const promise = loader()
+    .then((value) => {
+      setCached(key, value, ttlMs);
+      return value;
+    })
+    .finally(() => {
+      inflight.delete(key);
+    });
+  inflight.set(key, promise);
+  return promise;
 }
 
 export function clearRideQuoteConfigCache(): void {
   store.clear();
+  inflight.clear();
 }

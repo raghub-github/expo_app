@@ -21,6 +21,9 @@ type RiderOrderUiRow = {
   riderEarning: string | null;
   createdAt: string;
   externalRef: string | null;
+  formattedOrderId?: string | null;
+  orderId?: string | null;
+  displayOrderId?: string | null;
   walletCredited?: boolean;
   walletDebited?: boolean;
   hasLedgerEntry?: boolean;
@@ -80,6 +83,9 @@ function mapCoreOrderRow(row: {
         ? row.createdAt.toISOString()
         : String(row.createdAt ?? new Date().toISOString()),
     externalRef,
+    formattedOrderId: row.formattedOrderId ?? null,
+    orderId: row.orderId ?? null,
+    displayOrderId: externalRef,
     walletCredited: row.walletCredited === true,
     walletDebited: row.walletDebited === true,
     hasLedgerEntry: row.hasLedgerEntry === true || row.walletCredited === true || row.walletDebited === true,

@@ -33,10 +33,9 @@ export function useFeaturedOffersParcel(
         limit: 10,
       }),
     enabled,
-    staleTime: 5 * 60 * 1000,
-    gcTime: 30 * 60 * 1000,
+    staleTime: 30 * 1000,
+    gcTime: 5 * 60 * 1000,
     retry: 1,
     refetchOnMount: true,
-    placeholderData: (prev) => prev,
   });
 }

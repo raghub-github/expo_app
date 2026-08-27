@@ -9,6 +9,7 @@
  *       - app FCM tokens included when the user has no Expo token (avoid double-notify)
  */
 import { isExpoPushTokenString } from "@gatimitra/contracts";
+import { isFirebaseAdminConfigured } from "../../config/firebase.js";
 import { getSql } from "../../db/client.js";
 import type {
   NotificationPlatform,
@@ -57,8 +58,12 @@ function dedupeByToken(recipients: Recipient[]): Recipient[] {
  * Expo Push requires FCM credentials uploaded to each Expo project; when that
  * is missing Expo returns InvalidCredentials while direct FCM v1 (same
  * google-services tokens) still works.
+ *
+ * Only apply when Firebase Admin is configured — otherwise dropping Expo
+ * leaves zero deliverable tokens and pushes silently fail.
  */
 function preferNativeAndroidFcm(recipients: Recipient[]): Recipient[] {
+  if (!isFirebaseAdminConfigured()) return recipients;
   const usersWithAndroidFcm = new Set<string>();
   for (const r of recipients) {
     if (r.platform !== "android") continue;

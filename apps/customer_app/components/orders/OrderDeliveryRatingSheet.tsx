@@ -105,6 +105,8 @@ export type OrderDeliveryRatingSheetProps = {
   /** Tip already paid at checkout or via tip sheet (₹). */
   existingTipAmount?: number;
   paymentMethodLabel?: string;
+  /** Self-pickup / takeaway — no rider to rate or tip. */
+  hideDeliveryPartner?: boolean;
   submitting?: boolean;
   onClose: () => void;
   onTipPaid?: (amount: number) => void;
@@ -126,6 +128,7 @@ export function OrderDeliveryRatingSheet({
   riderName,
   existingTipAmount = 0,
   paymentMethodLabel = "UPI",
+  hideDeliveryPartner = false,
   submitting = false,
   onClose,
   onTipPaid,
@@ -163,7 +166,7 @@ export function OrderDeliveryRatingSheet({
   );
 
   const paidTip = Math.max(existingTipAmount, localTipPaid);
-  const canOfferTip = paidTip <= 0;
+  const canOfferTip = !hideDeliveryPartner && paidTip <= 0;
 
   const tipAmount = useMemo(() => {
     if (customTipMode) {
@@ -281,8 +284,10 @@ export function OrderDeliveryRatingSheet({
   }, [tipAmount, paidTip, orderId]);
 
   const hasStoreRating = storeRating >= 1;
-  const hasDeliveryRating = deliveryRating >= 1;
-  const canSubmit = (hasStoreRating || hasDeliveryRating) && !submitting && !tipPaying;
+  const hasDeliveryRating = !hideDeliveryPartner && deliveryRating >= 1;
+  const canSubmit = hideDeliveryPartner
+    ? hasStoreRating && !submitting
+    : (hasStoreRating || hasDeliveryRating) && !submitting && !tipPaying;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
@@ -290,9 +295,11 @@ export function OrderDeliveryRatingSheet({
       ...(hasStoreRating ? { storeRating } : {}),
       ...(hasDeliveryRating ? { deliveryRating } : {}),
       reviewText: reviewText.trim() || undefined,
-      riderReviewText: riderReviewText.trim() || undefined,
+      riderReviewText: hideDeliveryPartner ? undefined : riderReviewText.trim() || undefined,
       ...(storeSelectedTags.length ? { storeReviewTags: storeSelectedTags } : {}),
-      ...(riderSelectedTags.length ? { riderReviewTags: riderSelectedTags } : {}),
+      ...(!hideDeliveryPartner && riderSelectedTags.length
+        ? { riderReviewTags: riderSelectedTags }
+        : {}),
     });
   };
 
@@ -319,9 +326,13 @@ export function OrderDeliveryRatingSheet({
             <View style={styles.successIcon}>
               <Ionicons name="checkmark-circle" size={26} color={GREEN} />
             </View>
-            <AppText style={styles.title}>Order delivered!</AppText>
+            <AppText style={styles.title}>
+              {hideDeliveryPartner ? "Order collected!" : "Order delivered!"}
+            </AppText>
             <AppText style={styles.subtitle}>
-              Rate the restaurant, delivery partner, or both — at least one is enough.
+              {hideDeliveryPartner
+                ? "Rate the restaurant."
+                : "Rate the restaurant, delivery partner, or both — at least one is enough."}
             </AppText>
           </View>
 
@@ -363,6 +374,7 @@ export function OrderDeliveryRatingSheet({
             />
           </View>
 
+          {hideDeliveryPartner ? null : (
           <View style={styles.section}>
             <AppText style={styles.sectionTitle}>Delivery partner</AppText>
             <View style={styles.entityRow}>
@@ -482,6 +494,7 @@ export function OrderDeliveryRatingSheet({
               </View>
             )}
           </View>
+          )}
 
           <TouchableOpacity
             style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}

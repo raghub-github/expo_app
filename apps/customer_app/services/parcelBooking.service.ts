@@ -23,6 +23,10 @@ export type PlaceParcelOrderPayload = {
   receiverName: string;
   receiverMobile: string;
   paymentMethod?: "cash" | "cod" | "online";
+  couponCode?: string | null;
+  selectedPlatformOfferId?: number | null;
+  forceNoAutoOffer?: boolean;
+  appliedOfferDiscount?: number | null;
 };
 
 export type PlaceParcelOrderResponse = {

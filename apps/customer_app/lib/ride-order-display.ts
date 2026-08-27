@@ -19,6 +19,8 @@ const RIDE_IMAGE_KEY: Record<string, string> = {
   bike: "bike",
   "bike-lite": "bike",
   auto: "auto",
+  ev_auto: "ev_auto",
+  travel: "ev_auto",
   "cab-economy": "cab",
   "cab-premium": "cab_premium",
 };
@@ -638,14 +640,16 @@ export function buildRidePaymentFareBreakdown(
     order.billingSnapshot != null && typeof order.billingSnapshot === "object"
       ? (order.billingSnapshot as Record<string, unknown>)
       : {};
-  const billingFeeLines = rideBillingFeeLines(snap);
+  const billingFeeLines = rideBillingFeeLines(snap).filter((line) => {
+    const lower = line.label.toLowerCase();
+    return !lower.includes("waiting") && !lower.includes("surge");
+  });
   const billingFeesTotal = billingFeeLines.reduce((s, l) => s + l.amount, 0);
   const additionalCharges =
     billingFeesTotal > 0.005 ? billingFeesTotal : snapBill.additionalCharges;
   const componentTotal = rideFare + waitingCharge + surgeCharge + additionalCharges + tip;
-  const serverTotal = Math.max(0, Number(order.totalAmount ?? 0));
   const snapFinal = billNum(snap.final_amount);
-  const total = Math.max(componentTotal, snapBill.total, snapFinal, serverTotal);
+  const total = Math.max(componentTotal, snapBill.total, snapFinal);
 
   const lines: RidePaymentFareLine[] = [{ label: "Ride fare", amount: rideFare }];
   if (waitingCharge > 0) {

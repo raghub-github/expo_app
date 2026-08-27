@@ -29,6 +29,7 @@ import {
 import { listOrderRoutedToHistory } from "@/lib/orders/stamp-order-routed-to";
 import { fetchOrderPaymentDetailByCoreId } from "@/lib/orders/order-payment-detail";
 import type { OrderPaymentDetail } from "@/lib/orders/order-payment-types";
+import { resolveFoodOrderDashboardAction } from "@/lib/orders/food-order-dashboard-status";
 
 /** Row returned to the client: list shape + `storeId`, optional enrichments for single-order fetch */
 type OrderCoreApiListItem = Omit<OrdersCoreRow, "estimatedDeliveryTime"> & {
@@ -36,6 +37,11 @@ type OrderCoreApiListItem = Omit<OrdersCoreRow, "estimatedDeliveryTime"> & {
   merchantLocality?: string | null;
   deliveryInstructions?: string | null;
   estimatedDeliveryTime?: Date | string | null;
+  foodOrderStatus?: string | null;
+  isTerminal?: boolean;
+  isActionable?: boolean;
+  dashboardStage?: string | null;
+  dashboardAction?: string | null;
 };
 import {
   getMerchantStoreSummaryByStoreId,
@@ -72,10 +78,22 @@ async function enrichOrdersListWithStoreMeta(
   return orders.map((order) => {
     const sid = order.merchantStoreId;
     const storeLocality = sid != null ? localities.get(sid) ?? null : null;
+    const actionMeta = resolveFoodOrderDashboardAction({
+      status: order.status,
+      currentStatus: order.currentStatus,
+      foodOrderStatus: order.foodOrderStatus,
+      cancelledAt: order.cancelledAt,
+      isBulkOrder: order.isBulkOrder,
+      riderPickedUpAt: order.riderPickedUpAt,
+    });
     return {
       ...order,
       storeId: sid != null ? storeIds.get(sid) ?? null : null,
       merchantLocality: resolveOrderMerchantLocality(order, storeLocality),
+      isTerminal: actionMeta.isTerminal,
+      isActionable: actionMeta.isActionable,
+      dashboardStage: actionMeta.stage,
+      dashboardAction: actionMeta.action,
     };
   });
 }
@@ -214,6 +232,7 @@ async function enrichSingleOrderDetail(
           foodOrderStatus: foodOrderMetaResult?.orderStatus ?? null,
           dispatchedAt: foodOrderMetaResult?.dispatchedAt ?? null,
           riderPickedUpAt: foodOrderMetaResult?.riderPickedUpAt ?? null,
+          deliveredAt: foodOrderMetaResult?.deliveredAt ?? null,
         },
       ] as unknown as typeof enrichedData;
     }

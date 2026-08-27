@@ -40,7 +40,7 @@ type Ticket = {
  */
 const DEAD_TOKEN_ERRORS = new Set([
   "DeviceNotRegistered",
-  "InvalidCredentials",
+  // InvalidCredentials = Expo project missing FCM creds (ops fault), NOT a dead token.
   "MessageTooBig",     // caller bug; not a device error, but do not retry
   "MessageRateExceeded", // rare — retry once, then treat as dead
 ]);

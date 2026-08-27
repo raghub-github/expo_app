@@ -33,11 +33,12 @@ export function featuredOffersRideQueryOptions(params: FeaturedOffersRideParams)
         serviceType: "RIDE",
         limit: 10,
       }),
-    staleTime: 5 * 60 * 1000,
-    gcTime: 30 * 60 * 1000,
+    staleTime: 0,
+    gcTime: 30 * 1000,
     retry: 1,
-    refetchOnMount: true,
+    refetchOnMount: "always",
     refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
   } as const;
 }
 
@@ -55,6 +56,5 @@ export function useFeaturedOffersRide(
   return useQuery({
     ...featuredOffersRideQueryOptions(params),
     enabled,
-    placeholderData: (prev) => prev,
   });
 }

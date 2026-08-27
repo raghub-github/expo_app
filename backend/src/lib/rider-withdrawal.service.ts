@@ -390,8 +390,12 @@ export async function revertRiderWithdrawalWalletDebit(
         ${balanceAfter.toFixed(2)},
         ${ref},
         'withdrawal',
-        ${`Withdrawal failed #${withdrawalId} — amount reverted`},
-        ${JSON.stringify({ withdrawal_id: withdrawalId, reason })}::text::jsonb,
+        ${`Withdrawal rejected — amount reverted. Reason: ${(reason.trim() || "Rejected by admin").slice(0, 400)}`},
+        ${JSON.stringify({
+          withdrawal_id: withdrawalId,
+          reason: reason.trim() || "Rejected by admin",
+          rejection_reason: reason.trim() || "Rejected by admin",
+        })}::text::jsonb,
         'system'
       )
     `;

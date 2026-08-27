@@ -177,6 +177,11 @@ function buildSubline(offer: HomeBannerOffer, mode: "home" | "food" | "ride"): s
     return formatRideOfferSubline(offer.sub, {
       minFare: offer.min_order_amount,
       maxDiscount: offer.max_discount_amount,
+      discountValue: offer.discount_value,
+      discountPercentage: offer.discount_percentage,
+      promoType: offer.promo_type,
+      maxKm: offer.max_km,
+      firstNCompleted: offer.first_n_completed,
     });
   }
 
@@ -261,10 +266,12 @@ function PromoSlideCard({ slide, index, cardHeight, mode, decodeImage, onPress }
           {slide.title}
         </AppText>
 
-        <AppText style={styles.promoSub} numberOfLines={2}>
-          {slide.sub}
-          {showParty ? " 🎉" : ""}
-        </AppText>
+        {slide.sub ? (
+          <AppText style={styles.promoSub} numberOfLines={2}>
+            {slide.sub}
+            {showParty ? " 🎉" : ""}
+          </AppText>
+        ) : null}
 
         <View style={styles.promoBtn}>
           <AppText style={styles.promoBtnText}>{slide.cta}</AppText>

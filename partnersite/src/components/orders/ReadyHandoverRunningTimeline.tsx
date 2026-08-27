@@ -7,6 +7,7 @@ import {
   formatHandoverDuration,
   resolveHandoverTimelinePhase,
 } from '@/lib/orderHandoverTimeline';
+import { isPartnerSelfPickupOrder } from '@/lib/partner-delivery-type';
 
 export function ReadyHandoverRunningTimeline({
   order,
@@ -20,6 +21,7 @@ export function ReadyHandoverRunningTimeline({
   /** `panel` = customer column on order detail; `inline` = sidebar cards */
   placement?: 'panel' | 'inline';
 }) {
+  const isSelfPickup = isPartnerSelfPickupOrder(order);
   const preparedAt = order.prepared_at ?? null;
   const handedOverAt = order.handed_over_to_rider_at ?? null;
   const pickedUpAt = order.rider_picked_up_at ?? null;
@@ -63,10 +65,18 @@ export function ReadyHandoverRunningTimeline({
 
   const title =
     phase === 'waiting_handover'
-      ? 'Handover food in'
+      ? isSelfPickup
+        ? 'Hand food to customer in'
+        : 'Handover food in'
       : phase === 'waiting_pickup'
-        ? 'Waiting for rider pickup'
+        ? isSelfPickup
+          ? 'Waiting for customer pickup'
+          : 'Waiting for rider pickup'
         : 'Handover complete';
+
+  const waitingHint = isSelfPickup
+    ? 'Ask customer for Pickup OTP to complete'
+    : 'Share pickup OTP after handoff';
 
   const progressBar = (heightClass: string, marginClass: string) => (
     <div className={`${heightClass} rounded-full bg-teal-100 overflow-hidden ${marginClass}`}>
@@ -80,17 +90,12 @@ export function ReadyHandoverRunningTimeline({
   if (compact && placement === 'panel') {
     return (
       <div
-        className="w-full overflow-hidden rounded-xl border border-teal-200/80 bg-gradient-to-br from-teal-50 via-white to-emerald-50/80 px-3 py-2.5 shadow-sm"
+        className="w-full overflow-x-auto overflow-y-hidden rounded-xl border border-teal-200/80 bg-gradient-to-br from-teal-50 via-white to-emerald-50/80 px-3 py-2.5 shadow-sm"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3 min-w-0">
           <div className="min-w-0 flex-1">
             <p className="text-xs font-bold text-teal-900 leading-snug">{title}</p>
-            {phase === 'waiting_handover' ? (
-              <p className="mt-0.5 text-[10px] text-teal-700/90 leading-snug">
-                Share pickup OTP after handoff
-              </p>
-            ) : null}
           </div>
           {phase !== 'complete' ? (
             <span className="shrink-0 rounded-lg bg-white/90 px-2 py-1 font-mono text-xs font-bold text-teal-800 tabular-nums leading-none shadow-sm ring-1 ring-teal-100">
@@ -102,6 +107,11 @@ export function ReadyHandoverRunningTimeline({
             </span>
           )}
         </div>
+        {phase === 'waiting_handover' ? (
+          <p className="mt-0.5 text-[10px] text-teal-700/90 leading-snug whitespace-nowrap">
+            {waitingHint}
+          </p>
+        ) : null}
         <div className="mt-2.5 h-1.5 rounded-full bg-teal-100/90 overflow-hidden">
           <div
             className="h-full rounded-full bg-gradient-to-r from-teal-500 to-emerald-500 transition-all duration-500 ease-out"
@@ -151,7 +161,7 @@ export function ReadyHandoverRunningTimeline({
 
       <div className="space-y-1.5 text-xs">
         <div className="flex justify-between gap-2 text-gray-600">
-          <span>Ready → Handover</span>
+          <span>{isSelfPickup ? 'Ready → Customer' : 'Ready → Handover'}</span>
           <span className="font-semibold text-gray-900 tabular-nums">
             {handedOverAt
               ? formatHandoverDuration(readyToHandoverMs)
@@ -160,23 +170,27 @@ export function ReadyHandoverRunningTimeline({
                 : '—'}
           </span>
         </div>
-        <div className="flex justify-between gap-2 text-gray-600">
-          <span>Handover → Pickup</span>
-          <span className="font-semibold text-gray-900 tabular-nums">
-            {pickedUpAt
-              ? formatHandoverDuration(handoverToPickupMs)
-              : phase === 'waiting_pickup'
-                ? formatHandoverDuration(waitingMs)
-                : handedOverAt
-                  ? 'Waiting…'
-                  : '—'}
-          </span>
-        </div>
+        {!isSelfPickup ? (
+          <div className="flex justify-between gap-2 text-gray-600">
+            <span>Handover → Pickup</span>
+            <span className="font-semibold text-gray-900 tabular-nums">
+              {pickedUpAt
+                ? formatHandoverDuration(handoverToPickupMs)
+                : phase === 'waiting_pickup'
+                  ? formatHandoverDuration(waitingMs)
+                  : handedOverAt
+                    ? 'Waiting…'
+                    : '—'}
+            </span>
+          </div>
+        ) : null}
       </div>
 
       {phase === 'waiting_handover' && (
         <p className="mt-2 text-xs text-gray-500">
-           Confirm order handoff, then share the OTP..
+          {isSelfPickup
+            ? 'Hand over the order, then enter the customer Pickup OTP to complete.'
+            : 'Confirm order handoff, then share the OTP.'}
         </p>
       )}
     </div>

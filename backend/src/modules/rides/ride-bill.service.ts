@@ -24,6 +24,20 @@ function billNum(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function resolvePersistedWaitingCharge(snap: Record<string, unknown>): number {
+  return Math.max(
+    0,
+    billNum(snap.waiting_charge),
+    billNum(snap.pickup_waiting_charge),
+    billNum(snap.waiting_charges),
+    billNum(snap.waiting_fee)
+  );
+}
+
+function chargesIncludeWaiting(charges: AppliedLine[]): boolean {
+  return charges.some((row) => String(row.label ?? "").toLowerCase().includes("waiting"));
+}
+
 function resolveRideBaseFare(order: {
   fareAmount: string | null;
   itemTotal: string | null;
@@ -59,13 +73,15 @@ function mergeBillingIntoSnapshot(
   }
 ): Record<string, unknown> {
   let charges: AppliedLine[] = [...(billing.charges ?? [])];
-  const waiting = Math.max(0, extras?.pickupWaitingCharge ?? 0);
+  const waiting = Math.max(
+    0,
+    extras?.pickupWaitingCharge ?? 0,
+    resolvePersistedWaitingCharge(prevSnap)
+  );
   let finalAmount = round2(billing.final_amount);
 
   if (waiting > 0) {
-    const hasWaiting = charges.some((row) =>
-      String(row.label ?? "").toLowerCase().includes("waiting")
-    );
+    const hasWaiting = chargesIncludeWaiting(charges);
     if (!hasWaiting) {
       charges.push({
         kind: "charge",
@@ -114,7 +130,21 @@ function mergeBillingIntoSnapshot(
           applied_surges: prevSnap.applied_surges,
         }),
     ride_fare_coupon_code: prevSnap.ride_fare_coupon_code,
-    ride_fare_platform_offer_id: prevSnap.ride_fare_platform_offer_id,
+    ride_fare_platform_offer_id: (() => {
+      if (Array.isArray(billing.discounts)) {
+        for (const row of billing.discounts) {
+          const id = Number(
+            (row as { meta?: { platformOfferId?: unknown } })?.meta?.platformOfferId
+          );
+          if (Number.isFinite(id) && id > 0) return id;
+        }
+      }
+      return prevSnap.ride_fare_platform_offer_id;
+    })(),
+    ride_fare_force_no_auto_offer:
+      Number(billing.discount_total) < 0.005
+        ? prevSnap.ride_fare_force_no_auto_offer === true
+        : false,
     ride_fare_offer_discount: prevSnap.ride_fare_offer_discount,
     ride_fare_paid_at: prevSnap.ride_fare_paid_at,
     gatiCashAmount: prevSnap.gatiCashAmount,
@@ -130,6 +160,7 @@ export async function syncRideCustomerBillingSnapshot(
     pickupWaitSeconds?: number;
     couponCode?: string | null;
     platformOfferId?: number | null;
+    forceNoAutoOffer?: boolean;
     skipIfPaid?: boolean;
   }
 ): Promise<{ ok: true; finalAmount: number } | { ok: false }> {
@@ -199,10 +230,18 @@ export async function syncRideCustomerBillingSnapshot(
       : null) ||
     null;
   const platformOfferId =
-    opts?.platformOfferId ??
-    (typeof prevSnap.ride_fare_platform_offer_id === "number"
-      ? prevSnap.ride_fare_platform_offer_id
-      : null);
+    opts?.forceNoAutoOffer === true && opts?.platformOfferId == null
+      ? null
+      : opts?.platformOfferId ??
+        (typeof prevSnap.ride_fare_platform_offer_id === "number"
+          ? prevSnap.ride_fare_platform_offer_id
+          : null);
+  const forceNoAutoOffer =
+    opts?.forceNoAutoOffer === true ||
+    (platformOfferId == null &&
+      !couponCode &&
+      opts?.platformOfferId == null &&
+      prevSnap.ride_fare_force_no_auto_offer === true);
 
   const billRes = await computeBillForRide(db, {
     customerId: customerPk,
@@ -217,6 +256,7 @@ export async function syncRideCustomerBillingSnapshot(
     pickupPincode: typeof meta.pickupPincode === "string" ? meta.pickupPincode : null,
     pickupState: typeof meta.pickupState === "string" ? meta.pickupState : null,
     selectedPlatformOfferId: platformOfferId,
+    forceNoAutoOffer,
     rideType: typeof meta.rideType === "string" ? meta.rideType : null,
     vehicleType: typeof meta.rideType === "string" ? meta.rideType : null,
     paymentMode:
@@ -413,6 +453,31 @@ export async function computeRideBillForCustomerOrder(
   const distanceKm = billNum(orderRow.distanceKm);
   const tipAmount = Math.max(0, billNum(orderRow.tipAmount));
 
+  const prevSnap =
+    orderRow.billingSnapshot != null && typeof orderRow.billingSnapshot === "object"
+      ? (orderRow.billingSnapshot as Record<string, unknown>)
+      : {};
+  const couponCode =
+    input.couponCode?.trim() ||
+    (typeof prevSnap.ride_fare_coupon_code === "string"
+      ? prevSnap.ride_fare_coupon_code.trim()
+      : null) ||
+    null;
+  const snapshotOfferId = Number(prevSnap.ride_fare_platform_offer_id);
+  const metaOfferId = Number(meta.selectedPlatformOfferId);
+  const platformOfferId =
+    input.forceNoAutoOffer === true && input.platformOfferId == null
+      ? null
+      : input.platformOfferId ??
+        (Number.isFinite(snapshotOfferId) && snapshotOfferId > 0 ? snapshotOfferId : null) ??
+        (Number.isFinite(metaOfferId) && metaOfferId > 0 ? metaOfferId : null);
+  const forceNoAutoOffer =
+    input.forceNoAutoOffer === true ||
+    (platformOfferId == null &&
+      !couponCode &&
+      input.platformOfferId == null &&
+      (prevSnap.ride_fare_force_no_auto_offer === true || meta.forceNoAutoOffer === true));
+
   const billRes = await computeBillForRide(db, {
     customerId: input.customerPk,
     rideFare,
@@ -422,12 +487,12 @@ export async function computeRideBillForCustomerOrder(
     dropLat,
     dropLon,
     tipAmount,
-    couponCode: input.couponCode?.trim() || null,
+    couponCode,
     pickupPincode:
       typeof meta.pickupPincode === "string" ? meta.pickupPincode : null,
     pickupState: typeof meta.pickupState === "string" ? meta.pickupState : null,
-    selectedPlatformOfferId: input.platformOfferId ?? null,
-    forceNoAutoOffer: input.forceNoAutoOffer === true,
+    selectedPlatformOfferId: platformOfferId,
+    forceNoAutoOffer,
     rideType: typeof meta.rideType === "string" ? meta.rideType : null,
     vehicleType: typeof meta.rideType === "string" ? meta.rideType : null,
     paymentMode:
@@ -438,6 +503,28 @@ export async function computeRideBillForCustomerOrder(
   });
 
   if (!billRes.ok) return billRes;
+
+  const persistedWaiting = resolvePersistedWaitingCharge(prevSnap);
+  if (persistedWaiting > 0.005) {
+    const charges = [...(billRes.billing.charges ?? [])];
+    if (!chargesIncludeWaiting(charges)) {
+      charges.push({
+        kind: "charge",
+        label: "Waiting charges",
+        amount: persistedWaiting,
+      });
+      billRes.billing = {
+        ...billRes.billing,
+        charges,
+        final_amount: round2(Number(billRes.billing.final_amount) + persistedWaiting),
+      };
+    }
+    billRes.snapshot = {
+      ...billRes.snapshot,
+      waiting_charge: persistedWaiting,
+      pickup_waiting_charge: persistedWaiting,
+    };
+  }
 
   const paymentCompleted =
     String(orderRow.paymentStatus ?? "").toLowerCase() === "completed";

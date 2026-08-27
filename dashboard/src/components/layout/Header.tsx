@@ -19,7 +19,6 @@ import {
   PanelRight,
   PanelLeft,
   User,
-  ArrowLeft,
   IndianRupee,
   SlidersHorizontal,
   Bell,
@@ -66,6 +65,7 @@ import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
 import { HEADER_IDENTITY_CACHE_KEY } from "@/lib/dashboard-auth-client-state";
 import { TicketsHubGearButton } from "@/components/tickets/TicketsHubGearButton";
+import { HeaderBackButton } from "@/components/layout/HeaderBackButton";
 import {
   isTicketsAppDetailPath,
   isTicketsQueueLayoutExperience,
@@ -1182,135 +1182,84 @@ function HeaderComponent() {
         </Link>
         {cleanPathname === STORE_ONBOARDING_FEE_PATH ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
-              href="/dashboard/super-admin"
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back to Super Admin"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            <HeaderBackButton href="/dashboard/super-admin" ariaLabel="Back to Super Admin" />
             <IndianRupee className="h-5 w-5 shrink-0 text-violet-600" strokeWidth={2} aria-hidden />
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
         ) : cleanPathname === TICKET_SETTINGS_PATH ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
-              href="/dashboard/super-admin"
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back to Super Admin"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            <HeaderBackButton href="/dashboard/super-admin" ariaLabel="Back to Super Admin" />
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
         ) : cleanPathname === ORDER_ACCEPTANCE_SETTINGS_PATH ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
-              href="/dashboard/super-admin"
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back to Super Admin"
-              title="Back"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            <HeaderBackButton href="/dashboard/super-admin" ariaLabel="Back to Super Admin" title="Back" />
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
         ) : cleanPathname === RIDER_ASSIGNMENT_CONTROLS_PATH ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
+            <HeaderBackButton
               href="/dashboard/super-admin"
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back to Super Admin"
+              ariaLabel="Back to Super Admin"
               title="Back to Super Admin"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            />
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">
               Rider Assignment Controls
             </h2>
           </div>
         ) : cleanPathname === PAYMENTS_PATH ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
+            <HeaderBackButton
               href="/dashboard/super-admin"
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back to Super Admin"
+              ariaLabel="Back to Super Admin"
               title="Back to Super Admin"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            />
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
         ) : isUsersArea ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
+            <HeaderBackButton
               href={usersBackHref ?? SUPER_ADMIN_HUB_PATH}
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back"
+              ariaLabel="Back"
               title="Back"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            />
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
         ) : cleanPathname === OFFERS_SUPER_ADMIN_PATH ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
+            <HeaderBackButton
               href="/dashboard/super-admin"
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back to Super Admin"
+              ariaLabel="Back to Super Admin"
               title="Back to Super Admin"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            />
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
         ) : cleanPathname === OFFERS_MERCHANTS_PATH ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
+            <HeaderBackButton
               href="/dashboard/merchants"
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back to Merchants"
+              ariaLabel="Back to Merchants"
               title="Back to Merchants"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            />
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
         ) : cleanPathname.startsWith(`${RULE_ENGINE_PATH}/`) ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
-              href={RULE_ENGINE_PATH}
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back to rules"
-              title="Back to rules"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            <HeaderBackButton href={RULE_ENGINE_PATH} ariaLabel="Back to rules" title="Back to rules" />
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
         ) : cleanPathname === RULE_ENGINE_PATH ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
+            <HeaderBackButton
               href="/dashboard/super-admin"
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back to Super Admin"
+              ariaLabel="Back to Super Admin"
               title="Back to Super Admin"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            />
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
         ) : isNotificationsArea ? (
           <div className="flex min-w-0 items-center gap-2.5">
-            <Link
-              href={notificationsBackHref}
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back"
-              title="Back"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            <HeaderBackButton href={notificationsBackHref} ariaLabel="Back" title="Back" />
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-[#121212] text-white">
               <Bell className="h-4 w-4" aria-hidden />
             </span>
@@ -1325,14 +1274,11 @@ function HeaderComponent() {
           </div>
         ) : cleanPathname === GEO_LIST_PATH ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
+            <HeaderBackButton
               href={SUPER_ADMIN_HUB_PATH}
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back to Super Admin"
+              ariaLabel="Back to Super Admin"
               title="Back to Super Admin"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            />
             <div className="min-w-0 leading-tight">
               <h2 className="truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
               <p className="mt-0.5 hidden max-w-2xl truncate text-[11px] text-gray-500 sm:block">
@@ -1342,40 +1288,23 @@ function HeaderComponent() {
           </div>
         ) : isSuperAdminSubRoute ? (
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
+            <HeaderBackButton
               href={resolveSuperAdminBackHref(cleanPathname)}
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back"
+              ariaLabel="Back"
               title="Back"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            />
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
         ) : isStoreVerificationDetail ? (
           <div className="verification-typo flex min-w-0 items-center gap-2 sm:gap-2.5">
-            <Link
-              href={storeVerificationBackHref}
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back"
-              title="Back"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            <HeaderBackButton href={storeVerificationBackHref} ariaLabel="Back" title="Back" />
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">
               {pageName}
             </h2>
           </div>
         ) : isParentOnboardingPage ? (
           <div className="flex min-w-0 items-center gap-2.5">
-            <Link
-              href={parentOnboardingBackHref}
-              className="shrink-0 cursor-pointer rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
-              aria-label="Back"
-              title="Back"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
+            <HeaderBackButton href={parentOnboardingBackHref} ariaLabel="Back" title="Back" />
             <div className="min-w-0 leading-tight">
               <h2 className="truncate text-base font-semibold text-[#121212] sm:text-lg">
                 Parent onboarding
@@ -1397,14 +1326,12 @@ function HeaderComponent() {
         ) : isAnalyticsPage ? (
           <div className="flex min-w-0 items-center gap-2">
             {analyticsBackHref && (
-              <Link
+              <HeaderBackButton
                 href={analyticsBackHref}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gray-200 text-gray-700 transition hover:bg-gray-100 hover:text-black"
-                aria-label="Go back to previous analytics page"
+                ariaLabel="Go back to previous analytics page"
                 title="Back"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </Link>
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-gray-200 text-gray-700 transition hover:bg-gray-100 hover:text-black"
+              />
             )}
             <div className="min-w-0 flex-shrink">
               <h2 className="min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg">

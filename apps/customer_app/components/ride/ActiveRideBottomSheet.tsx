@@ -21,6 +21,10 @@ import Animated, {
 } from "react-native-reanimated";
 import { useEffect } from "react";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import {
+  isCashRidePaymentMethod,
+  resolveRidePaymentMethod,
+} from "@/lib/ride-fare-gate";
 import type { OrderSummary } from "@/services/order.service";
 import {
   getActiveRideTrackLabel,
@@ -65,6 +69,7 @@ function ActiveRideTrackCard({ ride, width }: { ride: OrderSummary; width: numbe
   }));
 
   const paymentDue =
+    !isCashRidePaymentMethod(resolveRidePaymentMethod(ride)) &&
     String(ride.paymentStatus ?? "").trim().toLowerCase() !== "paid" &&
     String(ride.paymentStatus ?? "").trim().toLowerCase() !== "completed" &&
     normalizeCustomerOrderStatus(ride.status) === "DELIVERED";
@@ -76,7 +81,11 @@ function ActiveRideTrackCard({ ride, width }: { ride: OrderSummary; width: numbe
     staleTime: 5000,
   });
 
-  const { title, subtitle } = getActiveRideTrackLabel(ride.status, ride.paymentStatus);
+  const { title, subtitle } = getActiveRideTrackLabel(
+    ride.status,
+    ride.paymentStatus,
+    resolveRidePaymentMethod(ride)
+  );
   const orderRef = ride.formattedOrderId ?? ride.orderId;
   const dueFareAmount = dueOrderDetail
     ? resolveRidePaymentDueAmount(dueOrderDetail)
@@ -126,7 +135,7 @@ function ActiveRideTrackCard({ ride, width }: { ride: OrderSummary; width: numbe
                   : "Pay"
                 : "Track"}
             </AppText>
-            <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+            <Ionicons name="chevron-forward" size={16} color="#FFFFFF" />
           </View>
         </LinearGradient>
       </Animated.View>
@@ -219,58 +228,62 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   card: {
-    borderRadius: 18,
+    borderRadius: 14,
     overflow: "hidden",
     ...cardShadow,
   },
   gradient: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    gap: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    gap: 10,
+    minHeight: 56,
   },
   iconWrap: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: "rgba(255,255,255,0.22)",
     alignItems: "center",
     justifyContent: "center",
   },
   bikeIcon: {
-    width: 36,
-    height: 36,
+    width: 28,
+    height: 28,
   },
   textCol: {
     flex: 1,
     minWidth: 0,
   },
   title: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "800",
     color: "#FFFFFF",
+    lineHeight: 18,
   },
   subtitle: {
-    marginTop: 2,
-    fontSize: 12,
-    fontWeight: "600",
-    color: "rgba(255,255,255,0.92)",
-  },
-  orderId: {
-    marginTop: 2,
+    marginTop: 1,
     fontSize: 11,
     fontWeight: "600",
+    color: "rgba(255,255,255,0.92)",
+    lineHeight: 14,
+  },
+  orderId: {
+    marginTop: 0,
+    fontSize: 10,
+    fontWeight: "600",
     color: "rgba(255,255,255,0.75)",
+    lineHeight: 13,
   },
   ctaCol: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
-    paddingLeft: 4,
+    gap: 1,
+    paddingLeft: 2,
   },
   ctaText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "800",
     color: "#FFFFFF",
   },
@@ -279,7 +292,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    marginTop: 8,
+    marginTop: 6,
     paddingHorizontal: HORIZONTAL_PAD,
   },
   hintText: {

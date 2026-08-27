@@ -43,7 +43,7 @@ import {
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { NotificationsEmptyMailboxArt } from "@/components/NotificationsEmptyMailboxArt";
 import { StoreFonts } from "@/constants/storeTypography";
-import { formatNotificationTimeAgo } from "@/lib/notificationTime";
+import { displayNotificationTitle, formatNotificationTimeAgo } from "@/lib/notificationTime";
 import {
   dedupeInboxItems,
   resolveActiveOrderPath,
@@ -152,6 +152,7 @@ function NotificationItem({
   const iconColor = ICON_COLOR[type];
   const unread = isUnread(item);
   const when = formatNotificationTimeAgo(item.queued_at);
+  const title = displayNotificationTitle(item.title);
   const translateX = useRef(new Animated.Value(0)).current;
   const dragStartX = useRef(0);
   const [isOpen, setIsOpen] = useState(false);
@@ -245,14 +246,14 @@ function NotificationItem({
             pressed && clickable && styles.pressed,
           ]}
         >
+          {unread ? <View style={styles.unreadDot} pointerEvents="none" /> : null}
           <View style={styles.topRow}>
             <View style={styles.iconWrap}>
-              <Ionicons name={iconName} size={22} color={iconColor} />
+              <Ionicons name={iconName} size={15} color={iconColor} />
             </View>
             <Text style={styles.title} numberOfLines={2}>
-              {item.title?.trim() || "Notification"}
+              {title}
             </Text>
-            {unread ? <View style={styles.unreadDot} /> : <View style={styles.unreadDotSpacer} />}
           </View>
           {!!displayBody ? (
             <Text style={styles.body} numberOfLines={2}>
@@ -493,11 +494,15 @@ export default function NotificationsScreen() {
           visible={confirmClearAll}
           transparent
           animationType="fade"
-          onRequestClose={() => (!clearingAll ? setConfirmClearAll(false) : undefined)}
+          onRequestClose={() => {
+            if (!clearingAll) setConfirmClearAll(false);
+          }}
         >
           <Pressable
             style={styles.modalBackdrop}
-            onPress={() => (!clearingAll ? setConfirmClearAll(false) : undefined)}
+            onPress={() => {
+              if (!clearingAll) setConfirmClearAll(false);
+            }}
           >
             <Pressable style={styles.confirmCard} onPress={() => null}>
               <Text style={styles.confirmTitle}>Clear all notifications?</Text>
@@ -506,9 +511,13 @@ export default function NotificationsScreen() {
               </Text>
               <View style={styles.confirmActions}>
                 <Pressable
-                  onPress={() => setConfirmClearAll(false)}
-                  style={({ pressed }) => [styles.modalBtn, pressed && styles.pressed]}
+                  onPress={() => {
+                    if (!clearingAll) setConfirmClearAll(false);
+                  }}
+                  style={({ pressed }) => [styles.modalBtn, styles.modalBtnFlex, pressed && styles.pressed]}
                   disabled={clearingAll}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel"
                 >
                   <Text style={styles.modalBtnText}>Cancel</Text>
                 </Pressable>
@@ -516,15 +525,19 @@ export default function NotificationsScreen() {
                   onPress={() => void runClearAll()}
                   style={({ pressed }) => [
                     styles.modalBtn,
-                    styles.confirmDeleteBtn,
+                    styles.modalBtnFlex,
+                    styles.modalBtnPrimary,
                     pressed && styles.pressed,
+                    clearingAll && styles.modalBtnDisabled,
                   ]}
                   disabled={clearingAll}
+                  accessibilityRole="button"
+                  accessibilityLabel="Continue and clear all notifications"
                 >
                   {clearingAll ? (
                     <ActivityIndicator color="#FFFFFF" size="small" />
                   ) : (
-                    <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Clear all</Text>
+                    <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Continue</Text>
                   )}
                 </Pressable>
               </View>
@@ -660,10 +673,12 @@ const styles = StyleSheet.create({
     width: "100%",
     paddingVertical: 14,
     paddingHorizontal: 12,
+    paddingRight: 22,
     borderRadius: 14,
     backgroundColor: COLORS.cardBg,
     borderWidth: 1,
     borderColor: "rgba(226,232,240,0.9)",
+    overflow: "visible",
   },
   swipeWrap: {
     position: "relative",
@@ -720,18 +735,20 @@ const styles = StyleSheet.create({
   },
   topRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 10,
     width: "100%",
-    paddingRight: 6,
+    paddingRight: 4,
   },
   iconWrap: {
     width: 28,
     height: 28,
+    borderRadius: 14,
+    marginTop: 0,
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
-    backgroundColor: "transparent",
+    backgroundColor: "rgba(20, 184, 166, 0.08)",
   },
   title: {
     flex: 1,
@@ -740,6 +757,7 @@ const styles = StyleSheet.create({
     fontFamily: LORA_BOLD,
     color: COLORS.textPrimary,
     lineHeight: 20,
+    paddingTop: 4,
   },
   body: {
     fontSize: 13,
@@ -757,25 +775,22 @@ const styles = StyleSheet.create({
     marginLeft: 38,
   },
   unreadDot: {
+    position: "absolute",
+    top: 12,
+    right: 12,
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: "#5EEAD4",
-    marginRight: 14,
-    flexShrink: 0,
-  },
-  unreadDotSpacer: {
-    width: 8,
-    height: 8,
-    marginRight: 14,
-    flexShrink: 0,
+    backgroundColor: ACCENT,
+    zIndex: 2,
   },
   pressed: { opacity: 0.75 },
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.45)",
-    paddingHorizontal: 16,
+    paddingHorizontal: 24,
     justifyContent: "center",
+    alignItems: "center",
   },
   modalCard: {
     backgroundColor: COLORS.cardBg,
@@ -786,9 +801,12 @@ const styles = StyleSheet.create({
     maxHeight: "80%",
   },
   confirmCard: {
+    alignSelf: "stretch",
+    width: "100%",
+    maxWidth: 360,
     backgroundColor: COLORS.cardBg,
     borderRadius: 16,
-    padding: 16,
+    padding: 18,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
@@ -806,9 +824,9 @@ const styles = StyleSheet.create({
   },
   confirmActions: {
     flexDirection: "row",
-    justifyContent: "flex-end",
-    gap: 10,
-    marginTop: 16,
+    alignItems: "stretch",
+    justifyContent: "space-between",
+    marginTop: 18,
   },
   confirmDeleteBtn: {
     backgroundColor: COLORS.error,
@@ -848,17 +866,28 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
   modalBtn: {
-    paddingVertical: 10,
+    paddingVertical: 12,
     paddingHorizontal: 14,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: COLORS.border,
     backgroundColor: COLORS.cardBg,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 44,
+  },
+  modalBtnFlex: {
+    flexGrow: 1,
+    flexShrink: 0,
+    flexBasis: 0,
+    minWidth: 120,
+    marginHorizontal: 5,
   },
   modalBtnText: {
     fontSize: 14,
     fontFamily: LORA_BOLD,
     color: COLORS.textPrimary,
+    textAlign: "center",
   },
   modalBtnPrimary: {
     backgroundColor: ACCENT,
@@ -866,6 +895,9 @@ const styles = StyleSheet.create({
   },
   modalBtnPrimaryText: {
     color: "#FFFFFF",
+  },
+  modalBtnDisabled: {
+    opacity: 0.7,
   },
   empty: {
     alignItems: "center",

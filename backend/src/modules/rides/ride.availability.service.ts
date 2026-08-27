@@ -295,7 +295,7 @@ export async function getNearbyRideSupply(input: {
       etaMins: nearestEta,
       capacity: row.capacity,
       tag: row.tag === "FASTEST" || row.tag === "SAVE" ? row.tag : null,
-      imageKey: row.imageKey,
+      imageKey: row.code === "ev_auto" ? "ev_auto" : row.imageKey,
       vehicleTypes: matchTypes,
       nearbyRiderCount: matchingRiders.length,
       nearestRiderKm: nearestKm,

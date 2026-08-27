@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, Pressable, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -7,11 +7,16 @@ import {
   H_PADDING,
 } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
 import {
   fetchMarketInsights,
-  type CompetitorRow,
   type MarketMatchScope,
+  type MerchantMarketInsights,
 } from "@/services/marketApi";
+import {
+  buildCompetitorLeaderboard,
+  type CompetitorLeaderboardRow,
+} from "@/lib/competitorLeaderboard";
 
 const TOP_N = 10;
 
@@ -59,11 +64,28 @@ function TrendPill({ delta }: { delta: number | null }) {
   );
 }
 
-function CompetitorRowView({ c }: { c: CompetitorRow }) {
+function CompetitorRowView({ c }: { c: CompetitorLeaderboardRow }) {
+  if (c.is_own) {
+    return (
+      <View style={[styles.row, styles.ownRow]}>
+        <View style={styles.ownLeft}>
+          <Text style={styles.ownRank}>{c.display_rank}</Text>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.ownName} numberOfLines={1}>
+              {c.name}
+            </Text>
+            <Text style={styles.ownSub}>Your store</Text>
+          </View>
+        </View>
+        <Text style={styles.ownAffinity}>{c.affinity_pct.toFixed(1)}%</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.row}>
       <Text style={styles.name} numberOfLines={2}>
-        <Text style={styles.rank}>#{c.rank} </Text>
+        <Text style={styles.rank}>{c.display_rank} </Text>
         {c.name}
       </Text>
       <View style={styles.metrics}>
@@ -76,21 +98,24 @@ function CompetitorRowView({ c }: { c: CompetitorRow }) {
 
 export function MerchantMarketInsightsPanel({ storeId }: { storeId: number | null }) {
   const { token } = useAuth();
+  const { selectedStore } = useSelectedStore();
   const [matchScope, setMatchScope] = useState<MarketMatchScope>("city");
-  const [competitors, setCompetitors] = useState<CompetitorRow[]>([]);
+  const [insights, setInsights] = useState<MerchantMarketInsights | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const publicStoreId = selectedStore?.store_id ?? "";
 
   const load = useCallback(async () => {
     if (storeId == null || !token) return;
     setLoading(true);
     setError(null);
     try {
-      const insights = await fetchMarketInsights(storeId, token, matchScope);
-      setCompetitors((insights.competitors ?? []).slice(0, TOP_N));
+      const data = await fetchMarketInsights(storeId, token, matchScope);
+      setInsights(data);
     } catch (e) {
       setError((e as Error).message);
-      setCompetitors([]);
+      setInsights(null);
     } finally {
       setLoading(false);
     }
@@ -99,6 +124,19 @@ export function MerchantMarketInsightsPanel({ storeId }: { storeId: number | nul
   useEffect(() => {
     void load();
   }, [load]);
+
+  const leaderboard = useMemo(() => {
+    if (!insights) return [];
+    return buildCompetitorLeaderboard({
+      competitors: insights.competitors ?? [],
+      storeId: publicStoreId || String(storeId ?? ""),
+      ownName: insights.store_name || selectedStore?.store_name || "Your store",
+      ownLogoUrl: insights.store_logo_url,
+      ownAffinityPct: Number(insights.your_affinity_pct) || 0,
+    }).slice(0, TOP_N);
+  }, [insights, publicStoreId, storeId, selectedStore?.store_name]);
+
+  const hasPeers = leaderboard.some((r) => !r.is_own);
 
   if (storeId == null) return null;
 
@@ -119,18 +157,18 @@ export function MerchantMarketInsightsPanel({ storeId }: { storeId: number | nul
         <View style={styles.emptyWrap}>
           <Text style={styles.errorText}>{error}</Text>
         </View>
-      ) : competitors.length === 0 ? (
+      ) : !hasPeers ? (
         <View style={styles.emptyWrap}>
-        <Text style={styles.emptyHint}>
-          {matchScope === "locality"
-            ? "No competitors in your pincode yet."
-            : "No competitors in your city yet."}
-        </Text>
+          <Text style={styles.emptyHint}>
+            {matchScope === "locality"
+              ? "No competitors in your pincode yet."
+              : "No competitors in your city yet."}
+          </Text>
         </View>
       ) : (
         <View style={styles.list}>
-          {competitors.map((c) => (
-            <CompetitorRowView key={c.competitor_store_id} c={c} />
+          {leaderboard.map((c) => (
+            <CompetitorRowView key={c.id} c={c} />
           ))}
         </View>
       )}
@@ -193,7 +231,30 @@ const styles = StyleSheet.create({
     borderBottomColor: GatiMitraMerchant.border,
     gap: 8,
   },
-  rank: { fontSize: 10, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
+  ownRow: {
+    backgroundColor: "#059669",
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 0,
+    marginVertical: 6,
+    overflow: "hidden",
+  },
+  ownLeft: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 },
+  ownRank: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#047857",
+    backgroundColor: "#FFFFFF",
+    overflow: "hidden",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  ownName: { fontSize: 13, fontWeight: "700", color: "#FFFFFF" },
+  ownSub: { fontSize: 10, fontWeight: "600", color: "#D1FAE5", marginTop: 1 },
+  ownAffinity: { fontSize: 14, fontWeight: "800", color: "#FFFFFF" },
+  rank: { fontSize: 11, fontWeight: "700", color: "#B45309" },
   name: {
     flex: 1,
     fontSize: 13,

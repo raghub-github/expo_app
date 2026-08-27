@@ -121,6 +121,9 @@ export function NewOrderCard({
               </Text>
               <Text style={styles.timeSince}>· {timeSince}</Text>
             </View>
+            {order.deliveryType === "SELF_PICKUP" ? (
+              <Text style={styles.selfPickupChip}>Self-Pick-Up</Text>
+            ) : null}
             {countdown != null ? (
               <Text style={[styles.acceptCountdown, urgent && styles.acceptCountdownUrgent]}>
                 Accept in {countdown}
@@ -224,6 +227,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: GatiMitraMerchant.textTertiary,
     fontWeight: "500",
+  },
+  selfPickupChip: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#92400E",
+    backgroundColor: "#FEF3C7",
+    overflow: "hidden",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
   },
   acceptCountdown: {
     fontSize: 12,

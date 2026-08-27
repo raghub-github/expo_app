@@ -1,10 +1,5 @@
 import type { ApiFoodOrderItem } from "@/services/ordersApi";
-import { merchantBillPartsFromItems } from "@gatimitra/bill-print";
-import {
-  apiFoodItemToBillLine,
-  merchantBillPartsFromFoodItems,
-  merchantLineTotalForFoodItem,
-} from "@/lib/merchant-line-total";
+import { merchantBillPartsFromFoodItems } from "@/lib/merchant-line-total";
 import { merchantFundedDiscountFromBilling } from "@/lib/merchant-billing-discount";
 
 /** Partner Site / payout-engine money rounding (2dp). */
@@ -50,6 +45,8 @@ export type MerchantOrderTotalInput = {
   grand_total?: number;
   /** Frozen CTM from orders_core.total_ctm (Partner Site / payout SSOT). */
   total_ctm?: number | null;
+  /** CamelCase alias used by OrderRecord in the app. */
+  totalCtm?: number | null;
   food_items_total_value?: number | null;
   lineItems?: MerchantBillLineItem[];
   items?: ApiFoodOrderItem[];
@@ -125,7 +122,7 @@ function billFromItems(order: MerchantOrderTotalInput, opts?: { forceRecomputeTo
  * Then pricing.total, line recompute, food_items_total_value, mapped totals.
  */
 export function resolveMerchantOrderTotal(order: MerchantOrderTotalInput): number {
-  const fromFrozen = Number(order.total_ctm);
+  const fromFrozen = Number(order.total_ctm ?? order.totalCtm);
   if (Number.isFinite(fromFrozen) && fromFrozen > 0) return round2(fromFrozen);
 
   const fromPricing = Number(order.pricing?.total);
@@ -159,36 +156,14 @@ export type MerchantBillParts = {
 };
 
 /**
- * Incoming-order bill — PartnerIncomingOrderModal parity.
- * Always recomputes from items (total: 0) with frozen merchant_precision_discount.
+ * Incoming-order bill — same SSOT as Active cards / Partner Site:
+ * prefer frozen `total_ctm` (and API pricing.total), never a drifted recompute
+ * from customer-priced lines that can appear before accept hydration.
  */
 export function merchantIncomingBillPartsFromOrder(
   order: MerchantOrderTotalInput
 ): MerchantBillParts {
-  const items = resolveItems(order);
-  const packaging = resolvePackaging(order);
-  const precision = Math.max(0, Number(order.merchantPrecisionDiscount) || 0);
-
-  if (items.length === 0) {
-    return { itemsSubtotal: 0, packaging, discount: precision, taxes: 0, total: 0 };
-  }
-
-  const billItems = items.map(apiFoodItemToBillLine);
-  const lineSum = items.reduce((acc, it) => acc + merchantLineTotalForFoodItem(it), 0);
-  const bill = merchantBillPartsFromItems(billItems, {
-    subtotal: lineSum,
-    packaging,
-    discount: precision,
-    total: 0,
-  });
-
-  return {
-    itemsSubtotal: bill.itemsSubtotal,
-    packaging: bill.packaging,
-    discount: bill.discount,
-    taxes: 0,
-    total: bill.total,
-  };
+  return merchantBillPartsFromOrder(order);
 }
 
 /**

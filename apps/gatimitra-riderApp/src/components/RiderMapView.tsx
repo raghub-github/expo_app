@@ -47,8 +47,9 @@ interface RiderMapViewProps {
   onOrderPress?: (orderId: string) => void;
   style?: object;
   showRadar?: boolean;
+  /** Legacy restaurant-cluster zones (hexagons). Used when backend hot zones are empty. */
   demandZones?: DemandZone[];
-  /** Backend-authoritative H3 hot zones (preferred over the legacy circle demandZones). */
+  /** Backend-authoritative H3 hot zones (preferred over legacy demandZones). */
   hotZones?: HotZoneCell[];
   isOnDuty?: boolean;
 }
@@ -109,7 +110,7 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
     [demandZones]
   );
 
-  // Real H3 hot zones (backend). Preferred; when present the legacy circle demandZones
+  // Real H3 hot zones (backend). Preferred; when present the legacy demandZones
   // are not drawn (orders.tsx passes only one of the two).
   const hotGeoJson = useMemo(
     () => (hotZones.length > 0 ? hotZonesToGeoJson(hotZones) : null),

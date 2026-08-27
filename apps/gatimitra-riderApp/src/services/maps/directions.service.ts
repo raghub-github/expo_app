@@ -48,6 +48,7 @@ const PROFILES: Record<string, RouteProfile> = {
   bike: { mapboxProfiles: ["driving"], durationScale: 0.72 },
   "bike-lite": { mapboxProfiles: ["driving"], durationScale: 0.76 },
   auto: { mapboxProfiles: ["driving-traffic", "driving"], durationScale: 1.18 },
+  ev_auto: { mapboxProfiles: ["driving-traffic", "driving"], durationScale: 1.18 },
   "cab-economy": { mapboxProfiles: ["driving-traffic", "driving"], durationScale: 1.0 },
   "cab-premium": { mapboxProfiles: ["driving-traffic", "driving"], durationScale: 0.96 },
   travel: { mapboxProfiles: ["driving"], durationScale: 0.9 },

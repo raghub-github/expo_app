@@ -34,6 +34,11 @@ import {
   parseMenuItemIdsFromMeta,
   parseConditionsModeFromMeta,
 } from "./offer-display-surface.js";
+import {
+  parseRideParcelPromoConfig,
+  rideParcelPromoPreviewTitle,
+  type RideParcelPromoConfig,
+} from "../billing/rideParcelPromo.js";
 
 /** Merchant upload is stored in merchant_offers.offer_image_url (R2 proxy path or https URL). */
 function resolveMerchantOfferImageUrl(
@@ -305,6 +310,11 @@ function n(v: unknown): number | null {
   return Number.isFinite(x) ? x : null;
 }
 
+function geoBoundHas(bound: ReadonlySet<number>, id: unknown): boolean {
+  const nId = typeof id === "number" ? id : Number(id);
+  return Number.isInteger(nId) && nId > 0 && bound.has(nId);
+}
+
 function buildOfferLabel(
   type: string,
   discountPct: number | null,
@@ -413,13 +423,92 @@ function buildPlatformBannerSub(
   minOrder: number | null,
   maxDiscount: number | null,
   customerSegment: string | null,
+  discountType?: string | null,
+  value?: number | null,
+  serviceType?: string | null,
 ): string {
   const parts: string[] = [];
   const seg = String(customerSegment ?? "ALL").toUpperCase();
-  if (seg === "NEW") parts.push("on your first order");
-  if (minOrder != null && minOrder > 0) parts.push(`on orders above ₹${Math.round(minOrder)}`);
-  if (maxDiscount != null && maxDiscount > 0) parts.push(`save up to ₹${Math.round(maxDiscount)}`);
+  const type = String(discountType ?? "").toUpperCase();
+  const st = String(serviceType ?? "").toUpperCase();
+  const isRideLike = st === "RIDE" || st === "PARCEL";
+  if (seg === "NEW") parts.push(isRideLike ? "on your first ride" : "on your first order");
+  if (minOrder != null && minOrder > 0) {
+    parts.push(isRideLike ? `on rides above ₹${Math.round(minOrder)}` : `on orders above ₹${Math.round(minOrder)}`);
+  }
+  const amt = value != null && Number.isFinite(value) && value > 0 ? value : null;
+  if (type === "PERCENTAGE") {
+    if (amt != null) parts.push(`${Math.round(amt)}% off`);
+    if (maxDiscount != null && maxDiscount > 0) parts.push(`save up to ₹${Math.round(maxDiscount)}`);
+  } else if (amt != null) {
+    // FIXED/CASHBACK: show the mapped discount amount, not max_discount_amount.
+    parts.push(`₹${Math.round(amt)} off`);
+  } else if (maxDiscount != null && maxDiscount > 0) {
+    parts.push(`save up to ₹${Math.round(maxDiscount)}`);
+  }
   return parts.join(" · ") || "Great deals across GatiMitra";
+}
+
+const RIDE_FLAT_PROMO_TYPES = new Set(["FLAT_OFF", "PERCENT_OFF", "COUPON", "PEAK_HOUR"]);
+
+function ridePromoUsesFlatValue(promo: RideParcelPromoConfig | null): boolean {
+  const t = promo?.promo_type;
+  return !t || RIDE_FLAT_PROMO_TYPES.has(t);
+}
+
+function buildRideFeaturedBannerTitle(
+  name: string | null,
+  offerKind: string,
+  discountType: string | null,
+  value: number | null,
+  maxDiscount: number | null,
+  promo: RideParcelPromoConfig | null,
+): string {
+  if (promo?.promo_type === "FREE_UP_TO_KM" || promo?.promo_type === "FREE_FIRST_N") {
+    const n = promo.first_n_completed;
+    if (n == null || n <= 1) return "FREE RIDE ✨";
+  }
+  if (promo && !ridePromoUsesFlatValue(promo)) {
+    return rideParcelPromoPreviewTitle(promo, "RIDE", discountType, value);
+  }
+  return buildPlatformBannerTitle(name, offerKind, discountType, value, maxDiscount);
+}
+
+function buildRideFeaturedBannerSub(
+  minOrder: number | null,
+  maxDiscount: number | null,
+  customerSegment: string | null,
+  discountType: string | null,
+  value: number | null,
+  promo: RideParcelPromoConfig | null,
+): string {
+  const parts: string[] = [];
+  const n = promo?.first_n_completed;
+  const promoType = promo?.promo_type;
+  if (promoType === "FREE_UP_TO_KM" || promoType === "FREE_FIRST_N") {
+    if (n != null && n > 1) return `on your first ${n} rides`;
+    return "on your first ride";
+  }
+  if (n === 1) parts.push("on your first ride");
+  else if (n != null && n > 1) parts.push(`on your first ${n} rides`);
+  if (ridePromoUsesFlatValue(promo)) {
+    const type = String(discountType ?? "").toUpperCase();
+    if (type === "PERCENTAGE" && value != null && value > 0) {
+      parts.push(`${Math.round(value)}% off`);
+      if (maxDiscount != null && maxDiscount > 0) parts.push(`save up to ₹${Math.round(maxDiscount)}`);
+    }
+    // Skip repeating ₹X off — banner title already has "Flat ₹X Off".
+  }
+  if (minOrder != null && minOrder > 0) parts.push(`on rides above ₹${Math.round(minOrder)}`);
+  if (promoType !== "FLAT_OFF") {
+    const vehicles = (promo?.vehicle_types ?? []).map((v) => v.trim()).filter(Boolean);
+    if (vehicles.length > 0 && vehicles.length <= 4) {
+      parts.push(vehicles.map((v) => v.replace(/-/g, " ")).join(", "));
+    }
+  }
+  if (parts.length > 0) return parts.join(" · ");
+  if (promoType === "FLAT_OFF") return "";
+  return buildPlatformBannerSub(minOrder, maxDiscount, customerSegment, discountType, value, "RIDE");
 }
 
 async function resolveStoreInternalId(storeId: string): Promise<number | null> {
@@ -654,7 +743,7 @@ async function fetchPlatformOffers(
       // Checkout / bill apply still handles MERCHANT-scoped rows with bindings.
       continue;
     }
-    if (!geoBoundIds.has(o.id)) continue;
+    if (!geoBoundHas(geoBoundIds, o.id)) continue;
     const isGeoBound = true;
 
     const kind     = String(o.offerKind ?? "DISCOUNT").toUpperCase();
@@ -704,6 +793,17 @@ export type HomeBannerOffer = {
   conditions_mode?: "boost" | "precision" | null;
   /** ISO timestamp — offer expires at this time. */
   valid_till?: string | null;
+  /** Ride promo: empty = all vehicles. */
+  vehicle_types?: string[] | null;
+  /** Ride promo peak windows; empty = always. */
+  peak_slots?: string[] | null;
+  /** Ride/parcel promo_config.promo_type (FREE_UP_TO_KM, FLAT_OFF, …). */
+  promo_type?: string | null;
+  first_n_completed?: number | null;
+  max_km?: number | null;
+  auto_apply?: boolean;
+  /** True only when this platform offer has an effective geo_platform_offer_bindings hit. */
+  is_geo_bound?: boolean;
 };
 
 type NearbyStoreRef = {
@@ -897,7 +997,7 @@ async function fetchPlatformBannerOffers(
     const scope = String(o.targetScope ?? "GLOBAL").toUpperCase();
     // Every customer-facing platform banner requires an effective geo binding.
     // MERCHANT / GEO_MERCHANT also need a nearby mapped store (below).
-    if (!geoBoundIds.has(o.id)) continue;
+    if (!geoBoundHas(geoBoundIds, o.id)) continue;
 
     const platformCoupon = String(o.couponCode ?? "").trim() || null;
 
@@ -911,7 +1011,7 @@ async function fetchPlatformBannerOffers(
         store_id: "",
         store_name: null,
         title: buildPlatformBannerTitle(o.name, kind, o.discountType, value, maxDisc),
-        sub: buildPlatformBannerSub(minOrder, maxDisc, o.customerSegment),
+        sub: buildPlatformBannerSub(minOrder, maxDisc, o.customerSegment, o.discountType, value, oSt),
         kind: "platform",
         source_offer_id: o.id,
         offer_type: kind,
@@ -921,6 +1021,7 @@ async function fetchPlatformBannerOffers(
         discount_percentage: o.discountType === "PERCENTAGE" ? value : null,
         discount_value: o.discountType !== "PERCENTAGE" ? value : null,
         valid_till: o.endsAt ? new Date(o.endsAt).toISOString() : null,
+        is_geo_bound: true,
       });
       continue;
     }
@@ -945,7 +1046,7 @@ async function fetchPlatformBannerOffers(
     const maxDisc = n(o.maxDiscountAmount);
     const minOrder = n(o.minOrderAmount);
     const bannerSub =
-      buildPlatformBannerSub(minOrder, maxDisc, o.customerSegment) ||
+      buildPlatformBannerSub(minOrder, maxDisc, o.customerSegment, o.discountType, value, oSt) ||
       (store && minOrder != null && minOrder > 0
         ? `on orders above ₹${Math.round(minOrder)} · ${store.name}`
         : store?.name ?? "Tap to explore deals");
@@ -965,6 +1066,7 @@ async function fetchPlatformBannerOffers(
       discount_percentage: o.discountType === "PERCENTAGE" ? value : null,
       discount_value: o.discountType !== "PERCENTAGE" ? value : null,
       valid_till: o.endsAt ? new Date(o.endsAt).toISOString() : null,
+      is_geo_bound: true,
     });
   }
 
@@ -989,15 +1091,20 @@ async function fetchCouponBannerOffers(
           ? `Flat ₹${Math.round(value)} OFF`
           : String(coupon.code);
     const maxCap = coupon.maxDiscountCap;
+    const amountLine =
+      isPct && value != null && value > 0
+        ? maxCap != null && maxCap > 0
+          ? `${Math.round(value)}% off · save up to ₹${Math.round(maxCap)}`
+          : `${Math.round(value)}% off`
+        : value != null && value > 0
+          ? `₹${Math.round(value)} off`
+          : null;
     return {
       id: `coupon-${String(coupon.code).toLowerCase()}`,
       store_id: "",
       store_name: null,
       title,
-      sub:
-        maxCap != null && maxCap > 0
-          ? `Save up to ₹${Math.round(maxCap)} · Use code ${coupon.code}`
-          : `Use code ${coupon.code}`,
+      sub: amountLine ? `${amountLine} · Use code ${coupon.code}` : `Use code ${coupon.code}`,
       kind: "platform",
       source_offer_id: -(idx + 1),
       offer_type: "COUPON",
@@ -1007,6 +1114,7 @@ async function fetchCouponBannerOffers(
       discount_percentage: isPct ? value : null,
       discount_value: !isPct ? value : null,
       valid_till: null,
+      is_geo_bound: true,
     };
   });
 }
@@ -1033,7 +1141,7 @@ function isRideFeaturedBannerEligible(banner: HomeBannerOffer): boolean {
   return true;
 }
 
-/** RIDE checkout/home: skip nearby-store listing (expensive Supabase RPC) — only global/geo platform + coupons. */
+/** RIDE/PARCEL featured: geo-mapped platform offers only (same binding model as FOOD). */
 async function fetchRideFeaturedOffersFast(params: {
   pincode: string | null;
   stateName: string | null;
@@ -1041,9 +1149,11 @@ async function fetchRideFeaturedOffersFast(params: {
   latitude: number | null;
   longitude: number | null;
   limit: number;
+  serviceType?: "RIDE" | "PARCEL";
 }): Promise<HomeBannerOffer[]> {
   const db = getDb();
   const now = new Date();
+  const serviceType = (params.serviceType ?? "RIDE").toUpperCase() === "PARCEL" ? "PARCEL" : "RIDE";
 
   const geo = await resolveGeoLocation({
     livePincode: params.pincode,
@@ -1054,6 +1164,11 @@ async function fetchRideFeaturedOffersFast(params: {
   });
   const geoBoundIds = geo.geoBoundOfferIds;
   const geoBoundCouponIds = geo.geoBoundCouponIds;
+
+  // Unmapped location → no platform offers (food already uses the same fail-closed set).
+  if (geoBoundIds.size === 0 && geoBoundCouponIds.size === 0) {
+    return [];
+  }
 
   const platformRows = await db
       .select({
@@ -1072,17 +1187,18 @@ async function fetchRideFeaturedOffersFast(params: {
         startsAt: billingPlatformOffers.startsAt,
         endsAt: billingPlatformOffers.endsAt,
         priority: billingPlatformOffers.priority,
+        promoConfig: billingPlatformOffers.promoConfig,
       })
       .from(billingPlatformOffers)
       .where(
         and(
           eq(billingPlatformOffers.isActive, true),
           eq(billingPlatformOffers.isHidden, false),
-          or(eq(billingPlatformOffers.serviceType, "RIDE"), eq(billingPlatformOffers.serviceType, "ALL"))
+          or(eq(billingPlatformOffers.serviceType, serviceType), eq(billingPlatformOffers.serviceType, "ALL"))
         )
       )
       .orderBy(asc(billingPlatformOffers.priority));
-  const couponBanners = await fetchCouponBannerOffers("RIDE", geoBoundCouponIds);
+  const couponBanners = await fetchCouponBannerOffers(serviceType, geoBoundCouponIds);
 
   const platformBanners: HomeBannerOffer[] = [];
   for (const o of platformRows) {
@@ -1093,7 +1209,9 @@ async function fetchRideFeaturedOffersFast(params: {
     const scope = String(o.targetScope ?? "GLOBAL").toUpperCase();
     if (scope === "MERCHANT" || scope === "GEO_MERCHANT") continue;
     // Unmapped platform offers must never appear on ride featured surfaces.
-    if (!geoBoundIds.has(o.id)) continue;
+    // GLOBAL with zero geo_platform_offer_bindings is not customer-visible.
+    const offerId = Number(o.id);
+    if (!Number.isInteger(offerId) || offerId < 1 || !geoBoundHas(geoBoundIds, offerId)) continue;
 
     const kind = String(o.offerKind ?? "DISCOUNT").toUpperCase();
     if (RIDE_EXCLUDED_PLATFORM_OFFER_KINDS.has(kind)) continue;
@@ -1101,21 +1219,48 @@ async function fetchRideFeaturedOffersFast(params: {
     const value = n(o.valueNumeric);
     const maxDisc = n(o.maxDiscountAmount);
     const minOrder = n(o.minOrderAmount);
+    const promo = parseRideParcelPromoConfig(o.promoConfig ?? null);
+    const rawPromo =
+      o.promoConfig && typeof o.promoConfig === "object" && !Array.isArray(o.promoConfig)
+        ? (o.promoConfig as Record<string, unknown>)
+        : null;
+    const vehicleTypes = (
+      promo?.vehicle_types?.length
+        ? promo.vehicle_types
+        : Array.isArray(rawPromo?.vehicle_types)
+          ? (rawPromo.vehicle_types as unknown[]).map((v) => String(v).trim())
+          : []
+    ).filter(Boolean);
+    const peakSlots = (
+      promo?.peak_slots?.length
+        ? promo.peak_slots
+        : Array.isArray(rawPromo?.peak_slots)
+          ? (rawPromo.peak_slots as unknown[]).map((v) => String(v).trim())
+          : []
+    ).filter(Boolean);
+    const usesFlat = ridePromoUsesFlatValue(promo);
     platformBanners.push({
       id: `platform-geo-${o.id}`,
       store_id: "",
       store_name: null,
-      title: buildPlatformBannerTitle(o.name, kind, o.discountType, value, maxDisc),
-      sub: buildPlatformBannerSub(minOrder, maxDisc, o.customerSegment),
+      title: buildRideFeaturedBannerTitle(o.name, kind, o.discountType, value, maxDisc, promo),
+      sub: buildRideFeaturedBannerSub(minOrder, maxDisc, o.customerSegment, o.discountType, value, promo),
       kind: "platform",
       source_offer_id: o.id,
       offer_type: kind,
       coupon_code: String(o.couponCode ?? "").trim() || null,
       min_order_amount: minOrder,
-      max_discount_amount: maxDisc,
-      discount_percentage: o.discountType === "PERCENTAGE" ? value : null,
-      discount_value: o.discountType !== "PERCENTAGE" ? value : null,
+      max_discount_amount: usesFlat ? maxDisc : null,
+      discount_percentage: usesFlat && o.discountType === "PERCENTAGE" ? value : null,
+      discount_value: usesFlat && o.discountType !== "PERCENTAGE" ? value : null,
       valid_till: o.endsAt ? new Date(o.endsAt).toISOString() : null,
+      vehicle_types: vehicleTypes.length > 0 ? vehicleTypes : null,
+      peak_slots: peakSlots.length > 0 ? peakSlots : null,
+      promo_type: promo?.promo_type ?? null,
+      first_n_completed: promo?.first_n_completed ?? null,
+      max_km: promo?.max_km ?? null,
+      auto_apply: promo?.auto_apply !== false,
+      is_geo_bound: true,
     });
   }
 
@@ -1129,8 +1274,17 @@ async function fetchRideFeaturedOffersFast(params: {
     merged.push(b);
   };
 
+  const platformCouponCodes = new Set(
+    platformBanners
+      .map((b) => b.coupon_code?.trim().toUpperCase())
+      .filter((code): code is string => Boolean(code))
+  );
   for (const b of platformBanners) push(b);
-  for (const b of couponBanners) push(b);
+  for (const b of couponBanners) {
+    const code = b.coupon_code?.trim().toUpperCase();
+    if (code && platformCouponCodes.has(code)) continue;
+    push(b);
+  }
 
   return merged.slice(0, params.limit);
 }
@@ -1152,6 +1306,19 @@ async function fetchHomeFeaturedOffers(params: {
       latitude: params.latitude,
       longitude: params.longitude,
       limit: params.limit,
+      serviceType: "RIDE",
+    });
+  }
+
+  if (params.serviceType.toUpperCase() === "PARCEL") {
+    return fetchRideFeaturedOffersFast({
+      pincode: params.pincode,
+      stateName: params.stateName,
+      cityName: params.cityName,
+      latitude: params.latitude,
+      longitude: params.longitude,
+      limit: params.limit,
+      serviceType: "PARCEL",
     });
   }
 
@@ -1325,6 +1492,13 @@ export async function offersRoutes(app: FastifyInstance) {
               menu_item_ids:         z.array(z.string()).nullable().optional(),
               conditions_mode:       z.enum(["boost", "precision"]).nullable().optional(),
               valid_till:            z.string().nullable().optional(),
+              vehicle_types:         z.array(z.string()).nullable().optional(),
+              peak_slots:            z.array(z.string()).nullable().optional(),
+              promo_type:            z.string().nullable().optional(),
+              first_n_completed:     z.number().nullable().optional(),
+              max_km:                z.number().nullable().optional(),
+              auto_apply:            z.boolean().optional(),
+              is_geo_bound:          z.boolean().optional(),
             })),
           }),
         },

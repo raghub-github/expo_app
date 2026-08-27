@@ -12,6 +12,7 @@ import Animated, {
   withTiming,
   withSequence,
   Easing,
+  cancelAnimation,
 } from "react-native-reanimated";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
@@ -45,6 +46,9 @@ export function GMSkeleton({
       -1,
       false
     );
+    return () => {
+      cancelAnimation(translateX);
+    };
   }, [translateX]);
 
   const animatedStyle = useAnimatedStyle(() => ({
@@ -115,6 +119,9 @@ export function ShimmerView({
       -1,
       true
     );
+    return () => {
+      cancelAnimation(opacity);
+    };
   }, [opacity]);
 
   const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));

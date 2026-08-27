@@ -8,7 +8,7 @@ Supabase sends you to its **Site URL** (e.g. `https://gatimitra.com`) when the r
 
 1. In the **terminal** where the app is running, tap **Continue with Google** and note the log: `[Google OAuth] redirectTo: exp://... (Expo Go)`.
 2. Open **Supabase** → **Authentication** → **URL Configuration** → **Redirect URLs**.
-3. Ensure that **exact** URL is in the list (e.g. `exp://10.150.65.181:8081/--/auth/callback`). If not, click **Add URL**, paste it, and **Save**.
+3. Ensure that **exact** URL is in the list (e.g. `exp://10.124.175.181:8081/--/auth/callback`). If not, click **Add URL**, paste it, and **Save**.
 4. Try **Continue with Google** again. You should return to the app instead of gatimitra.com.
 
 ## If it still redirects to gatimitra.com

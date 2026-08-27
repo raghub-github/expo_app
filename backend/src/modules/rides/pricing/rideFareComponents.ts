@@ -27,6 +27,7 @@ export const RIDE_FARE_CHARGE_SUBTYPES = {
 
 export const RIDE_FARE_DISCOUNT_SUBTYPES = {
   BIKE_LITE: "RIDE_BIKE_LITE_DISCOUNT",
+  EV_AUTO: "RIDE_EV_AUTO_DISCOUNT",
 } as const;
 
 export type RideFareChargeSubtype =
@@ -154,6 +155,7 @@ export const RIDE_COMPONENT_DEFAULT_LABEL: Record<
   [RIDE_FARE_CHARGE_SUBTYPES.TOLL]: "Toll charges",
   [RIDE_FARE_CHARGE_SUBTYPES.EXTRA_STOPS]: "Extra stops",
   [RIDE_FARE_DISCOUNT_SUBTYPES.BIKE_LITE]: "Bike Lite discount",
+  [RIDE_FARE_DISCOUNT_SUBTYPES.EV_AUTO]: "EV Auto discount",
 };
 
 /**

@@ -442,7 +442,7 @@ export const en = {
       penaltyHint: "This amount will be debited from your wallet as a penalty.",
     },
     adminCancelled: {
-      title: "Order Cancelled by Gatimitra Team",
+      title: "Cancelled by Gatimitra Team",
       orderId: "Order {{id}}",
       message:
         "This order is no longer active. You can accept new orders from the home screen.",
@@ -783,6 +783,12 @@ export const en = {
     loadMore: "Load more",
     created: "Created",
     completed: "Completed",
+    statusRejected: "Rejected",
+    statusDebited: "Debited",
+    statusCredited: "Credited",
+    titleWithdrawalRejected: "Withdrawal Rejected",
+    titleWithdrawal: "Withdrawal to Bank",
+    withdrawalRejected: "Withdrawal rejected",
     noTransactions: "No transactions yet",
     transactionHistory: "Transaction History",
   },

@@ -157,14 +157,21 @@ input[inputmode="numeric"],
   font-variant-numeric: tabular-nums;
 }
 
-/* Blur sidebar when modal is open */
-body.modal-open-blur aside {
+/* Blur top header when modal is open; keep sidebar sharp. */
+body.modal-open-blur [data-mx-partner-topbar],
+body.modal-open-blur header.mx-partner-topbar {
   filter: blur(8px) !important;
   transition: filter 0.3s ease;
+  pointer-events: none;
+}
+
+body.modal-open-blur aside {
+  filter: none !important;
+  pointer-events: auto;
 }
 
 body.modal-open-blur aside * {
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 /* Animations for ticket closing panel */
@@ -220,6 +227,66 @@ body.modal-open-blur aside * {
   100% {
     transform: translateX(-50%);
   }
+}
+
+/* Self-pick-up footer: yellow ↔ green slides one way, then reverses back (no jump). */
+@keyframes self-pickup-bg-slide {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-self-pickup-bg-slide {
+  animation: self-pickup-bg-slide 3.2s ease-in-out infinite alternate;
+}
+
+/* Whole trail drifts L→R only (never R→L). Loop restarts from the left. */
+@keyframes self-pickup-prints-move {
+  0% {
+    transform: translateX(-22%);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(22%);
+    opacity: 0;
+  }
+}
+
+.animate-self-pickup-prints-move {
+  animation: self-pickup-prints-move 5.5s ease-in-out infinite;
+}
+
+/* Each print: appear → hold → fade (walking step). */
+@keyframes self-pickup-print-step {
+  0%,
+  8% {
+    opacity: 0;
+    transform: scale(0.75);
+  }
+  22%,
+  48% {
+    opacity: 0.75;
+    transform: scale(1);
+  }
+  68%,
+  100% {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+
+.animate-self-pickup-print-step {
+  animation: self-pickup-print-step 2.4s ease-in-out infinite;
+  will-change: opacity, transform;
 }
 
 .animate-store-closed-marquee {

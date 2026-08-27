@@ -144,6 +144,17 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
     return;
   }
 
+  if (path.startsWith("/dashboard/super-admin/customer-app-categories")) {
+    void import("@/lib/user-app-categories/fetch-bootstrap").then(({ fetchUserAppCategoriesBootstrap }) =>
+      queryClient.prefetchQuery({
+        queryKey: queryKeys.admin.userAppCategories("FOOD"),
+        queryFn: () => fetchUserAppCategoriesBootstrap("FOOD"),
+        staleTime: 10 * 60 * 1000,
+      })
+    );
+    return;
+  }
+
   if (path.startsWith("/dashboard/orders")) {
     queryClient.prefetchQuery({
       queryKey: queryKeys.ordersCore.foodList(
@@ -151,6 +162,5 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
       ),
       queryFn: () => fetchFoodOrders(defaultFoodOrdersFilters),
     });
-    return;
   }
 }

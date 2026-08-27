@@ -289,6 +289,7 @@ export async function GET(
       ifsc: row.ifsc,
       accountHolderName: row.accountHolderName,
       transactionId: row.transactionId,
+      failureReason: row.failureReason ?? null,
       processedAt: row.processedAt,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,

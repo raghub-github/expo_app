@@ -1,3 +1,5 @@
+import { hexRingFromCenter } from "@/src/lib/demand-zones";
+
 /**
  * Rider hot zones — client types + pure transforms.
  *
@@ -96,28 +98,36 @@ function closedRing(ring: [number, number][]): [number, number][] {
 
 /** Hexagon polygons for Mapbox — one Feature per H3 cell, styled by status. */
 export function hotZonesToGeoJson(cells: HotZoneCell[]): HotZoneFeatureCollection {
+  const features = cells
+    .map((c) => {
+      const boundary =
+        Array.isArray(c.boundary) && c.boundary.length >= 3
+          ? c.boundary
+          : hexRingFromCenter(c.center);
+      if (boundary.length < 3) return null;
+
+      const status = dominantStatus(c);
+      const services = c.services.map((s) => s.service);
+      return {
+        type: "Feature" as const,
+        id: c.h3Index,
+        properties: {
+          h3: c.h3Index,
+          status,
+          services: services.join(","),
+          serviceCount: services.length,
+        },
+        geometry: {
+          type: "Polygon" as const,
+          coordinates: [closedRing(boundary)],
+        },
+      };
+    })
+    .filter((f): f is NonNullable<typeof f> => f != null);
+
   return {
     type: "FeatureCollection",
-    features: cells
-      .filter((c) => Array.isArray(c.boundary) && c.boundary.length >= 3)
-      .map((c) => {
-        const status = dominantStatus(c);
-        const services = c.services.map((s) => s.service);
-        return {
-          type: "Feature" as const,
-          id: c.h3Index,
-          properties: {
-            h3: c.h3Index,
-            status,
-            services: services.join(","),
-            serviceCount: services.length,
-          },
-          geometry: {
-            type: "Polygon" as const,
-            coordinates: [closedRing(c.boundary)],
-          },
-        };
-      }),
+    features,
   };
 }
 

@@ -2,7 +2,12 @@
 
 import { ClipboardList, KeyRound } from 'lucide-react';
 import type { OrderOtpBundle } from '@/lib/orderOtps';
-import { formatRtoOtpDisplay, shouldShowPickupOtp, shouldShowRtoOtp } from '@/lib/orderOtps';
+import {
+  formatPickupOtpForMerchantDisplay,
+  formatRtoOtpDisplay,
+  shouldShowPickupOtp,
+  shouldShowRtoOtp,
+} from '@/lib/orderOtps';
 
 export type OrderOtpSectionProps = {
   status: string;
@@ -10,6 +15,8 @@ export type OrderOtpSectionProps = {
   pickupVerified?: boolean;
   rtoVerified?: boolean;
   compact?: boolean;
+  /** Self-pickup: mask code — customer shares OTP at the counter. */
+  selfPickup?: boolean;
   /** From DB merchant_instructions_list (kitchen notes, cutlery choice, etc.). */
   merchantInstructions?: string[] | null;
 };
@@ -66,9 +73,10 @@ export function OrderOtpSection({
   pickupVerified,
   rtoVerified,
   compact,
+  selfPickup,
   merchantInstructions,
 }: OrderOtpSectionProps) {
-  const showPickup = shouldShowPickupOtp(status, otps.pickup);
+  const showPickup = shouldShowPickupOtp(status, otps.pickup, { selfPickup });
   const showRto = shouldShowRtoOtp(status, otps.rto);
   const instructions = (merchantInstructions ?? []).filter((s) => s.trim().length > 0);
   const showInstructions = instructions.length > 0;
@@ -76,6 +84,7 @@ export function OrderOtpSection({
 
   const pad = compact ? 'p-2' : 'p-3';
   const hasOtps = showPickup || showRto;
+  const pickupDisplay = formatPickupOtpForMerchantDisplay(otps.pickup, { selfPickup });
 
   return (
     <div className={`rounded-lg border border-slate-200 bg-slate-50/80 ${pad}`}>
@@ -90,8 +99,13 @@ export function OrderOtpSection({
             </p>
           </div>
           <div className={compact ? 'grid grid-cols-2 gap-1.5' : 'space-y-2'}>
-            {showPickup && otps.pickup ? (
-              <OtpRow label="Pickup OTP" code={otps.pickup} verified={pickupVerified} compact={compact} />
+            {showPickup && pickupDisplay ? (
+              <OtpRow
+                label="Pickup OTP"
+                code={pickupDisplay}
+                verified={pickupVerified}
+                compact={compact}
+              />
             ) : null}
             {showRto && otps.rto ? (
               <OtpRow

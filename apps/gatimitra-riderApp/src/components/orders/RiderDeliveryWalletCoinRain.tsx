@@ -14,11 +14,11 @@ import Animated, {
 } from "react-native-reanimated";
 
 const COIN_COUNT = 14;
-const COIN_SIZE = 34;
+const COIN_SIZE = 22;
 const COIN_STAGGER_MS = 95;
 const COIN_TRAVEL_MS = 1250;
-const COIN_WOBBLE_PX = 14;
-const COIN_ARC_PX = 52;
+const COIN_WOBBLE_PX = 9;
+const COIN_ARC_PX = 36;
 const MAX_MEASURE_ATTEMPTS = 12;
 const COIN_ANIM_START_DELAY_MS = 420;
 const COINS_COMPLETE_MS =
@@ -97,7 +97,7 @@ function FlyingCoin({
   const progress = useSharedValue(0);
   const visible = useSharedValue(0);
   const size = COIN_SIZE * sizeScale;
-  const symbolSize = Math.round(13 * sizeScale);
+  const symbolSize = Math.max(8, Math.round(10 * sizeScale));
 
   useEffect(() => {
     const delay = COIN_ANIM_START_DELAY_MS + index * COIN_STAGGER_MS;
@@ -169,7 +169,7 @@ export function RiderDeliveryWalletCoinRain({
 
   const coinVariants = useRef(
     Array.from({ length: COIN_COUNT }, (_, index) => ({
-      sizeScale: 0.88 + (index % 5) * 0.05,
+      sizeScale: 0.78 + (index % 5) * 0.04,
       startSpreadX: ((index % 7) - 3) * 5,
       startSpreadY: ((index % 5) - 2) * 4,
       wobbleDir: index % 2 === 0 ? 1 : -1,

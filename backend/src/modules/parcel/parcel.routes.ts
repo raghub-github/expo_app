@@ -42,6 +42,7 @@ const placeBodySchema = z.object({
   paymentMethod: z.enum(["cash", "cod", "online"]).optional(),
   couponCode: z.string().optional().nullable(),
   selectedPlatformOfferId: z.coerce.number().int().positive().optional().nullable(),
+  forceNoAutoOffer: z.boolean().optional(),
   offerSnapshot: z.record(z.string(), z.unknown()).optional().nullable(),
   appliedOfferDiscount: z.coerce.number().nonnegative().optional().nullable(),
   weightKg: z.coerce.number().positive().optional().nullable(),
@@ -109,6 +110,7 @@ export const parcelRoutes: FastifyPluginAsync = async (app) => {
           paymentMethod: parsed.data.paymentMethod ?? "cash",
           couponCode: parsed.data.couponCode ?? null,
           selectedPlatformOfferId: parsed.data.selectedPlatformOfferId ?? null,
+          forceNoAutoOffer: parsed.data.forceNoAutoOffer === true,
           offerSnapshot: parsed.data.offerSnapshot ?? null,
           appliedOfferDiscount: parsed.data.appliedOfferDiscount ?? null,
         });

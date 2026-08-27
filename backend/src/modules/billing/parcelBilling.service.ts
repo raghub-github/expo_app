@@ -77,6 +77,17 @@ export function enrichParcelBillingSnapshot(
   if (base.serviceType == null) base.serviceType = "PARCEL";
   if (base.distanceKm == null && Number.isFinite(opts.distanceKm)) base.distanceKm = opts.distanceKm;
   if (base.computedAt == null) base.computedAt = new Date().toISOString();
+  const discounts = base.discounts;
+  if (Array.isArray(discounts)) {
+    for (const row of discounts) {
+      if (!row || typeof row !== "object") continue;
+      const id = Number((row as { meta?: { platformOfferId?: unknown } }).meta?.platformOfferId);
+      if (Number.isFinite(id) && id > 0) {
+        if (base.parcel_platform_offer_id == null) base.parcel_platform_offer_id = id;
+        break;
+      }
+    }
+  }
   return base;
 }
 

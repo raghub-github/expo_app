@@ -28,11 +28,29 @@ function childrenToPlainText(children: React.ReactNode): string {
   return "";
 }
 
+/** Nested RN Text often drops parent decorations — keep strike/underline on glyph Text. */
+function decorationFrom(style: TextStyle): TextStyle | null {
+  const {
+    textDecorationLine,
+    textDecorationStyle,
+    textDecorationColor,
+  } = style;
+  if (textDecorationLine == null && textDecorationStyle == null && textDecorationColor == null) {
+    return null;
+  }
+  return {
+    ...(textDecorationLine != null ? { textDecorationLine } : null),
+    ...(textDecorationStyle != null ? { textDecorationStyle } : null),
+    ...(textDecorationColor != null ? { textDecorationColor } : null),
+  };
+}
+
 /** Checkout typography — Lora for alphabetic text, Poppins for numeric text. */
 export function CheckoutText({ style, bold, children, ...rest }: Props) {
   const flat = StyleSheet.flatten(style) ?? {};
   const isBold = bold ?? isBoldFontWeight(flat.fontWeight);
   const { fontWeight: _fw, fontFamily: _ff, ...segmentBase } = flat as TextStyle;
+  const decoration = decorationFrom(segmentBase);
 
   if (hasComplexChildren(children)) {
     return (
@@ -79,6 +97,7 @@ export function CheckoutText({ style, bold, children, ...rest }: Props) {
           style={[
             { fontFamily: segmentFontFamily(seg.kind, isBold) },
             inheritedColor != null ? { color: inheritedColor } : null,
+            decoration,
           ]}
         >
           {seg.value}

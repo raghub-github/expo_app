@@ -280,7 +280,32 @@ export interface OrdersCoreRow {
   etaBreachedAt?: Date | null;
   /** order_timelines.id of the stage current when ETA was first breached (red dot on timeline). */
   etaBreachedTimelineId?: number | null;
+  /** Core cancel timestamp — terminal for dashboard. */
+  cancelledAt?: Date | null;
+  /** Latest linked orders_food.order_status (for stage/action resolution). */
+  foodOrderStatus?: string | null;
+  /** Rider marked pickup on food row (DESPATCHED stage). */
+  riderPickedUpAt?: Date | string | null;
 }
+
+/** Extra list columns for food dashboard stage/action (shared across list query branches). */
+const foodDashboardListSelect = {
+  cancelledAt: ordersCore.cancelledAt,
+  foodOrderStatus: sql<string | null>`(
+    SELECT of.order_status::text
+    FROM orders_food of
+    WHERE of.order_id = ${ordersCore.id}
+    ORDER BY of.id DESC
+    LIMIT 1
+  )`,
+  riderPickedUpAt: sql<Date | null>`(
+    SELECT of.rider_picked_up_at
+    FROM orders_food of
+    WHERE of.order_id = ${ordersCore.id}
+    ORDER BY of.id DESC
+    LIMIT 1
+  )`,
+} as const;
 
 /**
  * List orders from orders_core with optional search and status filter.
@@ -582,6 +607,7 @@ export async function listOrdersCore(
         firstEtaAt: ordersCore.firstEtaAt,
         etaBreachedAt: ordersCore.etaBreachedAt,
         etaBreachedTimelineId: ordersCore.etaBreachedTimelineId,
+        ...foodDashboardListSelect,
       })
       .from(ordersCore)
       .leftJoin(customers, eq(ordersCore.customerId, customers.id))
@@ -689,6 +715,7 @@ export async function listOrdersCore(
         firstEtaAt: ordersCore.firstEtaAt,
         etaBreachedAt: ordersCore.etaBreachedAt,
         etaBreachedTimelineId: ordersCore.etaBreachedTimelineId,
+        ...foodDashboardListSelect,
       })
       .from(ordersCore)
       .leftJoin(customers, eq(ordersCore.customerId, customers.id))
@@ -789,6 +816,7 @@ export async function listOrdersCore(
       firstEtaAt: ordersCore.firstEtaAt,
       etaBreachedAt: ordersCore.etaBreachedAt,
       etaBreachedTimelineId: ordersCore.etaBreachedTimelineId,
+      ...foodDashboardListSelect,
     })
     .from(ordersCore)
     .leftJoin(customers, eq(ordersCore.customerId, customers.id))
@@ -851,6 +879,7 @@ export type FoodOrderMeta = {
   orderStatus: string | null;
   dispatchedAt: string | null;
   riderPickedUpAt: string | null;
+  deliveredAt: string | null;
 };
 
 function toFoodIso(value: unknown): string | null {
@@ -863,7 +892,7 @@ function toFoodIso(value: unknown): string | null {
 export async function getFoodOrderMeta(orderId: number): Promise<FoodOrderMeta> {
   const sql = getSql();
   const rows = await sql`
-    SELECT order_status, dispatched_at, rider_picked_up_at
+    SELECT order_status, dispatched_at, rider_picked_up_at, delivered_at
     FROM orders_food
     WHERE order_id = ${orderId}
     LIMIT 1
@@ -874,6 +903,7 @@ export async function getFoodOrderMeta(orderId: number): Promise<FoodOrderMeta> 
         order_status?: string | null;
         dispatched_at?: unknown;
         rider_picked_up_at?: unknown;
+        delivered_at?: unknown;
       }
     | undefined;
   const status = r?.order_status;
@@ -882,6 +912,7 @@ export async function getFoodOrderMeta(orderId: number): Promise<FoodOrderMeta> 
       status != null && String(status).trim() !== "" ? String(status) : null,
     dispatchedAt: toFoodIso(r?.dispatched_at),
     riderPickedUpAt: toFoodIso(r?.rider_picked_up_at),
+    deliveredAt: toFoodIso(r?.delivered_at),
   };
 }
 

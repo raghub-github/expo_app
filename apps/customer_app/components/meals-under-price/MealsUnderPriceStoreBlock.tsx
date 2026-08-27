@@ -5,6 +5,7 @@ import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { DietIndicator } from "@/components/store/DietIndicator";
 import { getBasePrice, getSellingPrice } from "@/components/store/storeMenuUtils";
+import { resolveItemDiet } from "@/lib/itemDiet";
 import type { FoodItemUnderPrice, StoreFoodItemsUnderPrice } from "@/services/foodHomeItemsUnderPrice.service";
 import type { MenuItem } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
@@ -88,7 +89,7 @@ function MealsUnderPriceItemCard({
 
         <View style={styles.cardBody}>
           <View style={styles.nameRow}>
-            <DietIndicator type={item.isVeg ? "veg" : "nonveg"} />
+            <DietIndicator type={resolveItemDiet({ isVeg: item.isVeg })} />
             <AppText style={[styles.itemName, dark && styles.itemNameDark]} numberOfLines={2}>
               {item.name}
             </AppText>

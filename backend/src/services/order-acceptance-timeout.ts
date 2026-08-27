@@ -328,11 +328,12 @@ async function finalizeCancelledRow(
           oc.order_id,
           oc.formatted_order_id,
           c.customer_id AS customer_user_id,
-          s.user_id AS merchant_user_id,
+          mp.parent_merchant_id AS merchant_user_id,
           s.store_display_name AS store_name
         FROM orders_core oc
         LEFT JOIN customers c ON c.id = oc.customer_id
         LEFT JOIN merchant_stores s ON s.id = ${storeId}
+        LEFT JOIN merchant_parents mp ON mp.id = s.parent_id
         WHERE oc.id = ${coreId}
         LIMIT 1
       `) as Array<{

@@ -96,7 +96,21 @@ export function MerchantOrderCardLayout({
   );
 
   const defaultRiderContent =
-    order.deliveryType === "GATIMITRA_RIDER" ? (
+    order.deliveryType === "SELF_PICKUP" ? (
+      <View style={styles.riderRow}>
+        <View style={[styles.riderAvatar, { backgroundColor: "#FEF3C7" }]}>
+          <Ionicons
+            name="walk-outline"
+            size={16}
+            color="#92400E"
+            style={{ transform: [{ scaleX: -1 }] }}
+          />
+        </View>
+        <Text style={[styles.riderText, { color: "#92400E", fontWeight: "700" }]}>
+          Self-Pick-Up · Customer will collect from store
+        </Text>
+      </View>
+    ) : order.deliveryType === "GATIMITRA_RIDER" ? (
       orderHasAssignedRider(order) ? (
         <MerchantAssignedRiderRow order={order} />
       ) : (

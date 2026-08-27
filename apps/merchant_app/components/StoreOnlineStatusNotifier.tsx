@@ -6,7 +6,7 @@
 import { useEffect } from "react";
 import { Platform } from "react-native";
 import Constants from "expo-constants";
-import { LEGACY_ONLINE_NOTIF_ID } from "@/lib/liveOrdersOngoingNotification";
+import { dismissLiveOrdersOngoingNotification } from "@/lib/liveOrdersOngoingNotification";
 
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
@@ -15,14 +15,7 @@ function isExpoGo(): boolean {
 export default function StoreOnlineStatusNotifier() {
   useEffect(() => {
     if (Platform.OS !== "android" || isExpoGo()) return;
-    void (async () => {
-      try {
-        const Notifications = await import("expo-notifications");
-        await Notifications.dismissNotificationAsync(LEGACY_ONLINE_NOTIF_ID);
-      } catch {
-        /* best-effort */
-      }
-    })();
+    void dismissLiveOrdersOngoingNotification();
   }, []);
 
   return null;

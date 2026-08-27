@@ -59,6 +59,22 @@ async function snapshotsAreFresh(
   scope: MarketMatchScope
 ): Promise<boolean> {
   const periodKey = periodKeyForScope(scope);
+  try {
+    const meta = await sql`
+      SELECT computed_at
+      FROM merchant_store_competitor_refresh_meta
+      WHERE merchant_store_id = ${storePk}
+        AND period_key = ${periodKey}
+      LIMIT 1
+    `;
+    const metaAt = meta[0]?.computed_at;
+    if (metaAt) {
+      const ms = new Date(String(metaAt)).getTime();
+      if (Number.isFinite(ms) && Date.now() - ms < STALE_MS) return true;
+    }
+  } catch {
+    /* table may not exist until migration 0572 */
+  }
   const rows = await sql`
     SELECT computed_at
     FROM merchant_store_competitor_snapshots
@@ -84,6 +100,85 @@ export async function ensureCompetitorSnapshots(
   } catch (e) {
     console.warn(`[merchant-store-competitors] refresh ${scope} failed:`, (e as Error).message);
   }
+}
+
+async function loadAreaPeerCompetitors(
+  sql: Sql,
+  storePk: number,
+  store: { city: string | null; postal_code: string | null },
+  scope: MarketMatchScope,
+  limit: number,
+  excludeStoreIds: Set<string>
+): Promise<CompetitorRow[]> {
+  const pincodeNorm = (store.postal_code ?? "").replace(/\D/g, "");
+  const cityNorm = store.city?.trim().toLowerCase() ?? "";
+  if (scope === "locality" && !pincodeNorm) return [];
+  if (scope === "city" && !cityNorm) return [];
+
+  const peerRows =
+    scope === "locality"
+      ? await sql`
+          SELECT cs.store_id AS competitor_store_id,
+                 COALESCE(NULLIF(TRIM(cs.store_display_name), ''), cs.store_name) AS name,
+                 cs.banner_url,
+                 mp.store_logo AS parent_logo_url,
+                 COUNT(oc.id)::int AS order_count
+          FROM merchant_stores cs
+          LEFT JOIN merchant_parents mp ON mp.id = cs.parent_id
+          LEFT JOIN orders_core oc
+            ON oc.merchant_store_id = cs.id
+           AND oc.placed_at >= now() - interval '90 days'
+           AND COALESCE(oc.current_status, '') NOT IN ('CANCELLED', 'CANCELED', 'REJECTED')
+          WHERE cs.deleted_at IS NULL
+            AND cs.id <> ${storePk}
+            AND NULLIF(regexp_replace(TRIM(COALESCE(cs.postal_code, '')), '[^0-9]', '', 'g'), '') = ${pincodeNorm}
+          GROUP BY cs.id, cs.store_id, cs.store_display_name, cs.store_name, cs.banner_url, mp.store_logo
+          ORDER BY order_count DESC, cs.id ASC
+          LIMIT ${Math.min(Math.max(1, limit + excludeStoreIds.size), 40)}
+        `
+      : await sql`
+          SELECT cs.store_id AS competitor_store_id,
+                 COALESCE(NULLIF(TRIM(cs.store_display_name), ''), cs.store_name) AS name,
+                 cs.banner_url,
+                 mp.store_logo AS parent_logo_url,
+                 COUNT(oc.id)::int AS order_count
+          FROM merchant_stores cs
+          LEFT JOIN merchant_parents mp ON mp.id = cs.parent_id
+          LEFT JOIN orders_core oc
+            ON oc.merchant_store_id = cs.id
+           AND oc.placed_at >= now() - interval '90 days'
+           AND COALESCE(oc.current_status, '') NOT IN ('CANCELLED', 'CANCELED', 'REJECTED')
+          WHERE cs.deleted_at IS NULL
+            AND cs.id <> ${storePk}
+            AND LOWER(TRIM(cs.city)) = ${cityNorm}
+          GROUP BY cs.id, cs.store_id, cs.store_display_name, cs.store_name, cs.banner_url, mp.store_logo
+          ORDER BY order_count DESC, cs.id ASC
+          LIMIT ${Math.min(Math.max(1, limit + excludeStoreIds.size), 40)}
+        `;
+
+  const out: CompetitorRow[] = [];
+  let rank = 1;
+  for (const r of peerRows as unknown as Array<{
+    competitor_store_id: string;
+    name: string;
+    banner_url: string | null;
+    parent_logo_url: string | null;
+  }>) {
+    const id = String(r.competitor_store_id);
+    if (excludeStoreIds.has(id)) continue;
+    out.push({
+      rank,
+      competitor_store_id: id,
+      name: String(r.name ?? "Store"),
+      logo_url: resolveLogoUrl(r.banner_url ?? r.parent_logo_url),
+      affinity_pct: 0,
+      rank_delta: null,
+      shared_customers: 0,
+    });
+    rank += 1;
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 async function loadAreaInsights(
@@ -274,6 +369,23 @@ export async function loadMerchantMarketInsights(
       shared_customers: Number(r.shared_customers) || 0,
     };
   });
+
+  const cap = Math.min(Math.max(1, limit), 20);
+  if (competitors.length < cap) {
+    const seen = new Set(competitors.map((c) => c.competitor_store_id));
+    const peers = await loadAreaPeerCompetitors(
+      sql,
+      storePk,
+      store,
+      scope,
+      cap - competitors.length,
+      seen
+    );
+    const baseRank = competitors.length;
+    for (let i = 0; i < peers.length; i++) {
+      competitors.push({ ...peers[i], rank: baseRank + i + 1 });
+    }
+  }
 
   const locality = await loadAreaInsights(sql, storePk, store, scope);
 

@@ -9,6 +9,7 @@ import {
   deriveCrnFromOrderId,
   formatKotRestaurantAddress,
   getUtensilsCustomerLabel,
+  isKotSelfPickupOrderType,
   normalizeThermalPrinterWidthMm,
   resolveKotPrintSpec,
   type KotLineItem,
@@ -73,6 +74,8 @@ export function apiOrderToKotPayload(
   const orderId = kotOrderId(order);
   const packaging = getUtensilsCustomerLabel(order)?.trim() || null;
   const specialInstructions = parseMerchantInstructionsList(order.merchant_instructions_list);
+  const orderType = order.delivery_type ?? "food";
+  const selfPickup = isKotSelfPickupOrderType(orderType);
 
   return withPrintContext(
     {
@@ -86,10 +89,10 @@ export function apiOrderToKotPayload(
       customerPhone: order.customer_phone?.trim() || null,
       orderCreatedAt: order.created_at ?? null,
       printTimestamp: new Date().toISOString(),
-      orderType: order.delivery_type ?? "food",
+      orderType,
       paymentMode: order.payment_method ?? null,
-      pickupToken: order.pickup_token?.trim() || null,
-      pickupOtp: order.pickup_otp?.trim() || null,
+      pickupToken: selfPickup ? null : order.pickup_token?.trim() || null,
+      pickupOtp: selfPickup ? null : order.pickup_otp?.trim() || null,
       items: mapApiItems(order.items ?? []),
       specialInstructions,
       packagingInstructions: packaging,
@@ -123,6 +126,8 @@ export function orderRecordToKotPayload(
   );
   const packaging = getUtensilsCustomerLabel(order)?.trim() || null;
   const specialInstructions = parseMerchantInstructionsList(order.merchantInstructionsList);
+  const orderType = order.deliveryType ?? "food";
+  const selfPickup = isKotSelfPickupOrderType(orderType);
 
   return withPrintContext(
     {
@@ -136,10 +141,10 @@ export function orderRecordToKotPayload(
       customerPhone: order.customerPhone?.trim() || null,
       orderCreatedAt: order.createdAt ?? null,
       printTimestamp: new Date().toISOString(),
-      orderType: order.deliveryType ?? "food",
+      orderType,
       paymentMode: order.paymentMethod ?? null,
-      pickupToken: order.pickupToken?.trim() || null,
-      pickupOtp: order.pickupOtp?.trim() || null,
+      pickupToken: selfPickup ? null : order.pickupToken?.trim() || null,
+      pickupOtp: selfPickup ? null : order.pickupOtp?.trim() || null,
       items: mapRecordItems(order),
       specialInstructions,
       packagingInstructions: packaging,

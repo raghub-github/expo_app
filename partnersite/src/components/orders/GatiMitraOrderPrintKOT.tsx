@@ -13,12 +13,14 @@ import {
   type KotLineItem,
   type KotPrintPayload,
   getUtensilsCustomerLabel,
+  isKotSelfPickupOrderType,
   type ThermalPrinterWidthMm,
 } from '@gatimitra/kot-print';
 import { printHtmlDocument } from '@gatimitra/print-utils';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
 import { parseMerchantInstructionsList } from '@/lib/merchant-order-instructions';
+import { isPartnerSelfPickupOrder } from '@/lib/partner-delivery-type';
 
 export type GatiMitraKotStoreInfo = {
   storeName?: string | null;
@@ -82,6 +84,9 @@ export function orderToKotPayload(
   const orderId = formatKotOrderId(order);
   const packaging = getUtensilsCustomerLabel(order)?.trim() || null;
   const specialInstructions = parseMerchantInstructionsList(order.merchant_instructions_list);
+  const orderType = order.delivery_type ?? order.order_type ?? 'food';
+  const selfPickup =
+    isPartnerSelfPickupOrder(order) || isKotSelfPickupOrderType(orderType);
 
   return {
     kotNumber: order.kot_number?.trim() || null,
@@ -98,10 +103,10 @@ export function orderToKotPayload(
     customerPhone: order.customer_phone?.trim() || null,
     orderCreatedAt: order.created_at ?? null,
     printTimestamp: new Date().toISOString(),
-    orderType: order.delivery_type ?? order.order_type ?? 'food',
+    orderType,
     paymentMode: order.payment_method ?? null,
-    pickupToken: order.pickup_token?.trim() || null,
-    pickupOtp: order.pickup_otp?.trim() || null,
+    pickupToken: selfPickup ? null : order.pickup_token?.trim() || null,
+    pickupOtp: selfPickup ? null : order.pickup_otp?.trim() || null,
     items: mapItems(order),
     specialInstructions,
     packagingInstructions: packaging,

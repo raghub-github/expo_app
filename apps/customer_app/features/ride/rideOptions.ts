@@ -48,6 +48,16 @@ export const RIDE_OPTIONS: RideOption[] = [
     subtitle: "Hassle-free Auto rides",
   },
   {
+    id: "ev_auto",
+    name: "EV Auto",
+    image: rideImage(CX.ride.evAuto, CX.ride.auto),
+    baseFare: 30,
+    etaMins: 6,
+    capacity: 3,
+    tag: "SAVE",
+    subtitle: "Budget EV Auto rides",
+  },
+  {
     id: "cab-economy",
     name: "Cab Economy",
     image: rideImage(CX.ride.cab, CX.ride.bike),

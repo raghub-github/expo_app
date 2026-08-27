@@ -398,9 +398,7 @@ export async function GET(
 
     // Server-side CTC reconciliation (customer delivery fee — never rider payout).
     {
-      const roundingLine = customerPricingSummary.lines.find(
-        (l) => l.key === "adjustment" && l.label === "Bill rounding"
-      );
+      const adjustmentLine = customerPricingSummary.lines.find((l) => l.key === "adjustment");
       const otherCharges = round2(
         customerPricingSummary.lines
           .filter(
@@ -418,16 +416,19 @@ export async function GET(
           .filter((l) => l.kind === "discount")
           .reduce((s, l) => s + l.amount, 0)
       );
+      const deliveryLineAmount =
+        customerPricingSummary.lines.find((l) => l.key === "delivery")?.amount ??
+        customerPricingSummary.deliveryFee;
       const reconcile = customerBillReconciles({
         itemsAmount: customerPricingSummary.itemsAmountTotal,
         platformFee: customerPricingSummary.platformFee,
-        deliveryFee: customerPricingSummary.deliveryFee,
+        deliveryFee: deliveryLineAmount,
         gst: customerPricingSummary.gst,
         otherCharges,
         discounts: discountSum,
         tip: customerPricingSummary.tipAmount,
         donation: customerPricingSummary.donationAmount,
-        rounding: roundingLine?.amount ?? 0,
+        adjustment: adjustmentLine?.kind === "charge" ? adjustmentLine.amount : 0,
         totalPaid: customerPricingSummary.totalOrderAmount,
       });
       if (!reconcile.ok) {

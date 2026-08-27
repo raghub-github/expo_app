@@ -7,7 +7,7 @@
     "dev:turbopack": "next dev -p 3001",
     "dev:webpack": "node ./scripts/dev-with-memory.mjs",
     "clean": "node ./scripts/clean-next.mjs",
-    "dev:clean": "npm run clean && next dev --webpack -p 3001",
+    "dev:clean": "npm run clean && node ./scripts/dev-with-memory.mjs --clean-cache",
     "build": "npm run clean && node ./scripts/build-with-memory.mjs",
     "start": "next start",
     "lint": "eslint",

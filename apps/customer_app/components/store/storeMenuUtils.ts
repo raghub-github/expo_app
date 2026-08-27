@@ -1,15 +1,12 @@
 import type { MenuItem } from "@/services/merchant.service";
 import type { OrderSummary } from "@/services/order.service";
 import type { ComboPair } from "./StoreComboSection";
+import { resolveItemDiet, type ItemDiet } from "@/lib/itemDiet";
 
-export type ItemDiet = "veg" | "egg" | "nonveg";
+export type { ItemDiet };
 
-export function getItemDiet(item: MenuItem): ItemDiet {
-  const ft = (item.foodType ?? "").toLowerCase();
-  if (ft.includes("egg")) return "egg";
-  if (ft.includes("non") || ft.includes("nonveg") || ft.includes("non-veg")) return "nonveg";
-  if (item.isVeg || ft.startsWith("veg")) return "veg";
-  return "nonveg";
+export function getItemDiet(item: Pick<MenuItem, "foodType" | "isVeg">): ItemDiet {
+  return resolveItemDiet({ foodType: item.foodType, isVeg: item.isVeg });
 }
 
 export function isItemSpicy(item: MenuItem): boolean {

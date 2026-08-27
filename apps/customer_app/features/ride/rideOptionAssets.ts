@@ -4,7 +4,9 @@ import { CX } from "@/lib/appAssetKeys";
 
 const RIDE_ASSET_BY_KEY: Record<string, string> = {
   bike: CX.ride.bike,
+  "bike-lite": CX.ride.bike,
   auto: CX.ride.auto,
+  ev_auto: CX.ride.evAuto,
   cab: CX.ride.cab,
   cab_premium: CX.ride.cabPremium,
   travel: CX.ride.travel,
@@ -33,7 +35,7 @@ const BUNDLED_SERVICE_BY_ASSET_KEY: Record<string, ImageSourcePropType> = {
   [CX.ride.auto]: BUNDLED_MAP_MARKER_BY_KEY.auto!,
   [CX.ride.cab]: BUNDLED_MAP_MARKER_BY_KEY.cab!,
   [CX.ride.cabPremium]: BUNDLED_MAP_MARKER_BY_KEY.cab_premium!,
-  [CX.ride.travel]: BUNDLED_MAP_MARKER_BY_KEY.travel!,
+  [CX.ride.travel]: BUNDLED_MAP_MARKER_BY_KEY.auto!,
 };
 
 /** CMS URL or bundled PNG for All Services / Intercity tiles. */
@@ -100,7 +102,7 @@ export function resolveSelectedRideMapMarkerImageKey(
   if (fromCatalog) return fromCatalog;
   const id = (rideId ?? "").trim().toLowerCase();
   if (id === "bike" || id === "bike-lite") return "bike";
-  if (id === "auto") return "auto";
+  if (id === "auto" || id === "ev_auto") return "auto";
   if (id === "cab-economy") return "cab";
   if (id === "cab-premium") return "cab_premium";
   return "bike";
