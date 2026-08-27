@@ -46,6 +46,9 @@ export default function ParcelSearchingScreen() {
     routeEtaMins?: string;
     payAt?: string;
     paymentMethod?: string;
+    selectedPlatformOfferId?: string;
+    forceNoAutoOffer?: string;
+    quotedGrandTotal?: string;
   }>();
 
   const pickup = useParcelBookingStore((s) => s.pickup);
@@ -71,6 +74,15 @@ export default function ParcelSearchingScreen() {
   const navigatedToLiveRef = useRef(false);
 
   const fare = Math.max(0, Math.round(Number(params.fare) || 0));
+  const quotedGrandTotal = Math.max(0, Math.round(Number(params.quotedGrandTotal) || 0));
+  const displayFare = quotedGrandTotal > 0 ? quotedGrandTotal : fare;
+  const selectedPlatformOfferId =
+    params.selectedPlatformOfferId != null &&
+    Number.isFinite(Number(params.selectedPlatformOfferId)) &&
+    Number(params.selectedPlatformOfferId) > 0
+      ? Number(params.selectedPlatformOfferId)
+      : undefined;
+  const forceNoAutoOffer = params.forceNoAutoOffer === "true";
   const tripKm =
     params.tripKm != null && Number(params.tripKm) > 0 ? Number(params.tripKm) : undefined;
   const etaMins =
@@ -189,6 +201,8 @@ export default function ParcelSearchingScreen() {
       paymentMethod: (params.paymentMethod === "online" ? "online" : "cash") as
         | "cash"
         | "online",
+      ...(selectedPlatformOfferId != null ? { selectedPlatformOfferId } : {}),
+      ...(forceNoAutoOffer ? { forceNoAutoOffer: true } : {}),
     };
 
     try {
@@ -254,6 +268,8 @@ export default function ParcelSearchingScreen() {
     drop,
     receiver,
     fare,
+    selectedPlatformOfferId,
+    forceNoAutoOffer,
     tripKm,
     vehicleCategory,
     imageKey,
@@ -403,7 +419,7 @@ export default function ParcelSearchingScreen() {
                   ? placementError ?? "Please try again"
                   : `Parcel on ${vehicleName}${orderId ? ` · ${orderId}` : ""}`
             }
-            fare={fare}
+            fare={displayFare}
             rideImage={rideImage}
             rideName={vehicleName}
             pickupLabel={pickupLabel}

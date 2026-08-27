@@ -10,7 +10,7 @@ test("null / non-finite → null", () => {
 });
 
 test("< 1 km → whole metres", () => {
-  assert.equal(formatMerchantDistanceKm(0), "0 m");
+  assert.equal(formatMerchantDistanceKm(0), null);
   assert.equal(formatMerchantDistanceKm(0.85), "850 m");
   assert.equal(formatMerchantDistanceKm(0.999), "999 m");
 });

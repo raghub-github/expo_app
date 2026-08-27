@@ -8,6 +8,10 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { syncNegativeWalletBlocks } from "@/lib/rider-negative-wallet-blocks";
+import {
+  displayIdFromPenaltyMetadata,
+  resolveFormattedOrderIdsByCoreId,
+} from "@/lib/riders/resolve-penalty-order-display-ids";
 
 export const runtime = "nodejs";
 
@@ -133,6 +137,17 @@ export async function POST(
       }
     }
 
+    const orderPublicIdMap =
+      orderId != null && Number.isFinite(orderId) && orderId > 0
+        ? await resolveFormattedOrderIdsByCoreId(db, [orderId])
+        : new Map<number, string>();
+    const resolvedOrderPublicId =
+      orderId != null ? orderPublicIdMap.get(orderId) ?? null : null;
+    const orderPublicIdForMeta =
+      resolvedOrderPublicId && !/^\d+$/.test(resolvedOrderPublicId)
+        ? resolvedOrderPublicId
+        : null;
+
     const [penalty] = await db
       .insert(riderPenalties)
       .values({
@@ -149,6 +164,8 @@ export async function POST(
           added_manually: true,
           source: "dashboard",
           ...(serviceTypeExplicit ? {} : { serviceUnspecified: true }),
+          ...(orderId != null ? { orderId } : {}),
+          ...(orderPublicIdForMeta ? { orderPublicId: orderPublicIdForMeta } : {}),
         },
       })
       .returning();
@@ -162,7 +179,13 @@ export async function POST(
       ref: `pen_${penalty.id}`,
       refType: "penalty",
       description: reason,
-      metadata: orderId != null ? { orderId } : {},
+      metadata:
+        orderId != null
+          ? {
+              orderId,
+              ...(orderPublicIdForMeta ? { orderPublicId: orderPublicIdForMeta } : {}),
+            }
+          : {},
       performedByType: "agent",
       performedById: systemUser?.id ?? null,
     });
@@ -382,15 +405,37 @@ export async function GET(
       .limit(Number.isNaN(limit) ? 20 : limit)
       .offset(offset);
 
-    const penalties = penaltyRows.map((row) => ({
-      ...row.penalty,
-      imposedByUser: row.imposedByEmail
-        ? { email: row.imposedByEmail, fullName: row.imposedByName }
-        : null,
-      reversedByUser: row.reversedByEmail
-        ? { email: row.reversedByEmail, fullName: row.reversedByName }
-        : null,
-    }));
+    const formattedById = await resolveFormattedOrderIdsByCoreId(
+      db,
+      penaltyRows
+        .map((row) => Number(row.penalty.orderId))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    );
+
+    const penalties = penaltyRows.map((row) => {
+      const oid = row.penalty.orderId != null ? Number(row.penalty.orderId) : null;
+      const fromMeta = displayIdFromPenaltyMetadata(row.penalty.metadata);
+      const fromCore =
+        oid != null && Number.isFinite(oid) ? formattedById.get(oid) ?? null : null;
+      const display =
+        fromMeta && !/^\d+$/.test(fromMeta)
+          ? fromMeta
+          : fromCore && !/^\d+$/.test(fromCore)
+            ? fromCore
+            : fromMeta ?? fromCore;
+      return {
+        ...row.penalty,
+        displayOrderId: display,
+        formattedOrderId: display,
+        orderPublicId: display,
+        imposedByUser: row.imposedByEmail
+          ? { email: row.imposedByEmail, fullName: row.imposedByName }
+          : null,
+        reversedByUser: row.reversedByEmail
+          ? { email: row.reversedByEmail, fullName: row.reversedByName }
+          : null,
+      };
+    });
 
     return NextResponse.json({
       success: true,

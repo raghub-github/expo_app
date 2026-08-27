@@ -65,8 +65,12 @@ const DEFAULTS: Required<NavigationFollowOptions> = {
   cameraSmoothMs: 420,
 };
 
-function easeInOutCubic(t: number): number {
-  return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+/** Near-linear cruise with soft settle — closer to Google Maps nav feel. */
+function easeNav(t: number): number {
+  // 70% linear + 30% ease-out so speed doesn't die mid-leg between GPS pings.
+  const linear = t;
+  const easeOut = 1 - (1 - t) * (1 - t);
+  return linear * 0.7 + easeOut * 0.3;
 }
 
 function setBikeHeading(marker: MarkerLike, headingDeg: number) {
@@ -226,16 +230,20 @@ export class NavigationFollowController {
     const from = this.rendered ?? readMarkerLngLat(this.marker!) ?? visual;
     const fromHeading = this.renderedHeading;
 
-    // Duration ≈ GPS interval, clamped — continuous motion without inventing future.
+    // Span nearly the full GPS interval so motion stays continuous (Google-nav style).
     const intervalMs =
       this.lastAppliedGpsMs > 0
-        ? Math.max(350, sample.timestampMs - this.lastAppliedGpsMs)
-        : 1200;
+        ? Math.max(400, sample.timestampMs - this.lastAppliedGpsMs)
+        : 1400;
     this.lastAppliedGpsMs = sample.timestampMs;
     const dist = haversineMeters(from, visual);
+    const bySpeed =
+      sample.speedMps != null && sample.speedMps > 0.5
+        ? Math.min(5000, Math.max(500, (dist / sample.speedMps) * 1000))
+        : null;
     const duration = Math.min(
-      4500,
-      Math.max(400, Math.min(intervalMs * 1.05, 800 + dist * 35))
+      5200,
+      Math.max(450, bySpeed ?? Math.min(intervalMs * 1.12, 900 + dist * 40))
     );
 
     this.startAnim(from, fromHeading, visual, heading, duration);
@@ -312,7 +320,7 @@ export class NavigationFollowController {
     }
 
     const tRaw = Math.min(1, (now - this.animStartMs) / Math.max(1, this.animDurationMs));
-    const t = easeInOutCubic(tRaw);
+    const t = easeNav(tRaw);
 
     let pos: LngLat;
     let heading: number;
@@ -327,17 +335,20 @@ export class NavigationFollowController {
       if (Math.abs(shortestBearingDelta(heading, alongPt.bearing)) < 90) {
         heading = lerpBearing(this.animFromHeading, alongPt.bearing, t);
       }
-      this.onRouteProgress?.(
-        // remaining built by consumer from along — pass along via remaining empty + along
-        [],
-        along
-      );
+      this.onRouteProgress?.([], along);
     } else {
       pos = [
         this.animFrom[0] + (this.target[0] - this.animFrom[0]) * t,
         this.animFrom[1] + (this.target[1] - this.animFrom[1]) * t,
       ];
       heading = lerpBearing(this.animFromHeading, this.targetHeading, t);
+      // Still trim remaining line from map-matched progress when possible.
+      if (this.route && this.onRouteProgress) {
+        const snap = snapToRoute(this.route, pos);
+        if (snap.offRouteM <= this.opts.maxSnapM) {
+          this.onRouteProgress([], snap.distanceAlongM);
+        }
+      }
     }
 
     this.rendered = pos;
@@ -347,12 +358,6 @@ export class NavigationFollowController {
 
     if (this.followEnabled && this.map) {
       this.applyCamera(pos, heading, now);
-    }
-
-    // Soft route progress callback for remaining trim (throttled by consumer).
-    if (this.route && this.onRouteProgress && tRaw >= 1) {
-      const snap = snapToRoute(this.route, pos);
-      this.onRouteProgress([], snap.distanceAlongM);
     }
   }
 

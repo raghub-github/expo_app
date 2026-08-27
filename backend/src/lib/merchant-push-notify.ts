@@ -18,9 +18,33 @@ export async function getMerchantStorePushTokens(sql: Sql, storeId: number): Pro
   const tokenRows = await sql`
     SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
   `;
-  return (tokenRows as unknown as Array<{ token: string }>)
+  const storeTokens = (tokenRows as unknown as Array<{ token: string }>)
     .map((t) => t.token)
     .filter(Boolean);
+
+  // Also fan out to parent merchant Expo tokens (same devices often register
+  // only in expo_push_tokens with parent_merchant_id as user_id).
+  let parentTokens: string[] = [];
+  try {
+    const parentRows = await sql`
+      SELECT ept.expo_push_token AS token
+      FROM public.merchant_stores ms
+      INNER JOIN public.merchant_parents mp ON mp.id = ms.parent_id
+      INNER JOIN public.expo_push_tokens ept
+        ON ept.user_id = mp.parent_merchant_id
+       AND lower(coalesce(ept.role, 'merchant')) = 'merchant'
+      WHERE ms.id = ${storeId}
+        AND ms.deleted_at IS NULL
+        AND ept.expo_push_token IS NOT NULL
+    `;
+    parentTokens = (parentRows as unknown as Array<{ token: string }>)
+      .map((t) => t.token)
+      .filter(Boolean);
+  } catch {
+    /* parent fan-out is best-effort */
+  }
+
+  return [...new Set([...storeTokens, ...parentTokens])];
 }
 
 async function sendMerchantExpoPush(tokens: string[], payload: PushPayload): Promise<void> {

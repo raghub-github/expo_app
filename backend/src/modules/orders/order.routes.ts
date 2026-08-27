@@ -223,6 +223,40 @@ async function resolvePersonRideRatingStoreId(): Promise<number | null> {
   return id != null && Number.isFinite(id) && id > 0 ? id : null;
 }
 
+function resolveCustomerDeliveryType(
+  /** Prefer orders_core.delivery_type; fall back to billing/checkout metadata. */
+  storedDeliveryType: string | null | undefined,
+  billingSnapshot: unknown,
+  checkoutMetadata: unknown
+): string {
+  const fromStored = String(storedDeliveryType ?? "").trim().toLowerCase();
+  if (
+    fromStored === "self_pickup" ||
+    fromStored === "takeaway" ||
+    fromStored === "take_away" ||
+    fromStored === "pickup"
+  ) {
+    return "self_pickup";
+  }
+  const billing =
+    billingSnapshot && typeof billingSnapshot === "object"
+      ? (billingSnapshot as Record<string, unknown>)
+      : null;
+  const billed = String(billing?.deliveryType ?? billing?.delivery_type ?? "")
+    .trim()
+    .toLowerCase();
+  if (billed === "self_pickup" || billing?.isSelfPickup === true) return "self_pickup";
+  const checkout =
+    checkoutMetadata && typeof checkoutMetadata === "object"
+      ? (checkoutMetadata as Record<string, unknown>)
+      : null;
+  const meta = String(checkout?.deliveryType ?? checkout?.delivery_type ?? "")
+    .trim()
+    .toLowerCase();
+  if (meta === "self_pickup" || meta === "takeaway") return "self_pickup";
+  return fromStored || "delivery";
+}
+
 const orderDetailItemSchema = z.object({
   name: z.string(),
   quantity: z.number(),
@@ -269,6 +303,8 @@ const orderDetailResponseSchema = z.object({
   deliveryOtp: z.string().optional().nullable(),
   /** 4-digit pickup OTP — person_ride; customer shares with rider. */
   pickupOtp: z.string().optional().nullable(),
+  /** Checkout fulfillment: 'delivery' | 'self_pickup'. */
+  deliveryType: z.string().optional().nullable(),
   orderType: z.string().optional().nullable(),
   rideType: z.string().optional().nullable(),
   riderReachedPickupAt: z.string().optional().nullable(),
@@ -383,6 +419,7 @@ const orderSummarySchema = z.object({
   storeRating: z.number().int().min(1).max(5).optional().nullable(),
   deliveryRating: z.number().int().min(1).max(5).optional().nullable(),
   paymentStatus: z.string().optional().nullable(),
+  paymentMethod: z.string().optional().nullable(),
   checkoutMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
   cancellationReason: z.string().optional().nullable(),
   cancelledByLabel: z.string().optional().nullable(),
@@ -659,6 +696,7 @@ export async function orderRoutes(app: FastifyInstance) {
             dropAddressRaw: ordersCore.dropAddressRaw,
             grandTotal: ordersCore.grandTotal,
             paymentStatus: ordersCore.paymentStatus,
+            paymentMethod: ordersCore.paymentMethod,
             checkoutMetadata: ordersCore.checkoutMetadata,
             items: ordersCore.items,
             createdAt: ordersCore.createdAt,
@@ -956,6 +994,7 @@ export async function orderRoutes(app: FastifyInstance) {
             totalAmount,
             createdAt: (at instanceof Date ? at : new Date(at)).toISOString(),
             paymentStatus: row.paymentStatus ?? null,
+            paymentMethod: row.paymentMethod ?? null,
             checkoutMetadata:
               row.checkoutMetadata != null && typeof row.checkoutMetadata === "object"
                 ? (row.checkoutMetadata as Record<string, unknown>)
@@ -1385,6 +1424,7 @@ export async function orderRoutes(app: FastifyInstance) {
           billingSnapshot: ordersCore.billingSnapshot,
           riderId: ordersCore.riderId,
           tipAmount: ordersCore.tipAmount,
+          deliveryType: ordersCore.deliveryType,
           checkoutMetadata: ordersCore.checkoutMetadata,
           merchantInstructionsList: ordersCore.merchantInstructionsList,
           deliveryInstructionsList: ordersCore.deliveryInstructionsList,
@@ -2005,6 +2045,11 @@ export async function orderRoutes(app: FastifyInstance) {
             }
           : null,
         deliveryAddress: coreRow.deliveryAddress ?? null,
+        deliveryType: resolveCustomerDeliveryType(
+          coreRow.deliveryType,
+          coreRow.billingSnapshot,
+          coreRow.checkoutMetadata
+        ),
         deliveryAddressLabel: deliveryDetails.deliveryAddressLabel,
         deliveryContactName: deliveryDetails.deliveryContactName,
         deliveryContactPhone: deliveryDetails.deliveryContactPhone,
@@ -2095,7 +2140,19 @@ export async function orderRoutes(app: FastifyInstance) {
           if (orderType === "person_ride" || orderType === "ride") {
             return atPickupRadius ? rawPickup : null;
           }
-          // Food pickup OTP is merchant/rider-facing — do not expose to customer API.
+          // Self-pick-up food: customer must show the same Pickup OTP the store sees.
+          if (orderType === "food") {
+            const dt = resolveCustomerDeliveryType(
+              coreRow.deliveryType,
+              coreRow.billingSnapshot,
+              coreRow.checkoutMetadata
+            );
+            if (dt === "self_pickup") {
+              return rawPickup ?? resolvedDeliveryOtp ?? null;
+            }
+            // Courier food: pickup OTP is merchant/rider-facing only.
+            return null;
+          }
           return null;
         })(),
         orderType: coreRow.orderType ?? null,

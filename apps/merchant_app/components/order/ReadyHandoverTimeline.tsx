@@ -13,6 +13,7 @@ type Props = {
   pickedUpAt?: string | null;
   pickupOtp?: string | null;
   nowMs: number;
+  isSelfPickup?: boolean;
 };
 
 export function ReadyHandoverTimeline({
@@ -21,6 +22,7 @@ export function ReadyHandoverTimeline({
   pickedUpAt,
   pickupOtp,
   nowMs,
+  isSelfPickup = false,
 }: Props) {
   const phase = resolveHandoverTimelinePhase(preparedAt, handedOverAt, pickedUpAt);
 
@@ -50,10 +52,19 @@ export function ReadyHandoverTimeline({
 
   const title =
     phase === "waiting_handover"
-      ? "Handover food in"
+      ? isSelfPickup
+        ? "Hand food to customer in"
+        : "Handover food in"
       : phase === "waiting_pickup"
-        ? "Waiting for pickup"
+        ? isSelfPickup
+          ? "Waiting for customer pickup"
+          : "Waiting for pickup"
         : "Handover complete";
+
+  const hint =
+    phase === "waiting_handover" && isSelfPickup
+      ? "Ask customer for Pickup OTP to complete"
+      : null;
 
   const showOtp = phase === "waiting_handover" && !!pickupOtp;
 
@@ -77,6 +88,11 @@ export function ReadyHandoverTimeline({
           </View>
         ) : null}
       </View>
+      {hint ? (
+        <Text style={styles.hint} numberOfLines={1}>
+          {hint}
+        </Text>
+      ) : null}
       <View style={styles.track}>
         <View style={[styles.bar, { width: `${progressPct}%` }]} />
       </View>
@@ -131,6 +147,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 6,
+  },
+  hint: {
+    marginTop: 4,
+    fontSize: 10,
+    fontWeight: "600",
+    color: "#0F766E",
   },
   otpChip: {
     flexDirection: "row",

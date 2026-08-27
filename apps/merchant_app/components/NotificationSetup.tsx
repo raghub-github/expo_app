@@ -36,6 +36,7 @@ import type { PartnerData } from "@/context/AuthContext";
 import * as SecureStore from "expo-secure-store";
 import { useMerchantWalletFreezeLive } from "@/hooks/useMerchantWalletFreezeLive";
 import { useMerchantStoreDelistLive } from "@/hooks/useMerchantStoreDelistLive";
+import { isMerchantIdleStatusNotification } from "@/lib/merchantStatusNotification";
 
 const LORA = "Lora_400Regular";
 const LORA_BOLD = "Lora_700Bold";
@@ -318,6 +319,7 @@ function NotificationSetupImpl() {
         });
         dispatchMerchantForegroundPush(payload);
         if (isMerchantNewOrderPush(data)) return;
+        if (isMerchantIdleStatusNotification(data)) return;
         enqueueInAppBannerFromPush(payload);
       },
     }),

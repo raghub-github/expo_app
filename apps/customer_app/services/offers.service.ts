@@ -74,6 +74,14 @@ export type HomeBannerOffer = {
   conditions_mode?: "boost" | "precision" | null;
   /** ISO timestamp — offer expires at this time. */
   valid_till?: string | null;
+  vehicle_types?: string[] | null;
+  peak_slots?: string[] | null;
+  promo_type?: string | null;
+  first_n_completed?: number | null;
+  max_km?: number | null;
+  auto_apply?: boolean;
+  /** Set by featured API only after geo_platform_offer_bindings match. */
+  is_geo_bound?: boolean;
 };
 
 export type FeaturedOffersResponse = {

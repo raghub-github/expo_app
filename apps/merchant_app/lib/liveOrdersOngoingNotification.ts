@@ -1,16 +1,10 @@
 /**
  * Zomato-style Android sticky for merchant kitchen status.
  *
- * One ongoing tray row while the store is online:
- *   Title: 🟢 {Store} is online
- *   Body (idle): Waiting for orders
- *   Body (busy): 🍳 N preparing · ✅ M ready · 🛵 K out
- *                + unicode progress bar (prep / ready / OFD)
+ * DISABLED (product): merchants receive server push for new orders only — no local
+ * ongoing "store is online · Waiting for orders" tray row or foreground pill.
  *
- * Shared by LiveOrdersOngoingNotification (poll) and push/lifecycle handlers.
- *
- * Crash hardening: never schedule/dismiss in a tight loop. Gate flips only
- * dismiss on true→false; writers no-op when gated off (no nested dismiss).
+ * Dismiss helpers remain so existing tray rows are cleared on app start.
  */
 
 import { Platform } from "react-native";
@@ -29,7 +23,10 @@ export const LIVE_ORDERS_HREF = "/(tabs)/orders?tab=active";
 
 const BAR_LEN = 12;
 
-/** When false, sticky must not be shown (store closed / logged out). */
+/** Product flag — local kitchen sticky is off; use server push only. */
+const KITCHEN_STICKY_ENABLED = false;
+
+/** When false, sticky must not be shown (store closed / logged out / feature off). */
 let kitchenStickyAllowed = false;
 /** Serialize native schedule/dismiss so they cannot overlap and crash the process. */
 let nativeBusy = false;
@@ -40,6 +37,14 @@ let pendingDismiss = false;
  * Dismisses only when transitioning from allowed → blocked.
  */
 export function setKitchenStickyAllowed(allowed: boolean): void {
+  if (!KITCHEN_STICKY_ENABLED) {
+    const was = kitchenStickyAllowed;
+    kitchenStickyAllowed = false;
+    if (was || allowed) {
+      void dismissLiveOrdersOngoingNotification();
+    }
+    return;
+  }
   const was = kitchenStickyAllowed;
   kitchenStickyAllowed = allowed;
   if (was && !allowed) {
@@ -83,9 +88,9 @@ async function ensureChannel(
 }
 
 /**
- * Text progress for shade notifications (no View / CSS).
- * Rounded unicode instead of sharp █/▓/░ blocks (≈ 30px-radius pill look).
- * Segments: preparing · ready · out-for-delivery.
+ * Compact status fractions for shade notifications (no View / CSS).
+ * Avoids dense unicode "pill" glyphs that render as (●●●●●…) on many Android fonts.
+ * Example: `Prep 1  ·  Ready 0  ·  Out 0` with a simple `▓▓▓░░░░░░░` meter.
  */
 function progressBar(prep: number, ready: number, ofd: number): string {
   const total = prep + ready + ofd;
@@ -93,16 +98,10 @@ function progressBar(prep: number, ready: number, ofd: number): string {
   const prepSeg = Math.round((prep / total) * BAR_LEN);
   const readySeg = Math.round((ready / total) * BAR_LEN);
   const ofdSeg = Math.max(0, BAR_LEN - prepSeg - readySeg);
-  const chars = [
-    ..."◕".repeat(prepSeg),
-    ..."●".repeat(readySeg),
-    ..."○".repeat(ofdSeg),
-  ];
-  if (chars.length === 0) return "";
-  if (chars.length === 1) return "●";
-  chars[0] = "◖";
-  chars[chars.length - 1] = "◗";
-  return chars.join("");
+  const filled = "▓".repeat(Math.max(0, prepSeg));
+  const mid = "▒".repeat(Math.max(0, readySeg));
+  const empty = "░".repeat(Math.max(0, ofdSeg));
+  return `${filled}${mid}${empty}`;
 }
 
 export function formatKitchenStickyBody(
@@ -125,11 +124,16 @@ export function formatKitchenStickyBody(
     breakdown.ready,
     breakdown.out_for_delivery
   );
+  const legend =
+    breakdown.preparing + breakdown.ready + breakdown.out_for_delivery > 0
+      ? `Prep ${breakdown.preparing} · Ready ${breakdown.ready} · Out ${breakdown.out_for_delivery}`
+      : "";
   const event = opts?.eventSubtitle?.trim();
-  if (bar && event) return `${line}\n${bar}\n${event}`;
-  if (bar) return `${line}\n${bar}`;
-  if (event) return `${line}\n${event}`;
-  return line;
+  const chunks = [line];
+  if (bar) chunks.push(bar);
+  if (legend) chunks.push(legend);
+  if (event) chunks.push(event);
+  return chunks.join("\n");
 }
 
 export function formatKitchenStickyTitle(storeName: string): string {
@@ -173,6 +177,7 @@ export type KitchenStickyOpts = {
 export async function showOrUpdateKitchenSticky(
   opts: KitchenStickyOpts
 ): Promise<void> {
+  if (!KITCHEN_STICKY_ENABLED) return;
   if (Platform.OS !== "android" || isExpoGo()) return;
   // Soft gate — do not dismiss here (avoids schedule/dismiss thrash → native crash).
   if (!kitchenStickyAllowed) return;
@@ -259,6 +264,7 @@ export async function refreshLiveOrdersOngoingNotification(args: {
   subtitle?: string | null;
   force?: boolean;
 }): Promise<void> {
+  if (!KITCHEN_STICKY_ENABLED) return;
   if (Platform.OS !== "android" || isExpoGo()) return;
   if (!kitchenStickyAllowed) return;
   if (inFlight || nativeBusy) return;
@@ -291,6 +297,7 @@ export async function applyLiveOrdersCountFromPush(args: {
   outForDelivery?: number | null;
   pendingAccept?: number | null;
 }): Promise<void> {
+  if (!KITCHEN_STICKY_ENABLED) return;
   if (!kitchenStickyAllowed) return;
   const active = Math.max(0, Math.floor(Number(args.activeOrdersCount) || 0));
   const preparing = Math.max(0, Math.floor(Number(args.preparing ?? 0) || 0));

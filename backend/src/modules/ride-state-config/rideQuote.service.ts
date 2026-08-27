@@ -19,8 +19,11 @@ import {
   type RideVehicleLimitRow,
 } from "./rideStateConfig.repository.js";
 import { isCatalogOptionEligibleForTrip } from "./rideEligibility.service.js";
-import { applyBikeLiteCustomerFare } from "./rideCustomerFare.js";
-import { loadBikeLiteDiscount } from "../rides/pricing/rideVehicleDiscount.js";
+import { applyCatalogOffsetCustomerFare } from "./rideCustomerFare.js";
+import {
+  loadCatalogFareOffsets,
+  type RideCatalogFareOffset,
+} from "../rides/pricing/rideVehicleDiscount.js";
 import { resolveCustomerRideSurge } from "../rides/pricing/rideSurgeResolver.js";
 import { formatRideCustomerRateCardSummary, formatRideWaitingChargeNote } from "./rideRateCardDisplay.js";
 import { DEFAULT_RIDE_PICKUP_FREE_WAIT_MINUTES } from "../../lib/ride-pickup-wait.js";
@@ -88,6 +91,8 @@ export type RideQuoteContext = {
   waitingChargeNote: string | null;
   /** Per pricing vehicle — loaded lazily into this map during batch. */
   slabsByVehicle: Map<RideVehiclePricingType, VehicleSlabBundle>;
+  /** Bike Lite / EV Auto ₹ offsets — one cached read per quote context. */
+  catalogFareOffsets: Record<string, RideCatalogFareOffset>;
   timings: {
     geoMs: number;
     configMs: number;
@@ -239,7 +244,10 @@ export async function buildRideQuoteContext(
   const geoMs = Date.now() - t0;
 
   const t1 = Date.now();
-  const limits = stateId ? await loadCachedLimits(stateId) : [];
+  const [limits, catalogFareOffsets] = await Promise.all([
+    stateId ? loadCachedLimits(stateId) : Promise.resolve([] as RideVehicleLimitRow[]),
+    loadCatalogFareOffsets(),
+  ]);
 
   let freeWaitMinutes = DEFAULT_RIDE_PICKUP_FREE_WAIT_MINUTES;
   let waitingChargePerMin = 0;
@@ -271,6 +279,7 @@ export async function buildRideQuoteContext(
     waitingChargePerMin,
     waitingChargeNote,
     slabsByVehicle: new Map(),
+    catalogFareOffsets,
     timings: { geoMs, configMs, slabsMs: 0, pricingMs: 0 },
   };
 }
@@ -313,15 +322,22 @@ function ineligibleOk(
   };
 }
 
+type ParentFareBag = Record<string, { finalFare: number; baseFare: number }>;
+
+function catalogOffsetSortRank(code: string, offsets: Record<string, RideCatalogFareOffset>): number {
+  const offset = offsets[code];
+  if (!offset) return 0;
+  return 1;
+}
+
 /**
  * Quote one catalog code using a shared context (no re-geo / re-wait lookup).
- * Bike-lite derives from bike fare in memory when `bikeFinalFare` is provided by batch;
- * single-code path loads bike slabs once if needed.
+ * Offset catalogs (Bike Lite, EV Auto) derive from the parent fare in memory.
  */
 export async function quoteCustomerRideFareWithContext(
   ctx: RideQuoteContext,
   catalogCode: string,
-  opts?: { bikeFinalFare?: number; bikeBaseFare?: number }
+  opts?: { parentFares?: ParentFareBag }
 ): Promise<RideFareQuoteResult> {
   const t0 = Date.now();
   const pricingVehicle = catalogCodeToPricingVehicle(catalogCode);
@@ -346,37 +362,36 @@ export async function quoteCustomerRideFareWithContext(
     return { ok: false, code: "NO_PRICING_CONTEXT", message: "Could not resolve ride pricing context" };
   }
 
-  // Bike Lite = bike − ₹12 (customer slabs only). Prefer batch-provided bike fare.
-  if (catalogCode === "bike-lite") {
-    let bikeFinal = opts?.bikeFinalFare;
-    let bikeBase = opts?.bikeBaseFare;
-    if (bikeFinal == null || !(bikeFinal > 0)) {
-      const bikeQuote = await quoteCustomerRideFareWithContext(ctx, "bike");
-      if (bikeQuote.ok && bikeQuote.eligible && bikeQuote.finalFare > 0) {
-        bikeFinal = bikeQuote.finalFare;
-        bikeBase = bikeQuote.baseFare;
+  const offset = ctx.catalogFareOffsets[catalogCode];
+  if (offset) {
+    let parentFinal = opts?.parentFares?.[offset.parentCatalogCode]?.finalFare;
+    let parentBase = opts?.parentFares?.[offset.parentCatalogCode]?.baseFare;
+    if (parentFinal == null || !(parentFinal > 0)) {
+      const parentQuote = await quoteCustomerRideFareWithContext(ctx, offset.parentCatalogCode);
+      if (parentQuote.ok && parentQuote.eligible && parentQuote.finalFare > 0) {
+        parentFinal = parentQuote.finalFare;
+        parentBase = parentQuote.baseFare;
       }
     }
-    if (bikeFinal != null && bikeFinal > 0) {
-      const bikeLiteDiscount = await loadBikeLiteDiscount();
-      const bikeLiteBase = applyBikeLiteCustomerFare(bikeFinal, bikeLiteDiscount);
+    if (parentFinal != null && parentFinal > 0) {
+      const offsetBase = applyCatalogOffsetCustomerFare(parentFinal, offset.discountInr);
       const surge = await resolveCustomerRideSurge({
         stateId: ctx.stateId,
         pricingVehicle,
-        baseFareForPct: bikeLiteBase,
+        baseFareForPct: offsetBase,
       });
       const finalFare =
-        Math.round((bikeLiteBase + surge.customerShareTotal) * 100) / 100;
-      const ratio = bikeFinal > 0 ? bikeLiteBase / bikeFinal : 1;
-      const baseFare = Math.round((bikeBase ?? 0) * ratio * 100) / 100;
-      const distanceFare = Math.round((bikeLiteBase - baseFare) * 100) / 100;
-      const bikeSlabs = await ensureVehicleSlabs(ctx, pricingVehicle);
+        Math.round((offsetBase + surge.customerShareTotal) * 100) / 100;
+      const ratio = parentFinal > 0 ? offsetBase / parentFinal : 1;
+      const baseFare = Math.round((parentBase ?? 0) * ratio * 100) / 100;
+      const distanceFare = Math.round((offsetBase - baseFare) * 100) / 100;
+      const parentSlabs = await ensureVehicleSlabs(ctx, pricingVehicle);
       ctx.timings.pricingMs += Date.now() - t0;
       return {
         ok: true,
         stateId: ctx.stateId,
-        pricingGeoLevel: bikeSlabs.pricingGeoLevel,
-        pricingGeoRefId: bikeSlabs.pricingGeoRefId,
+        pricingGeoLevel: parentSlabs.pricingGeoLevel,
+        pricingGeoRefId: parentSlabs.pricingGeoRefId,
         pricingVehicle,
         eligible: true,
         maxDistanceKm,
@@ -393,7 +408,7 @@ export async function quoteCustomerRideFareWithContext(
         })),
         surgeCustomerShare: surge.customerShareTotal,
         surgeCompanyShare: surge.companyShareTotal,
-        rateCardSummary: formatRideCustomerRateCardSummary(bikeSlabs.rateCardSlabs),
+        rateCardSummary: formatRideCustomerRateCardSummary(parentSlabs.rateCardSlabs),
         waitingChargeNote: ctx.waitingChargeNote,
       };
     }
@@ -498,27 +513,33 @@ export async function quoteCustomerRideFareBatch(
 }> {
   const t0 = Date.now();
   const codes = [...new Set(args.catalogCodes.map((c) => c.trim()).filter(Boolean))];
-  // Bike before bike-lite so lite can reuse bike fare without nested geo.
+
+  const ctx = await buildRideQuoteContext(args);
+  // Parents (Bike, Auto) before offset children (Bike Lite, EV Auto) — reuse fares, no nested geo.
   codes.sort((a, b) => {
-    if (a === "bike" && b === "bike-lite") return -1;
-    if (a === "bike-lite" && b === "bike") return 1;
+    const ra = catalogOffsetSortRank(a, ctx.catalogFareOffsets);
+    const rb = catalogOffsetSortRank(b, ctx.catalogFareOffsets);
+    if (ra !== rb) return ra - rb;
     return a.localeCompare(b);
   });
 
-  const ctx = await buildRideQuoteContext(args);
+  const uniqueVehicles = [
+    ...new Set(
+      codes
+        .map((code) => catalogCodeToPricingVehicle(code))
+        .filter((v): v is RideVehiclePricingType => v != null)
+    ),
+  ];
+  await Promise.all(uniqueVehicles.map((vehicle) => ensureVehicleSlabs(ctx, vehicle)));
+
   const quotes: Record<string, RideFareQuoteResult> = {};
-  let bikeFinalFare: number | undefined;
-  let bikeBaseFare: number | undefined;
+  const parentFares: ParentFareBag = {};
 
   for (const code of codes) {
-    const result = await quoteCustomerRideFareWithContext(ctx, code, {
-      bikeFinalFare,
-      bikeBaseFare,
-    });
+    const result = await quoteCustomerRideFareWithContext(ctx, code, { parentFares });
     quotes[code] = result;
-    if (code === "bike" && result.ok && result.eligible && result.finalFare > 0) {
-      bikeFinalFare = result.finalFare;
-      bikeBaseFare = result.baseFare;
+    if (result.ok && result.eligible && result.finalFare > 0) {
+      parentFares[code] = { finalFare: result.finalFare, baseFare: result.baseFare };
     }
   }
 

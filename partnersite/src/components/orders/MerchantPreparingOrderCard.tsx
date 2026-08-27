@@ -28,6 +28,7 @@ import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import { MarkAsReadyCountdownButton } from '@/components/orders/MarkAsReadyCountdownButton';
 import { RiderAssignPendingCard } from '@/components/orders/RiderAssignPendingCard';
 import { useNearbyDispatchRiders } from '@/hooks/useNearbyDispatchRiders';
+import { isPartnerSelfPickupOrder } from '@/lib/partner-delivery-type';
 import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
 
 function ordinalSuffix(n: number): string {
@@ -209,7 +210,8 @@ export function MerchantPreparingOrderCard({
   const riderName = order.rider_details?.name || order.rider_name;
   const riderSelfie = order.rider_details?.selfie_url;
   const riderAssigned = !!(riderName || order.rider_id || order.rider_phone);
-  const showPendingRider = !riderAssigned;
+  const isSelfPickup = isPartnerSelfPickupOrder(order);
+  const showPendingRider = !isSelfPickup && !riderAssigned;
   const { summary: nearbyRiderSummary } = useNearbyDispatchRiders(order.id, showPendingRider);
   const hadPastRiderAssign = usePastRidersEligibility(order.id, showPendingRider);
   const etaMins =
@@ -263,11 +265,23 @@ export function MerchantPreparingOrderCard({
       <div className="px-4 pt-4 pb-3" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            {badge ? (
-              <span className="inline-flex items-center gap-1 rounded-md bg-[#E8F5E9] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[#2E7D32]">
-                <Leaf size={11} strokeWidth={2.5} aria-hidden />
-                {badge}
-              </span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {badge ? (
+                <span className="inline-flex items-center gap-1 rounded-md bg-[#E8F5E9] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[#2E7D32]">
+                  <Leaf size={11} strokeWidth={2.5} aria-hidden />
+                  {badge}
+                </span>
+              ) : null}
+              {isSelfPickup ? (
+                <span className="inline-flex items-center rounded-md bg-amber-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800 ring-1 ring-amber-200">
+                  Self-Pick-Up
+                </span>
+              ) : null}
+            </div>
+            {isSelfPickup ? (
+              <p className="mt-1.5 text-[11px] font-semibold text-amber-800">
+                Customer will collect this order from the store.
+              </p>
             ) : null}
             <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
               <OrderIdRow
@@ -414,8 +428,17 @@ export function MerchantPreparingOrderCard({
         ) : null}
       </div>
 
-      {/* Rider */}
-      {showPendingRider ? (
+      {/* Rider / Self-Pick-Up */}
+      {isSelfPickup ? (
+        <div className="mx-4 mb-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3">
+          <p className="text-[11px] font-extrabold uppercase tracking-wide text-amber-900">
+            Self-Pick-Up
+          </p>
+          <p className="mt-1 text-[12px] font-semibold text-amber-800">
+            Customer will collect this order from the store.
+          </p>
+        </div>
+      ) : showPendingRider ? (
         <div onClick={(e) => e.stopPropagation()}>
           <RiderAssignPendingCard
             nearbyCount={nearbyRiderSummary?.nearbyCount ?? 0}

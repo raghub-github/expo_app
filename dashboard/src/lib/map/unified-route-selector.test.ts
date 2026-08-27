@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import {
   selectShortestPracticalRoute,
   type MapboxRouteCandidate,
-} from "./unified-route-selector.ts";
+} from "./unified-route-selector";
 
 function route(
   distance: number,

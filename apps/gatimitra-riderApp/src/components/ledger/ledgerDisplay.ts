@@ -36,9 +36,29 @@ export function ledgerCategoryLabel(entry: RiderLedgerEntry, t: TFunction): stri
       return t("ledger.penalties", "Penalties");
     case "adjustments":
       return t("ledger.adjustments", "Adjustments");
+    case "withdrawals":
+      return t("ledger.withdrawals", "Withdrawals");
     default:
       return entry.entryType.replace(/_/g, " ");
   }
+}
+
+export function extractWithdrawalRejectionReason(entry: RiderLedgerEntry): string {
+  const fromApi = entry.rejectionReason?.trim();
+  if (fromApi) return fromApi;
+  const desc = entry.description?.trim() ?? "";
+  const match = desc.match(/Reason:\s*(.+)$/i);
+  return match?.[1]?.trim() ?? "";
+}
+
+export function isRejectedWithdrawalLedgerEntry(entry: RiderLedgerEntry): boolean {
+  const entryType = entry.entryType.toLowerCase();
+  if (entryType === "failed_withdrawal_revert") return true;
+  const desc = entry.description?.toLowerCase() ?? "";
+  return (
+    (entryType === "withdrawal" || entry.refType?.toLowerCase() === "withdrawal") &&
+    (desc.includes("withdrawal rejected") || desc.includes("withdrawal failed"))
+  );
 }
 
 export function ledgerTransactionTitle(entry: RiderLedgerEntry, t: TFunction): string {
@@ -50,6 +70,9 @@ export function ledgerTransactionTitle(entry: RiderLedgerEntry, t: TFunction): s
   }
   if (entryType === "subscription_fee" || entry.refType?.toLowerCase() === "subscription") {
     return t("ledger.titleSubscription", "GMitra Max Subscription");
+  }
+  if (entryType === "failed_withdrawal_revert" || isRejectedWithdrawalLedgerEntry(entry)) {
+    return t("ledger.titleWithdrawalRejected", "Withdrawal Rejected");
   }
   if (entryType === "withdrawal" || entry.refType?.toLowerCase() === "withdrawal") {
     return t("ledger.titleWithdrawal", "Withdrawal to Bank");
@@ -68,6 +91,9 @@ export function ledgerTransactionTitle(entry: RiderLedgerEntry, t: TFunction): s
 }
 
 export function ledgerStatusLabel(entry: RiderLedgerEntry, t: TFunction): string {
+  if (isRejectedWithdrawalLedgerEntry(entry)) {
+    return t("ledger.statusRejected", "Rejected");
+  }
   const entryType = entry.entryType.toLowerCase();
   if (entryType === "withdrawal") return t("ledger.statusDebited", "Debited");
   if (entry.flow === "debit") return t("ledger.statusDebited", "Debited");
@@ -91,11 +117,15 @@ export type LedgerVisualConfig = {
 
 const LEDGER_STATUS_CREDIT = { statusBg: "#DCFCE7", statusColor: "#15803D" };
 const LEDGER_STATUS_DEBIT = { statusBg: "#FEE2E2", statusColor: "#B91C1C" };
+const LEDGER_STATUS_REJECTED = { statusBg: "#FEE2E2", statusColor: "#B91C1C" };
 
 function withFlowStatus(
   config: LedgerVisualConfig,
   entry: RiderLedgerEntry,
 ): LedgerVisualConfig {
+  if (isRejectedWithdrawalLedgerEntry(entry)) {
+    return { ...config, ...LEDGER_STATUS_REJECTED };
+  }
   if (entry.flow === "debit") {
     return { ...config, ...LEDGER_STATUS_DEBIT };
   }
@@ -105,7 +135,11 @@ function withFlowStatus(
 export function ledgerVisualConfig(entry: RiderLedgerEntry): LedgerVisualConfig {
   const entryType = entry.entryType.toLowerCase();
 
-  if (entryType === "withdrawal" || entry.refType?.toLowerCase() === "withdrawal") {
+  if (
+    entryType === "failed_withdrawal_revert" ||
+    entryType === "withdrawal" ||
+    entry.refType?.toLowerCase() === "withdrawal"
+  ) {
     return withFlowStatus(
       {
         kind: "withdrawal",
@@ -210,6 +244,13 @@ export function ledgerEarningBanner(entry: RiderLedgerEntry, t: TFunction): stri
 
   if (entryType === "penalty_reversal") {
     return "";
+  }
+
+  if (isRejectedWithdrawalLedgerEntry(entry)) {
+    return (
+      extractWithdrawalRejectionReason(entry) ||
+      t("ledger.withdrawalRejected", "Withdrawal rejected")
+    );
   }
 
   const dashSplit = desc.split(/\s*[—–-]\s*/);
@@ -322,6 +363,7 @@ export function matchesLedgerSearch(entry: RiderLedgerEntry, query: string, t: T
   const haystack = [
     ledgerTransactionTitle(entry, t),
     entry.description,
+    entry.rejectionReason,
     entry.ref,
     entry.orderPublicId,
     entry.entryType,

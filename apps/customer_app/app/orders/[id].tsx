@@ -64,11 +64,16 @@ import { RideAcceptedTrackingScreen } from "@/components/ride/RideAcceptedTracki
 import { RideOrderDetailsScreen } from "@/components/ride/RideOrderDetailsScreen";
 import { RideOrderDeliveredScreen } from "@/components/ride/RideOrderDeliveredScreen";
 import { RideFarePaymentPendingScreen } from "@/components/ride/RideFarePaymentPendingScreen";
-import { isRideFarePaymentPending } from "@/lib/ride-fare-gate";
+import { RideCashPayScreen } from "@/components/ride/RideCashPayScreen";
+import {
+  shouldShowRideFarePaymentPendingScreen,
+  shouldShowRideCashPayScreen,
+} from "@/lib/ride-fare-gate";
 import { FoodLiveTrackingScreen } from "@/components/orders/FoodLiveTrackingScreen";
 import { ParcelLiveTrackingScreen } from "@/components/orders/ParcelLiveTrackingScreen";
 import { FoodOrderDeliveredScreen } from "@/components/orders/FoodOrderDeliveredScreen";
 import { InvoiceDownloadingToast } from "@/components/orders/InvoiceDownloadingToast";
+import { isSelfPickupOrder } from "@/lib/self-pickup-order";
 import {
   orderItemHasCustomizations,
   type OrderDetailLineItem,
@@ -202,7 +207,7 @@ export default function OrderDetailsScreen() {
         data &&
         isPersonRideOrder(data) &&
         status === "DELIVERED" &&
-        isRideFarePaymentPending(data.paymentStatus)
+        shouldShowRideFarePaymentPendingScreen(data)
       ) {
         return 3_000;
       }
@@ -392,8 +397,13 @@ export default function OrderDetailsScreen() {
   }) => {
     if (!orderId) return;
     const storeRating = payload.storeRating != null && payload.storeRating >= 1 ? payload.storeRating : null;
+    const skipPartnerRating = isSelfPickupOrder(order);
     const deliveryRating =
-      payload.deliveryRating != null && payload.deliveryRating >= 1 ? payload.deliveryRating : null;
+      skipPartnerRating
+        ? null
+        : payload.deliveryRating != null && payload.deliveryRating >= 1
+          ? payload.deliveryRating
+          : null;
     if (storeRating == null && deliveryRating == null) return;
 
     setRatingSubmitting(true);
@@ -402,9 +412,9 @@ export default function OrderDetailsScreen() {
         storeRating,
         deliveryRating,
         reviewText: payload.reviewText ?? null,
-        riderReviewText: payload.riderReviewText ?? null,
+        riderReviewText: skipPartnerRating ? null : payload.riderReviewText ?? null,
         storeReviewTags: payload.storeReviewTags,
-        riderReviewTags: payload.riderReviewTags,
+        riderReviewTags: skipPartnerRating ? undefined : payload.riderReviewTags,
       });
       await queryClient.invalidateQueries({ queryKey: ["order", orderId] });
       await queryClient.invalidateQueries({ queryKey: ["my-orders"] });
@@ -434,6 +444,7 @@ export default function OrderDetailsScreen() {
         riderName={order.rider?.name}
         existingTipAmount={order.tipAmount ?? 0}
         paymentMethodLabel={order.paymentMethod ?? "UPI"}
+        hideDeliveryPartner={isSelfPickupOrder(order)}
         submitting={ratingSubmitting}
         onClose={() => {
           setRatingSheetVisible(false);
@@ -665,7 +676,7 @@ export default function OrderDetailsScreen() {
   }
 
   if (isRideOrder && orderStatus === "DELIVERED" && !useHistoryOrderDetails) {
-    if (isRideFarePaymentPending(order.paymentStatus)) {
+    if (shouldShowRideFarePaymentPendingScreen(order)) {
       return (
         <>
           <AndroidBackHandler
@@ -673,6 +684,17 @@ export default function OrderDetailsScreen() {
             preferFallback
           />
           <RideFarePaymentPendingScreen order={order} onBack={handleRideGoHome} />
+        </>
+      );
+    }
+    if (shouldShowRideCashPayScreen(order)) {
+      return (
+        <>
+          <AndroidBackHandler
+            fallback={openedFromRideHome ? RIDE_HOME_FALLBACK : HOME_TAB_FALLBACK}
+            preferFallback
+          />
+          <RideCashPayScreen order={order} onBack={handleRideGoHome} />
         </>
       );
     }
@@ -861,7 +883,7 @@ export default function OrderDetailsScreen() {
                   ))}
                 </View>
               </View>
-              {order.deliveryRating != null ? (
+              {order.deliveryRating != null && !isSelfPickupOrder(order) ? (
                 <View style={styles.feedbackRatingRow}>
                   <AppText style={styles.feedbackRatingLabel}>Delivery</AppText>
                   <View style={styles.feedbackStars}>
@@ -882,7 +904,7 @@ export default function OrderDetailsScreen() {
                   {order.storeReviewText}
                 </AppText>
               ) : null}
-              {order.riderReviewText ? (
+              {order.riderReviewText && !isSelfPickupOrder(order) ? (
                 <AppText style={styles.feedbackReviewText}>
                   <AppText style={styles.feedbackReviewLabel}>Delivery: </AppText>
                   {order.riderReviewText}

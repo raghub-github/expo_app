@@ -13,6 +13,7 @@ import { FilterSearchBar } from "./FilterSearchBar";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { TablePagination } from "./TablePagination";
 import Link from "next/link";
+import { buildTicketDetailHref } from "@/lib/tickets/ticket-path-utils";
 
 interface RiderInfo {
   id: number;
@@ -333,7 +334,21 @@ export function RiderTicketsClient() {
                         return (
                           <React.Fragment key={t.id}>
                             <tr className={`hover:bg-gray-50/80 transition-colors ${isExpanded ? "bg-gray-50" : ""}`}>
-                              <td className="px-3 py-2 font-mono font-medium text-gray-900">{displayTicketId(t)}</td>
+                              <td className="px-3 py-2 font-mono font-medium text-gray-900">
+                                {displayTicketId(t) !== "—" ? (
+                                  <Link
+                                    href={buildTicketDetailHref(t.id, "")}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-700 hover:text-blue-900 hover:underline"
+                                    title="Open ticket in new tab"
+                                  >
+                                    {displayTicketId(t)}
+                                  </Link>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
                               <td className="px-3 py-2 text-gray-700">{t.orderId != null ? `#${t.orderId}` : "—"}</td>
                               <td className="px-3 py-2"><span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${t.status === "resolved" || t.status === "closed" ? "bg-green-100 text-green-800" : t.status === "in_progress" ? "bg-blue-100 text-blue-800" : "bg-amber-100 text-amber-800"}`}>{t.status.replace("_", " ")}</span></td>
                               <td className="px-3 py-2 font-medium text-gray-900 max-w-[160px] truncate" title={t.subject}>{t.subject}</td>

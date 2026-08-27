@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { getQueryClient, persister } from "@/lib/react-query";
@@ -19,9 +19,23 @@ interface QueryProviderProps {
  * Outer QueryClientProvider uses the app's @tanstack/react-query copy so
  * useQueryClient / useQuery never miss context (persist-client can resolve a
  * second copy). Same singleton client as PersistQueryClientProvider.
+ *
+ * Persist is deferred until after mount so restore/hydrate does not call
+ * setState during the first render (React 19 warning).
  */
 export function QueryProvider({ children }: QueryProviderProps) {
   const [queryClient] = useState(() => getQueryClient());
+  const [persistReady, setPersistReady] = useState(false);
+
+  useEffect(() => {
+    setPersistReady(true);
+  }, []);
+
+  if (!persistReady) {
+    return (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+  }
 
   return (
     <QueryClientProvider client={queryClient}>

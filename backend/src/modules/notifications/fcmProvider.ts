@@ -40,7 +40,8 @@ type FcmSendInput = {
 const EXPO_EXPERIENCE_BY_ROLE: Record<string, string> = {
   customer: "@raghubhunia/gatimitra-customer",
   merchant: "@raghubhunia/merchantapp",
-  rider: "@raghubhunia/gatimitra-riderapp",
+  // Must match apps/gatimitra-riderApp/app.config.js owner + slug.
+  rider: "@raghubhunia53s-team/gatimitra-riderapp",
 };
 
 function stampExpoIdentity(data: Record<string, string>, input: FcmSendInput): void {

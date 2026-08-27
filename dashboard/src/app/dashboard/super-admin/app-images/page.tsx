@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ImageIcon, Loader2, Trash2, Upload, RefreshCw } from "lucide-react";
+import { ImageIcon, Loader2, Trash2, Upload, RefreshCw, Plus } from "lucide-react";
 import { usePermissions } from "@/hooks/usePermissions";
 import {
   APP_STATIC_ASSET_APPS,
   appStaticAssetAppLabel,
   isAppStaticVideoAsset,
+  isRideHomeBannerSlot,
+  RIDE_HOME_BANNER_SLOT_IDS,
   type AppStaticAssetApp,
 } from "@/lib/app-static-assets/shared";
 import type { AppStaticAssetRow } from "@/lib/db/operations/app-static-assets";
@@ -28,6 +30,13 @@ type SectionGroup = {
   items: AppStaticAssetRow[];
 };
 
+function rideBannerSlotsFromItems(items: AppStaticAssetRow[]): AppStaticAssetRow[] {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  return RIDE_HOME_BANNER_SLOT_IDS.map((id) => byId.get(id)).filter(
+    (row): row is AppStaticAssetRow => Boolean(row)
+  );
+}
+
 export default function AppImagesPage() {
   const router = useRouter();
   const { isSuperAdmin, loading: permLoading } = usePermissions();
@@ -38,7 +47,7 @@ export default function AppImagesPage() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const pendingUploadId = useRef<string | null>(null);
+  const pendingUploadIds = useRef<string[]>([]);
   const app = tab === "learning" ? "merchant" : tab;
 
   useEffect(() => {
@@ -83,8 +92,9 @@ export default function AppImagesPage() {
   }, [items]);
 
   const onPickFile = (id: string) => {
-    pendingUploadId.current = id;
+    pendingUploadIds.current = [id];
     if (fileInputRef.current) {
+      fileInputRef.current.multiple = false;
       fileInputRef.current.accept = isAppStaticVideoAsset(id)
         ? "video/mp4,video/webm,video/quicktime,video/x-m4v"
         : "image/jpeg,image/png,image/webp,image/gif";
@@ -92,25 +102,55 @@ export default function AppImagesPage() {
     fileInputRef.current?.click();
   };
 
-  const onFileSelected = async (fileList: FileList | null) => {
-    const id = pendingUploadId.current;
-    pendingUploadId.current = null;
-    if (!id || !fileList?.[0]) return;
+  const onPickRideBannerFiles = (emptySlotIds: string[]) => {
+    if (emptySlotIds.length === 0) return;
+    pendingUploadIds.current = emptySlotIds;
+    if (fileInputRef.current) {
+      fileInputRef.current.multiple = emptySlotIds.length > 1;
+      fileInputRef.current.accept = "image/jpeg,image/png,image/webp,image/gif";
+    }
+    fileInputRef.current?.click();
+  };
 
-    const file = fileList[0];
-    setBusyId(id);
+  const uploadToSlot = async (id: string, file: File): Promise<AppStaticAssetRow> => {
+    const fd = new FormData();
+    fd.set("file", file);
+    const res = await fetch(`/api/super-admin/app-assets/${encodeURIComponent(id)}`, {
+      method: "POST",
+      body: fd,
+    });
+    const json = (await res.json()) as { item?: AppStaticAssetRow; error?: string };
+    if (!res.ok || !json.item) throw new Error(json.error ?? "Upload failed");
+    return json.item;
+  };
+
+  const onFileSelected = async (fileList: FileList | null) => {
+    const ids = pendingUploadIds.current;
+    pendingUploadIds.current = [];
+    if (ids.length === 0 || !fileList?.length) return;
+
+    const files = Array.from(fileList).slice(0, ids.length);
+    setBusyId(ids[0] ?? null);
     setError(null);
     try {
-      const fd = new FormData();
-      fd.set("file", file);
-      const res = await fetch(`/api/super-admin/app-assets/${encodeURIComponent(id)}`, {
-        method: "POST",
-        body: fd,
-      });
-      const json = (await res.json()) as { item?: AppStaticAssetRow; error?: string };
-      if (!res.ok) throw new Error(json.error ?? "Upload failed");
-      if (json.item) {
-        setItems((prev) => prev.map((row) => (row.id === id ? json.item! : row)));
+      const updated: AppStaticAssetRow[] = [];
+      for (let i = 0; i < files.length; i++) {
+        const slotId = ids[i];
+        const file = files[i];
+        if (!slotId || !file) break;
+        setBusyId(slotId);
+        updated.push(await uploadToSlot(slotId, file));
+      }
+      if (updated.length > 0) {
+        setItems((prev) => {
+          const next = [...prev];
+          for (const item of updated) {
+            const idx = next.findIndex((row) => row.id === item.id);
+            if (idx >= 0) next[idx] = item;
+            else next.push(item);
+          }
+          return next;
+        });
       } else {
         await loadItems();
       }
@@ -118,7 +158,10 @@ export default function AppImagesPage() {
       setError(e instanceof Error ? e.message : "Upload failed");
     } finally {
       setBusyId(null);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+        fileInputRef.current.multiple = false;
+      }
     }
   };
 
@@ -259,6 +302,108 @@ export default function AppImagesPage() {
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {sectionItems.map((item) => {
+                      if (isRideHomeBannerSlot(item.id) && item.id !== "customer.ride.banner") {
+                        return null;
+                      }
+                      if (item.id === "customer.ride.banner") {
+                        const slots = rideBannerSlotsFromItems(sectionItems);
+                        const filled = slots.filter((slot) => Boolean(slot.proxy_url));
+                        const emptyIds = slots
+                          .filter((slot) => !slot.proxy_url)
+                          .map((slot) => slot.id);
+                        const galleryBusy = slots.some((slot) => busyId === slot.id);
+                        return (
+                          <tr key="customer.ride.banner-gallery" className="hover:bg-slate-50/80">
+                            <td className="px-4 py-3" colSpan={4}>
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div className="min-w-0">
+                                  <div className="font-medium text-slate-900">Ride home banner</div>
+                                  <div className="mt-0.5 font-mono text-xs text-slate-400">
+                                    customer.ride.banner · up to 6 images
+                                  </div>
+                                  <div className="mt-1 text-sm text-slate-600">
+                                    1 image shows on every offer. 2 or more images split across offer slides.
+                                  </div>
+                                </div>
+                                {emptyIds.length > 0 ? (
+                                  <button
+                                    type="button"
+                                    disabled={galleryBusy}
+                                    onClick={() => onPickRideBannerFiles(emptyIds)}
+                                    className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+                                  >
+                                    {galleryBusy ? (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                      <Plus className="h-3.5 w-3.5" />
+                                    )}
+                                    {filled.length === 0 ? "Upload" : "Add images"}
+                                    {` (${filled.length}/6)`}
+                                  </button>
+                                ) : (
+                                  <span className="shrink-0 text-xs font-medium text-slate-500">6/6 uploaded</span>
+                                )}
+                              </div>
+                              <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-6">
+                                {slots.map((slot, idx) => {
+                                  const url = previewUrl(slot.proxy_url);
+                                  const isBusy = busyId === slot.id;
+                                  return (
+                                    <div
+                                      key={slot.id}
+                                      className="overflow-hidden rounded-lg border border-slate-200 bg-slate-50"
+                                    >
+                                      <div className="flex h-20 items-center justify-center bg-white">
+                                        {url ? (
+                                          // eslint-disable-next-line @next/next/no-img-element
+                                          <img
+                                            src={url}
+                                            alt={`Ride banner ${idx + 1}`}
+                                            className="h-full w-full object-cover"
+                                          />
+                                        ) : (
+                                          <ImageIcon className="h-5 w-5 text-slate-300" />
+                                        )}
+                                      </div>
+                                      <div className="flex items-center justify-between gap-1 px-1.5 py-1">
+                                        <span className="text-[10px] font-medium text-slate-500">
+                                          {idx + 1}
+                                        </span>
+                                        <div className="flex gap-1">
+                                          <button
+                                            type="button"
+                                            disabled={isBusy}
+                                            onClick={() => onPickFile(slot.id)}
+                                            className="rounded p-0.5 text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+                                            title={url ? "Change" : "Upload"}
+                                          >
+                                            {isBusy ? (
+                                              <Loader2 className="h-3 w-3 animate-spin" />
+                                            ) : (
+                                              <Upload className="h-3 w-3" />
+                                            )}
+                                          </button>
+                                          {url ? (
+                                            <button
+                                              type="button"
+                                              disabled={isBusy}
+                                              onClick={() => void onRemove(slot.id)}
+                                              className="rounded p-0.5 text-red-600 hover:bg-red-50 disabled:opacity-50"
+                                              title="Remove"
+                                            >
+                                              <Trash2 className="h-3 w-3" />
+                                            </button>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      }
                       const url = previewUrl(item.proxy_url);
                       const isBusy = busyId === item.id;
                       const isVideo = isAppStaticVideoAsset(item.id);

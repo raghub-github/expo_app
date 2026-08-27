@@ -37,6 +37,7 @@ export const RIDE_VEHICLE_OPTIONS = [
   "bike",
   "bike-lite",
   "auto",
+  "ev_auto",
   "cab-economy",
   "cab-premium",
   "travel",

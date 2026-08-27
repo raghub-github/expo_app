@@ -9156,6 +9156,82 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      /** POST /merchant-partner/stores/:storeId/food-orders/:orderId/complete-self-pickup */
+      protectedApp.post<{
+        Params: { storeId: string; orderId: string };
+        Body: { otp?: string };
+      }>(
+        "/stores/:storeId/food-orders/:orderId/complete-self-pickup",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const ordersFoodId = parseInt(req.params.orderId, 10);
+          const otp = String(req.body?.otp ?? "").trim();
+          if (
+            !Number.isInteger(storeId) ||
+            storeId < 1 ||
+            !Number.isFinite(ordersFoodId) ||
+            !otp
+          ) {
+            return reply.code(400).send({ error: "invalid_request" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const { completeMerchantSelfPickupWithOtp } = await import(
+            "./merchant-food-orders.service.js"
+          );
+          try {
+            const order = await completeMerchantSelfPickupWithOtp(
+              sql,
+              storeId,
+              ordersFoodId,
+              otp
+            );
+            return reply.send({ valid: true, completed: true, order });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "update_failed";
+            if (msg === "order_not_found" || msg === "pickup_otp_not_found") {
+              return reply.code(404).send({ error: msg, valid: false });
+            }
+            if (msg === "store_mismatch") {
+              return reply.code(403).send({ error: msg, valid: false });
+            }
+            if (msg === "otp_locked") {
+              return reply
+                .code(429)
+                .send({ error: "Too many attempts. Try again later.", valid: false });
+            }
+            if (
+              msg === "invalid_otp" ||
+              msg === "otp_required" ||
+              msg === "not_self_pickup" ||
+              msg.startsWith("invalid_status:")
+            ) {
+              return reply.code(400).send({
+                error:
+                  msg === "invalid_otp"
+                    ? "Invalid OTP"
+                    : msg === "not_self_pickup"
+                      ? "Only self-pickup orders can be completed with customer OTP"
+                      : msg.startsWith("invalid_status:")
+                        ? `Order must be Ready (current: ${msg.replace("invalid_status:", "")})`
+                        : "Enter the 4-digit Pickup OTP from the customer",
+                valid: false,
+              });
+            }
+            return reply.code(500).send({ error: msg, valid: false });
+          }
+        }
+      );
+
       /** GET /merchant-partner/stores/:storeId/active-orders-count — live count of active orders for this store. */
       protectedApp.get<{ Params: { storeId: string } }>(
         "/stores/:storeId/active-orders-count",

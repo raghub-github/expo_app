@@ -20,7 +20,7 @@ export function FormattedOrderId({
     const prefix = formattedOrderId.slice(0, -4);
     const lastFour = formattedOrderId.slice(-4);
     return (
-      <span className="inline-flex items-baseline gap-0.5">
+      <span className="inline-flex flex-nowrap items-baseline gap-0.5 whitespace-nowrap">
         <span className={`font-bold text-gray-900 ${classes.base}`}>{prefix}</span>
         {lastFour.split('').map((digit, idx) => (
           <span

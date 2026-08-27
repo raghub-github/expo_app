@@ -7,6 +7,7 @@ import {
   runSmsAllowPipeline,
 } from "@/lib/smsPermissionManager";
 import { profileService } from "@/services/profile.service";
+import { useAuthStore } from "@/store/authStore";
 
 type SmsPermissionState = {
   showSheet: boolean;
@@ -28,6 +29,7 @@ type SmsPermissionState = {
 };
 
 async function syncProfile(granted: boolean) {
+  if (!useAuthStore.getState().session?.accessToken) return;
   try {
     await profileService.updateProfile({ sms_permission: granted });
   } catch {

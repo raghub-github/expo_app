@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { resolveEtaBreachTimelineIndex } from "@/lib/orders/eta-breach";
 import { filterOrderProgressTimelineEntries } from "@/lib/orders/order-timeline-rider-filter";
+import { isSelfPickupDelivery } from "@/lib/orders/order-detail-display";
 import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 
 export interface OrderTimelineEntry {
@@ -38,6 +39,10 @@ interface OrderTimelineProps {
   orderCreatedAt?: Date | null;
   /** First ETA deadline — breach is measured from this time (sidebar "First ETA"). */
   etaAt?: Date | null;
+  /** Checkout fulfillment: takeaway / self_pickup vs courier delivery. */
+  deliveryType?: string | null;
+  /** Order delivered_at / completion time — used when timeline has no Delivered row (e.g. self-pickup). */
+  completedAt?: Date | string | null;
 }
 
 function filterOrderProgressEntries(list: OrderTimelineEntry[]): OrderTimelineEntry[] {
@@ -50,6 +55,8 @@ export default function OrderTimeline({
   currentStatus,
   orderCreatedAt,
   etaAt,
+  deliveryType,
+  completedAt,
 }: OrderTimelineProps) {
   const [entries, setEntries] = useState<OrderTimelineEntry[]>(() =>
     filterOrderProgressEntries(initialEntries ?? [])
@@ -310,6 +317,47 @@ export default function OrderTimeline({
     ];
   }
 
+  /**
+   * Self-pickup complete often writes Dispatched + core status DELIVERED without a
+   * Delivered row in order_timelines — still show the Delivered node on the bar.
+   */
+  const hasDeliveredNode = displayEntries.some(
+    (e) => !e.placeholder && matchStage(e, "Delivered")
+  );
+  if (isDelivered && !hasDeliveredNode) {
+    const completedIso = (() => {
+      if (completedAt) {
+        const d = completedAt instanceof Date ? completedAt : new Date(completedAt);
+        if (!isNaN(d.getTime())) return d.toISOString();
+      }
+      const dispatched = displayEntries.find(
+        (e) =>
+          !e.placeholder &&
+          e.occurredAt &&
+          (matchStage(e, "Dispatched") ||
+            matchStage(e, "Out for Delivery") ||
+            matchStage(e, "Picked Up"))
+      );
+      if (dispatched?.occurredAt) return dispatched.occurredAt;
+      return new Date().toISOString();
+    })();
+    displayEntries = [
+      ...displayEntries,
+      {
+        id: -1,
+        orderId,
+        status: "Delivered",
+        previousStatus: null,
+        actorType: "system",
+        actorId: null,
+        actorName: null,
+        statusMessage: null,
+        occurredAt: completedIso,
+        placeholder: false,
+      },
+    ];
+  }
+
   const hasDisplay = displayEntries.length > 0;
   if (!hasDisplay) {
     return (
@@ -340,12 +388,44 @@ export default function OrderTimeline({
       e.occurredAt &&
       (e.status.toLowerCase() === "delivered" || e.status.toLowerCase() === "cancelled")
   );
+  /** Self-pickup often records Dispatched then status→DELIVERED without a Delivered timeline row. */
+  const dispatchedEntry = displayEntries.find(
+    (e) =>
+      !e.placeholder &&
+      e.occurredAt &&
+      (e.status.toLowerCase() === "dispatched" ||
+        e.status.toLowerCase() === "out for delivery" ||
+        e.status.toLowerCase() === "picked up")
+  );
+  const completedAtDate = (() => {
+    if (completedAt) {
+      const d = completedAt instanceof Date ? completedAt : new Date(completedAt);
+      if (!isNaN(d.getTime())) return d;
+    }
+    return null;
+  })();
+  const deliveryCompletedAt: Date | null = (() => {
+    if (deliveredOrCancelledEntry?.occurredAt && isDelivered) {
+      const d = new Date(deliveredOrCancelledEntry.occurredAt);
+      if (!isNaN(d.getTime())) return d;
+    }
+    if (isDelivered && completedAtDate) return completedAtDate;
+    if (isDelivered && dispatchedEntry?.occurredAt) {
+      const d = new Date(dispatchedEntry.occurredAt);
+      if (!isNaN(d.getTime())) return d;
+    }
+    if (deliveredOrCancelledEntry?.occurredAt && isCancelledStatus) {
+      const d = new Date(deliveredOrCancelledEntry.occurredAt);
+      if (!isNaN(d.getTime())) return d;
+    }
+    return null;
+  })();
   const deliveredOrCancelledAfterEta =
     hasEta &&
     (isDelivered || isCancelledStatus) &&
-    deliveredOrCancelledEntry?.occurredAt &&
+    deliveryCompletedAt &&
     etaAt &&
-    new Date(deliveredOrCancelledEntry.occurredAt).getTime() > etaAt.getTime();
+    deliveryCompletedAt.getTime() > etaAt.getTime();
   const breachedIndexResolved =
     hasEta && etaAt
       ? resolveEtaBreachTimelineIndex(displayEntries, etaAt)
@@ -365,10 +445,12 @@ export default function OrderTimeline({
         <div className="min-w-0">
           <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[9px] font-medium text-slate-600 bg-slate-100 border border-slate-200 whitespace-nowrap">
             <i className="bi bi-graph-up text-slate-500 text-[10px] sm:hidden" />
-            Order progress timeline · Delivery, GatiMitra
+            {isSelfPickupDelivery(deliveryType)
+              ? "Order Progress Timeline · Self-Pick-Up"
+              : "Order Progress Timeline · Delivery, GatiMitra"}
           </span>
         </div>
-        {/* ETA tag — right corner, same row */}
+        {/* ETA tag — same as rider delivery: countdown / breach / Was Delivered vs ETA */}
         <div className="shrink-0 flex items-center gap-1.5">
           {hasEta && !isDelivered && !isCancelledStatus && (
             <>
@@ -393,24 +475,29 @@ export default function OrderTimeline({
               className={`px-2.5 py-1 rounded-full text-[9px] font-semibold whitespace-nowrap border ${
                 deliveredOrCancelledAfterEta
                   ? "text-white bg-red-500 border-red-600 shadow-sm"
-                  : (isDelivered || isCancelledStatus) && deliveredOrCancelledEntry?.occurredAt
+                  : deliveryCompletedAt
                     ? "text-white bg-emerald-500 border-emerald-600 shadow-sm"
                     : "text-slate-700 bg-slate-100 border-slate-200"
               }`}
             >
-              {deliveredOrCancelledEntry?.occurredAt ? (
+              {deliveryCompletedAt ? (
                 <OrderMixedText>
                   {isDelivered
-                    ? `Was Delivered ${formatAfterBeforeEta(new Date(deliveredOrCancelledEntry.occurredAt), etaAt)}`
-                    : `Was Cancelled ${formatAfterBeforeEta(new Date(deliveredOrCancelledEntry.occurredAt), etaAt)}`}
+                    ? `Was Delivered ${formatAfterBeforeEta(deliveryCompletedAt, etaAt)} · ${formatTimeShort(deliveryCompletedAt)}`
+                    : `Was Cancelled ${formatAfterBeforeEta(deliveryCompletedAt, etaAt)} · ${formatTimeShort(deliveryCompletedAt)}`}
                 </OrderMixedText>
-              ) : isDelivered ? (
-                "Delivered"
               ) : (
-                "Cancelled"
+                <OrderMixedText>
+                  {isDelivered ? `ETA ${formatTimeShort(etaAt)}` : "Cancelled"}
+                </OrderMixedText>
               )}
             </span>
           )}
+          {!hasEta && isDelivered && deliveryCompletedAt ? (
+            <span className="px-2.5 py-1 rounded-full text-[9px] font-semibold text-white bg-emerald-500 border border-emerald-600 shadow-sm whitespace-nowrap">
+              <OrderMixedText>{`Delivered · ${formatTimeShort(deliveryCompletedAt)}`}</OrderMixedText>
+            </span>
+          ) : null}
         </div>
       </div>
 

@@ -49,6 +49,7 @@ const VEHICLE_TYPE_BY_RIDE: Record<string, string> = {
   bike: "two_wheeler",
   "bike-lite": "two_wheeler",
   auto: "auto",
+  ev_auto: "auto",
   "cab-economy": "cab",
   "cab-premium": "cab",
   travel: "cab",
@@ -433,6 +434,18 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
     }
     grandTotal = billRes.billing.final_amount;
     billingSnapshot = billRes.snapshot;
+    if (billingSnapshot && typeof billingSnapshot === "object") {
+      const fromInput = input.selectedPlatformOfferId;
+      const fromSnap = Number(
+        (billingSnapshot as { ride_fare_platform_offer_id?: unknown }).ride_fare_platform_offer_id
+      );
+      if (fromInput != null && Number.isFinite(fromInput) && fromInput > 0) {
+        (billingSnapshot as Record<string, unknown>).ride_fare_platform_offer_id = fromInput;
+      }
+      if (input.forceNoAutoOffer === true && !(Number.isFinite(fromSnap) && fromSnap > 0) && fromInput == null) {
+        (billingSnapshot as Record<string, unknown>).ride_fare_force_no_auto_offer = true;
+      }
+    }
     billingRulesetVersion = billRes.billing.ruleset_version;
     placementBillingForSnapshot = billRes.billing;
   }
@@ -557,6 +570,11 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
           pickupState: input.pickupState?.trim() || undefined,
           pickupWaitFreeMinutes,
           estimatedFare,
+          quotedGrandTotal: grandTotal,
+          ...(input.selectedPlatformOfferId != null && input.selectedPlatformOfferId > 0
+            ? { selectedPlatformOfferId: input.selectedPlatformOfferId }
+            : {}),
+          ...(input.forceNoAutoOffer === true ? { forceNoAutoOffer: true } : {}),
           ...(fareQuote.waitingChargeNote
             ? { waitingChargeNote: fareQuote.waitingChargeNote }
             : {}),
@@ -720,6 +738,14 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
       distanceKm,
     },
     paymentContext: { paymentMethod: paymentMethodEnum },
+    offerContext: {
+      couponCode: input.couponCode ?? null,
+      platformOfferId:
+        input.selectedPlatformOfferId ??
+        (typeof billingSnapshot?.ride_fare_platform_offer_id === "number"
+          ? billingSnapshot.ride_fare_platform_offer_id
+          : null),
+    },
   });
 
   return {

@@ -3,26 +3,31 @@
  */
 
 export function isSelfPickupDelivery(deliveryType: string | null | undefined): boolean {
-  const dt = String(deliveryType ?? "").toLowerCase().replace(/-/g, "_");
+  const dt = String(deliveryType ?? "")
+    .toLowerCase()
+    .replace(/-/g, "_")
+    .replace(/\s+/g, "_");
   return (
     dt === "self_pickup" ||
     dt === "pickup" ||
     dt === "self" ||
+    dt === "takeaway" ||
+    dt === "take_away" ||
     dt.includes("self_pickup") ||
-    dt.includes("pick_up")
+    dt.includes("pick_up") ||
+    dt.includes("takeaway")
   );
 }
 
-/** Customer-facing label: Self vs Delivery */
+/** Dashboard label: Self-Pick-Up vs Delivery */
 export function formatOrderDeliveryTypeLabel(
   deliveryType: string | null | undefined
 ): string {
   const raw = String(deliveryType ?? "").trim();
   if (!raw || raw === "—" || raw === "-") return "—";
-  if (isSelfPickupDelivery(raw)) return "Self";
+  if (isSelfPickupDelivery(raw)) return "Self-Pick-Up";
   const dt = raw.toLowerCase().replace(/-/g, "_");
   if (dt === "delivery" || dt.includes("delivery")) return "Delivery";
-  if (dt === "self_pickup" || dt === "pickup") return "Self";
   return raw.charAt(0).toUpperCase() + raw.slice(1).replace(/_/g, " ");
 }
 

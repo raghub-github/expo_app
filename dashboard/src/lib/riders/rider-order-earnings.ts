@@ -10,6 +10,11 @@ import { isRideRiderWalletCreditBlocked } from "@/lib/riders/ride-wallet-credit-
 import { resolveRiderPayoutTotalForDisplay } from "@/lib/riders/rider-payout-snapshot";
 import { isLedgerCreditEntryType } from "@/lib/riders/rider-ledger-display";
 import { extractOrderCoreIdFromLedger } from "@/lib/riders/rider-ledger-resolve";
+import { isOrderDeliveredForRiderWalletCredit } from "@/lib/riders/rider-wallet-credit-display";
+import {
+  extractGatiCashAppliedFromBilling,
+  resolveCustomerCtcPaidAmount,
+} from "@/lib/orders/customer-ctc";
 
 type Db = ReturnType<typeof getDb>;
 
@@ -20,6 +25,8 @@ export type EnrichableRiderOrder = {
   fareAmount?: string | number | null;
   riderEarning?: string | number | null;
   grandTotal?: string | number | null;
+  itemTotal?: string | number | null;
+  foodItemsTotalValue?: string | number | null;
   tipAmount?: string | number | null;
   billingSnapshot?: unknown;
   acceptPayoutSnapshot?: unknown;
@@ -46,6 +53,16 @@ function parseBillingAmount(snapshot: unknown, keys: string[]): number {
   for (const key of keys) {
     const n = Number(obj[key]);
     if (Number.isFinite(n) && n > 0) return n;
+  }
+  // Nested gst_totals / totals (food billing pipeline).
+  for (const nestKey of ["gst_totals", "gstTotals", "totals", "bill", "summary"]) {
+    const nest = obj[nestKey];
+    if (nest == null || typeof nest !== "object") continue;
+    const nested = nest as Record<string, unknown>;
+    for (const key of keys) {
+      const n = Number(nested[key]);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
   }
   return 0;
 }
@@ -108,23 +125,93 @@ export function resolveRiderEarningFromOrderFields(input: {
   return 0;
 }
 
+/**
+ * Rider Orders "ORDER VALUE" = customer CTC — same SSOT as order Payment details
+ * (`order-payment-detail.ts` → `resolveCustomerCtcPaidAmount`).
+ *
+ * netPayable = orders_core.grand_total ?? billing.final_amount
+ * gati      = billing / checkout_metadata only (never invent from item totals)
+ * CTC        = cashin + GatiCash
+ */
 export function resolveOrderFareAmount(input: {
   fareAmount?: string | number | null;
   grandTotal?: string | number | null;
+  itemTotal?: string | number | null;
+  foodItemsTotalValue?: string | number | null;
   billingSnapshot?: unknown;
+  checkoutMetadata?: unknown;
+  /** Trusted GatiCash only (billing already applied). Ignored when it would double-count net. */
+  gatiCashUsed?: string | number | null;
 }): string | number | null {
-  if (input.fareAmount != null && Number(input.fareAmount) > 0) {
-    return input.fareAmount;
-  }
-  if (input.grandTotal != null && Number(input.grandTotal) > 0) {
-    return input.grandTotal;
-  }
-  const fromBilling = parseBillingAmount(input.billingSnapshot, [
+  const snapshot =
+    typeof input.billingSnapshot === "string"
+      ? (() => {
+          try {
+            return JSON.parse(input.billingSnapshot) as unknown;
+          } catch {
+            return null;
+          }
+        })()
+      : input.billingSnapshot;
+  const billing =
+    snapshot != null && typeof snapshot === "object"
+      ? (snapshot as Record<string, unknown>)
+      : null;
+  const checkoutMeta =
+    input.checkoutMetadata != null && typeof input.checkoutMetadata === "object"
+      ? (input.checkoutMetadata as Record<string, unknown>)
+      : null;
+
+  // Same precedence as order-payment-detail: grand_total ?? billing.final_amount
+  const netFromCore =
+    input.grandTotal != null && Number.isFinite(Number(input.grandTotal))
+      ? Number(input.grandTotal)
+      : NaN;
+  const netFromBilling = parseBillingAmount(billing, [
     "final_amount",
-    "grand_total",
-    "grandTotal",
+    "finalAmount",
   ]);
-  return fromBilling > 0 ? fromBilling : input.fareAmount ?? input.grandTotal ?? null;
+  const netPayable =
+    Number.isFinite(netFromCore) && netFromCore > 0
+      ? netFromCore
+      : netFromBilling > 0
+        ? netFromBilling
+        : Number.isFinite(netFromCore) && netFromCore === 0
+          ? 0
+          : null;
+
+  // Prefer billing Gati (matches Payment details when wallet icon is ₹0).
+  // Do not prefer external/pending values that equal the full payable — that
+  // double-counts CTC (e.g. 27.07 + 27.07 = 54.14).
+  const gatiFromBilling = extractGatiCashAppliedFromBilling(billing, checkoutMeta);
+  const gatiExplicit = Number(input.gatiCashUsed);
+  let gati = gatiFromBilling;
+  if (
+    gati <= 0.005 &&
+    Number.isFinite(gatiExplicit) &&
+    gatiExplicit > 0.005
+  ) {
+    const net = netPayable ?? 0;
+    // Only accept external gati when it looks like a wallet slice, not a copy of CTC.
+    if (!(net > 0.005 && Math.abs(gatiExplicit - net) <= 0.05)) {
+      gati = round2(gatiExplicit);
+    }
+  }
+
+  const { ctc } = resolveCustomerCtcPaidAmount({
+    netPayable,
+    gatiCashUsed: gati > 0.005 ? gati : null,
+    // Do not use item/food totals as capturedAmount — that diverges from Payment details.
+    capturedAmount: null,
+  });
+
+  if (ctc > 0.005) return round2(ctc);
+
+  // Person-ride / legacy: fare when core totals are empty.
+  if (input.fareAmount != null && Number(input.fareAmount) > 0) {
+    return round2(Number(input.fareAmount));
+  }
+  return null;
 }
 
 function ledgerRefPrefix(coreId: number) {
@@ -187,7 +274,9 @@ export async function enrichRiderOrdersWithEarnings<T extends EnrichableRiderOrd
   return orders.map((order) => {
     const hasLedgerEntry = ledgerHitByCoreId.has(order.id);
     const ledgerNet = hasLedgerEntry ? (ledgerNetByCoreId.get(order.id) ?? 0) : null;
-    const walletCredited = ledgerNet != null && ledgerNet > 0;
+    const delivered = isOrderDeliveredForRiderWalletCredit(order);
+    // Same gate as delivery credit engine: never surface Credit before delivered.
+    const walletCredited = delivered && ledgerNet != null && ledgerNet > 0;
     const walletDebited = ledgerNet != null && ledgerNet < 0;
     const expectedEarning = resolveRiderEarningFromOrderFields({
       riderEarning: order.riderEarning,
@@ -212,14 +301,18 @@ export async function enrichRiderOrdersWithEarnings<T extends EnrichableRiderOrd
       statusKey === "cancelled" || statusKey === "failed";
     /** Waiting on wallet credit (ride payment hold, delivered, or active with known payout). */
     const earningCreditPending =
-      !hasLedgerEntry &&
+      !walletCredited &&
+      !walletDebited &&
       !isTerminalNoPayout &&
-      (ridePaymentBlocked || statusKey === "delivered" || expectedEarning > 0);
+      (ridePaymentBlocked ||
+        delivered ||
+        expectedEarning > 0 ||
+        (ledgerNet != null && ledgerNet > 0 && !delivered));
 
-    // Ledger net when present; otherwise expected payout (may render with strikethrough in UI).
+    // Credited/debited ledger net when allowed; otherwise expected payout (pending UI).
     const displayEarning =
-      ledgerNet != null
-        ? Math.abs(ledgerNet)
+      walletCredited || walletDebited
+        ? Math.abs(ledgerNet ?? 0)
         : expectedEarning > 0
           ? expectedEarning
           : Number(order.riderEarning) > 0
@@ -232,7 +325,10 @@ export async function enrichRiderOrdersWithEarnings<T extends EnrichableRiderOrd
       fareAmount: resolveOrderFareAmount({
         fareAmount: order.fareAmount,
         grandTotal: order.grandTotal,
+        itemTotal: order.itemTotal,
+        foodItemsTotalValue: order.foodItemsTotalValue,
         billingSnapshot: order.billingSnapshot,
+        checkoutMetadata: order.checkoutMetadata,
       }),
       walletCredited,
       walletDebited,

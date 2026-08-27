@@ -128,21 +128,102 @@ const DEFAULT_THEME = "#16a34a";
 const COMPANY_NAME = "GatiMitra";
 const COMPANY_DESCRIPTION = "Complete your food order";
 
+/** Map our checkout `upiApp` ids to Razorpay `config.display` apps keys. */
+function razorpayUpiAppKeys(upiApp: string): string[] {
+  switch (upiApp) {
+    case "google_pay":
+      return ["google_pay", "gpay"];
+    case "phonepe":
+      return ["phonepe"];
+    case "paytm":
+      return ["paytm"];
+    case "bhim":
+      return ["bhim"];
+    case "amazon_pay":
+      return ["amazon_pay"];
+    case "cred":
+      return ["cred"];
+    case "whatsapp":
+      return ["whatsapp"];
+    default:
+      return [upiApp];
+  }
+}
+
+/** Lock Standard Checkout to the instrument already chosen on Pay using. */
+function buildDisplayConfig(method: RazorpayCheckoutMethod): Record<string, unknown> | null {
+  if (method.method === "upi" && method.upiApp) {
+    const apps = razorpayUpiAppKeys(method.upiApp);
+    const label = upiAppDisplayName(method.upiApp);
+    return {
+      display: {
+        blocks: {
+          preferred: {
+            name: `Pay using ${label}`,
+            instruments: [
+              {
+                method: "upi",
+                flows: ["intent"],
+                apps,
+              },
+            ],
+          },
+        },
+        sequence: ["block.preferred"],
+        preferences: { show_default_blocks: false },
+      },
+    };
+  }
+  if (method.method === "wallet" && method.wallet) {
+    return {
+      display: {
+        blocks: {
+          preferred: {
+            name: "Pay using Wallet",
+            instruments: [{ method: "wallet", wallets: [method.wallet] }],
+          },
+        },
+        sequence: ["block.preferred"],
+        preferences: { show_default_blocks: false },
+      },
+    };
+  }
+  if (method.method === "card" || method.method === "netbanking") {
+    return {
+      display: {
+        blocks: {
+          preferred: {
+            name: method.method === "card" ? "Pay using Card" : "Netbanking",
+            instruments: [{ method: method.method }],
+          },
+        },
+        sequence: ["block.preferred"],
+        preferences: { show_default_blocks: false },
+      },
+    };
+  }
+  return null;
+}
+
 function applyCheckoutMethod(
   options: Record<string, unknown>,
   method: RazorpayCheckoutMethod | null | undefined
 ): void {
   if (!method?.method) return;
-  // Razorpay Standard Checkout: focus the family the customer picked.
-  // Never use config.display.blocks / show_default_blocks:false (Custom Checkout).
-  // Never zero-out other methods — WebView/Expo Go then shows
-  // "No appropriate payment method found" even when Cards/UPI are live.
+  // Top-level method + prefill.method, and when the user already picked a
+  // specific UPI app / wallet on checkout, lock the sheet via config.display
+  // so Razorpay does not re-open the full UPI app picker.
+  options.method = method.method;
   options.prefill = {
     ...((options.prefill as Record<string, unknown> | undefined) ?? {}),
     method: method.method,
   };
   if (method.method === "wallet" && method.wallet) {
     options.wallet = method.wallet;
+  }
+  const config = buildDisplayConfig(method);
+  if (config) {
+    options.config = config;
   }
 }
 
@@ -212,7 +293,7 @@ async function openNativeSdk(args: {
     theme: { color: args.themeColor },
     prefill: {
       contact: normalizeContact(args.prefill?.contact),
-      email: args.prefill?.email ?? "",
+      email: normalizePrefillEmail(args.prefill?.email, normalizeContact(args.prefill?.contact)),
       name: args.prefill?.name ?? "",
     },
     notes: {
@@ -223,6 +304,15 @@ async function openNativeSdk(args: {
     retry: { enabled: true, max_count: 2 },
   };
   applyCheckoutMethod(options, args.checkoutMethod);
+  if (__DEV__ && args.checkoutMethod?.method) {
+    // eslint-disable-next-line no-console
+    console.log("[payment] razorpay_checkout_open", {
+      method: args.checkoutMethod.method,
+      upiApp: args.checkoutMethod.upiApp ?? null,
+      wallet: args.checkoutMethod.wallet ?? null,
+      razorpayOrderId: args.orderParams.orderId,
+    });
+  }
 
   try {
     const data = await RazorpayCheckoutModule.open(options);
@@ -313,6 +403,15 @@ function normalizeContact(raw: string | null | undefined): string {
   return digits.length >= 10 ? digits.slice(-10) : digits;
 }
 
+function normalizePrefillEmail(raw: string | null | undefined, contact: string): string {
+  const email = String(raw ?? "").trim();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return email;
+  // Razorpay method preselection requires email + contact. Never send empty.
+  const digits = contact.replace(/\D/g, "").slice(-10);
+  if (digits.length === 10) return `cx${digits}@customers.gatimitra.com`;
+  return "checkout@gatimitra.com";
+}
+
 /**
  * Build the HTML shell that loads Razorpay's checkout.js and opens the sheet
  * immediately. Communicates back to RN via window.ReactNativeWebView.postMessage.
@@ -333,8 +432,10 @@ function buildCheckoutHtml(args: {
   const amount = Math.trunc(args.orderParams.amount);
   const themeColor = escapeForJs(args.themeColor);
   const prefillName = escapeForJs(args.prefill?.name ?? "");
-  const prefillEmail = escapeForJs(args.prefill?.email ?? "");
   const prefillContact = escapeForJs(normalizeContact(args.prefill?.contact));
+  const prefillEmail = escapeForJs(
+    normalizePrefillEmail(args.prefill?.email, normalizeContact(args.prefill?.contact))
+  );
   const name = escapeForJs(COMPANY_NAME);
   const desc = escapeForJs(COMPANY_DESCRIPTION);
   const methodJson = JSON.stringify({
@@ -416,10 +517,60 @@ function buildCheckoutHtml(args: {
         };
         var methodPick = ${methodJson};
         if (methodPick && methodPick.method) {
+          opts.method = methodPick.method;
           opts.prefill.method = methodPick.method;
           if (methodPick.method === 'wallet' && methodPick.wallet) {
             opts.wallet = methodPick.wallet;
           }
+          if (methodPick.method === 'upi' && methodPick.upiApp) {
+            var upiApps = methodPick.upiApp === 'google_pay'
+              ? ['google_pay', 'gpay']
+              : [methodPick.upiApp];
+            var upiLabel = methodPick.upiApp === 'google_pay' ? 'Google Pay'
+              : methodPick.upiApp === 'phonepe' ? 'PhonePe'
+              : methodPick.upiApp === 'paytm' ? 'Paytm'
+              : methodPick.upiApp === 'bhim' ? 'BHIM'
+              : 'UPI';
+            opts.config = {
+              display: {
+                blocks: {
+                  preferred: {
+                    name: 'Pay using ' + upiLabel,
+                    instruments: [{ method: 'upi', flows: ['intent'], apps: upiApps }]
+                  }
+                },
+                sequence: ['block.preferred'],
+                preferences: { show_default_blocks: false }
+              }
+            };
+          } else if (methodPick.method === 'wallet' && methodPick.wallet) {
+            opts.config = {
+              display: {
+                blocks: {
+                  preferred: {
+                    name: 'Pay using Wallet',
+                    instruments: [{ method: 'wallet', wallets: [methodPick.wallet] }]
+                  }
+                },
+                sequence: ['block.preferred'],
+                preferences: { show_default_blocks: false }
+              }
+            };
+          } else if (methodPick.method === 'card' || methodPick.method === 'netbanking') {
+            opts.config = {
+              display: {
+                blocks: {
+                  preferred: {
+                    name: methodPick.method === 'card' ? 'Pay using Card' : 'Netbanking',
+                    instruments: [{ method: methodPick.method }]
+                  }
+                },
+                sequence: ['block.preferred'],
+                preferences: { show_default_blocks: false }
+              }
+            };
+          }
+          post({ type: 'log', msg: 'razorpay_checkout_open method=' + methodPick.method + ' upiApp=' + (methodPick.upiApp || '') });
         }
         try {
           var rzp = new Razorpay(opts);

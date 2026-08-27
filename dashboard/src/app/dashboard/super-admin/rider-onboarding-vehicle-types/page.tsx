@@ -31,6 +31,10 @@ import type {
   CustomerRideServiceCatalogRow,
   RideCatalogVehicleRow,
 } from "@/lib/db/operations/customer-ride-service-catalog-admin";
+import {
+  RIDE_CATALOG_FARE_DISCOUNT_DEFAULT_INR,
+  type RideCatalogFareDiscountRow,
+} from "@/lib/ride-catalog-fare-discounts";
 
 const FALLBACK_DOC_OPTIONS = ["dl", "rc", "rental_proof", "ev_proof"] as const;
 
@@ -174,6 +178,7 @@ export default function RiderOnboardingVehicleTypesPage() {
   const [rideCatalog, setRideCatalog] = useState<CustomerRideServiceCatalogRow[]>([]);
   const [rideCatalogVehicles, setRideCatalogVehicles] = useState<RideCatalogVehicleRow[]>([]);
   const [rideCatalogDraft, setRideCatalogDraft] = useState<Record<string, string[]>>({});
+  const [fareDiscountDraft, setFareDiscountDraft] = useState<RideCatalogFareDiscountRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
@@ -244,6 +249,7 @@ export default function RiderOnboardingVehicleTypesPage() {
       success?: boolean;
       catalog?: CustomerRideServiceCatalogRow[];
       vehicles?: RideCatalogVehicleRow[];
+      fareDiscounts?: RideCatalogFareDiscountRow[];
       error?: string;
     };
     if (!res.ok || !data.success) throw new Error(data.error || "Failed to load ride catalog");
@@ -251,6 +257,26 @@ export default function RiderOnboardingVehicleTypesPage() {
     const vehicles = data.vehicles ?? [];
     setRideCatalog(catalog);
     setRideCatalogVehicles(vehicles);
+    setFareDiscountDraft(
+      data.fareDiscounts && data.fareDiscounts.length > 0
+        ? data.fareDiscounts
+        : [
+            {
+              catalogCode: "bike-lite",
+              parentCatalogCode: "bike",
+              label: "Bike Lite",
+              parentLabel: "Bike",
+              amountInr: RIDE_CATALOG_FARE_DISCOUNT_DEFAULT_INR,
+            },
+            {
+              catalogCode: "ev_auto",
+              parentCatalogCode: "auto",
+              label: "EV Auto",
+              parentLabel: "Auto",
+              amountInr: RIDE_CATALOG_FARE_DISCOUNT_DEFAULT_INR,
+            },
+          ]
+    );
     const draft: Record<string, string[]> = {};
     for (const row of vehicles) {
       draft[row.vehicleTypeCode] = [...row.catalogCodes];
@@ -592,10 +618,17 @@ export default function RiderOnboardingVehicleTypesPage() {
         vehicleTypeCode: row.vehicleTypeCode,
         catalogCodes: rideCatalogDraft[row.vehicleTypeCode] ?? row.catalogCodes,
       }));
+      const fareDiscounts: Record<string, number> = {};
+      for (const row of fareDiscountDraft) {
+        fareDiscounts[row.catalogCode] =
+          Number.isFinite(row.amountInr) && row.amountInr >= 0
+            ? row.amountInr
+            : RIDE_CATALOG_FARE_DISCOUNT_DEFAULT_INR;
+      }
       const res = await fetch("/api/super-admin/customer-ride-service-catalog", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates }),
+        body: JSON.stringify({ updates, fareDiscounts }),
       });
       const data = (await res.json()) as {
         success?: boolean;
@@ -624,6 +657,14 @@ export default function RiderOnboardingVehicleTypesPage() {
     });
   };
 
+  const setRideCatalogFareDiscount = (catalogCode: string, amountInr: number) => {
+    setFareDiscountDraft((prev) =>
+      prev.map((row) =>
+        row.catalogCode === catalogCode ? { ...row, amountInr } : row
+      )
+    );
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -637,11 +678,11 @@ export default function RiderOnboardingVehicleTypesPage() {
                 ? "Manage operating vehicle options, required documents, and onboarding flow for the rider app."
                 : viewTab === "assigned_ride"
                   ? "Assign dispatch services per vehicle category and specific vehicle types. Riders only receive offers for enabled vehicles."
-                : "Map each vehicle to ride options (Bike, Bike Lite, Auto, Cab Economy, Cab Premium). Remap anytime."}
+                : "Map each vehicle to ride options (Bike, Bike Lite, EV Auto, Auto, Cab). Set always-on ₹ discounts for Bike Lite and EV Auto."}
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-nowrap items-center gap-2">
           <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 shadow-sm">
             <button
               type="button"
@@ -741,20 +782,20 @@ export default function RiderOnboardingVehicleTypesPage() {
               type="button"
               disabled={saving}
               onClick={() => void saveAssignments()}
-              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-60"
+              className="inline-flex h-9 min-w-[10.5rem] shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-emerald-600 px-3 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-90"
             >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              Save assignments
+              <Loader2 className={`h-4 w-4 shrink-0 animate-spin ${saving ? "opacity-100" : "opacity-0"}`} />
+              <span>{saving ? "Saving…" : "Save assignments"}</span>
             </button>
           ) : (
             <button
               type="button"
               disabled={saving}
               onClick={() => void saveRideCatalog()}
-              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-60"
+              className="inline-flex h-9 w-[13.75rem] shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-emerald-600 px-3 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-90"
             >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              Save catalog mapping
+              <Loader2 className={`h-4 w-4 shrink-0 animate-spin ${saving ? "opacity-100" : "opacity-0"}`} />
+              <span className="min-w-0">{saving ? "Saving…" : "Save catalog mapping"}</span>
             </button>
           )}
         </div>
@@ -1008,6 +1049,8 @@ export default function RiderOnboardingVehicleTypesPage() {
             vehicles={rideCatalogVehicles}
             draft={rideCatalogDraft}
             onToggle={toggleRideCatalogVehicle}
+            fareDiscounts={fareDiscountDraft}
+            onFareDiscountChange={setRideCatalogFareDiscount}
           />
         ) : (
           <div className="overflow-x-auto">

@@ -174,6 +174,12 @@ async function probeApplied(file: string): Promise<boolean> {
       ) OR EXISTS (
         SELECT 1 FROM notification_templates WHERE code = 'REFERRAL_REWARD_MERCHANT'
       ) AS ok`,
+    "0572_competitor_snapshots_area_peers.sql": `
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'merchant_store_competitor_refresh_meta'
+      ) AS ok`,
   };
   const q = probes[file];
   if (!q) return false;

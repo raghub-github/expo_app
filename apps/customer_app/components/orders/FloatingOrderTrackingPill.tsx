@@ -1,9 +1,10 @@
 /**
  * Floating active-order pill — same chrome as View Cart bar (mint bar + green CTA).
  * Green CTA slideshow: wipe-out then wipe-in between "Track order · Live" and stage ETA.
+ * Self-pick-up: green box shows a mini map; tap opens Google Maps route (you → store).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   TouchableOpacity,
@@ -12,6 +13,7 @@ import {
   Image as RNImage,
   Animated,
   Easing,
+  Alert,
 } from "react-native";
 import { Image } from "expo-image";
 import { useQuery } from "@tanstack/react-query";
@@ -29,6 +31,9 @@ import { merchantService } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { resolveDockVehicleImage } from "@/lib/dock-vehicle-image";
 import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
+import { getConfig } from "@/config/env";
+import { useLocationStore } from "@/store/locationStore";
+import { openGoogleMapsNavigation } from "@/lib/openGoogleMapsNavigation";
 
 const FLOAT_CART_GREEN = "#137243";
 const FLOAT_CART_RADIUS = 10;
@@ -41,6 +46,7 @@ const CTA_FACE_HOLD_MS = 12_000;
 const CTA_WIPE_MS = 320;
 /** Vertical travel for wipe (clipped by overflow). */
 const CTA_WIPE_PX = 18;
+const MAP_PIN = "#059669";
 
 type FloatingOrderTrackingPillProps = {
   order: ActiveOrder;
@@ -52,6 +58,65 @@ type FloatingOrderTrackingPillProps = {
   dark?: boolean;
 };
 
+function SelfPickupMapCta({
+  storeLat,
+  storeLng,
+  storeLabel,
+  onOpenDirections,
+}: {
+  storeLat: number | null;
+  storeLng: number | null;
+  storeLabel: string;
+  onOpenDirections: () => void;
+}) {
+  const staticUri = useMemo(() => {
+    const token =
+      getConfig().mapboxAccessToken?.trim() ||
+      process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN?.trim() ||
+      null;
+    if (
+      !token ||
+      storeLat == null ||
+      storeLng == null ||
+      !Number.isFinite(storeLat) ||
+      !Number.isFinite(storeLng)
+    ) {
+      return null;
+    }
+    const lon = storeLng.toFixed(5);
+    const la = storeLat.toFixed(5);
+    return `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/pin-s+059669(${lon},${la})/${lon},${la},14,0/160x96@2x?access_token=${encodeURIComponent(token)}`;
+  }, [storeLat, storeLng]);
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.92}
+      onPress={onOpenDirections}
+      style={styles.mapCta}
+      accessibilityLabel={`Open directions to ${storeLabel}`}
+    >
+      <View style={styles.mapCtaPreview}>
+        {staticUri ? (
+          <Image source={{ uri: staticUri }} style={styles.mapCtaImage} contentFit="cover" />
+        ) : (
+          <View style={styles.mapCtaFallback}>
+            <View style={styles.mapRoadH} />
+            <View style={styles.mapRoadV} />
+          </View>
+        )}
+        <View style={styles.mapPinOverlay} pointerEvents="none">
+          <Ionicons name="location" size={16} color={MAP_PIN} />
+        </View>
+      </View>
+      <View style={styles.mapCtaLabelBar}>
+        <StoreText style={styles.mapCtaLabel} bold numberOfLines={1}>
+          View Map
+        </StoreText>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
 export function FloatingOrderTrackingPill({
   order,
   onPress,
@@ -61,8 +126,11 @@ export function FloatingOrderTrackingPill({
   const [thumbFailed, setThumbFailed] = useState(false);
   const storeId = order.storeId?.trim() || null;
   const isVehicleOrder = order.serviceType === "parcel" || order.serviceType === "ride";
+  const isSelfPickup = order.isSelfPickup === true && !isVehicleOrder;
   const storeLabel = order.storeName?.trim() || (order.serviceType === "parcel" ? "Courier" : "Your order");
   const statusLine = getFloatingOrderStatusText(order.status, false, order.serviceType);
+  const sessionCoords = useLocationStore((s) => s.coords);
+
   const stageFace = useMemo(
     () =>
       getFloatingTrackCtaStageLines(
@@ -72,7 +140,7 @@ export function FloatingOrderTrackingPill({
       ),
     [order.status, order.etaMinutes, order.serviceType]
   );
-  const canAlternate = stageFace != null;
+  const canAlternate = !isSelfPickup && stageFace != null;
 
   /** false = Track order / Live; true = stage ETA face */
   const [showStageFace, setShowStageFace] = useState(false);
@@ -97,7 +165,6 @@ export function FloatingOrderTrackingPill({
     const scheduleNext = () => {
       timer = setTimeout(() => {
         if (cancelled) return;
-        // Wipe out — text slides up and clears (slideshow curtain)
         Animated.parallel([
           Animated.timing(wipeY, {
             toValue: -CTA_WIPE_PX,
@@ -114,7 +181,6 @@ export function FloatingOrderTrackingPill({
         ]).start(({ finished }) => {
           if (!finished || cancelled) return;
           setShowStageFace(!showStageFaceRef.current);
-          // Start below the clip, then wipe in (write-on)
           wipeY.setValue(CTA_WIPE_PX);
           wipeOpacity.setValue(0);
           Animated.parallel([
@@ -171,6 +237,35 @@ export function FloatingOrderTrackingPill({
     return toAbsoluteImageUrl(raw) ?? raw;
   }, [isVehicleOrder, merchantQuery.data]);
 
+  const storeLat =
+    merchantQuery.data?.latitude != null && Number.isFinite(merchantQuery.data.latitude)
+      ? Number(merchantQuery.data.latitude)
+      : null;
+  const storeLng =
+    merchantQuery.data?.longitude != null && Number.isFinite(merchantQuery.data.longitude)
+      ? Number(merchantQuery.data.longitude)
+      : null;
+
+  const openPickupDirections = useCallback(() => {
+    if (storeLat == null || storeLng == null) {
+      Alert.alert("Directions unavailable", "Restaurant location is not available yet.");
+      return;
+    }
+    const origin =
+      sessionCoords?.latitude != null &&
+      sessionCoords?.longitude != null &&
+      Number.isFinite(sessionCoords.latitude) &&
+      Number.isFinite(sessionCoords.longitude)
+        ? { lat: sessionCoords.latitude, lng: sessionCoords.longitude }
+        : undefined;
+    void openGoogleMapsNavigation({
+      destination: { lat: storeLat, lng: storeLng },
+      origin,
+      destinationLabel: storeLabel,
+      mode: "directions",
+    });
+  }, [storeLat, storeLng, sessionCoords, storeLabel]);
+
   const ctaTitle =
     canAlternate && showStageFace && stageFace ? stageFace.title : "Track order";
   const ctaSub =
@@ -192,7 +287,15 @@ export function FloatingOrderTrackingPill({
         accessibilityLabel={`Track order from ${storeLabel}`}
       >
         <View style={styles.thumb}>
-          {vehicleThumb ? (
+          {isSelfPickup ? (
+            <View style={[styles.thumbPlaceholder, dark && styles.thumbPlaceholderDark]}>
+              <Ionicons
+                name="footsteps"
+                size={20}
+                color={dark ? DiscoveryColors.textMuted : FLOAT_CART_GREEN}
+              />
+            </View>
+          ) : vehicleThumb ? (
             <View style={styles.thumbPlaceholder}>
               <RNImage source={vehicleThumb} style={styles.vehicleThumbImg} resizeMode="contain" />
             </View>
@@ -222,31 +325,40 @@ export function FloatingOrderTrackingPill({
         </View>
       </Pressable>
 
-      <TouchableOpacity
-        activeOpacity={0.92}
-        onPress={onPress}
-        style={styles.cta}
-        accessibilityLabel={a11yLabel}
-      >
-        <View style={styles.ctaFill} pointerEvents="none">
-          <Animated.View
-            style={[
-              styles.ctaSlide,
-              {
-                opacity: wipeOpacity,
-                transform: [{ translateY: wipeY }],
-              },
-            ]}
-          >
-            <StoreText style={styles.ctaTitle} bold numberOfLines={1}>
-              {ctaTitle}
-            </StoreText>
-            <StoreText style={styles.ctaSub} bold numberOfLines={1}>
-              {ctaSub}
-            </StoreText>
-          </Animated.View>
-        </View>
-      </TouchableOpacity>
+      {isSelfPickup ? (
+        <SelfPickupMapCta
+          storeLat={storeLat}
+          storeLng={storeLng}
+          storeLabel={storeLabel}
+          onOpenDirections={openPickupDirections}
+        />
+      ) : (
+        <TouchableOpacity
+          activeOpacity={0.92}
+          onPress={onPress}
+          style={styles.cta}
+          accessibilityLabel={a11yLabel}
+        >
+          <View style={styles.ctaFill} pointerEvents="none">
+            <Animated.View
+              style={[
+                styles.ctaSlide,
+                {
+                  opacity: wipeOpacity,
+                  transform: [{ translateY: wipeY }],
+                },
+              ]}
+            >
+              <StoreText style={styles.ctaTitle} bold numberOfLines={1}>
+                {ctaTitle}
+              </StoreText>
+              <StoreText style={styles.ctaSub} bold numberOfLines={1}>
+                {ctaSub}
+              </StoreText>
+            </Animated.View>
+          </View>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -368,5 +480,66 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.95)",
     marginTop: 1,
     textAlign: "center",
+  },
+  mapCta: {
+    width: 72,
+    height: 52,
+    borderRadius: FLOAT_CART_RADIUS,
+    overflow: "hidden",
+    borderWidth: 1.5,
+    borderColor: "rgba(5, 150, 105, 0.45)",
+    backgroundColor: "#ECFDF5",
+    flexShrink: 0,
+  },
+  mapCtaPreview: {
+    width: "100%",
+    height: 34,
+    backgroundColor: "#D1FAE5",
+    overflow: "hidden",
+  },
+  mapCtaImage: {
+    width: "100%",
+    height: "100%",
+  },
+  mapCtaFallback: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#D1FAE5",
+  },
+  mapRoadH: {
+    position: "absolute",
+    left: -2,
+    right: -2,
+    top: 16,
+    height: 3,
+    backgroundColor: "#A7F3D0",
+    transform: [{ rotate: "-6deg" }],
+  },
+  mapRoadV: {
+    position: "absolute",
+    top: -2,
+    bottom: -2,
+    left: 34,
+    width: 3,
+    backgroundColor: "#6EE7B7",
+    transform: [{ rotate: "10deg" }],
+  },
+  mapPinOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  mapCtaLabelBar: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FAFAFA",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(5, 150, 105, 0.35)",
+  },
+  mapCtaLabel: {
+    fontSize: 9,
+    fontFamily: StoreFonts.loraBold,
+    color: MAP_PIN,
+    letterSpacing: 0.2,
   },
 });

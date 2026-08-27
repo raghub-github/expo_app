@@ -21,6 +21,11 @@ export function clampPrepMinutes(raw: unknown, fallback = PLATFORM_DEFAULT_PREP_
   return Math.max(PREP_TIME_MIN, Math.min(PREP_TIME_MAX, Math.round(n)));
 }
 
+/** Store avg prep (merchant_stores.avg_preparation_time_minutes) — Partner Site parity. */
+export function resolveStoreDefaultPrepMinutes(storeAvgPrepMinutes: unknown): number {
+  return clampPrepMinutes(storeAvgPrepMinutes, PLATFORM_DEFAULT_PREP_MINUTES);
+}
+
 export function prepPerformanceDeadlineMs(order: PrepCountdownOrder): number {
   if (order.prep_ready_by_at) {
     const t = new Date(order.prep_ready_by_at).getTime();

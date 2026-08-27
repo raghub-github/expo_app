@@ -1096,14 +1096,34 @@ export default function OrderRightSidebar({
 
       try {
         setIsLoadingRecons(true);
-        const res = await fetch(`/api/orders/${order.id}/recons`, {
+        let res = await fetch(`/api/orders/${order.id}/recons`, {
           credentials: "include",
           signal,
         });
+        // Transient auth/DB blip under parallel sidebar loads — quiet retry, then silence.
+        if (res.status === 503 && !signal?.aborted) {
+          await new Promise((r) => setTimeout(r, 400));
+          if (!signal?.aborted) {
+            res = await fetch(`/api/orders/${order.id}/recons`, {
+              credentials: "include",
+              signal,
+            });
+          }
+        }
         if (signal?.aborted) return;
         if (!res.ok) {
+          const text = await res.text();
+          let code = "";
+          try {
+            code = String(JSON.parse(text)?.code ?? "");
+          } catch {
+            /* ignore */
+          }
+          if (res.status === 503 || code === "SERVICE_UNAVAILABLE") {
+            return;
+          }
           // eslint-disable-next-line no-console
-          console.error("Failed to load recons", await res.text());
+          console.error("Failed to load recons", text);
           return;
         }
         const json = await res.json();
@@ -1138,13 +1158,21 @@ export default function OrderRightSidebar({
     if (!authReady || order.id == null || !Number.isFinite(order.id)) return;
 
     const controller = new AbortController();
+    const { signal } = controller;
 
-    void loadRemarks({ signal: controller.signal });
-    void loadNotifications(controller.signal);
-    void loadRecons(controller.signal);
+    // Stagger sidebar fetches slightly to avoid auth/DB stampede → transient 503s.
+    void loadRemarks({ signal });
+    const tNotif = window.setTimeout(() => {
+      void loadNotifications(signal);
+    }, 120);
+    const tRecons = window.setTimeout(() => {
+      void loadRecons(signal);
+    }, 240);
 
     return () => {
       controller.abort();
+      window.clearTimeout(tNotif);
+      window.clearTimeout(tRecons);
     };
   }, [authReady, order.id, activityRefreshKey, loadRemarks, loadNotifications, loadRecons]);
 

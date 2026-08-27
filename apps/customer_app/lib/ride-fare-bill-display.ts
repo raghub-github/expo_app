@@ -186,18 +186,30 @@ export function computeRideFarePayableTotal(
   bill: RideFareBillApiResponse,
   extras?: { waitingCharge?: number; surgeCharge?: number }
 ): number {
-  const waiting = Math.max(0, num(extras?.waitingCharge));
-  const surge = Math.max(0, num(extras?.surgeCharge));
+  let waitingFromCharges = 0;
+  let surgeFromCharges = 0;
+  let total = bill.rideFare;
 
-  let total = bill.rideFare + waiting + surge;
   for (const row of bill.charges ?? []) {
     if (row.kind === "tax" || row.kind === "discount") continue;
     const label = String(row.label ?? "").toLowerCase();
     if (label.includes("tip")) continue;
-    total += num(row.amount);
+    const amount = num(row.amount);
+    if (label.includes("waiting")) {
+      waitingFromCharges += amount;
+      continue;
+    }
+    if (label.includes("surge")) {
+      surgeFromCharges += amount;
+      continue;
+    }
+    total += amount;
   }
   for (const row of bill.taxes ?? []) total += num(row.amount);
   if (bill.tipAmount > 0.005) total += bill.tipAmount;
+
+  total += Math.max(0, num(extras?.waitingCharge), waitingFromCharges);
+  total += Math.max(0, num(extras?.surgeCharge), surgeFromCharges);
 
   const discountRows = (bill.discounts ?? []).reduce((sum, row) => sum + num(row.amount), 0);
   if (discountRows > 0.005) total -= discountRows;
@@ -345,10 +357,10 @@ export function buildRideFareBillSummaryLines(
     }
   }
 
-  const payableTotal =
-    bill.finalAmount > 0.005
-      ? Math.round(bill.finalAmount * 100) / 100
-      : computeRideFarePayableTotal(bill, extras);
+  const fromParts = computeRideFarePayableTotal(bill, extras);
+  const fromFinal =
+    bill.finalAmount > 0.005 ? Math.round(bill.finalAmount * 100) / 100 : 0;
+  const payableTotal = Math.max(fromParts, fromFinal);
 
   push("Total fare", payableTotal, { emphasis: true });
 
@@ -465,10 +477,10 @@ export function buildRideCheckoutCompactBill(
     });
   }
 
-  const payableTotal =
-    bill.finalAmount > 0.005
-      ? Math.round(bill.finalAmount * 100) / 100
-      : computeRideFarePayableTotal(bill, extras);
+  const fromParts = computeRideFarePayableTotal(bill, extras);
+  const fromFinal =
+    bill.finalAmount > 0.005 ? Math.round(bill.finalAmount * 100) / 100 : 0;
+  const payableTotal = Math.max(fromParts, fromFinal);
 
   return {
     rideFare,

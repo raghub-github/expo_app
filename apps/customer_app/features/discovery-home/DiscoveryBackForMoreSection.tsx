@@ -24,6 +24,7 @@ import { useScrollSafePress } from "@/hooks/useScrollSafePress";
 import { useMerchantLiveStatus } from "@/hooks/useMerchantLiveStatus";
 import { isMerchantPureVeg } from "@/lib/pureVegFilter";
 import { isMerchantCurrentlyOpen } from "@/lib/merchantListing";
+import { formatMerchantDistanceKm } from "@/lib/merchantDistance";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { DiscoveryColors, DISCOVERY_PAGE_PAD } from "./discoveryTheme";
 
@@ -40,13 +41,10 @@ type Props = {
 
 function formatMeta(store: RecentlyViewedStore, liveMerchant?: MerchantSummary): string {
   const kmRaw = liveMerchant?.distanceKm ?? store.distanceKm;
-  const km =
-    kmRaw != null && Number.isFinite(kmRaw)
-      ? `${kmRaw >= 10 ? kmRaw.toFixed(0) : kmRaw.toFixed(1)}km`
-      : null;
+  const distance = formatMerchantDistanceKm(kmRaw) ?? "Near & Fast";
   const area = store.cuisines?.[0]?.trim() || liveMerchant?.cuisines?.[0]?.trim() || null;
-  if (km && area) return `${km}, ${area}`;
-  return km ?? area ?? "";
+  if (area) return `${distance}, ${area}`;
+  return distance;
 }
 
 function BackForMoreCard({

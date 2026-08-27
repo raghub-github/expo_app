@@ -1,12 +1,12 @@
 import type { LivePreviewInsights } from "@/lib/merchant-growth/live-preview-insights";
 import type { GrowthBusinessInsights } from "@/lib/merchant-growth/growth-business-insights";
-import type { MerchantMarketInsights } from "@/lib/merchant-store-competitors";
+import type { MerchantMarketInsights } from "@/lib/merchant-store-competitors-shared";
 
 const LIVE_SESSION_PREFIX = "mx_growth_live_v3:";
 const LIVE_LOCAL_PREFIX = "mx_growth_live_v3_ls:";
 const REPORTS_SESSION_PREFIX = "mx_growth_reports_v3:";
 const REPORTS_LOCAL_PREFIX = "mx_growth_reports_v3_ls:";
-const MARKET_PREFIX = "mx_growth_market_v2:";
+const MARKET_PREFIX = "mx_growth_market_v5:";
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const LOCAL_TTL_MS = 24 * 60 * 60 * 1000;
 

@@ -542,11 +542,19 @@ async function updateCancellationReasonPenalty(
 
 async function fetchOrderPublicId(orderCoreId: number): Promise<string | null> {
   const sql = getSql();
-  const rows = await sql.unsafe<{ formatted_order_id: string | null; order_id: string | null }[]>(
+  const rows = await sql.unsafe<{
+    formatted_order_id: string | null;
+    food_formatted_order_id: string | null;
+    order_id: string | null;
+  }[]>(
     `
-      SELECT formatted_order_id, order_id
-      FROM orders_core
-      WHERE id = $1
+      SELECT
+        NULLIF(TRIM(oc.formatted_order_id), '') AS formatted_order_id,
+        NULLIF(TRIM(f.formatted_order_id), '') AS food_formatted_order_id,
+        NULLIF(TRIM(oc.order_id), '') AS order_id
+      FROM orders_core oc
+      LEFT JOIN orders_food f ON f.order_id = oc.id
+      WHERE oc.id = $1
       LIMIT 1
     `,
     [orderCoreId]
@@ -554,6 +562,8 @@ async function fetchOrderPublicId(orderCoreId: number): Promise<string | null> {
   const row = rows[0];
   const formatted = row?.formatted_order_id?.trim();
   if (formatted) return formatted;
+  const foodFormatted = row?.food_formatted_order_id?.trim();
+  if (foodFormatted) return foodFormatted;
   const business = row?.order_id?.trim();
   if (business && !/^\d+$/.test(business)) return business;
   return null;
@@ -640,6 +650,8 @@ async function debitRiderWalletPenalty(args: {
         catalogReasonId: args.catalogReasonId,
         ledgerDescription: args.ledgerDescription,
         triggerSource: args.triggerSource ?? args.source,
+        orderPublicId: orderPublicId ?? undefined,
+        orderId: args.orderCoreId,
       },
     })
     .returning();

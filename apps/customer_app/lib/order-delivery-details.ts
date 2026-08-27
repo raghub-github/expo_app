@@ -6,6 +6,9 @@ export type OrderDeliveryDetailsView = {
   addressTitle: string | null;
   addressLine: string | null;
   instructionItems: string[];
+  bannerText?: string | null;
+  addressIcon?: "location" | "store";
+  addressAction?: "edit" | "directions";
 };
 
 export function maskPhone(phone: string) {
@@ -15,14 +18,15 @@ export function maskPhone(phone: string) {
   return `${digits.slice(0, 6)}XXXX`;
 }
 
-export function buildOrderDeliveryDetailsView(order: OrderDetail): OrderDeliveryDetailsView {
+function contactTitleFromOrder(order: OrderDetail): string | null {
   const contactName = order.deliveryContactName?.trim() || null;
   const contactPhone = order.deliveryContactPhone?.trim() || null;
-  const contactTitle =
-    contactName && contactPhone
-      ? `${contactName}, ${maskPhone(contactPhone)}`
-      : contactName ?? (contactPhone ? maskPhone(contactPhone) : null);
+  if (contactName && contactPhone) return `${contactName}, ${maskPhone(contactPhone)}`;
+  return contactName ?? (contactPhone ? maskPhone(contactPhone) : null);
+}
 
+export function buildOrderDeliveryDetailsView(order: OrderDetail): OrderDeliveryDetailsView {
+  const contactTitle = contactTitleFromOrder(order);
   const addressLabel = order.deliveryAddressLabel?.trim() || null;
   const addressLine = order.deliveryAddress?.trim() || null;
   const addressTitle = addressLabel ? `Delivery at ${addressLabel}` : null;
@@ -37,5 +41,22 @@ export function buildOrderDeliveryDetailsView(order: OrderDetail): OrderDelivery
     addressTitle,
     addressLine,
     instructionItems,
+  };
+}
+
+export function buildOrderSelfPickupDetailsView(order: OrderDetail): OrderDeliveryDetailsView {
+  const contactTitle = contactTitleFromOrder(order);
+  const restaurantName = order.merchantPublicName ?? order.merchantName ?? "Restaurant";
+  const addressLine = order.merchantAddress?.trim() || order.deliveryAddress?.trim() || null;
+
+  return {
+    contactTitle,
+    contactSubtitle: contactTitle ? "Restaurant may call this number" : null,
+    addressTitle: `Self-Pick-Up at ${restaurantName}`,
+    addressLine,
+    instructionItems: [],
+    bannerText: "All your Self-Pick-Up details in one place 👇",
+    addressIcon: "store",
+    addressAction: "directions",
   };
 }

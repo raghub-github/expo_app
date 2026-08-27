@@ -179,7 +179,7 @@ export function RiderWithdrawalsClient() {
 
   const withdrawalFilterChips: FilterChipItem[] = [];
   if (filterSearch.trim()) withdrawalFilterChips.push({ id: "q", label: `Search: ${filterSearch.trim().slice(0, 16)}${filterSearch.trim().length > 16 ? "…" : ""}` });
-  if (status !== "all") withdrawalFilterChips.push({ id: "status", label: `Status: ${status}` });
+  if (status !== "all") withdrawalFilterChips.push({ id: "status", label: `Status: ${status === "failed" ? "Rejected" : status}` });
   if (from) withdrawalFilterChips.push({ id: "from", label: `From: ${from}` });
   if (to) withdrawalFilterChips.push({ id: "to", label: `To: ${to}` });
 
@@ -214,7 +214,9 @@ export function RiderWithdrawalsClient() {
   }, [searchValue, router]);
 
   const hasSearch = searchValue.length > 0;
-  const showReason = (s: string) => ["failed", "cancelled", "aborted"].includes(String(s).toLowerCase());
+  const showReason = (s: string) => ["failed", "rejected", "cancelled", "aborted"].includes(String(s).toLowerCase());
+  const withdrawalStatusLabel = (s: string) =>
+    String(s).toLowerCase() === "failed" ? "Rejected" : s;
   const DROPDOWN_HEIGHT = 220;
   const isUpiWithdrawal = useCallback((w: WithdrawalRow) => {
     const methodType = w.paymentMethodDetails?.methodType;
@@ -394,7 +396,7 @@ export function RiderWithdrawalsClient() {
                     <option value="pending">Pending</option>
                     <option value="processing">Processing</option>
                     <option value="completed">Completed</option>
-                    <option value="failed">Failed</option>
+                    <option value="failed">Rejected</option>
                     <option value="cancelled">Cancelled</option>
                     <option value="aborted">Aborted</option>
                   </select>
@@ -449,7 +451,7 @@ export function RiderWithdrawalsClient() {
                                 w.status === "completed" ? "bg-green-100 text-green-800" :
                                 w.status === "failed" || w.status === "cancelled" || w.status === "aborted" ? "bg-red-100 text-red-800" :
                                 w.status === "processing" ? "bg-blue-100 text-blue-800" : "bg-gray-100 text-gray-800"
-                              }`}>{w.status}</span>
+                              }`}>{withdrawalStatusLabel(w.status)}</span>
                             </td>
                             <td className="px-3 py-2 sm:px-4 text-sm text-gray-900 min-w-0 max-w-[160px]">
                               <div className="relative">
@@ -507,7 +509,7 @@ export function RiderWithdrawalsClient() {
                               w.status === "completed" ? "bg-green-100 text-green-800" :
                               w.status === "failed" || w.status === "cancelled" || w.status === "aborted" ? "bg-red-100 text-red-800" :
                               w.status === "processing" ? "bg-blue-100 text-blue-800" : "bg-gray-100 text-gray-800"
-                            }`}>{w.status}</span>
+                            }`}>{withdrawalStatusLabel(w.status)}</span>
                           </div>
                           <p className="text-lg font-semibold text-gray-900">₹{Number(w.amount).toFixed(2)}</p>
                           <div className="grid grid-cols-2 gap-2 text-xs">

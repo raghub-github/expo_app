@@ -39,7 +39,8 @@ import Svg, { Path } from "react-native-svg";
 import { AppText } from "@/components/AppText";
 import { OrderDeliveryDetailsCard } from "@/components/orders/OrderDeliveryDetailsCard";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { buildOrderDeliveryDetailsView } from "@/lib/order-delivery-details";
+import { buildOrderDeliveryDetailsView, buildOrderSelfPickupDetailsView } from "@/lib/order-delivery-details";
+import { isSelfPickupOrder } from "@/lib/self-pickup-order";
 import { parseOrderBillFromSnapshot } from "@/lib/orderBillBreakdown";
 import { applyAndroidStatusBarVisible } from "@/lib/androidEdgeToEdgeChrome";
 import { playCustomerNotificationSound } from "@/lib/playCustomerNotificationSound";
@@ -462,6 +463,18 @@ export default function OrderSuccessScreen() {
       contactName && contactPhone
         ? `${contactName}, ${contactPhone}`
         : contactName ?? contactPhone;
+    if (isSelfPickupOrder(order)) {
+      const pickup = buildOrderSelfPickupDetailsView(order);
+      return {
+        contactTitle,
+        contactSubtitle: contactTitle ? "Restaurant may call this number" : null,
+        addressTitle: pickup.addressTitle,
+        addressLine: pickup.addressLine,
+        instructionItems: [] as string[],
+        bannerText: pickup.bannerText,
+        addressIcon: pickup.addressIcon,
+      };
+    }
     const base = buildOrderDeliveryDetailsView(order);
     return {
       contactTitle,

@@ -1638,6 +1638,189 @@ export async function patchMerchantFoodOrderPrepDelay(
   return updated;
 }
 
+const SELF_PICKUP_OTP_MAX_ATTEMPTS = 5;
+const SELF_PICKUP_OTP_LOCK_MINUTES = 15;
+
+function isSelfPickupDeliveryType(raw: string | null | undefined): boolean {
+  const dt = String(raw ?? "")
+    .toUpperCase()
+    .replace(/-/g, "_")
+    .replace(/\s+/g, "_");
+  return (
+    dt === "SELF_PICKUP" ||
+    dt === "SELF_PICK_UP" ||
+    dt === "CUSTOMER_PICKUP" ||
+    dt.includes("SELF_PICKUP")
+  );
+}
+
+/**
+ * Store collects customer Pickup OTP → Ready → OUT_FOR_DELIVERY → DELIVERED.
+ * Mirrors partnersite `/complete-self-pickup`.
+ */
+export async function completeMerchantSelfPickupWithOtp(
+  sql: Sql,
+  storeId: number,
+  ordersFoodId: number,
+  otpInput: string
+): Promise<MerchantFoodOrderDto> {
+  const inputOtp = String(otpInput ?? "").trim();
+  if (!/^\d{4}$/.test(inputOtp)) {
+    throw new Error("otp_required");
+  }
+
+  const existingRows = await sql`
+    SELECT
+      of.id,
+      of.order_id,
+      of.order_status,
+      of.merchant_store_id,
+      oc.delivery_type AS core_delivery_type,
+      oc.billing_snapshot
+    FROM orders_food of
+    LEFT JOIN orders_core oc ON oc.id = of.order_id
+    WHERE of.id = ${ordersFoodId}
+    LIMIT 1
+  `;
+  const existing = existingRows[0] as
+    | {
+        id: number;
+        order_id: number | null;
+        order_status: string | null;
+        merchant_store_id: number;
+        core_delivery_type: string | null;
+        billing_snapshot: { isSelfPickup?: boolean; delivery_type?: string } | null;
+      }
+    | undefined;
+  if (!existing) throw new Error("order_not_found");
+  if (Number(existing.merchant_store_id) !== storeId) throw new Error("store_mismatch");
+
+  // delivery_type lives on orders_core (see 0222_delivery_type_columns.sql) — not orders_food.
+  const deliveryType = String(existing.core_delivery_type ?? "").toUpperCase();
+  const snap = existing.billing_snapshot;
+  if (
+    !isSelfPickupDeliveryType(deliveryType) &&
+    snap?.isSelfPickup !== true &&
+    !isSelfPickupDeliveryType(snap?.delivery_type)
+  ) {
+    throw new Error("not_self_pickup");
+  }
+
+  let status = normalizeOrderStatusForTransition(existing.order_status);
+  if (status !== "READY_FOR_PICKUP" && status !== "OUT_FOR_DELIVERY") {
+    throw new Error(`invalid_status:${status}`);
+  }
+
+  const corePk =
+    existing.order_id != null && Number.isFinite(Number(existing.order_id))
+      ? Number(existing.order_id)
+      : null;
+  if (corePk == null) throw new Error("core_order_not_found");
+
+  const otpRows = await sql`
+    SELECT id, otp_code, verified_at, attempt_count, locked_until
+    FROM order_food_otps
+    WHERE order_id = ${corePk} AND otp_type = 'PICKUP'
+    LIMIT 1
+  `;
+  const otpRow = otpRows[0] as
+    | {
+        id: number;
+        otp_code: string;
+        verified_at: string | null;
+        attempt_count: number | null;
+        locked_until: string | null;
+      }
+    | undefined;
+  if (!otpRow) throw new Error("pickup_otp_not_found");
+
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  const alreadyVerified = !!otpRow.verified_at;
+
+  if (!alreadyVerified) {
+    if (otpRow.locked_until && new Date(otpRow.locked_until) > nowDate) {
+      throw new Error("otp_locked");
+    }
+    if (String(otpRow.otp_code) !== inputOtp) {
+      const newAttempts = (Number(otpRow.attempt_count) || 0) + 1;
+      const lockUntil =
+        newAttempts >= SELF_PICKUP_OTP_MAX_ATTEMPTS
+          ? new Date(nowDate.getTime() + SELF_PICKUP_OTP_LOCK_MINUTES * 60_000).toISOString()
+          : null;
+      await sql`
+        UPDATE order_food_otps
+        SET attempt_count = ${newAttempts},
+            locked_until = ${lockUntil}::timestamptz,
+            updated_at = ${now}::timestamptz
+        WHERE id = ${otpRow.id}
+      `;
+      try {
+        await sql`
+          INSERT INTO order_food_otp_audit (order_id, action, otp_type)
+          VALUES (${corePk}, 'VALIDATE_FAIL', 'PICKUP')
+        `;
+      } catch {
+        /* non-fatal */
+      }
+      throw new Error("invalid_otp");
+    }
+
+    await sql`
+      UPDATE order_food_otps
+      SET verified_at = ${now}::timestamptz,
+          verified_by = 'merchant',
+          attempt_count = 0,
+          locked_until = NULL,
+          updated_at = ${now}::timestamptz
+      WHERE id = ${otpRow.id}
+    `;
+    try {
+      await sql`
+        INSERT INTO order_food_otp_audit (order_id, action, otp_type)
+        VALUES (${corePk}, 'VALIDATE_SUCCESS', 'PICKUP')
+      `;
+    } catch {
+      /* non-fatal */
+    }
+
+    await sql`
+      UPDATE orders_food
+      SET handed_over_to_rider_at = COALESCE(handed_over_to_rider_at, ${now}::timestamptz),
+          updated_at = ${now}::timestamptz
+      WHERE id = ${ordersFoodId}
+    `;
+    await sql`
+      UPDATE orders_core
+      SET handed_over_to_rider_at = COALESCE(handed_over_to_rider_at, ${now}::timestamptz),
+          updated_at = ${now}::timestamptz
+      WHERE id = ${corePk}
+    `;
+  } else if (String(otpRow.otp_code) !== inputOtp) {
+    throw new Error("invalid_otp");
+  }
+
+  if (status === "READY_FOR_PICKUP") {
+    await patchMerchantFoodOrderStatus(sql, storeId, ordersFoodId, "OUT_FOR_DELIVERY", null, {
+      actionSource: "app",
+      actionMode: "manual",
+    });
+    status = "OUT_FOR_DELIVERY";
+  }
+
+  if (status === "OUT_FOR_DELIVERY") {
+    return patchMerchantFoodOrderStatus(sql, storeId, ordersFoodId, "DELIVERED", null, {
+      actionSource: "app",
+      actionMode: "manual",
+    });
+  }
+
+  const orders = await loadMerchantFoodOrders(sql, storeId, { ordersFoodId });
+  const updated = orders[0];
+  if (!updated) throw new Error("order_not_found");
+  return updated;
+}
+
 export async function loadMerchantFoodOrderRidersLog(
   sql: Sql,
   storeId: number,
@@ -3117,10 +3300,14 @@ export async function patchMerchantFoodOrderStatus(
   try {
     const orderIdText = existing.core_order_id ?? String(existing.order_id ?? "");
     const ownerRows = (await sql`
-      SELECT c.customer_id AS customer_user_id, s.user_id AS merchant_user_id, s.store_display_name AS store_name
+      SELECT
+        c.customer_id AS customer_user_id,
+        mp.parent_merchant_id AS merchant_user_id,
+        s.store_display_name AS store_name
       FROM public.orders_core oc
       LEFT JOIN public.customers c ON c.id = oc.customer_id
       LEFT JOIN public.merchant_stores s ON s.id = ${storeId}
+      LEFT JOIN public.merchant_parents mp ON mp.id = s.parent_id
       WHERE oc.id = ${corePk}
       LIMIT 1
     `) as unknown as Array<{ customer_user_id: string | null; merchant_user_id: string | null; store_name: string | null }>;

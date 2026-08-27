@@ -69,8 +69,10 @@ import {
   PLATFORM_DEFAULT_PREP_MINUTES,
   PREP_TIME_MIN,
   PREP_TIME_MAX,
+  resolveStoreDefaultPrepMinutes,
 } from "@/lib/order-prep-time";
 import { TypographyVariantProvider } from "@/lib/typographyVariant";
+import { fetchStoreProfile } from "@/services/menuApi";
 import * as SecureStore from "expo-secure-store";
 
 // v3: clear prior dismiss poison (v1 auto-dismissed on list flicker; v2 still
@@ -480,6 +482,7 @@ export default function IncomingOrderModal() {
   const [customizationItem, setCustomizationItem] = useState<LineItem | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [prepMinutes, setPrepMinutes] = useState(PLATFORM_DEFAULT_PREP_MINUTES);
+  const storeDefaultPrepRef = useRef(PLATFORM_DEFAULT_PREP_MINUTES);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [fuseBaselineMs, setFuseBaselineMs] = useState(0);
   const [toast, setToast] = useState({ visible: false, message: "" });
@@ -598,8 +601,29 @@ export default function IncomingOrderModal() {
 
   useEffect(() => {
     if (!sheetOrder) return;
-    setPrepMinutes(PLATFORM_DEFAULT_PREP_MINUTES);
+    setPrepMinutes(storeDefaultPrepRef.current);
   }, [sheetOrder?.id]);
+
+  useEffect(() => {
+    if (!selectedStore?.store_id || !token) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const profile = await fetchStoreProfile(selectedStore.store_id, token);
+        if (cancelled) return;
+        const def = resolveStoreDefaultPrepMinutes(profile.avg_preparation_time_minutes);
+        storeDefaultPrepRef.current = def;
+        setPrepMinutes((prev) =>
+          sheetOrderRef.current ? def : prev === PLATFORM_DEFAULT_PREP_MINUTES ? def : prev
+        );
+      } catch {
+        /* keep platform default */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedStore?.store_id, token]);
 
   useEffect(() => {
     setSheetOpen(!!sheetOrder);
@@ -981,7 +1005,7 @@ export default function IncomingOrderModal() {
 
   const stepPrep = useCallback((delta: number) => {
     setPrepMinutes((prev) =>
-      clampPrepMinutes(prev + delta, PLATFORM_DEFAULT_PREP_MINUTES)
+      clampPrepMinutes(prev + delta, storeDefaultPrepRef.current)
     );
   }, []);
 
@@ -1097,11 +1121,24 @@ export default function IncomingOrderModal() {
     if (!order) {
       return [{ key: "delivery", icon: "bicycle-outline", text: "GatiMitra delivery", tone: "delivery" }];
     }
+    const isSelfPickup = order.deliveryType === "SELF_PICKUP";
     const notes = parseMerchantInstructionsList(order.merchantInstructionsList).filter(
       (line) => !/cutlery|utensil/i.test(line)
     );
     const slides: IncomingBannerSlide[] = [
-      { key: "delivery", icon: "bicycle-outline", text: "GatiMitra delivery", tone: "delivery" },
+      isSelfPickup
+        ? {
+            key: "pickup",
+            icon: "bag-handle-outline",
+            text: "Self-Pick-Up",
+            tone: "pickup",
+          }
+        : {
+            key: "delivery",
+            icon: "bicycle-outline",
+            text: "GatiMitra delivery",
+            tone: "delivery",
+          },
     ];
     if (order.requiresUtensils != null) {
       slides.push({
@@ -1120,13 +1157,12 @@ export default function IncomingOrderModal() {
       });
     });
     return slides;
-  }, [order?.id, order?.merchantInstructionsList, order?.requiresUtensils]);
+  }, [order?.id, order?.deliveryType, order?.merchantInstructionsList, order?.requiresUtensils]);
 
   if (!storeId && !actionStoreId) return null;
 
-  // Deterministic merchant bill: item subtotal (Boost/BOGO-adjusted nets) + packaging
-  // − frozen orders_core.merchant_precision_discount — recomputed from items (total: 0),
-  // matching PartnerIncomingOrderModal exactly.
+  // Prefer frozen total_ctm / pricing.total (Partner Site SSOT) so Accept sheet
+  // matches Active cards instead of recomputing from customer-priced lines.
   const incomingBill = order ? merchantIncomingBillPartsFromOrder(order) : null;
   const sheetVisible =
     !!order && !rejectOpen && !allItemsOpen && !billBreakdownOpen && !customizationItem;
@@ -1272,7 +1308,7 @@ export default function IncomingOrderModal() {
                     </View>
                   ) : null}
 
-                  {order.dropAddress ? (
+                  {order.deliveryType !== "SELF_PICKUP" && order.dropAddress ? (
                     <View style={styles.addressCard}>
                       <Ionicons name="location-outline" size={16} color={GatiMitraMerchant.textSecondary} />
                       <Text style={styles.addressText} numberOfLines={3}>

@@ -28,6 +28,7 @@ export type OrderSummary = {
   totalAmount?: number;
   createdAt: string;
   paymentStatus?: string | null;
+  paymentMethod?: string | null;
   checkoutMetadata?: Record<string, unknown> | null;
   items?: {
     name: string;
@@ -63,6 +64,8 @@ export type OrderSummary = {
   /** Immutable delivery drop snapshot from order placement (orders_core.drop_*). */
   deliveryLat?: number | null;
   deliveryLng?: number | null;
+  /** Checkout fulfillment: 'delivery' (courier) or 'self_pickup' (takeaway). */
+  deliveryType?: string | null;
   /** Trip distance in km when available (rides). Mirrors OrderDetail.distanceKm. */
   distanceKm?: number | null;
   billingSnapshot?: Record<string, unknown> | null;

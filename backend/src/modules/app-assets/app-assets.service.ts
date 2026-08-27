@@ -92,7 +92,10 @@ export async function ensureAppStaticAssetSeeds(): Promise<void> {
         ${seed.description},
         ${seed.sortOrder}
       )
-      ON CONFLICT (id) DO NOTHING
+      ON CONFLICT (id) DO UPDATE SET
+        label = EXCLUDED.label,
+        description = EXCLUDED.description,
+        sort_order = EXCLUDED.sort_order
     `;
   }
 }

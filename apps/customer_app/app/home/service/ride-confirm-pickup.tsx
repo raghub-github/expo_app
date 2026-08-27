@@ -96,6 +96,8 @@ export default function RideConfirmPickupScreen() {
     customerTipAmount?: string;
     pickupPincode?: string;
     pickupState?: string;
+    selectedPlatformOfferId?: string;
+    forceNoAutoOffer?: string;
   }>();
 
   const initialLat = params.pickupLat != null ? Number(params.pickupLat) : 24.7969;
@@ -345,6 +347,10 @@ export default function RideConfirmPickupScreen() {
       if (params.bookedForSelf) navParams.bookedForSelf = String(params.bookedForSelf);
       if (params.passengerName) navParams.passengerName = String(params.passengerName);
       if (params.passengerPhone) navParams.passengerPhone = String(params.passengerPhone);
+      if (params.selectedPlatformOfferId) {
+        navParams.selectedPlatformOfferId = String(params.selectedPlatformOfferId);
+      }
+      if (params.forceNoAutoOffer) navParams.forceNoAutoOffer = String(params.forceNoAutoOffer);
 
       router.replace({ pathname: "/home/service/ride-searching", params: navParams });
     } finally {

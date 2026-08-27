@@ -6,6 +6,10 @@ import {
   listRideCatalogVehicleAssignments,
   saveRideCatalogVehicleAssignments,
 } from "@/lib/db/operations/customer-ride-service-catalog-admin";
+import {
+  listRideCatalogFareDiscounts,
+  saveRideCatalogFareDiscounts,
+} from "@/lib/db/operations/ride-catalog-fare-discounts";
 
 export const runtime = "nodejs";
 
@@ -13,11 +17,12 @@ export async function GET() {
   const gate = await requireSuperAdminApi();
   if (!gate.ok) return gate.response;
   try {
-    const [catalog, vehicles] = await Promise.all([
+    const [catalog, vehicles, fareDiscounts] = await Promise.all([
       listCustomerRideServiceCatalog(),
       listRideCatalogVehicleAssignments(),
+      listRideCatalogFareDiscounts(),
     ]);
-    return NextResponse.json({ success: true, catalog, vehicles });
+    return NextResponse.json({ success: true, catalog, vehicles, fareDiscounts });
   } catch (e) {
     console.error("[super-admin customer-ride-service-catalog GET]", e);
     const msg = e instanceof Error ? e.message : "Failed";
@@ -34,6 +39,7 @@ const putSchema = z.object({
       })
     )
     .min(1),
+  fareDiscounts: z.record(z.string(), z.number().min(0).max(500)).optional(),
 });
 
 export async function PUT(req: NextRequest) {
@@ -54,7 +60,10 @@ export async function PUT(req: NextRequest) {
 
   try {
     const result = await saveRideCatalogVehicleAssignments(parsed.data.updates);
-    return NextResponse.json({ success: true, ...result });
+    const fareDiscounts = parsed.data.fareDiscounts
+      ? await saveRideCatalogFareDiscounts(parsed.data.fareDiscounts)
+      : await listRideCatalogFareDiscounts();
+    return NextResponse.json({ success: true, ...result, fareDiscounts });
   } catch (e) {
     console.error("[super-admin customer-ride-service-catalog PUT]", e);
     const msg = e instanceof Error ? e.message : "Failed";

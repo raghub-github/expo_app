@@ -105,7 +105,17 @@ export function resolveDispatchManualStage(params: {
     return "cancelled";
   }
 
-  if (core === "delivered" || cur === "DELIVERED" || food === "DELIVERED") {
+  if (
+    core === "delivered" ||
+    core === "completed" ||
+    core === "complete" ||
+    cur === "DELIVERED" ||
+    cur === "COMPLETED" ||
+    cur === "COMPLETE" ||
+    food === "DELIVERED" ||
+    food === "COMPLETED" ||
+    food === "COMPLETE"
+  ) {
     return "delivered";
   }
 

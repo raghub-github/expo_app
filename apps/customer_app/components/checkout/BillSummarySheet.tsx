@@ -319,6 +319,10 @@ export type BillSummarySheetProps = {
   showItemTotalStrike: boolean;
   /** When set with showItemTotalStrike, Item total nets to this (merchant Boost only). */
   itemTotalNetOverride?: number | null;
+  /** Explicit list/strike amount for Item total (preferred over serverBill.itemTotal). */
+  itemTotalStrikeAmount?: number | null;
+  /** Applied savings for banner + "You saved" row (item deals + bill discounts). */
+  youSavedAmount?: number;
   /** GatiCash wallet applied on checkout (INR). */
   gatiCashApplyAmount?: number;
   /** Missed-offer GatiCash credit selected for after order (INR, informational only). */
@@ -353,6 +357,8 @@ export function BillSummarySheet({
   visibleDiscounts,
   showItemTotalStrike,
   itemTotalNetOverride = null,
+  itemTotalStrikeAmount = null,
+  youSavedAmount = 0,
   gatiCashApplyAmount = 0,
   missedOfferWalletPendingAmount = 0,
   missedOfferUnlockDiscount = 0,
@@ -485,7 +491,17 @@ export function BillSummarySheet({
     return gap > 0.05 ? Math.round(gap * 100) / 100 : 0;
   }, [serverBill, discountRows, bogoDiscountTotal, missedOfferUnlockDiscount]);
 
-  const showSavingsBanner = serverBill != null && serverBill.discountTotal > 0.005;
+  const showSavingsBanner = youSavedAmount > 0.005 || (serverBill != null && serverBill.discountTotal > 0.005);
+  const savingsBannerTotal =
+    youSavedAmount > 0.005 ? youSavedAmount : serverBill?.discountTotal ?? 0;
+  const showYouSavedRow = youSavedAmount > 0.005;
+
+  const itemTotalStrikeValue =
+    itemTotalStrikeAmount != null && itemTotalStrikeAmount > 0.005
+      ? itemTotalStrikeAmount
+      : serverBill?.itemTotal ?? 0;
+  const itemTotalNetValue =
+    itemTotalNetOverride ?? serverBill?.itemsNetAfterDiscounts ?? serverBill?.itemTotal ?? 0;
 
   const deliveryOriginalInr =
     deliveryFeeStrikeAmount ??
@@ -556,18 +572,30 @@ export function BillSummarySheet({
                   <BillLineRow
                     label="Item total"
                     valueNode={
-                      showItemTotalStrike ? (
+                      showItemTotalStrike && itemTotalStrikeValue > itemTotalNetValue + 0.005 ? (
                         <View style={styles.deliveryValueCluster}>
-                          <AnimatedAsStrike value={serverBill.itemTotal} />
-                          <AnimatedBillValue
-                            value={itemTotalNetOverride ?? serverBill.itemsNetAfterDiscounts}
-                          />
+                          <AnimatedAsStrike value={itemTotalStrikeValue} />
+                          <AnimatedBillValue value={itemTotalNetValue} />
                         </View>
                       ) : (
                         <AnimatedBillValue value={serverBill.itemTotal} />
                       )
                     }
                   />
+
+                  {showYouSavedRow ? (
+                    <BillLineRow
+                      label="You saved"
+                      valueNode={
+                        <AnimatedBillValue
+                          value={youSavedAmount}
+                          style={[styles.discountValue, dark && styles.discountValueDark]}
+                        />
+                      }
+                      labelAccent
+                      rowStyle={styles.discountRow}
+                    />
+                  ) : null}
 
                   {serverBill.addonTotal > 0.005 ? (
                     <BillLineRow label="Add-ons" value={fmt(serverBill.addonTotal)} />
@@ -743,7 +771,7 @@ export function BillSummarySheet({
 
                   {showSavingsBanner ? (
                     <BillSavingsBanner
-                      totalSaved={serverBill.discountTotal}
+                      totalSaved={savingsBannerTotal}
                       subscriptionWaived={subscriptionWaivedInr}
                       planName={subscriptionPlanName}
                     />
@@ -862,6 +890,7 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     color: "#94A3B8",
     textDecorationLine: "line-through",
+    textDecorationColor: "#94A3B8",
   },
   waivedValue: { fontSize: 14, fontWeight: "700", color: GM.emerald },
   sectionDivider: { height: StyleSheet.hairlineWidth, backgroundColor: "#E5E7EB", marginVertical: 8 },

@@ -22,11 +22,18 @@ export const CX = {
   },
   ride: {
     banner: "ride.banner",
+    banner2: "ride.banner_2",
+    banner3: "ride.banner_3",
+    banner4: "ride.banner_4",
+    banner5: "ride.banner_5",
+    banner6: "ride.banner_6",
     bottomBanner: "ride.bottom_banner",
     bike: "ride.bike",
     auto: "ride.auto",
     cab: "ride.cab",
     cabPremium: "ride.cab_premium",
+    /** CMS slot `customer.ride.travel` — Auto EV artwork for EV Auto. */
+    evAuto: "ride.travel",
     travel: "ride.travel",
     rideCard: "ride.ride_card",
     waitingHero: "ride.waiting_hero",

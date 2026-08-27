@@ -5,6 +5,7 @@ import { resolveItemPricing } from "../pricing/canonicalItemPricing.js";
 import { loadMerchantOffersForPricing } from "../pricing/loadMerchantOffersForPricing.js";
 import type { MerchantOfferRow } from "../billing/types.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
+import { foodTypeIsListedAsVeg } from "../../lib/food-order-veg.js";
 import { listStores } from "./merchant.service.js";
 import {
   getCustomerVisibleApprovalExpr,
@@ -130,7 +131,7 @@ function mapItemRow(
     discountPercentage,
     storePublicId: String(r.store_public_id),
     storeName: String(r.store_name),
-    isVeg: String(r.food_type ?? "").toLowerCase().startsWith("veg"),
+    isVeg: foodTypeIsListedAsVeg(r.food_type),
     isPopular: r.is_popular === true,
     itemTags: Array.isArray(r.item_tags) ? r.item_tags.filter(Boolean).map(String) : [],
   };

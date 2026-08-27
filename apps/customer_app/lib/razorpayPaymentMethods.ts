@@ -79,6 +79,30 @@ export function orderPayloadPaymentMethod(item: CheckoutPayMethodItem): string {
   return item.method;
 }
 
+/** Canonical GatiMitra method → Razorpay Standard Checkout `method` string. */
+export const RAZORPAY_METHOD_MAP: Record<CheckoutPayGatewayMethod, CheckoutPayGatewayMethod> = {
+  upi: "upi",
+  card: "card",
+  netbanking: "netbanking",
+  wallet: "wallet",
+};
+
+/** Snapshot for Razorpay open — includes specific UPI app / wallet when checkout selected one. */
+export function toRazorpayCheckoutMethod(item: CheckoutPayMethodItem): {
+  method: CheckoutPayGatewayMethod;
+  upiApp?: string;
+  wallet?: string;
+} {
+  const method = RAZORPAY_METHOD_MAP[item.method] ?? "upi";
+  if (method === "wallet" && item.wallet) {
+    return { method, wallet: item.wallet };
+  }
+  if (method === "upi" && item.upiApp) {
+    return { method, upiApp: item.upiApp };
+  }
+  return { method };
+}
+
 export function payInstrumentShortLabel(item: CheckoutPayMethodItem): string {
   const raw = item.label.replace(/\s+UPI$/i, "").trim();
   if (item.method === "card") return "Card";

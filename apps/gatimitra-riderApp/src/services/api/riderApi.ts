@@ -66,6 +66,9 @@ const OrderSummarySchema = z.object({
   customerPrimaryPhone: z.string().nullable().optional(),
   customerAlternateName: z.string().nullable().optional(),
   customerAlternatePhone: z.string().nullable().optional(),
+  customerPhoneMasked: z.string().nullable().optional(),
+  customerPrimaryPhoneMasked: z.string().nullable().optional(),
+  customerAlternatePhoneMasked: z.string().nullable().optional(),
   pickupAddressGeocoded: z.string().optional(),
   dropAddressGeocoded: z.string().optional(),
   foodItems: z
@@ -90,6 +93,7 @@ const OrderSummarySchema = z.object({
   passengerRating: z.number().nullable().optional(),
   cancellationPenaltyApplied: z.boolean().optional(),
   cancellationPenaltyAmount: z.number().nullable().optional(),
+  cancelledByType: z.string().nullable().optional(),
 });
 
 const RiderBankAddGateSchema = z.object({
@@ -299,6 +303,7 @@ const RiderLedgerEntrySchema = z.object({
   serviceType: z.string().nullable(),
   orderPublicId: z.string().nullable(),
   createdAt: z.string(),
+  rejectionReason: z.string().nullable().optional(),
 });
 
 const RiderLedgerResponseSchema = z.object({

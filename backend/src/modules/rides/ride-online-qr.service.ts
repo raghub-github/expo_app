@@ -8,6 +8,8 @@ import { computeRideBillForCustomerOrder } from "./ride-bill.service.js";
 import { rideBillingToSettlementComponents } from "./settlement/billingToComponents.js";
 import { postOnlineRideSettlement } from "./settlement/rideSettlement.engine.js";
 import { createRazorpayQrCode } from "../../services/payment/razorpayService.js";
+import { getEnv } from "../../config/env.js";
+import { ulid } from "ulid";
 
 /**
  * Rider-presented dynamic UPI QR for a COMPLETED person ride (online collection).
@@ -23,6 +25,11 @@ const QR_TTL_SECONDS = 30 * 60; // auto-close after 30 minutes
 const QR_GATEWAY = "razorpay";
 const QR_METHOD = "upi_qr";
 const QR_SOURCE = "ride_online_qr";
+
+function buildDummyQrImageUrl(orderIdText: string, amount: number): string {
+  const upiPayload = `upi://pay?pa=gatimitra@razorpay&pn=GatiMitra&am=${amount}&cu=INR&tn=${orderIdText}`;
+  return `https://api.qrserver.com/v1/create-qr-code/?size=512x512&data=${encodeURIComponent(upiPayload)}`;
+}
 
 function riderOrderRefWhere(riderId: number, orderRef: string) {
   const trimmed = orderRef.trim();
@@ -134,6 +141,47 @@ export async function createRideOnlineQr(
   }
 
   const closeBy = Math.floor(Date.now() / 1000) + QR_TTL_SECONDS;
+
+  const env = getEnv();
+  const dummyModeActive =
+    env.PAYMENT_DUMMY_MODE || !env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET;
+
+  if (dummyModeActive) {
+    if (!env.PAYMENT_DUMMY_MODE && env.NODE_ENV !== "development") {
+      throw Object.assign(new Error("Payment gateway not configured"), {
+        statusCode: 503,
+        code: "QR_CREATE_FAILED",
+      });
+    }
+    const qrId = `dummy_qr_${ulid()}`;
+    const qrImageUrl = buildDummyQrImageUrl(orderIdText, customerBill);
+    await db.insert(ordersCorePayments).values({
+      orderId: orderIdText,
+      paymentGateway: "dummy",
+      paymentMethod: QR_METHOD,
+      transactionId: qrId,
+      amount: String(customerBill),
+      currency: "INR",
+      paymentStatus: "INITIATED",
+      gatewayResponse: {
+        source: QR_SOURCE,
+        qrId,
+        imageUrl: qrImageUrl,
+        amount: customerBill,
+        closeBy,
+        dummyMode: true,
+      },
+    });
+    return {
+      ok: true,
+      orderId: orderIdText,
+      qrId,
+      qrImageUrl,
+      amount: customerBill,
+      reused: false,
+    };
+  }
+
   const qr = await createRazorpayQrCode({
     amountPaise: Math.round(customerBill * 100),
     description: `GatiMitra ride ${orderIdText}`,

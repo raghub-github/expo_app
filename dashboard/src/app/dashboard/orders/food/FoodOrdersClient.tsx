@@ -25,6 +25,7 @@ import {
   fetchOrderCorePayload,
   orderDetailQueryKey,
 } from "@/hooks/queries/useOrderDetailQuery";
+import { resolveFoodOrderDashboardAction } from "@/lib/orders/food-order-dashboard-status";
 // Dashboard UI tokens (aligned with tickets / home rails — charcoal primary, not mint)
 const ACCENT = "#121212"; // Primary CTA / active tab
 const ACCENT_TEXT = "#FFFFFF";
@@ -77,8 +78,8 @@ interface OrdersCoreRow {
   orderType: string;
   formattedOrderId: string | null;
   orderId: string | null;
-  status: string;
-  currentStatus: string | null;
+  status?: string | null;
+  currentStatus?: string | null;
   paymentStatus: string | null;
   createdAt: string;
   updatedAt: string;
@@ -109,6 +110,14 @@ interface OrdersCoreRow {
   isBulkOrder: boolean;
   /** Set when first ETA was breached — used for delayed row highlight. */
   etaBreachedAt?: string | Date | null;
+  foodOrderStatus?: string | null;
+  cancelledAt?: string | Date | null;
+  riderPickedUpAt?: string | Date | null;
+  /** From API — terminal outcome (Delivered / Cancelled / RTO - Delivered / …). */
+  isTerminal?: boolean;
+  isActionable?: boolean;
+  dashboardStage?: OrderStatusFilter | null;
+  dashboardAction?: string | null;
 }
 
 interface FilterState {
@@ -377,7 +386,7 @@ export default function FoodOrdersClient() {
   const [showUserTypeDropdown, setShowUserTypeDropdown] = useState(false);
   const deliveryRef = useRef<HTMLDivElement>(null);
   const userTypeRef = useRef<HTMLDivElement>(null);
-  /** Stage instruction shown in Action column when that status filter is selected */
+  /** Stage instruction for the selected tab — fallback only when row has no resolved action. */
   const STAGE_INSTRUCTION: Record<Exclude<OrderStatusFilter, null>, string> = {
     "PAYMENT DONE": "Verify with MX",
     ACCEPTED: "Check with MX & RX",
@@ -386,6 +395,38 @@ export default function FoodOrdersClient() {
     BULK: "Check with MX / RX / CX",
   };
   const stageInstructionText = selectedStatus ? STAGE_INSTRUCTION[selectedStatus] ?? "" : "";
+
+  const resolveRowAction = useCallback(
+    (row: OrdersCoreRow): { text: string | null; actionable: boolean } => {
+      const resolved = resolveFoodOrderDashboardAction({
+        status: row.status,
+        currentStatus: row.currentStatus,
+        foodOrderStatus: row.foodOrderStatus,
+        cancelledAt: row.cancelledAt,
+        isBulkOrder: row.isBulkOrder,
+        riderPickedUpAt: row.riderPickedUpAt,
+      });
+      // Prefer API enrichment when present; always re-check terminal as a safety layer.
+      if (row.isTerminal || resolved.isTerminal) {
+        return {
+          text: row.dashboardAction || resolved.action || "Delivered",
+          actionable: false,
+        };
+      }
+      if (row.dashboardAction) {
+        return { text: row.dashboardAction, actionable: row.isActionable !== false };
+      }
+      if (resolved.action) {
+        return { text: resolved.action, actionable: resolved.isActionable };
+      }
+      // Last resort: selected-tab instruction only for non-terminal active-stage rows.
+      return {
+        text: stageInstructionText || null,
+        actionable: Boolean(stageInstructionText),
+      };
+    },
+    [stageInstructionText]
+  );
 
   const setStatusFilter = useCallback(
     (status: OrderStatusFilter) => {
@@ -479,19 +520,22 @@ export default function FoodOrdersClient() {
     return () => window.removeEventListener(ORDER_LIST_SEARCH_REPEAT_EVENT, onRepeat);
   }, [refetchOrders]);
 
-  // Stage tab counts (ignore active search so CTAs always show stage volume).
+  // Stage tab counts — always from unscoped stage queries (never search result totals).
   const statusCountFilters = useMemo(
     () =>
       FOOD_STATUS_TABS.map(
         (status): OrdersFilters => ({
-          ...filtersForQuery,
+          orderType: "food",
           statusFilter: status,
           search: "",
           searchType: "Order Id",
+          page: 1,
+          limit: 20,
+          foodFilters: foodFiltersPayload,
           listSort: "newest",
         })
       ),
-    [filtersForQuery]
+    [foodFiltersPayload]
   );
   const statusCountQueries = useQueries({
     queries: statusCountFilters.map((tabFilters) => ({
@@ -510,13 +554,15 @@ export default function FoodOrdersClient() {
   });
   const statusCounts = useMemo(() => {
     const map = {} as Record<Exclude<OrderStatusFilter, null>, number>;
+    const searching = Boolean(urlSearch.trim());
     FOOD_STATUS_TABS.forEach((status, i) => {
+      // While searching, never substitute the search-hit total into a stage CTA count.
       const fromActive =
-        selectedStatus === status ? ordersData?.total : undefined;
+        !searching && selectedStatus === status ? ordersData?.total : undefined;
       map[status] = fromActive ?? statusCountQueries[i]?.data?.total ?? 0;
     });
     return map;
-  }, [selectedStatus, ordersData?.total, statusCountQueries]);
+  }, [selectedStatus, ordersData?.total, statusCountQueries, urlSearch]);
 
   // Prefetch other status tabs in the background so tab switches feel instant.
   useEffect(() => {
@@ -665,10 +711,13 @@ export default function FoodOrdersClient() {
 
   const refreshData = useCallback(() => {
     setManualRefreshing(true);
-    void Promise.resolve(refetchOrders()).finally(() => {
+    void Promise.all([
+      refetchOrders(),
+      queryClient.invalidateQueries({ queryKey: ["orders", "core", "food"] }),
+    ]).finally(() => {
       setManualRefreshing(false);
     });
-  }, [refetchOrders]);
+  }, [refetchOrders, queryClient]);
   const orderCount = total;
 
   const ROW_HEIGHT = 40;
@@ -706,6 +755,8 @@ export default function FoodOrdersClient() {
       // Search results always use white row bg (no delayed highlight).
       const isDelayed = !hasActiveSearch && Boolean(row.etaBreachedAt);
 
+      const { text: actionText, actionable } = resolveRowAction(row);
+
       return (
         <tr
           key={row.id}
@@ -739,11 +790,14 @@ export default function FoodOrdersClient() {
           <td
             className="px-2 py-1.5 max-w-[200px]"
             style={{ color: TABLE_TEXT }}
-            title={stageInstructionText || undefined}
+            title={actionText || undefined}
           >
-            {stageInstructionText ? (
-              <span className="text-[11px] font-medium" style={{ color: CHECKMARK_COLOR }}>
-                <OrderMixedText>{stageInstructionText}</OrderMixedText>
+            {actionText ? (
+              <span
+                className="text-[11px] font-medium"
+                style={{ color: actionable ? CHECKMARK_COLOR : "#64748b" }}
+              >
+                <OrderMixedText>{actionText}</OrderMixedText>
               </span>
             ) : (
               <span>—</span>
@@ -786,7 +840,7 @@ export default function FoodOrdersClient() {
         </tr>
       );
     },
-    [orders, stageInstructionText, queryClient, hasActiveSearch]
+    [orders, resolveRowAction, queryClient, hasActiveSearch]
   );
 
   // Helper function to get button styles - prevents hydration mismatch

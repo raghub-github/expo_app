@@ -29,7 +29,7 @@ const DEFAULT_DURATION_MS: Record<HomeBannerSlideType, number> = {
 };
 
 /** Shared height for top alert banners (icon + two text lines + CTA). */
-export const BANNER_HEIGHT = 76;
+export const BANNER_HEIGHT = 62;
 
 export function homeBannerDuration(type: HomeBannerSlideType): number {
   return DEFAULT_DURATION_MS[type];
@@ -70,8 +70,8 @@ const pagerStyles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 4,
-    marginTop: 4,
-    minHeight: 8,
+    marginTop: 2,
+    minHeight: 6,
   },
   dot: {
     width: 5,

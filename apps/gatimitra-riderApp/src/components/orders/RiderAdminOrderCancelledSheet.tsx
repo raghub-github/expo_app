@@ -11,11 +11,18 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme";
 import { useRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import {
+  normalizeRiderCancellationActor,
+  riderCancellationTitle,
+  type RiderCancellationActor,
+} from "@/src/lib/rider-cancellation-display";
 
 type Props = {
   visible: boolean;
   orderIdLabel?: string | null;
   penaltyAmount?: number | null;
+  /** customer | rider | admin | system — defaults to admin when order was removed server-side. */
+  cancelledByType?: string | null;
   onDismiss: () => void;
 };
 
@@ -29,11 +36,14 @@ export function RiderAdminOrderCancelledSheet({
   visible,
   orderIdLabel,
   penaltyAmount,
+  cancelledByType,
   onDismiss,
 }: Props) {
   const { t } = useTranslation();
   const bottomInset = useRiderBottomInset();
   const hasPenalty = penaltyAmount != null && penaltyAmount > 0;
+  const actor: RiderCancellationActor = normalizeRiderCancellationActor(cancelledByType);
+  const title = riderCancellationTitle(actor);
 
   return (
     <Modal
@@ -52,12 +62,7 @@ export function RiderAdminOrderCancelledSheet({
             <View style={styles.iconWrap}>
               <Ionicons name="close-circle" size={48} color={colors.error[600]} />
             </View>
-            <Text style={styles.title}>
-              {t(
-                "orders.adminCancelled.title",
-                "Order Cancelled by Gatimitra Team"
-              )}
-            </Text>
+            <Text style={styles.title}>{title}</Text>
             {orderIdLabel ? (
               <Text style={styles.orderId}>
                 {t("orders.adminCancelled.orderId", "Order {{id}}", { id: orderIdLabel })}

@@ -25,6 +25,7 @@ import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
 import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
 import { formatOrderDropAddress } from '@/lib/formatOrderAddress';
+import { isPartnerSelfPickupOrder } from '@/lib/partner-delivery-type';
 
 export type GatiMitraPrintStoreInfo = BillStoreInfo;
 
@@ -79,7 +80,7 @@ export function orderToBillPayload(
     taxInvoiceNumber: order.tax_invoice_number ?? null,
     customerName: order.customer_name?.trim() || null,
     dropAddress: formatOrderDropAddress(order.drop_address_normalized, order.drop_address_raw) || null,
-    pickupOtp: order.pickup_otp?.trim() || null,
+    pickupOtp: isPartnerSelfPickupOrder(order) ? null : order.pickup_otp?.trim() || null,
     items: items.map(mapBillItem),
     pricing: {
       subtotal: pricing.subtotal,

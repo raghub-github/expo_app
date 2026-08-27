@@ -78,6 +78,16 @@ export function shouldShowDashboardNavOverlay(fromPath: string, toHref: string):
   if (storePathRe.test(cleanPath) && storePathRe.test(cleanTarget)) {
     return false;
   }
+  // Super Admin hub ↔ inner settings: instant header back, no blocking overlay.
+  if (
+    cleanPath.startsWith("/dashboard/super-admin") &&
+    cleanTarget.startsWith("/dashboard/super-admin")
+  ) {
+    return false;
+  }
+  if (cleanPath.startsWith("/dashboard/users") && cleanTarget.startsWith("/dashboard/users")) {
+    return false;
+  }
   return true;
 }
 

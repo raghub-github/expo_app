@@ -1,5 +1,6 @@
 import { getSupabase } from "../../lib/supabase.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
+import { foodTypeIsListedAsVeg } from "../../lib/food-order-veg.js";
 
 const TABLE = "customer_menu_item_bookmarks";
 
@@ -147,7 +148,7 @@ export async function listBookmarkedMenuItems(
         name: String(menu.item_name ?? "Item"),
         imageUrl: toAbsoluteClientMediaUrl(menu.item_image_url ?? null),
         price,
-        isVeg: (menu.food_type ?? "").toLowerCase().includes("veg"),
+        isVeg: foodTypeIsListedAsVeg(menu.food_type),
         storeName: (store.store_display_name ?? store.store_name ?? "Restaurant").trim(),
       });
     }

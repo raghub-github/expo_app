@@ -92,3 +92,16 @@ export function formatNotificationDateTime(raw: string | null | undefined): stri
     });
   }
 }
+
+/**
+ * Inbox cards already show a type icon — strip leading title emojis/symbols
+ * so they don’t overlap the Ionicons glyph in the top-left corner.
+ */
+export function displayNotificationTitle(raw: string | null | undefined): string {
+  const cleaned = String(raw ?? "")
+    .replace(/^[\s\p{Extended_Pictographic}\p{Emoji_Presentation}\p{Emoji}\uFE0F\u200D]+/gu, "")
+    .replace(/^[\s•·\-–—|:]+/u, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || "Notification";
+}

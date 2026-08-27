@@ -1,8 +1,20 @@
 import type { ReactNode } from "react";
-import { Modal, View, Pressable, StyleSheet, Platform } from "react-native";
+import { useEffect, useState } from "react";
+import {
+  Modal,
+  View,
+  Pressable,
+  StyleSheet,
+  Platform,
+  Keyboard,
+  type KeyboardEvent,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
+
+/** Extra lift above keyboard so actions aren't clipped by suggestion/tool bars. */
+const KEYBOARD_CLEARANCE_PX = 36;
 
 type Props = {
   visible: boolean;
@@ -13,6 +25,8 @@ type Props = {
   maxHeightPercent?: `${number}%`;
   /** Hide the floating close button above the sheet (use an in-sheet close control). */
   hideCloseFab?: boolean;
+  /** Lift sheet above the soft keyboard when an input is focused. */
+  keyboardAware?: boolean;
 };
 
 export function MerchantBottomSheetShell({
@@ -22,8 +36,79 @@ export function MerchantBottomSheetShell({
   footer,
   maxHeightPercent = "88%",
   hideCloseFab = false,
+  keyboardAware = false,
 }: Props) {
   const insets = useSafeAreaInsets();
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  useEffect(() => {
+    if (!keyboardAware || !visible) {
+      setKeyboardHeight(0);
+      return;
+    }
+    const onShow = (e: KeyboardEvent) => {
+      setKeyboardHeight(e.endCoordinates?.height ?? 0);
+    };
+    const onHide = () => setKeyboardHeight(0);
+    const showSub = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+      onShow
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide",
+      onHide
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [keyboardAware, visible]);
+
+  const sheet = (
+    <View
+      style={[
+        styles.sheetWrap,
+        { maxHeight: maxHeightPercent },
+        keyboardAware && keyboardHeight > 0
+          ? {
+              marginBottom: Math.max(
+                0,
+                keyboardHeight -
+                  (Platform.OS === "android" ? insets.bottom : 0) +
+                  KEYBOARD_CLEARANCE_PX
+              ),
+            }
+          : null,
+      ]}
+    >
+      {!hideCloseFab ? (
+        <Pressable
+          onPress={onClose}
+          style={styles.closeFab}
+          hitSlop={12}
+          accessibilityRole="button"
+          accessibilityLabel="Close"
+        >
+          <Ionicons name="close" size={22} color={GatiMitraMerchant.textPrimary} />
+        </Pressable>
+      ) : null}
+
+      {/* Sheet bg must paint to the physical bottom; safe-area is inner padding only. */}
+      <View style={styles.sheet}>
+        <View style={{ paddingBottom: Math.max(insets.bottom, 8) }}>
+          {children}
+          {footer}
+        </View>
+      </View>
+    </View>
+  );
+
+  const overlayBody = (
+    <>
+      <Pressable style={styles.dismissArea} onPress={onClose} accessibilityLabel="Close" />
+      {sheet}
+    </>
+  );
 
   return (
     <Modal
@@ -34,30 +119,7 @@ export function MerchantBottomSheetShell({
       statusBarTranslucent
       {...(Platform.OS === "android" ? { navigationBarTranslucent: true } : null)}
     >
-      <View style={styles.overlay}>
-        <Pressable style={styles.dismissArea} onPress={onClose} accessibilityLabel="Close" />
-        <View style={[styles.sheetWrap, { maxHeight: maxHeightPercent }]}>
-          {!hideCloseFab ? (
-            <Pressable
-              onPress={onClose}
-              style={styles.closeFab}
-              hitSlop={12}
-              accessibilityRole="button"
-              accessibilityLabel="Close"
-            >
-              <Ionicons name="close" size={22} color={GatiMitraMerchant.textPrimary} />
-            </Pressable>
-          ) : null}
-
-          {/* Sheet bg must paint to the physical bottom; safe-area is inner padding only. */}
-          <View style={styles.sheet}>
-            <View style={{ paddingBottom: Math.max(insets.bottom, 8) }}>
-              {children}
-              {footer}
-            </View>
-          </View>
-        </View>
-      </View>
+      <View style={styles.overlay}>{overlayBody}</View>
     </Modal>
   );
 }

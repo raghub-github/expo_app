@@ -28,6 +28,7 @@ import {
   loadCustomerOrderCounts,
   loadOrderOrdinalsByCoreId,
 } from '@/lib/food-order-customer-stats';
+import { mapPartnerDeliveryType } from '@/lib/partner-delivery-type';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -72,7 +73,7 @@ type FoodRow = Record<string, unknown>;
  */
 export async function GET(req: NextRequest) {
   try {
-    return await withRouteTimeout('food-orders.get', 40_000, async () => {
+    return await withRouteTimeout('food-orders.get', 90_000, async () => {
     const { searchParams } = new URL(req.url);
     const storeId = searchParams.get('store_id') || searchParams.get('storeId');
     const status = searchParams.get('status');
@@ -310,30 +311,33 @@ export async function GET(req: NextRequest) {
         })
       ),
     ];
-    const rawItemsByOrderTextId = await loadCoreDbItemsByOrderTextIds(db, orderIdTexts);
-
     const riderIds = [
       ...new Set(coreRows.map((c) => c.rider_id).filter((x) => x != null).map((x) => Number(x))),
     ];
-    const riderById = new Map<number, Record<string, unknown>>();
-    const riderSelfieById =
-      riderIds.length > 0 ? await buildRiderSelfieUrlMap(db, riderIds) : new Map<number, string | null>();
-    if (riderIds.length > 0) {
-      const { data: riders } = await db
-        .from('riders')
-        .select('id, name, mobile, selfie_url, status, city, lat, lon')
-        .in('id', riderIds);
-      for (const r of riders || []) {
-        riderById.set(Number((r as { id: number }).id), r as Record<string, unknown>);
-      }
-    }
-
     const orderTexts = coreRows
       .map((c) => String((c as CoreRow).order_id ?? '').trim())
       .filter(Boolean);
-    const snapshotsByOrderText = await loadSnapshotsByOrderTexts(db, orderTexts, store.id);
 
-    const uniformByCoreId = await loadMerchantRiderUniformByOrderCoreIds(db, coreIds);
+    const [rawItemsByOrderTextId, riderSelfieById, ridersResult, snapshotsByOrderText, uniformByCoreId] =
+      await Promise.all([
+        loadCoreDbItemsByOrderTextIds(db, orderIdTexts),
+        riderIds.length > 0
+          ? buildRiderSelfieUrlMap(db, riderIds)
+          : Promise.resolve(new Map<number, string | null>()),
+        riderIds.length > 0
+          ? db
+              .from('riders')
+              .select('id, name, mobile, selfie_url, status, city, lat, lon')
+              .in('id', riderIds)
+          : Promise.resolve({ data: [] as unknown[] }),
+        loadSnapshotsByOrderTexts(db, orderTexts, store.id),
+        loadMerchantRiderUniformByOrderCoreIds(db, coreIds),
+      ]);
+
+    const riderById = new Map<number, Record<string, unknown>>();
+    for (const r of ridersResult.data || []) {
+      riderById.set(Number((r as { id: number }).id), r as Record<string, unknown>);
+    }
 
     const ordersWithDetails = await Promise.all(
       coreRows.map(async (core) => {
@@ -699,6 +703,10 @@ export async function GET(req: NextRequest) {
             ((core as Record<string, unknown>).payment_method as string | null) ??
             (food?.payment_method as string | null) ??
             null,
+          delivery_type: mapPartnerDeliveryType(
+            (core.delivery_type as string | null | undefined) ?? null,
+            billingSnap
+          ),
           rto_otp:
             (food?.rto_otp as string | null) ??
             ((core as Record<string, unknown>).rto_otp as string | null) ??

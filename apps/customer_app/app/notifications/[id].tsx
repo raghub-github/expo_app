@@ -38,7 +38,7 @@ import {
 } from "@/lib/dismissedNotifications";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { StoreFonts } from "@/constants/storeTypography";
-import { formatNotificationDateTime } from "@/lib/notificationTime";
+import { displayNotificationTitle, formatNotificationDateTime } from "@/lib/notificationTime";
 import { siblingNotificationIds, resolveActiveOrderPath } from "@/lib/notificationDedupe";
 
 const LORA = StoreFonts.loraRegular;
@@ -317,9 +317,9 @@ export default function NotificationDetailScreen() {
           <View style={styles.card}>
             <View style={styles.topRow}>
               <View style={styles.iconWrap}>
-                <Ionicons name={ICON_MAP[type]} size={24} color={ICON_COLOR[type]} />
+                <Ionicons name={ICON_MAP[type]} size={18} color={ICON_COLOR[type]} />
               </View>
-              <Text style={styles.title}>{item.title?.trim() || "Notification"}</Text>
+              <Text style={styles.title}>{displayNotificationTitle(item.title)}</Text>
             </View>
             {when ? <Text style={styles.time}>{when}</Text> : null}
             <Text style={styles.body}>{item.body?.trim() || ""}</Text>
@@ -420,15 +420,17 @@ const styles = StyleSheet.create({
   },
   topRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 12,
   },
   iconWrap: {
-    width: 28,
-    height: 28,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
+    backgroundColor: "rgba(20, 184, 166, 0.08)",
   },
   title: {
     flex: 1,
@@ -436,6 +438,7 @@ const styles = StyleSheet.create({
     fontFamily: LORA_BOLD,
     color: COLORS.textPrimary,
     lineHeight: 24,
+    paddingTop: 4,
   },
   time: {
     marginTop: 12,

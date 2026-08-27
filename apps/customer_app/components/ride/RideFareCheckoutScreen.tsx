@@ -13,7 +13,7 @@ import { StatusBar } from "expo-status-bar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { HEADER_PADDING_TOP, resolveBottomSafeInset } from "@/constants/layout";
+import { resolveBottomSafeInset, resolveTopSafeInset, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import type { OrderDetail } from "@/services/order.service";
 import { orderService } from "@/services/order.service";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult } from "@/components/RazorpayCheckoutModal";
@@ -469,7 +469,7 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
-      <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP }]}>
+      <View style={[styles.header, { paddingTop: resolveTopSafeInset(insets.top) + STATUS_BAR_TO_HEADER_GAP }]}>
         <TouchableOpacity onPress={onBack} hitSlop={12} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimary} />
         </TouchableOpacity>

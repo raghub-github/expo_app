@@ -25,6 +25,8 @@ import { merchantService } from "@/services/merchant.service";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
 import { WeatherStatusChip } from "@/components/weather";
 import { PrepDelayMarqueeBanner } from "@/components/orders/PrepDelayMarqueeBanner";
+import { PrepDelayStatusPillSlideshow } from "@/components/orders/PrepDelayStatusPillSlideshow";
+import { SelfPickupOtpShareMarquee } from "@/components/orders/SelfPickupOtpShareMarquee";
 import { useOrderStore } from "@/store/orderStore";
 import { OrderItemCustomizationModal } from "@/components/orders/OrderItemCustomizationModal";
 import { FoodOrderCancelSheet } from "@/components/orders/FoodOrderCancelSheet";
@@ -66,7 +68,12 @@ import {
   AlternateContactFlow,
   type AlternateContactFlowRef,
 } from "@/components/orders/AlternateContactFlow";
-import { buildOrderDeliveryDetailsView } from "@/lib/order-delivery-details";
+import { buildOrderDeliveryDetailsView, buildOrderSelfPickupDetailsView } from "@/lib/order-delivery-details";
+import { isSelfPickupOrder, remapSelfPickupLiveStatus } from "@/lib/self-pickup-order";
+import { openGoogleMapsNavigation } from "@/lib/openGoogleMapsNavigation";
+import { useLocationStore } from "@/store/locationStore";
+import { getCalculatedRouteCoordinates } from "@/services/directions.service";
+import { buildPickupDropPreviewArc } from "@/lib/map-route-utils";
 import { useStableOrderInstructionLists } from "@/lib/order-instruction-display";
 import { canAddCookingRequestForOrder } from "@/lib/merchant-instructions";
 import { canCustomerUpdateAlternateContact } from "@/lib/alternate-contact";
@@ -175,14 +182,14 @@ function ChevronRow({
   );
 }
 
-function DeliveryOtpBanner({ otp }: { otp: string }) {
+function DeliveryOtpBanner({ otp, label = "Delivery OTP" }: { otp: string; label?: string }) {
   return (
     <View style={styles.otpBanner}>
       <View style={styles.otpRow}>
         <View style={styles.otpLeft}>
           <Ionicons name="shield-checkmark-outline" size={17} color={MINT_DARK} />
           <CheckoutText style={styles.otpLabel} numberOfLines={1}>
-            Delivery OTP
+            {label}
           </CheckoutText>
         </View>
         <CheckoutText style={styles.otpValue} numberOfLines={1}>
@@ -249,19 +256,28 @@ export function FoodLiveTrackingScreen({
   const chatUnreadCount = chatUnread?.unreadCount ?? 0;
 
   const prepDelayBanner = useOrderStore((s) => s.prepDelayBanner);
-  const showPrepDelayMarquee =
+  const prepDelayBannerMatches =
     !!prepDelayBanner &&
-    prepDelayBanner.orderId === order.orderId &&
-    prepDelayBanner.expiresAt > Date.now();
+    (prepDelayBanner.orderId === order.orderId ||
+      (!!order.formattedOrderId && prepDelayBanner.orderId === order.formattedOrderId));
+  const showPrepDelayMarquee =
+    prepDelayBannerMatches && prepDelayBanner!.expiresAt > Date.now();
+  const prepDelayExtraMinutes =
+    prepDelayBannerMatches &&
+    prepDelayBanner!.additionalMinutes != null &&
+    prepDelayBanner!.additionalMinutes > 0
+      ? prepDelayBanner!.additionalMinutes
+      : null;
 
   const orderStatus = normalizeCustomerOrderStatus(order.status);
+  const isSelfPickup = isSelfPickupOrder(order);
   /** Assigned delivery partner — hide dashed store↔home preview once true. */
   const hasTrackingFix =
     tracking?.rider?.latitude != null &&
     tracking?.rider?.longitude != null &&
     Number.isFinite(tracking.rider.latitude) &&
     Number.isFinite(tracking.rider.longitude);
-  const hasRider = isFoodRiderAssignedForMap(
+  const assignedRider = isFoodRiderAssignedForMap(
     orderStatus,
     order.rider,
     hasTrackingFix,
@@ -274,6 +290,7 @@ export function FoodLiveTrackingScreen({
             ? "READY_AWAITING_RIDER"
             : null)
   );
+  const hasRider = isSelfPickup ? false : assignedRider;
   const riderArrived = isRiderAtCustomerStatus(orderStatus);
   const showDeliveryOtpNow = shouldShowCustomerDeliveryOtp(orderStatus, order.deliveryOtp);
   const [deliveryOtpPinned, setDeliveryOtpPinned] = useState(false);
@@ -287,11 +304,25 @@ export function FoodLiveTrackingScreen({
   }, [order.orderId]);
 
   const showDeliveryOtp =
+    !isSelfPickup &&
     Boolean(order.deliveryOtp?.trim()) &&
     !isTerminalOrderStatus(orderStatus) &&
     (showDeliveryOtpNow || deliveryOtpPinned);
 
   const restaurantName = order.merchantPublicName ?? order.merchantName ?? "Restaurant";
+  const sessionCoords = useLocationStore((s) => s.coords);
+  const customerLat =
+    sessionCoords?.latitude != null && Number.isFinite(sessionCoords.latitude)
+      ? sessionCoords.latitude
+      : null;
+  const customerLng =
+    sessionCoords?.longitude != null && Number.isFinite(sessionCoords.longitude)
+      ? sessionCoords.longitude
+      : null;
+  const hasCustomerFix =
+    customerLat != null &&
+    customerLng != null &&
+    !(Math.abs(customerLat) < 1e-6 && Math.abs(customerLng) < 1e-6);
   const merchantArea = getCompactAddressLine(order.merchantAddress);
   const displayOrderId = order.formattedOrderId ?? order.orderId;
   const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
@@ -307,8 +338,11 @@ export function FoodLiveTrackingScreen({
     [items]
   );
   const deliveryDetails = useMemo(
-    () => buildOrderDeliveryDetailsView({ ...order, deliveryInstructionsList }),
-    [order, deliveryInstructionsList]
+    () =>
+      isSelfPickup
+        ? buildOrderSelfPickupDetailsView({ ...order, deliveryInstructionsList })
+        : buildOrderDeliveryDetailsView({ ...order, deliveryInstructionsList }),
+    [order, deliveryInstructionsList, isSelfPickup]
   );
   const canAddCookingRequest = canAddCookingRequestForOrder(orderStatus, {
     riderReachedPickupAt: order.riderReachedPickupAt,
@@ -422,6 +456,54 @@ export function FoodLiveTrackingScreen({
     hasRider,
   });
 
+  const selfPickupRouteQuery = useQuery({
+    queryKey: [
+      "self-pickup-route",
+      order.orderId,
+      customerLat?.toFixed(5),
+      customerLng?.toFixed(5),
+      pickupLat.toFixed(5),
+      pickupLng.toFixed(5),
+    ],
+    enabled:
+      isSelfPickup &&
+      hasCustomerFix &&
+      Number.isFinite(pickupLat) &&
+      Number.isFinite(pickupLng) &&
+      !isTerminalOrderStatus(orderStatus),
+    staleTime: 60_000,
+    queryFn: async () => {
+      const route = await getCalculatedRouteCoordinates(
+        [
+          { latitude: customerLat!, longitude: customerLng! },
+          { latitude: pickupLat, longitude: pickupLng },
+        ],
+        "bike"
+      );
+      return route?.coordinates ?? [];
+    },
+  });
+
+  const selfPickupRoadRoute = selfPickupRouteQuery.data ?? [];
+  const selfPickupFallbackArc = useMemo(() => {
+    if (!isSelfPickup || !hasCustomerFix) return [];
+    if (selfPickupRoadRoute.length >= 2) return [];
+    return buildPickupDropPreviewArc(
+      { latitude: customerLat!, longitude: customerLng! },
+      { latitude: pickupLat, longitude: pickupLng }
+    );
+  }, [
+    isSelfPickup,
+    hasCustomerFix,
+    selfPickupRoadRoute.length,
+    customerLat,
+    customerLng,
+    pickupLat,
+    pickupLng,
+  ]);
+  const selfPickupRouteCoords =
+    selfPickupRoadRoute.length >= 2 ? selfPickupRoadRoute : selfPickupFallbackArc;
+
   const liveEta = useLiveTrackingEtaMinutes({
     eta,
     orderId: order.orderId,
@@ -437,7 +519,7 @@ export function FoodLiveTrackingScreen({
     enabled: !isTerminalOrderStatus(orderStatus),
   });
   const displayEtaMinutes = liveEta.minutes ?? etaMinutes;
-  const liveStatus = buildLiveOrderStatusView({
+  const deliveryLiveStatus = buildLiveOrderStatusView({
     status: orderStatus,
     hasRider,
     riderName: order.rider?.name,
@@ -447,6 +529,20 @@ export function FoodLiveTrackingScreen({
     merchantDelayed,
     nowMs: liveEta.nowMs || Date.now(),
   });
+  const liveStatus = isSelfPickup
+    ? remapSelfPickupLiveStatus(deliveryLiveStatus)
+    : deliveryLiveStatus;
+  const pickupOtpCode = (order.pickupOtp ?? order.deliveryOtp ?? "").trim();
+  const [pinnedSelfPickupOtp, setPinnedSelfPickupOtp] = useState<string | null>(null);
+  useEffect(() => {
+    if (isSelfPickup && pickupOtpCode) setPinnedSelfPickupOtp(pickupOtpCode);
+  }, [isSelfPickup, pickupOtpCode]);
+  useEffect(() => {
+    setPinnedSelfPickupOtp(null);
+  }, [order.orderId]);
+  const displaySelfPickupOtp = pickupOtpCode || pinnedSelfPickupOtp || "";
+  /** Self-pick-up: OTP strip always on screen until collected (even while code loads). */
+  const showPickupOtp = isSelfPickup && !isTerminalOrderStatus(orderStatus);
   const headline = liveStatus.headline;
   const awaitingAcceptOverdue =
     liveStatus.stage === "ORDER_PLACED" &&
@@ -465,6 +561,8 @@ export function FoodLiveTrackingScreen({
    * actually decides this; behaviour is unchanged.
    */
   const prepPastPromised = liveStatus.stage === "PREPARATION_DELAYED";
+  const showPrepDelayPillSlideshow =
+    prepPastPromised && prepDelayExtraMinutes != null;
   const waitingForRider = liveStatus.stage === "WAITING_FOR_RIDER";
   const riderToMerchant =
     liveStatus.stage === "RIDER_TO_MERCHANT" || liveStatus.stage === "AT_STORE";
@@ -490,9 +588,9 @@ export function FoodLiveTrackingScreen({
   const headerLight =
     awaitingAcceptOverdue ||
     prepPastPromised ||
-    waitingForRider ||
-    deliveryLate ||
-    (riderToMerchant && everPrepDelayedRef.current);
+    (!isSelfPickup && waitingForRider) ||
+    (!isSelfPickup && deliveryLate) ||
+    (!isSelfPickup && riderToMerchant && everPrepDelayedRef.current);
   const headerFg = headerLight ? "#111827" : "#fff";
   const headerFgMuted = headerLight ? "#4B5563" : "rgba(255,255,255,0.88)";
   const headerBg = headerLight ? "#FFFFFF" : HEADER_GREEN;
@@ -511,7 +609,7 @@ export function FoodLiveTrackingScreen({
     if (liveStatus.stage === "ORDER_PLACED" && awaitingAcceptOverdue) {
       return ORDER_PLACED_OVERDUE_MESSAGE;
     }
-    if (liveStatus.stage !== "PICKED_UP") return liveStatus.pillText;
+    if (isSelfPickup || liveStatus.stage !== "PICKED_UP") return liveStatus.pillText;
 
     const liveMins =
       displayEtaMinutes != null && displayEtaMinutes > 0
@@ -617,6 +715,42 @@ export function FoodLiveTrackingScreen({
     ]
   );
 
+  const selfPickupMapPayload = useMemo<DeliveryMapPayload>(
+    () => ({
+      // Store = green restaurant pin; customer = drop/home pin.
+      pickupLat,
+      pickupLng,
+      dropLat: hasCustomerFix ? customerLat : pickupLat,
+      dropLng: hasCustomerFix ? customerLng : pickupLng,
+      riderLat: null,
+      riderLng: null,
+      riderHeading: null,
+      fullRoute: selfPickupRouteCoords,
+      remainingRoute: selfPickupRouteCoords,
+      hideRouteLine: selfPickupRouteCoords.length < 2,
+      highlightPickupZone: !isTerminalOrderStatus(orderStatus) && orderStatus !== "ORDER_PLACED",
+      highlightDropZone: false,
+      geofenceRadiusM: FOOD_DELIVERY_GEOFENCE_RADIUS_M,
+      geofenceProximityM: FOOD_DELIVERY_GEOFENCE_PROXIMITY_M,
+      riderArrived: false,
+      mapPhase: "rider_to_pickup",
+      showPickupMarker: true,
+      showDropMarker: hasCustomerFix,
+      mapPadding: { top: 64, bottom: 64, left: 40, right: 40 },
+    }),
+    [
+      pickupLat,
+      pickupLng,
+      hasCustomerFix,
+      customerLat,
+      customerLng,
+      selfPickupRouteCoords,
+      orderStatus,
+    ]
+  );
+
+  const trackingMapPayload = isSelfPickup ? selfPickupMapPayload : deliveryMapPayload;
+
   const deliveryMapCenter = useMemo(() => {
     const latitude = (pickupLat + deliveryLat) / 2;
     const longitude = (pickupLng + deliveryLng) / 2;
@@ -626,9 +760,31 @@ export function FoodLiveTrackingScreen({
     return { latitude, longitude };
   }, [pickupLat, pickupLng, deliveryLat, deliveryLng]);
 
+  const trackingMapCenter = useMemo(() => {
+    if (!isSelfPickup) return deliveryMapCenter;
+    if (hasCustomerFix && Number.isFinite(pickupLat) && Number.isFinite(pickupLng)) {
+      return {
+        latitude: (customerLat! + pickupLat) / 2,
+        longitude: (customerLng! + pickupLng) / 2,
+      };
+    }
+    if (!Number.isFinite(pickupLat) || !Number.isFinite(pickupLng)) {
+      return deliveryMapCenter;
+    }
+    return { latitude: pickupLat, longitude: pickupLng };
+  }, [
+    isSelfPickup,
+    deliveryMapCenter,
+    hasCustomerFix,
+    customerLat,
+    customerLng,
+    pickupLat,
+    pickupLng,
+  ]);
+
   const { data: trackingWeather } = useLocationWeather({
-    lat: order.deliveryLat,
-    lng: order.deliveryLng,
+    lat: isSelfPickup ? pickupLat : order.deliveryLat,
+    lng: isSelfPickup ? pickupLng : order.deliveryLng,
     enabled: true,
   });
 
@@ -735,6 +891,26 @@ export function FoodLiveTrackingScreen({
     if (deliveryEditLocked.instructions) return;
     setDeliveryInstructionSheetVisible(true);
   }, [canUpdateDeliveryInstructions, deliveryEditLocked.instructions]);
+
+  const handleGetPickupDirections = useCallback(() => {
+    if (!Number.isFinite(pickupLat) || !Number.isFinite(pickupLng)) {
+      Alert.alert("Directions unavailable", "Restaurant location is not available yet.");
+      return;
+    }
+    const origin =
+      sessionCoords?.latitude != null &&
+      sessionCoords?.longitude != null &&
+      Number.isFinite(sessionCoords.latitude) &&
+      Number.isFinite(sessionCoords.longitude)
+        ? { lat: sessionCoords.latitude, lng: sessionCoords.longitude }
+        : undefined;
+    void openGoogleMapsNavigation({
+      destination: { lat: pickupLat, lng: pickupLng },
+      origin,
+      destinationLabel: restaurantName,
+      mode: "directions",
+    });
+  }, [pickupLat, pickupLng, sessionCoords, restaurantName]);
 
   const handleCallRestaurant = useCallback(() => {
     const digits = order.merchantPhone?.replace(/\D/g, "") ?? "";
@@ -870,12 +1046,21 @@ export function FoodLiveTrackingScreen({
                 headerLight ? styles.etaPillChipLight : null,
               ]}
             >
-              <CheckoutText
-                style={[styles.etaPillText, headerLight ? { color: headerFg } : null]}
-                numberOfLines={2}
-              >
-                {etaPillText}
-              </CheckoutText>
+              {showPrepDelayPillSlideshow ? (
+                <PrepDelayStatusPillSlideshow
+                  followUpText={etaPillText}
+                  extraMinutes={prepDelayExtraMinutes!}
+                  light={headerLight}
+                  textColor={headerFg}
+                />
+              ) : (
+                <CheckoutText
+                  style={[styles.etaPillText, headerLight ? { color: headerFg } : null]}
+                  numberOfLines={2}
+                >
+                  {etaPillText}
+                </CheckoutText>
+              )}
             </View>
             <TouchableOpacity
               style={[
@@ -910,15 +1095,15 @@ export function FoodLiveTrackingScreen({
           <View
             style={[
               styles.mapSection,
-              showDeliveryOtp ? styles.mapSectionFlushBottom : null,
+              showDeliveryOtp || showPickupOtp ? styles.mapSectionFlushBottom : null,
             ]}
           >
             {mapReady ? (
               <MapboxWebDeliveryMap
                 key={order.orderId}
                 style={StyleSheet.absoluteFill}
-                center={deliveryMapCenter}
-                payload={deliveryMapPayload}
+                center={trackingMapCenter}
+                payload={trackingMapPayload}
                 refitNonce={mapRefitNonce}
                 onReady={() => setMapRefitNonce((n) => n + 1)}
               />
@@ -929,7 +1114,7 @@ export function FoodLiveTrackingScreen({
             )}
           </View>
           <LiveTrackingStatusChip
-            hasRiderFix={riderLat != null && riderLng != null}
+            hasRiderFix={!isSelfPickup && riderLat != null && riderLng != null}
             style={styles.liveStatusChip}
           />
           <TouchableOpacity
@@ -950,6 +1135,16 @@ export function FoodLiveTrackingScreen({
           </TouchableOpacity>
         </View>
 
+        {showPickupOtp && displaySelfPickupOtp ? (
+          <>
+            <DeliveryOtpBanner
+              otp={displaySelfPickupOtp}
+              label="Self-Pick-Up OTP"
+            />
+            <SelfPickupOtpShareMarquee />
+          </>
+        ) : null}
+
         {showDeliveryOtp && order.deliveryOtp ? (
           <DeliveryOtpBanner otp={order.deliveryOtp} />
         ) : null}
@@ -965,7 +1160,7 @@ export function FoodLiveTrackingScreen({
           </View>
         ) : null}
 
-        {order.rider ? (
+        {!isSelfPickup && order.rider ? (
           <DeliveryPartnerTrackingCard
             riderName={riderName}
             riderFirstName={riderFirstName}
@@ -990,8 +1185,17 @@ export function FoodLiveTrackingScreen({
             instructions: deliveryEditLocked.instructions || !canUpdateDeliveryInstructions,
           }}
           onEditContact={handleEditContact}
-          onEditAddress={handleChangeAddress}
-          onEditInstructions={handleOpenDeliveryInstructions}
+          onEditAddress={isSelfPickup ? undefined : handleChangeAddress}
+          onEditInstructions={isSelfPickup ? undefined : handleOpenDeliveryInstructions}
+          onGetDirections={isSelfPickup ? handleGetPickupDirections : undefined}
+          showViewMapBox={isSelfPickup}
+          mapLat={isSelfPickup ? pickupLat : null}
+          mapLng={isSelfPickup ? pickupLng : null}
+          footerBannerText={
+            isSelfPickup ? "Please go to the store to pick up your order." : null
+          }
+          otp={null}
+          otpLabel="Self-Pick-Up OTP"
         />
 
         <OrderRestaurantCard
@@ -1064,6 +1268,7 @@ export function FoodLiveTrackingScreen({
         onOpenChat={handleMessageRider}
         onCancelled={onOrderCancelled}
         chatEnabled={hasRider}
+        showPartnerChat={!isSelfPickup}
       />
 
       {order.rider && existingTip <= 0 ? (

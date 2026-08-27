@@ -10,6 +10,26 @@ import { resolveMerchantOrderTotal } from "@/lib/resolveMerchantOrderTotal";
 
 export type DeliveryType = "GATIMITRA_RIDER" | "SELF_DELIVERY" | "SELF_PICKUP";
 
+/** Normalize API / DB variants (`self_pickup`, `SELF_PICKUP`, etc.) to the card enum. */
+export function normalizeDeliveryType(
+  raw: string | null | undefined
+): DeliveryType {
+  const dt = String(raw ?? "delivery")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
+  if (
+    dt === "SELF_PICKUP" ||
+    dt === "TAKEAWAY" ||
+    dt === "TAKE_AWAY" ||
+    dt.includes("PICKUP")
+  ) {
+    return "SELF_PICKUP";
+  }
+  if (dt === "SELF_DELIVERY" || dt === "MX_SELF") return "SELF_DELIVERY";
+  return "GATIMITRA_RIDER";
+}
+
 export type OrderStage =
   | "created"
   | "preparing"
@@ -235,7 +255,7 @@ export function mapApiOrder(
 ): OrderRecord {
   const formatted = (o.formatted_order_id ?? "").trim();
   const orderNumber = formatted.length > 0 ? formatted : "";
-  const deliveryType = (o.delivery_type ?? "GATIMITRA_RIDER") as DeliveryType;
+  const deliveryType = normalizeDeliveryType(o.delivery_type);
 
   const foodRowId = o.core_only ? null : o.orders_food_id;
   const cancelledAt = coerceTimestamp(o.cancelled_at);

@@ -1,23 +1,21 @@
 /**
  * Customer ride fare rules (no rider surges on customer bill).
  *
- * The Bike-Lite discount amount is now configurable via
- * `billing_pricing_rules` (charge_subtype `RIDE_BIKE_LITE_DISCOUNT`, seeded
- * in migration 0464). The constant below is the LEGACY fallback used when the
- * config row is missing or the DB lookup fails — it matches the value that
- * shipped for the last 8+ months so behaviour is identical if config is not
- * touched.
+ * Catalog fare offsets (Bike Lite vs Bike, EV Auto vs Auto) are configurable
+ * via `billing_pricing_rules`. The constant below is the fallback when the
+ * config row is missing — default ₹5.
  */
-export const BIKE_LITE_DISCOUNT_INR = 12;
+export const CATALOG_FARE_OFFSET_FALLBACK_INR = 5;
+
+/** @deprecated Use `CATALOG_FARE_OFFSET_FALLBACK_INR`. */
+export const BIKE_LITE_DISCOUNT_INR = CATALOG_FARE_OFFSET_FALLBACK_INR;
 
 /**
- * Apply the Bike-Lite discount to a customer's bike fare.
- * @param bikeFare Positive ₹ fare on regular bike.
- * @param discountOverride Optional runtime discount amount (₹) resolved from
- *   config. Falls back to `BIKE_LITE_DISCOUNT_INR` when not provided.
+ * Subtract a catalog offset from the parent fare (Bike Lite / EV Auto).
+ * Platform offers apply on the result, not on the parent fare.
  */
-export function applyBikeLiteCustomerFare(
-  bikeFare: number,
+export function applyCatalogOffsetCustomerFare(
+  parentFare: number,
   discountOverride?: number
 ): number {
   const discount =
@@ -25,7 +23,15 @@ export function applyBikeLiteCustomerFare(
     Number.isFinite(discountOverride) &&
     discountOverride > 0
       ? discountOverride
-      : BIKE_LITE_DISCOUNT_INR;
-  if (!Number.isFinite(bikeFare) || bikeFare <= discount) return bikeFare;
-  return Math.round((bikeFare - discount) * 100) / 100;
+      : CATALOG_FARE_OFFSET_FALLBACK_INR;
+  if (!Number.isFinite(parentFare) || parentFare <= discount) return parentFare;
+  return Math.round((parentFare - discount) * 100) / 100;
+}
+
+/** Apply the Bike-Lite discount to a customer's bike fare. */
+export function applyBikeLiteCustomerFare(
+  bikeFare: number,
+  discountOverride?: number
+): number {
+  return applyCatalogOffsetCustomerFare(bikeFare, discountOverride);
 }

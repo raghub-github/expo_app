@@ -31,12 +31,16 @@ export type ActiveOrder = {
    * (bike | auto | van | cab | cab_premium | travel, or catalog/category id).
    */
   vehicleImageKey?: string | null;
+  /** Takeaway / self-pickup — floating pill shows map CTA instead of Track Live. */
+  isSelfPickup?: boolean;
 };
 
 export type PrepDelayBanner = {
   orderId: string;
   message: string;
   expiresAt: number;
+  /** Extra minutes the store just added (Need more time). */
+  additionalMinutes?: number;
 };
 
 type OrderState = {
@@ -62,7 +66,12 @@ type OrderState = {
       vehicleImageKey?: string | null;
     }
   ) => void;
-  showPrepDelayBanner: (orderId: string, message: string, durationMs?: number) => void;
+  showPrepDelayBanner: (
+    orderId: string,
+    message: string,
+    durationMs?: number,
+    additionalMinutes?: number
+  ) => void;
   clearPrepDelayBanner: () => void;
   clearActiveOrder: () => void;
 };
@@ -81,6 +90,7 @@ function mergeActiveOrder(existing: ActiveOrder | undefined, incoming: ActiveOrd
       incoming.vehicleImageKey?.trim() ||
       existing?.vehicleImageKey?.trim() ||
       null,
+    isSelfPickup: incoming.isSelfPickup ?? existing?.isSelfPickup ?? false,
   };
 }
 
@@ -175,12 +185,16 @@ export const useOrderStore = create<OrderState>((set) => ({
       };
     }),
 
-  showPrepDelayBanner: (orderId, message, durationMs = 20_000) =>
+  showPrepDelayBanner: (orderId, message, durationMs = 20_000, additionalMinutes) =>
     set({
       prepDelayBanner: {
         orderId,
         message,
         expiresAt: Date.now() + durationMs,
+        additionalMinutes:
+          additionalMinutes != null && Number.isFinite(additionalMinutes) && additionalMinutes > 0
+            ? Math.round(additionalMinutes)
+            : undefined,
       },
     }),
 

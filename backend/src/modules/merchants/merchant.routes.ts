@@ -37,6 +37,7 @@ import {
   resolveStorePrepMinutesForEta,
 } from "./merchant-menu-prep.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
+import { foodTypeIsListedAsVeg } from "../../lib/food-order-veg.js";
 import { previewEtaRange } from "../eta/eta.preview.js";
 import { getSql } from "../../db/client.js";
 import type { MerchantMenuItemRow } from "./merchant.types.js";
@@ -156,7 +157,7 @@ function mapCustomerMenuItem(
     imageUrl: toAbsoluteClientMediaUrl(m.item_image_url ?? null) ?? undefined,
     foodType: m.food_type ?? undefined,
     spiceLevel: m.spice_level ?? undefined,
-    isVeg: (m.food_type ?? "").toLowerCase().startsWith("veg"),
+    isVeg: foodTypeIsListedAsVeg(m.food_type),
     category: m.cuisine_type ?? m.category_name ?? undefined,
     categoryId: categoryId ?? undefined,
     categoryName: m.category_name ?? undefined,
@@ -1091,7 +1092,7 @@ export async function merchantRoutes(app: FastifyInstance) {
           restaurantName: store?.store_display_name ?? store?.store_name,
           storeId: store?.store_id,
           price: parseFloat(m.selling_price),
-          isVeg: (m.food_type ?? "").toLowerCase().startsWith("veg"),
+          isVeg: foodTypeIsListedAsVeg(m.food_type),
         };
       });
       const storeList = stores.map((s) => ({
