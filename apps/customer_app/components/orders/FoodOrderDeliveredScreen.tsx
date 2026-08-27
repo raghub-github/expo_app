@@ -22,7 +22,8 @@ import { orderService } from "@/services/order.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { DietIndicator } from "@/components/store/DietIndicator";
 import { resolveOrderItemDiet } from "@/lib/reorderFromOrder";
-import { buildOrderDeliveryDetailsView } from "@/lib/order-delivery-details";
+import { buildOrderDeliveryDetailsView, buildOrderSelfPickupDetailsView } from "@/lib/order-delivery-details";
+import { isSelfPickupOrder } from "@/lib/self-pickup-order";
 import { ReceiptTornEdge } from "@/components/orders/ReceiptTornEdge";
 import { DeliveryPartnerTrackingCard } from "@/components/orders/DeliveryPartnerTrackingCard";
 import { DeliveryPartnerSafetyBottomSheet } from "@/components/orders/DeliveryPartnerSafetyBottomSheet";
@@ -244,16 +245,24 @@ export function FoodOrderDeliveredScreen({
   ]);
 
   const deliveryLabel = order.deliveryAddressLabel?.trim() || "Other";
+  const isSelfPickup = isSelfPickupOrder(order);
+  const restaurantName = order.merchantPublicName ?? order.merchantName ?? "Restaurant";
   const deliveryDetailsView = useMemo(() => {
+    if (isSelfPickup) {
+      const pickup = buildOrderSelfPickupDetailsView(order);
+      return {
+        contactTitle: pickup.contactTitle,
+        addressTitle: `Picked up from ${restaurantName}`,
+        addressLine: pickup.addressLine,
+      };
+    }
     const base = buildOrderDeliveryDetailsView(order);
     return {
       contactTitle: base.contactTitle,
       addressTitle: `Delivered at ${deliveryLabel}`,
       addressLine: base.addressLine,
     };
-  }, [order, deliveryLabel]);
-
-  const restaurantName = order.merchantPublicName ?? order.merchantName ?? "Restaurant";
+  }, [order, deliveryLabel, isSelfPickup, restaurantName]);
   const merchantArea = getCompactAddressLine(order.merchantAddress);
   const displayOrderId = order.formattedOrderId ?? order.orderId;
   const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
@@ -337,9 +346,11 @@ export function FoodOrderDeliveredScreen({
       const incomingStore =
         payload.storeRating != null && payload.storeRating >= 1 ? payload.storeRating : undefined;
       const incomingDelivery =
-        payload.deliveryRating != null && payload.deliveryRating >= 1
-          ? payload.deliveryRating
-          : undefined;
+        isSelfPickup
+          ? undefined
+          : payload.deliveryRating != null && payload.deliveryRating >= 1
+            ? payload.deliveryRating
+            : undefined;
 
       const isStoreUpdate = incomingStore != null && !storeRatedOnServer;
       const isDeliveryUpdate = incomingDelivery != null && !deliveryRatedOnServer;
@@ -372,6 +383,7 @@ export function FoodOrderDeliveredScreen({
     },
     [
       deliveryRatedOnServer,
+      isSelfPickup,
       order.orderId,
       queryClient,
       storeRatedOnServer,
@@ -416,11 +428,11 @@ export function FoodOrderDeliveredScreen({
 
   const handleDeliveryStarPress = useCallback(
     (stars: number) => {
-      if (deliveryRatedOnServer || submitting) return;
+      if (isSelfPickup || deliveryRatedOnServer || submitting) return;
       setDeliverySheetInitialRating(stars);
       setDeliveryRatingSheetOpen(true);
     },
-    [deliveryRatedOnServer, submitting]
+    [deliveryRatedOnServer, isSelfPickup, submitting]
   );
 
   const handleDeliverySheetSubmit = useCallback(
@@ -545,18 +557,31 @@ export function FoodOrderDeliveredScreen({
               </View>
             </View>
             <View style={styles.receiptCard}>
-              <AppText style={styles.receiptTitle}>
-                Order delivered at{" "}
-                <AppText style={styles.receiptTitleBold}>{deliveryLabel}</AppText>
-              </AppText>
+              {isSelfPickup ? (
+                <AppText style={styles.receiptTitle}>
+                  Picked up from{" "}
+                  <AppText style={styles.receiptTitleBold}>{restaurantName}</AppText>
+                </AppText>
+              ) : (
+                <AppText style={styles.receiptTitle}>
+                  Order delivered at{" "}
+                  <AppText style={styles.receiptTitleBold}>{deliveryLabel}</AppText>
+                </AppText>
+              )}
               {deliveredTime ? (
-                <AppText style={styles.receiptSub}>Delivered at {deliveredTime}</AppText>
+                <AppText style={styles.receiptSub}>
+                  {isSelfPickup ? "Collected at" : "Delivered at"} {deliveredTime}
+                </AppText>
               ) : null}
               <AppAssetImage
                 assetKey={CX.orders.postDeliveryHero}
                 style={styles.receiptHero}
                 contentFit="contain"
               />
+              {isSelfPickup ? (
+                <AppText style={styles.receiptThanks}>Hope you enjoy your meal</AppText>
+              ) : (
+                <>
               <AppText style={styles.receiptThanks}>Thank your delivery partner</AppText>
               {displayTipAmount <= 0 ? (
                 <TouchableOpacity
@@ -568,6 +593,8 @@ export function FoodOrderDeliveredScreen({
                 </TouchableOpacity>
               ) : (
                 <AppText style={styles.tipDone}>You tipped ₹{displayTipAmount} — thank you!</AppText>
+              )}
+                </>
               )}
             </View>
             <ReceiptTornEdge />
@@ -696,7 +723,7 @@ export function FoodOrderDeliveredScreen({
           </View>
         </View>
 
-        {order.rider ? (
+        {!isSelfPickup && order.rider ? (
           <DeliveryPartnerTrackingCard
             mode="delivered"
             riderName={riderName}
@@ -735,7 +762,7 @@ export function FoodOrderDeliveredScreen({
         onClose={() => setSafetySheetVisible(false)}
       />
 
-      {order.rider && displayTipAmount <= 0 ? (
+      {!isSelfPickup && order.rider && displayTipAmount <= 0 ? (
         <FoodOrderTipSheet
           visible={tipSheetVisible}
           orderId={order.orderId}
@@ -758,7 +785,7 @@ export function FoodOrderDeliveredScreen({
       />
 
       <DeliveryPartnerPostRatingSheet
-        visible={deliveryRatingSheetOpen}
+        visible={!isSelfPickup && deliveryRatingSheetOpen}
         partnerName={riderFirstName}
         initialRating={deliverySheetInitialRating}
         submitting={submitting}

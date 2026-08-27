@@ -551,7 +551,11 @@ export function registerDomainEventHandlers(): void {
       await sendNotification({
         templateCode: map.merchant,
         variables: merchantVars,
-        target: { user_id: e.merchantUserId },
+        // Prefer store_id so merchant_store_push_tokens + parent Expo tokens resolve.
+        target:
+          e.merchantStoreId != null && e.merchantStoreId > 0
+            ? { store_id: e.merchantStoreId }
+            : { user_id: e.merchantUserId },
         idempotencyKey: `${map.merchant}:${e.orderId}:${e.toStatus}`,
         metadata: {
           type: map.merchant === "MERCHANT_NEW_ORDER" ? "merchant_new_order" : "merchant_order",

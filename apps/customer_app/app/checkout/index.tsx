@@ -54,23 +54,20 @@ import { shareAddressViaLink } from "@/services/addressShare.service";
 import { profileService } from "@/services/profile.service";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult, type RazorpayOrderParams } from "@/components/RazorpayCheckoutModal";
 import { CheckoutDeliveryTypeToggle } from "@/components/checkout/CheckoutDeliveryTypeToggle";
+import { CheckoutRiderUnavailableBanner } from "@/components/checkout/CheckoutRiderUnavailableBanner";
+import { CheckoutTakeawayConfirmModal } from "@/components/checkout/CheckoutTakeawayConfirmModal";
 import { CheckoutPayUsingButton } from "@/components/checkout/CheckoutPayUsingButton";
-import { CheckoutPaymentMethodsSheet } from "@/components/checkout/CheckoutPaymentMethodsSheet";
-import {
-  DEFAULT_PAY_INSTRUMENT,
-  orderPayloadPaymentMethod,
-  payInstrumentShortLabel,
-  type CheckoutPayMethodItem,
-} from "@/lib/razorpayPaymentMethods";
 import { CheckoutPaymentFailedSheet, CheckoutPaymentReturnOverlay } from "@/components/checkout/CheckoutPaymentFailedSheet";
 import { useCheckoutPaymentFailureStore } from "@/store/checkoutPaymentFailureStore";
-import { AppAlertModal } from "@/components/AppAlertModal";
+import { DietIndicator } from "@/components/store/DietIndicator";
+import { resolveItemDiet } from "@/lib/itemDiet";
 import { merchantService, type MerchantSummary, type MenuItem } from "@/services/merchant.service";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { DEFAULT_STATUS_BAR_HEIGHT, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { haversineKm, SERVICE_RADIUS_KM } from "@/lib/billSummary";
+import { formatMerchantDistanceKm } from "@/lib/merchantDistance";
 import { matchSavedAddressIdNearCoords } from "@/lib/deliveryDropResolution";
 import {
   buildDeliveryInstructionsList,
@@ -173,7 +170,7 @@ import {
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
 import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
-import { MerchantUiThemeProvider, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
+import { MerchantUiThemeProvider, useMerchantUiDark, MerchantDarkPalette } from "@/features/merchant-detail/merchantUiTheme";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import {
   useCheckoutSubscriptionPlan,
@@ -210,6 +207,38 @@ function roundBillAmount(n: number): number {
  * array every render while the query hasn't resolved, invalidating any memo keyed on it. */
 const EMPTY_ADDRESSES: Address[] = [];
 
+/**
+ * Catalog / strike / net line totals — same rules as `CheckoutCartLineRow`
+ * (Boost "Get for", then MRP strike when no Boost).
+ */
+function cartLineStrikeNetTotals(
+  item: CartItem & { catalogMrp?: number | null },
+  itemOfferById: Map<string, ItemOfferDisplay>
+): { strike: number | null; net: number; catalog: number } {
+  const baseId = cartItemBaseId(item.menuItemId);
+  const itemOffer = itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
+  const catalogBase =
+    item.basePrice != null && item.basePrice > 0 ? item.basePrice : cartLineBaseUnitPrice(item);
+  const addonPerUnit = cartAddonTotalPerUnit(item);
+  const boostBase = estimateBoostUnitPrice(catalogBase, itemOffer);
+  const showOfferPrice = boostBase != null && boostBase < catalogBase - 0.001;
+  const catalogAllIn = Math.round(catalogBase + addonPerUnit);
+  const offerAllIn = showOfferPrice ? Math.round(boostBase! + addonPerUnit) : catalogAllIn;
+  const catalog = catalogAllIn * item.quantity;
+  const mrpLineTotal =
+    item.catalogMrp != null && item.catalogMrp > catalogBase
+      ? Math.round(item.catalogMrp + addonPerUnit) * item.quantity
+      : null;
+  const showMrpStrike = !showOfferPrice && mrpLineTotal != null;
+  const strike = showOfferPrice ? catalog : showMrpStrike ? mrpLineTotal! : null;
+  const net = showOfferPrice ? offerAllIn * item.quantity : catalog;
+  return {
+    strike: strike != null && strike > net ? strike : null,
+    net,
+    catalog,
+  };
+}
+
 /** Effective per-unit price (post Boost/BOGO override + addons) — same math used for
  * each row's own "Get for" price, kept here so the optimistic total delta never diverges
  * from what each line already displays. */
@@ -217,16 +246,8 @@ function effectiveCartLineUnitPrice(
   item: CartItem,
   itemOfferById: Map<string, ItemOfferDisplay>
 ): number {
-  const baseId = cartItemBaseId(item.menuItemId);
-  const itemOffer = itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
-  const catalogBase =
-    item.basePrice != null && item.basePrice > 0 ? item.basePrice : cartLineBaseUnitPrice(item);
-  const addonPerUnit = cartAddonTotalPerUnit(item);
-  const boostBase = estimateBoostUnitPrice(catalogBase, itemOffer);
-  if (boostBase != null && boostBase < catalogBase - 0.001) {
-    return Math.round(boostBase + addonPerUnit);
-  }
-  return Math.round(catalogBase + addonPerUnit);
+  const { net } = cartLineStrikeNetTotals(item, itemOfferById);
+  return item.quantity > 0 ? Math.round(net / item.quantity) : net;
 }
 
 /** Sum of effectiveCartLineUnitPrice × quantity across a cart snapshot. */
@@ -530,32 +551,6 @@ function isCartItemCustomizable(
   return !!(menuItem.hasVariants || menuItem.hasAddons || menuItem.hasCustomizations);
 }
 
-function DietIndicator({ isVeg }: { isVeg: boolean }) {
-  return (
-    <View style={[dietStyles.box, isVeg ? dietStyles.boxVeg : dietStyles.boxNonVeg]}>
-      <View style={[dietStyles.dot, isVeg ? dietStyles.dotVeg : dietStyles.dotNonVeg]} />
-    </View>
-  );
-}
-
-const dietStyles = StyleSheet.create({
-  box: {
-    width: 16,
-    height: 16,
-    borderRadius: 2,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-    marginTop: 1,
-  },
-  boxVeg: { borderColor: "#22C55E" },
-  boxNonVeg: { borderColor: "#8D4A2B" },
-  dot: { width: 6, height: 6, borderRadius: 3 },
-  dotVeg: { backgroundColor: "#22C55E" },
-  dotNonVeg: { backgroundColor: "#8D4A2B" },
-});
-
 /** Shown in "Order failed" alert when payment may have been charged. */
 const ORDER_FAILED_REFUND_NOTE =
   " If you were charged, the amount will be reverted within 24–48 working hours. In some cases, refunds may be instant. For any issues, contact support with your payment details.";
@@ -661,9 +656,9 @@ const CHECKOUT_FOOTER_CTA_LEFT_INSET = 6;
 /** Same outer radius as `deliveryTypeToggle` (not a full pill). */
 const CHECKOUT_FOOTER_CTA_RADIUS = 14;
 /** Scroll clearance for fixed footer (toggle + legal) without GatiCash row — keep in sync with `fixedBottom`. */
-const CHECKOUT_SCROLL_FOOTER_BASE = 108;
+const CHECKOUT_SCROLL_FOOTER_BASE = 110;
 /** Extra scroll inset when GatiCash wallet bar is visible above the place-order row. */
-const CHECKOUT_SCROLL_GATICASH_BAR_EXTRA = 90;
+const CHECKOUT_SCROLL_GATICASH_BAR_EXTRA = 92;
 /** Breathing room so `BrandingFooter` tagline + watermark sit fully above the fixed footer. */
 const CHECKOUT_SCROLL_BRANDING_CLEARANCE = 20;
 
@@ -680,6 +675,7 @@ type CheckoutCartLineRowProps = {
     string,
     { isDiscountEligible: boolean; ineligibilityReason: "ITEM_PROMO" | "MRP" | null }
   >;
+  foodType?: string | null;
   onEdit: (item: CartItem) => void;
   onIncrement: (lineId: string) => void;
   onDecrement: (lineId: string) => void;
@@ -696,6 +692,7 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
   item,
   itemOfferById,
   serverLineEligibilityById,
+  foodType,
   onEdit,
   onIncrement,
   onDecrement,
@@ -706,23 +703,10 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
   const itemOffer = itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
   const catalogBase =
     item.basePrice != null && item.basePrice > 0 ? item.basePrice : cartLineBaseUnitPrice(item);
-  const addonPerUnit = cartAddonTotalPerUnit(item);
   const boostBase = estimateBoostUnitPrice(catalogBase, itemOffer);
   const showOfferPrice = boostBase != null && boostBase < catalogBase - 0.001;
-  const catalogAllIn = Math.round(catalogBase + addonPerUnit);
-  const offerAllIn = showOfferPrice ? Math.round(boostBase! + addonPerUnit) : catalogAllIn;
-  const catalogLineTotalRounded = catalogAllIn * item.quantity;
-  const mrpLineTotal =
-    item.catalogMrp != null && item.catalogMrp > catalogBase
-      ? Math.round(item.catalogMrp + addonPerUnit) * item.quantity
-      : null;
-  const showMrpStrike = !showOfferPrice && mrpLineTotal != null;
-  const strikeLineTotal = showOfferPrice
-    ? catalogLineTotalRounded
-    : showMrpStrike
-      ? mrpLineTotal!
-      : null;
-  const netLineTotal = showOfferPrice ? offerAllIn * item.quantity : catalogLineTotalRounded;
+  const { strike: strikeLineTotal, net: netLineTotal, catalog: catalogLineTotalRounded } =
+    cartLineStrikeNetTotals(item, itemOfferById);
   const showStrikeRow = strikeLineTotal != null && strikeLineTotal > netLineTotal;
   const serverElig =
     serverLineEligibilityById.get(baseId) ?? serverLineEligibilityById.get(item.menuItemId);
@@ -793,13 +777,15 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
   return (
     <View style={styles.orderItemRow}>
       <View style={styles.orderItemDietWrap}>
-        <DietIndicator isVeg={item.isVeg} />
+        <DietIndicator type={resolveItemDiet({ foodType, isVeg: item.isVeg })} />
       </View>
       <View style={styles.orderItemMid}>
         <View style={styles.orderItemNameRow}>
-          <CheckoutText style={[styles.orderItemName, dark && styles.darkText]} numberOfLines={2}>
-            {item.name}
-          </CheckoutText>
+          <View style={[styles.orderItemNameDashWrap, dark && styles.orderItemNameDashWrapDark]}>
+            <CheckoutText style={[styles.orderItemName, dark && styles.darkText]} numberOfLines={2}>
+              {item.name}
+            </CheckoutText>
+          </View>
           {itemOffer?.kind === "bogo" ? (
             <View style={[styles.orderItemBogoPill, dark && styles.darkBogoPill]} accessibilityLabel={itemOffer.label}>
               <CheckoutText style={[styles.orderItemBogoPillText, dark && styles.darkTealText]} numberOfLines={1}>
@@ -1030,10 +1016,6 @@ function CheckoutScreen() {
 
   const [selectedAddressId, setSelectedAddressId] = useState<number | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<string>("upi");
-  const [selectedPayInstrument, setSelectedPayInstrument] =
-    useState<CheckoutPayMethodItem>(DEFAULT_PAY_INSTRUMENT);
-  const selectedPayInstrumentRef = useRef(selectedPayInstrument);
-  selectedPayInstrumentRef.current = selectedPayInstrument;
   /** Delivery / Self pickup toggle. Self pickup waives the delivery fee server-side. */
   const [deliveryType, setDeliveryType] = useState<"delivery" | "self_pickup">("delivery");
   const [tipSliderValue, setTipSliderValue] = useState(0);
@@ -1068,6 +1050,8 @@ function CheckoutScreen() {
     title: string;
     message: string;
   } | null>(null);
+  const [riderAvailabilityRefreshing, setRiderAvailabilityRefreshing] = useState(false);
+  const [takeawayConfirmVisible, setTakeawayConfirmVisible] = useState(false);
   const recheckDeliveryUnavailableGateRef = useRef<(forceShow: boolean) => Promise<boolean>>(
     async () => true
   );
@@ -1099,7 +1083,6 @@ function CheckoutScreen() {
   const [instrPetAtHome, setInstrPetAtHome] = useState(false);
   const [editingCartItemId, setEditingCartItemId] = useState<string | null>(null);
   const [pendingCustomizationItem, setPendingCustomizationItem] = useState<MenuItem | null>(null);
-  const [paymentSheetVisible, setPaymentSheetVisible] = useState(false);
   const [billSummarySheetVisible, setBillSummarySheetVisible] = useState(false);
   /** Modal showing the per-line GST + extras breakdown when the user taps the `i` chip. */
   const [gstBreakdownModalVisible, setGstBreakdownModalVisible] = useState(false);
@@ -1163,25 +1146,6 @@ function CheckoutScreen() {
     staleTime: 60_000,
     retry: false,
   });
-
-  const payMethodsQuery = useQuery({
-    queryKey: ["checkout", "razorpay-methods"],
-    queryFn: () => paymentService.getAvailableMethods(),
-    enabled: authHydrated && !!authSession,
-    staleTime: 5 * 60_000,
-    retry: 1,
-    placeholderData: (previous) => previous,
-  });
-  const payMethodSections = payMethodsQuery.data?.sections ?? [];
-
-  useEffect(() => {
-    const items = payMethodSections.flatMap((section) => section.items);
-    if (items.length === 0) return;
-    setSelectedPayInstrument((current) => {
-      if (items.some((item) => item.id === current.id)) return current;
-      return items.find((item) => item.method === "upi") ?? items[0]!;
-    });
-  }, [payMethodSections]);
 
   const gatiCashAvailable = useMemo(() => {
     const raw = gatiCashBalanceQ.data?.available_balance ?? gatiCashBalanceQ.data?.balance ?? 0;
@@ -1769,7 +1733,7 @@ function CheckoutScreen() {
   const storeFullAddress = merchantAbout?.full_address ?? merchant?.address ?? merchant?.city ?? merchantName;
 
   const recheckDeliveryUnavailableGate = useCallback(
-    async (forceShow: boolean): Promise<boolean> => {
+    async (_forceShow: boolean): Promise<boolean> => {
       if (deliveryType === "self_pickup") {
         setDeliveryUnavailableAlert(null);
         return true;
@@ -1798,11 +1762,8 @@ function CheckoutScreen() {
           svc.result.message ||
           "We couldn't find a delivery partner for your area right now. Please try again shortly.",
       };
-      if (forceShow) {
-        setDeliveryUnavailableAlert(alert);
-      } else {
-        setDeliveryUnavailableAlert((prev) => (prev ? alert : null));
-      }
+      // Always surface the footer banner while riders are unavailable (Magicpin-style).
+      setDeliveryUnavailableAlert(alert);
       return false;
     },
     [
@@ -1819,13 +1780,31 @@ function CheckoutScreen() {
     recheckDeliveryUnavailableGateRef.current = recheckDeliveryUnavailableGate;
   }, [recheckDeliveryUnavailableGate]);
 
+  // Proactively check (and keep polling) while delivery is selected.
   useEffect(() => {
-    if (!deliveryUnavailableAlert) return;
+    if (deliveryType !== "delivery") return;
+    if (merchant?.latitude == null || merchant?.longitude == null) return;
+    void recheckDeliveryUnavailableGate(true);
     const id = setInterval(() => {
       void recheckDeliveryUnavailableGate(false);
-    }, 1200);
+    }, 2500);
     return () => clearInterval(id);
-  }, [deliveryUnavailableAlert, recheckDeliveryUnavailableGate]);
+  }, [
+    deliveryType,
+    merchant?.latitude,
+    merchant?.longitude,
+    merchantId,
+    recheckDeliveryUnavailableGate,
+  ]);
+
+  const refreshRiderAvailability = useCallback(async () => {
+    setRiderAvailabilityRefreshing(true);
+    try {
+      await recheckDeliveryUnavailableGate(true);
+    } finally {
+      setRiderAvailabilityRefreshing(false);
+    }
+  }, [recheckDeliveryUnavailableGate]);
 
   const openCheckoutAddressSheet = useCallback(() => {
     setAddressSheetVisible(true);
@@ -2658,6 +2637,33 @@ function CheckoutScreen() {
     [itemDealSavingsByOfferId]
   );
 
+  /** List→selling gap when billing does not return a separate item-deal discount line. */
+  const clientItemDealSavings = useMemo(() => {
+    let sum = 0;
+    for (const cartItem of items) {
+      const baseId = cartItemBaseId(cartItem.menuItemId);
+      const menuItem = merchant?.menu
+        ? findMenuItemByCartBaseId(merchant.menu, baseId)
+        : null;
+      const catalogMrp =
+        menuItem?.basePrice != null && menuItem.basePrice > menuItem.price
+          ? menuItem.basePrice
+          : null;
+      const { strike, net } = cartLineStrikeNetTotals(
+        { ...cartItem, catalogMrp },
+        itemOfferById
+      );
+      if (strike != null && strike > net + 0.005) sum += strike - net;
+    }
+    return roundBillAmount(sum);
+  }, [items, itemOfferById, merchant?.menu]);
+
+  const appliedItemDealSavings = useMemo(
+    () =>
+      Math.max(merchantItemDiscountTotal, itemDealSavingsTotal, clientItemDealSavings),
+    [merchantItemDiscountTotal, itemDealSavingsTotal, clientItemDealSavings]
+  );
+
   /** Match on-screen bill discount rows + item Boost/Get-for savings (folded out of bill list).
    * Only applied discounts — never advertised membership upsell. Subscription free-delivery
    * rows are already inside billVisibleDiscounts (counted once). */
@@ -2665,9 +2671,9 @@ function CheckoutScreen() {
     () =>
       computeAppliedCheckoutSavings({
         billVisibleDiscounts,
-        itemDealSavings: Math.max(merchantItemDiscountTotal, itemDealSavingsTotal),
+        itemDealSavings: appliedItemDealSavings,
       }),
-    [billVisibleDiscounts, merchantItemDiscountTotal, itemDealSavingsTotal]
+    [billVisibleDiscounts, appliedItemDealSavings]
   );
 
   const missedOffersFingerprint = useMemo(() => {
@@ -3443,7 +3449,42 @@ function CheckoutScreen() {
     setForceNoAutoOffer(false);
   }, []);
 
-  const showItemTotalStrike = itemTotalNetOverride != null && itemTotalNetOverride > 0;
+  const showItemTotalStrike =
+    (itemTotalNetOverride != null && itemTotalNetOverride > 0) || appliedItemDealSavings > 0.005;
+
+  /** List price for Item total strike when deals are folded into the billed item total. */
+  const itemTotalStrikeAmount = useMemo(() => {
+    if (!serverBill) {
+      return itemTotalNetOverride != null && appliedItemDealSavings > 0.005
+        ? roundBillAmount(itemTotalNetOverride + appliedItemDealSavings)
+        : null;
+    }
+    if (merchantItemDiscountTotal > 0.05) {
+      return serverBill.itemTotal;
+    }
+    if (appliedItemDealSavings > 0.005) {
+      return roundBillAmount(serverBill.itemTotal + appliedItemDealSavings);
+    }
+    if (itemTotalNetOverride != null && itemTotalNetOverride > 0.005) {
+      // Pre-billing / Boost estimate: catalog list vs net override
+      return roundBillAmount(itemTotalNetOverride + Math.max(0, clientItemDealSavings));
+    }
+    return null;
+  }, [
+    serverBill,
+    merchantItemDiscountTotal,
+    appliedItemDealSavings,
+    itemTotalNetOverride,
+    clientItemDealSavings,
+  ]);
+
+  const itemTotalNetForSheet = useMemo(() => {
+    if (serverBill && merchantItemDiscountTotal > 0.05) {
+      return Math.max(0, Math.round(serverBill.itemTotal - merchantItemDiscountTotal));
+    }
+    if (serverBill) return serverBill.itemTotal;
+    return itemTotalNetOverride;
+  }, [serverBill, merchantItemDiscountTotal, itemTotalNetOverride]);
 
   const deliveryFeeStrikeAmount = useMemo(() => {
     if (!serverBill || deliveryType !== "delivery") return null;
@@ -3631,8 +3672,9 @@ function CheckoutScreen() {
       footerBottomInset +
       CHECKOUT_SCROLL_FOOTER_BASE +
       CHECKOUT_SCROLL_BRANDING_CLEARANCE +
-      CHECKOUT_SCROLL_GATICASH_BAR_EXTRA,
-    [footerBottomInset]
+      CHECKOUT_SCROLL_GATICASH_BAR_EXTRA +
+      (deliveryType === "delivery" && deliveryUnavailableAlert != null ? 44 : 0),
+    [footerBottomInset, deliveryType, deliveryUnavailableAlert]
   );
 
   /** Authoritative total from the last SETTLED server bill (not a mid-flight placeholder). */
@@ -3723,7 +3765,7 @@ function CheckoutScreen() {
       useCheckoutPaymentFailureStore.getState().show({
         amountInr:
           amountOverride ?? (typeof toPayAmount === "number" ? toPayAmount : null),
-        methodLabel: payInstrumentShortLabel(selectedPayInstrumentRef.current),
+        methodLabel: "UPI / Cards",
       });
     },
     [toPayAmount]
@@ -3776,6 +3818,8 @@ function CheckoutScreen() {
   const hasValidPayment =
     paymentMethod !== "cod" && ["upi", "card", "wallet", "online"].includes(paymentMethod);
   /** Placeable only when the bill is settled for the selected address (not keepPreviousData). */
+  const riderBlocksPlaceOrder =
+    deliveryType === "delivery" && deliveryUnavailableAlert != null;
   const canPlaceOrder =
     !isStoreClosed &&
     items.length > 0 &&
@@ -3786,7 +3830,37 @@ function CheckoutScreen() {
     billMatchesSelectedAddress &&
     billingQuery.isSuccess &&
     !billingQuery.isPlaceholderData &&
-    !isDeliveryOutOfRange;
+    (deliveryType === "self_pickup" || !isDeliveryOutOfRange) &&
+    !riderBlocksPlaceOrder;
+
+  const takeawayDistanceLabel = useMemo(() => {
+    const fromBill = formatMerchantDistanceKm(uiDistanceKm);
+    if (fromBill) return fromBill.replace(/\s+/g, " ").trim();
+    const fromMerchant = formatMerchantDistanceKm(merchant?.distanceKm);
+    if (fromMerchant) return fromMerchant.replace(/\s+/g, " ").trim();
+    if (
+      merchant?.latitude != null &&
+      merchant?.longitude != null &&
+      selectedAddress?.latitude != null &&
+      selectedAddress?.longitude != null
+    ) {
+      const km = haversineKm(
+        Number(selectedAddress.latitude),
+        Number(selectedAddress.longitude),
+        Number(merchant.latitude),
+        Number(merchant.longitude)
+      );
+      return formatMerchantDistanceKm(km);
+    }
+    return null;
+  }, [
+    uiDistanceKm,
+    merchant?.distanceKm,
+    merchant?.latitude,
+    merchant?.longitude,
+    selectedAddress?.latitude,
+    selectedAddress?.longitude,
+  ]);
 
   const baseOrderPayload = useMemo(() => {
     if (!merchantId || !selectedAddress) return null;
@@ -3971,6 +4045,7 @@ function CheckoutScreen() {
         storeName: merchantName ?? null,
         placedAt: Date.now(),
         serviceType: "food",
+        isSelfPickup: deliveryType === "self_pickup",
       });
       // Navigate first — wallet refresh / cart clear must not delay or unmount
       // the checkout tree before expo-router dispatches payment-success.
@@ -4088,6 +4163,7 @@ function CheckoutScreen() {
         storeName: merchantName ?? null,
         placedAt: Date.now(),
         serviceType: "food",
+        isSelfPickup: deliveryType === "self_pickup",
       });
       if (isCheckoutSheet) {
         useCheckoutSheetStore.getState().hide();
@@ -4152,8 +4228,7 @@ function CheckoutScreen() {
     },
   });
 
-  const handlePlaceOrderPress = useCallback(async () => {
-    if (deliveryType === "self_pickup") return;
+  const runPlaceOrderFlow = useCallback(async () => {
     if (!canPlaceOrder || placeOrder.isPending || finalizeOrder.isPending || razorpayCreating || paymentReturnBusy) return;
     if (!checkoutReceiverName.trim() || !checkoutReceiverMobile.trim()) {
       Alert.alert(
@@ -4163,10 +4238,12 @@ function CheckoutScreen() {
       );
       return;
     }
-    // Pre-placement serviceability gate (delivery). Fail-open on API/network error so a
-    // transient issue never blocks checkout — only a definitive "not serviceable" stops it.
-    const allowed = await recheckDeliveryUnavailableGate(true);
-    if (!allowed) return;
+    if (deliveryType === "delivery") {
+      // Pre-placement serviceability gate (delivery). Fail-open on API/network error so a
+      // transient issue never blocks checkout — only a definitive "not serviceable" stops it.
+      const allowed = await recheckDeliveryUnavailableGate(true);
+      if (!allowed) return;
+    }
     if (hasValidPayment) {
       setRazorpayCreating(true);
       try {
@@ -4184,7 +4261,7 @@ function CheckoutScreen() {
         }
         const pending = await orderService.createPendingOrderWithRetry({
           ...payload,
-          paymentMethod: orderPayloadPaymentMethod(selectedPayInstrumentRef.current),
+          paymentMethod,
           idempotencyKey: idempotencyKeyRef.current,
         });
         // GatiCash covered the whole bill: there is nothing to charge, so skip Razorpay
@@ -4228,6 +4305,8 @@ function CheckoutScreen() {
             pendingId: pending.pendingId,
           });
         } else {
+          // Open full Razorpay Standard Checkout (all enabled methods). Method is
+          // chosen there — do not lock to a preselected UPI app / custom sheet.
           setRazorpayOrderParams({
             orderId: razorpayOrder.orderId,
             keyId: razorpayOrder.keyId,
@@ -4254,24 +4333,35 @@ function CheckoutScreen() {
     placeOrder,
     finalizeOrder,
     razorpayCreating,
+    paymentReturnBusy,
     hasValidPayment,
-    merchantId,
-    merchant,
     checkoutReceiverName,
     checkoutReceiverMobile,
     openReceiverSheet,
     recheckDeliveryUnavailableGate,
     toPayAmount,
     showPaymentFailedSheet,
-    paymentReturnBusy,
+    paymentMethod,
   ]);
 
-  const handleSelectPayInstrument = useCallback((item: CheckoutPayMethodItem) => {
-    selectedPayInstrumentRef.current = item;
-    setSelectedPayInstrument(item);
-    setPaymentMethod(orderPayloadPaymentMethod(item));
-    setPaymentSheetVisible(false);
-  }, []);
+  const handlePlaceOrderPress = useCallback(async () => {
+    if (deliveryType === "self_pickup") {
+      if (!canPlaceOrder || placeOrder.isPending || finalizeOrder.isPending || razorpayCreating || paymentReturnBusy) {
+        return;
+      }
+      setTakeawayConfirmVisible(true);
+      return;
+    }
+    await runPlaceOrderFlow();
+  }, [
+    deliveryType,
+    canPlaceOrder,
+    placeOrder.isPending,
+    finalizeOrder.isPending,
+    razorpayCreating,
+    paymentReturnBusy,
+    runPlaceOrderFlow,
+  ]);
 
   const handleRazorpaySuccess = useCallback(
     (result: RazorpayPaymentResult) => {
@@ -4322,6 +4412,7 @@ function CheckoutScreen() {
             storeName: merchantName ?? null,
             placedAt: Date.now(),
             serviceType: "food",
+            isSelfPickup: deliveryType === "self_pickup",
           });
           if (isCheckoutSheet) {
             useCheckoutSheetStore.getState().hide();
@@ -4362,7 +4453,7 @@ function CheckoutScreen() {
           merchantName: merchantName ?? "",
           message: "We're confirming your payment. Keep this screen open.",
           amount: amount != null ? String(amount) : "",
-          method: payInstrumentShortLabel(selectedPayInstrumentRef.current),
+          method: "UPI / Cards",
           ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
         },
       });
@@ -4947,6 +5038,9 @@ function CheckoutScreen() {
                   item={item}
                   itemOfferById={itemOfferById}
                   serverLineEligibilityById={serverLineEligibilityById}
+                  foodType={
+                    findMenuItemByCartBaseId(merchant?.menu, cartItemBaseId(item.menuItemId))?.foodType
+                  }
                   onEdit={handleEditCartItem}
                   onIncrement={handleIncrementCartLine}
                   onDecrement={handleDecrementCartLine}
@@ -5039,6 +5133,7 @@ function CheckoutScreen() {
                 >
                   {completeYourMealItems.map((m) => {
                     const { chipW, radius } = upsellChipLayout;
+                    const diet = resolveItemDiet({ foodType: m.foodType, isVeg: m.isVeg });
                     return (
                       <Pressable
                         key={m.id}
@@ -5066,16 +5161,24 @@ function CheckoutScreen() {
                             <View
                               style={[
                                 styles.upsellImagePlaceholder,
-                                !m.isVeg && styles.nonVegBg,
+                                diet === "nonveg" && styles.nonVegBg,
                                 { borderRadius: radius },
                               ]}
                             >
                               <Ionicons name="restaurant" size={20} color={GatiMitraColors.textSecondary} />
                             </View>
                           )}
-                          <View style={[styles.upsellVegBadge, !m.isVeg && styles.upsellNonVegBadge]}>
-                            {m.isVeg ? (
+                          <View
+                            style={[
+                              styles.upsellVegBadge,
+                              diet === "nonveg" && styles.upsellNonVegBadge,
+                              diet === "egg" && styles.upsellEggBadge,
+                            ]}
+                          >
+                            {diet === "veg" ? (
                               <View style={styles.upsellVegDot} />
+                            ) : diet === "egg" ? (
+                              <View style={styles.upsellEggDot} />
                             ) : (
                               <View style={styles.upsellNonVegDot} />
                             )}
@@ -5632,18 +5735,7 @@ function CheckoutScreen() {
         onRemoveAllOffers={removeAllCheckoutOffers}
       />
 
-      {/* Payment method selector sheet */}
-      <CheckoutPaymentMethodsSheet
-        visible={paymentSheetVisible}
-        onClose={() => setPaymentSheetVisible(false)}
-        billTotal={typeof toPayAmount === "number" ? toPayAmount : null}
-        sections={payMethodSections}
-        loading={payMethodsQuery.isLoading && payMethodSections.length === 0}
-        loadFailed={payMethodsQuery.isError && payMethodSections.length === 0}
-        onRetryLoad={() => void payMethodsQuery.refetch()}
-        selectedId={selectedPayInstrument.id}
-        onSelect={handleSelectPayInstrument}
-      />
+      {/* Payment methods are selected inside Razorpay Standard Checkout. */}
 
       {/* Footer: Pay using + Place Order CTA. Delivery/takeaway sits on the GatiCash row. */}
       <View
@@ -5663,6 +5755,14 @@ function CheckoutScreen() {
             isDiscoveryDark && { borderBottomColor: DiscoveryColors.border },
           ]}
         >
+            {deliveryType === "delivery" && deliveryUnavailableAlert != null ? (
+              <CheckoutRiderUnavailableBanner
+                refreshing={riderAvailabilityRefreshing}
+                onRefresh={() => {
+                  void refreshRiderAvailability();
+                }}
+              />
+            ) : null}
             <CheckoutGatiCashWalletBar
               balance={gatiCashAvailable}
               maxApplyAmount={gatiCashMaxApply}
@@ -5696,8 +5796,16 @@ function CheckoutScreen() {
           <View style={styles.footerRow}>
             <View style={styles.footerToggleCol}>
               <CheckoutPayUsingButton
-                instrument={selectedPayInstrument}
-                onPress={() => setPaymentSheetVisible(true)}
+                onPress={() => {
+                  void handlePlaceOrderPress();
+                }}
+                disabled={
+                  needsDeliveryAddress ||
+                  placeOrder.isPending ||
+                  finalizeOrder.isPending ||
+                  razorpayCreating ||
+                  paymentReturnBusy
+                }
               />
             </View>
             <View style={styles.footerCtaCol}>
@@ -5713,19 +5821,17 @@ function CheckoutScreen() {
                   Add items
                 </CheckoutText>
               </View>
-            ) : deliveryType === "self_pickup" ? (
-              <View style={[styles.ctaSolid, styles.ctaSolidMuted]} collapsable={false}>
-                <CheckoutText style={styles.ctaSolidTitle} bold>
-                  Coming Soon
-                </CheckoutText>
-              </View>
             ) : (
               <Pressable
                 onPress={() => {
+                  if (riderBlocksPlaceOrder) {
+                    void refreshRiderAvailability();
+                    return;
+                  }
                   if (!canPlaceOrder) {
                     const reason = !hasDeliveryAddress
                       ? "Add a delivery address to place your order."
-                      : isDeliveryOutOfRange
+                      : deliveryType === "delivery" && isDeliveryOutOfRange
                         ? "This address is outside the restaurant delivery zone. Please choose another address."
                       : billingQuery.isError
                         ? "Could not load the bill. Pull to refresh or try again."
@@ -5742,18 +5848,29 @@ function CheckoutScreen() {
                   handlePlaceOrderPress();
                 }}
                 disabled={
-                  canPlaceOrder &&
-                  (placeOrder.isPending ||
-                    finalizeOrder.isPending ||
-                    razorpayCreating ||
-                    paymentReturnBusy)
+                  riderBlocksPlaceOrder ||
+                  (canPlaceOrder &&
+                    (placeOrder.isPending ||
+                      finalizeOrder.isPending ||
+                      razorpayCreating ||
+                      paymentReturnBusy))
                 }
                 accessibilityRole="button"
-                accessibilityLabel={canPlaceOrder ? "Place order" : "Place order unavailable"}
+                accessibilityLabel={
+                  riderBlocksPlaceOrder
+                    ? "Place order unavailable — low rider availability"
+                    : canPlaceOrder
+                      ? "Place order"
+                      : "Place order unavailable"
+                }
                 style={({ pressed }) => [styles.ctaSolidPressable, pressed && styles.ctaTouchPressed]}
               >
                 <View
-                  style={[styles.ctaSolid, !canPlaceOrder && styles.ctaSolidWaiting]}
+                  style={[
+                    styles.ctaSolid,
+                    riderBlocksPlaceOrder && styles.ctaSolidFaded,
+                    !canPlaceOrder && !riderBlocksPlaceOrder && styles.ctaSolidWaiting,
+                  ]}
                   collapsable={false}
                 >
                   <View style={styles.ctaSolidLeft}>
@@ -5807,6 +5924,7 @@ function CheckoutScreen() {
                   </View>
                   <View style={styles.ctaSolidRight}>
                     {canPlaceOrder &&
+                    !riderBlocksPlaceOrder &&
                     (placeOrder.isPending ||
                       finalizeOrder.isPending ||
                       razorpayCreating ||
@@ -5823,15 +5941,17 @@ function CheckoutScreen() {
                           >
                             Place Order
                           </CheckoutText>
-                          {canPlaceOrder ? (
+                          {canPlaceOrder && !riderBlocksPlaceOrder ? (
                             <Ionicons name="chevron-forward" size={16} color="#FFFFFF" />
                           ) : null}
                         </View>
-                        {!canPlaceOrder ? (
+                        {!canPlaceOrder || riderBlocksPlaceOrder ? (
                           <CheckoutText style={styles.ctaSolidHint} bold numberOfLines={1}>
-                            {!hasDeliveryAddress
+                            {riderBlocksPlaceOrder
+                              ? "Riders unavailable"
+                              : !hasDeliveryAddress
                               ? "Check address"
-                              : isDeliveryOutOfRange
+                              : deliveryType === "delivery" && isDeliveryOutOfRange
                                 ? "Out of delivery zone"
                               : billingQuery.isError
                                 ? "Bill error"
@@ -6537,8 +6657,15 @@ function CheckoutScreen() {
           ...d,
           label: friendlyCheckoutDiscountLabel(d.label),
         }))}
-        showItemTotalStrike={showItemTotalStrike}
-        itemTotalNetOverride={itemTotalNetOverride}
+        showItemTotalStrike={
+          showItemTotalStrike &&
+          itemTotalStrikeAmount != null &&
+          itemTotalNetForSheet != null &&
+          itemTotalStrikeAmount > itemTotalNetForSheet + 0.005
+        }
+        itemTotalNetOverride={itemTotalNetForSheet}
+        itemTotalStrikeAmount={itemTotalStrikeAmount}
+        youSavedAmount={checkoutSavingsTotal}
         gatiCashApplyAmount={gatiCashApplyAmount}
         missedOfferWalletPendingAmount={missedOfferWalletPendingAmount}
         missedOfferUnlockDiscount={missedOfferUnlockDiscount}
@@ -6554,15 +6681,11 @@ function CheckoutScreen() {
       <RazorpayCheckoutModal
         visible={razorpayModalVisible && !!razorpayOrderParams}
         orderParams={razorpayOrderParams}
-        checkoutMethod={{
-          method: selectedPayInstrument.method,
-          upiApp: selectedPayInstrument.upiApp,
-          wallet: selectedPayInstrument.wallet,
-        }}
+        checkoutMethod={null}
         prefill={{
           contact: checkoutReceiverMobile.trim() || profileContactMobile || null,
           name: checkoutReceiverName.trim() || profileContactName || null,
-          email: null,
+          email: (userProfile?.email ?? "").trim() || null,
         }}
         onSuccess={handleRazorpaySuccess}
         onCancel={handleRazorpayCancel}
@@ -6580,23 +6703,21 @@ function CheckoutScreen() {
         }}
         onChooseMethod={() => {
           useCheckoutPaymentFailureStore.getState().hide();
-          setPaymentSheetVisible(true);
+          void handlePlaceOrderPress();
         }}
         onLeave={() => useCheckoutPaymentFailureStore.getState().hide()}
       />
 
       <CheckoutPaymentReturnOverlay visible={paymentReturnBusy} />
 
-      <AppAlertModal
-        visible={deliveryUnavailableAlert != null}
-        title={deliveryUnavailableAlert?.title ?? "No delivery partner available"}
-        message={
-          deliveryUnavailableAlert?.message ??
-          "We couldn't find a delivery partner for your area right now. Please try again shortly."
-        }
-        confirmLabel="OK"
-        variant="warning"
-        onClose={() => setDeliveryUnavailableAlert(null)}
+      <CheckoutTakeawayConfirmModal
+        visible={takeawayConfirmVisible}
+        distanceLabel={takeawayDistanceLabel}
+        onCancel={() => setTakeawayConfirmVisible(false)}
+        onContinue={() => {
+          setTakeawayConfirmVisible(false);
+          void runPlaceOrderFlow();
+        }}
       />
 
       {/* Dummy / simulated payment sheet (backend has PAYMENT_DUMMY_MODE=true
@@ -7054,6 +7175,18 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 6,
   },
+  /** Same dotted underline treatment as Bill Summary fee labels. */
+  orderItemNameDashWrap: {
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+    borderBottomWidth: 1,
+    borderStyle: Platform.OS === "ios" ? "dotted" : "dashed",
+    borderColor: "#94A3B8",
+    paddingBottom: 1,
+  },
+  orderItemNameDashWrapDark: {
+    borderColor: MerchantDarkPalette.textDim,
+  },
   orderItemName: {
     fontSize: 15,
     fontWeight: "700",
@@ -7165,6 +7298,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#9CA3AF",
     textDecorationLine: "line-through",
+    textDecorationColor: "#9CA3AF",
     textAlign: "right",
   },
   orderItemLinePriceOffer: {
@@ -7429,8 +7563,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   upsellNonVegBadge: { borderColor: "#8D4A2B" },
+  upsellEggBadge: { borderColor: "#F59E0B" },
   upsellVegDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: "#22C55E" },
   upsellNonVegDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: "#8D4A2B" },
+  upsellEggDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: "#F59E0B" },
   upsellAddBtnOnImage: {
     position: "absolute",
     right: 6,
@@ -9105,6 +9241,13 @@ const styles = StyleSheet.create({
   simulatedBtnDisabled: { opacity: 0.55 },
   simulatedCancelBtn: { paddingVertical: 12, alignItems: "center" },
   simulatedCancelBtnText: { fontSize: 15, color: GatiMitraColors.textSecondary, fontWeight: "500" },
+  gatiCashWalletBarWrap: {
+    marginHorizontal: -CHECKOUT_PAGE_H_MARGIN,
+    marginBottom: 0,
+    borderBottomWidth: 0,
+    overflow: "visible",
+    zIndex: 60,
+  },
   fixedBottom: {
     position: "absolute",
     left: 0,
@@ -9116,19 +9259,15 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E5E7EB",
     zIndex: 50,
+    overflow: "visible",
     ...GatiMitraColors.elevationShadow,
-  },
-  gatiCashWalletBarWrap: {
-    marginHorizontal: -CHECKOUT_PAGE_H_MARGIN,
-    marginBottom: 0,
-    borderBottomWidth: 0,
   },
   footerRow: {
     flexDirection: "row",
     flexWrap: "nowrap",
     alignItems: "center",
     width: "100%",
-    marginTop: 0,
+    marginTop: 8,
   },
   footerToggleCol: {
     width: CHECKOUT_FOOTER_TOGGLE_WIDTH,
@@ -9151,7 +9290,7 @@ const styles = StyleSheet.create({
     alignSelf: "center",
   },
   footerAddressCtaPressable: {
-    marginTop: 2,
+    marginTop: 8,
   },
   footerAddressCta: {
     alignItems: "center",
@@ -9245,6 +9384,10 @@ const styles = StyleSheet.create({
   },
   ctaSolidWaiting: {
     backgroundColor: CHECKOUT_CTA_GREEN_WAIT,
+  },
+  ctaSolidFaded: {
+    backgroundColor: CHECKOUT_CTA_GREEN_MUTED,
+    opacity: 0.55,
   },
   ctaSolidMuted: {
     backgroundColor: CHECKOUT_CTA_GREEN_MUTED,

@@ -19,6 +19,7 @@ export type RiderLedgerDisplayEntry = {
   refType?: string | null;
   serviceType?: string | null;
   orderPublicId?: string | null;
+  rejectionReason?: string | null;
 };
 
 /** Full set of wallet_entry_type enum values (keep in sync with DB `wallet_entry_type`). */
@@ -91,6 +92,31 @@ export function isLedgerTipEntry(entry: {
   return entryType.includes("tip") || ref.includes("tip") || /\btip\b/.test(desc);
 }
 
+export function extractWithdrawalRejectionReason(entry: {
+  description?: string | null;
+  rejectionReason?: string | null;
+}): string {
+  const fromField = entry.rejectionReason?.trim();
+  if (fromField) return fromField;
+  const desc = entry.description?.trim() ?? "";
+  const match = desc.match(/Reason:\s*(.+)$/i);
+  return match?.[1]?.trim() ?? "";
+}
+
+export function isRejectedWithdrawalLedgerEntry(entry: {
+  entryType: string;
+  refType?: string | null;
+  description?: string | null;
+}): boolean {
+  const entryType = entry.entryType.toLowerCase();
+  if (entryType === "failed_withdrawal_revert") return true;
+  const desc = entry.description?.toLowerCase() ?? "";
+  return (
+    (entryType === "withdrawal" || entry.refType?.toLowerCase() === "withdrawal") &&
+    (desc.includes("withdrawal rejected") || desc.includes("withdrawal failed"))
+  );
+}
+
 function ledgerCategoryLabel(category: string): string {
   switch (category) {
     case "food":
@@ -143,6 +169,7 @@ export function mapLedgerRowForDisplay(row: {
   refType?: string | null;
   serviceType?: string | null;
   orderId?: string | null;
+  rejectionReason?: string | null;
 }): RiderLedgerDisplayEntry {
   const entryType = row.entryType.toLowerCase();
   const base: RiderLedgerDisplayEntry = {
@@ -154,6 +181,7 @@ export function mapLedgerRowForDisplay(row: {
     refType: row.refType,
     serviceType: row.serviceType,
     orderPublicId: row.orderId?.trim() || null,
+    rejectionReason: row.rejectionReason ?? null,
   };
   return { ...base, category: resolveLedgerCategory(base) };
 }
@@ -165,6 +193,9 @@ export function ledgerTransactionTitle(entry: RiderLedgerDisplayEntry): string {
   if (entryType === "penalty_reversal") return "Penalty Credited Back";
   if (entryType === "subscription_fee" || entry.refType?.toLowerCase() === "subscription") {
     return "GMitra Max Subscription";
+  }
+  if (entryType === "failed_withdrawal_revert" || isRejectedWithdrawalLedgerEntry(entry)) {
+    return "Withdrawal Rejected";
   }
   if (entryType === "withdrawal" || entry.refType?.toLowerCase() === "withdrawal") {
     return "Withdrawal to Bank";
@@ -186,7 +217,6 @@ export function ledgerTransactionTitle(entry: RiderLedgerDisplayEntry): string {
   }
   if (entryType === "refund") return "Refund Credit";
   if (entryType === "manual_add") return "Manual Credit";
-  if (entryType === "failed_withdrawal_revert") return "Withdrawal Reverted";
   if (entryType === "cancellation_payout") return "Cancellation Payout";
   if (entry.category === "adjustments") return "Adjustment Credit";
   if (entry.category === "food") return "Food Delivery Earnings";
@@ -200,6 +230,10 @@ export function ledgerEarningBanner(entry: RiderLedgerDisplayEntry): string {
   const desc = entry.description?.trim() ?? "";
 
   if (entryType === "penalty_reversal") return "";
+
+  if (entryType === "failed_withdrawal_revert" || isRejectedWithdrawalLedgerEntry(entry)) {
+    return extractWithdrawalRejectionReason(entry) || "Withdrawal rejected";
+  }
 
   const dashSplit = desc.split(/\s*[—–-]\s*/);
   const lead = dashSplit[0]?.trim();
@@ -267,6 +301,7 @@ export function formatLedgerDisplay(row: {
   refType?: string | null;
   serviceType?: string | null;
   orderId?: string | null;
+  rejectionReason?: string | null;
 }): {
   title: string;
   reason: string;

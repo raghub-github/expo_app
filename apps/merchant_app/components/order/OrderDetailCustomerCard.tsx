@@ -122,8 +122,15 @@ export function OrderDetailCustomerCard({
               preparedAt={preparedAtForTimeline}
               handedOverAt={order.handed_over_to_rider_at}
               pickedUpAt={order.rider_picked_up_at}
-              pickupOtp={order.pickup_otp}
+              pickupOtp={
+                String(order.delivery_type ?? "").toUpperCase() === "SELF_PICKUP"
+                  ? null
+                  : order.pickup_otp
+              }
               nowMs={orderNowMs}
+              isSelfPickup={
+                String(order.delivery_type ?? "").toUpperCase() === "SELF_PICKUP"
+              }
             />
           </View>
         ) : null}

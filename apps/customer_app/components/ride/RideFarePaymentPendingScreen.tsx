@@ -13,7 +13,7 @@ import { useRouter } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { useQuery } from "@tanstack/react-query";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { HEADER_PADDING_TOP, resolveTabBarBottomInset } from "@/constants/layout";
+import { resolveTabBarBottomInset, resolveTopSafeInset, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import type { OrderDetail } from "@/services/order.service";
 import { orderService } from "@/services/order.service";
 import {
@@ -23,6 +23,10 @@ import {
   buildRidePaymentFareBreakdown,
 } from "@/lib/ride-order-display";
 import { buildRideFareBillSummaryLines } from "@/lib/ride-fare-bill-display";
+import {
+  resolveRideFareBillOfferContext,
+  resolveRideBookingPayableTotal,
+} from "@/lib/ride-fare-offer-context";
 import { RideTollNoticeBanner, RideTollNoticeSheet } from "@/components/ride/RideTollNoticeSheet";
 import { useAppAssetSource } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
@@ -87,6 +91,23 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
   const insets = useSafeAreaInsets();
   const deliveredBill = parseRideDeliveredBill(order);
   const fareBreakdown = useMemo(() => buildRidePaymentFareBreakdown(order), [order]);
+  const fareBillOfferContext = useMemo(
+    () =>
+      resolveRideFareBillOfferContext(
+        order.checkoutMetadata as Record<string, unknown> | null | undefined
+      ),
+    [order.checkoutMetadata]
+  );
+  const bookingPayableTotal = useMemo(
+    () =>
+      resolveRideBookingPayableTotal({
+        totalAmount: order.totalAmount,
+        tipAmount: order.tipAmount,
+        billingSnapshot: order.billingSnapshot as Record<string, unknown> | null | undefined,
+        checkoutMetadata: order.checkoutMetadata as Record<string, unknown> | null | undefined,
+      }),
+    [order.totalAmount, order.tipAmount, order.billingSnapshot, order.checkoutMetadata]
+  );
 
   const rideFareBillQ = useQuery({
     queryKey: [
@@ -95,8 +116,14 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
       "pending",
       fareBreakdown.waitingCharge,
       fareBreakdown.surgeCharge,
+      fareBillOfferContext.platformOfferId ?? null,
+      fareBillOfferContext.forceNoAutoOffer ?? false,
     ],
-    queryFn: () => orderService.getRideFareBill(order.orderId),
+    queryFn: () =>
+      orderService.getRideFareBill(order.orderId, {
+        platformOfferId: fareBillOfferContext.platformOfferId,
+        forceNoAutoOffer: fareBillOfferContext.forceNoAutoOffer,
+      }),
     staleTime: 0,
     retry: 2,
   });
@@ -111,11 +138,21 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
   }, [rideFareBillQ.data, fareBreakdown.waitingCharge, fareBreakdown.surgeCharge]);
 
   const fareDueAmount = useMemo(() => {
-    if (billSummary?.payableTotal != null && billSummary.payableTotal > 0) {
-      return billSummary.payableTotal;
+    const fromBill = billSummary?.payableTotal ?? 0;
+    const waitingAdded =
+      (fareBreakdown.waitingCharge ?? 0) > 0.005 || (fareBreakdown.surgeCharge ?? 0) > 0.005;
+    if (fromBill > 0) return fromBill;
+    if (!waitingAdded && bookingPayableTotal != null && bookingPayableTotal > 0) {
+      return bookingPayableTotal;
     }
-    return fareBreakdown.total;
-  }, [billSummary?.payableTotal, fareBreakdown.total]);
+    return fareBreakdown.total ?? 0;
+  }, [
+    billSummary?.payableTotal,
+    bookingPayableTotal,
+    fareBreakdown.total,
+    fareBreakdown.waitingCharge,
+    fareBreakdown.surgeCharge,
+  ]);
 
   const appliedOfferLines = useMemo(() => {
     const bill = rideFareBillQ.data;
@@ -156,6 +193,7 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
   const tollNoticeSpokenRef = useRef<string | null>(null);
   const bottomPad = Math.max(resolveTabBarBottomInset(insets.bottom), 6);
   const scrollBottomPad = bottomPad + 96;
+  const headerTopPad = resolveTopSafeInset(insets.top) + STATUS_BAR_TO_HEADER_GAP;
 
   useEffect(() => {
     setTollSheetVisible(showTollNotice);
@@ -178,7 +216,7 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
-      <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP }]}>
+      <View style={[styles.header, { paddingTop: headerTopPad }]}>
         <TouchableOpacity onPress={onBack} hitSlop={12} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimary} />
         </TouchableOpacity>

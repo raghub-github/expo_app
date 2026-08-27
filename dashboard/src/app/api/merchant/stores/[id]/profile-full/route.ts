@@ -303,6 +303,21 @@ export async function GET(
       ? redactStoreBankAccounts(bankAccounts)
       : bankAccounts;
 
+    // Merchant Partner app: Expo push token registered for this store ⇒ app installed.
+    let appInstalled = false;
+    try {
+      const sql = getSql();
+      const tokenRows = await sql`
+        SELECT 1
+        FROM merchant_store_push_tokens
+        WHERE store_id = ${storeId}
+        LIMIT 1
+      `;
+      appInstalled = Array.isArray(tokenRows) ? tokenRows.length > 0 : Boolean(tokenRows);
+    } catch (e) {
+      console.warn("[profile-full] app_installed:", e);
+    }
+
     return NextResponse.json({
       success: true,
       store: storePayload,
@@ -312,6 +327,7 @@ export async function GET(
       bankAccounts: safeBankAccounts,
       areaManager,
       legalDocsRestricted,
+      app_installed: appInstalled,
     });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/profile-full]", e);

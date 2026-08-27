@@ -2276,6 +2276,8 @@ export const ordersCore = pgTable(
     cancelledBy: text("cancelled_by"),
     cancelledById: bigint("cancelled_by_id", { mode: "number" }),
     billingSnapshot: jsonb("billing_snapshot"),
+    /** leaveAtDoor, notes, gatiCashAmount mirror; billing remains in billing_snapshot. */
+    checkoutMetadata: jsonb("checkout_metadata"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -2440,6 +2442,8 @@ export const ordersFood = pgTable(
     isHighValue: boolean("is_high_value").notNull().default(false),
     vegNonVeg: vegNonVegTypeEnum("veg_non_veg"),
     deliveryInstructions: text("delivery_instructions"),
+    /** Public food order id (GMF…); may be set here when orders_core.formatted_order_id is empty. */
+    formattedOrderId: text("formatted_order_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

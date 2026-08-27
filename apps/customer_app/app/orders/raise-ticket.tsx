@@ -44,6 +44,7 @@ import {
   resolveOrderSupportAnchorAt,
 } from "@/lib/order-support-ticket-window";
 import type { FraudReportTargetType } from "@/services/customerSupport.service";
+import { isSelfPickupOrder } from "@/lib/self-pickup-order";
 import { resolveTopSafeInset } from "@/constants/layout";
 
 const GREEN = "#22C55E";
@@ -239,6 +240,10 @@ export default function OrderRaiseTicketScreen() {
   }, [order, resolved, orderRefParam, orderIdParam]);
 
   const isFoodOrder = !isRideOrder && !isParcelDeliveryOrder;
+  const isSelfPickup = useMemo(
+    () => (order ? isSelfPickupOrder(order) : false),
+    [order]
+  );
 
   const ticketWindowAnchor = useMemo(() => {
     if (chatLinkedOrder) {
@@ -764,7 +769,7 @@ export default function OrderRaiseTicketScreen() {
           </HelpSectionBlock>
         ) : null}
 
-        {!isRideOrder ? (
+        {!isRideOrder && !isSelfPickup ? (
           <HelpSectionBlock title="DELIVERY PARTNER INSTRUCTIONS">
             <HelpActionRow
               icon="call-outline"
@@ -780,7 +785,7 @@ export default function OrderRaiseTicketScreen() {
               onPress={hasRider ? handleChatRider : undefined}
             />
           </HelpSectionBlock>
-        ) : hasRider ? (
+        ) : isRideOrder && hasRider ? (
           <HelpSectionBlock title="RIDE PARTNER">
             <HelpActionRow icon="call-outline" title="Call ride partner" onPress={handleCallRider} />
           </HelpSectionBlock>
@@ -794,20 +799,22 @@ export default function OrderRaiseTicketScreen() {
                 title="Report restaurant fraud"
                 onPress={() => openFraudSheet("merchant")}
               />
-              <DashedDivider />
+              {!isSelfPickup ? <DashedDivider /> : null}
             </>
           ) : null}
-          <HelpActionRow
-            icon="shield-outline"
-            title={
-              isRideOrder
-                ? "Report ride partner fraud"
-                : isParcelDeliveryOrder
-                  ? "Report captain fraud"
-                  : "Report delivery partner fraud"
-            }
-            onPress={() => openFraudSheet("rider")}
-          />
+          {!isSelfPickup ? (
+            <HelpActionRow
+              icon="shield-outline"
+              title={
+                isRideOrder
+                  ? "Report ride partner fraud"
+                  : isParcelDeliveryOrder
+                    ? "Report captain fraud"
+                    : "Report delivery partner fraud"
+              }
+              onPress={() => openFraudSheet("rider")}
+            />
+          ) : null}
         </HelpSectionBlock>
 
         <HelpSectionBlock title="CONTACT GATIMITRA">

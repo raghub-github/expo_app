@@ -41,7 +41,7 @@ export function RideCashPayScreen({ order, onBack }: Props) {
 
   const rideLabel = getRideServiceLabel(order.rideType);
   const displayOrderId = order.formattedOrderId ?? order.orderId;
-  const amount = deliveredBill.total > 0 ? deliveredBill.total : Number(order.totalAmount ?? 0);
+  const amount = fareBreakdown.total > 0 ? fareBreakdown.total : deliveredBill.total;
   const amountLabel = formatRideFare(amount);
 
   const bottomInset = resolveBottomSafeInset(insets.bottom);

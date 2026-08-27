@@ -20,7 +20,7 @@ import { AppState, Platform, type AppStateStatus } from "react-native";
 import Constants from "expo-constants";
 import NetInfo, { type NetInfoState } from "@react-native-community/netinfo";
 
-const OFFLINE_NOTIF_ID = "mx_offline_network_v1";
+import { isMerchantIdleStatusNotification } from "@/lib/merchantStatusNotification";
 const OFFLINE_CHANNEL = "merchant_connectivity";
 
 type NetworkContextValue = {
@@ -80,8 +80,19 @@ async function ensureForegroundPresentation(): Promise<void> {
     const Notifications = await import("expo-notifications");
     Notifications.setNotificationHandler({
       handleNotification: async (notification) => {
-        const type = (notification.request.content.data as { type?: string } | undefined)?.type;
+        const data = notification.request.content.data as { type?: string } | undefined;
+        const type = data?.type;
         const isOffline = type === "offline_network";
+        const isIdleStatus = isMerchantIdleStatusNotification(data ?? null);
+        if (isIdleStatus) {
+          return {
+            shouldShowAlert: false,
+            shouldPlaySound: false,
+            shouldSetBadge: false,
+            shouldShowBanner: false,
+            shouldShowList: false,
+          };
+        }
         return {
           shouldShowAlert: true,
           shouldPlaySound: !isOffline,
@@ -95,6 +106,8 @@ async function ensureForegroundPresentation(): Promise<void> {
     /* ignore */
   }
 }
+
+const OFFLINE_NOTIF_ID = "mx_offline_network_v1";
 
 async function hasNotificationPermission(): Promise<boolean> {
   try {

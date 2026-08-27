@@ -244,6 +244,14 @@ export default function RideSearchingScreen() {
     [params.routeDistanceKm, params.tripKm, tripKm]
   );
 
+  /** Fare the customer saw on ride-book (after offers) — must not jump after placement. */
+  const quotedPayableFare = useMemo(() => {
+    const fromQuoted =
+      params.quotedGrandTotal != null ? Number(params.quotedGrandTotal) : 0;
+    if (Number.isFinite(fromQuoted) && fromQuoted > 0) return Math.round(fromQuoted);
+    return 0;
+  }, [params.quotedGrandTotal]);
+
   const rideImage = resolveRideImage(rideImageKey);
   const initialTipAmount =
     params.customerTipAmount != null ? Math.max(0, Number(params.customerTipAmount)) : 0;
@@ -253,7 +261,9 @@ export default function RideSearchingScreen() {
     if (Number.isFinite(fromParams) && fromParams > 0) return fromParams;
     return Number.isFinite(fare) && fare > 0 ? fare : 0;
   }, [params.estimatedFare, fare]);
-  const totalFare = fare + (Number.isFinite(activeTipAmount) ? activeTipAmount : 0);
+  const bookingFare = quotedPayableFare > 0 ? quotedPayableFare : fare;
+  const totalFare =
+    bookingFare + (Number.isFinite(activeTipAmount) ? activeTipAmount : 0);
   const stops = useMemo(() => parseRideStopsParam(params.stops), [params.stops]);
   const stopsForApi = useMemo(() => parseRideStopsForOrder(params.stops), [params.stops]);
   const isResumeMode = Boolean(params.orderId?.trim());
@@ -990,7 +1000,14 @@ export default function RideSearchingScreen() {
         trackActiveRideOrder(result.orderId, rideImageKey || rideTypeId);
         void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
         void queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
-        if (result.totalAmount != null && Number.isFinite(result.totalAmount) && result.totalAmount > 0) {
+        // Keep the quoted payable shown on ride-book; server totalAmount can differ
+        // (slab fare vs billing/offer preview) and must not change the UI mid-search.
+        if (
+          quotedPayableFare <= 0 &&
+          result.totalAmount != null &&
+          Number.isFinite(result.totalAmount) &&
+          result.totalAmount > 0
+        ) {
           setTripState((prev) => ({ ...prev, fare: Math.round(result.totalAmount) }));
         }
         searchExtensionsUsedRef.current = 0;
@@ -1374,7 +1391,7 @@ export default function RideSearchingScreen() {
         visible={timeoutSheetVisible}
         loadingAction={tipBoostLoadingAction}
         decisionRemainingSec={tipBoostDecisionRemainingSec}
-        orderTotal={fare}
+        orderTotal={bookingFare}
         existingTipAmount={activeTipAmount}
         heroImage={rideImage ?? undefined}
         onAddTipAndContinue={(tip) => void handleExtendSearch(tip)}

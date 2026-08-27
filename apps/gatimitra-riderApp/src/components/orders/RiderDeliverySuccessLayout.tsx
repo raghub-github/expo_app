@@ -1,15 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   View,
-  Text,
   StyleSheet,
   Platform,
-  Pressable,
   ScrollView,
   RefreshControl,
-  PanResponder,
+  TouchableOpacity,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import Svg, { Path } from "react-native-svg";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -24,6 +23,8 @@ import Animated, {
   Easing,
   runOnJS,
 } from "react-native-reanimated";
+import { AppText } from "@/components/AppText";
+import { LORA_BOLD, LORA_REGULAR, POPPINS_BOLD } from "@/src/theme/headerFonts";
 import { RiderDeliveryWalletCoinRain, riderWalletPocketStyles } from "@/src/components/orders/RiderDeliveryWalletCoinRain";
 
 export type SuccessBreakdownRow = {
@@ -60,173 +61,157 @@ export type RiderDeliverySuccessLayoutProps = {
   ctaAccessibilityLabel?: string;
 };
 
-const PAGE_BG = "#F3F5F4";
+const PAGE_BG = "#F4F6F5";
 const CARD = "#FFFFFF";
 const TEXT = "#111827";
-const MUTED = "#6B7280";
-const GREEN = "#22C55E";
-const GREEN_DARK = "#15803D";
-const GREEN_DEEP = "#0B5E36";
-const HEADER_GREEN = "#0E6B40";
-const HEADER_GREEN_LIGHT = "#1A8A52";
-const BORDER = "#E8ECF0";
-const MINT_BANNER = "#ECFDF5";
-const MINT_BORDER = "#BBF7D0";
-/** ~40% of earnings card sits on green header, ~60% on page background. */
-const EARNINGS_CARD_GREEN_OVERLAP = 50;
-
-const CTA_TRACK_H = 54;
-const CTA_THUMB = 46;
-const CTA_PAD = 4;
-const SLIDE_COMPLETE_RATIO = 0.15;
-const SLIDE_COMPLETE_MIN_PX = 22;
-const TAP_MOVE_MAX_PX = 10;
-
-const CONFETTI = [
-  { top: 18, left: 28, size: 6, color: "rgba(255,255,255,0.35)" },
-  { top: 42, left: 72, size: 5, color: "rgba(255,255,255,0.28)" },
-  { top: 24, right: 36, size: 7, color: "rgba(255,255,255,0.32)" },
-  { top: 58, right: 88, size: 5, color: "rgba(255,255,255,0.25)" },
-  { top: 12, right: 120, size: 4, color: "rgba(255,255,255,0.3)" },
-] as const;
+const MUTED = "#64748B";
+const BORDER = "#E2E8F0";
+/** Customer app Place Order green */
+const BRAND = "#137243";
+const BRAND_DARK = "#0F5132";
+const BRAND_LIGHT = "#ECFDF5";
+const BRAND_BORDER = "#BBF7D0";
+/** Fallback until earnings card is measured — half card height for green overlap. */
+const EARNINGS_CARD_HALF_FALLBACK = 82;
 
 function formatRupee(amount: number): string {
   const n = Math.round(amount * 10) / 10;
   return `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
 }
 
-function BreakdownLine({ row }: { row: SuccessBreakdownRow }) {
-  return (
-    <View style={styles.breakdownLine}>
-      <View style={styles.breakdownIconWrap}>
-        <Ionicons name={row.icon} size={16} color={MUTED} />
-      </View>
-      <Text style={styles.breakdownLineLabel} numberOfLines={2}>
-        {row.label}
-      </Text>
-      <Text style={styles.breakdownLineValue} numberOfLines={1}>
-        {row.value}
-      </Text>
-    </View>
-  );
+/** Soft scalloped seal — quadratic curves instead of sharp triangle teeth. */
+function buildSoftScallopCirclePath(
+  cx: number,
+  cy: number,
+  radius: number,
+  lobes: number,
+  depth: number
+): string {
+  const step = (Math.PI * 2) / lobes;
+  let d = "";
+  for (let i = 0; i < lobes; i++) {
+    const a0 = i * step - Math.PI / 2;
+    const a1 = (i + 1) * step - Math.PI / 2;
+    const x0 = cx + radius * Math.cos(a0);
+    const y0 = cy + radius * Math.sin(a0);
+    const x1 = cx + radius * Math.cos(a1);
+    const y1 = cy + radius * Math.sin(a1);
+    const mid = a0 + step / 2;
+    const qx = cx + (radius - depth) * Math.cos(mid);
+    const qy = cy + (radius - depth) * Math.sin(mid);
+    d += i === 0 ? `M ${x0.toFixed(2)} ${y0.toFixed(2)}` : "";
+    d += ` Q ${qx.toFixed(2)} ${qy.toFixed(2)} ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+  }
+  return `${d} Z`;
 }
 
-function SlideOrTapActionButton({
-  label,
-  onComplete,
-  accessibilityLabel,
-}: {
-  label: string;
-  onComplete: () => void;
-  accessibilityLabel?: string;
-}) {
-  const trackWidthRef = useRef(0);
-  const translateX = useSharedValue(0);
-  const isDragging = useSharedValue(false);
-  const chevronPulse = useSharedValue(1);
-  const firedRef = useRef(false);
+const BADGE_SIZE = 94;
+const BADGE_CX = BADGE_SIZE / 2;
+/** Outer decorative zig-zag ring (stroke only) — slightly inset. */
+const OUTER_RING_PATH = buildSoftScallopCirclePath(BADGE_CX, BADGE_CX, 39, 14, 4);
+/** Inner white seal. */
+const INNER_BADGE_PATH = buildSoftScallopCirclePath(BADGE_CX, BADGE_CX, 33, 14, 5);
+const OUTER_RING_COLOR = "#FCD34D";
 
-  const maxDrag = () => Math.max(0, trackWidthRef.current - CTA_THUMB - CTA_PAD * 2);
-  const slideThreshold = (max: number) =>
-    max > 0 ? Math.max(SLIDE_COMPLETE_MIN_PX, max * SLIDE_COMPLETE_RATIO) : SLIDE_COMPLETE_MIN_PX;
+const AnimatedSvg = Animated.createAnimatedComponent(Svg);
 
-  const fireComplete = () => {
-    if (firedRef.current) return;
-    firedRef.current = true;
-    const max = maxDrag();
-    if (max > 0) {
-      translateX.value = withSpring(max, { damping: 20, stiffness: 240 });
-    }
-    isDragging.value = false;
-    onComplete();
-  };
-
-  const tryCompleteSlide = (dx: number) => {
-    if (dx < slideThreshold(maxDrag())) return false;
-    fireComplete();
-    return true;
-  };
-
-  const resetThumb = () => {
-    isDragging.value = false;
-    translateX.value = withSpring(0, { damping: 18, stiffness: 220 });
-    firedRef.current = false;
-  };
+function ZigZagSuccessBadge() {
+  const ringScale = useSharedValue(1);
+  const ringRotate = useSharedValue(0);
 
   useEffect(() => {
-    chevronPulse.value = withRepeat(
+    ringScale.value = withRepeat(
       withSequence(
-        withTiming(1.08, { duration: 500, easing: Easing.inOut(Easing.ease) }),
-        withTiming(1, { duration: 500, easing: Easing.inOut(Easing.ease) })
+        withTiming(1.05, { duration: 1400, easing: Easing.inOut(Easing.ease) }),
+        withTiming(1, { duration: 1400, easing: Easing.inOut(Easing.ease) })
       ),
       -1,
       true
     );
-  }, [chevronPulse]);
+    ringRotate.value = withRepeat(
+      withTiming(360, { duration: 18_000, easing: Easing.linear }),
+      -1,
+      false
+    );
+  }, [ringRotate, ringScale]);
 
-  const pan = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 4,
-        onPanResponderGrant: () => {
-          isDragging.value = true;
-        },
-        onPanResponderMove: (_, g) => {
-          const max = maxDrag();
-          translateX.value = Math.max(0, Math.min(g.dx, max));
-          tryCompleteSlide(g.dx);
-        },
-        onPanResponderRelease: (_, g) => {
-          if (Math.abs(g.dx) < TAP_MOVE_MAX_PX && Math.abs(g.dy) < TAP_MOVE_MAX_PX) {
-            fireComplete();
-            return;
-          }
-          if (!tryCompleteSlide(g.dx)) {
-            resetThumb();
-          }
-        },
-        onPanResponderTerminate: resetThumb,
-      }),
-    [onComplete, translateX, isDragging]
-  );
-
-  const thumbStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: translateX.value }],
-  }));
-
-  const chevronStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: chevronPulse.value }],
+  const ringAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: ringScale.value }, { rotate: `${ringRotate.value}deg` }],
   }));
 
   return (
-    <View
-      style={styles.ctaPressable}
-      onLayout={(e) => {
-        trackWidthRef.current = e.nativeEvent.layout.width;
-      }}
-      {...pan.panHandlers}
+    <View style={styles.zigZagBadgeWrap}>
+      <AnimatedSvg
+        width={BADGE_SIZE}
+        height={BADGE_SIZE}
+        viewBox={`0 0 ${BADGE_SIZE} ${BADGE_SIZE}`}
+        style={[styles.zigZagRingLayer, ringAnimStyle]}
+      >
+        <Path
+          d={OUTER_RING_PATH}
+          fill="none"
+          stroke={OUTER_RING_COLOR}
+          strokeWidth={2.4}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+      </AnimatedSvg>
+      <Svg width={BADGE_SIZE} height={BADGE_SIZE} viewBox={`0 0 ${BADGE_SIZE} ${BADGE_SIZE}`}>
+        <Path d={INNER_BADGE_PATH} fill="#fff" />
+      </Svg>
+      <View style={styles.zigZagCheckCenter} pointerEvents="none">
+        <MaterialCommunityIcons name="check-bold" size={34} color={BRAND} />
+      </View>
+    </View>
+  );
+}
+
+function BreakdownLine({ row }: { row: SuccessBreakdownRow }) {
+  return (
+    <View style={styles.breakdownLine}>
+      <View style={styles.breakdownIconWrap}>
+        <Ionicons name={row.icon} size={16} color={BRAND} />
+      </View>
+      <AppText style={styles.breakdownLineLabel} numberOfLines={2}>
+        {row.label}
+      </AppText>
+      <AppText style={styles.breakdownLineValue} bold numberOfLines={1}>
+        {row.value}
+      </AppText>
+    </View>
+  );
+}
+
+function PrimaryCtaButton({
+  label,
+  onPress,
+  accessibilityLabel,
+}: {
+  label: string;
+  onPress: () => void;
+  accessibilityLabel?: string;
+}) {
+  const firedRef = useRef(false);
+
+  const handlePress = () => {
+    if (firedRef.current) return;
+    firedRef.current = true;
+    onPress();
+  };
+
+  return (
+    <TouchableOpacity
+      style={styles.ctaBtn}
+      onPress={handlePress}
+      activeOpacity={0.9}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? label}
     >
-      <LinearGradient
-        colors={[GREEN_DEEP, GREEN_DARK]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
-        style={styles.ctaBtn}
-      >
-        <Animated.View style={[styles.ctaIconCircle, thumbStyle]}>
-          <Animated.View style={[styles.ctaChevronPair, chevronStyle]}>
-            <Ionicons name="chevron-forward" size={16} color={GREEN_DARK} />
-            <Ionicons name="chevron-forward" size={16} color={GREEN_DARK} style={styles.ctaChevronSecond} />
-          </Animated.View>
-        </Animated.View>
-        <View style={styles.ctaLabelHit} pointerEvents="none">
-          <Text style={styles.ctaLabel}>{label}</Text>
-          <Text style={styles.ctaHint}>Tap or slide</Text>
-        </View>
-      </LinearGradient>
-    </View>
+      <AppText style={styles.ctaLabel} bold>
+        {label}
+      </AppText>
+      <Ionicons name="arrow-forward" size={18} color="#fff" />
+    </TouchableOpacity>
   );
 }
 
@@ -248,12 +233,10 @@ export function RiderDeliverySuccessLayout({
   championTitle,
   championSubtitle,
   ctaLabel,
-  onClose,
   onPrimaryCta,
   onRefresh,
   refreshing = false,
   walletPocketLabel = "Pocket",
-  closeAccessibilityLabel = "Close",
   ctaAccessibilityLabel,
 }: RiderDeliverySuccessLayoutProps) {
   const amountAnchorRef = useRef<View>(null);
@@ -261,6 +244,7 @@ export function RiderDeliverySuccessLayout({
   const pocketPulse = useSharedValue(1);
   const pocketHide = useSharedValue(1);
   const [pocketVisible, setPocketVisible] = useState(true);
+  const [earningsCardHalfH, setEarningsCardHalfH] = useState(EARNINGS_CARD_HALF_FALLBACK);
 
   const handleCoinsComplete = useCallback(() => {
     pocketHide.value = withTiming(0, { duration: 320, easing: Easing.out(Easing.ease) }, (finished) => {
@@ -269,9 +253,10 @@ export function RiderDeliverySuccessLayout({
       }
     });
   }, [pocketHide]);
-  const scale = useSharedValue(0.88);
+
+  const scale = useSharedValue(0.92);
   const opacity = useSharedValue(0);
-  const cardY = useSharedValue(28);
+  const cardY = useSharedValue(24);
 
   useEffect(() => {
     scale.value = withSpring(1, { damping: 14, stiffness: 140 });
@@ -296,6 +281,30 @@ export function RiderDeliverySuccessLayout({
 
   const formattedTotal = formatRupee(totalEarning);
 
+  const tripStats = useMemo(
+    () => [
+      {
+        key: "distance",
+        icon: "navigate-outline" as const,
+        label: tripDistanceLabel,
+        value: tripDistanceValue,
+      },
+      {
+        key: "time",
+        icon: "time-outline" as const,
+        label: tripTimeLabel,
+        value: tripTimeValue,
+      },
+      {
+        key: "rating",
+        icon: "star-outline" as const,
+        label: tripRatingLabel,
+        value: tripRatingValue,
+      },
+    ],
+    [tripDistanceLabel, tripDistanceValue, tripRatingLabel, tripRatingValue, tripTimeLabel, tripTimeValue]
+  );
+
   return (
     <View style={styles.root}>
       <StatusBar style="light" />
@@ -311,100 +320,76 @@ export function RiderDeliverySuccessLayout({
                 refreshing={refreshing}
                 onRefresh={onRefresh}
                 tintColor="#fff"
-                colors={[GREEN_DARK]}
+                colors={[BRAND]}
                 progressBackgroundColor="#fff"
               />
             ) : undefined
           }
         >
           <LinearGradient
-            colors={[HEADER_GREEN, HEADER_GREEN_LIGHT, "#1F9B58"]}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-            style={styles.headerGradient}
+            colors={[BRAND_DARK, BRAND, "#1A9D55"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={[styles.headerGradient, { paddingBottom: earningsCardHalfH + 16 }]}
           >
-            {CONFETTI.map((dot, i) => (
-              <View
-                key={i}
-                style={[
-                  styles.confettiDot,
-                  {
-                    top: dot.top,
-                    left: "left" in dot ? dot.left : undefined,
-                    right: "right" in dot ? dot.right : undefined,
-                    width: dot.size,
-                    height: dot.size,
-                    borderRadius: dot.size / 2,
-                    backgroundColor: dot.color,
-                  },
-                ]}
-              />
-            ))}
-
             <SafeAreaView edges={["top"]} style={styles.headerSafe}>
-              <View style={styles.headerTopRow}>
-                <Pressable
-                  onPress={onClose}
-                  style={({ pressed }) => [styles.circleBtn, pressed && styles.pressed]}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel={closeAccessibilityLabel}
-                >
-                  <Ionicons name="close" size={22} color="#fff" />
-                </Pressable>
-              </View>
-
               <Animated.View style={[styles.headerCenter, heroAnimStyle]}>
-                <View style={styles.checkOuter}>
-                  <Ionicons name="checkmark" size={28} color={GREEN} />
-                </View>
-                <Text style={styles.headerTitle}>{title}</Text>
-                <Text style={styles.headerSubtitle}>{subtitle}</Text>
+                <ZigZagSuccessBadge />
+                <AppText style={styles.headerTitle} bold>
+                  {title}
+                </AppText>
+                <AppText style={styles.headerSubtitle}>{subtitle}</AppText>
               </Animated.View>
             </SafeAreaView>
           </LinearGradient>
 
-          <View style={[styles.body, { marginTop: -EARNINGS_CARD_GREEN_OVERLAP }]}>
-            <Animated.View style={[styles.earningsCard, cardAnimStyle]}>
+          <View style={[styles.body, { marginTop: -earningsCardHalfH }]}>
+            <Animated.View
+              style={[styles.earningsCard, cardAnimStyle]}
+              onLayout={(e) => {
+                const h = e.nativeEvent.layout.height;
+                if (h > 0) {
+                  const half = Math.round(h / 2);
+                  setEarningsCardHalfH((prev) => (prev === half ? prev : half));
+                }
+              }}
+            >
               <LinearGradient
-                colors={["#F0FDF4", "#FFFFFF", "#FAFFFE"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.earningsCardInner}
+                colors={["#FFFFFF", "#FFFFFF", "#F8FCFA", "#F8FCFA"]}
+                locations={[0, 0.5, 0.5, 1]}
+                style={styles.earningsInner}
               >
-                <View style={styles.earningsTopBar} />
-                <View style={styles.earningsHeaderRow}>
-                  <View style={styles.earningsTitleCol}>
-                    <Text style={styles.earningsCardLabel}>Your Earnings</Text>
-                    <Text style={styles.earningsCardSub}>Trip payout credited</Text>
-                  </View>
+                <View style={styles.earningsTopMeta}>
                   <View style={styles.earningsCoinWrap}>
-                    <MaterialCommunityIcons name="wallet-outline" size={22} color={GREEN_DARK} />
+                    <MaterialCommunityIcons name="wallet-outline" size={20} color={BRAND} />
+                  </View>
+                  <View style={styles.creditedBadge}>
+                    <MaterialCommunityIcons name="shield-check" size={13} color={BRAND} />
+                    <AppText style={styles.creditedBadgeText} bold>
+                      {paymentBadgeLabel}
+                    </AppText>
                   </View>
                 </View>
                 <View style={styles.earningsAmountCenter}>
                   <View ref={amountAnchorRef} collapsable={false} style={styles.earningsFareAnchor}>
-                    <Text
-                      style={styles.earningsCardAmount}
-                      numberOfLines={1}
-                      adjustsFontSizeToFit
-                      minimumFontScale={0.75}
-                    >
+                    <AppText style={styles.earningsCardAmount} bold numberOfLines={1}>
                       {formattedTotal}
-                    </Text>
+                    </AppText>
                   </View>
-                  <View style={styles.creditedBadge}>
-                    <MaterialCommunityIcons name="shield-check" size={14} color={GREEN_DARK} />
-                    <Text style={styles.creditedBadgeText}>{paymentBadgeLabel}</Text>
-                  </View>
+                  <AppText style={styles.earningsCardLabel} bold>
+                    Your Earnings
+                  </AppText>
+                  <AppText style={styles.earningsCardSub}>Trip payout credited</AppText>
                 </View>
               </LinearGradient>
             </Animated.View>
 
             <Animated.View style={[styles.sectionCard, cardAnimStyle]}>
               <View style={styles.sectionHeaderLeft}>
-                <Ionicons name="wallet-outline" size={18} color={GREEN_DARK} />
-                <Text style={styles.sectionTitle}>{breakdownTitle}</Text>
+                <Ionicons name="receipt-outline" size={18} color={BRAND} />
+                <AppText style={styles.sectionTitle} bold>
+                  {breakdownTitle}
+                </AppText>
               </View>
 
               {breakdownRows.map((row) => (
@@ -414,48 +399,46 @@ export function RiderDeliverySuccessLayout({
               <View style={styles.dashedDivider} />
 
               <View style={styles.totalRow}>
-                <Text style={styles.totalLabel}>{totalEarningsLabel}</Text>
-                <Text style={styles.totalValue}>{formattedTotal}</Text>
+                <AppText style={styles.totalLabel} bold>
+                  {totalEarningsLabel}
+                </AppText>
+                <AppText style={styles.totalValue} bold>
+                  {formattedTotal}
+                </AppText>
               </View>
             </Animated.View>
 
             <Animated.View style={[styles.sectionCard, cardAnimStyle]}>
               <View style={styles.sectionHeaderLeft}>
-                <MaterialCommunityIcons name="map-marker-path" size={18} color={GREEN_DARK} />
-                <Text style={styles.sectionTitle}>{tripDetailsTitle}</Text>
+                <MaterialCommunityIcons name="map-marker-path" size={18} color={BRAND} />
+                <AppText style={styles.sectionTitle} bold>
+                  {tripDetailsTitle}
+                </AppText>
               </View>
 
               <View style={styles.tripGrid}>
-                <View style={styles.tripGridCell}>
-                  <Ionicons name="location-outline" size={18} color={GREEN_DARK} />
-                  <Text style={styles.tripGridLabel}>{tripDistanceLabel}</Text>
-                  <Text style={styles.tripGridValue}>{tripDistanceValue}</Text>
-                </View>
-                <View style={styles.tripGridCell}>
-                  <Ionicons name="time-outline" size={18} color={GREEN_DARK} />
-                  <Text style={styles.tripGridLabel}>{tripTimeLabel}</Text>
-                  <Text style={styles.tripGridValue}>{tripTimeValue}</Text>
-                </View>
-              </View>
-
-              <View style={styles.tripFooterRow}>
-                <View style={styles.tripFooterItem}>
-                  <Ionicons name="star" size={16} color={GREEN} />
-                  <Text style={styles.tripFooterLabel}>{tripRatingLabel}</Text>
-                  <Text style={styles.tripFooterValue}>{tripRatingValue}</Text>
-                </View>
+                {tripStats.map((stat) => (
+                  <View key={stat.key} style={styles.tripGridCell}>
+                    <Ionicons name={stat.icon} size={18} color={BRAND} />
+                    <AppText style={styles.tripGridLabel}>{stat.label}</AppText>
+                    <AppText style={styles.tripGridValue} bold>
+                      {stat.value}
+                    </AppText>
+                  </View>
+                ))}
               </View>
             </Animated.View>
 
             <Animated.View style={[styles.championBanner, cardAnimStyle]}>
               <View style={styles.championIconWrap}>
-                <MaterialCommunityIcons name="medal-outline" size={22} color={GREEN_DARK} />
+                <MaterialCommunityIcons name="medal-outline" size={22} color={BRAND} />
               </View>
               <View style={styles.championTextCol}>
-                <Text style={styles.championTitle}>{championTitle}</Text>
-                <Text style={styles.championSub}>{championSubtitle}</Text>
+                <AppText style={styles.championTitle} bold>
+                  {championTitle}
+                </AppText>
+                <AppText style={styles.championSub}>{championSubtitle}</AppText>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={MUTED} />
             </Animated.View>
           </View>
         </ScrollView>
@@ -470,12 +453,12 @@ export function RiderDeliverySuccessLayout({
               >
                 <MaterialCommunityIcons name="wallet" size={24} color="#B45309" />
               </View>
-              <Text style={riderWalletPocketStyles.pocketLabel}>{walletPocketLabel}</Text>
+              <AppText style={riderWalletPocketStyles.pocketLabel}>{walletPocketLabel}</AppText>
             </Animated.View>
           ) : null}
-          <SlideOrTapActionButton
+          <PrimaryCtaButton
             label={ctaLabel}
-            onComplete={onPrimaryCta}
+            onPress={onPrimaryCta}
             accessibilityLabel={ctaAccessibilityLabel ?? ctaLabel}
           />
         </View>
@@ -504,109 +487,74 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    paddingBottom: 8,
+    paddingBottom: 12,
   },
   headerGradient: {
-    paddingBottom: EARNINGS_CARD_GREEN_OVERLAP + 8,
-    overflow: "hidden",
-  },
-  confettiDot: {
-    position: "absolute",
+    /* paddingBottom set dynamically = half earnings card height */
   },
   headerSafe: {
     paddingHorizontal: 16,
-  },
-  headerTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 4,
-  },
-  circleBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.18)",
-    alignItems: "center",
-    justifyContent: "center",
+    paddingTop: 8,
   },
   headerCenter: {
     alignItems: "center",
-    paddingTop: 0,
-    paddingBottom: 4,
+    paddingTop: 4,
+    paddingBottom: 8,
   },
-  checkOuter: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: "#fff",
-    borderWidth: 2,
-    borderColor: "#111827",
+  zigZagBadgeWrap: {
+    width: BADGE_SIZE,
+    height: BADGE_SIZE,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 8,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.12,
-        shadowRadius: 10,
-      },
-      android: { elevation: 4 },
-    }),
+    marginBottom: 12,
   },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: "800",
-    color: "#fff",
-    textAlign: "center",
-    letterSpacing: -0.3,
-    includeFontPadding: false,
-  },
-  headerSubtitle: {
-    marginTop: 4,
-    fontSize: 13,
-    fontWeight: "500",
-    color: "rgba(255,255,255,0.92)",
-    textAlign: "center",
-    lineHeight: 18,
-    paddingHorizontal: 20,
-    includeFontPadding: false,
-  },
-  body: {
-    paddingHorizontal: 16,
-    gap: 8,
-  },
-  earningsCard: {
-    borderRadius: 20,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "#D1FAE5",
-    minHeight: 124,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0f172a",
-        shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 0.12,
-        shadowRadius: 18,
-      },
-      android: { elevation: 6 },
-    }),
-  },
-  earningsCardInner: {
-    paddingTop: 16,
-    paddingHorizontal: 18,
-    paddingBottom: 18,
-    gap: 8,
-  },
-  earningsTopBar: {
+  zigZagRingLayer: {
     position: "absolute",
     top: 0,
     left: 0,
-    right: 0,
-    height: 4,
-    backgroundColor: GREEN,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+  },
+  zigZagCheckCenter: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerTitle: {
+    fontSize: 24,
+    fontFamily: LORA_BOLD,
+    color: "#fff",
+    textAlign: "center",
+    letterSpacing: -0.3,
+  },
+  headerSubtitle: {
+    marginTop: 6,
+    fontSize: 14,
+    fontFamily: LORA_REGULAR,
+    color: "rgba(255,255,255,0.92)",
+    textAlign: "center",
+    lineHeight: 20,
+    paddingHorizontal: 24,
+  },
+  body: {
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  earningsCard: {
+    backgroundColor: CARD,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: BORDER,
+    overflow: "hidden",
+  },
+  earningsInner: {
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 20,
+    gap: 6,
+  },
+  earningsTopMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   earningsHeaderRow: {
     flexDirection: "row",
@@ -620,76 +568,71 @@ const styles = StyleSheet.create({
   },
   earningsCardSub: {
     fontSize: 12,
-    fontWeight: "500",
-    color: "#6B9E7E",
-    includeFontPadding: false,
+    fontFamily: LORA_REGULAR,
+    color: MUTED,
+    textAlign: "center",
+    marginTop: 2,
   },
   earningsCoinWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    backgroundColor: "#DCFCE7",
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: BRAND_LIGHT,
     borderWidth: 1,
-    borderColor: MINT_BORDER,
+    borderColor: BRAND_BORDER,
     alignItems: "center",
     justifyContent: "center",
   },
   earningsCardLabel: {
     fontSize: 14,
-    fontWeight: "700",
-    color: GREEN_DARK,
-    includeFontPadding: false,
-    letterSpacing: 0.2,
+    fontFamily: LORA_BOLD,
+    color: BRAND,
+    textAlign: "center",
+    marginTop: 4,
   },
   earningsCardAmount: {
-    marginTop: 2,
-    fontSize: 36,
-    fontWeight: "900",
+    fontSize: 42,
+    fontFamily: POPPINS_BOLD,
     color: TEXT,
-    letterSpacing: -1.2,
+    letterSpacing: -1,
     textAlign: "center",
-    width: "100%",
-    includeFontPadding: false,
   },
   earningsAmountCenter: {
     width: "100%",
     alignItems: "center",
-    paddingTop: 2,
-    gap: 8,
+    paddingTop: 4,
+    gap: 2,
   },
   earningsFareAnchor: {
     width: "100%",
-    minHeight: 46,
+    minHeight: 50,
     alignItems: "center",
     justifyContent: "center",
   },
   creditedBadge: {
     flexDirection: "row",
     alignItems: "center",
-    alignSelf: "center",
-    gap: 6,
-    marginTop: 0,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 999,
-    backgroundColor: MINT_BANNER,
+    backgroundColor: "#fff",
     borderWidth: 1,
-    borderColor: MINT_BORDER,
+    borderColor: BRAND_BORDER,
   },
   creditedBadgeText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: GREEN_DARK,
-    includeFontPadding: false,
+    fontSize: 11,
+    fontFamily: POPPINS_BOLD,
+    color: BRAND,
   },
   sectionCard: {
     backgroundColor: CARD,
-    borderRadius: 14,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: BORDER,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 8,
   },
   sectionHeaderLeft: {
     flexDirection: "row",
@@ -697,24 +640,24 @@ const styles = StyleSheet.create({
     gap: 8,
     flex: 1,
     minWidth: 0,
+    marginBottom: 2,
   },
   sectionTitle: {
     fontSize: 15,
-    fontWeight: "800",
+    fontFamily: LORA_BOLD,
     color: TEXT,
-    includeFontPadding: false,
   },
   breakdownLine: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingVertical: 1,
+    paddingVertical: 2,
   },
   breakdownIconWrap: {
-    width: 24,
-    height: 24,
-    borderRadius: 7,
-    backgroundColor: "#F3F4F6",
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: BRAND_LIGHT,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -722,15 +665,13 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     fontSize: 14,
-    fontWeight: "500",
+    fontFamily: LORA_REGULAR,
     color: TEXT,
-    includeFontPadding: false,
   },
   breakdownLineValue: {
     fontSize: 14,
-    fontWeight: "700",
+    fontFamily: POPPINS_BOLD,
     color: TEXT,
-    includeFontPadding: false,
   },
   dashedDivider: {
     borderTopWidth: 1,
@@ -747,99 +688,70 @@ const styles = StyleSheet.create({
   },
   totalLabel: {
     fontSize: 15,
-    fontWeight: "800",
-    color: GREEN_DARK,
-    includeFontPadding: false,
+    fontFamily: LORA_BOLD,
+    color: BRAND,
   },
   totalValue: {
     fontSize: 16,
-    fontWeight: "800",
-    color: GREEN_DARK,
-    includeFontPadding: false,
+    fontFamily: POPPINS_BOLD,
+    color: BRAND,
   },
   tripGrid: {
     flexDirection: "row",
-    gap: 10,
+    gap: 8,
   },
   tripGridCell: {
     flex: 1,
     borderWidth: 1,
     borderColor: BORDER,
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 6,
     alignItems: "center",
     gap: 4,
     backgroundColor: "#FAFBFC",
   },
   tripGridLabel: {
-    fontSize: 12,
-    fontWeight: "500",
+    fontSize: 11,
+    fontFamily: LORA_REGULAR,
     color: MUTED,
     textAlign: "center",
-    includeFontPadding: false,
   },
   tripGridValue: {
-    fontSize: 15,
-    fontWeight: "800",
+    fontSize: 14,
+    fontFamily: POPPINS_BOLD,
     color: TEXT,
     textAlign: "center",
-    includeFontPadding: false,
-  },
-  tripFooterRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingTop: 2,
-  },
-  tripFooterItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    flexWrap: "wrap",
-  },
-  tripFooterLabel: {
-    fontSize: 12,
-    fontWeight: "500",
-    color: MUTED,
-    includeFontPadding: false,
-  },
-  tripFooterValue: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: TEXT,
-    includeFontPadding: false,
   },
   championBanner: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    backgroundColor: MINT_BANNER,
-    borderRadius: 12,
+    backgroundColor: BRAND_LIGHT,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: MINT_BORDER,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderColor: BRAND_BORDER,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
   championIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: "#D1FAE5",
     alignItems: "center",
     justifyContent: "center",
   },
   championTitle: {
     fontSize: 14,
-    fontWeight: "800",
+    fontFamily: LORA_BOLD,
     color: TEXT,
-    includeFontPadding: false,
   },
   championSub: {
     marginTop: 2,
     fontSize: 12,
-    fontWeight: "500",
+    fontFamily: LORA_REGULAR,
     color: MUTED,
-    includeFontPadding: false,
   },
   championTextCol: {
     flex: 1,
@@ -848,69 +760,33 @@ const styles = StyleSheet.create({
   ctaDock: {
     paddingHorizontal: 16,
     paddingTop: 8,
-    paddingBottom: 8,
+    paddingBottom: 10,
     backgroundColor: PAGE_BG,
-  },
-  ctaPressable: {
-    width: "100%",
-    borderRadius: 14,
-    overflow: "hidden",
+    gap: 8,
   },
   ctaBtn: {
-    minHeight: CTA_TRACK_H,
+    minHeight: 52,
     borderRadius: 14,
+    backgroundColor: BRAND,
     flexDirection: "row",
     alignItems: "center",
-    paddingRight: 16,
-    overflow: "hidden",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 20,
     ...Platform.select({
       ios: {
-        shadowColor: GREEN_DEEP,
+        shadowColor: BRAND_DARK,
         shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.28,
+        shadowOpacity: 0.22,
         shadowRadius: 8,
       },
-      android: { elevation: 4 },
+      android: { elevation: 3 },
     }),
-  },
-  ctaIconCircle: {
-    marginLeft: CTA_PAD,
-    width: CTA_THUMB,
-    height: CTA_THUMB,
-    borderRadius: CTA_THUMB / 2,
-    backgroundColor: "#fff",
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 2,
-  },
-  ctaChevronPair: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  ctaChevronSecond: {
-    marginLeft: -10,
-  },
-  ctaLabelHit: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 10,
-    paddingLeft: 12,
   },
   ctaLabel: {
     fontSize: 16,
-    fontWeight: "800",
+    fontFamily: POPPINS_BOLD,
     color: "#fff",
-    textAlign: "center",
-    includeFontPadding: false,
-  },
-  ctaHint: {
-    marginTop: 1,
-    fontSize: 11,
-    fontWeight: "600",
-    color: "rgba(255,255,255,0.78)",
-    textAlign: "center",
-    includeFontPadding: false,
   },
   pressed: {
     opacity: 0.9,

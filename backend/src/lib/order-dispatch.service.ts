@@ -58,6 +58,39 @@ function normalizeOrderServiceType(raw: string | null | undefined): DispatchServ
   return null;
 }
 
+/** Customer collects at store — never start/exhaust rider dispatch for these. */
+function isSelfPickupFulfillment(
+  deliveryType: string | null | undefined,
+  billingSnapshot?: unknown,
+  checkoutMetadata?: unknown
+): boolean {
+  const fromStored = String(deliveryType ?? "").trim().toLowerCase();
+  if (
+    fromStored === "self_pickup" ||
+    fromStored === "takeaway" ||
+    fromStored === "take_away" ||
+    fromStored === "pickup"
+  ) {
+    return true;
+  }
+  const billing =
+    billingSnapshot && typeof billingSnapshot === "object"
+      ? (billingSnapshot as Record<string, unknown>)
+      : null;
+  const billed = String(billing?.deliveryType ?? billing?.delivery_type ?? "")
+    .trim()
+    .toLowerCase();
+  if (billed === "self_pickup" || billing?.isSelfPickup === true) return true;
+  const checkout =
+    checkoutMetadata && typeof checkoutMetadata === "object"
+      ? (checkoutMetadata as Record<string, unknown>)
+      : null;
+  const meta = String(checkout?.deliveryType ?? checkout?.delivery_type ?? "")
+    .trim()
+    .toLowerCase();
+  return meta === "self_pickup" || meta === "takeaway";
+}
+
 async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
   const db = getDb();
   const [row] = await db
@@ -66,6 +99,9 @@ async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
       riderId: ordersCore.riderId,
       status: ordersCore.status,
       currentStatus: ordersCore.currentStatus,
+      deliveryType: ordersCore.deliveryType,
+      billingSnapshot: ordersCore.billingSnapshot,
+      checkoutMetadata: ordersCore.checkoutMetadata,
       foodStatus: ordersFood.orderStatus,
       foodCancelled: ordersFood.cancelledAt,
       rideCancelled: ordersRide.cancelledAt,
@@ -83,6 +119,12 @@ async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
   if (!serviceType) return false;
 
   if (serviceType === "food") {
+    // Self-pick-up never needs a rider — do not open / keep dispatch sessions.
+    if (
+      isSelfPickupFulfillment(row.deliveryType, row.billingSnapshot, row.checkoutMetadata)
+    ) {
+      return false;
+    }
     return (
       (await isFoodStatusDispatchableForConfiguredFlow(row.foodStatus)) &&
       row.foodCancelled == null &&
@@ -628,7 +670,36 @@ export async function advanceDispatchWave(sessionId: number): Promise<boolean> {
       // Phase 5b: optional auto-cancel + refund on exhaustion (food only; gated by
       // auto_cancel_on_exhaustion, default OFF). Reuses the existing cancellation +
       // refund + merchant-compensation engine (prepared food -> partial merchant credit).
+      // Self-pick-up must never be cancelled for NO_RIDER_AVAILABLE.
       if (cfg?.autoCancelOnExhaustion && serviceType === "food") {
+        const selfPickup = await (async () => {
+          try {
+            const rows = (await sql`
+              SELECT delivery_type, billing_snapshot, checkout_metadata
+              FROM orders_core WHERE id = ${orderCoreId} LIMIT 1
+            `) as Array<{
+              delivery_type: string | null;
+              billing_snapshot: unknown;
+              checkout_metadata: unknown;
+            }>;
+            const r = rows[0];
+            return isSelfPickupFulfillment(
+              r?.delivery_type,
+              r?.billing_snapshot,
+              r?.checkout_metadata
+            );
+          } catch {
+            return false;
+          }
+        })();
+        if (selfPickup) {
+          console.info(
+            "[dispatch] skip_exhausted_cancel_self_pickup",
+            JSON.stringify({ orderCoreId })
+          );
+          await completeOrderDispatch(orderCoreId, "expired");
+          return false;
+        }
         const { cancelDispatchExhaustedOrder } = await import(
           "./dispatch-exhausted-cancel.service.js"
         );
@@ -775,6 +846,35 @@ export async function restartOrderDispatch(orderCoreId: number): Promise<boolean
 /** Convenience entry when only order core id is known after status transition. */
 export async function maybeStartOrderDispatch(orderCoreId: number): Promise<void> {
   try {
+    // Expire any stray session for self-pick-up without starting waves.
+    if (!(await isOrderStillDispatchable(orderCoreId))) {
+      const sql = getSql();
+      const selfPickup = await (async () => {
+        try {
+          const rows = (await sql`
+            SELECT delivery_type, billing_snapshot, checkout_metadata
+            FROM orders_core WHERE id = ${orderCoreId} LIMIT 1
+          `) as Array<{
+            delivery_type: string | null;
+            billing_snapshot: unknown;
+            checkout_metadata: unknown;
+          }>;
+          const r = rows[0];
+          return isSelfPickupFulfillment(
+            r?.delivery_type,
+            r?.billing_snapshot,
+            r?.checkout_metadata
+          );
+        } catch {
+          return false;
+        }
+      })();
+      if (selfPickup) {
+        await completeOrderDispatch(orderCoreId, "cancelled").catch(() => undefined);
+        console.info("[dispatch] skip_start_self_pickup", { orderCoreId });
+        return;
+      }
+    }
     await startOrderDispatch(orderCoreId);
     const eligible = await countEligibleRidersForOrder(orderCoreId).catch(() => -1);
     console.info("[dispatch] wave1 started", { orderCoreId, eligibleRiders: eligible });

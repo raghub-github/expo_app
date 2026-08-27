@@ -68,7 +68,7 @@ export function AccountRestrictedBanner({
   return (
     <View style={styles.restrictedWrap}>
       <View style={styles.restrictedIcon}>
-        <Ionicons name="warning" size={18} color="#ffffff" />
+        <Ionicons name="warning" size={16} color="#ffffff" />
       </View>
       <View style={styles.bannerTextCol}>
         <Text style={styles.restrictedTitle}>
@@ -102,7 +102,7 @@ export function PenaltyBanner({ amount, onPay, paying = false }: PenaltyBannerPr
   return (
     <View style={styles.penaltyWrap}>
       <View style={styles.penaltyIcon}>
-        <Ionicons name="warning" size={18} color="#ffffff" />
+        <Ionicons name="warning" size={16} color="#ffffff" />
       </View>
       <View style={styles.bannerTextCol}>
         <Text style={styles.penaltyTitle}>
@@ -153,7 +153,7 @@ export function RidePaymentHoldBanner({ hold, onView }: RidePaymentHoldBannerPro
   return (
     <View style={styles.penaltyWrap}>
       <View style={styles.penaltyIcon}>
-        <Ionicons name="warning" size={18} color="#ffffff" />
+        <Ionicons name="warning" size={16} color="#ffffff" />
       </View>
       <View style={styles.bannerTextCol}>
         <Text style={styles.penaltyTitle}>
@@ -203,7 +203,7 @@ export function OffDutyBanner({ visible, onTurnOn, loading, dutyLocked = false }
   return (
     <View style={styles.offDutyWrap}>
       <View style={styles.offDutyIcon}>
-        <Ionicons name="warning" size={18} color="#ffffff" />
+        <Ionicons name="warning" size={16} color="#ffffff" />
       </View>
       <View style={styles.bannerTextCol}>
         <Text style={styles.offDutyTitle}>
@@ -284,10 +284,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#D4A017",
-    paddingLeft: 12,
-    paddingRight: 12,
-    paddingVertical: 12,
-    gap: 10,
+    paddingLeft: 10,
+    paddingRight: 10,
+    paddingVertical: 8,
+    gap: 8,
   },
   restrictedWrap: {
     flex: 1,
@@ -297,74 +297,75 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#DC2626",
-    paddingLeft: 12,
-    paddingRight: 12,
-    paddingVertical: 12,
-    gap: 10,
+    paddingLeft: 10,
+    paddingRight: 10,
+    paddingVertical: 8,
+    gap: 8,
   },
   restrictedIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     borderWidth: 2,
     borderColor: "rgba(255,255,255,0.45)",
     alignItems: "center",
     justifyContent: "center",
   },
   restrictedTitle: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "800",
     color: "#ffffff",
   },
   restrictedSub: {
-    fontSize: 11,
+    fontSize: 10,
     color: "rgba(255,255,255,0.92)",
-    marginTop: 2,
-    lineHeight: 15,
+    marginTop: 1,
+    lineHeight: 14,
   },
   supportBtn: {
     backgroundColor: "#ffffff",
     borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     flexShrink: 0,
   },
   supportBtnText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "800",
     color: colors.gray[900],
   },
   penaltyIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     borderWidth: 2,
     borderColor: "rgba(255,255,255,0.5)",
     alignItems: "center",
     justifyContent: "center",
   },
   penaltyTitle: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "800",
     color: "#ffffff",
   },
   penaltySub: {
-    fontSize: 11,
+    fontSize: 10,
     color: "rgba(255,255,255,0.92)",
-    marginTop: 2,
+    marginTop: 1,
+    lineHeight: 14,
   },
   payBtn: {
     backgroundColor: "#ffffff",
     borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     flexShrink: 0,
   },
   payBtnDisabled: {
     opacity: 0.7,
   },
   payBtnText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "800",
     color: colors.gray[900],
   },
@@ -420,7 +421,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
-    marginRight: 6,
+    marginRight: 4,
     marginLeft: 2,
   },
   fab: {

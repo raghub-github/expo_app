@@ -3,13 +3,9 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { orderService } from "@/services/order.service";
 import { RideFareCheckoutScreen } from "@/components/ride/RideFareCheckoutScreen";
-import { RideCashPayScreen } from "@/components/ride/RideCashPayScreen";
 import { GatiMitraColors } from "@/constants/gatimitra";
-
-function isCashRideOrder(paymentMethod: string | null | undefined): boolean {
-  const m = String(paymentMethod ?? "").trim().toLowerCase();
-  return m === "cash" || m === "cod";
-}
+import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
+import { shouldShowRideFarePaymentPendingScreen } from "@/lib/ride-fare-gate";
 
 export default function RideFareCheckoutRoute() {
   const router = useRouter();
@@ -40,8 +36,10 @@ export default function RideFareCheckoutRoute() {
     return null;
   }
 
-  if (isCashRideOrder(order.paymentMethod)) {
-    return <RideCashPayScreen order={order} onBack={() => router.back()} />;
+  const delivered = normalizeCustomerOrderStatus(order.status) === "DELIVERED";
+  if (delivered && !shouldShowRideFarePaymentPendingScreen(order)) {
+    router.replace({ pathname: "/orders/[id]", params: { id: order.orderId } });
+    return null;
   }
 
   return <RideFareCheckoutScreen order={order} onBack={() => router.back()} />;

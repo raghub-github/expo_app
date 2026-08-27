@@ -49,6 +49,7 @@ import {
 } from "@/components/MerchantHomeBannerCarousel";
 import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
 import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
+import { useNetworkStatus } from "@/context/NetworkStatusContext";
 
 const DAY_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
 type DayKey = (typeof DAY_KEYS)[number];
@@ -262,6 +263,8 @@ function MainHeader({
   reopenCountdownLabelPrefix?: string;
 }) {
   const { isOnline, scheduledClosure, manualCloseUntil, restrictionType, isDelisted } = useStoreStatus();
+  const { isOnline: networkOnline, ready: networkReady } = useNetworkStatus();
+  const networkOffline = networkReady && !networkOnline;
   const reopenAtIso = normalizeIso(reopenAtIsoProp);
   const countdownPrefix = reopenCountdownLabelPrefix ?? "Opens in";
   const [countdownTime, setCountdownTime] = useState<string | null>(() =>
@@ -453,13 +456,17 @@ function MainHeader({
         </View>
         <View style={styles.rightSection}>
           {isOnline && !showHeaderToggle && !isProfileSection ? (
-            <View style={styles.radarWrap} accessibilityLabel="Store is live">
+            <View
+              style={[styles.radarWrap, networkOffline && styles.headerNetworkOffline]}
+              accessibilityLabel="Store is live"
+            >
               <RadarLiveIndicator compact />
             </View>
           ) : null}
           {showHeaderToggle && onToggleRequest ? (
             <View
-              style={styles.headerToggleWrap}
+              style={[styles.headerToggleWrap, networkOffline && styles.headerNetworkOffline]}
+              pointerEvents={networkOffline ? "none" : "auto"}
               onStartShouldSetResponder={() => true}
             >
               <OnlineOfflineToggle
@@ -2071,6 +2078,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginRight: -2,
+  },
+  headerNetworkOffline: {
+    opacity: 0.38,
   },
   logo: {
     width: LOGO_SIZE,

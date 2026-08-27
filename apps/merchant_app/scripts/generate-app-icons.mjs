@@ -1,8 +1,7 @@
 /**
  * Generates the Android notification small icon for GatiMitra Partner.
  *
- * Launcher / adaptive icons: `npm run generate:icons` runs
- * `generate-launcher-icon.mjs` first (safe-zone adaptive + mxappicon).
+ * Launcher icon: assets/mxappicon.png only (see generate-launcher-icon.mjs for previews).
  */
 import fs from "node:fs";
 import path from "node:path";

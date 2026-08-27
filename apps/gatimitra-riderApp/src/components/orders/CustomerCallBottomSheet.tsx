@@ -40,6 +40,9 @@ type Props = {
   customerPrimaryPhone?: string | null;
   customerAlternateName?: string | null;
   customerAlternatePhone?: string | null;
+  customerPhoneMasked?: string | null;
+  customerPrimaryPhoneMasked?: string | null;
+  customerAlternatePhoneMasked?: string | null;
 };
 
 type ContactRow = {
@@ -53,9 +56,13 @@ type ContactRow = {
 export function CustomerCallBottomSheet({
   visible,
   onDismiss,
+  customerName,
   customerPhone,
   customerPrimaryPhone,
   customerAlternatePhone,
+  customerPhoneMasked,
+  customerPrimaryPhoneMasked,
+  customerAlternatePhoneMasked,
 }: Props) {
   const { t } = useTranslation();
 
@@ -66,6 +73,7 @@ export function CustomerCallBottomSheet({
     const add = (
       key: string,
       phone: string | null | undefined,
+      maskedFromServer: string | null | undefined,
       isDeliveryPrimary = false
     ) => {
       const trimmed = phone?.trim();
@@ -76,18 +84,25 @@ export function CustomerCallBottomSheet({
       list.push({
         key,
         phone: trimmed,
-        masked: maskPhone(trimmed),
+        masked: maskedFromServer?.trim() || maskPhone(trimmed),
         isDeliveryPrimary,
       });
     };
 
     const hasAlternate = Boolean(customerAlternatePhone?.trim());
-    add("alternate", customerAlternatePhone, hasAlternate);
-    add("primary", customerPrimaryPhone);
-    add("customer", customerPhone);
+    add("alternate", customerAlternatePhone, customerAlternatePhoneMasked, hasAlternate);
+    add("primary", customerPrimaryPhone, customerPrimaryPhoneMasked);
+    add("customer", customerPhone, customerPhoneMasked);
 
     return list;
-  }, [customerAlternatePhone, customerPrimaryPhone, customerPhone]);
+  }, [
+    customerAlternatePhone,
+    customerAlternatePhoneMasked,
+    customerPhone,
+    customerPhoneMasked,
+    customerPrimaryPhone,
+    customerPrimaryPhoneMasked,
+  ]);
 
   const dial = useCallback(
     (phone: string) => {
@@ -107,16 +122,26 @@ export function CustomerCallBottomSheet({
       onDismiss={onDismiss}
       maxHeightRatio={0.42}
       showOuterHandle={false}
+      showFloatingClose
     >
       <View style={styles.headerRow}>
-        <Text style={styles.title}>
-          {t("orders.customerCall.title", "Tap a number to call")}
-        </Text>
-        <Pressable onPress={onDismiss} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="close" size={22} color="#5F6368" />
-        </Pressable>
+        <View style={styles.headerTextCol}>
+          <Text style={styles.title}>
+            {t("orders.customerCall.heading", "User Contact details")}
+          </Text>
+          {customerName?.trim() ? (
+            <Text style={styles.customerName}>{customerName.trim()}</Text>
+          ) : null}
+        </View>
       </View>
 
+      {rows.length === 0 ? (
+        <View style={styles.emptyWrap}>
+          <Text style={styles.emptyText}>
+            {t("orders.ridePaymentWait.noPhone", "Phone unavailable")}
+          </Text>
+        </View>
+      ) : (
       <View style={styles.list}>
         {rows.map((row) => (
           <Pressable
@@ -154,6 +179,7 @@ export function CustomerCallBottomSheet({
           </Pressable>
         ))}
       </View>
+      )}
     </DismissibleBottomSheetShell>
   );
 }
@@ -161,23 +187,27 @@ export function CustomerCallBottomSheet({
 const styles = StyleSheet.create({
   headerRow: {
     flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+    alignItems: "flex-start",
     paddingHorizontal: 20,
     paddingTop: 18,
     paddingBottom: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E8EAED",
   },
-  title: {
+  headerTextCol: {
     flex: 1,
+    gap: 4,
+    paddingRight: 8,
+  },
+  title: {
     fontSize: 17,
     fontWeight: "700",
     color: "#1C1C1C",
   },
-  closeBtn: {
-    marginLeft: 12,
-    padding: 2,
+  customerName: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#5F6368",
   },
   list: {
     paddingHorizontal: 16,
@@ -241,5 +271,15 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#828282",
     lineHeight: 16,
+  },
+  emptyWrap: {
+    paddingHorizontal: 20,
+    paddingVertical: 24,
+    alignItems: "center",
+  },
+  emptyText: {
+    fontSize: 14,
+    color: "#6B7280",
+    fontWeight: "600",
   },
 });

@@ -23,6 +23,7 @@ import {
   getMatrixDistances,
 } from "../distance/distance.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
+import { foodTypeIsListedAsVeg } from "../../lib/food-order-veg.js";
 import { toTimestamptzParam } from "../../lib/sql-timestamps.js";
 import type {
   MerchantMenuItemRow,
@@ -2147,7 +2148,7 @@ export async function getMenuItemFullConfig(
       description: item.item_description ?? null,
       price: itemPriced.customerItemPriceUnit,
       imageUrl: toAbsoluteClientMediaUrl(visibleImageUrl),
-      isVeg: (item.food_type ?? "").toLowerCase().startsWith("veg"),
+      isVeg: foodTypeIsListedAsVeg(item.food_type),
       hasCustomizations: item.has_customizations === true,
       hasAddons: item.has_addons === true,
       hasVariants: item.has_variants === true,

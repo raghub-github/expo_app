@@ -4,15 +4,22 @@ import { ordersCore, ordersRide } from "../db/schema.js";
 import { normalizeCustomerOrderStatus } from "./customer-order-status-resolve.js";
 import { isRideFarePaymentPending } from "./ride-rider-payout-snapshot.js";
 
+function isCashRidePaymentMethod(method?: string | null): boolean {
+  const m = String(method ?? "").trim().toLowerCase();
+  return m === "cash" || m === "cod";
+}
+
 export function isCustomerRideFareDue(input: {
   orderType?: string | null;
   status?: string | null;
   currentStatus?: string | null;
   paymentStatus?: string | null;
+  paymentMethod?: string | null;
 }): boolean {
   if (String(input.orderType ?? "").trim() !== "person_ride") return false;
   const appStatus = normalizeCustomerOrderStatus(input.currentStatus, input.status);
   if (appStatus !== "DELIVERED") return false;
+  if (isCashRidePaymentMethod(input.paymentMethod)) return false;
   return isRideFarePaymentPending(input.paymentStatus);
 }
 
@@ -31,6 +38,7 @@ export async function findCustomerOutstandingRideFare(customerPk: number): Promi
       status: ordersCore.status,
       currentStatus: ordersCore.currentStatus,
       paymentStatus: ordersCore.paymentStatus,
+      paymentMethod: ordersCore.paymentMethod,
       grandTotal: ordersCore.grandTotal,
       cancelledAt: ordersRide.cancelledAt,
     })
@@ -54,6 +62,7 @@ export async function findCustomerOutstandingRideFare(customerPk: number): Promi
       status: row.status,
       currentStatus: row.currentStatus,
       paymentStatus: row.paymentStatus,
+      paymentMethod: row.paymentMethod,
     })
   ) {
     return null;

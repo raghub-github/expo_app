@@ -113,7 +113,10 @@ import {
   type FoodPickupVerificationMethod,
 } from "../../lib/food-pickup-verification.js";
 import { loadFoodPickupVerificationSettings } from "../../lib/food-pickup-verification-settings.js";
-import { resolveRiderCustomerContactFields } from "../../lib/order-alternate-contact.js";
+import {
+  maskOrderContactPhone,
+  resolveRiderCustomerContactFields,
+} from "../../lib/order-alternate-contact.js";
 
 export const RIDER_ACCEPT_WINDOW_SEC = 60;
 export {
@@ -222,6 +225,10 @@ export type RiderOrderSummary = {
   customerPrimaryPhone?: string | null;
   customerAlternateName?: string | null;
   customerAlternatePhone?: string | null;
+  /** Server-masked display phones (rider call sheet). */
+  customerPhoneMasked?: string | null;
+  customerPrimaryPhoneMasked?: string | null;
+  customerAlternatePhoneMasked?: string | null;
   pickupAddressGeocoded?: string;
   dropAddressGeocoded?: string;
   /** Line items for pickup verification screen. */
@@ -248,6 +255,8 @@ export type RiderOrderSummary = {
   /** Admin/dashboard cancellation penalty debited from rider wallet. */
   cancellationPenaltyApplied?: boolean;
   cancellationPenaltyAmount?: number | null;
+  /** Who cancelled — customer | rider | admin | system (from orders_ride / OCR). */
+  cancelledByType?: string | null;
 };
 
 export type RiderFoodOrderItem = {
@@ -367,6 +376,21 @@ function resolveRideCustomer(row: RideRow): { name: string | null; phone: string
   const name = row.passengerName?.trim() || row.customerFullName?.trim() || null;
   const phone = row.passengerPhone?.trim() || row.customerPrimaryMobile?.trim() || null;
   return { name, phone };
+}
+
+function maskRiderContactPhone(phone: string | null | undefined): string | null {
+  const trimmed = phone?.trim();
+  if (!trimmed) return null;
+  return maskOrderContactPhone(trimmed);
+}
+
+function withMaskedCustomerPhones(summary: RiderOrderSummary): RiderOrderSummary {
+  return {
+    ...summary,
+    customerPhoneMasked: maskRiderContactPhone(summary.customerPhone),
+    customerPrimaryPhoneMasked: maskRiderContactPhone(summary.customerPrimaryPhone),
+    customerAlternatePhoneMasked: maskRiderContactPhone(summary.customerAlternatePhone),
+  };
 }
 
 function resolveRideStoredTripKm(row: {
@@ -536,7 +560,9 @@ function mapRideRow(row: RideRow, ledgerTotal?: number | null): RiderOrderSummar
         : String(row.adminRiderPaymentClearedAt)
       : undefined,
   };
-  return applyRidePayoutSnapshot(mapped, row.billingSnapshot, row.acceptPayoutSnapshot);
+  return withMaskedCustomerPhones(
+    applyRidePayoutSnapshot(mapped, row.billingSnapshot, row.acceptPayoutSnapshot)
+  );
 }
 
 type FoodRow = {
@@ -667,9 +693,13 @@ function mapFoodRow(row: FoodRow, ledgerTotal?: number | null): RiderOrderSummar
   };
   const withSnapshot = applyRidePayoutSnapshot(mapped, row.billingSnapshot);
   if (ledgerTotal != null && ledgerTotal > 0) {
-    return { ...withSnapshot, totalEarning: ledgerTotal, estimatedEarning: ledgerTotal };
+    return withMaskedCustomerPhones({
+      ...withSnapshot,
+      totalEarning: ledgerTotal,
+      estimatedEarning: ledgerTotal,
+    });
   }
-  return withSnapshot;
+  return withMaskedCustomerPhones(withSnapshot);
 }
 
 type FoodRowWithStatus = FoodRow & {
@@ -1681,19 +1711,50 @@ async function attachRiderOrderCancellationPenalty(
   riderId: number
 ): Promise<RiderOrderSummary> {
   if (summary.status !== "cancelled") return summary;
+
+  let cancelledByType = summary.cancelledByType ?? null;
+  let cancellationPenaltyApplied = summary.cancellationPenaltyApplied;
+  let cancellationPenaltyAmount = summary.cancellationPenaltyAmount ?? null;
+
   try {
     const db = getDb();
+
+    if (!cancelledByType) {
+      const actorRows = await db.execute<{ cancelled_by_type: string | null }>(sql`
+        SELECT COALESCE(r.cancelled_by_type, p.cancelled_by_type) AS cancelled_by_type
+        FROM orders_core c
+        LEFT JOIN orders_ride r ON r.order_id = c.id
+        LEFT JOIN orders_parcel p ON p.order_id = c.id
+        WHERE c.id = ${orderCorePk}
+        LIMIT 1
+      `);
+      cancelledByType =
+        (actorRows as { cancelled_by_type: string | null }[])[0]?.cancelled_by_type?.trim() ||
+        null;
+    }
+
     const ocrRows = await db.execute<{
       penalty_applied: boolean | null;
       penalty_amount: string | null;
+      cancelled_by_type: string | null;
     }>(sql`
-      SELECT penalty_applied, penalty_amount::text
+      SELECT penalty_applied, penalty_amount::text, cancelled_by_type
       FROM order_cancellation_reasons
       WHERE order_id = ${orderCorePk}
       ORDER BY created_at DESC
       LIMIT 1
     `);
-    const ocr = (ocrRows as { penalty_applied: boolean | null; penalty_amount: string | null }[])[0];
+    const ocr = (
+      ocrRows as {
+        penalty_applied: boolean | null;
+        penalty_amount: string | null;
+        cancelled_by_type: string | null;
+      }[]
+    )[0];
+    if (!cancelledByType && ocr?.cancelled_by_type?.trim()) {
+      cancelledByType = ocr.cancelled_by_type.trim();
+    }
+
     const fromReason =
       ocr?.penalty_amount != null && Number.isFinite(Number(ocr.penalty_amount))
         ? Number(ocr.penalty_amount)
@@ -1701,6 +1762,7 @@ async function attachRiderOrderCancellationPenalty(
     if (fromReason != null && fromReason > 0) {
       return {
         ...summary,
+        cancelledByType,
         cancellationPenaltyApplied: true,
         cancellationPenaltyAmount: fromReason,
       };
@@ -1717,16 +1779,30 @@ async function attachRiderOrderCancellationPenalty(
     if (Number.isFinite(ledgerTotal) && ledgerTotal > 0) {
       return {
         ...summary,
+        cancelledByType,
         cancellationPenaltyApplied: true,
         cancellationPenaltyAmount: ledgerTotal,
       };
     }
 
     if (ocr?.penalty_applied === true) {
-      return { ...summary, cancellationPenaltyApplied: true, cancellationPenaltyAmount: null };
+      return {
+        ...summary,
+        cancelledByType,
+        cancellationPenaltyApplied: true,
+        cancellationPenaltyAmount: null,
+      };
     }
   } catch {
     /* optional tables */
+  }
+
+  if (cancelledByType || cancellationPenaltyApplied) {
+    return {
+      ...summary,
+      ...(cancelledByType ? { cancelledByType } : {}),
+      ...(cancellationPenaltyApplied ? { cancellationPenaltyApplied, cancellationPenaltyAmount } : {}),
+    };
   }
   return summary;
 }

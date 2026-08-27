@@ -6,14 +6,23 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { forceRemoveLock, lockPath, root } from "./prepare-next-output.mjs";
+import {
+  applyOneDriveModuleResolutionOptions,
+  forceRemoveLock,
+  lockPath,
+  prepareNextBuildOutput,
+  root,
+} from "./prepare-next-output.mjs";
 
 const require = createRequire(path.join(root, "package.json"));
 const nextBin = require.resolve("next/dist/bin/next");
 
 forceRemoveLock();
+await prepareNextBuildOutput();
 spawnSync("cmd", ["/c", "attrib", "-R", "-S", "-H", lockPath], { stdio: "ignore" });
 spawnSync("cmd", ["/c", "del", "/f", "/q", lockPath], { stdio: "ignore" });
+
+applyOneDriveModuleResolutionOptions(process.env);
 
 const heapFlag = "--max-old-space-size=8192";
 const existing = (process.env.NODE_OPTIONS ?? "").trim();

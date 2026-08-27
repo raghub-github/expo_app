@@ -20,11 +20,29 @@ export function resolveOrderOtps(order: OrdersFoodRow, cache?: CachedOrderOtps):
 }
 
 /** Pickup OTP: show once order is accepted through dispatch (merchant handover to rider). */
-export function shouldShowPickupOtp(status: string, pickup: string | null): boolean {
+export function shouldShowPickupOtp(
+  status: string,
+  pickup: string | null,
+  opts?: { selfPickup?: boolean }
+): boolean {
+  if (opts?.selfPickup) return false;
   if (!pickup) return false;
   const s = status.toUpperCase();
   if (s === 'CANCELLED' || s === 'DELIVERED' || s === 'RTO') return false;
   return ['ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'CREATED', 'NEW'].includes(s);
+}
+
+/**
+ * Self-pickup: never show pickup OTP on merchant UI (customer holds the code).
+ * Rider delivery: store still shows pickup OTP for rider handover.
+ */
+export function formatPickupOtpForMerchantDisplay(
+  pickup: string | null,
+  opts?: { selfPickup?: boolean }
+): string | null {
+  if (!pickup) return null;
+  if (opts?.selfPickup) return null;
+  return pickup;
 }
 
 /** RTO OTP row when an RTO code exists on the order. */

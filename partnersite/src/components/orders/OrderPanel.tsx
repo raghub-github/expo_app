@@ -5,6 +5,7 @@ import {
   Bike,
   ChevronRight,
   Clock,
+  Footprints,
   HelpCircle,
   MapPin,
   Phone,
@@ -34,9 +35,69 @@ import { formatOrderDropAddress } from '@/lib/formatOrderAddress';
 import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
 import { resolveRiderStoreWaitState } from '@/lib/rider-store-wait-display';
 import { orderHasAssignedRider } from '@/lib/order-has-assigned-rider';
+import { isPartnerSelfPickupOrder } from '@/lib/partner-delivery-type';
 
 /** Panel preview only — full list via sidesheet (+N more). No scroll on items. */
 const ITEMS_PREVIEW_MAX = 4;
+
+function SelfPickupFooterBanner() {
+  // Horizontal walking trail (icon rotated so prints face L→R, not stacked vertically).
+  const prints = [
+    { delay: '0s', y: 4, rot: 90 },
+    { delay: '0.35s', y: -4, rot: 90 },
+    { delay: '0.7s', y: 4, rot: 90 },
+    { delay: '1.05s', y: -4, rot: 90 },
+    { delay: '1.4s', y: 4, rot: 90 },
+    { delay: '1.75s', y: -4, rot: 90 },
+  ] as const;
+
+  return (
+    <div className="relative shrink-0 overflow-hidden border-t border-emerald-200/60">
+      {/* Sliding yellow ↔ green band; text stays fixed and centered above it. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-y-0 left-0 w-[200%] animate-self-pickup-bg-slide"
+        style={{
+          background:
+            'linear-gradient(90deg, #FDE047 0%, #FEF08A 28%, #BBF7D0 72%, #4ADE80 100%)',
+        }}
+      />
+      {/* Walking footprints — always L→R (never R→L); fade out then restart from left. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 z-[5] flex items-center"
+      >
+        <div className="relative h-full w-full animate-self-pickup-prints-move">
+          {prints.map((p, i) => (
+            <span
+              key={i}
+              className="absolute top-1/2"
+              style={{
+                left: `${6 + i * 16}%`,
+                marginTop: p.y,
+                transform: `translateY(-50%) rotate(${p.rot}deg)`,
+              }}
+            >
+              <span
+                className="inline-flex animate-self-pickup-print-step text-emerald-900/55"
+                style={{ animationDelay: p.delay }}
+              >
+                <Footprints size={15} strokeWidth={2.2} className="shrink-0" />
+              </span>
+            </span>
+          ))}
+        </div>
+      </div>
+      <p className="relative z-10 px-4 py-2.5 text-center text-[12px] font-semibold text-emerald-950">
+        <span className="font-extrabold uppercase tracking-wide">Self-Pick-Up</span>
+        <span className="mx-1.5 text-emerald-900/55">·</span>
+        <span className="font-semibold text-emerald-900">
+          Customer will come to the store and pick up this order. No delivery partner needed.
+        </span>
+      </p>
+    </div>
+  );
+}
 
 function resolveItemVegType(vegNonveg?: string | null, name?: string | null): 'veg' | 'non_veg' | null {
   const t = (vegNonveg ?? '').toLowerCase();
@@ -249,8 +310,9 @@ export function OrderPanel({
     order.rider_phone
   );
   const terminalStatus = ['DELIVERED', 'CANCELLED', 'RTO'].includes(status);
+  const isSelfPickup = isPartnerSelfPickupOrder(order);
   const showPendingRiderAssign =
-    panelMode === 'live' && !riderAssigned && !terminalStatus;
+    panelMode === 'live' && !isSelfPickup && !riderAssigned && !terminalStatus;
   const { summary: nearbyRiderSummary } = useNearbyDispatchRiders(
     order.id,
     showPendingRiderAssign
@@ -272,6 +334,7 @@ export function OrderPanel({
   /** Live preview only — history uses top-right “View rider” + sidesheet. */
   const showRiderCard =
     !isHistory &&
+    !isSelfPickup &&
     (riderAssigned ||
       !!riderName ||
       !!displayOtps.pickup ||
@@ -345,18 +408,25 @@ export function OrderPanel({
       <div className={`relative flex flex-col bg-white ${className ?? ''}`}>
         <div className="flex flex-col gap-4 p-4 sm:p-5">
           <div className="flex items-center justify-between gap-2 min-w-0 flex-nowrap">
-            <span
-              className={`inline-flex min-w-0 max-w-full items-center rounded-md px-2.5 py-1 text-[10px] font-bold tracking-wide whitespace-nowrap overflow-hidden text-ellipsis ${
-                panelMode === 'history'
-                  ? 'bg-slate-100 text-slate-700'
-                  : 'bg-violet-100 text-violet-800'
-              }`}
-              title={panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
-            >
-              {panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
-            </span>
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span
+                className={`inline-flex min-w-0 max-w-full items-center rounded-md px-2.5 py-1 text-[10px] font-bold tracking-wide whitespace-nowrap overflow-hidden text-ellipsis ${
+                  panelMode === 'history'
+                    ? 'bg-slate-100 text-slate-700'
+                    : 'bg-violet-100 text-violet-800'
+                }`}
+                title={panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
+              >
+                {panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
+              </span>
+              {isSelfPickup && status !== 'DELIVERED' ? (
+                <span className="inline-flex items-center rounded-md bg-amber-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-amber-800 ring-1 ring-amber-200">
+                  Self-Pick-Up
+                </span>
+              ) : null}
+            </div>
             <div className="flex items-center gap-2 shrink-0">
-              {onPrintKot ? (
+              {onPrintKot && !terminalStatus ? (
                 <button
                   type="button"
                   onClick={onPrintKot}
@@ -423,7 +493,7 @@ export function OrderPanel({
             </div>
           ) : null}
 
-          {addressText ? (
+          {isSelfPickup ? null : addressText ? (
             <p className="text-xs text-gray-600 leading-relaxed">
               {addressText}
               {dropProximity ? <span className="text-gray-500"> {dropProximity}</span> : null}
@@ -439,8 +509,12 @@ export function OrderPanel({
             pickupVerified={pickupVerified}
             rtoVerified={rtoVerified}
             compact
+            selfPickup={isSelfPickup}
             merchantInstructions={merchantInstructions}
           />
+          {isSelfPickup && status === 'DELIVERED' ? (
+            <p className="text-sm font-bold text-emerald-800">Self-Picked Up</p>
+          ) : null}
 
           <div className="flex items-center justify-between text-xs text-gray-600 gap-2 border-t border-dashed border-gray-200 pt-3">
             <PlacedTimeToggle createdAt={order.created_at} />
@@ -470,7 +544,7 @@ export function OrderPanel({
             onTotalClick={onOpenBill}
           />
 
-          {showPendingRiderAssign ? (
+          {!isSelfPickup && showPendingRiderAssign ? (
             <RiderAssignPendingCard
               nearbyCount={nearbyRiderSummary?.nearbyCount ?? 0}
               assignSoonMessage={
@@ -482,7 +556,7 @@ export function OrderPanel({
                 hadPastRiderAssign ? 'Previous rider was unassigned' : null
               }
             />
-          ) : showRiderCard ? (
+          ) : !isSelfPickup && showRiderCard ? (
             <RiderDeliveryPartnerCard {...riderCardProps} />
           ) : null}
 
@@ -518,6 +592,8 @@ export function OrderPanel({
           ) : null}
         </div>
 
+        {isSelfPickup && !isHistory ? <SelfPickupFooterBanner /> : null}
+
         <OrderItemDetailModal
           open={selectedItem != null}
           onClose={() => setSelectedItem(null)}
@@ -532,21 +608,38 @@ export function OrderPanel({
     <div
       className={`relative flex flex-col h-auto max-h-[calc(100dvh-10rem)] bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden ${className ?? ''}`}
     >
+      {isSelfPickup && onClose ? (
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute top-2 right-2 z-20 rounded-lg p-1.5 text-gray-500 hover:bg-gray-100"
+          aria-label="Close order"
+        >
+          <X size={18} />
+        </button>
+      ) : null}
       <div className="flex flex-col xl:flex-row xl:items-stretch divide-y xl:divide-y-0 xl:divide-x divide-dashed divide-gray-200 overflow-y-auto hide-scrollbar flex-1 min-h-0">
         <div className="flex flex-col p-4 xl:w-[30%] min-w-0 shrink-0">
           <div className="mb-3 flex items-center justify-between gap-2 min-w-0 flex-nowrap">
-            <span
-              className={`inline-flex min-w-0 max-w-full items-center rounded-md px-2.5 py-1 text-[10px] font-bold tracking-wide whitespace-nowrap overflow-hidden text-ellipsis ${
-                panelMode === 'history'
-                  ? 'bg-slate-100 text-slate-700'
-                  : 'bg-violet-100 text-violet-800'
-              }`}
-              title={panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
-            >
-              {panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
-            </span>
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <span
+                className={`inline-flex min-w-0 max-w-full items-center rounded-md px-2.5 py-1 text-[10px] font-bold tracking-wide whitespace-nowrap overflow-hidden text-ellipsis ${
+                  panelMode === 'history'
+                    ? 'bg-slate-100 text-slate-700'
+                    : 'bg-violet-100 text-violet-800'
+                }`}
+                title={panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
+              >
+                {panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
+              </span>
+              {isSelfPickup && status !== 'DELIVERED' ? (
+                <span className="inline-flex items-center rounded-md bg-amber-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-amber-800 ring-1 ring-amber-200">
+                  Self-Pick-Up
+                </span>
+              ) : null}
+            </div>
             <div className="flex items-center gap-2 shrink-0">
-              {onPrintKot ? (
+              {onPrintKot && !terminalStatus ? (
                 <button
                   type="button"
                   onClick={onPrintKot}
@@ -603,7 +696,7 @@ export function OrderPanel({
             </div>
           )}
 
-          {addressText ? (
+          {isSelfPickup ? null : addressText ? (
             <p className="text-xs text-gray-600 leading-relaxed mb-4">
               {addressText}
               {dropProximity ? (
@@ -622,8 +715,12 @@ export function OrderPanel({
               pickupVerified={pickupVerified}
               rtoVerified={rtoVerified}
               compact
+              selfPickup={isSelfPickup}
               merchantInstructions={merchantInstructions}
             />
+            {isSelfPickup && status === 'DELIVERED' ? (
+              <p className="text-sm font-bold text-emerald-800">Self-Picked Up</p>
+            ) : null}
           </div>
 
           <div className="mt-3 pt-3 border-t border-dashed border-gray-200 flex items-center justify-between text-xs text-gray-600 gap-2">
@@ -656,7 +753,11 @@ export function OrderPanel({
           ) : null}
         </div>
 
-        <div className="flex flex-col p-4 flex-[1.35] min-w-0 min-h-0 w-full">
+        <div
+          className={`flex flex-col p-4 min-w-0 min-h-0 w-full ${
+            isSelfPickup ? 'flex-1 xl:flex-[1]' : 'flex-[1.35]'
+          }`}
+        >
           <MerchantOrderItemsList
             items={items}
             totalItemCount={totalItemCount}
@@ -678,7 +779,7 @@ export function OrderPanel({
             onTotalClick={onOpenBill}
           />
 
-          {isHistory ? (
+          {isSelfPickup || isHistory ? (
             <div className="mt-auto shrink-0 flex flex-col gap-2.5 pt-5 w-full">
               {showOldRidersLogButton ? (
                 <button
@@ -708,7 +809,7 @@ export function OrderPanel({
           ) : null}
         </div>
 
-        {!isHistory ? (
+        {!isHistory && !isSelfPickup ? (
           <div className="relative flex flex-col self-stretch p-4 xl:w-[20%] min-w-[200px] max-w-[280px] shrink-0 min-h-[240px] xl:min-h-0">
             {onClose && (
               <button
@@ -763,7 +864,7 @@ export function OrderPanel({
               </button>
             </div>
           </div>
-        ) : onClose ? (
+        ) : !isSelfPickup && onClose ? (
           <button
             type="button"
             onClick={onClose}
@@ -774,6 +875,8 @@ export function OrderPanel({
           </button>
         ) : null}
       </div>
+
+      {isSelfPickup && !isHistory ? <SelfPickupFooterBanner /> : null}
 
       <OrderItemDetailModal
         open={selectedItem != null}

@@ -41,13 +41,26 @@ export const APP_STATIC_ASSET_SEEDS: AppStaticAssetSeed[] = [
   { id: "customer.home.promo_ride_offer_2", app: "customer", section: "Home", label: "Ride offer banner 2", description: "Ride promo carousel", sortOrder: 110 },
 
   // ── Customer: Ride ──
-  { id: "customer.ride.banner", app: "customer", section: "Ride", label: "Ride home banner", description: "Ride home top banner", sortOrder: 10 },
+  {
+    id: "customer.ride.banner",
+    app: "customer",
+    section: "Ride",
+    label: "Ride home banner",
+    description:
+      "Ride home offer carousel — up to 6 images. 1 image shows on all offers; 2+ images split across offers.",
+    sortOrder: 10,
+  },
+  { id: "customer.ride.banner_2", app: "customer", section: "Ride", label: "Ride home banner 2", description: "Ride home offer carousel slot 2 of 6", sortOrder: 11 },
+  { id: "customer.ride.banner_3", app: "customer", section: "Ride", label: "Ride home banner 3", description: "Ride home offer carousel slot 3 of 6", sortOrder: 12 },
+  { id: "customer.ride.banner_4", app: "customer", section: "Ride", label: "Ride home banner 4", description: "Ride home offer carousel slot 4 of 6", sortOrder: 13 },
+  { id: "customer.ride.banner_5", app: "customer", section: "Ride", label: "Ride home banner 5", description: "Ride home offer carousel slot 5 of 6", sortOrder: 14 },
+  { id: "customer.ride.banner_6", app: "customer", section: "Ride", label: "Ride home banner 6", description: "Ride home offer carousel slot 6 of 6", sortOrder: 15 },
   { id: "customer.ride.bottom_banner", app: "customer", section: "Ride", label: "Ride bottom banner", description: "Ride home bottom banner", sortOrder: 20 },
   { id: "customer.ride.bike", app: "customer", section: "Ride", label: "Bike option", description: "Ride option list & grid", sortOrder: 30 },
   { id: "customer.ride.auto", app: "customer", section: "Ride", label: "Auto option", description: "Ride option list & grid", sortOrder: 40 },
   { id: "customer.ride.cab", app: "customer", section: "Ride", label: "Cab option", description: "Ride option list & grid", sortOrder: 50 },
   { id: "customer.ride.cab_premium", app: "customer", section: "Ride", label: "Premium cab option", description: "Ride option list & grid", sortOrder: 60 },
-  { id: "customer.ride.travel", app: "customer", section: "Ride", label: "Travel option", description: "Ride option list & grid", sortOrder: 70 },
+  { id: "customer.ride.travel", app: "customer", section: "Ride", label: "Auto EV option", description: "Ride option list & grid — EV Auto", sortOrder: 70 },
   { id: "customer.ride.ride_card", app: "customer", section: "Ride", label: "Ride card", description: "Ride card component", sortOrder: 80 },
   { id: "customer.ride.waiting_hero", app: "customer", section: "Ride", label: "Payment waiting hero", description: "Fare payment pending screen", sortOrder: 90 },
   { id: "customer.ride.map_bike", app: "customer", section: "Ride", label: "Map marker — bike", description: "Ride booking map markers", sortOrder: 100 },

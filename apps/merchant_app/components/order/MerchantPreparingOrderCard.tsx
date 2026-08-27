@@ -180,7 +180,12 @@ export function MerchantPreparingOrderCard({
           ) : undefined
         }
         riderContent={
-          showPendingRider ? (
+          order.deliveryType === "SELF_PICKUP" ? (
+            <View style={styles.selfPickupRow}>
+              <Text style={styles.selfPickupChip}>Self-Pick-Up</Text>
+              <Text style={styles.selfPickupHint}>Customer will collect from store</Text>
+            </View>
+          ) : showPendingRider ? (
             <RiderAssignPendingCard summary={nearbyRiderSummary} />
           ) : order.deliveryType === "GATIMITRA_RIDER" ? (
             <MerchantAssignedRiderRow order={order} />
@@ -244,4 +249,27 @@ const styles = StyleSheet.create({
   },
   btnDisabled: { opacity: 0.5 },
   pressed: { opacity: 0.88 },
+  selfPickupRow: {
+    marginHorizontal: 14,
+    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "#FEF3C7",
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+    gap: 2,
+  },
+  selfPickupChip: {
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+    color: "#92400E",
+  },
+  selfPickupHint: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#B45309",
+  },
 });

@@ -35,6 +35,20 @@ function formatOrderType(raw: string | null | undefined): string {
   return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/** Self-pickup KOTs must not print rider pickup OTP or QR. */
+export function isKotSelfPickupOrderType(raw: string | null | undefined): boolean {
+  const dt = String(raw ?? "")
+    .toUpperCase()
+    .replace(/-/g, "_")
+    .replace(/\s+/g, "_");
+  return (
+    dt === "SELF_PICKUP" ||
+    dt === "SELF_PICK_UP" ||
+    dt === "CUSTOMER_PICKUP" ||
+    dt.includes("SELF_PICKUP")
+  );
+}
+
 function formatPaymentMode(raw: string | null | undefined): string {
   const t = String(raw ?? "").trim();
   if (!t) return "";
@@ -158,12 +172,20 @@ export function buildKotHtml(payload: KotPrintPayload): string {
   const totalQty = items.reduce((n, i) => n + (i.quantity || 1), 0);
   const printAt = formatKotTime(payload.printTimestamp ?? new Date().toISOString());
   const orderAt = formatKotTime(payload.orderCreatedAt);
-  const qrSrc = pickupTokenToQrDataUri(payload.pickupToken, spec.qrModuleScale);
-  const qrTable = pickupTokenToQrTableHtml(payload.pickupToken, spec.qrModuleScale);
-  const qrMarkup = qrTable || (qrSrc
-    ? `<div class="qr-wrap"><img src="${qrSrc}" alt="Pickup QR" width="${spec.paperMm === 58 ? 108 : 132}" height="${spec.paperMm === 58 ? 108 : 132}" /></div>`
-    : "");
-  const otp = String(payload.pickupOtp ?? "").trim();
+  const selfPickup = isKotSelfPickupOrderType(payload.orderType);
+  const qrSrc = selfPickup
+    ? null
+    : pickupTokenToQrDataUri(payload.pickupToken, spec.qrModuleScale);
+  const qrTable = selfPickup
+    ? null
+    : pickupTokenToQrTableHtml(payload.pickupToken, spec.qrModuleScale);
+  const qrMarkup =
+    !selfPickup &&
+    (qrTable ||
+      (qrSrc
+        ? `<div class="qr-wrap"><img src="${qrSrc}" alt="Pickup QR" width="${spec.paperMm === 58 ? 108 : 132}" height="${spec.paperMm === 58 ? 108 : 132}" /></div>`
+        : ""));
+  const otp = selfPickup ? "" : String(payload.pickupOtp ?? "").trim();
   const orderType = formatOrderType(payload.orderType);
   const paymentMode = formatPaymentMode(payload.paymentMode);
   const packaging = (payload.packagingInstructions ?? "").trim();
@@ -448,7 +470,10 @@ export function buildKotHtml(payload: KotPrintPayload): string {
   ${packaging ? `<div class="pack-line">Packaging : ${escapeHtml(packaging)}</div>` : ""}
   ${packaging || noteBlock ? `<hr class="rule" />` : ""}
   <div class="total-line">Items Ordered: ${lineCount} | Total Units: ${totalQty}</div>
-  <hr class="rule-double" />
+  ${
+    selfPickup
+      ? ""
+      : `<hr class="rule-double" />
   <div class="verify-block">
     ${
       otp
@@ -469,7 +494,8 @@ export function buildKotHtml(payload: KotPrintPayload): string {
         : // A KOT without its QR is never silent — staff must know to reprint.
           `<div class="scan-caption">Pickup QR unavailable — reprint this KOT</div>`
     }
-  </div>
+  </div>`
+  }
   <hr class="rule" />
   <div class="footer-line">-------- Powered by GatiMitra --------</div>
   <div class="footer-tag">Made for you moments ❤️</div>

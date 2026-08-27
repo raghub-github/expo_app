@@ -74,7 +74,12 @@ export async function GET(req: NextRequest) {
     const raw = data ?? [];
     const purged = await purgeStaleNewOrderNotifications(db, gate.storeIdNum, raw);
     const remaining = purged.size > 0 ? raw.filter((r) => !purged.has(String(r.id))) : raw;
-    const storeNotifications = remaining.map((r) => ({
+    // Partnersite sheet is ops-only: waiting-for-order. Order lifecycle rows
+    // (and MERCHANT_* push mirrors) stay in merchant app / push — not here.
+    const waitingOnly = remaining.filter(
+      (r) => String(r.title ?? '').trim() === WAITING_FOR_ORDER_TITLE
+    );
+    const storeNotifications = waitingOnly.map((r) => ({
       id: String(r.id),
       type: r.type,
       title: r.title,

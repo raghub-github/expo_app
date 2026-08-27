@@ -17,6 +17,7 @@ import {
   fetchFoodOrder,
   fetchFoodOrders,
   patchFoodOrderStatus,
+  postCompleteSelfPickup,
   postFoodOrderPrepDelay,
 } from "@/services/ordersApi";
 import { prefetchMenuItemsForOrders } from "@/lib/menuItemCache";
@@ -25,7 +26,6 @@ import { cacheFoodOrders, setCachedFoodOrder } from "@/lib/foodOrderCache";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { useMerchantOrdersRealtime } from "@/hooks/useMerchantOrdersRealtime";
 import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
-import { refreshLiveOrdersOngoingNotification } from "@/lib/liveOrdersOngoingNotification";
 import {
   mapApiOrder,
   attachStoreRatingsFromReviews,
@@ -76,6 +76,8 @@ type OrdersContextValue = {
     }
   ) => Promise<boolean>;
   extendPrepDelay: (orderId: string, additionalMinutes: number) => Promise<void>;
+  /** Self-pickup only: verify customer OTP and mark order completed. */
+  completeSelfPickup: (orderId: string, otp: string) => Promise<void>;
   counts: OrderCounts;
   formatRelativeTime: (iso: string) => string;
   acceptanceWindowMinutes: number;
@@ -548,12 +550,6 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         );
         setError(null);
         requestMerchantDashboardStatsRefresh();
-        void refreshLiveOrdersOngoingNotification({
-          storeId,
-          token,
-          storeName: selectedStore?.store_name ?? undefined,
-          force: true,
-        });
         return true;
       } catch (e) {
         const msg = e instanceof Error ? e.message : "";
@@ -617,6 +613,37 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     [token, orderStoreIds, resolveOrderStoreId, mapWithStore]
   );
 
+  const completeSelfPickup = useCallback(
+    async (orderId: string, otp: string) => {
+      if (!token || orderStoreIds.length === 0) {
+        throw new Error("Not signed in. Open the app again and retry.");
+      }
+      if (orderId.startsWith("core-")) {
+        throw new Error("Order is still syncing; refresh in a moment.");
+      }
+      const foodId = Number(orderId);
+      if (!Number.isFinite(foodId)) {
+        throw new Error("Invalid order");
+      }
+      const order = ordersRef.current.find((o) => o.id === orderId);
+      if (!order) throw new Error("Order not found. Pull to refresh and retry.");
+      if (order.deliveryType !== "SELF_PICKUP") {
+        throw new Error("Only self-pickup orders can be completed with customer OTP");
+      }
+      const storeId = resolveOrderStoreId(order);
+      if (!storeId) throw new Error("No store selected. Retry after the store loads.");
+
+      const updated = await postCompleteSelfPickup(storeId, foodId, token, otp);
+      setCachedFoodOrder(storeId, foodId, updated);
+      setOrders((list) =>
+        list.map((o) => (o.id === orderId ? mapWithStore(updated, storeId) : o))
+      );
+      setError(null);
+      requestMerchantDashboardStatsRefresh();
+    },
+    [token, orderStoreIds, resolveOrderStoreId, mapWithStore]
+  );
+
   const counts: OrderCounts = useMemo(() => {
     const base: OrderCounts = {
       all: orders.length,
@@ -643,6 +670,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       upsertOrder,
       transitionOrder,
       extendPrepDelay,
+      completeSelfPickup,
       counts,
       formatRelativeTime,
       acceptanceWindowMinutes,
@@ -655,6 +683,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       upsertOrder,
       transitionOrder,
       extendPrepDelay,
+      completeSelfPickup,
       counts,
       acceptanceWindowMinutes,
     ]

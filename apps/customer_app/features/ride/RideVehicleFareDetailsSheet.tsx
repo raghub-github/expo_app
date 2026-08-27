@@ -11,8 +11,10 @@ export type RideVehicleFareDetailsSheetProps = {
   vehicleName: string;
   imageKey: string;
   fare: number | null;
+  offerDiscount?: number;
+  offerLabel?: string | null;
+  payableFare?: number | null;
   billingLines?: RideQuoteBillingLine[];
-  rateCardSummary?: string | null;
   waitingChargeNote?: string | null;
   loading?: boolean;
 };
@@ -28,13 +30,24 @@ export function RideVehicleFareDetailsSheet({
   vehicleName,
   imageKey,
   fare,
+  offerDiscount = 0,
+  offerLabel = null,
+  payableFare = null,
   billingLines = [],
-  rateCardSummary,
   waitingChargeNote,
   loading = false,
 }: RideVehicleFareDetailsSheetProps) {
-  const fareLabel = formatFareAmount(fare);
+  const listFare = fare != null && Number.isFinite(fare) && fare > 0 ? Math.round(fare) : null;
+  const discount = offerDiscount >= 1 ? Math.round(offerDiscount) : 0;
+  const afterOffer =
+    payableFare != null && Number.isFinite(payableFare) && payableFare > 0
+      ? Math.round(payableFare)
+      : listFare != null && discount > 0
+        ? Math.max(0, listFare - discount)
+        : listFare;
+  const fareLabel = formatFareAmount(afterOffer);
   const showBreakdown = billingLines.length > 0;
+  const showOffer = discount > 0 && listFare != null && afterOffer != null && listFare > afterOffer;
 
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.72}>
@@ -58,7 +71,12 @@ export function RideVehicleFareDetailsSheet({
           {loading ? (
             <ActivityIndicator size="small" color="#111827" />
           ) : (
-            <AppText style={styles.totalFare}>{fareLabel}*</AppText>
+            <View style={styles.totalFareCol}>
+              {showOffer && listFare != null ? (
+                <AppText style={styles.totalFareStrike}>₹{listFare}*</AppText>
+              ) : null}
+              <AppText style={styles.totalFare}>{fareLabel}*</AppText>
+            </View>
           )}
         </View>
 
@@ -74,11 +92,18 @@ export function RideVehicleFareDetailsSheet({
         ) : (
           <View style={styles.lineRow}>
             <AppText style={styles.lineLabel}>Ride Fare</AppText>
-            <AppText style={styles.lineValue}>{loading ? "…" : fareLabel}</AppText>
+            <AppText style={styles.lineValue}>{loading ? "…" : formatFareAmount(listFare)}</AppText>
           </View>
         )}
 
-        {showBreakdown ? (
+        {showOffer ? (
+          <View style={styles.lineRow}>
+            <AppText style={styles.offerLineLabel}>{offerLabel?.trim() || "Offer applied"}</AppText>
+            <AppText style={styles.offerLineValue}>-₹{discount}</AppText>
+          </View>
+        ) : null}
+
+        {showBreakdown || showOffer ? (
           <View style={[styles.lineRow, styles.totalBreakdownRow]}>
             <AppText style={styles.totalBreakdownLabel}>Total payable</AppText>
             <AppText style={styles.totalBreakdownValue}>{loading ? "…" : fareLabel}</AppText>
@@ -88,13 +113,6 @@ export function RideVehicleFareDetailsSheet({
         <AppText style={styles.disclaimer}>
           *Price may vary based on final pickup or drop location, time taken, final route and toll area.
         </AppText>
-
-        {rateCardSummary ? (
-          <View style={styles.infoBlock}>
-            <AppText style={styles.infoHeading}>Rate Card</AppText>
-            <AppText style={styles.infoText}>{rateCardSummary}</AppText>
-          </View>
-        ) : null}
 
         {waitingChargeNote ? (
           <View style={styles.infoBlock}>
@@ -163,6 +181,28 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: "800",
     color: "#111827",
+  },
+  totalFareCol: {
+    alignItems: "flex-end",
+  },
+  totalFareStrike: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#9CA3AF",
+    textDecorationLine: "line-through",
+    marginBottom: 2,
+  },
+  offerLineLabel: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#15803D",
+    paddingRight: 8,
+  },
+  offerLineValue: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#15803D",
   },
   divider: {
     height: StyleSheet.hairlineWidth,

@@ -18,6 +18,7 @@ import {
 import { isActiveOrderStatus, normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
 import { isActivePersonRideOrder, isPersonRideOrderSummary } from "@/lib/person-ride-orders";
 import { resolveDockVehicleImageKey } from "@/lib/dock-vehicle-image";
+import { isSelfPickupOrder } from "@/lib/self-pickup-order";
 import {
   getMyOrdersCachedAt,
   readSyncMyOrders,
@@ -58,6 +59,10 @@ function toActiveOrder(order: OrderSummary, existing?: ActiveOrder): ActiveOrder
       fromApi ||
       existing?.vehicleImageKey ||
       (serviceType === "ride" || serviceType === "parcel" ? "bike" : null),
+    isSelfPickup:
+      serviceType === "food"
+        ? isSelfPickupOrder({ deliveryType: order.deliveryType })
+        : false,
   };
 }
 

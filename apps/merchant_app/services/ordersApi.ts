@@ -447,3 +447,31 @@ export async function postFoodOrderPrepDelay(
   if (!data.order) throw new Error("Prep delay update failed");
   return data.order;
 }
+
+/** Self-pickup: verify customer Pickup OTP → mark order completed (Delivered). */
+export async function postCompleteSelfPickup(
+  storeId: number,
+  ordersFoodId: number,
+  token: string,
+  otp: string
+): Promise<ApiFoodOrder> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}/complete-self-pickup`,
+    token,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ otp: otp.trim() }),
+    }
+  );
+  const data = (await res.json().catch(() => ({}))) as {
+    order?: ApiFoodOrder;
+    error?: string;
+    valid?: boolean;
+    completed?: boolean;
+  };
+  if (!res.ok || !data.completed || !data.order) {
+    throw new Error(data.error || "Invalid OTP or could not complete pickup");
+  }
+  return data.order;
+}

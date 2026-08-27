@@ -1896,7 +1896,7 @@ export default function RiderRouteMap({
           navFollowRef.current = new NavigationFollowController({
             pitch: MAP_INITIAL_PITCH,
             lookAheadM: 70,
-            cameraSmoothMs: 420,
+            cameraSmoothMs: 520,
           });
         }
         const nav = navFollowRef.current;
@@ -1912,9 +1912,10 @@ export default function RiderRouteMap({
           const mapInst = mapRef.current;
           if (!route || !mapInst || alongM < 0) return;
           const now = performance.now();
+          // Tight throttle — green line should shrink every few frames like Google nav.
           if (
-            now - lastRouteProgressAtRef.current < 120 &&
-            Math.abs(alongM - lastRouteProgressAlongRef.current) < 4
+            now - lastRouteProgressAtRef.current < 32 &&
+            Math.abs(alongM - lastRouteProgressAlongRef.current) < 1.25
           ) {
             return;
           }
@@ -1993,10 +1994,26 @@ export default function RiderRouteMap({
 
     syncPlaceMarkers(mapboxgl, mapRef.current);
     updateRiderOnMap(mapboxgl, mapRef.current, tracking);
+
     const riderRouteAnchor = resolveRiderRouteAnchor(
       tracking,
       tracking?.rider?.assignment_status ?? null
     );
+
+    // While nav is interpolating along a cached route, do NOT re-trim from raw GPS
+    // (that snaps the green line ahead of the marker). Progress callback owns the line.
+    const nav = navFollowRef.current;
+    const full = lastRouteGeometryRef.current?.coordinates;
+    if (nav && full && full.length >= 2 && riderRouteAnchor) {
+      const rendered = nav.getRendered();
+      const checkPoint = (rendered ?? riderRouteAnchor) as [number, number];
+      const { offRouteM } = remainingRouteFromRider(full, checkPoint);
+      if (offRouteM <= OFF_ROUTE_REROUTE_M) {
+        nav.setRoute(full);
+        return;
+      }
+    }
+
     void loadRoute(
       mapRef.current,
       riderRouteAnchor,

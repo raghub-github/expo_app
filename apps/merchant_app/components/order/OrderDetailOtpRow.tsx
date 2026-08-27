@@ -8,6 +8,8 @@ type Props = {
   orderStatus: string;
   pickupOtp: string | null | undefined;
   rtoOtp: string | null | undefined;
+  /** Self-pickup: never show pickup OTP (customer holds it). */
+  selfPickup?: boolean;
 };
 
 function OtpCell({
@@ -29,8 +31,13 @@ function OtpCell({
   );
 }
 
-export function OrderDetailOtpRow({ orderStatus, pickupOtp, rtoOtp }: Props) {
-  const pickup = (pickupOtp ?? "").trim();
+export function OrderDetailOtpRow({
+  orderStatus,
+  pickupOtp,
+  rtoOtp,
+  selfPickup = false,
+}: Props) {
+  const pickup = selfPickup ? "" : (pickupOtp ?? "").trim();
   const rto = (rtoOtp ?? "").trim();
   if (!pickup && !rto) return null;
 

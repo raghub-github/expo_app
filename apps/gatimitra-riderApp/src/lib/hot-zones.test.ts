@@ -59,9 +59,12 @@ test("hotZonesToGeoJson emits closed hexagon polygons with status/service props"
   assert.equal(f.properties.serviceCount, 2);
 });
 
-test("hotZonesToGeoJson drops cells with a degenerate boundary", () => {
+test("hotZonesToGeoJson synthesizes a hex when boundary is missing or degenerate", () => {
   const fc = hotZonesToGeoJson([cell({ boundary: [[88.36, 22.57]] })]);
-  assert.equal(fc.features.length, 0);
+  assert.equal(fc.features.length, 1);
+  const ring = fc.features[0]!.geometry.coordinates[0]!;
+  assert.equal(ring.length, 7);
+  assert.deepEqual(ring[0], ring[ring.length - 1]);
 });
 
 test("display list sorts by status severity then distance", () => {

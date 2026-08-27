@@ -11,6 +11,7 @@ import { setMenuItemBookmark } from "@/services/merchant.service";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { useMenuItemBookmarkMutations } from "@/hooks/useMenuItemBookmarks";
 import { DietIndicator } from "@/components/store/DietIndicator";
+import { resolveItemDiet } from "@/lib/itemDiet";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
@@ -73,7 +74,7 @@ export function BookmarkedDishCard({ item, onRemoved }: Props) {
 
       <View style={styles.body}>
         <View style={styles.titleRow}>
-          <DietIndicator type={item.isVeg ? "veg" : "nonveg"} />
+          <DietIndicator type={resolveItemDiet({ isVeg: item.isVeg })} />
           <AppText style={styles.name} numberOfLines={2}>
             {item.name}
           </AppText>

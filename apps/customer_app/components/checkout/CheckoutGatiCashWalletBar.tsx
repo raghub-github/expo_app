@@ -107,9 +107,11 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E5E7EB",
     paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingVertical: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E5E7EB",
+    overflow: "visible",
+    zIndex: 20,
   },
   leftCluster: {
     flexGrow: 1,
@@ -184,5 +186,7 @@ const styles = StyleSheet.create({
   trailing: {
     flexShrink: 0,
     marginLeft: 4,
+    overflow: "visible",
+    zIndex: 30,
   },
 });

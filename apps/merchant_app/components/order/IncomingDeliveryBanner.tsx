@@ -8,7 +8,7 @@ export type IncomingBannerSlide = {
   key: string;
   icon: keyof typeof Ionicons.glyphMap;
   text: string;
-  tone: "delivery" | "cutlery" | "note";
+  tone: "delivery" | "pickup" | "cutlery" | "note";
 };
 
 type Props = {
@@ -48,19 +48,25 @@ export function IncomingDeliveryBanner({ slides, resetKey }: Props) {
       ? styles.toneCutlery
       : slide.tone === "note"
         ? styles.toneNote
-        : styles.toneDelivery;
+        : slide.tone === "pickup"
+          ? styles.tonePickup
+          : styles.toneDelivery;
   const iconColor =
     slide.tone === "cutlery"
       ? "#047857"
       : slide.tone === "note"
         ? "#6D28D9"
-        : GatiMitraMerchant.primaryDark;
+        : slide.tone === "pickup"
+          ? "#92400E"
+          : GatiMitraMerchant.primaryDark;
   const textStyle =
     slide.tone === "cutlery"
       ? styles.textCutlery
       : slide.tone === "note"
         ? styles.textNote
-        : styles.textDelivery;
+        : slide.tone === "pickup"
+          ? styles.textPickup
+          : styles.textDelivery;
 
   return (
     <View style={[styles.banner, toneStyle]}>
@@ -97,6 +103,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#ECFDF5",
     borderColor: "#A7F3D0",
   },
+  tonePickup: {
+    backgroundColor: "#FEF3C7",
+    borderColor: "#FCD34D",
+  },
   toneCutlery: {
     backgroundColor: "#ECFDF5",
     borderColor: "#A7F3D0",
@@ -115,6 +125,11 @@ const styles = StyleSheet.create({
   },
   textDelivery: {
     color: GatiMitraMerchant.primaryDark,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  textPickup: {
+    color: "#92400E",
     letterSpacing: 0.6,
     textTransform: "uppercase",
   },

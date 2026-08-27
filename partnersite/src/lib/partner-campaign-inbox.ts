@@ -78,13 +78,26 @@ export async function listPartnerCampaignNotifications(
     : pg``;
 
   try {
+    // Only super-admin campaigns (campaign_id set). Transactional order pushes
+    // (MERCHANT_NEW_ORDER etc.) also write in_app logs with campaign_id NULL —
+    // those must not appear in the partnersite Notifications sheet.
     const rows = await pg`
       SELECT d.notification_id, d.title, d.body, d.deep_link, d.queued_at, d.clicked_at
       FROM public.notification_dispatch_logs d
       WHERE d.recipient_user_id = ${parentId}
         AND d.recipient_role = 'merchant'
         AND d.channel = 'in_app'
+        AND d.campaign_id IS NOT NULL
         AND d.status IN ('queued', 'sent', 'delivered', 'clicked')
+        AND COALESCE(d.template_code, '') NOT IN (
+          'MERCHANT_NEW_ORDER',
+          'MERCHANT_ORDER_CANCELLED',
+          'MERCHANT_ORDER_READY',
+          'MERCHANT_ORDER_PICKED_UP',
+          'MERCHANT_ORDER_DELIVERED',
+          'MERCHANT_ORDER_REJECTED'
+        )
+        AND lower(COALESCE(d.title, '')) NOT LIKE 'new order%'
         ${notRevoked}
         ${notCleared}
       ORDER BY d.queued_at DESC

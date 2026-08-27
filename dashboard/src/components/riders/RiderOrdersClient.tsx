@@ -23,6 +23,11 @@ import {
 import Link from "next/link";
 import { MoreVertical } from "lucide-react";
 import { resolveRiderDashboardOrderStatusLabel } from "@/lib/riders/rider-order-status-display";
+import {
+  isOrderDeliveredForRiderWalletCredit,
+  resolveRiderOrderWalletEntryType,
+} from "@/lib/riders/rider-wallet-credit-display";
+import { formatRiderOrderDisplayId } from "@/lib/riders/format-rider-order-display-id";
 
 interface RiderInfo {
   id: number;
@@ -38,6 +43,9 @@ interface OrderRow {
   riderEarning: string | null;
   createdAt: string;
   externalRef: string | null;
+  formattedOrderId?: string | null;
+  orderId?: string | null;
+  displayOrderId?: string | null;
   walletCredited?: boolean;
   walletDebited?: boolean;
   hasLedgerEntry?: boolean;
@@ -48,55 +56,52 @@ interface OrderRow {
 }
 
 function formatOrderStatusLabel(order: OrderRow): string {
-  const base = resolveRiderDashboardOrderStatusLabel({
+  return resolveRiderDashboardOrderStatusLabel({
     status: order.status,
     orderType: order.orderType,
     riderAssignmentStatus: order.riderAssignmentStatus,
     riderRideUnassigned: order.riderRideUnassigned,
   });
-  if (order.earningCreditPending) {
-    return `${base} · payment pending`;
-  }
-  return base;
 }
 
 type EarningDisplay = {
   label: string;
   className: string;
+  pendingHint?: string | null;
 };
 
-/** Credit → plain; debit → leading −; not credited to wallet → strikethrough. */
+/** Credit only after delivered; otherwise Pending (strikethrough). Same gate as wallet engine. */
 function formatOrderEarningDisplay(order: OrderRow): EarningDisplay {
   const amount = Number(order.riderEarning);
   const hasAmount = Number.isFinite(amount) && amount > 0;
   const absLabel = hasAmount ? `₹${amount.toFixed(2)}` : "—";
+  const entry = resolveRiderOrderWalletEntryType(order);
 
-  // Wallet credit landed — never strikethrough.
-  if (order.walletCredited === true) {
-    return {
-      label: absLabel,
-      className: "font-medium text-emerald-700 tabular-nums",
-    };
+  if (entry === "Credit") {
+    return { label: absLabel, className: "font-medium text-emerald-700 tabular-nums", pendingHint: null };
   }
-
-  // Wallet debit (e.g. cancel penalty) — show minus, no strikethrough.
-  if (order.walletDebited === true) {
+  if (entry === "Debit") {
     return {
       label: hasAmount ? `−₹${amount.toFixed(2)}` : "—",
       className: "font-medium text-red-700 tabular-nums",
+      pendingHint: null,
     };
   }
-
-  // Amount never credited to wallet — strikethrough (cancelled / pending / unpaid).
-  if (!hasAmount) {
-    return { label: "—", className: "font-medium text-gray-400" };
+  if (entry === "—" || !hasAmount) {
+    return { label: "—", className: "font-medium text-gray-400", pendingHint: null };
   }
+
+  const showPending =
+    order.earningCreditPending === true ||
+    !isOrderDeliveredForRiderWalletCredit(order) ||
+    order.walletCredited !== true;
 
   return {
     label: absLabel,
-    className: order.earningCreditPending
+    className: showPending
       ? "font-medium text-amber-700/80 tabular-nums line-through decoration-amber-600/70"
       : "font-medium text-gray-500 tabular-nums line-through decoration-gray-400",
+    pendingHint: showPending ? "Pending" : null,
   };
 }
 
@@ -553,7 +558,7 @@ export function RiderOrdersClient() {
                       <th className="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wide">Order ID</th>
                       <th className="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wide">Type</th>
                       <th className="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wide">Status</th>
-                      <th className="px-3 py-2 text-right text-[10px] font-medium text-gray-600 uppercase tracking-wide">Order value</th>
+                      <th className="px-3 py-2 text-right text-[10px] font-medium text-gray-600 uppercase tracking-wide">Order value (CTC)</th>
                       <th className="px-3 py-2 text-right text-[10px] font-medium text-gray-600 uppercase tracking-wide">Earning</th>
                       <th className="px-3 py-2 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wide">Date</th>
                       <th className="px-3 py-2 w-10"></th>
@@ -567,15 +572,39 @@ export function RiderOrdersClient() {
                         const earning = formatOrderEarningDisplay(o);
                         return (
                         <tr key={o.id} className="relative hover:bg-gray-50/50">
-                          <td className="px-3 py-2 text-xs font-mono font-medium text-gray-900">{o.externalRef || o.id}</td>
+                          <td className="px-3 py-2 text-xs font-mono font-medium text-gray-900">
+                            {(() => {
+                              const publicId = formatRiderOrderDisplayId(o);
+                              return (
+                                <Link
+                                  href={`/order/${encodeURIComponent(publicId)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-700 hover:text-blue-900 hover:underline"
+                                  title="Open order in new tab"
+                                >
+                                  {publicId}
+                                </Link>
+                              );
+                            })()}
+                          </td>
                           <td className="px-3 py-2 text-xs text-gray-900 capitalize">{o.orderType.replace("_", " ")}</td>
                           <td className="px-3 py-2 text-xs text-gray-900 capitalize">{formatOrderStatusLabel(o)}</td>
-                          <td className="px-3 py-2 text-xs text-right text-gray-900 tabular-nums">₹{o.fareAmount ?? "—"}</td>
+                          <td className="px-3 py-2 text-xs text-right text-gray-900 tabular-nums">
+                            {o.fareAmount != null && Number(o.fareAmount) > 0
+                              ? `₹${Number(o.fareAmount).toFixed(2)}`
+                              : "—"}
+                          </td>
                           <td className="px-3 py-2 text-xs text-right">
                             <div className="flex flex-col items-end leading-tight">
                               <span className={earning.className}>
                                 {earning.label}
                               </span>
+                              {earning.pendingHint ? (
+                                <span className="mt-0.5 text-[10px] font-semibold text-amber-700">
+                                  {earning.pendingHint}
+                                </span>
+                              ) : null}
                               {(approvedExtraByOrderId.get(o.id) ?? 0) > 0 && (
                                 <span
                                   className="mt-0.5 inline-flex items-center rounded-md bg-green-50 px-1.5 py-0.5 text-[10px] font-semibold text-green-700 border border-green-200"

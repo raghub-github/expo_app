@@ -14,7 +14,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocationStore } from "@/store/locationStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { HEADER_PADDING_TOP } from "@/constants/layout";
+import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { AllServicesGrid, type ServiceId } from "./AllServicesGrid";
 import { IntercityServicesList } from "./IntercityServicesList";
 import { RideServiceBottomNav, type RideServiceTab, getRideServiceBottomNavHeight } from "./RideServiceBottomNav";
@@ -26,16 +26,16 @@ import { resolvePersonRideTrackingNavigation } from "@/lib/person-ride-orders";
 import { tripKmFromCoords } from "@/lib/intercity-rides";
 import { RideHomePromoBanner, RideSafetyBanner } from "./RideHomeSections";
 import { useFeaturedOffersRide } from "@/hooks/useFeaturedOffersRide";
-import { filterRideBookFeaturedOffers } from "@/lib/ride-offers";
+import { filterRideBookFeaturedOffers, filterRideOffersForCompletedRides, completedPersonRideCountHint } from "@/lib/ride-offers";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 import { prefetchCriticalRideAssetImagesSync } from "@/lib/rideCriticalAssets";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
 
 const PAD = 18;
-const DUE_BANNER_H = 64;
-const TRACKING_PILL_H = 76;
-const TRACKING_PILL_MULTI_HINT_H = 24;
-const TRACKING_FLOAT_GAP = 6;
+const TRACKING_PILL_H = 56;
+const TRACKING_PILL_MULTI_HINT_H = 22;
+/** Clear breathing room above tab bar — keep small so it doesn’t look like a blank white row. */
+const TRACKING_FLOAT_GAP = 8;
 
 type RideRouteParams = {
   tab?: string;
@@ -79,29 +79,34 @@ export function RideBookingScreen() {
   }, [address?.pincode, address?.state, address?.city, coords?.latitude, coords?.longitude]);
 
   const { data: rideOffersData } = useFeaturedOffersRide(offerLocationParams, locationHydrated);
+  const { activeRides, dueFareRide, hasDueFare, orders: myOrders } = useActivePersonRideOrders(true);
+  const completedRideCount = completedPersonRideCountHint(myOrders);
   const rideFeaturedOffers = useMemo(
-    () => filterRideBookFeaturedOffers(rideOffersData?.offers ?? []),
-    [rideOffersData?.offers]
+    () =>
+      filterRideOffersForCompletedRides(
+        filterRideBookFeaturedOffers(rideOffersData?.offers ?? []),
+        completedRideCount
+      ),
+    [rideOffersData?.offers, completedRideCount]
   );
 
   useFocusEffect(
     useCallback(() => {
       if (!locationHydrated) return;
-      // Background refresh only — keep cached offers painted (no blank flash).
-      void queryClient.refetchQueries({ queryKey: ["featured-offers-ride"], type: "active" });
+      void queryClient.invalidateQueries({ queryKey: ["featured-offers-ride"] });
     }, [locationHydrated, queryClient])
   );
 
   const initialTab: RideServiceTab =
     routeParams.tab === "intercity" ? "intercity" : "all";
   const [activeTab, setActiveTab] = useState<RideServiceTab>(initialTab);
+  const [measuredNavH, setMeasuredNavH] = useState(0);
 
   useEffect(() => {
     if (routeParams.tab === "intercity") setActiveTab("intercity");
   }, [routeParams.tab]);
 
   const locationDisplay = address?.fullAddress ?? address?.primary ?? "Select location";
-  const { activeRides, dueFareRide, hasDueFare } = useActivePersonRideOrders(true);
   const trackingRides = useMemo(() => {
     const byId = new Map<string, OrderSummary>();
     for (const ride of activeRides) {
@@ -129,15 +134,20 @@ export function RideBookingScreen() {
     Boolean(routeParams.drop?.trim()) &&
     intercityTripKm != null;
 
-  const rideNavH = getRideServiceBottomNavHeight(insets.bottom);
+  const estimatedNavH = getRideServiceBottomNavHeight(insets.bottom);
+  // Prefer measured height so the pill gap isn’t inflated by estimate mismatch (white “duplicate row”).
+  const rideNavH = measuredNavH > 0 ? measuredNavH : estimatedNavH;
   const trackingPillStackH = showTrackingPill
     ? TRACKING_PILL_H +
       (trackingRides.length > 1 ? TRACKING_PILL_MULTI_HINT_H : 0) +
       TRACKING_FLOAT_GAP
     : 0;
 
-  const bottomStackH =
-    rideNavH + trackingPillStackH + (hasDueFare ? DUE_BANNER_H : 0);
+  const bottomStackH = rideNavH + trackingPillStackH;
+
+  const onBottomNavHeight = useCallback((height: number) => {
+    setMeasuredNavH((prev) => (prev === height ? prev : height));
+  }, []);
 
   const openIntercityPickup = useCallback(() => {
     if (hasDueFare && trackingRide) {
@@ -204,11 +214,8 @@ export function RideBookingScreen() {
   const openDefaultRide = () => goToRideBook("bike");
 
   const trackingBottom = rideNavH + TRACKING_FLOAT_GAP;
-  const bannerBottom =
-    trackingBottom +
-    (showTrackingPill
-      ? TRACKING_PILL_H + (trackingRides.length > 1 ? TRACKING_PILL_MULTI_HINT_H : 0) + TRACKING_FLOAT_GAP
-      : 0);
+  // Root layout already reserves the status-bar strip — only add a small gap below it.
+  const headerTopPad = STATUS_BAR_TO_HEADER_GAP;
 
   return (
     <View style={styles.container}>
@@ -217,7 +224,7 @@ export function RideBookingScreen() {
       <LinearGradient
         colors={["#FFFFFF", "#F4FBF6", "#FFFFFF"]}
         locations={[0, 0.5, 1]}
-        style={[styles.headerBlock, { paddingTop: HEADER_PADDING_TOP }]}
+        style={[styles.headerBlock, { paddingTop: headerTopPad }]}
       >
         <View style={styles.titleBar}>
           <TouchableOpacity
@@ -257,6 +264,26 @@ export function RideBookingScreen() {
             </TouchableOpacity>
           </View>
         </View>
+
+        {hasDueFare ? (
+          <TouchableOpacity
+            style={styles.dueFareRibbon}
+            activeOpacity={0.9}
+            onPress={() => {
+              if (!trackingRide) return;
+              const target = resolvePersonRideTrackingNavigation(trackingRide);
+              router.push({ pathname: target.pathname, params: target.params });
+            }}
+          >
+            <View style={styles.dueFareRibbonInner}>
+              <Ionicons name="alert-circle" size={16} color="#B45309" />
+              <AppText style={styles.dueFareRibbonText} numberOfLines={2}>
+                {RIDE_DUE_FARE_NOTICE}
+              </AppText>
+              <Ionicons name="chevron-forward" size={16} color="#B45309" />
+            </View>
+          </TouchableOpacity>
+        ) : null}
       </LinearGradient>
 
       <ScrollView
@@ -284,18 +311,15 @@ export function RideBookingScreen() {
         )}
       </ScrollView>
 
-      {hasDueFare ? (
-        <View style={[styles.dueFareFloating, { bottom: bannerBottom }]}>
-          <Ionicons name="alert-circle-outline" size={20} color="#B45309" />
-          <AppText style={styles.dueFareText}>{RIDE_DUE_FARE_NOTICE}</AppText>
-        </View>
-      ) : null}
-
       {showTrackingPill ? (
         <ActiveRideBottomSheet rides={trackingRides} bottomInset={trackingBottom} />
       ) : null}
 
-      <RideServiceBottomNav activeTab={activeTab} onTabChange={handleTabChange} />
+      <RideServiceBottomNav
+        activeTab={activeTab}
+        onTabChange={handleTabChange}
+        onHeightChange={onBottomNavHeight}
+      />
     </View>
   );
 }
@@ -318,8 +342,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     paddingHorizontal: PAD,
-    paddingTop: 10,
-    paddingBottom: 14,
+    paddingTop: 4,
+    paddingBottom: 12,
     gap: 8,
   },
   backBtn: {
@@ -400,26 +424,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: PAD,
     paddingTop: 14,
   },
-  dueFareFloating: {
-    position: "absolute",
-    left: 16,
-    right: 16,
+  dueFareRibbon: {
+    marginHorizontal: PAD,
+    marginBottom: 10,
+    borderRadius: 12,
+    overflow: "hidden",
+    backgroundColor: "#FFF7ED",
+    borderWidth: 1,
+    borderColor: "#FDBA74",
+  },
+  dueFareRibbonInner: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    backgroundColor: "#FFFBEB",
-    borderWidth: 1,
-    borderColor: "#FDE68A",
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    zIndex: 40,
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
-  dueFareText: {
+  dueFareRibbonText: {
     flex: 1,
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#92400E",
-    lineHeight: 18,
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#9A3412",
+    lineHeight: 16,
   },
 });

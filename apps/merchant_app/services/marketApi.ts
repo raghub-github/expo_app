@@ -30,6 +30,7 @@ export type MerchantMarketInsights = {
   match_scope: MarketMatchScope;
   computed_at: string | null;
   competitors: CompetitorRow[];
+  your_affinity_pct?: number;
   locality: LocalityInsight;
 };
 

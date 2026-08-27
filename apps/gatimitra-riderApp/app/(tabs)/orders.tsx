@@ -675,7 +675,7 @@ export default function OrdersScreen() {
           orders={mapOrders}
           style={styles.map}
           showRadar={homeChrome.showSearchingRadar && !!riderLocation}
-          demandZones={[]}
+          demandZones={hotZones.length > 0 ? [] : demandZones}
           hotZones={homeChrome.fetchDemandZones ? hotZones : []}
           isOnDuty={isOnDuty}
         />

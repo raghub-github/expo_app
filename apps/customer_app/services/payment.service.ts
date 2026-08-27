@@ -7,6 +7,7 @@ import { getConfig } from "@/config/env";
 import { ORDER_PLACEMENT_TIMEOUT_MS } from "@/constants";
 import { isRetriableCheckoutError } from "@/utils/networkError";
 import type { CheckoutPayMethodsResponse } from "@/lib/razorpayPaymentMethods";
+import { FALLBACK_PAY_METHODS } from "@/lib/razorpayPaymentMethods";
 
 const PAYMENT_PREFIX = "/v1/payment";
 
@@ -116,8 +117,13 @@ export const paymentService = {
    * mapped by the backend from GET https://api.razorpay.com/v1/methods.
    */
   async getAvailableMethods(): Promise<CheckoutPayMethodsResponse> {
-    const { data } = await api.get<CheckoutPayMethodsResponse>(`${PAYMENT_PREFIX}/methods`);
-    return data;
+    try {
+      const { data } = await api.get<CheckoutPayMethodsResponse>(`${PAYMENT_PREFIX}/methods`);
+      if (data?.sections?.some((s) => s.items?.length > 0)) return data;
+      return FALLBACK_PAY_METHODS;
+    } catch {
+      return FALLBACK_PAY_METHODS;
+    }
   },
 
   /**

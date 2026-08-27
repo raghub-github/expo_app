@@ -84,8 +84,7 @@ export function RideOffersSheet({ visible, onClose, offers }: RideOffersSheetPro
       <View style={styles.paymentNotice}>
         <Ionicons name="information-circle-outline" size={18} color="#0369A1" />
         <AppText style={styles.paymentNoticeText}>
-          Eligible offers are applied exclusively on the fare payment page after your ride is
-          completed — not at the time of booking.
+          Eligible offers are applied exclusively on the fare payment page.
         </AppText>
       </View>
 

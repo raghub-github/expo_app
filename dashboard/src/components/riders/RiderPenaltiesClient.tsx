@@ -15,6 +15,8 @@ import { TablePagination } from "./TablePagination";
 import { Plus, RotateCcw, RefreshCw, ChevronDown, X } from "lucide-react";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { riderSearchMatchesLoadedRider } from "@/lib/riders/resolve-rider-search";
+import { formatRiderOrderDisplayId } from "@/lib/riders/format-rider-order-display-id";
+import Link from "next/link";
 import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
 import {
   useGetRiderPenaltiesQuery,
@@ -30,6 +32,9 @@ interface Penalty {
   reason: string | null;
   status: string;
   orderId: number | null;
+  displayOrderId?: string | null;
+  formattedOrderId?: string | null;
+  orderPublicId?: string | null;
   source?: string;
   resolutionNotes?: string | null;
   imposedAt: string | null;
@@ -853,7 +858,27 @@ function PenaltyRow({
     <tr className="hover:bg-gray-50/80 transition-colors">
       <td className="px-4 py-3.5 text-gray-800 font-mono text-[14px] align-middle">{penalty.id}</td>
       <td className="px-4 py-3.5 text-gray-800 font-mono text-[14px] align-middle">
-        {penalty.orderId != null ? penalty.orderId : "—"}
+        {penalty.orderId != null
+          ? (() => {
+              const publicId = formatRiderOrderDisplayId({
+                id: Number(penalty.orderId),
+                formattedOrderId: penalty.formattedOrderId,
+                orderId: penalty.orderPublicId,
+                displayOrderId: penalty.displayOrderId,
+              });
+              return (
+                <Link
+                  href={`/order/${encodeURIComponent(publicId)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-700 hover:text-blue-900 hover:underline"
+                  title="Open order in new tab"
+                >
+                  {publicId}
+                </Link>
+              );
+            })()
+          : "—"}
       </td>
       <td className="px-4 py-3.5 capitalize text-gray-800 text-[14px] align-middle">
         {penalty.serviceType ? penalty.serviceType.replace("_", " ") : "—"}
@@ -1057,7 +1082,27 @@ function PenaltyCard({
           {penalty.orderId != null && (
             <div>
               <span className="text-gray-500 font-medium text-[11px] uppercase tracking-wide">Order</span>
-              <p className="text-[14px] font-mono text-gray-800 mt-0.5">{penalty.orderId}</p>
+              <p className="text-[14px] font-mono mt-0.5">
+                {(() => {
+                  const publicId = formatRiderOrderDisplayId({
+                    id: Number(penalty.orderId),
+                    formattedOrderId: penalty.formattedOrderId,
+                    orderId: penalty.orderPublicId,
+                    displayOrderId: penalty.displayOrderId,
+                  });
+                  return (
+                    <Link
+                      href={`/order/${encodeURIComponent(publicId)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-700 hover:text-blue-900 hover:underline"
+                      title="Open order in new tab"
+                    >
+                      {publicId}
+                    </Link>
+                  );
+                })()}
+              </p>
             </div>
           )}
         </div>

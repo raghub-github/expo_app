@@ -1259,6 +1259,7 @@ export async function riderRoutes(app: FastifyInstance) {
     serviceType: z.string().nullable(),
     orderPublicId: z.string().nullable(),
     createdAt: z.string(),
+    rejectionReason: z.string().nullable(),
   });
 
   const RiderLedgerSummarySchema = z.object({
@@ -2671,6 +2672,9 @@ export async function riderRoutes(app: FastifyInstance) {
     customerPrimaryPhone: z.string().nullable().optional(),
     customerAlternateName: z.string().nullable().optional(),
     customerAlternatePhone: z.string().nullable().optional(),
+    customerPhoneMasked: z.string().nullable().optional(),
+    customerPrimaryPhoneMasked: z.string().nullable().optional(),
+    customerAlternatePhoneMasked: z.string().nullable().optional(),
     pickupAddressGeocoded: z.string().optional(),
     dropAddressGeocoded: z.string().optional(),
     foodItems: z
@@ -2696,6 +2700,7 @@ export async function riderRoutes(app: FastifyInstance) {
   passengerRating: z.number().nullable().optional(),
   cancellationPenaltyApplied: z.boolean().optional(),
   cancellationPenaltyAmount: z.number().nullable().optional(),
+  cancelledByType: z.string().nullable().optional(),
 });
 
   app.get(

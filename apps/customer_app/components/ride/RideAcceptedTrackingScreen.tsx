@@ -84,7 +84,7 @@ type RideAcceptedTrackingScreenProps = {
 };
 
 function resolveRideCatalogId(order: OrderDetail): string {
-  const allowed = ["bike", "bike-lite", "auto", "cab-economy", "cab-premium"] as const;
+  const allowed = ["bike", "bike-lite", "auto", "ev_auto", "cab-economy", "cab-premium"] as const;
   const raw = order.rideType?.trim().toLowerCase();
   if (raw && allowed.includes(raw as (typeof allowed)[number])) {
     return raw;

@@ -76,6 +76,38 @@ function loadServiceAccountFromFile(path: string): ServiceAccount {
 }
 
 /**
+ * True when explicit Firebase Admin credentials are present in env.
+ * Used to avoid preferring native FCM over Expo when Admin cannot send.
+ */
+export function isFirebaseAdminConfigured(env?: Partial<Env> | null): boolean {
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) return true;
+  const fcmJson =
+    (typeof env?.FCM_SERVICE_ACCOUNT_JSON === "string" && env.FCM_SERVICE_ACCOUNT_JSON) ||
+    process.env.FCM_SERVICE_ACCOUNT_JSON;
+  if (typeof fcmJson === "string" && fcmJson.trim().length >= 40) return true;
+  const projectId =
+    (typeof env?.FIREBASE_PROJECT_ID === "string" && env.FIREBASE_PROJECT_ID) ||
+    process.env.FIREBASE_PROJECT_ID;
+  const clientEmail =
+    (typeof env?.FIREBASE_CLIENT_EMAIL === "string" && env.FIREBASE_CLIENT_EMAIL) ||
+    process.env.FIREBASE_CLIENT_EMAIL;
+  const privateKey =
+    (typeof env?.FIREBASE_PRIVATE_KEY === "string" && env.FIREBASE_PRIVATE_KEY) ||
+    process.env.FIREBASE_PRIVATE_KEY;
+  if (
+    typeof projectId === "string" &&
+    projectId.trim() &&
+    typeof clientEmail === "string" &&
+    clientEmail.trim() &&
+    typeof privateKey === "string" &&
+    privateKey.trim().length >= 30
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Initialise (or return) the Firebase Admin app singleton. Safe to call
  * many times across modules — only the first call actually does work.
  */
@@ -127,8 +159,4 @@ export function getFirebaseAuth(env: Env): Auth {
 
 export function getFirebaseMessaging(env: Env): Messaging {
   return getMessaging(getFirebaseApp(env));
-}
-
-export function __resetFirebaseAppForTests(): void {
-  cached = null;
 }

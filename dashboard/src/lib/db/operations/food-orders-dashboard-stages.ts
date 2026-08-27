@@ -60,21 +60,32 @@ function sqlHasRiderMarkedPickup(): SQL {
   )`;
 }
 
-/** Delivered / cancelled / terminal — never shown on food orders dashboard tabs. */
+/**
+ * Delivered / completed / cancelled / terminal — never counted or shown as
+ * actionable on food orders dashboard tabs. Keep in sync with
+ * `isFoodOrderTerminalStatus` in food-order-dashboard-status.ts.
+ */
 export function sqlFoodOrderIsTerminal(): SQL {
   const cur = sqlCurrentStatusKey();
   const core = sqlCoreStatusKey();
   const food = sqlLinkedFoodStatusKey();
   return sql`(
     ${core} IN (
-      'delivered', 'cancelled', 'failed', 'rejected',
+      'delivered', 'completed', 'complete', 'cancelled', 'failed', 'rejected',
       'rto_initiated', 'rto_in_transit', 'rto_delivered', 'rto_lost'
     )
+    OR ${core} LIKE 'rto_%'
     OR ${cur} IN (
-      'DELIVERED', 'CANCELLED', 'CANCELED', 'RTO', 'REJECTED', 'FAILED',
+      'DELIVERED', 'COMPLETED', 'COMPLETE', 'CANCELLED', 'CANCELED', 'RTO',
+      'REJECTED', 'FAILED', 'RTO_COMPLETED',
       'RTO_INITIATED', 'RTO_IN_TRANSIT', 'RTO_DELIVERED', 'RTO_LOST'
     )
-    OR ${food} IN ('DELIVERED', 'CANCELLED', 'CANCELED', 'RTO', 'REJECTED', 'FAILED')
+    OR ${cur} LIKE 'RTO_%'
+    OR ${food} IN (
+      'DELIVERED', 'COMPLETED', 'COMPLETE', 'CANCELLED', 'CANCELED', 'RTO',
+      'REJECTED', 'FAILED', 'RTO_COMPLETED'
+    )
+    OR ${food} LIKE 'RTO_%'
     OR ${ordersCore.cancelledAt} IS NOT NULL
   )`;
 }

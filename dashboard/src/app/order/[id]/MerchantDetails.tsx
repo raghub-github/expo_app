@@ -63,6 +63,8 @@ interface MerchantProfile {
   is_available?: boolean | null;
   deleted_at?: string | null;
   delisted_at?: string | null;
+  /** True when merchant Partner app has registered a push token for this store. */
+  appInstalled?: boolean | null;
 }
 
 const STORE_STATUS_PILL =
@@ -88,14 +90,16 @@ export default function MerchantDetails({
       setProfile(null);
       return;
     }
+
+    // Show cached/summary profile immediately; always refresh for live fields (app install).
     if (initialProfile) {
       setProfile(initialProfile);
       setLoading(false);
-      return;
+    } else {
+      setLoading(true);
     }
 
     let cancelled = false;
-    setLoading(true);
 
     const extractTime = (value: unknown): string | null => {
       if (!value) return null;
@@ -120,7 +124,7 @@ export default function MerchantDetails({
       .then((body) => {
         if (cancelled) return;
         if (!body?.success || !body.store) {
-          setProfile(null);
+          if (!initialProfile) setProfile(null);
           return;
         }
         const store = body.store as any;
@@ -173,10 +177,11 @@ export default function MerchantDetails({
           is_available: store.is_available ?? null,
           deleted_at: store.deleted_at ?? null,
           delisted_at: store.delisted_at ?? null,
+          appInstalled: Boolean(body.app_installed),
         });
       })
       .catch(() => {
-        if (!cancelled) setProfile(null);
+        if (!cancelled && !initialProfile) setProfile(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -273,8 +278,14 @@ export default function MerchantDetails({
             <span>Mx Details</span>
           </span>
         </span>
-        <span className="text-[11px] font-medium text-rose-600 bg-rose-50 border border-rose-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-          App Not Installed
+        <span
+          className={
+            profile?.appInstalled
+              ? "text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded-full whitespace-nowrap"
+              : "text-[11px] font-medium text-rose-600 bg-rose-50 border border-rose-100 px-1.5 py-0.5 rounded-full whitespace-nowrap"
+          }
+        >
+          {profile?.appInstalled ? "App Installed" : "App Not Installed"}
         </span>
       </div>
 

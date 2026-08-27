@@ -31,7 +31,6 @@ import {
 } from "@/features/ride/ride-map-pill-layout";
 import { useRideConfirmPickupStore } from "@/store/rideConfirmPickupStore";
 import { resolveRideImage, resolveSelectedRideMapMarkerImageKey } from "@/features/ride/rideOptionAssets";
-import { filterRideCatalogOptions } from "@/lib/ride-catalog-display";
 import { useNearbyRideAvailability } from "@/hooks/useNearbyRideAvailability";
 import type { RideAvailabilityOption } from "@/services/rideAvailability.service";
 import { RIDE_RIDER_SEARCH_TIMEOUT_SEC } from "@/features/ride/rideOptions";
@@ -43,10 +42,17 @@ import { RideOffersSheet } from "@/features/ride/RideOffersSheet";
 import { RideVehicleFareDetailsSheet } from "@/features/ride/RideVehicleFareDetailsSheet";
 import { RideBookAvailabilityToast } from "@/features/ride/RideBookAvailabilityToast";
 import { RIDE_BIKE_UNAVAILABLE_TOAST } from "@/lib/ride-search-toast-copy";
-import { mapFeaturedOffersToRideBookOffers } from "@/lib/ride-offers";
+import { estimateMatchingRidePlatformOffer, mapFeaturedOffersToRideBookOffers, filterRideBookFeaturedOffers, filterRideOffersForCompletedRides, completedPersonRideCountHint } from "@/lib/ride-offers";
+import type { HomeBannerOffer } from "@/services/offers.service";
 import { useFeaturedOffersRide } from "@/hooks/useFeaturedOffersRide";
 import { shouldShowPreBookTipSheet } from "@/lib/ride-tip-amounts";
-import { applyBikeLiteFareRule, sortRideOptionsBikeLiteSecond } from "@/lib/ride-customer-fare";
+import { applyCatalogFareOffsets, catalogFareCompareParent, mergeRideCatalogFareOffsets } from "@/lib/ride-customer-fare";
+import {
+  filterRideCatalogOptions,
+  sortRideCatalogOptions,
+  catalogOptionImageKey,
+  RIDE_CATALOG_DISPLAY_ORDER,
+} from "@/lib/ride-catalog-display";
 import {
   buildRideQuoteBillingLines,
   resolveRideQuotePayableAmount,
@@ -55,13 +61,32 @@ import {
 import { formatRideDistanceKm, logRideRouteDebug } from "@/lib/ride-route-snapshot";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { useRideRouteSnapshot } from "@/hooks/useRideRouteSnapshot";
+import { useActivePersonRideOrders } from "@/hooks/useActivePersonRideOrders";
 import { rideRouteParamsFromSnapshot } from "@/services/rideRoute.service";
 import { rideFareDistanceNavParams } from "@/lib/ride-fare-distance";
 import { latLngFromStrings, latLngKey } from "@/lib/ride-map-sync";
 
 const ENTRY_SURGE_MESSAGE = "Fares are higher due to increased demand";
 const PRICING_BANNER_MS = 2500;
+const FARE_QUOTE_RETRY_MS = 400;
+const FARE_QUOTE_MAX_ATTEMPTS = 2;
 const BIKE_FAMILY_IDS = new Set(["bike", "bike-lite"]);
+const AUTO_FAMILY_IDS = new Set(["auto", "ev_auto"]);
+
+function waitForQuoteRetry(ms: number, signal: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve(false);
+      return;
+    }
+    const timer = setTimeout(() => resolve(true), ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 type PricingBanner = {
   text: string;
@@ -124,6 +149,8 @@ function RideOptionCard({
   routeEtaMins,
   quotedFare,
   compareFare,
+  platformOffers,
+  completedRideCount = null,
   quoteLoading,
   showSurgeHint,
   fareDetailsEnabled = false,
@@ -137,6 +164,8 @@ function RideOptionCard({
   routeEtaMins: number | null;
   quotedFare?: number | null;
   compareFare?: number | null;
+  platformOffers?: HomeBannerOffer[];
+  completedRideCount?: number | null;
   quoteLoading?: boolean;
   showSurgeHint?: boolean;
   fareDetailsEnabled?: boolean;
@@ -146,6 +175,28 @@ function RideOptionCard({
   const fareReady = quotedFare != null && quotedFare > 0;
   const farePending = !!quoteLoading;
   const price = fareReady ? Math.round(quotedFare!) : null;
+  const offerPreview =
+    price != null
+      ? estimateMatchingRidePlatformOffer({
+          fare: price,
+          vehicleId: option.id,
+          offers: platformOffers ?? [],
+          distanceKm: tripKm,
+          completedRideCount,
+        })
+      : { discount: 0, payable: price ?? 0 };
+  const offerMatches = offerPreview.discount >= 1 && price != null;
+  const payable = offerMatches ? offerPreview.payable : price;
+  const strikeFare = (() => {
+    if (offerMatches && price != null && payable != null && price > payable) {
+      return price;
+    }
+    const liteCompare =
+      compareFare != null && compareFare > 0 && price != null && compareFare > price
+        ? Math.round(compareFare)
+        : null;
+    return liteCompare;
+  })();
   const travelMins = routeEtaMins ?? Math.round((tripKm ?? 3) * 2);
   const awayMins = option.nearestRiderEtaMins ?? option.etaMins;
   const etaMins = awayMins + travelMins;
@@ -160,7 +211,7 @@ function RideOptionCard({
       activeOpacity={0.85}
     >
       {(() => {
-        const src = resolveRideImage(option.imageKey);
+        const src = resolveRideImage(catalogOptionImageKey(option.id, option.imageKey));
         if (!src) return null;
         const img = <Image source={src} style={styles.rideImage} resizeMode="contain" />;
         return fareDetailsEnabled ? (
@@ -185,7 +236,11 @@ function RideOptionCard({
               <AppText style={styles.fastestText}>FASTEST</AppText>
             </View>
           ) : null}
-          {option.tag === "SAVE" ? (
+          {offerMatches ? (
+            <View style={styles.offBadge}>
+              <AppText style={styles.offBadgeText}>₹{offerPreview.discount} OFF</AppText>
+            </View>
+          ) : option.tag === "SAVE" ? (
             <View style={styles.saveTag}>
               <AppText style={styles.saveText}>%</AppText>
             </View>
@@ -204,14 +259,14 @@ function RideOptionCard({
           <GMSkeleton style={styles.fareSkeletonInline} />
         ) : (
           <View style={styles.priceCol}>
-            {compareFare != null && compareFare > 0 && price != null && compareFare > price ? (
-              <AppText style={styles.ridePriceStrike}>₹{Math.round(compareFare)}</AppText>
+            {strikeFare != null && payable != null && strikeFare > payable ? (
+              <AppText style={styles.ridePriceStrike}>₹{Math.round(strikeFare)}</AppText>
             ) : null}
             <View style={styles.priceRow}>
               {showSurgeHint && selected ? (
                 <Ionicons name="caret-up" size={14} color="#DC2626" style={styles.surgeCaret} />
               ) : null}
-              <AppText style={styles.ridePrice}>{price != null ? `₹${price}` : "—"}</AppText>
+              <AppText style={styles.ridePrice}>{payable != null ? `₹${payable}` : "—"}</AppText>
             </View>
           </View>
         )}
@@ -258,6 +313,7 @@ export default function RideBookScreen() {
   const routeEndpointsKeyRef = useRef("");
   const [fareQuotes, setFareQuotes] = useState<Record<string, number>>({});
   const [fareQuoteMeta, setFareQuoteMeta] = useState<Record<string, RideFareQuote>>({});
+  const [fareOffsets, setFareOffsets] = useState(() => mergeRideCatalogFareOffsets());
   const [fareQuotesLoading, setFareQuotesLoading] = useState(false);
   const [pricingBanner, setPricingBanner] = useState<PricingBanner | null>(null);
   const fareQuoteRequestRef = useRef(0);
@@ -381,6 +437,16 @@ export default function RideBookScreen() {
   const dropLat = dropPoint?.latitude ?? null;
   const dropLng = dropPoint?.longitude ?? null;
 
+  const endpointSpanKm = useMemo(() => {
+    if (!pickupPoint || !dropPoint) return null;
+    return haversineKm(
+      pickupPoint.latitude,
+      pickupPoint.longitude,
+      dropPoint.latitude,
+      dropPoint.longitude
+    );
+  }, [pickupPoint, dropPoint]);
+
   const routeEndpointsKey = useMemo(
     () =>
       `${latLngKey(pickupPoint)}|${latLngKey(dropPoint)}|${params.stops ?? ""}`,
@@ -427,9 +493,19 @@ export default function RideBookScreen() {
     rideOfferLocationParams,
     locationHydrated
   );
+  const { orders: myOrders } = useActivePersonRideOrders(isFocused);
+  const completedRideCount = completedPersonRideCountHint(myOrders);
+  const rideFeaturedOffers = useMemo(
+    () =>
+      filterRideOffersForCompletedRides(
+        filterRideBookFeaturedOffers(rideOffersData?.offers ?? []),
+        completedRideCount
+      ),
+    [rideOffersData?.offers, completedRideCount]
+  );
   const rideBookOffers = useMemo(
-    () => mapFeaturedOffersToRideBookOffers(rideOffersData?.offers ?? []),
-    [rideOffersData?.offers]
+    () => mapFeaturedOffersToRideBookOffers(rideFeaturedOffers),
+    [rideFeaturedOffers]
   );
 
   const stopCoords = useMemo(() => parseRideStopsParam(params.stops), [params.stops]);
@@ -448,13 +524,21 @@ export default function RideBookScreen() {
   });
 
   const fareTripKm = useMemo(() => {
-    if (tripKm == null || !Number.isFinite(tripKm) || tripKm <= 0) return null;
-    return Math.round(tripKm * 10) / 10;
-  }, [tripKm]);
+    const fromRoute =
+      tripKm != null && Number.isFinite(tripKm) && tripKm > 0
+        ? Math.round(tripKm * 10) / 10
+        : null;
+    if (fromRoute != null) return fromRoute;
+    if (endpointSpanKm != null && endpointSpanKm > 0) {
+      return Math.round(endpointSpanKm * 10) / 10;
+    }
+    return null;
+  }, [tripKm, endpointSpanKm]);
 
   const {
     data: availability,
     isLoading: availabilityLoading,
+    isFetching: availabilityFetching,
     isError: availabilityError,
   } = useNearbyRideAvailability(pickupLat, pickupLng, tripKm, pickupGeoHints);
 
@@ -469,16 +553,22 @@ export default function RideBookScreen() {
       (c) => typeof c === "string" && c.length > 0 && c !== "travel"
     );
     if (fromApi.length > 0) return fromApi;
-    return availableOptions.map((o) => o.id);
+    if (availableOptions.length > 0) return availableOptions.map((o) => o.id);
+    return [...RIDE_CATALOG_DISPLAY_ORDER];
   }, [availability?.catalogCodes, availableOptions]);
+  const fareCatalogCodesRef = useRef(fareCatalogCodes);
+  fareCatalogCodesRef.current = fareCatalogCodes;
 
   const fareCatalogCodesKey = useMemo(() => fareCatalogCodes.join("\u0000"), [fareCatalogCodes]);
 
-  const displayFareQuotes = useMemo(() => applyBikeLiteFareRule(fareQuotes), [fareQuotes]);
+  const displayFareQuotes = useMemo(
+    () => applyCatalogFareOffsets(fareQuotes, fareOffsets),
+    [fareQuotes, fareOffsets]
+  );
 
   const sortedOptions = useMemo(
-    () => sortRideOptionsBikeLiteSecond(availableOptions, displayFareQuotes),
-    [availableOptions, displayFareQuotes]
+    () => sortRideCatalogOptions(availableOptions),
+    [availableOptions]
   );
   const availableOptionIdsKey = useMemo(
     () => availableOptions.map((o) => o.id).join("\u0000"),
@@ -490,7 +580,7 @@ export default function RideBookScreen() {
     sortedOptions.find((r) => r.id === selectedRideId) ?? sortedOptions[0] ?? null;
   const riderMarkerImageKey = resolveSelectedRideMapMarkerImageKey(
     selectedRide?.id,
-    selectedRide?.imageKey
+    catalogOptionImageKey(selectedRide?.id ?? "", selectedRide?.imageKey)
   );
   const fareDetailsOption = useMemo(
     () => sortedOptions.find((o) => o.id === fareDetailsOptionId) ?? null,
@@ -503,6 +593,16 @@ export default function RideBookScreen() {
     () => (fareDetailsQuote ? buildRideQuoteBillingLines(fareDetailsQuote) : []),
     [fareDetailsQuote]
   );
+  const fareDetailsOfferPreview =
+    fareDetailsOptionId != null && fareDetailsDisplayFare != null && fareDetailsDisplayFare > 0
+      ? estimateMatchingRidePlatformOffer({
+          fare: fareDetailsDisplayFare,
+          vehicleId: fareDetailsOptionId,
+          offers: rideFeaturedOffers,
+          distanceKm: tripKm,
+          completedRideCount,
+        })
+      : { discount: 0, payable: fareDetailsDisplayFare ?? 0, offerId: null, offerTitle: null };
 
   const bikeUnavailableOnRoute = useMemo(() => {
     if (availabilityLoading || routeLoading || availabilityError) return false;
@@ -548,6 +648,22 @@ export default function RideBookScreen() {
           }
         } else if (prevId === "bike-lite" && id === "bike") {
           showPricingBanner({ text: ENTRY_SURGE_MESSAGE, variant: "inline" });
+        }
+      } else if (
+        prevId &&
+        AUTO_FAMILY_IDS.has(prevId) &&
+        AUTO_FAMILY_IDS.has(id) &&
+        prevId !== id
+      ) {
+        if (prevId === "auto" && id === "ev_auto") {
+          const autoFare = displayFareQuotes.auto;
+          const evFare = displayFareQuotes.ev_auto;
+          if (autoFare != null && evFare != null && autoFare > evFare) {
+            showPricingBanner({
+              text: `Saving ₹${Math.round(autoFare - evFare)} with EV Auto`,
+              variant: "inline",
+            });
+          }
         }
       }
 
@@ -642,18 +758,24 @@ export default function RideBookScreen() {
   const noVehiclesAvailable = useMemo(
     () =>
       !availabilityLoading &&
+      !availabilityFetching &&
       !availabilityError &&
       routeSettled &&
       pickupLat != null &&
       pickupLng != null &&
-      availableOptions.length === 0,
+      availableOptions.length === 0 &&
+      allNearbyRiders.length === 0 &&
+      (availability?.nearbyRiderCount ?? 0) === 0,
     [
       availabilityLoading,
+      availabilityFetching,
       availabilityError,
       routeSettled,
       pickupLat,
       pickupLng,
       availableOptions.length,
+      allNearbyRiders.length,
+      availability?.nearbyRiderCount,
     ]
   );
 
@@ -665,7 +787,12 @@ export default function RideBookScreen() {
   }, [tripKm]);
 
   useEffect(() => {
-    setServiceUnavailableVisible(noVehiclesAvailable);
+    if (!noVehiclesAvailable) {
+      setServiceUnavailableVisible(false);
+      return;
+    }
+    const t = setTimeout(() => setServiceUnavailableVisible(true), 800);
+    return () => clearTimeout(t);
   }, [noVehiclesAvailable]);
 
   useEffect(() => {
@@ -678,21 +805,25 @@ export default function RideBookScreen() {
   }, [availableOptionIdsKey, selectedRideId, sortedOptions]);
 
   useEffect(() => {
-    if (!isFocused) return;
-    if (
-      pickupLat == null ||
-      pickupLng == null ||
-      dropLat == null ||
-      dropLng == null ||
-      fareTripKm == null ||
-      fareCatalogCodes.length === 0
-    ) {
+    if (!isFocused) {
+      fareQuoteAbortRef.current?.abort();
+      fareQuoteAbortRef.current = null;
+      return;
+    }
+    if (pickupLat == null || pickupLng == null || dropLat == null || dropLng == null) {
       fareQuoteKeyRef.current = null;
       fareQuoteAbortRef.current?.abort();
       fareQuoteAbortRef.current = null;
       setFareQuotes({});
       setFareQuoteMeta({});
       setFareQuotesLoading(false);
+      return;
+    }
+
+    if (fareTripKm == null || fareCatalogCodesKey.length === 0) {
+      fareQuoteAbortRef.current?.abort();
+      fareQuoteAbortRef.current = null;
+      setFareQuotesLoading(true);
       return;
     }
 
@@ -708,15 +839,14 @@ export default function RideBookScreen() {
     ].join("\u0000");
 
     if (quoteKey === fareQuoteKeyRef.current) return;
-    fareQuoteKeyRef.current = quoteKey;
 
     fareQuoteAbortRef.current?.abort();
     const abort = new AbortController();
     fareQuoteAbortRef.current = abort;
+    fareQuoteKeyRef.current = quoteKey;
 
     const requestId = ++fareQuoteRequestRef.current;
-    setFareQuotes({});
-    setFareQuoteMeta({});
+    const catalogCodes = fareCatalogCodesRef.current;
     setFareQuotesLoading(true);
     const startedAt = Date.now();
     logRideRouteDebug("fare_quote_batch_request", {
@@ -725,44 +855,67 @@ export default function RideBookScreen() {
       pickupLng,
       dropLat,
       dropLng,
-      vehicleCount: fareCatalogCodes.length,
-      catalogCodes: fareCatalogCodes,
+      vehicleCount: catalogCodes.length,
+      catalogCodes,
     });
 
     void (async () => {
       try {
-        const result = await getRideFareQuoteBatch({
-          pickupLat,
-          pickupLng,
-          dropLat,
-          dropLng,
-          tripKm: fareTripKm,
-          catalogCodes: fareCatalogCodes,
-          pickupPincode,
-          pickupState,
-          signal: abort.signal,
-        });
-        if (requestId !== fareQuoteRequestRef.current) return;
-        if (!result.ok) {
-          if (result.code === "ABORTED") return;
+        for (let attempt = 0; attempt < FARE_QUOTE_MAX_ATTEMPTS; attempt++) {
+          if (abort.signal.aborted || requestId !== fareQuoteRequestRef.current) return;
+          const result = await getRideFareQuoteBatch({
+            pickupLat,
+            pickupLng,
+            dropLat,
+            dropLng,
+            tripKm: fareTripKm,
+            catalogCodes,
+            pickupPincode,
+            pickupState,
+            signal: abort.signal,
+          });
+          if (requestId !== fareQuoteRequestRef.current) return;
+          if (!result.ok) {
+            if (result.code === "ABORTED") return;
+            if (attempt + 1 < FARE_QUOTE_MAX_ATTEMPTS) {
+              const shouldRetry = await waitForQuoteRetry(FARE_QUOTE_RETRY_MS, abort.signal);
+              if (!shouldRetry) return;
+              continue;
+            }
+            if (fareQuoteKeyRef.current === quoteKey) fareQuoteKeyRef.current = null;
+            return;
+          }
+
+          const next: Record<string, number> = {};
+          const nextMeta: Record<string, RideFareQuote> = {};
+          for (const [code, quote] of Object.entries(result.quotes)) {
+            nextMeta[code] = quote;
+            next[code] = resolveRideQuotePayableAmount(quote);
+          }
+          if (Object.keys(next).length === 0) {
+            if (attempt + 1 < FARE_QUOTE_MAX_ATTEMPTS) {
+              const shouldRetry = await waitForQuoteRetry(FARE_QUOTE_RETRY_MS, abort.signal);
+              if (!shouldRetry) return;
+              continue;
+            }
+            if (fareQuoteKeyRef.current === quoteKey) fareQuoteKeyRef.current = null;
+            return;
+          }
+
+          setFareQuoteMeta(nextMeta);
+          setFareOffsets(mergeRideCatalogFareOffsets(result.fareOffsets));
+          setFareQuotes(next);
+          logRideRouteDebug("fare_quote_batch_ms", {
+            ms: Date.now() - startedAt,
+            vehicleCount: Object.keys(next).length,
+            serverTimings: result.timings ?? null,
+            attempt: attempt + 1,
+          });
           return;
         }
-
-        const next: Record<string, number> = {};
-        const nextMeta: Record<string, RideFareQuote> = {};
-        for (const [code, quote] of Object.entries(result.quotes)) {
-          nextMeta[code] = quote;
-          next[code] = resolveRideQuotePayableAmount(quote);
-        }
-        setFareQuoteMeta(nextMeta);
-        setFareQuotes(applyBikeLiteFareRule(next));
-        logRideRouteDebug("fare_quote_batch_ms", {
-          ms: Date.now() - startedAt,
-          vehicleCount: Object.keys(next).length,
-          serverTimings: result.timings ?? null,
-        });
       } catch {
         if (requestId !== fareQuoteRequestRef.current) return;
+        if (fareQuoteKeyRef.current === quoteKey) fareQuoteKeyRef.current = null;
       } finally {
         if (requestId === fareQuoteRequestRef.current) {
           setFareQuotesLoading(false);
@@ -772,6 +925,9 @@ export default function RideBookScreen() {
 
     return () => {
       abort.abort();
+      if (fareQuoteKeyRef.current === quoteKey) {
+        fareQuoteKeyRef.current = null;
+      }
     };
   }, [
     isFocused,
@@ -781,7 +937,6 @@ export default function RideBookScreen() {
     dropLng,
     fareTripKm,
     fareCatalogCodesKey,
-    fareCatalogCodes,
     pickupPincode,
     pickupState,
   ]);
@@ -805,11 +960,6 @@ export default function RideBookScreen() {
     routeCoordinates.length,
     routeCoordinates,
   ]);
-
-  const endpointSpanKm = useMemo(() => {
-    if (!pickupPoint || !dropPoint) return null;
-    return haversineKm(pickupPoint.latitude, pickupPoint.longitude, dropPoint.latitude, dropPoint.longitude);
-  }, [pickupPoint, dropPoint]);
 
   /** Nearest supply at pickup — selected vehicle icon (Rapido-style, max 6). */
   const mapNearbyRiders = useMemo(
@@ -952,6 +1102,15 @@ export default function RideBookScreen() {
             ? resolveRideQuotePayableAmount(quoteMeta)
             : 0;
       if (slabFare <= 0 || payableFare <= 0) return;
+      const offerPreview = estimateMatchingRidePlatformOffer({
+        fare: payableFare,
+        vehicleId: selectedRideId,
+          offers: rideFeaturedOffers,
+        distanceKm: tripKm,
+        completedRideCount,
+      });
+      const displayPayable =
+        offerPreview.discount >= 1 ? offerPreview.payable : payableFare;
       const navParams: Record<string, string> = {
         pickup: effectivePickupAddress,
         drop: String(params.drop ?? ""),
@@ -959,7 +1118,7 @@ export default function RideBookScreen() {
         dropLabel,
         selectedRideId,
         selectedRideName: selectedRide.name,
-        selectedRideImageKey: selectedRide.imageKey,
+        selectedRideImageKey: catalogOptionImageKey(selectedRide.id, selectedRide.imageKey),
       };
       if (pickupLat != null) navParams.pickupLat = String(pickupLat);
       if (pickupLng != null) navParams.pickupLng = String(pickupLng);
@@ -970,7 +1129,12 @@ export default function RideBookScreen() {
       if (params.passengerName) navParams.passengerName = String(params.passengerName);
       if (params.passengerPhone) navParams.passengerPhone = String(params.passengerPhone);
       navParams.estimatedFare = String(slabFare);
-      navParams.quotedGrandTotal = String(payableFare);
+      navParams.quotedGrandTotal = String(displayPayable);
+      if (offerPreview.offerId != null && offerPreview.discount >= 1) {
+        navParams.selectedPlatformOfferId = String(offerPreview.offerId);
+      } else {
+        navParams.forceNoAutoOffer = "true";
+      }
       if (pickupGeoHints.pickupPincode) navParams.pickupPincode = pickupGeoHints.pickupPincode;
       if (pickupGeoHints.pickupState) navParams.pickupState = pickupGeoHints.pickupState;
       if (customerTipAmount > 0) navParams.customerTipAmount = String(customerTipAmount);
@@ -997,6 +1161,8 @@ export default function RideBookScreen() {
       pickupGeoHints,
       pickupLabel,
       dropLabel,
+      rideFeaturedOffers,
+      completedRideCount,
       router,
     ]
   );
@@ -1157,19 +1323,21 @@ export default function RideBookScreen() {
                   pickupDistanceKm={option.nearestRiderKm ?? null}
                   routeEtaMins={routeEtaMins}
                   quotedFare={displayFareQuotes[option.id]}
-                  compareFare={
-                    option.id === "bike-lite" ? displayFareQuotes.bike : undefined
-                  }
+                  compareFare={catalogFareCompareParent(
+                    option.id,
+                    displayFareQuotes,
+                    fareOffsets
+                  )}
+                  platformOffers={rideFeaturedOffers}
+                  completedRideCount={completedRideCount}
                   quoteLoading={
                     fareQuotePending && !(displayFareQuotes[option.id] > 0)
                   }
                   showSurgeHint={option.id === "bike" && selectedRideId === "bike"}
-                  fareDetailsEnabled={BIKE_FAMILY_IDS.has(option.id)}
+                  fareDetailsEnabled
                   onSelect={() => selectRideOption(option.id)}
                   onImagePress={() => {
-                    if (BIKE_FAMILY_IDS.has(option.id)) {
-                      setFareDetailsOptionId(option.id);
-                    }
+                    setFareDetailsOptionId(option.id);
                   }}
                 />
               ))
@@ -1233,13 +1401,23 @@ export default function RideBookScreen() {
       />
 
       <RideVehicleFareDetailsSheet
-        visible={fareDetailsOption != null && BIKE_FAMILY_IDS.has(fareDetailsOption.id)}
+        visible={fareDetailsOption != null}
         onClose={() => setFareDetailsOptionId(null)}
         vehicleName={fareDetailsOption?.name ?? "Ride"}
-        imageKey={fareDetailsOption?.imageKey ?? "bike"}
+        imageKey={
+          fareDetailsOption
+            ? catalogOptionImageKey(fareDetailsOption.id, fareDetailsOption.imageKey)
+            : "bike"
+        }
         fare={fareDetailsDisplayFare}
+        offerDiscount={fareDetailsOfferPreview.discount}
+        offerLabel={fareDetailsOfferPreview.offerTitle}
+        payableFare={
+          fareDetailsOfferPreview.discount >= 1
+            ? fareDetailsOfferPreview.payable
+            : fareDetailsDisplayFare
+        }
         billingLines={fareDetailsBillingLines}
-        rateCardSummary={fareDetailsQuote?.rateCardSummary}
         waitingChargeNote={fareDetailsQuote?.waitingChargeNote}
         loading={fareQuotePending}
       />
@@ -1248,7 +1426,13 @@ export default function RideBookScreen() {
         visible={tipSheetVisible && !!selectedRide}
         baseFare={
           selectedRide && displayFareQuotes[selectedRide.id] > 0
-            ? displayFareQuotes[selectedRide.id]
+            ? estimateMatchingRidePlatformOffer({
+                fare: displayFareQuotes[selectedRide.id],
+                vehicleId: selectedRide.id,
+                offers: rideFeaturedOffers,
+                distanceKm: tripKm,
+                completedRideCount,
+              }).payable
             : 0
         }
         rideName={selectedRide?.name ?? "Ride"}
@@ -1548,6 +1732,20 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "800",
     color: "#FFFFFF",
+  },
+  offBadge: {
+    paddingHorizontal: 6,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: GatiMitraColors.primaryMint,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  offBadgeText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: 0.2,
   },
   rideSubtitle: {
     fontSize: 12,

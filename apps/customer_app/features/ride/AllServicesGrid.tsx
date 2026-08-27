@@ -19,10 +19,11 @@ const TILE_W = (SCREEN_W - H_PAD * 2 - GAP * (COLS - 1)) / COLS;
 const ICON_SIZE = TILE_W * 0.82;
 
 export type ServiceId =
-  | "auto"
-  | "cab-economy"
   | "bike"
   | "bike-lite"
+  | "auto"
+  | "ev_auto"
+  | "cab-economy"
   | "cab-premium";
 
 type ServiceBadge = "discount" | "premium";
@@ -33,16 +34,19 @@ type RideService = {
   assetKey: string;
   badge?: ServiceBadge;
   disabled?: boolean;
+  /** Visual scale inside the shared icon box (full-bleed CMS art vs padded bike/cab). */
+  iconScale?: number;
 };
 
 /** @deprecated Travel removed from customer booking. */
 export const DISABLED_SERVICE_IDS: ServiceId[] = [];
 
 export const ALL_SERVICES: RideService[] = [
-  { id: "auto", label: "Auto", assetKey: CX.ride.auto },
-  { id: "cab-economy", label: "Cab Economy", assetKey: CX.ride.cab },
   { id: "bike", label: "Bike", assetKey: CX.ride.bike },
   { id: "bike-lite", label: "Bike Lite", assetKey: CX.ride.bike, badge: "discount" },
+  { id: "auto", label: "Auto", assetKey: CX.ride.auto },
+  { id: "ev_auto", label: "EV Auto", assetKey: CX.ride.evAuto, badge: "discount", iconScale: 0.72 },
+  { id: "cab-economy", label: "Cab Economy", assetKey: CX.ride.cab },
   { id: "cab-premium", label: "Cab Premium", assetKey: CX.ride.cabPremium, badge: "premium" },
 ];
 
@@ -70,6 +74,7 @@ function ServiceTile({
   onPress: () => void;
 }) {
   const disabled = service.disabled === true;
+  const iconPx = ICON_SIZE * (service.iconScale ?? 1);
 
   return (
     <TouchableOpacity
@@ -79,12 +84,14 @@ function ServiceTile({
       disabled={disabled}
     >
       <View style={[styles.iconArea, { width: TILE_W, height: ICON_SIZE }]}>
-        <AppAssetImage
-          assetKey={service.assetKey}
-          style={{ width: ICON_SIZE, height: ICON_SIZE }}
-          contentFit="contain"
-          fallbackSource={bundledRideServiceIcon(service.assetKey)}
-        />
+        <View style={[styles.iconClip, { width: ICON_SIZE, height: ICON_SIZE }]}>
+          <AppAssetImage
+            assetKey={service.assetKey}
+            style={{ width: iconPx, height: iconPx }}
+            contentFit="contain"
+            fallbackSource={bundledRideServiceIcon(service.assetKey)}
+          />
+        </View>
         {service.badge && !disabled ? <ServiceBadgeIcon type={service.badge} /> : null}
         {disabled ? (
           <View style={styles.comingSoonBadge}>
@@ -158,6 +165,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     overflow: "visible",
+  },
+  iconClip: {
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
   },
   comingSoonBadge: {
     position: "absolute",

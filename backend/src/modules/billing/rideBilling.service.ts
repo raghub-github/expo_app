@@ -92,6 +92,17 @@ export function enrichRideBillingSnapshot(
   if (base.computedAt == null) {
     base.computedAt = new Date().toISOString();
   }
+  const discounts = base.discounts;
+  if (Array.isArray(discounts)) {
+    for (const row of discounts) {
+      if (!row || typeof row !== "object") continue;
+      const id = Number((row as { meta?: { platformOfferId?: unknown } }).meta?.platformOfferId);
+      if (Number.isFinite(id) && id > 0) {
+        if (base.ride_fare_platform_offer_id == null) base.ride_fare_platform_offer_id = id;
+        break;
+      }
+    }
+  }
   return base;
 }
 

@@ -216,6 +216,7 @@ export function useOrderRealtime() {
   const authHydrated = useAuthStore((s) => s.hydrated);
 
   const lastEtaReasonRef = useRef<Record<string, string>>({});
+  const lastPrepMinutesRef = useRef<Record<string, number>>({});
   const lastAcceptedMsRef = useRef<Map<string, number>>(new Map());
   const lastEtaVersionRef = useRef<Map<string, number>>(new Map());
   const wsConnectedRef = useRef(false);
@@ -393,15 +394,31 @@ export function useOrderRealtime() {
                   : 0;
                 const isRecent = liveCreated > 0 && Date.now() - liveCreated < 120_000;
                 if (isRecent) {
+                  const prepMins =
+                    eta?.prep?.minutes != null && Number.isFinite(eta.prep.minutes)
+                      ? Number(eta.prep.minutes)
+                      : null;
+                  const prevPrep = lastPrepMinutesRef.current[orderId];
+                  const delta =
+                    prepMins != null &&
+                    prevPrep != null &&
+                    Number.isFinite(prevPrep) &&
+                    prepMins > prevPrep
+                      ? Math.round(prepMins - prevPrep)
+                      : 5;
+                  const extraMins = delta > 0 ? delta : 5;
                   const message = buildPrepDelayMessage(
-                    5,
+                    extraMins,
                     etaMins,
                     detail?.merchantPublicName ?? detail?.merchantName ?? null
                   );
-                  showPrepDelayBanner(orderId, message, 20_000);
+                  showPrepDelayBanner(orderId, message, 20_000, extraMins);
                 }
               }
               lastEtaReasonRef.current[orderId] = liveReason;
+              if (eta?.prep?.minutes != null && Number.isFinite(eta.prep.minutes)) {
+                lastPrepMinutesRef.current[orderId] = Number(eta.prep.minutes);
+              }
             }
           } catch (err) {
             if (httpStatusOf(err) === 404) {
@@ -669,12 +686,34 @@ export function useOrderRealtime() {
 
       const liveReason = payload.reason ?? "";
       if (liveReason === "MERCHANT_DELAY" && orderKey) {
+        const prepMins =
+          payload.prepMinutes != null && Number.isFinite(payload.prepMinutes)
+            ? Number(payload.prepMinutes)
+            : null;
+        const prevPrep = lastPrepMinutesRef.current[orderKey];
+        const delta =
+          prepMins != null &&
+          prevPrep != null &&
+          Number.isFinite(prevPrep) &&
+          prepMins > prevPrep
+            ? Math.round(prepMins - prevPrep)
+            : 5;
+        const extraMins = delta > 0 ? delta : 5;
         const message = buildPrepDelayMessage(
-          5,
+          extraMins,
           displayMins,
           matching[0]?.storeName ?? null
         );
-        showPrepDelayBanner(orderKey, message, 20_000);
+        showPrepDelayBanner(orderKey, message, 20_000, extraMins);
+        if (prepMins != null) {
+          lastPrepMinutesRef.current[orderKey] = prepMins;
+        }
+      } else if (
+        orderKey &&
+        payload.prepMinutes != null &&
+        Number.isFinite(payload.prepMinutes)
+      ) {
+        lastPrepMinutesRef.current[orderKey] = Number(payload.prepMinutes);
       }
     };
 

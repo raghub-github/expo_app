@@ -37,6 +37,8 @@ type FoodOrderCancelSheetProps = {
   onCancelled?: () => void;
   /** When false, "Chat with delivery partner" is disabled (no rider assigned yet). */
   chatEnabled?: boolean;
+  /** Hide rider chat entirely (self-pickup / takeaway). Default true. */
+  showPartnerChat?: boolean;
 };
 
 function formatMoney(value: number) {
@@ -101,6 +103,7 @@ export function FoodOrderCancelSheet({
   onOpenChat,
   onCancelled,
   chatEnabled = false,
+  showPartnerChat = true,
 }: FoodOrderCancelSheetProps) {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
@@ -224,25 +227,27 @@ export function FoodOrderCancelSheet({
           </AppText>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.chatLink}
-          activeOpacity={riderAssigned ? 0.85 : 1}
-          disabled={!riderAssigned}
-          onPress={() => {
-            if (!riderAssigned) return;
-            onClose();
-            onOpenChat();
-          }}
-        >
-          <AppText
-            style={[styles.chatLinkText, !riderAssigned && styles.chatLinkTextDisabled]}
+        {showPartnerChat ? (
+          <TouchableOpacity
+            style={styles.chatLink}
+            activeOpacity={riderAssigned ? 0.85 : 1}
+            disabled={!riderAssigned}
+            onPress={() => {
+              if (!riderAssigned) return;
+              onClose();
+              onOpenChat();
+            }}
           >
-            Chat with delivery partner
-          </AppText>
-          {!riderAssigned ? (
-            <AppText style={styles.chatLinkHint}>Available once a partner is assigned</AppText>
-          ) : null}
-        </TouchableOpacity>
+            <AppText
+              style={[styles.chatLinkText, !riderAssigned && styles.chatLinkTextDisabled]}
+            >
+              Chat with delivery partner
+            </AppText>
+            {!riderAssigned ? (
+              <AppText style={styles.chatLinkHint}>Available once a partner is assigned</AppText>
+            ) : null}
+          </TouchableOpacity>
+        ) : null}
       </ScrollView>
     </StoreBottomSheetShell>
 

@@ -10,7 +10,11 @@ import {
 import { rideFareDistanceNavParams, parseRideFareDistanceKm } from "@/lib/ride-fare-distance";
 import { rideLabelsFromCheckoutMetadata } from "@/lib/ride-address-labels";
 import { isDismissedRideOrder } from "@/lib/ride-dismissed-orders";
-import { isOutstandingRideFareOrder } from "@/lib/ride-fare-gate";
+import {
+  isCashRidePaymentMethod,
+  isOutstandingRideFareOrder,
+  resolveRidePaymentMethod,
+} from "@/lib/ride-fare-gate";
 import { isPersonRideOrderSummary } from "@/lib/person-ride-order-kind";
 
 export { isPersonRideOrderSummary };
@@ -117,10 +121,14 @@ export function resolvePersonRideTrackingNavigation(order: OrderSummary): Person
 
 export function getActiveRideTrackLabel(
   status: string,
-  paymentStatus?: string | null
+  paymentStatus?: string | null,
+  paymentMethod?: string | null
 ): { title: string; subtitle: string } {
   const s = normalizeCustomerOrderStatus(status);
   if (s === "DELIVERED") {
+    if (isCashRidePaymentMethod(paymentMethod)) {
+      return { title: "Ride completed", subtitle: "Tap to rate your captain" };
+    }
     const pending = String(paymentStatus ?? "").trim().toLowerCase();
     if (pending !== "paid" && pending !== "completed") {
       return {

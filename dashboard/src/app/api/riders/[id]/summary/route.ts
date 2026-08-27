@@ -8,6 +8,10 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb, getSql } from "@/lib/db/client";
 import { fetchRiderUnifiedTickets } from "@/lib/riders/rider-unified-tickets";
 import { fetchRiderRecentOrders, formatRiderOrderDisplayId } from "@/lib/riders/rider-orders-query";
+import {
+  displayIdFromPenaltyMetadata,
+  resolveFormattedOrderIdsByCoreId,
+} from "@/lib/riders/resolve-penalty-order-display-ids";
 import { walletBlockHistoryReason } from "@/lib/rider-restriction-display";
 import {
   riders,
@@ -159,7 +163,7 @@ export async function GET(
 
     // Per‑rider summary cache (30s) – keyed by rider + filters to avoid
     // recalculating heavy aggregates on quick tab switches.
-    const cacheKey = riderId ? `rider_summary_v5:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
+    const cacheKey = riderId ? `rider_summary_v6:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
     const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
 
     if (cacheKey) {
@@ -415,6 +419,30 @@ export async function GET(
         reversedByEmail: row.reversedByEmail,
         reversedByName: row.reversedByName,
       }));
+      const penaltyOrderIds = recentPenalties
+        .map((p) => Number((p as { orderId?: number | null }).orderId))
+        .filter((id) => Number.isFinite(id) && id > 0);
+      const formattedById = await resolveFormattedOrderIdsByCoreId(db, penaltyOrderIds);
+      recentPenalties = recentPenalties.map((p) => {
+        const oid = Number((p as { orderId?: number | null }).orderId);
+        const fromMeta = displayIdFromPenaltyMetadata(
+          (p as { metadata?: unknown }).metadata
+        );
+        const fromCore =
+          Number.isFinite(oid) && oid > 0 ? formattedById.get(oid) ?? null : null;
+        const display =
+          fromMeta && !/^\d+$/.test(fromMeta)
+            ? fromMeta
+            : fromCore && !/^\d+$/.test(fromCore)
+              ? fromCore
+              : fromMeta ?? fromCore;
+        return {
+          ...p,
+          displayOrderId: display,
+          formattedOrderId: display,
+          orderPublicId: display,
+        };
+      });
     } catch {
       console.warn("[Summary API] Penalties table not found, skipping penalties data");
     }
@@ -768,6 +796,7 @@ export async function GET(
           bankAcc: withdrawal.bankAcc,
           createdAt: withdrawal.createdAt,
           processedAt: withdrawal.processedAt,
+          failureReason: withdrawal.failureReason ?? null,
         })),
         recentTickets,
         vehicle: activeVehicle ? {
@@ -811,6 +840,9 @@ export async function GET(
         recentPenalties: recentPenalties.map(penalty => ({
           id: penalty.id,
           orderId: penalty.orderId ?? null,
+          displayOrderId: (penalty as { displayOrderId?: string | null }).displayOrderId ?? null,
+          formattedOrderId: (penalty as { formattedOrderId?: string | null }).formattedOrderId ?? null,
+          orderPublicId: (penalty as { orderPublicId?: string | null }).orderPublicId ?? null,
           serviceType: penalty.serviceType,
           penaltyType: penalty.penaltyType,
           amount: penalty.amount,

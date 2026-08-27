@@ -24,6 +24,9 @@ const CREDIT_ENTRY_TYPES = new Set([
   "penalty_reversal",
 ]);
 
+/** Credits that are not earnings (must not inflate totals / graphs). */
+const CREDIT_FLOW_ONLY_TYPES = new Set(["failed_withdrawal_revert"]);
+
 const INCENTIVE_ENTRY_TYPES = new Set(["bonus", "referral_bonus"]);
 
 const SUMMARY_WITHDRAWAL_ONLY_TYPES = new Set(["withdrawal"]);
@@ -61,6 +64,7 @@ export type RiderLedgerEntryDto = {
   serviceType: string | null;
   orderPublicId: string | null;
   createdAt: string;
+  rejectionReason: string | null;
 };
 
 export type RiderLedgerSummaryDto = {
@@ -72,6 +76,23 @@ export type RiderLedgerSummaryDto = {
 
 export function isCreditEntryType(entryType: string): boolean {
   return CREDIT_ENTRY_TYPES.has(entryType.toLowerCase());
+}
+
+function isCreditFlowType(entryType: string): boolean {
+  const type = entryType.toLowerCase();
+  return CREDIT_ENTRY_TYPES.has(type) || CREDIT_FLOW_ONLY_TYPES.has(type);
+}
+
+function extractRejectionReason(row: LedgerRow): string | null {
+  const meta = row.metadata ?? {};
+  for (const key of ["rejection_reason", "rejectionReason", "reason"]) {
+    const raw = meta[key];
+    if (typeof raw === "string" && raw.trim()) return raw.trim();
+  }
+  const desc = row.description?.trim() ?? "";
+  const match = desc.match(/Reason:\s*(.+)$/i);
+  const fromDesc = match?.[1]?.trim();
+  return fromDesc || null;
 }
 
 function resolveServiceType(row: LedgerRow, orderTypeByCoreId?: Map<number, string | null>): string | null {
@@ -98,6 +119,13 @@ function categoryForRow(row: LedgerRow, orderTypeByCoreId?: Map<number, string |
   const entryType = row.entry_type.toLowerCase();
   if (entryType === "subscription_fee") return "subscriptions";
   if (entryType === "penalty" || entryType === "penalty_reversal") return "penalties";
+  if (
+    entryType === "withdrawal" ||
+    entryType === "failed_withdrawal_revert" ||
+    row.ref_type?.toLowerCase() === "withdrawal"
+  ) {
+    return "withdrawals";
+  }
   if (ADJUSTMENT_ENTRY_TYPES.has(entryType)) return "adjustments";
   if (INCENTIVE_ENTRY_TYPES.has(entryType)) return "incentives";
 
@@ -111,6 +139,16 @@ function categoryForRow(row: LedgerRow, orderTypeByCoreId?: Map<number, string |
 }
 
 function descriptionForRow(row: LedgerRow): string {
+  const entryType = row.entry_type.toLowerCase();
+  const reason = extractRejectionReason(row);
+  if (entryType === "failed_withdrawal_revert") {
+    const base = row.description?.trim() || "Withdrawal rejected — amount reverted";
+    if (reason && !/Reason:\s*/i.test(base)) {
+      return `${base.replace(/\.$/, "")}. Reason: ${reason}`;
+    }
+    return base;
+  }
+
   const desc = row.description?.trim();
   if (desc) return desc;
 
@@ -204,6 +242,9 @@ function computeSummary(
     const amount = Math.abs(Number(row.amount ?? 0));
     const entryType = row.entry_type.toLowerCase();
 
+    if (entryType === "failed_withdrawal_revert") {
+      continue;
+    }
     if (isWithdrawalRow(row)) {
       totalWithdrawals += amount;
       continue;
@@ -350,7 +391,7 @@ function mapRow(
   return {
     id: Number(row.id),
     entryType,
-    flow: isCreditEntryType(entryType) ? "credit" : "debit",
+    flow: isCreditFlowType(entryType) ? "credit" : "debit",
     category: categoryForRow(row, orderTypeByCoreId),
     description: descriptionForRow(row),
     amount,
@@ -360,6 +401,7 @@ function mapRow(
     serviceType: resolveServiceType(row, orderTypeByCoreId),
     orderPublicId: resolvedPublicId,
     createdAt: new Date(row.created_at).toISOString(),
+    rejectionReason: extractRejectionReason(row),
   };
 }
 

@@ -32,6 +32,7 @@ interface LedgerRow {
   refType: string | null;
   description: string | null;
   orderId: string | null;
+  rejectionReason?: string | null;
   performedByType: string | null;
   performedById: number | null;
   performedByEmail: string | null;

@@ -13,9 +13,14 @@ import {
   markRideSearchWindowEnded,
 } from "./ride.tip-boost.service.js";
 import { getNearbyRideSupply } from "./ride.availability.service.js";
-import { quoteCustomerRideFare, quoteCustomerRideFareBatch } from "../ride-state-config/rideQuote.service.js";
+import {
+  quoteCustomerRideFare,
+  quoteCustomerRideFareBatch,
+  type RideFareQuoteResult,
+} from "../ride-state-config/rideQuote.service.js";
 import { getDb } from "../../db/client.js";
 import { computeBillForRide, resolveRideBillingGeo } from "../billing/rideBilling.service.js";
+import type { ComputeBillResult } from "../billing/billing.service.js";
 import { buildRideComponentBreakdown } from "./pricing/rideFareComponents.js";
 
 const rideStopSchema = z.object({
@@ -115,6 +120,49 @@ const rideQuoteBatchBodySchema = z.object({
   pickupPincode: z.string().optional().nullable(),
   pickupState: z.string().optional().nullable(),
 });
+
+/** Cap extra billing so the list always returns slab fares quickly. */
+const QUOTE_BATCH_BILLING_BUDGET_MS = 2800;
+
+type RideQuoteBillingAttach = {
+  finalAmount: number;
+  rideFare: number;
+  platformFee: number;
+  convenienceFee: number;
+  taxTotal: number;
+  tipAmount: number;
+  discountTotal?: number;
+  charges?: unknown[];
+  taxes?: unknown[];
+  breakdownSteps?: unknown[];
+  componentBreakdown?: ReturnType<typeof buildRideComponentBreakdown>;
+};
+
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function billingFromRideBill(
+  rideFare: number,
+  billRes: Extract<ComputeBillResult, { ok: true }>
+): RideQuoteBillingAttach {
+  return {
+    finalAmount: billRes.billing.final_amount,
+    rideFare,
+    platformFee: billRes.billing.platform_fee,
+    convenienceFee: billRes.billing.convenience_fee,
+    taxTotal: billRes.billing.tax_total,
+    tipAmount: billRes.billing.tip_amount,
+    discountTotal: billRes.billing.discount_total,
+    charges: billRes.billing.charges,
+    taxes: billRes.billing.taxes,
+    breakdownSteps: billRes.billing.breakdown_steps,
+    componentBreakdown: buildRideComponentBreakdown(
+      billRes.billing.charges,
+      billRes.billing.discounts
+    ),
+  };
+}
 
 const rideQuoteComponentLineSchema = z.object({
   subtype: z.string(),
@@ -255,6 +303,7 @@ export async function rideRoutes(app: FastifyInstance) {
         convenienceFee: number;
         taxTotal: number;
         tipAmount: number;
+        discountTotal?: number;
         charges?: unknown[];
         taxes?: unknown[];
         breakdownSteps?: unknown[];
@@ -262,36 +311,27 @@ export async function rideRoutes(app: FastifyInstance) {
       } | null = null;
 
       if (result.eligible && result.finalFare > 0) {
-        const db = getDb();
-        const billRes = await computeBillForRide(db, {
-          customerId: 0,
-          rideFare: result.finalFare,
-          distanceKm: body.tripKm,
-          pickupLat: body.pickupLat,
-          pickupLng: body.pickupLng,
-          dropLat: body.dropLat,
-          dropLon: body.dropLng,
-          pickupPincode: body.pickupPincode,
-          pickupState: body.pickupState,
-          rideType: body.catalogCode,
-          vehicleType: body.catalogCode,
-        });
-        if (billRes.ok) {
-          billing = {
-            finalAmount: billRes.billing.final_amount,
+        try {
+          const db = getDb();
+          const billRes = await computeBillForRide(db, {
+            customerId: 0,
             rideFare: result.finalFare,
-            platformFee: billRes.billing.platform_fee,
-            convenienceFee: billRes.billing.convenience_fee,
-            taxTotal: billRes.billing.tax_total,
-            tipAmount: billRes.billing.tip_amount,
-            charges: billRes.billing.charges,
-            taxes: billRes.billing.taxes,
-            breakdownSteps: billRes.billing.breakdown_steps,
-            componentBreakdown: buildRideComponentBreakdown(
-              billRes.billing.charges,
-              billRes.billing.discounts
-            ),
-          };
+            distanceKm: body.tripKm,
+            pickupLat: body.pickupLat,
+            pickupLng: body.pickupLng,
+            dropLat: body.dropLat,
+            dropLon: body.dropLng,
+            pickupPincode: body.pickupPincode,
+            pickupState: body.pickupState,
+            rideType: body.catalogCode,
+            vehicleType: body.catalogCode,
+            forceNoAutoOffer: true,
+          });
+          if (billRes.ok) {
+            billing = billingFromRideBill(result.finalFare, billRes);
+          }
+        } catch {
+          billing = null;
         }
       }
 
@@ -308,6 +348,15 @@ export async function rideRoutes(app: FastifyInstance) {
           200: z.object({
             ok: z.literal(true),
             quotes: z.record(z.string(), z.any()),
+            fareOffsets: z
+              .record(
+                z.string(),
+                z.object({
+                  parentCatalogCode: z.string(),
+                  discountInr: z.number(),
+                })
+              )
+              .optional(),
             timings: z
               .object({
                 geoMs: z.number(),
@@ -334,35 +383,28 @@ export async function rideRoutes(app: FastifyInstance) {
 
       const db = getDb();
       const billingT0 = Date.now();
-      const resolvedGeo = await resolveRideBillingGeo({
-        pickupLat: body.pickupLat,
-        pickupLng: body.pickupLng,
-        pickupPincode: body.pickupPincode,
-        pickupState: body.pickupState,
-      });
-
       const out: Record<string, unknown> = {};
 
-      for (const [code, result] of Object.entries(quotes)) {
-        if (!result.ok) {
-          out[code] = result;
-          continue;
+      let resolvedGeo: Awaited<ReturnType<typeof resolveRideBillingGeo>> | undefined;
+      try {
+        resolvedGeo = await resolveRideBillingGeo({
+          pickupLat: body.pickupLat,
+          pickupLng: body.pickupLng,
+          pickupPincode: body.pickupPincode,
+          pickupState: body.pickupState,
+        });
+      } catch {
+        resolvedGeo = undefined;
+      }
+
+      const billOne = async (
+        code: string,
+        result: Extract<RideFareQuoteResult, { ok: true }>
+      ): Promise<unknown> => {
+        if (!(result.eligible && result.finalFare > 0)) {
+          return { ...result, billing: null };
         }
-
-        let billing: {
-          finalAmount: number;
-          rideFare: number;
-          platformFee: number;
-          convenienceFee: number;
-          taxTotal: number;
-          tipAmount: number;
-          charges?: unknown[];
-          taxes?: unknown[];
-          breakdownSteps?: unknown[];
-          componentBreakdown?: ReturnType<typeof buildRideComponentBreakdown>;
-        } | null = null;
-
-        if (result.eligible && result.finalFare > 0) {
+        try {
           const billRes = await computeBillForRide(db, {
             customerId: 0,
             rideFare: result.finalFare,
@@ -376,27 +418,38 @@ export async function rideRoutes(app: FastifyInstance) {
             rideType: code,
             vehicleType: code,
             resolvedGeo,
+            useCache: true,
+            forceNoAutoOffer: true,
           });
           if (billRes.ok) {
-            billing = {
-              finalAmount: billRes.billing.final_amount,
-              rideFare: result.finalFare,
-              platformFee: billRes.billing.platform_fee,
-              convenienceFee: billRes.billing.convenience_fee,
-              taxTotal: billRes.billing.tax_total,
-              tipAmount: billRes.billing.tip_amount,
-              charges: billRes.billing.charges,
-              taxes: billRes.billing.taxes,
-              breakdownSteps: billRes.billing.breakdown_steps,
-              componentBreakdown: buildRideComponentBreakdown(
-                billRes.billing.charges,
-                billRes.billing.discounts
-              ),
-            };
+            return { ...result, billing: billingFromRideBill(result.finalFare, billRes) };
           }
+        } catch {
+          // Slab fare still ships — list must not wait on billing failures.
         }
+        return { ...result, billing: null };
+      };
 
-        out[code] = { ...result, billing };
+      const eligible: Array<[string, Extract<RideFareQuoteResult, { ok: true }>]> = [];
+      for (const [code, result] of Object.entries(quotes)) {
+        if (!result.ok) {
+          out[code] = result;
+          continue;
+        }
+        eligible.push([code, result]);
+      }
+
+      const billingWave = (async () => {
+        for (const [code, result] of eligible) {
+          out[code] = await billOne(code, result);
+        }
+      })();
+
+      await Promise.race([billingWave, delayMs(QUOTE_BATCH_BILLING_BUDGET_MS)]);
+
+      for (const [code, result] of Object.entries(quotes)) {
+        if (out[code] != null) continue;
+        out[code] = result.ok ? { ...result, billing: null } : result;
       }
 
       const billingMs = Date.now() - billingT0;
@@ -421,7 +474,20 @@ export async function rideRoutes(app: FastifyInstance) {
         );
       }
 
-      return { ok: true as const, quotes: out, timings };
+      return {
+        ok: true as const,
+        quotes: { ...out },
+        fareOffsets: Object.fromEntries(
+          Object.entries(ctx.catalogFareOffsets).map(([code, offset]) => [
+            code,
+            {
+              parentCatalogCode: offset.parentCatalogCode,
+              discountInr: offset.discountInr,
+            },
+          ])
+        ),
+        timings,
+      };
     }
   );
 

@@ -19,3 +19,18 @@ export const APP_STATIC_VIDEO_ASSET_IDS = new Set([
 export function isAppStaticVideoAsset(id: string): boolean {
   return APP_STATIC_VIDEO_ASSET_IDS.has(id);
 }
+
+export const RIDE_HOME_BANNER_SLOT_IDS = [
+  "customer.ride.banner",
+  "customer.ride.banner_2",
+  "customer.ride.banner_3",
+  "customer.ride.banner_4",
+  "customer.ride.banner_5",
+  "customer.ride.banner_6",
+] as const;
+
+export const RIDE_HOME_BANNER_SLOT_ID_SET = new Set<string>(RIDE_HOME_BANNER_SLOT_IDS);
+
+export function isRideHomeBannerSlot(id: string): boolean {
+  return RIDE_HOME_BANNER_SLOT_ID_SET.has(id);
+}

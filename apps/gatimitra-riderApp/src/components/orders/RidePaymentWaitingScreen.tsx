@@ -1,35 +1,178 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
-  Text,
   StyleSheet,
   ScrollView,
   ActivityIndicator,
   TouchableOpacity,
-  Image,
-  ImageBackground,
-  Linking,
-  Platform,
   Alert,
+  FlatList,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+  useWindowDimensions,
 } from "react-native";
+import { AppText } from "@/components/AppText";
 import { router, useLocalSearchParams } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { LinearGradient } from "expo-linear-gradient";
-import { colors } from "@/src/theme";
+import { ApiError } from "@gatimitra/sdk";
 import { riderApi } from "@/src/services/api/riderApi";
 import { buildRideDeliverySuccessParams } from "@/src/lib/ride-delivery-success-nav";
 import { isRideFarePaymentSettled } from "@/src/lib/ride-payment-wait";
-import { resolveRiderDisplayedEarning, buildRiderRideEarningBreakdown } from "@/src/lib/rider-earning-display";
+import { buildRiderRideEarningBreakdown } from "@/src/lib/rider-earning-display";
 import { RIDER_ACTIVE_ORDERS_QUERY_KEY, RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY } from "@/src/hooks/useOrders";
-import { useAppAssetSource } from "@/src/components/AppAssetImage";
-import { RX } from "@/src/lib/appAssetKeys";
+import { CustomerCallBottomSheet } from "@/src/components/orders/CustomerCallBottomSheet";
+import { RideCashCollectBottomSheet } from "@/src/components/orders/RideCashCollectBottomSheet";
+import { RideOnlineQrBottomSheet } from "@/src/components/orders/RideOnlineQrBottomSheet";
+import { LORA_BOLD, LORA_REGULAR, LORA_SEMIBOLD, POPPINS_BOLD, POPPINS_SEMIBOLD } from "@/src/theme/headerFonts";
+import { colors } from "@/src/theme";
+
+function riderApiErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    const payload = err.payload;
+    if (payload && typeof payload === "object" && "error" in payload) {
+      const msg = String((payload as { error?: string }).error ?? "").trim();
+      if (msg) return msg;
+    }
+    return err.message || fallback;
+  }
+  if (err instanceof Error && err.message.trim()) return err.message;
+  return fallback;
+}
 
 const POLL_MS = 15_000;
+const MINT = colors.primary[600];
+const MINT_DARK = colors.primary[700];
+/** Matches customer app Place Order CTA (`CHECKOUT_CTA_GREEN`). */
+const BRAND_BTN = "#137243";
+
+const CARD_GAP = 16;
+const PAYMENT_SECTION_GAP = 24;
+const BANNER_ROTATE_MS = 8000;
+
+type SafeBannerSlide = {
+  id: string;
+  title: string;
+  subtitle: string;
+};
+
+function HeaderSafeBannerCarousel({ slides }: { slides: SafeBannerSlide[] }) {
+  const { width } = useWindowDimensions();
+  const bannerWidth = Math.max(0, width - 32);
+  const listRef = useRef<FlatList<SafeBannerSlide>>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (slides.length <= 1) return;
+    timerRef.current = setTimeout(() => {
+      const next = (activeIndex + 1) % slides.length;
+      listRef.current?.scrollToIndex({ index: next, animated: true });
+      setActiveIndex(next);
+    }, BANNER_ROTATE_MS);
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [activeIndex, slides.length]);
+
+  const onScrollEnd = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (bannerWidth <= 0) return;
+      const idx = Math.round(e.nativeEvent.contentOffset.x / bannerWidth);
+      setActiveIndex(Math.max(0, Math.min(idx, slides.length - 1)));
+    },
+    [bannerWidth, slides.length]
+  );
+
+  if (slides.length === 0) return null;
+
+  return (
+    <View style={bannerStyles.wrap}>
+      <FlatList
+        ref={listRef}
+        data={slides}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        keyExtractor={(item) => item.id}
+        onMomentumScrollEnd={onScrollEnd}
+        getItemLayout={(_, index) => ({
+          length: bannerWidth,
+          offset: bannerWidth * index,
+          index,
+        })}
+        renderItem={({ item }) => (
+          <View style={[bannerStyles.slide, { width: bannerWidth }]}>
+            <View style={bannerStyles.iconWrap}>
+              <Ionicons name="shield-checkmark" size={18} color={MINT_DARK} />
+            </View>
+            <View style={bannerStyles.textCol}>
+              <AppText style={bannerStyles.title} bold>
+                {item.title}
+              </AppText>
+              <AppText style={bannerStyles.sub}>{item.subtitle}</AppText>
+            </View>
+          </View>
+        )}
+      />
+      {slides.length > 1 ? (
+        <View style={bannerStyles.dots}>
+          {slides.map((slide, i) => (
+            <View
+              key={slide.id}
+              style={[bannerStyles.dot, i === activeIndex ? bannerStyles.dotActive : null]}
+            />
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+const bannerStyles = StyleSheet.create({
+  wrap: { marginTop: 12 },
+  slide: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    backgroundColor: "#F0FDF4",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+    padding: 12,
+  },
+  iconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#DCFCE7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  textCol: { flex: 1, gap: 2 },
+  title: { fontSize: 13, fontFamily: LORA_BOLD, color: "#14532D" },
+  sub: { fontSize: 12, fontFamily: LORA_REGULAR, color: "#166534", lineHeight: 17 },
+  dots: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 4,
+    marginTop: 8,
+  },
+  dot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: "#BBF7D0",
+  },
+  dotActive: {
+    width: 14,
+    backgroundColor: MINT_DARK,
+  },
+});
 
 function isCashRideOrder(order: unknown): boolean {
   const method = String(
@@ -39,8 +182,6 @@ function isCashRideOrder(order: unknown): boolean {
     .toLowerCase();
   return method === "cash" || method === "cod";
 }
-const MINT = colors.primary[600];
-const MINT_DARK = colors.primary[700];
 
 function formatClock(iso?: string | null): string {
   if (!iso) return "—";
@@ -89,8 +230,10 @@ function TimelineRow({ step, isLast }: { step: TimelineStep; isLast?: boolean })
         {!isLast ? <View style={[styles.timelineLine, { backgroundColor: dotColor }]} /> : null}
       </View>
       <View style={styles.timelineTextCol}>
-        <Text style={[styles.timelineTitle, { color: titleColor }]}>{step.title}</Text>
-        {step.subtitle ? <Text style={styles.timelineSub}>{step.subtitle}</Text> : null}
+        <AppText style={[styles.timelineTitle, { color: titleColor }]} bold>
+          {step.title}
+        </AppText>
+        {step.subtitle ? <AppText style={styles.timelineSub}>{step.subtitle}</AppText> : null}
       </View>
     </View>
   );
@@ -99,14 +242,15 @@ function TimelineRow({ step, isLast }: { step: TimelineStep; isLast?: boolean })
 export function RidePaymentWaitingScreen() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const waitingHero = useAppAssetSource(RX.orders.waitingHero);
   const params = useLocalSearchParams<{ orderId?: string; displayId?: string }>();
   const orderId = typeof params.orderId === "string" ? params.orderId : "";
   const [lastCheckedAt, setLastCheckedAt] = useState(() => new Date());
+  const [callSheetOpen, setCallSheetOpen] = useState(false);
+  const [cashSheetOpen, setCashSheetOpen] = useState(false);
+  const [onlineSheetOpen, setOnlineSheetOpen] = useState(false);
+  const [qrError, setQrError] = useState<string | null>(null);
 
-  const isCashRide = useMemo(() => isCashRideOrder(order), [order]);
-
-  const { data: order, isFetching } = useQuery({
+  const { data: order } = useQuery({
     queryKey: ["rider", "orders", "detail", orderId],
     queryFn: async () => {
       const row = await riderApi.getRideOrder(orderId);
@@ -114,9 +258,15 @@ export function RidePaymentWaitingScreen() {
       return row;
     },
     enabled: orderId.length > 0,
-    // Cash rides never need polling — the rider taps "Cash received" to finish.
-    refetchInterval: isCashRide ? false : POLL_MS,
+    refetchInterval: (query) => {
+      const row = query.state.data;
+      const cash = isCashRideOrder(row);
+      return cash ? false : POLL_MS;
+    },
+    refetchIntervalInBackground: false,
   });
+
+  const isCashRide = useMemo(() => isCashRideOrder(order), [order]);
 
   const goToSuccess = useCallback(
     (deliveredOrder: NonNullable<typeof order>) => {
@@ -132,49 +282,65 @@ export function RidePaymentWaitingScreen() {
 
   useEffect(() => {
     if (!order || !isRideFarePaymentSettled(order)) return;
+    setOnlineSheetOpen(false);
+    setCashSheetOpen(false);
     goToSuccess(order);
   }, [order, goToSuccess]);
 
   const cashMutation = useMutation({
-    mutationFn: async () => riderApi.confirmRideCashCollected(orderId),
+    mutationFn: async () => {
+      try {
+        await riderApi.selectRidePaymentMethod(orderId, "cash");
+      } catch (err) {
+        const code =
+          err instanceof ApiError &&
+          err.payload &&
+          typeof err.payload === "object" &&
+          "code" in err.payload
+            ? String((err.payload as { code?: string }).code ?? "")
+            : "";
+        if (!(err instanceof ApiError && err.status === 409 && code === "ALREADY_SETTLED")) {
+          throw err;
+        }
+      }
+      return riderApi.confirmRideCashCollected(orderId);
+    },
     onSuccess: async () => {
-      // Refresh the underlying order (payment_status becomes completed) so the
-      // success-navigation effect above fires.
+      setCashSheetOpen(false);
       void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["rider", "orders", "detail", orderId] });
       const refreshed = await riderApi.getRideOrder(orderId);
       goToSuccess(refreshed);
     },
     onError: (err) => {
-      const message =
-        (err as { message?: string })?.message ??
-        t(
-          "orders.ridePaymentWait.cashError",
-          "Could not confirm the cash collection. Please try again."
-        );
-      Alert.alert(t("common.error", "Something went wrong"), String(message));
+      Alert.alert(
+        t("common.error", "Something went wrong"),
+        riderApiErrorMessage(
+          err,
+          t(
+            "orders.ridePaymentWait.cashError",
+            "Could not confirm the cash collection. Please try again."
+          )
+        )
+      );
     },
   });
 
-  // Rider chose "Online" this session → we show the QR (kept in local state; the ride
-  // is finalized backend-side by the qr_code.credited webhook, which flips the order to
-  // settled and triggers the success-navigation effect above).
-  const [onlineChosen, setOnlineChosen] = useState(false);
   const [qrInfo, setQrInfo] = useState<{ qrImageUrl: string; amount: number } | null>(null);
 
   const qrMutation = useMutation({
     mutationFn: async () => riderApi.createRideOnlineQr(orderId),
     onSuccess: (data) => {
+      setQrError(null);
       setQrInfo({ qrImageUrl: data.qrImageUrl, amount: data.amount });
     },
     onError: (err) => {
-      Alert.alert(
-        t("common.error", "Something went wrong"),
-        String(
-          (err as { message?: string })?.message ??
-            t("orders.ridePaymentWait.qrError", "Could not create the payment QR. Please try again.")
-        )
+      const message = String(
+        (err as { message?: string })?.message ??
+          t("orders.ridePaymentWait.qrError", "Could not create the payment QR. Please try again.")
       );
+      setQrError(message);
     },
   });
 
@@ -182,11 +348,8 @@ export function RidePaymentWaitingScreen() {
     mutationFn: async (method: "cash" | "online") =>
       riderApi.selectRidePaymentMethod(orderId, method),
     onSuccess: async (_res, method) => {
-      if (method === "cash") {
-        // Refresh so order.paymentMethod becomes cash → the cash card renders.
-        await queryClient.invalidateQueries({ queryKey: ["rider", "orders", "detail", orderId] });
-      } else {
-        setOnlineChosen(true);
+      await queryClient.invalidateQueries({ queryKey: ["rider", "orders", "detail", orderId] });
+      if (method === "online") {
         qrMutation.mutate();
       }
     },
@@ -201,7 +364,29 @@ export function RidePaymentWaitingScreen() {
     },
   });
 
-  const selectingMethod = selectMutation.isPending || qrMutation.isPending;
+  const openCashSheet = useCallback(() => {
+    setCashSheetOpen(true);
+    if (!isCashRide && !selectMutation.isPending && !cashMutation.isPending) {
+      selectMutation.mutate("cash");
+    }
+  }, [cashMutation.isPending, isCashRide, selectMutation]);
+
+  const openOnlineSheet = useCallback(() => {
+    setOnlineSheetOpen(true);
+    setQrError(null);
+    if (isCashRide) {
+      selectMutation.mutate("online");
+      return;
+    }
+    if (!qrInfo && !qrMutation.isPending) {
+      selectMutation.mutate("online");
+    }
+  }, [isCashRide, qrInfo, qrMutation.isPending, selectMutation]);
+
+  const handleCashCompleted = useCallback(() => {
+    if (cashMutation.isPending) return;
+    cashMutation.mutate();
+  }, [cashMutation]);
 
   const displayId = params.displayId?.trim() || order?.formattedOrderId || orderId;
   const earningBreakdown = useMemo(
@@ -249,15 +434,49 @@ export function RidePaymentWaitingScreen() {
 
   const customerPhone = order?.customerPhone?.trim() ?? "";
   const hasCallablePhone = customerPhone.replace(/\D/g, "").length >= 10;
+  const customerDisplayName =
+    order?.customerName?.trim() ||
+    order?.customerPrimaryName?.trim() ||
+    t("orders.ridePaymentWait.passengerFallback", "Passenger");
 
-  const handleCallCustomer = useCallback(() => {
-    if (!hasCallablePhone) return;
-    const digits = customerPhone.replace(/\D/g, "");
-    const tel = digits.length === 10 ? `+91${digits}` : customerPhone.startsWith("+") ? customerPhone : `+${digits}`;
-    void Linking.openURL(`tel:${tel}`).catch(() => {
-      /* silent */
-    });
-  }, [customerPhone, hasCallablePhone]);
+  const handleOpenCallSheet = useCallback(() => {
+    setCallSheetOpen(true);
+  }, []);
+
+  const safeBannerSlides = useMemo<SafeBannerSlide[]>(() => {
+    if (isCashRide) {
+      return [
+        {
+          id: "cash-safe",
+          title: t("orders.ridePaymentWait.cashSafeTitle", "Cash goes straight to you."),
+          subtitle: t(
+            "orders.ridePaymentWait.cashSafeSub",
+            "Only the platform's share is recovered from your wallet after you confirm."
+          ),
+        },
+      ];
+    }
+    const slides: SafeBannerSlide[] = [
+      {
+        id: "safe",
+        title: t("orders.ridePaymentWait.safeTitle", "Don't worry, your earnings are safe."),
+        subtitle: t(
+          "orders.ridePaymentWait.safeSub",
+          "Your earnings will be credited automatically once the passenger completes payment. No action is required from your side."
+        ),
+      },
+    ];
+    if (!isCashRide) {
+      slides.push({
+        id: "refresh",
+        title: t("orders.ridePaymentWait.autoRefresh", "Auto refresh every 15 sec"),
+        subtitle: t("orders.ridePaymentWait.lastChecked", "Last checked: {{time}}", {
+          time: formatClock(lastCheckedAt.toISOString()),
+        }),
+      });
+    }
+    return slides;
+  }, [isCashRide, lastCheckedAt, t]);
 
   const handleContactSupport = useCallback(() => {
     router.push("/raise-ticket");
@@ -265,60 +484,78 @@ export function RidePaymentWaitingScreen() {
 
   return (
     <View style={styles.root}>
-      <StatusBar style="light" />
+      <StatusBar style="dark" />
+      <SafeAreaView edges={["top"]} style={styles.headerSafe}>
+        <View style={styles.headerTopRow}>
+          <TouchableOpacity
+            style={styles.backBtn}
+            onPress={() => router.back()}
+            hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+          >
+            <Ionicons name="arrow-back" size={22} color="#111827" />
+          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              style={styles.headerIconBtn}
+              onPress={handleContactSupport}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={t("orders.ridePaymentWait.support", "Contact Support")}
+            >
+              <Ionicons name="headset-outline" size={22} color={MINT_DARK} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.headerIconBtn}
+              onPress={handleOpenCallSheet}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={t("orders.ridePaymentWait.callCustomer", "Call Customer")}
+            >
+              <Ionicons
+                name="call-outline"
+                size={22}
+                color={hasCallablePhone ? MINT_DARK : "#9CA3AF"}
+              />
+            </TouchableOpacity>
+          </View>
+        </View>
+        <View style={styles.headerTitleWrap}>
+          <AppText style={styles.pageTitle} bold>
+            {t("orders.ridePaymentWait.heroTitle", "Fare Pending")}
+          </AppText>
+          <AppText style={styles.pageSub}>
+            {t("orders.ridePaymentWait.heroSub", "Waiting for passenger payment")}
+          </AppText>
+        </View>
+        <HeaderSafeBannerCarousel slides={safeBannerSlides} />
+      </SafeAreaView>
+
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {waitingHero ? (
-          <ImageBackground source={waitingHero} style={styles.hero} imageStyle={styles.heroImage}>
-          <LinearGradient
-            colors={["rgba(15,23,42,0.35)", "rgba(15,23,42,0.82)"]}
-            style={StyleSheet.absoluteFill}
-          />
-          <SafeAreaView edges={["top"]} style={styles.heroSafe}>
-            <TouchableOpacity
-              style={styles.backBtn}
-              onPress={() => router.back()}
-              hitSlop={12}
-              accessibilityRole="button"
-              accessibilityLabel="Go back"
-            >
-              <Ionicons name="arrow-back" size={22} color="#fff" />
-            </TouchableOpacity>
-            <View style={styles.heroTextWrap}>
-              <Text style={styles.heroTitle}>
-                {t("orders.ridePaymentWait.heroTitle", "Fare Pending")}
-              </Text>
-              <Text style={styles.heroSub}>
-                {t("orders.ridePaymentWait.heroSub", "Waiting for passenger payment")}
-              </Text>
-            </View>
-          </SafeAreaView>
-        </ImageBackground>
-        ) : (
-          <View style={styles.hero} />
-        )}
-
         <View style={styles.body}>
+          <View style={styles.summarySection}>
           <View style={styles.fareCard}>
             <View style={styles.fareTopRow}>
               <View style={styles.fareLeft}>
                 <View style={styles.pendingBadge}>
                   <Ionicons name="hourglass-outline" size={12} color="#B45309" />
-                  <Text style={styles.pendingBadgeText}>
+                  <AppText style={styles.pendingBadgeText} bold>
                     {t("orders.ridePaymentWait.badge", "Payment Pending")}
-                  </Text>
+                  </AppText>
                 </View>
-                <Text style={styles.fareAmount}>{formatFare(fareAmount)}</Text>
-                <Text style={styles.fareLabel}>
+                <AppText style={styles.fareAmount} bold>{formatFare(fareAmount)}</AppText>
+                <AppText style={styles.fareLabel}>
                   {t("orders.ridePaymentWait.fareLabel", "Fare to be received")}
-                </Text>
+                </AppText>
                 {displayId ? (
-                  <Text style={styles.rideRef}>
+                  <AppText style={styles.rideRef}>
                     {t("orders.ridePaymentWait.rideRef", "Ride #{{id}}", { id: displayId })}
-                  </Text>
+                  </AppText>
                 ) : null}
               </View>
               <View style={styles.timelineCol}>
@@ -334,346 +571,233 @@ export function RidePaymentWaitingScreen() {
           </View>
 
           <View style={styles.breakdownCard}>
-            <Text style={styles.breakdownTitle}>
+            <AppText style={styles.breakdownTitle} bold>
               {t("orders.ridePaymentWait.settlementTitle", "Settlement summary")}
-            </Text>
+            </AppText>
             <View style={styles.feeRow}>
-              <Text style={styles.feeRowLabel}>
+              <AppText style={styles.feeRowLabel}>
                 {t("orders.ridePaymentWait.customerPays", "Customer Pays")}
-              </Text>
-              <Text style={styles.feeRowValue}>{formatFare(customerPays)}</Text>
+              </AppText>
+              <AppText style={styles.feeRowValue} bold>{formatFare(customerPays)}</AppText>
             </View>
             <View style={styles.feeRow}>
-              <Text style={styles.feeRowLabel}>
+              <AppText style={styles.feeRowLabel}>
                 {t("orders.ridePaymentWait.riderReceives", "Rider Receives")}
-              </Text>
-              <Text style={[styles.feeRowValue, { color: MINT_DARK }]}>
+              </AppText>
+              <AppText style={[styles.feeRowValue, styles.feeRowValueMint]} bold>
                 {formatFare(riderReceives)}
-              </Text>
+              </AppText>
             </View>
             <View style={[styles.feeRow, styles.feeRowTotal]}>
-              <Text style={[styles.feeRowLabel, styles.feeRowLabelTotal]}>
+              <AppText style={[styles.feeRowLabel, styles.feeRowLabelTotal]} bold>
                 {t("orders.ridePaymentWait.companyKeeps", "Company Keeps")}
-              </Text>
-              <Text style={[styles.feeRowValue, styles.feeRowValueTotal]}>
+              </AppText>
+              <AppText style={[styles.feeRowValue, styles.feeRowValueTotal]} bold>
                 {formatFare(companyKeeps)}
-              </Text>
+              </AppText>
             </View>
           </View>
 
           <View style={styles.breakdownCard}>
-            <Text style={styles.breakdownTitle}>
+            <AppText style={styles.breakdownTitle} bold>
               {t("orders.ridePaymentWait.breakdownTitle", "Earnings breakdown")}
-            </Text>
+            </AppText>
             {earningBreakdown.lines.map((line, idx) => (
               <View
                 key={line.label}
                 style={[styles.feeRow, line.emphasis && styles.feeRowTotal]}
               >
-                <Text style={[styles.feeRowLabel, line.emphasis && styles.feeRowLabelTotal]}>
+                <AppText style={[styles.feeRowLabel, line.emphasis && styles.feeRowLabelTotal]} bold={line.emphasis}>
                   {line.label}
-                </Text>
-                <Text style={[styles.feeRowValue, line.emphasis && styles.feeRowValueTotal]}>
+                </AppText>
+                <AppText style={[styles.feeRowValue, line.emphasis && styles.feeRowValueTotal]} bold={line.emphasis || idx === 0}>
                   {line.emphasis || idx === 0
                     ? formatFare(line.amount)
                     : `+ ${formatFare(line.amount)}`}
-                </Text>
+                </AppText>
               </View>
             ))}
           </View>
+          </View>
 
-          {isCashRide ? (
+          <View style={styles.paymentSection}>
             <View style={styles.cashCard}>
-              <View style={styles.cashIconWrap}>
-                <Ionicons name="cash-outline" size={22} color={MINT_DARK} />
-              </View>
               <View style={styles.cashTextCol}>
-                <Text style={styles.cashTitle}>
-                  {t(
-                    "orders.ridePaymentWait.cashTitle",
-                    "Collect {{amount}} in cash",
-                    { amount: formatFare(fareAmount) }
-                  )}
-                </Text>
-                <Text style={styles.cashSub}>
-                  {t(
-                    "orders.ridePaymentWait.cashSub",
-                    "Company share (≈ {{company}}) will be deducted from your wallet; you keep {{rider}}.",
-                    {
-                      company: formatFare(companyKeeps),
-                      rider: formatFare(riderReceives),
-                    }
-                  )}
-                </Text>
-                <TouchableOpacity
-                  style={[
-                    styles.cashCta,
-                    (cashMutation.isPending || cashMutation.isSuccess) && styles.cashCtaDisabled,
-                  ]}
-                  onPress={() => cashMutation.mutate()}
-                  disabled={cashMutation.isPending || cashMutation.isSuccess}
-                  activeOpacity={0.85}
-                  accessibilityRole="button"
-                  accessibilityLabel={t(
-                    "orders.ridePaymentWait.cashCta",
-                    "Cash received"
-                  )}
-                >
-                  {cashMutation.isPending ? (
-                    <ActivityIndicator color="#fff" size="small" />
+                <AppText style={styles.cashTitle} bold>
+                  {isCashRide
+                    ? t(
+                        "orders.ridePaymentWait.cashTitle",
+                        "Collect {{amount}} in cash",
+                        { amount: formatFare(fareAmount) }
+                      )
+                    : t(
+                        "orders.ridePaymentWait.chooseTitle",
+                        "Collect {{amount}} — how is the passenger paying?",
+                        { amount: formatFare(fareAmount) }
+                      )}
+                </AppText>
+                <AppText style={styles.cashSub}>
+                  {isCashRide
+                    ? t(
+                        "orders.ridePaymentWait.cashSub",
+                        "Company share (≈ {{company}}) will be deducted from your wallet; you keep {{rider}}.",
+                        {
+                          company: formatFare(companyKeeps),
+                          rider: formatFare(riderReceives),
+                        }
+                      )
+                    : t(
+                        "orders.ridePaymentWait.chooseSub",
+                        "Cash if they hand you money, or Online to show a UPI QR."
+                      )}
+                </AppText>
+                <View style={styles.payBtnRow}>
+                  {isCashRide ? (
+                    <TouchableOpacity
+                      style={[styles.payMethodBtn, { flex: 1 }, cashMutation.isPending && styles.payMethodBtnDisabled]}
+                      onPress={openCashSheet}
+                      disabled={cashMutation.isPending}
+                      activeOpacity={0.85}
+                      accessibilityRole="button"
+                      accessibilityLabel={t("orders.ridePaymentWait.cashCta", "Cash received")}
+                    >
+                      <Ionicons name="cash-outline" size={18} color="#fff" />
+                      <AppText style={styles.payMethodBtnLabel} bold>
+                        {t("orders.ridePaymentWait.cashCta", "Cash received")}
+                      </AppText>
+                    </TouchableOpacity>
                   ) : (
                     <>
-                      <Ionicons name="checkmark-circle" size={18} color="#fff" />
-                      <Text style={styles.cashCtaLabel}>
-                        {t(
-                          "orders.ridePaymentWait.cashCta",
-                          "Cash received"
-                        )}
-                      </Text>
+                      <TouchableOpacity
+                        style={[styles.payMethodBtn, { flex: 1 }]}
+                        onPress={openCashSheet}
+                        activeOpacity={0.85}
+                        accessibilityRole="button"
+                        accessibilityLabel={t("orders.ridePaymentWait.chooseCash", "Cash")}
+                      >
+                        <Ionicons name="cash-outline" size={18} color="#fff" />
+                        <AppText style={styles.payMethodBtnLabel} bold>
+                          {t("orders.ridePaymentWait.chooseCash", "Cash")}
+                        </AppText>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.payMethodBtn, { flex: 1 }]}
+                        onPress={openOnlineSheet}
+                        activeOpacity={0.85}
+                        accessibilityRole="button"
+                        accessibilityLabel={t("orders.ridePaymentWait.chooseOnline", "Online")}
+                      >
+                        <Ionicons name="qr-code-outline" size={18} color="#fff" />
+                        <AppText style={styles.payMethodBtnLabel} bold>
+                          {t("orders.ridePaymentWait.chooseOnline", "Online")}
+                        </AppText>
+                      </TouchableOpacity>
                     </>
                   )}
-                </TouchableOpacity>
-              </View>
-            </View>
-          ) : !onlineChosen ? (
-            <View style={styles.cashCard}>
-              <View style={styles.cashTextCol}>
-                <Text style={styles.cashTitle}>
-                  {t(
-                    "orders.ridePaymentWait.chooseTitle",
-                    "Collect {{amount}} — how is the passenger paying?",
-                    { amount: formatFare(fareAmount) }
-                  )}
-                </Text>
-                <Text style={styles.cashSub}>
-                  {t(
-                    "orders.ridePaymentWait.chooseSub",
-                    "Cash if they hand you money, or Online to show a UPI QR."
-                  )}
-                </Text>
-                <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
-                  <TouchableOpacity
-                    style={[styles.cashCta, { flex: 1 }, selectingMethod && styles.cashCtaDisabled]}
-                    onPress={() => selectMutation.mutate("cash")}
-                    disabled={selectingMethod}
-                    activeOpacity={0.85}
-                    accessibilityRole="button"
-                    accessibilityLabel={t("orders.ridePaymentWait.chooseCash", "Cash")}
-                  >
-                    <Ionicons name="cash-outline" size={18} color="#fff" />
-                    <Text style={styles.cashCtaLabel}>
-                      {t("orders.ridePaymentWait.chooseCash", "Cash")}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.cashCta,
-                      { flex: 1, backgroundColor: MINT_DARK },
-                      selectingMethod && styles.cashCtaDisabled,
-                    ]}
-                    onPress={() => selectMutation.mutate("online")}
-                    disabled={selectingMethod}
-                    activeOpacity={0.85}
-                    accessibilityRole="button"
-                    accessibilityLabel={t("orders.ridePaymentWait.chooseOnline", "Online")}
-                  >
-                    {selectingMethod ? (
-                      <ActivityIndicator color="#fff" size="small" />
-                    ) : (
-                      <>
-                        <Ionicons name="qr-code-outline" size={18} color="#fff" />
-                        <Text style={styles.cashCtaLabel}>
-                          {t("orders.ridePaymentWait.chooseOnline", "Online")}
-                        </Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
                 </View>
               </View>
-            </View>
-          ) : (
-            <>
-              {qrInfo ? (
-                <View style={[styles.cashCard, { flexDirection: "column", alignItems: "center" }]}>
-                  <Text style={[styles.cashTitle, { textAlign: "center" }]}>
-                    {t(
-                      "orders.ridePaymentWait.qrTitle",
-                      "Ask the passenger to scan & pay {{amount}}",
-                      { amount: formatFare(qrInfo.amount) }
-                    )}
-                  </Text>
-                  <Image
-                    source={{ uri: qrInfo.qrImageUrl }}
-                    style={{ width: 220, height: 220, marginTop: 12 }}
-                    resizeMode="contain"
-                    accessibilityLabel="Payment QR code"
-                  />
-                  <Text style={[styles.cashSub, { marginTop: 8, textAlign: "center" }]}>
-                    {t(
-                      "orders.ridePaymentWait.qrSub",
-                      "This confirms automatically once they pay."
-                    )}
-                  </Text>
-                </View>
-              ) : (
-                <View style={styles.liveCard}>
-                  <View style={styles.liveIconWrap}>
-                    <ActivityIndicator color={MINT} size="small" />
-                  </View>
-                  <View style={styles.liveTextCol}>
-                    <Text style={styles.liveTitle}>
-                      {t("orders.ridePaymentWait.qrLoading", "Generating QR…")}
-                    </Text>
-                  </View>
-                </View>
-              )}
-              <View style={styles.liveCard}>
-                <View style={styles.liveIconWrap}>
-                  <ActivityIndicator color={MINT} size="small" />
-                </View>
-                <View style={styles.liveTextCol}>
-                  <Text style={styles.liveTitle}>
-                    {t("orders.ridePaymentWait.liveTitle", "Checking payment status…")}
-                  </Text>
-                  <Text style={styles.liveSub}>
-                    {t(
-                      "orders.ridePaymentWait.liveSub",
-                      "We're waiting for the passenger to pay online."
-                    )}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.refreshRow}>
-                <View style={styles.refreshLeft}>
-                  <Ionicons name="refresh-outline" size={14} color="#6B7280" />
-                  <Text style={styles.refreshText}>
-                    {t("orders.ridePaymentWait.autoRefresh", "Auto refresh every 15 sec")}
-                  </Text>
-                </View>
-                <Text style={styles.lastChecked}>
-                  {t("orders.ridePaymentWait.lastChecked", "Last checked: {{time}}", {
-                    time: formatClock(lastCheckedAt.toISOString()),
-                  })}
-                </Text>
-              </View>
-            </>
-          )}
-
-          <View style={styles.safeCard}>
-            <View style={styles.safeIconWrap}>
-              <Ionicons name="shield-checkmark" size={20} color={MINT_DARK} />
-            </View>
-            <View style={styles.safeTextCol}>
-              <Text style={styles.safeTitle}>
-                {isCashRide
-                  ? t(
-                      "orders.ridePaymentWait.cashSafeTitle",
-                      "Cash goes straight to you."
-                    )
-                  : t(
-                      "orders.ridePaymentWait.safeTitle",
-                      "Don't worry, your earnings are safe."
-                    )}
-              </Text>
-              <Text style={styles.safeSub}>
-                {isCashRide
-                  ? t(
-                      "orders.ridePaymentWait.cashSafeSub",
-                      "Only the platform's share is recovered from your wallet after you confirm."
-                    )
-                  : t(
-                      "orders.ridePaymentWait.safeSub",
-                      "Your earnings will be credited automatically once the passenger completes payment. No action is required from your side."
-                    )}
-              </Text>
             </View>
           </View>
-
-          <View style={styles.actionRow}>
-            <TouchableOpacity
-              style={styles.actionCard}
-              onPress={handleContactSupport}
-              activeOpacity={0.85}
-            >
-              <View style={styles.actionIconWrap}>
-                <Ionicons name="headset-outline" size={20} color={MINT_DARK} />
-              </View>
-              <View style={styles.actionTextCol}>
-                <Text style={styles.actionTitle}>
-                  {t("orders.ridePaymentWait.support", "Contact Support")}
-                </Text>
-                <Text style={styles.actionSub}>
-                  {t("orders.ridePaymentWait.supportSub", "Need help?")}
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.actionCard, !hasCallablePhone && styles.actionCardDisabled]}
-              onPress={handleCallCustomer}
-              disabled={!hasCallablePhone}
-              activeOpacity={0.85}
-            >
-              <View style={styles.actionIconWrap}>
-                <Ionicons name="call-outline" size={20} color={MINT_DARK} />
-              </View>
-              <View style={styles.actionTextCol}>
-                <Text style={styles.actionTitle}>
-                  {t("orders.ridePaymentWait.callCustomer", "Call Customer")}
-                </Text>
-                <Text style={styles.actionSub}>
-                  {hasCallablePhone
-                    ? t("orders.ridePaymentWait.callCustomerSub", "Ask about payment")
-                    : t("orders.ridePaymentWait.noPhone", "Phone unavailable")}
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
-            </TouchableOpacity>
-          </View>
-
-          {isFetching ? (
-            <View style={styles.fetchingRow}>
-              <ActivityIndicator size="small" color={MINT} />
-            </View>
-          ) : null}
         </View>
       </ScrollView>
+
+      <CustomerCallBottomSheet
+        visible={callSheetOpen}
+        onDismiss={() => setCallSheetOpen(false)}
+        customerName={customerDisplayName}
+        customerPhone={order?.customerPhone}
+        customerPrimaryPhone={order?.customerPrimaryPhone}
+        customerAlternatePhone={order?.customerAlternatePhone}
+        customerPhoneMasked={order?.customerPhoneMasked}
+        customerPrimaryPhoneMasked={order?.customerPrimaryPhoneMasked}
+        customerAlternatePhoneMasked={order?.customerAlternatePhoneMasked}
+      />
+
+      <RideCashCollectBottomSheet
+        visible={cashSheetOpen}
+        onDismiss={() => setCashSheetOpen(false)}
+        amountLabel={formatFare(fareAmount)}
+        loading={cashMutation.isPending}
+        onConfirm={handleCashCompleted}
+      />
+
+      <RideOnlineQrBottomSheet
+        visible={onlineSheetOpen}
+        onDismiss={() => setOnlineSheetOpen(false)}
+        amountLabel={formatFare(qrInfo?.amount ?? fareAmount)}
+        qrImageUrl={qrInfo?.qrImageUrl}
+        loading={selectMutation.isPending || qrMutation.isPending}
+        errorMessage={qrError}
+        onRetry={() => {
+          setQrError(null);
+          qrMutation.mutate();
+        }}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#F3F4F6" },
-  scroll: { flex: 1 },
-  scrollContent: { paddingBottom: 28 },
-  hero: {
-    height: Platform.OS === "ios" ? 200 : 188,
-    justifyContent: "flex-end",
-  },
-  heroImage: {
-    resizeMode: "cover",
-  },
-  heroSafe: {
-    flex: 1,
-    justifyContent: "space-between",
+  headerSafe: {
+    backgroundColor: "#fff",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E5E7EB",
     paddingHorizontal: 16,
-    paddingBottom: 20,
+    paddingBottom: 14,
   },
-  backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.18)",
+  headerTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    minHeight: 44,
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  headerIconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#ECFDF5",
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 4,
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
   },
-  heroTextWrap: { gap: 4 },
-  heroTitle: { fontSize: 28, fontWeight: "900", color: "#fff" },
-  heroSub: { fontSize: 14, color: "rgba(255,255,255,0.88)", fontWeight: "600" },
-  body: { paddingHorizontal: 16, marginTop: -18, gap: 12 },
+  headerIconBtnDisabled: {
+    backgroundColor: "#F3F4F6",
+    borderColor: "#E5E7EB",
+  },
+  headerTitleWrap: {
+    marginTop: 8,
+    gap: 4,
+  },
+  pageTitle: {
+    fontSize: 24,
+    fontFamily: LORA_BOLD,
+    color: "#111827",
+  },
+  pageSub: {
+    fontSize: 14,
+    fontFamily: LORA_SEMIBOLD,
+    color: "#6B7280",
+  },
+  scroll: { flex: 1 },
+  scrollContent: { paddingBottom: 28 },
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  body: { paddingHorizontal: 16, paddingTop: 14 },
+  summarySection: { gap: CARD_GAP },
+  paymentSection: { marginTop: PAYMENT_SECTION_GAP, gap: CARD_GAP },
   fareCard: {
     backgroundColor: "#fff",
     borderRadius: 18,
@@ -700,10 +824,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#FDE68A",
   },
-  pendingBadgeText: { fontSize: 10, fontWeight: "800", color: "#B45309" },
-  fareAmount: { fontSize: 32, fontWeight: "900", color: "#111827", marginTop: 4 },
-  fareLabel: { fontSize: 12, color: "#6B7280", fontWeight: "600" },
-  rideRef: { fontSize: 11, color: "#9CA3AF", fontWeight: "600", marginTop: 2 },
+  pendingBadgeText: { fontSize: 10, fontFamily: LORA_BOLD, color: "#B45309" },
+  fareAmount: { fontSize: 32, fontFamily: POPPINS_BOLD, color: "#111827", marginTop: 4 },
+  fareLabel: { fontSize: 12, fontFamily: LORA_SEMIBOLD, color: "#6B7280" },
+  rideRef: { fontSize: 11, fontFamily: LORA_SEMIBOLD, color: "#9CA3AF", marginTop: 2 },
   timelineCol: { width: 148, paddingTop: 2 },
   timelineRow: { flexDirection: "row", minHeight: 44 },
   timelineRailCol: { width: 18, alignItems: "center" },
@@ -733,8 +857,8 @@ const styles = StyleSheet.create({
     opacity: 0.45,
   },
   timelineTextCol: { flex: 1, paddingLeft: 6, paddingBottom: 8 },
-  timelineTitle: { fontSize: 11, fontWeight: "800" },
-  timelineSub: { fontSize: 9, color: "#9CA3AF", marginTop: 1, fontWeight: "500" },
+  timelineTitle: { fontSize: 11, fontFamily: LORA_BOLD },
+  timelineSub: { fontSize: 9, fontFamily: LORA_REGULAR, color: "#9CA3AF", marginTop: 1 },
   breakdownCard: {
     backgroundColor: "#fff",
     borderRadius: 16,
@@ -745,7 +869,7 @@ const styles = StyleSheet.create({
   },
   breakdownTitle: {
     fontSize: 12,
-    fontWeight: "800",
+    fontFamily: LORA_BOLD,
     color: "#6B7280",
     letterSpacing: 0.4,
     textTransform: "uppercase",
@@ -763,10 +887,11 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E5E7EB",
   },
-  feeRowLabel: { fontSize: 13, color: "#6B7280", fontWeight: "600", flex: 1, paddingRight: 8 },
-  feeRowLabelTotal: { fontSize: 14, color: "#111827", fontWeight: "800" },
-  feeRowValue: { fontSize: 13, color: "#111827", fontWeight: "700" },
-  feeRowValueTotal: { fontSize: 15, color: "#111827", fontWeight: "900" },
+  feeRowLabel: { fontSize: 13, fontFamily: LORA_SEMIBOLD, color: "#6B7280", flex: 1, paddingRight: 8 },
+  feeRowLabelTotal: { fontSize: 14, fontFamily: LORA_BOLD, color: "#111827" },
+  feeRowValue: { fontSize: 13, fontFamily: POPPINS_SEMIBOLD, color: "#111827" },
+  feeRowValueMint: { color: MINT_DARK },
+  feeRowValueTotal: { fontSize: 15, fontFamily: POPPINS_BOLD, color: "#111827" },
   liveCard: {
     flexDirection: "row",
     gap: 12,
@@ -810,23 +935,22 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   cashTextCol: { flex: 1, gap: 6 },
-  cashTitle: { fontSize: 15, fontWeight: "900", color: "#111827" },
-  cashSub: { fontSize: 12, color: "#4B5563", lineHeight: 17, fontWeight: "500" },
-  cashCta: {
+  cashTitle: { fontSize: 15, fontFamily: LORA_BOLD, color: "#111827" },
+  cashSub: { fontSize: 12, fontFamily: LORA_REGULAR, color: "#4B5563", lineHeight: 17 },
+  payMethodBtn: {
     marginTop: 6,
-    alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    backgroundColor: MINT,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-    minWidth: 168,
     justifyContent: "center",
+    gap: 8,
+    backgroundColor: BRAND_BTN,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
   },
-  cashCtaDisabled: { opacity: 0.65 },
-  cashCtaLabel: { color: "#fff", fontSize: 13, fontWeight: "800" },
+  payMethodBtnDisabled: { opacity: 0.65 },
+  payMethodBtnLabel: { color: "#fff", fontSize: 13, fontFamily: LORA_BOLD },
+  payBtnRow: { flexDirection: "row", gap: 10, marginTop: 12 },
   refreshRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -836,49 +960,4 @@ const styles = StyleSheet.create({
   refreshLeft: { flexDirection: "row", alignItems: "center", gap: 6 },
   refreshText: { fontSize: 11, color: "#6B7280", fontWeight: "600" },
   lastChecked: { fontSize: 11, color: "#9CA3AF", fontWeight: "500" },
-  safeCard: {
-    flexDirection: "row",
-    gap: 12,
-    backgroundColor: "#F0FDF4",
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: "#BBF7D0",
-  },
-  safeIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "#DCFCE7",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  safeTextCol: { flex: 1, gap: 4 },
-  safeTitle: { fontSize: 13, fontWeight: "800", color: "#14532D" },
-  safeSub: { fontSize: 12, color: "#166534", lineHeight: 17, fontWeight: "500" },
-  actionRow: { flexDirection: "row", gap: 10 },
-  actionCard: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "#fff",
-    borderRadius: 14,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-  },
-  actionCardDisabled: { opacity: 0.55 },
-  actionIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: "#ECFDF5",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  actionTextCol: { flex: 1, gap: 1 },
-  actionTitle: { fontSize: 12, fontWeight: "800", color: "#111827" },
-  actionSub: { fontSize: 10, color: "#6B7280", fontWeight: "500" },
-  fetchingRow: { alignItems: "center", paddingVertical: 4 },
 });

@@ -23,6 +23,18 @@ export function resolveRideQuotePayableAmount(
   return resolveRideQuoteSlabFare(quote);
 }
 
+/** List fare before a platform offer (adds back a billing discount if the quote already applied one). */
+export function resolveRideQuoteListFare(
+  quote: Pick<RideFareQuote, "finalFare" | "billing">
+): number {
+  const payable = resolveRideQuotePayableAmount(quote);
+  const discount = Number(quote.billing?.discountTotal ?? 0);
+  if (Number.isFinite(discount) && discount >= 1) {
+    return Math.round(payable + discount);
+  }
+  return payable;
+}
+
 export function buildRideQuoteBillingLines(quote: RideFareQuote): RideQuoteBillingLine[] {
   const billing = quote.billing;
   const lines: RideQuoteBillingLine[] = [];

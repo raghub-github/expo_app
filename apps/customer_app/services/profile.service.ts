@@ -7,6 +7,7 @@ import api from "./api";
 import { getConfig } from "@/config/env";
 import { STORAGE_KEYS } from "@/constants";
 import { getItem } from "@/utils/storage";
+import { useAuthStore } from "@/store/authStore";
 import type {
   HearingAccessibility,
   MobilityAccessibility,
@@ -114,6 +115,14 @@ export const profileService = {
   },
 
   async updateProfile(payload: UpdateProfilePayload): Promise<UserProfile> {
+    const token =
+      (await getItem(STORAGE_KEYS.AUTH_TOKEN)) ||
+      useAuthStore.getState().session?.accessToken ||
+      null;
+    if (!token) {
+      throw new Error("Not authenticated");
+    }
+
     profileUpdatePending = { ...profileUpdatePending, ...payload };
     if (profileUpdateInFlight) return profileUpdateInFlight;
 
@@ -123,7 +132,9 @@ export const profileService = {
         while (profileUpdatePending) {
           const batch = profileUpdatePending;
           profileUpdatePending = null;
-          const { data } = await api.patch<UserProfile>(PROFILE_PATH, batch);
+          const { data } = await api.patch<UserProfile>(PROFILE_PATH, batch, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
           last = data;
         }
         return last!;

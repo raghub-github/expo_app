@@ -4,6 +4,17 @@ import type { NormalizedOrderItem } from "../modules/orders/orderNormalizer.js";
 import type { FoodOrderLineItem, VegNonVegAggregate } from "./food-order-payload.js";
 
 /** Map DB / snapshot food_type or cart isVeg to orders_food.veg_non_veg enum. */
+export function foodTypeIsListedAsVeg(raw: string | null | undefined): boolean {
+  const t = String(raw ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[_-]+/g, " ");
+  if (!t || t === "NA" || t === "NONE" || t === "N A" || t === "OTHER") return true;
+  if (t.includes("NON") && t.includes("VEG")) return false;
+  if (t === "EGG" || t.includes("EGG")) return false;
+  return t.startsWith("VEG") || t === "VEGAN" || t.includes("VEGETARIAN");
+}
+
 export function foodTypeToVegNonVeg(
   raw: string | null | undefined,
   isVeg?: boolean | null

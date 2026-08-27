@@ -79,6 +79,7 @@ export type PlaceParcelOrderInput = {
   paymentMethod?: "cash" | "cod" | "online";
   couponCode?: string | null;
   selectedPlatformOfferId?: number | null;
+  forceNoAutoOffer?: boolean;
   offerSnapshot?: Record<string, unknown> | null;
   appliedOfferDiscount?: number | null;
   weightKg?: number | null;
@@ -239,6 +240,7 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
       pickupLng: input.pickupLng,
       couponCode,
       selectedPlatformOfferId: platformOfferId,
+      forceNoAutoOffer: input.forceNoAutoOffer === true,
       vehicleType: category,
       paymentMode: paymentMethod,
     });
@@ -246,6 +248,14 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
       grandTotal = Math.max(0, Math.round(Number(bill.billing.final_amount) * 100) / 100);
       backendOfferDiscount = Math.max(0, Math.round(Number(bill.billing.discount_total) * 100) / 100);
       billingSnapshot = bill.snapshot;
+      if (billingSnapshot && typeof billingSnapshot === "object") {
+        if (platformOfferId != null && platformOfferId > 0) {
+          billingSnapshot.parcel_platform_offer_id = platformOfferId;
+        }
+        if (input.forceNoAutoOffer === true && platformOfferId == null) {
+          billingSnapshot.parcel_force_no_auto_offer = true;
+        }
+      }
     }
   } catch {
     /* fail-open: keep the slab fare as the total if the billing pipeline errors */
@@ -287,7 +297,8 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
     receiverMobile,
     couponCode,
     platformOfferId,
-    appliedOfferDiscount,
+    forceNoAutoOffer: input.forceNoAutoOffer === true,
+    appliedOfferDiscount: backendOfferDiscount,
     packageDims,
     fareQuote: fareQuoteMeta,
   };
@@ -335,6 +346,7 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
           tipAmount: "0",
           itemTotal: String(fare),
           addonTotal: "0",
+          billingSnapshot: billingSnapshot ?? undefined,
           placedAt: now,
           paymentStatus: "pending",
           paymentMethod,

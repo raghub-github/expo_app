@@ -8,7 +8,7 @@ const nextConfig = {
   output: 'standalone',
   reactCompiler: true,
   // Phone / LAN testing hits the machine IP, not localhost — allow Next dev assets.
-  allowedDevOrigins: ['10.150.65.181', '127.0.0.1', 'localhost'],
+  allowedDevOrigins: ['10.124.175.181', '127.0.0.1', 'localhost'],
   transpilePackages: [
     '@gatimitra/kot-print',
     '@gatimitra/bill-print',
@@ -55,11 +55,19 @@ const nextConfig = {
       },
     ];
   },
-  webpack: (config, { dev }) => {
+  webpack: (config, { dev, isServer }) => {
     const onOneDrive = process.platform === 'win32' && __dirname.includes('OneDrive');
     if (dev || onOneDrive) {
       // Disk pack cache + OneDrive file locking causes ENOENT on *.pack.gz — use memory cache.
       config.cache = { type: 'memory' };
+    }
+    if (dev && !isServer) {
+      // Dev compiles layout slowly under OneDrive; default chunkLoadTimeout (~120s)
+      // surfaces as ChunkLoadError before the chunk is ready.
+      config.output = {
+        ...config.output,
+        chunkLoadTimeout: 300_000,
+      };
     }
     return config;
   },

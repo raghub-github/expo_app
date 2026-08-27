@@ -127,10 +127,10 @@ function healStaleLanApiUrl(url: string): string {
   const healKey = `${url}→${healed}`;
   if (!loggedLanHeals.has(healKey)) {
     loggedLanHeals.add(healKey);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[env] healed stale LAN API URL ${url} → ${healed} (set EXPO_PUBLIC_API_BASE_URL=${healed} to silence)`
-    );
+    // Clear stale runtime override so env/.env.local wins next time (no repeat heal spam).
+    if (runtimeApiBaseUrlOverride) {
+      runtimeApiBaseUrlOverride = null;
+    }
   }
   return healed;
 }

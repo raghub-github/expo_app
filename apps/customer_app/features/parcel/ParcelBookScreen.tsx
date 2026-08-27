@@ -50,7 +50,7 @@ import { parcelVehicleTotalEtaMins, hasNearbyParcelCaptainSupply, parcelCategory
 import { getParcelFareQuoteBatch } from "@/services/parcelQuote.service";
 import { useNearbyRideAvailability } from "@/hooks/useNearbyRideAvailability";
 import { useFeaturedOffersParcel } from "@/hooks/useFeaturedOffersParcel";
-import { mapFeaturedOffersToRideBookOffers } from "@/lib/ride-offers";
+import { estimateMatchingRidePlatformOffer, mapFeaturedOffersToRideBookOffers } from "@/lib/ride-offers";
 
 const HERO_MINT = GatiMitraColors.mintSoft;
 
@@ -180,6 +180,7 @@ export function ParcelBookScreen() {
   const {
     data: availability,
     isLoading: availabilityLoading,
+    isFetching: availabilityFetching,
     isError: availabilityError,
   } = useNearbyRideAvailability(
     pickupPoint?.latitude ?? null,
@@ -189,16 +190,17 @@ export function ParcelBookScreen() {
   );
   const nearbyRiders = availability?.riders ?? [];
 
-  const { data: parcelOffersData } = useFeaturedOffersParcel(
+  const { data: parcelOffersData, isSuccess: parcelOffersReady } = useFeaturedOffersParcel(
     {
       lat: pickupPoint?.latitude,
       lng: pickupPoint?.longitude,
     },
     !!pickupPoint
   );
+  const parcelFeaturedOffers = parcelOffersReady ? parcelOffersData?.offers ?? [] : [];
   const parcelBookOffers = useMemo(
-    () => mapFeaturedOffersToRideBookOffers(parcelOffersData?.offers ?? []),
-    [parcelOffersData?.offers]
+    () => mapFeaturedOffersToRideBookOffers(parcelFeaturedOffers),
+    [parcelFeaturedOffers]
   );
 
   const etaByVehicle = useMemo(() => {
@@ -291,7 +293,8 @@ export function ParcelBookScreen() {
   /** Same gate as ride-book: no book UI / searching until supply + fares allow it. */
   const noVehiclesAvailable = useMemo(() => {
     if (!pickupPoint || !dropPoint) return false;
-    if (!routeSettled || availabilityLoading) return false;
+    if (!routeSettled || availabilityLoading || availabilityFetching) return false;
+    if (nearbyRiders.length > 0) return false;
 
     // No nearby on-duty captains that can serve parcel categories (ride-parity).
     if (!availabilityError && allVehicles.length > 0 && !hasCaptainSupply) {
@@ -308,12 +311,14 @@ export function ParcelBookScreen() {
     dropPoint,
     routeSettled,
     availabilityLoading,
+    availabilityFetching,
     availabilityError,
     faresLoading,
     faresSettled,
     displayVehicles.length,
     allVehicles.length,
     hasCaptainSupply,
+    nearbyRiders.length,
   ]);
 
   const unavailableMessage = useMemo(() => {
@@ -324,7 +329,12 @@ export function ParcelBookScreen() {
   }, [fareTripKm]);
 
   useEffect(() => {
-    setServiceUnavailableVisible(noVehiclesAvailable);
+    if (!noVehiclesAvailable) {
+      setServiceUnavailableVisible(false);
+      return;
+    }
+    const t = setTimeout(() => setServiceUnavailableVisible(true), 800);
+    return () => clearTimeout(t);
   }, [noVehiclesAvailable]);
 
   useEffect(() => {
@@ -391,6 +401,12 @@ export function ParcelBookScreen() {
       setServiceUnavailableVisible(true);
       return;
     }
+    const offerPreview = estimateMatchingRidePlatformOffer({
+      fare,
+      vehicleId: selectedVehicle.id,
+      offers: parcelFeaturedOffers,
+    });
+    const displayPayable = offerPreview.discount >= 1 ? offerPreview.payable : fare;
     router.push({
       pathname: "/home/service/parcel-searching",
       params: {
@@ -398,6 +414,10 @@ export function ParcelBookScreen() {
         vehicleName: selectedVehicle.name,
         imageKey: selectedVehicle.imageKey,
         fare: String(fare),
+        quotedGrandTotal: String(displayPayable),
+        ...(offerPreview.offerId != null && offerPreview.discount >= 1
+          ? { selectedPlatformOfferId: String(offerPreview.offerId) }
+          : { forceNoAutoOffer: "true" }),
         ...(tripKm != null ? { tripKm: String(Math.round(tripKm * 100) / 100) } : {}),
         ...(selectedEtaMins != null ? { routeEtaMins: String(selectedEtaMins) } : {}),
         payAt,
@@ -410,6 +430,7 @@ export function ParcelBookScreen() {
     selectedVehicle,
     fareByVehicle,
     nearbyRiders,
+    parcelFeaturedOffers,
     tripKm,
     selectedEtaMins,
     payAt,
@@ -529,6 +550,16 @@ export function ParcelBookScreen() {
               const img =
                 vehicle.imageKey === "van" ? null : resolveRideImage(vehicle.imageKey);
               const fare = fareByVehicle[vehicle.id];
+              const offerPreview =
+                fare != null && fare > 0
+                  ? estimateMatchingRidePlatformOffer({
+                      fare,
+                      vehicleId: vehicle.id,
+                      offers: parcelFeaturedOffers,
+                    })
+                  : { discount: 0, payable: fare ?? 0 };
+              const offerMatches = offerPreview.discount >= 1 && fare != null;
+              const payable = offerMatches ? offerPreview.payable : fare;
               return (
                 <TouchableOpacity
                   key={vehicle.id}
@@ -556,15 +587,27 @@ export function ParcelBookScreen() {
                   <View style={styles.optionBody}>
                     <View style={styles.optionTopRow}>
                       <View style={styles.optionTextCol}>
-                        <AppText style={styles.optionTitle}>{vehicle.name}</AppText>
+                        <View style={styles.optionTitleRow}>
+                          <AppText style={styles.optionTitle}>{vehicle.name}</AppText>
+                          {offerMatches ? (
+                            <View style={styles.offBadge}>
+                              <AppText style={styles.offBadgeText}>₹{offerPreview.discount} OFF</AppText>
+                            </View>
+                          ) : null}
+                        </View>
                         <AppText style={styles.optionSub} numberOfLines={2}>
                           {vehicle.blurb}
                         </AppText>
                       </View>
                       {faresLoading && fare == null ? (
                         <ActivityIndicator size="small" color={GatiMitraColors.deepMintStart} />
-                      ) : fare != null && fare > 0 ? (
-                        <AppText style={styles.optionFare}>₹{fare}</AppText>
+                      ) : payable != null && payable > 0 ? (
+                        <View style={styles.optionFareCol}>
+                          {offerMatches && fare != null && fare > payable ? (
+                            <AppText style={styles.optionFareStrike}>₹{fare}</AppText>
+                          ) : null}
+                          <AppText style={styles.optionFare}>₹{payable}</AppText>
+                        </View>
                       ) : (
                         <AppText style={styles.optionFareMuted}>—</AppText>
                       )}
@@ -865,6 +908,26 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#0F172A",
   },
+  optionTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexWrap: "wrap",
+  },
+  offBadge: {
+    paddingHorizontal: 6,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: GatiMitraColors.primaryMint,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  offBadgeText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: 0.2,
+  },
   optionSub: {
     marginTop: 2,
     fontSize: 12,
@@ -891,6 +954,15 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "900",
     color: "#0F172A",
+  },
+  optionFareCol: {
+    alignItems: "flex-end",
+  },
+  optionFareStrike: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#94A3B8",
+    textDecorationLine: "line-through",
   },
   optionFareMuted: {
     fontSize: 18,
