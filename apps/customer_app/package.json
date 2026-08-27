@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "test": "node --import tsx --experimental-test-module-mocks --test lib/locationFixSelection.test.ts lib/lastKnownLocationCache.test.ts lib/reverseGeocodeCacheKey.test.ts",
     "start": "expo start --offline --go",
     "start:c": "node scripts/clear-metro-cache.js && expo start --offline --go --clear",
     "start:dev-client": "expo start --offline --dev-client",

@@ -20,7 +20,6 @@ import {
   getBestEffortPosition,
   getFastPosition,
   getDeviceLocationReadiness,
-  haversineMeters,
   withTimeout,
   type LocationPermissionStatus,
   type DeviceLocationReadiness,
@@ -34,6 +33,7 @@ import {
   type LocationFreshness,
   type PersistedDeviceLocation,
 } from "@/lib/lastKnownLocationCache";
+import { shouldReplaceFix } from "@/lib/locationFixSelection";
 
 export {
   LOCATION_SIGNIFICANT_MOVE_METERS,
@@ -138,31 +138,6 @@ type DeviceFix = {
   timestampMs: number;
   source: PersistedDeviceLocation["source"];
 };
-
-/** Impossible-jump guard (section 23): reject a large move implying an impossible speed. */
-const OUTLIER_MIN_JUMP_M = 500;
-const MAX_PLAUSIBLE_SPEED_MPS = 60; // ~216 km/h
-
-function isImplausibleJump(prev: DeviceFix | null, next: DeviceFix): boolean {
-  if (!prev || !prev.timestampMs) return false;
-  const dist = haversineMeters(prev.latitude, prev.longitude, next.latitude, next.longitude);
-  if (dist < OUTLIER_MIN_JUMP_M) return false;
-  const dtSec = Math.max(1, (next.timestampMs - prev.timestampMs) / 1000);
-  return dist / dtSec > MAX_PLAUSIBLE_SPEED_MPS;
-}
-
-/**
- * Accuracy-aware selection (section 22): never downgrade a good fix to a much worse one at
- * the same spot; always accept a genuine move; prefer the more accurate fix otherwise.
- */
-function shouldReplaceFix(current: DeviceFix | null, next: DeviceFix): boolean {
-  if (!current) return true;
-  if (isImplausibleJump(current, next)) return false;
-  if (coordsMovedSignificantly(current, next, 30)) return true; // real movement wins
-  if (current.accuracy == null) return true;
-  if (next.accuracy == null) return false; // don't drop known accuracy for unknown
-  return next.accuracy <= current.accuracy + 5;
-}
 
 function currentDeviceFix(): DeviceFix | null {
   const s = useLocationStore.getState();

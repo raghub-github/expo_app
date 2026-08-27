@@ -16,6 +16,9 @@ import {
   type EnrichedPlaceResult,
   type LocationSearchOptions,
 } from "@/services/locationSearch.service";
+import { reverseGeocodeKey, sameReverseGeocodeCell } from "@/lib/reverseGeocodeCacheKey";
+
+export { sameReverseGeocodeCell };
 
 export {
   resolveMapboxEnrichedPlace,
@@ -320,22 +323,6 @@ const REVERSE_PROVIDERS: ReverseProvider[] = [
 const REVERSE_GEOCODE_CACHE_TTL_MS = 30 * 60_000;
 const REVERSE_GEOCODE_CACHE_MAX = 200;
 const reverseGeocodeCache = new Map<string, { result: ReverseGeocodeResult; at: number }>();
-
-/** Round to 4 decimals (~11 m) so near-identical coordinates share one lookup. */
-function reverseGeocodeKey(longitude: number, latitude: number): string {
-  return `${latitude.toFixed(4)},${longitude.toFixed(4)}`;
-}
-
-/** True when two coordinates fall in the same reverse-geocode cache cell (~11 m). */
-export function sameReverseGeocodeCell(
-  a: { latitude: number; longitude: number } | null | undefined,
-  b: { latitude: number; longitude: number } | null | undefined
-): boolean {
-  if (!a || !b) return false;
-  return (
-    reverseGeocodeKey(a.longitude, a.latitude) === reverseGeocodeKey(b.longitude, b.latitude)
-  );
-}
 
 /**
  * Reverse geocode lng,lat through the provider chain (v6 address-first → Search Box → v5).
