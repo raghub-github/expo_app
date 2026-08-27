@@ -4,6 +4,9 @@ export type {
   DeviceLocationReadiness,
   LocationFix,
   BestEffortPositionOptions,
+  FastPosition,
+  FastPositionSource,
+  FastPositionOptions,
 } from "./types";
 
 export {
@@ -21,6 +24,8 @@ export {
 } from "./readiness";
 
 export { getBestEffortPosition } from "./bestEffortPosition";
+
+export { getFastPosition } from "./fastPosition";
 
 export {
   createForegroundLocationTracker,

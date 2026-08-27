@@ -8,7 +8,7 @@
   "files": ["src"],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/coords.test.ts",
+    "test": "node --import tsx --experimental-test-module-mocks --test src/coords.test.ts src/fastPosition.test.ts",
     "lint": "echo \"(expo-location-kit) no lint configured\""
   },
   "peerDependencies": {
