@@ -41,6 +41,48 @@ export type VerifyOtpPayload = {
   loginGeo?: RiderLoginGeoPayload;
 };
 
+/** Safe device context for the "Another Device Is Logged In" sheet (§6, §21). */
+export type RiderConflictExistingSession = {
+  sessionId: string;
+  deviceLabel: string;
+  platform: string;
+  lastActiveAt: string | null;
+};
+
+/** Returned by verifyOtp when the rider is already active on another device (§5). */
+export type RiderSessionConflict = {
+  conflict: true;
+  existingSession: RiderConflictExistingSession;
+  takeoverToken: string;
+};
+
+export type VerifyOtpResult = Session | RiderSessionConflict;
+
+export function isRiderSessionConflict(r: VerifyOtpResult): r is RiderSessionConflict {
+  return (r as RiderSessionConflict).conflict === true;
+}
+
+/** Parse a 409 SESSION_CONFLICT body into a typed conflict, or null when it isn't one. */
+function parseSessionConflict(
+  status: number,
+  dataJson: Record<string, unknown>,
+): RiderSessionConflict | null {
+  if (status !== 409 || dataJson.code !== "SESSION_CONFLICT") return null;
+  const token = typeof dataJson.takeoverToken === "string" ? dataJson.takeoverToken : "";
+  if (!token) return null;
+  const es = (dataJson.existingSession ?? {}) as Record<string, unknown>;
+  return {
+    conflict: true,
+    takeoverToken: token,
+    existingSession: {
+      sessionId: String(es.sessionId ?? ""),
+      deviceLabel: typeof es.deviceLabel === "string" && es.deviceLabel ? es.deviceLabel : "another device",
+      platform: typeof es.platform === "string" ? es.platform : "",
+      lastActiveAt: typeof es.lastActiveAt === "string" ? es.lastActiveAt : null,
+    },
+  };
+}
+
 export type RiderStatusResponse = {
   exists: boolean;
   riderId?: string;
@@ -231,7 +273,7 @@ export const riderAuthService = {
     // review-number bypass vs Supabase delivery. Never skip this for a review phone.
     const res = await fetchWithTimeout(otpUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-gm-rider-conflict-aware": "1" },
       body: JSON.stringify({ phoneE164: payload.phoneE164, appType: "rider" }),
       timeoutMs: 30000,
     });
@@ -270,8 +312,13 @@ export const riderAuthService = {
     throw new Error("Unexpected OTP response from server.");
   },
 
-  /** Verify OTP — same branching as merchant (backend requestId vs Supabase verify + exchange). */
-  async verifyOtp(payload: VerifyOtpPayload): Promise<Session> {
+  /**
+   * Verify OTP — same branching as merchant (backend requestId vs Supabase verify + exchange).
+   * OTP always succeeds first; if the rider is already active on another device the backend
+   * returns 409 SESSION_CONFLICT and this resolves to a RiderSessionConflict (not a session)
+   * so the caller can show the "Another Device Is Logged In" sheet (§1, §5).
+   */
+  async verifyOtp(payload: VerifyOtpPayload): Promise<VerifyOtpResult> {
     const backendRequestId = _lastBackendOtpRequestId;
 
     if (__DEV__) {
@@ -285,7 +332,7 @@ export const riderAuthService = {
     if (backendRequestId) {
       const res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/otp/verify`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-gm-rider-conflict-aware": "1" },
         body: JSON.stringify({
           requestId: backendRequestId,
           phoneE164: payload.phoneE164,
@@ -300,6 +347,13 @@ export const riderAuthService = {
         dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
       } catch {
         throw new Error("Invalid response from server while verifying OTP.");
+      }
+
+      // OTP succeeded but another device is active — surface the conflict (do NOT log in).
+      const backendConflict = parseSessionConflict(res.status, dataJson);
+      if (backendConflict) {
+        _lastBackendOtpRequestId = null;
+        return backendConflict;
       }
 
       if (!res.ok) {
@@ -347,7 +401,7 @@ export const riderAuthService = {
 
     const res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/supabase/exchange-rider`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-gm-rider-conflict-aware": "1" },
         body: JSON.stringify({
           accessToken: sbToken,
           phoneE164: payload.phoneE164,
@@ -363,6 +417,9 @@ export const riderAuthService = {
     } catch {
       throw new Error("Invalid response from server while exchanging Supabase token.");
     }
+    const supabaseConflict = parseSessionConflict(res.status, dataJson);
+    if (supabaseConflict) return supabaseConflict;
+
     throwIfExchangeFailed(res, dataJson, "Could not create rider session after OTP verify.");
     assertSession(dataJson);
 
@@ -378,7 +435,7 @@ export const riderAuthService = {
     phoneE164: string;
     deviceId: string;
     loginGeo?: RiderLoginGeoPayload;
-  }): Promise<Session> {
+  }): Promise<VerifyOtpResult> {
     const supabase = getSupabaseAuth();
     if (!supabase) {
       throw new Error("Supabase is not configured.");
@@ -389,7 +446,7 @@ export const riderAuthService = {
     }
     const res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/supabase/exchange-rider`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-gm-rider-conflict-aware": "1" },
       body: JSON.stringify({
         accessToken: data.session.access_token,
         phoneE164: payload.phoneE164,
@@ -405,9 +462,43 @@ export const riderAuthService = {
     } catch {
       throw new Error("Invalid response from server while exchanging Supabase token.");
     }
+    const retryConflict = parseSessionConflict(res.status, dataJson);
+    if (retryConflict) return retryConflict;
     throwIfExchangeFailed(res, dataJson, "Could not create rider session.");
     assertSession(dataJson);
     return dataJson;
+  },
+
+  /**
+   * Confirmed device takeover (§8, §22). Exchanges the short-lived pending-takeover token
+   * (from a SESSION_CONFLICT) for a real rider session after the rider taps "Mark Logout".
+   * The backend atomically revokes the other device and activates this one.
+   */
+  async takeoverDeviceSession(payload: {
+    takeoverToken: string;
+    deviceId: string;
+    loginGeo?: RiderLoginGeoPayload;
+  }): Promise<Session> {
+    const res = await fetchWithTimeout(`${apiBaseUrl()}${AUTH_PREFIX}/rider/session/takeover`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-gm-rider-conflict-aware": "1" },
+      body: JSON.stringify({
+        takeoverToken: payload.takeoverToken,
+        deviceId: payload.deviceId,
+        device: getRiderLoginDeviceMeta(),
+        loginGeo: payload.loginGeo,
+      }),
+    });
+    const raw = await res.text();
+    let dataJson: Record<string, unknown> = {};
+    try {
+      dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    } catch {
+      throw new Error("Invalid response from server during device switch.");
+    }
+    throwIfExchangeFailed(res, dataJson, "Could not switch devices. Please try again.");
+    assertSession(dataJson);
+    return dataJson as Session;
   },
 
   async getRiderStatus(accessToken: string): Promise<RiderStatusResponse> {

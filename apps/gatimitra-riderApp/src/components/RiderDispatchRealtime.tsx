@@ -12,6 +12,7 @@ import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { pingLocation } from "@/src/services/location/locationPinger";
 import { useRiderWsStore } from "@/src/stores/riderWsStore";
 import { useRiderToastStore } from "@/src/stores/riderToastStore";
+import { notifySessionRevoked } from "@/src/services/sessionEvents";
 import {
   mergeEtaUpdatedEvent,
   RIDER_ORDER_ETA_QUERY_KEY,
@@ -65,6 +66,7 @@ export function RiderDispatchRealtime() {
   const connectGenRef = useRef(0);
   const connectInFlightRef = useRef(false);
   const lastGatewayDownLogRef = useRef(0);
+  const deviceIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!getRiderAppConfig().wsEnabled) return;
@@ -89,6 +91,11 @@ export function RiderDispatchRealtime() {
 
     cancelledRef.current = false;
     const accessToken = session.accessToken;
+    void getOrCreateDeviceId()
+      .then((d) => {
+        deviceIdRef.current = d;
+      })
+      .catch(() => {});
 
     const clearHeartbeat = () => {
       if (heartbeatTimer.current) {
@@ -235,6 +242,21 @@ export function RiderDispatchRealtime() {
               message?: string;
             };
             if (payload.type === "pong") return;
+            // Instant single-device logout (§11, §27): the backend revoked THIS device after
+            // a takeover from another device. Only react when the revoked deviceId is ours —
+            // the new (active) device ignores its own event. The per-request 401 in
+            // plugins/auth.ts remains the guaranteed fallback for offline/next-request cases.
+            if (payload.type === "session.revoked") {
+              const revokedDeviceId = (payload as { deviceId?: string }).deviceId;
+              if (
+                revokedDeviceId &&
+                deviceIdRef.current &&
+                revokedDeviceId === deviceIdRef.current
+              ) {
+                notifySessionRevoked({ reason: "device_takeover" });
+              }
+              return;
+            }
             // P2 "wake + fresh ping": dispatch is about to offer an order to THIS rider and
             // wants a <2s-fresh location to price/route the pre-pickup leg. Capture GPS and
             // push it immediately; best-effort (dispatch falls back to the last point).

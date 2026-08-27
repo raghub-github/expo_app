@@ -11,12 +11,15 @@ export function SessionRevokedGate() {
     const unsubscribe = onSessionRevoked(async (payload) => {
       await setSession(null);
       router.replace("/(auth)/login");
+      const isTakeover = payload.reason === "device_takeover";
       Alert.alert(
-        "Session ended",
-        payload.reason === "invalid_token"
-          ? "Your login has expired or is no longer valid. Please sign in again."
-          : "Your session has ended. Please sign in again.",
-        [{ text: "OK" }],
+        isTakeover ? "Logged Out" : "Session ended",
+        isTakeover
+          ? "Your rider account was signed in on another device. Please log in again to continue."
+          : payload.reason === "invalid_token"
+            ? "Your login has expired or is no longer valid. Please sign in again."
+            : "Your session has ended. Please sign in again.",
+        [{ text: "Go to Login" }],
         { cancelable: false },
       );
     });
