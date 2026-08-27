@@ -24,6 +24,25 @@ export type LocationFix = {
   provider?: "gps" | "network" | "fused" | "unknown";
 };
 
+/** Where a fast/first-fix coordinate came from — surfaced for debug + accuracy-aware selection. */
+export type FastPositionSource = "last-known" | "balanced" | "low";
+
+export type FastPosition = ValidatedCoords & {
+  /** Which quick path produced this fix. */
+  source: FastPositionSource;
+  /** Fix timestamp (ms epoch); OS last-known carries its own, live fixes use now(). */
+  timestampMs: number;
+};
+
+export type FastPositionOptions = {
+  /** Accept an OS last-known fix no older than this (ms). Default 120000 (2 min). */
+  lastKnownMaxAgeMs?: number;
+  /** Timeout for the quick live fix when no last-known is available (ms). Default 4000. */
+  quickTimeoutMs?: number;
+  /** Optional debug logger. */
+  log?: (event: string, data: Record<string, unknown>) => void;
+};
+
 export type BestEffortPositionOptions = {
   /** Per-attempt timeout for getCurrentPositionAsync (ms). Default 14000. */
   attemptTimeoutMs?: number;

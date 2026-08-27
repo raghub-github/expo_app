@@ -18,13 +18,22 @@ import {
   LOCATION_SIGNIFICANT_MOVE_METERS,
   coordsMovedSignificantly,
   getBestEffortPosition,
+  getFastPosition,
   getDeviceLocationReadiness,
+  haversineMeters,
   withTimeout,
   type LocationPermissionStatus,
   type DeviceLocationReadiness,
 } from "@gatimitra/expo-location-kit";
 import { reverseGeocode, type ReverseGeocodeResult } from "@/services/location.service";
 import { isSmsBlockingLocationPrompts } from "@/store/smsPermissionStore";
+import {
+  loadLastKnownLocation,
+  saveLastKnownLocation,
+  classifyFreshness,
+  type LocationFreshness,
+  type PersistedDeviceLocation,
+} from "@/lib/lastKnownLocationCache";
 
 export {
   LOCATION_SIGNIFICANT_MOVE_METERS,
@@ -49,13 +58,6 @@ type PersistedSelectedLocation = {
   address: ReverseGeocodeResult;
   savedAt: number;
 };
-
-async function getDeviceCoords(): Promise<{ latitude: number; longitude: number }> {
-  const v = await getBestEffortPosition({
-    log: logLocation,
-  });
-  return { latitude: v.latitude, longitude: v.longitude };
-}
 
 async function geocodeOrFallback(longitude: number, latitude: number): Promise<ReverseGeocodeResult> {
   try {
@@ -111,12 +113,205 @@ export type SessionSelectionKind = "nearby" | "remote";
  */
 let locationFetchSeq = 0;
 
+/** Per-commit token: only the newest committed coordinate's async geocode is applied. */
+let addressCommitSeq = 0;
+
+/** Dev-only performance metrics: app-action → each location milestone (section 26). */
+type LocationMetric =
+  | "location_permission_ms"
+  | "last_known_location_ms"
+  | "first_location_fix_ms"
+  | "accurate_location_fix_ms"
+  | "reverse_geocode_ms"
+  | "total_location_ready_ms";
+
+function logMetric(metric: LocationMetric, ms: number): void {
+  if (!LOCATION_DEBUG) return;
+  // eslint-disable-next-line no-console
+  console.log(`[location:perf] ${metric} = ${Math.round(ms)}ms`);
+}
+
+type DeviceFix = {
+  latitude: number;
+  longitude: number;
+  accuracy: number | null;
+  timestampMs: number;
+  source: PersistedDeviceLocation["source"];
+};
+
+/** Impossible-jump guard (section 23): reject a large move implying an impossible speed. */
+const OUTLIER_MIN_JUMP_M = 500;
+const MAX_PLAUSIBLE_SPEED_MPS = 60; // ~216 km/h
+
+function isImplausibleJump(prev: DeviceFix | null, next: DeviceFix): boolean {
+  if (!prev || !prev.timestampMs) return false;
+  const dist = haversineMeters(prev.latitude, prev.longitude, next.latitude, next.longitude);
+  if (dist < OUTLIER_MIN_JUMP_M) return false;
+  const dtSec = Math.max(1, (next.timestampMs - prev.timestampMs) / 1000);
+  return dist / dtSec > MAX_PLAUSIBLE_SPEED_MPS;
+}
+
+/**
+ * Accuracy-aware selection (section 22): never downgrade a good fix to a much worse one at
+ * the same spot; always accept a genuine move; prefer the more accurate fix otherwise.
+ */
+function shouldReplaceFix(current: DeviceFix | null, next: DeviceFix): boolean {
+  if (!current) return true;
+  if (isImplausibleJump(current, next)) return false;
+  if (coordsMovedSignificantly(current, next, 30)) return true; // real movement wins
+  if (current.accuracy == null) return true;
+  if (next.accuracy == null) return false; // don't drop known accuracy for unknown
+  return next.accuracy <= current.accuracy + 5;
+}
+
+function currentDeviceFix(): DeviceFix | null {
+  const s = useLocationStore.getState();
+  if (!s.coords) return null;
+  return {
+    latitude: s.coords.latitude,
+    longitude: s.coords.longitude,
+    accuracy: s.coordsAccuracy,
+    timestampMs: s.coordsUpdatedAt ?? 0,
+    source: (s.coordsSource as PersistedDeviceLocation["source"]) ?? "last-known",
+  };
+}
+
+/**
+ * Commit device coordinates immediately — the coordinate is shown BEFORE reverse-geocoding
+ * (section 10) — persist them, then reverse-geocode asynchronously and fill the address when
+ * it resolves. A per-commit token guarantees only the latest coordinate's address is applied.
+ */
+function commitDeviceFix(fix: DeviceFix, opts: { refining: boolean }): void {
+  const addrToken = ++addressCommitSeq;
+  AsyncStorage.removeItem(STORAGE_KEY).catch(() => {}); // drop any stale selected pin
+  const prevAddress = useLocationStore.getState().address;
+  useLocationStore.setState({
+    coords: { latitude: fix.latitude, longitude: fix.longitude },
+    coordsAccuracy: fix.accuracy,
+    coordsUpdatedAt: fix.timestampMs,
+    coordsSource: fix.source,
+    locationFreshness: classifyFreshness(fix.timestampMs),
+    locationSource: "current",
+    sessionSelectionKind: null,
+    sessionBoundAddressId: null,
+    loading: false,
+    refining: opts.refining,
+    error: null,
+  });
+  saveLastKnownLocation({
+    lat: fix.latitude,
+    lon: fix.longitude,
+    accuracy: fix.accuracy,
+    updatedAt: fix.timestampMs,
+    source: fix.source,
+    address: prevAddress,
+  });
+  const geoT0 = Date.now();
+  void (async () => {
+    const address = await geocodeOrFallback(fix.longitude, fix.latitude);
+    if (addrToken !== addressCommitSeq) return; // superseded by a newer fix
+    if (useLocationStore.getState().locationSource === "selected") return;
+    logMetric("reverse_geocode_ms", Date.now() - geoT0);
+    useLocationStore.setState({ address });
+    saveLastKnownLocation({
+      lat: fix.latitude,
+      lon: fix.longitude,
+      accuracy: fix.accuracy,
+      updatedAt: fix.timestampMs,
+      source: fix.source,
+      address,
+    });
+  })();
+}
+
+/** In-flight progressive fetch — a second caller subscribes instead of starting another (section 15). */
+let deviceFetchInFlight: Promise<boolean> | null = null;
+
+/**
+ * Progressive device fetch (sections 4–5): FAST first fix → commit + async geocode →
+ * ACCURATE refine in the background → replace only when materially better and not an
+ * outlier. Returns true when any usable fix was committed. Deduplicated: concurrent
+ * callers share the one in-flight run rather than each starting a fresh GPS session.
+ */
+function progressiveDeviceFetch(): Promise<boolean> {
+  if (deviceFetchInFlight) return deviceFetchInFlight;
+  deviceFetchInFlight = runProgressiveDeviceFetch().finally(() => {
+    deviceFetchInFlight = null;
+  });
+  return deviceFetchInFlight;
+}
+
+async function runProgressiveDeviceFetch(): Promise<boolean> {
+  const seq = ++locationFetchSeq;
+  const t0 = Date.now();
+  let committedAny = false;
+
+  // Phase 1 — fast, usable fix (OS last-known → quick balanced).
+  try {
+    const fast = await getFastPosition({ log: logLocation });
+    if (seq !== locationFetchSeq) return committedAny;
+    logMetric(
+      fast.source === "last-known" ? "last_known_location_ms" : "first_location_fix_ms",
+      Date.now() - t0
+    );
+    commitDeviceFix(
+      {
+        latitude: fast.latitude,
+        longitude: fast.longitude,
+        accuracy: fast.accuracy,
+        timestampMs: fast.timestampMs,
+        source: fast.source,
+      },
+      { refining: true }
+    );
+    committedAny = true;
+  } catch {
+    // no fast fix — the accurate pass below may still succeed
+  }
+
+  // Phase 2 — accurate refine (background; never blocks the first paint).
+  useLocationStore.setState({ refining: true });
+  try {
+    const best = await getBestEffortPosition({ log: logLocation });
+    if (seq !== locationFetchSeq) return committedAny;
+    logMetric("accurate_location_fix_ms", Date.now() - t0);
+    const next: DeviceFix = {
+      latitude: best.latitude,
+      longitude: best.longitude,
+      accuracy: best.accuracy,
+      timestampMs: Date.now(),
+      source: "accurate",
+    };
+    if (shouldReplaceFix(currentDeviceFix(), next)) {
+      commitDeviceFix(next, { refining: false });
+    } else {
+      useLocationStore.setState({ refining: false });
+    }
+    committedAny = true;
+  } catch {
+    useLocationStore.setState({ refining: false });
+  }
+
+  if (committedAny) logMetric("total_location_ready_ms", Date.now() - t0);
+  return committedAny;
+}
+
 type LocationState = {
   permissionStatus: LocationPermissionStatus;
   loading: boolean;
   error: string | null;
   coords: { latitude: number; longitude: number } | null;
   address: ReverseGeocodeResult | null;
+  /** Accuracy (m) of the current device coordinate, when known. */
+  coordsAccuracy: number | null;
+  /** ms epoch the current coordinate was captured (freshness + outlier checks). */
+  coordsUpdatedAt: number | null;
+  /** How the current coordinate was obtained (last-known / balanced / accurate / watch). */
+  coordsSource: string | null;
+  /** Freshness bucket for the current coordinate (FRESH / RECENT / STALE / UNKNOWN). */
+  locationFreshness: LocationFreshness;
+  /** True while a higher-accuracy fix is being acquired in the background (header hint). */
+  refining: boolean;
   /** null until first fetch; then reflects last explicit source (GPS vs user selection). */
   locationSource: LocationSource | null;
   /**
@@ -163,6 +358,11 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   error: null,
   coords: null,
   address: null,
+  coordsAccuracy: null,
+  coordsUpdatedAt: null,
+  coordsSource: null,
+  locationFreshness: "UNKNOWN",
+  refining: false,
   locationSource: null,
   sessionSelectionKind: null,
   sessionBoundAddressId: null,
@@ -172,13 +372,36 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
   hydrate: async () => {
     if (get().locationHydrated) return;
-    // Clear any previously persisted selected pin so cold start cannot lock onto an old city.
+    // Clear any previously persisted *selected* pin so cold start cannot lock onto an old city.
     // Explicit selections are session-scoped; live GPS is the default for discovery.
     AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+    // Paint the last real *device* location instantly (sections 2/7) so the home header
+    // shows a location with no GPS wait. The cold-start reconcile + progressive fetch then
+    // refine or replace it. This is a cache, never presented as a guaranteed-current fix.
+    let cached: PersistedDeviceLocation | null = null;
+    try {
+      cached = await loadLastKnownLocation();
+    } catch {
+      cached = null;
+    }
+    const cur = get();
+    const canApplyCache =
+      cached != null && cur.coords == null && cur.locationSource !== "selected";
     set({
       locationHydrated: true,
       sessionSelectionKind: null,
       sessionBoundAddressId: null,
+      ...(canApplyCache && cached
+        ? {
+            coords: { latitude: cached.lat, longitude: cached.lon },
+            address: cached.address,
+            coordsAccuracy: cached.accuracy,
+            coordsUpdatedAt: cached.updatedAt,
+            coordsSource: cached.source,
+            locationFreshness: classifyFreshness(cached.updatedAt),
+            locationSource: "current",
+          }
+        : {}),
     });
   },
 
@@ -234,6 +457,10 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
   setAddressAndCoords: (address, coords, meta) => {
     const source: LocationSource = meta?.source ?? "selected";
+    // An explicit address set (user pick or reconcile pin) supersedes any in-flight
+    // progressive GPS fetch — bump the token so its background phases abort and never
+    // overwrite this newer, intentional choice.
+    locationFetchSeq++;
     const prev = get();
     const selectionKind =
       source === "selected"
@@ -300,22 +527,14 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
     set({ loading: true, error: null });
     try {
+      const permT0 = Date.now();
       const readiness = await getDeviceLocationReadiness();
+      logMetric("location_permission_ms", Date.now() - permT0);
       if (readiness.isReady) {
         set({ permissionStatus: "granted", showPermissionModal: false });
-        const seq = ++locationFetchSeq;
-        const { latitude, longitude } = await getDeviceCoords();
-        const address = await geocodeOrFallback(longitude, latitude);
-        if (seq !== locationFetchSeq) return; // superseded by a newer GPS fetch — don't overwrite
-        AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
-        set({
-          coords: { latitude, longitude },
-          address,
-          loading: false,
-          locationSource: "current",
-          sessionSelectionKind: null,
-          sessionBoundAddressId: null,
-        });
+        // Fast first fix → instant coords + async address → background accuracy refine.
+        const ok = await progressiveDeviceFetch();
+        if (!ok) set({ loading: false });
         return;
       }
       if (readiness.permissionStatus === "denied") {
@@ -361,22 +580,11 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     if (permissionStatus !== "granted") return;
     set({ loading: true, error: null });
     try {
-      const seq = ++locationFetchSeq;
-      const { latitude, longitude } = await getDeviceCoords();
-      const address = await geocodeOrFallback(longitude, latitude);
-      if (seq !== locationFetchSeq) return; // superseded by a newer GPS fetch — don't overwrite
-      AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
-      set({
-        coords: { latitude, longitude },
-        address,
-        loading: false,
-        locationSource: "current",
-        sessionSelectionKind: null,
-        sessionBoundAddressId: null,
-      });
+      const ok = await progressiveDeviceFetch();
+      if (!ok) set({ loading: false, error: "Location error" });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Location error";
-      set({ error: message, loading: false });
+      set({ error: message, loading: false, refining: false });
     }
   },
 }));

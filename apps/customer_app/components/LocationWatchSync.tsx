@@ -8,6 +8,7 @@ import {
   LOCATION_SIGNIFICANT_MOVE_METERS,
 } from "@/store/locationStore";
 import { reverseGeocode } from "@/services/location.service";
+import { saveLastKnownLocation } from "@/lib/lastKnownLocationCache";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import { syncActiveLocationFromStore } from "@/lib/syncActiveLocationFromStore";
 import { useActiveLocationReconcileReady } from "@/hooks/useActiveLocationReconcileReady";
@@ -51,11 +52,29 @@ export function LocationWatchSync() {
               latitude: loc.coords.latitude,
               longitude: loc.coords.longitude,
             };
+            const accuracy =
+              typeof loc.coords.accuracy === "number" ? loc.coords.accuracy : null;
+            const tsMs = typeof loc.timestamp === "number" ? loc.timestamp : Date.now();
             const prev = lastAppliedRef.current ?? useLocationStore.getState().coords;
             if (!coordsMovedSignificantly(prev, next)) return;
 
             lastAppliedRef.current = next;
-            useLocationStore.setState({ coords: next, locationSource: "current" });
+            useLocationStore.setState({
+              coords: next,
+              coordsAccuracy: accuracy,
+              coordsUpdatedAt: tsMs,
+              coordsSource: "watch",
+              locationFreshness: "FRESH",
+              locationSource: "current",
+            });
+            saveLastKnownLocation({
+              lat: next.latitude,
+              lon: next.longitude,
+              accuracy,
+              updatedAt: tsMs,
+              source: "watch",
+              address: useLocationStore.getState().address,
+            });
             void useLocationStore.getState().clearPersistedSelection();
 
             if (geocodeTimerRef.current) clearTimeout(geocodeTimerRef.current);
@@ -65,6 +84,14 @@ export function LocationWatchSync() {
                   const address = await reverseGeocode(next.longitude, next.latitude);
                   if (useLocationStore.getState().locationSource === "selected") return;
                   useLocationStore.setState({ address, locationSource: "current" });
+                  saveLastKnownLocation({
+                    lat: next.latitude,
+                    lon: next.longitude,
+                    accuracy: useLocationStore.getState().coordsAccuracy,
+                    updatedAt: useLocationStore.getState().coordsUpdatedAt ?? Date.now(),
+                    source: "watch",
+                    address,
+                  });
                   await syncActiveLocationFromStore();
                   void invalidateFoodHomeLocationQueries(queryClient);
                 } catch {

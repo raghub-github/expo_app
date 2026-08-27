@@ -40,6 +40,7 @@ import { useRiderOnlineCheckRealtime } from "@/hooks/useRiderOnlineCheckRealtime
 import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { useActiveOrdersHydration } from "@/hooks/useActiveOrdersHydration";
 import { LocationWatchSync } from "@/components/LocationWatchSync";
+import { LocationDebugOverlay } from "@/components/LocationDebugOverlay";
 import { CustomerPermissionSheetsHost } from "@/components/CustomerPermissionSheetsHost";
 import { ServiceBlockedGateHost } from "@/components/ServiceBlockedGateHost";
 import { CustomerAccountBlockedGateHost } from "@/components/CustomerAccountBlockedGateHost";
@@ -366,6 +367,7 @@ export default function RootLayout() {
                   <CustomerPermissionsRealtimeSync />
                   <LocationPermissionResumeCheck />
                   <LocationWatchSync />
+                  {__DEV__ ? <LocationDebugOverlay /> : null}
                   <LanguageSync />
                 </AppErrorBoundary>
                 <AuthNavigationGate />

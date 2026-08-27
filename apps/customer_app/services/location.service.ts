@@ -313,9 +313,34 @@ const REVERSE_PROVIDERS: ReverseProvider[] = [
 ];
 
 /**
+ * Coordinate → address memo (section 20). Nearby GPS points snap to one ~11 m grid
+ * cell so we don't re-hit Mapbox for tiny fluctuations while the user stays put. Only
+ * successful resolutions are cached; the "none" fallback is never stored.
+ */
+const REVERSE_GEOCODE_CACHE_TTL_MS = 30 * 60_000;
+const REVERSE_GEOCODE_CACHE_MAX = 200;
+const reverseGeocodeCache = new Map<string, { result: ReverseGeocodeResult; at: number }>();
+
+/** Round to 4 decimals (~11 m) so near-identical coordinates share one lookup. */
+function reverseGeocodeKey(longitude: number, latitude: number): string {
+  return `${latitude.toFixed(4)},${longitude.toFixed(4)}`;
+}
+
+/** True when two coordinates fall in the same reverse-geocode cache cell (~11 m). */
+export function sameReverseGeocodeCell(
+  a: { latitude: number; longitude: number } | null | undefined,
+  b: { latitude: number; longitude: number } | null | undefined
+): boolean {
+  if (!a || !b) return false;
+  return (
+    reverseGeocodeKey(a.longitude, a.latitude) === reverseGeocodeKey(b.longitude, b.latitude)
+  );
+}
+
+/**
  * Reverse geocode lng,lat through the provider chain (v6 address-first → Search Box → v5).
  * Tags the winning provider and a data-quality distance/approximate signal so callers can
- * surface — never mask — sparsely-mapped areas.
+ * surface — never mask — sparsely-mapped areas. Results are memoized per ~11 m cell.
  */
 export async function reverseGeocode(
   longitude: number,
@@ -323,11 +348,26 @@ export async function reverseGeocode(
 ): Promise<ReverseGeocodeResult> {
   ensureMapboxSearchReady();
 
+  const cacheKey = reverseGeocodeKey(longitude, latitude);
+  const cached = reverseGeocodeCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < REVERSE_GEOCODE_CACHE_TTL_MS) {
+    // Refresh LRU recency.
+    reverseGeocodeCache.delete(cacheKey);
+    reverseGeocodeCache.set(cacheKey, cached);
+    return cached.result;
+  }
+
   for (const provider of REVERSE_PROVIDERS) {
     try {
       const result = await provider.reverse(longitude, latitude);
       if (result && result.fullAddress) {
-        return { ...result, provider: provider.name };
+        const tagged = { ...result, provider: provider.name };
+        if (reverseGeocodeCache.size >= REVERSE_GEOCODE_CACHE_MAX) {
+          const oldest = reverseGeocodeCache.keys().next().value;
+          if (oldest !== undefined) reverseGeocodeCache.delete(oldest);
+        }
+        reverseGeocodeCache.set(cacheKey, { result: tagged, at: Date.now() });
+        return tagged;
       }
     } catch {
       // try next provider

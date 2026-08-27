@@ -11,6 +11,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import {
   getBestEffortPosition,
+  getFastPosition,
   getDeviceLocationReadiness,
 } from "@gatimitra/expo-location-kit";
 import { addressService, type ReconcileActiveLocationResult } from "@/services/address.service";
@@ -22,19 +23,21 @@ import { applyActiveLocationFromBackend } from "@/lib/applyActiveLocationFromBac
 import { promptCartIfLocationBrokeServiceability } from "@/lib/promptCartIfLocationBrokeServiceability";
 
 async function applyCurrentGpsPin(gps: { latitude: number; longitude: number }): Promise<void> {
+  // Coord-first (section 10): paint the coordinate immediately, then resolve the address
+  // asynchronously. Keep any current address we already show as the placeholder to avoid a
+  // flash back to the generic "Current location" label.
+  const store = useLocationStore.getState();
+  const placeholder =
+    store.locationSource === "current" && store.address
+      ? store.address
+      : { primary: "Current location", secondary: "", fullAddress: "Current location" };
+  store.setAddressAndCoords(placeholder, gps, { source: "current" });
   try {
     const geo = await reverseGeocode(gps.longitude, gps.latitude);
+    if (useLocationStore.getState().locationSource !== "current") return;
     useLocationStore.getState().setAddressAndCoords(geo, gps, { source: "current" });
   } catch {
-    useLocationStore.getState().setAddressAndCoords(
-      {
-        primary: "Current location",
-        secondary: "",
-        fullAddress: "Current location",
-      },
-      gps,
-      { source: "current" }
-    );
+    // keep the placeholder coordinate label
   }
 }
 
@@ -99,6 +102,23 @@ export async function reconcileActiveLocationFromGps(
     // Still hydrate from backend SoT when GPS is unavailable.
     await applyActiveLocationFromBackend(queryClient);
     return null;
+  }
+
+  // Instant paint: if nothing is shown yet (no cache / no backend pin — e.g. a signed-in
+  // first launch), grab a FAST fix and display it immediately while the accurate fix below
+  // resolves. Fire-and-forget; the accurate reconcile decision still owns serviceability.
+  if (
+    useLocationStore.getState().coords == null &&
+    useLocationStore.getState().locationSource !== "selected"
+  ) {
+    void getFastPosition({})
+      .then((f) => {
+        const s = useLocationStore.getState();
+        if (s.coords == null && s.locationSource !== "selected") {
+          void applyCurrentGpsPin({ latitude: f.latitude, longitude: f.longitude });
+        }
+      })
+      .catch(() => {});
   }
 
   let gps: { latitude: number; longitude: number };

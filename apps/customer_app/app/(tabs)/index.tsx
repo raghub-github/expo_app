@@ -47,6 +47,7 @@ export default function HomeScreen() {
   const locationHydrated = useLocationStore((s) => s.locationHydrated);
   const locationSource = useLocationStore((s) => s.locationSource);
   const coords = useLocationStore((s) => s.coords);
+  const refining = useLocationStore((s) => s.refining);
   const { address, requestPermissionAndFetch, refetchLocation } = useLocationStore();
   const reconcileReady = useActiveLocationReconcileReady();
 
@@ -98,7 +99,12 @@ export default function HomeScreen() {
     [address, coords]
   );
   const locationPrimary = resolveHomeLocationPrimary(address);
-  const locationSecondary = stateCandidate ?? "Turn on location for accurate address";
+  // Section 19: subtle "Updating location…" only while the first address is still resolving;
+  // once we have a real address/state, show that instead of a spinner.
+  const locationSecondary =
+    !address && refining
+      ? "Updating location…"
+      : (stateCandidate ?? "Turn on location for accurate address");
   const { data: weather, isFetching: weatherFetching } = useLocationWeather(weatherParams);
 
   const hasLiveWeather =
