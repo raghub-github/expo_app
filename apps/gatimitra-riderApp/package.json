@@ -3,6 +3,7 @@
   "main": "index.js",
   "version": "1.0.0",
   "scripts": {
+    "test": "node --import tsx --test src/services/auth/sessionConflict.test.ts",
     "start": "node scripts/expo-start.js",
     "start:clear": "node scripts/expo-start.js --clear",
     "start:clean": "node scripts/clear-metro-cache.js && node scripts/expo-start.js --clear",
