@@ -555,6 +555,7 @@ export default function OrdersScreen() {
   // NOT the query's refetch timer, so without this gate the 5s active-orders poll keeps
   // hitting the network (and waking the JS thread) while the user sits on Home/Food.
   const [isScreenFocused, setIsScreenFocused] = useState(true);
+  const lastOrdersFocusRefetchRef = useRef(0);
 
   const coords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
@@ -562,7 +563,7 @@ export default function OrdersScreen() {
   const { data: activeLocation } = useQuery({
     queryKey: ["active-location"],
     queryFn: () => addressService.getActiveLocation(),
-    staleTime: 0,
+    staleTime: 60_000,
   });
 
   const { data: addresses = [] } = useQuery({
@@ -593,9 +594,11 @@ export default function OrdersScreen() {
     useCallback(() => {
       setIsScreenFocused(true);
       seedMyOrdersQueryIfCached(queryClient);
-      // Always pull the latest on focus so History fills with just-cancelled /
-      // just-delivered orders instead of showing a stale (or empty) cached list.
-      void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      const now = Date.now();
+      if (now - lastOrdersFocusRefetchRef.current > 15_000) {
+        lastOrdersFocusRefetchRef.current = now;
+        void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      }
       return () => setIsScreenFocused(false);
     }, [queryClient])
   );
@@ -607,8 +610,8 @@ export default function OrdersScreen() {
       void writeCachedMyOrders(list);
       return list;
     },
-    staleTime: 5_000,
-    refetchInterval: tab === "active" && isScreenFocused ? 5_000 : false,
+    staleTime: 15_000,
+    refetchInterval: false,
     initialData: cachedOrders,
     initialDataUpdatedAt: getMyOrdersCachedAt(),
     placeholderData: (previous) => previous ?? cachedOrders,

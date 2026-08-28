@@ -14,7 +14,13 @@ import { priceWithGst } from "../rider/rider-subscription.service.js";
 import {
   applyCustomerSubscriptionToBilling,
   type SubscriptionBillingAdjustmentInput,
+  type SubscriptionDeliveryBenefit,
 } from "./customer-subscription-billing.js";
+import {
+  computeSubscriptionDeliveryBenefit,
+  isSubscriptionDeliveryBenefitEligible,
+  type SubscriptionDeliveryPricingContext,
+} from "./subscriptionDeliveryPricing.js";
 import type { BillingResult } from "../billing/types.js";
 
 export type CustomerBillingCycle = "weekly" | "monthly" | "yearly";
@@ -442,11 +448,16 @@ export function isFreeDeliveryEligible(args: {
 /** Billing / checkout-offers: membership benefits stack with one platform or store promo. */
 export type CustomerSubscriptionBillingContext = {
   hasSubscriptionBenefits: boolean;
+  /** Full waiver — distance within membership free-delivery radius. */
   freeDeliveryEligible: boolean;
+  /** Any membership delivery benefit (full or partial beyond radius). */
+  subscriptionDeliveryBenefitEligible: boolean;
   /** Unlocks SUBSCRIPTION_BENEFIT platform offers for active members and checkout opt-in. */
   effectiveSubscriptionOptIn: boolean;
   planId: number;
   planName: string;
+  freeDeliveryEnabled: boolean;
+  maxFreeDeliveryRadiusKm: number;
 };
 
 export async function resolveCustomerSubscriptionBillingContext(args: {
@@ -463,6 +474,12 @@ export async function resolveCustomerSubscriptionBillingContext(args: {
   });
   if (!benefits) return null;
 
+  const subscriptionDeliveryBenefitEligible = isSubscriptionDeliveryBenefitEligible({
+    freeDeliveryEnabled: benefits.freeDeliveryEnabled,
+    distanceKm: args.distanceKm,
+    isSelfPickup: args.isSelfPickup,
+  });
+
   return {
     hasSubscriptionBenefits: true,
     freeDeliveryEligible: isFreeDeliveryEligible({
@@ -471,10 +488,55 @@ export async function resolveCustomerSubscriptionBillingContext(args: {
       distanceKm: args.distanceKm,
       isSelfPickup: args.isSelfPickup,
     }),
+    subscriptionDeliveryBenefitEligible,
     effectiveSubscriptionOptIn: args.subscriptionOptIn === true || !benefits.isNewOptIn,
     planId: benefits.planId,
     planName: benefits.planName,
+    freeDeliveryEnabled: benefits.freeDeliveryEnabled,
+    maxFreeDeliveryRadiusKm: benefits.maxFreeDeliveryRadiusKm,
   };
+}
+
+/** Preview upsell savings for a plan the customer has not joined yet. */
+export async function resolveSubscriptionPlanDeliveryPreview(
+  subscriptionPlanId?: number | null
+): Promise<SubscriptionBenefitContext | null> {
+  if (subscriptionPlanId == null || subscriptionPlanId <= 0) return null;
+  const sql = getSql();
+  const plan = await loadCustomerPlanRow(sql, subscriptionPlanId);
+  if (!plan || !plan.is_active) return null;
+  return {
+    planId: plan.id,
+    planName: plan.name,
+    freeDeliveryEnabled: plan.free_delivery_enabled,
+    maxFreeDeliveryRadiusKm: Number(plan.max_free_delivery_radius_km ?? 7),
+    isNewOptIn: true,
+  };
+}
+
+export function computeSubscriptionDeliveryBenefitPreview(args: {
+  distanceKm: number | null;
+  coveredRadiusKm: number;
+  freeDeliveryEnabled: boolean;
+  fullDeliveryFeeInr: number;
+  isSelfPickup?: boolean;
+  deliveryPricing?: SubscriptionDeliveryPricingContext | null;
+}): SubscriptionDeliveryBenefit | null {
+  if (
+    !isSubscriptionDeliveryBenefitEligible({
+      freeDeliveryEnabled: args.freeDeliveryEnabled,
+      distanceKm: args.distanceKm,
+      isSelfPickup: args.isSelfPickup,
+    })
+  ) {
+    return null;
+  }
+  return computeSubscriptionDeliveryBenefit({
+    distanceKm: args.distanceKm!,
+    coveredRadiusKm: args.coveredRadiusKm,
+    fullDeliveryFeeInr: args.fullDeliveryFeeInr,
+    pricing: args.deliveryPricing,
+  });
 }
 
 async function loadCheckoutPrice(
@@ -517,6 +579,7 @@ export async function applyCustomerSubscriptionBillingAdjustments(args: {
   subscriptionOptIn?: boolean;
   subscriptionPlanId?: number;
   subscriptionBillingCycle?: CustomerBillingCycle;
+  deliveryPricing?: SubscriptionDeliveryPricingContext | null;
 }): Promise<BillingResult> {
   const benefits = await resolveCustomerSubscriptionBenefits({
     customerId: args.customerId,
@@ -525,13 +588,6 @@ export async function applyCustomerSubscriptionBillingAdjustments(args: {
     subscriptionBillingCycle: args.subscriptionBillingCycle,
   });
   if (!benefits) return args.billing;
-
-  const freeDeliveryEligible = isFreeDeliveryEligible({
-    freeDeliveryEnabled: benefits.freeDeliveryEnabled,
-    maxFreeDeliveryRadiusKm: benefits.maxFreeDeliveryRadiusKm,
-    distanceKm: args.distanceKm,
-    isSelfPickup: args.isSelfPickup,
-  });
 
   let subscriptionCharge: SubscriptionBillingAdjustmentInput["subscriptionCharge"] = null;
   if (
@@ -555,9 +611,10 @@ export async function applyCustomerSubscriptionBillingAdjustments(args: {
   return applyCustomerSubscriptionToBilling(args.billing, {
     planId: benefits.planId,
     planName: benefits.planName,
-    freeDeliveryEligible,
+    freeDeliveryEnabled: benefits.freeDeliveryEnabled,
     maxFreeDeliveryRadiusKm: benefits.maxFreeDeliveryRadiusKm,
     distanceKm: args.distanceKm,
+    deliveryPricing: args.deliveryPricing,
     subscriptionCharge,
   });
 }

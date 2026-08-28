@@ -18,6 +18,9 @@ import {
   rideParcelPromoPasses,
 } from "./rideParcelPromoApply.js";
 import { platformOfferCouponCodesMatch } from "./platformOfferCouponCode.js";
+import { platformOfferServiceMatches } from "./platformOfferServiceTypes.js";
+
+export { platformOfferServiceMatches } from "./platformOfferServiceTypes.js";
 
 function num(v: unknown): number {
   if (v == null) return 0;
@@ -180,12 +183,34 @@ function platformOfferMinCartMeetsThreshold(o: PlatformOfferRow, grossCart: numb
   return true;
 }
 
+/**
+ * Min-order base for a platform offer.
+ * FREE_DELIVERY uses full items+addons — item Boost/BOGO must not shrink the gate
+ * (cart ₹768 with deals still unlocks "min ₹298 free delivery").
+ * Cart %/flat offers keep promo-eligible-only base.
+ */
+export function platformOfferMinOrderBase(
+  o: PlatformOfferRow,
+  ctx: BillContext,
+  itemPlusAddon: number
+): number {
+  const full = Math.max(0, itemPlusAddon);
+  if (String(o.offerKind ?? "DISCOUNT").toUpperCase() === "FREE_DELIVERY") return full;
+  return cartPromoQualifyingSubtotal(ctx, itemPlusAddon);
+}
+
 /** Exported for checkout promo listing (same gates as apply phase). */
-export function platformOfferEligible(ctx: BillContext, o: PlatformOfferRow, grossCart: number): boolean {
+export function platformOfferEligible(
+  ctx: BillContext,
+  o: PlatformOfferRow,
+  /** Full items+addons; min-order base is derived per offer kind. */
+  itemPlusAddon: number
+): boolean {
+  if (!platformOfferServiceMatches(ctx.serviceType, o.serviceType)) return false;
   if (!nowInWindow(new Date(), o.startsAt, o.endsAt)) return false;
   if (!platformOfferMerchantScopeMatches(ctx, o)) return false;
   if (!platformOfferGeoMatches(ctx, o)) return false;
-  if (!platformOfferMinCartMeetsThreshold(o, grossCart)) return false;
+  if (!platformOfferMinCartMeetsThreshold(o, platformOfferMinOrderBase(o, ctx, itemPlusAddon))) return false;
   const cond = (o.conditions ?? {}) as Record<string, unknown>;
   if (!platformOfferConditionsPass(cond, ctx)) return false;
   // First Ride Only — independent of per-user usage limits; server-side only.
@@ -207,6 +232,88 @@ export function platformOfferEligible(ctx: BillContext, o: PlatformOfferRow, gro
 
 function kindUpper(o: PlatformOfferRow): string {
   return String(o.offerKind ?? "DISCOUNT").toUpperCase();
+}
+
+/**
+ * Normalize admin/API delivery discount types to engine tokens.
+ * Super Admin historically saved `PERCENTAGE`; engine expects `PERCENT`.
+ * FREE_DELIVERY with missing type defaults to FULL_WAIVE.
+ */
+export function normalizeDeliveryDiscountType(o: PlatformOfferRow): string {
+  const raw = (o.deliveryDiscountType ?? "").toUpperCase().trim();
+  if (raw === "PERCENTAGE") return "PERCENT";
+  if (raw === "PERCENT" || raw === "FIXED" || raw === "FULL_WAIVE") return raw;
+  if (kindUpper(o) === "FREE_DELIVERY") return "FULL_WAIVE";
+  return raw;
+}
+
+/**
+ * Delivery fee cut (₹) for a platform delivery / FREE_DELIVERY offer.
+ * Never exceeds remaining delivery fee; respects max_discount_amount as a cap.
+ */
+export function computePlatformDeliveryCut(o: PlatformOfferRow, deliveryRem: number): number {
+  if (deliveryRem <= 0) return 0;
+  let dd = normalizeDeliveryDiscountType(o);
+  const cap = num(o.maxDiscountAmount);
+  // FREE_DELIVERY with PERCENT/FIXED but missing/zero value → treat as full waive
+  // (admin historically saved PERCENTAGE without a value; that produced ₹0 cut).
+  if (
+    kindUpper(o) === "FREE_DELIVERY" &&
+    (dd === "PERCENT" || dd === "FIXED") &&
+    num(o.deliveryDiscountValue) <= 0
+  ) {
+    dd = "FULL_WAIVE";
+  }
+  let cut = 0;
+  if (dd === "FULL_WAIVE") {
+    cut = deliveryRem;
+  } else if (dd === "PERCENT") {
+    const v = num(o.deliveryDiscountValue);
+    if (v <= 0) return 0;
+    cut = (deliveryRem * v) / 100;
+  } else if (dd === "FIXED") {
+    const v = num(o.deliveryDiscountValue);
+    if (v <= 0) return 0;
+    cut = Math.min(deliveryRem, v);
+  } else {
+    return 0;
+  }
+  if (cap > 0) cut = Math.min(cut, cap);
+  return Math.max(0, Math.min(cut, deliveryRem));
+}
+
+/**
+ * Whether pickPlatformOfferWinner may auto-select this offer (no explicit selection).
+ * - Ride/Parcel (parsed promo_config): default ON unless auto_apply === false
+ * - Food with explicit auto_apply false: OFF
+ * - Food with explicit auto_apply true: ON
+ * - Food with empty promo_config: ON (legacy partner / non-customer apply paths)
+ *
+ * Customer Food checkout exclusive auto-pick uses {@link platformOfferCheckoutAutoApply}
+ * (opt-in only) — do not confuse the two.
+ */
+export function platformOfferWantsAutoApply(o: PlatformOfferRow): boolean {
+  const cfg = getOfferPromoConfig(o);
+  if (cfg) return cfg.auto_apply !== false;
+  const raw = o.promoConfig;
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && "auto_apply" in raw) {
+    return (raw as { auto_apply?: unknown }).auto_apply === true;
+  }
+  return true;
+}
+
+/**
+ * Customer checkout exclusive: Food platform offers auto-apply only when
+ * promo_config.auto_apply === true. Manual apply still works via selectedPlatformOfferId.
+ */
+export function platformOfferCheckoutAutoApply(o: PlatformOfferRow): boolean {
+  const cfg = getOfferPromoConfig(o);
+  if (cfg) return cfg.auto_apply !== false;
+  const raw = o.promoConfig;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return (raw as Record<string, unknown>).auto_apply === true;
+  }
+  return false;
 }
 
 /** Active membership or checkout opt-in — required for SUBSCRIPTION_BENEFIT platform offers. */
@@ -315,23 +422,9 @@ export function estimateOfferDiscountValue(o: PlatformOfferRow, ctx: BillContext
   const special = computeRideParcelPromoDiscount(ctx, o, specialBase);
   if (special != null) return Math.max(0, Math.min(special, specialBase));
 
-  // FREE_DELIVERY: based on delivery_discount_type
+  // FREE_DELIVERY — same math as applyPlatformDeliveryOffers (PERCENTAGE ≡ PERCENT)
   if (k === "FREE_DELIVERY") {
-    const dd = (o.deliveryDiscountType ?? "").toUpperCase().trim();
-    if (dd === "FULL_WAIVE") return Math.max(0, rem.delivery);
-    if (dd === "PERCENT") {
-      const v = num(o.deliveryDiscountValue);
-      if (v <= 0) return 0;
-      let amt = (rem.delivery * v) / 100;
-      if (cap > 0) amt = Math.min(amt, cap);
-      return Math.max(0, Math.min(amt, rem.delivery));
-    }
-    if (dd === "FIXED") {
-      const v = num(o.deliveryDiscountValue);
-      if (v <= 0) return 0;
-      return Math.min(v, rem.delivery);
-    }
-    return 0;
+    return computePlatformDeliveryCut(o, rem.delivery);
   }
 
   // Fee-bucket offers: applied to a specific fee
@@ -363,11 +456,12 @@ export function estimateOfferDiscountValue(o: PlatformOfferRow, ctx: BillContext
 export function resolveSelectedPlatformOfferForCheckout(
   ctx: BillContext,
   dataset: BillingDataset,
-  grossCart: number,
+  /** Full items+addons (not promo-eligible-only). */
+  itemPlusAddon: number,
   offerId: number,
   kindFilter?: (o: PlatformOfferRow) => boolean
 ): PlatformOfferRow | null {
-  const eligible = listEligiblePlatformOffersForCheckout(ctx, dataset, grossCart);
+  const eligible = listEligiblePlatformOffersForCheckout(ctx, dataset, itemPlusAddon);
   let offer = eligible.find((o) => o.id === offerId) ?? null;
 
   if (!offer) {
@@ -376,7 +470,7 @@ export function resolveSelectedPlatformOfferForCheckout(
     const k = kindUpper(candidate);
     if (platformOfferConflictsWithSubscriptionFreeDelivery(ctx, candidate)) return null;
     if (k === "SUBSCRIPTION_BENEFIT" && !customerHasSubscriptionOfferAccess(ctx)) return null;
-    if (!platformOfferEligible(ctx, candidate, grossCart)) return null;
+    if (!platformOfferEligible(ctx, candidate, itemPlusAddon)) return null;
     offer = candidate;
   }
 
@@ -393,25 +487,25 @@ export function resolveSelectedPlatformOfferForCheckout(
 function pickPlatformOfferWinner(
   ctx: BillContext,
   dataset: BillingDataset,
-  grossCart: number,
+  /** Full items+addons (not promo-eligible-only). */
+  itemPlusAddon: number,
   kindFilter: (o: PlatformOfferRow) => boolean,
   rem?: FeeRem,
 ): PlatformOfferRow | null {
   // User explicitly removed the applied offer — skip auto-pick.
   if (ctx.forceNoAutoOffer === true && ctx.selectedPlatformOfferId == null) return null;
 
-  const eligible = listEligiblePlatformOffersForCheckout(ctx, dataset, grossCart).filter(kindFilter);
+  const eligible = listEligiblePlatformOffersForCheckout(ctx, dataset, itemPlusAddon).filter(kindFilter);
 
   const selectedId = ctx.selectedPlatformOfferId;
   if (selectedId != null) {
-    return resolveSelectedPlatformOfferForCheckout(ctx, dataset, grossCart, selectedId, kindFilter);
+    return resolveSelectedPlatformOfferForCheckout(ctx, dataset, itemPlusAddon, selectedId, kindFilter);
   }
 
   // Manual-apply-only promos: skip auto-pick unless coupon matches.
   const enteredCode = (ctx.couponCode ?? "").trim();
   const autoEligible = eligible.filter((o) => {
-    const cfg = getOfferPromoConfig(o);
-    if (cfg && cfg.auto_apply === false) {
+    if (!platformOfferWantsAutoApply(o)) {
       if (!enteredCode) return false;
       return platformOfferCouponCodesMatch(o.couponCode, enteredCode);
     }
@@ -442,13 +536,13 @@ function pickPlatformOfferWinner(
 export function listEligiblePlatformOffersForCheckout(
   ctx: BillContext,
   dataset: BillingDataset,
-  grossCart: number
+  /** Full items+addons; each offer derives its own min-order base. */
+  itemPlusAddon: number
 ): PlatformOfferRow[] {
   const now = new Date();
-  const st = ctx.serviceType || "FOOD";
   const offers = sortedOffers(
     dataset.platformOffers.filter(
-      (o) => (o.serviceType === st || o.serviceType === "ALL") && isCustomerCheckoutOffer(o)
+      (o) => platformOfferServiceMatches(ctx.serviceType, o.serviceType) && isCustomerCheckoutOffer(o)
     )
   );
   const out: PlatformOfferRow[] = [];
@@ -460,7 +554,7 @@ export function listEligiblePlatformOffersForCheckout(
     if (platformOfferConflictsWithSubscriptionFreeDelivery(ctx, o)) continue;
     const k = kindUpper(o);
     if (k === "SUBSCRIPTION_BENEFIT" && !customerHasSubscriptionOfferAccess(ctx)) continue;
-    if (!platformOfferEligible(ctx, o, grossCart)) continue;
+    if (!platformOfferEligible(ctx, o, itemPlusAddon)) continue;
     out.push(o);
   }
   return out;
@@ -525,10 +619,8 @@ export function applyPlatformCartOffers(
   itemPlusAddon: number,
   rem: FeeRem
 ): void {
-  // Min-order + % base for cart promos: only discount-eligible lines (fallback: full cart).
-  const grossCart = cartPromoQualifyingSubtotal(ctx, itemPlusAddon);
-
-  const winner = pickPlatformOfferWinner(ctx, dataset, grossCart, (o) => {
+  // Pass full items+addons — pickPlatformOfferWinner / platformOfferEligible derive min-order base per kind.
+  const winner = pickPlatformOfferWinner(ctx, dataset, itemPlusAddon, (o) => {
     const k = kindUpper(o);
     if (k === "FREE_DELIVERY") return false;
     if (FEE_KIND_TO_REM_KEY[k]) return false;
@@ -622,44 +714,41 @@ export function applyPlatformDeliveryOffers(
   itemPlusAddon: number,
   rem: FeeRem
 ): void {
-  const grossCart = cartPromoQualifyingSubtotal(ctx, itemPlusAddon);
-
-  const winner = pickPlatformOfferWinner(ctx, dataset, grossCart, (o) => {
+  const winner = pickPlatformOfferWinner(ctx, dataset, itemPlusAddon, (o) => {
     const k = kindUpper(o);
-    const dd = (o.deliveryDiscountType ?? "").toUpperCase().trim();
-    if (k === "FREE_DELIVERY") return Boolean(dd);
-    return Boolean(dd);
+    if (k === "FREE_DELIVERY") return true;
+    return Boolean((o.deliveryDiscountType ?? "").toString().trim());
   }, rem);
 
   if (!winner) return;
-  const dd = (winner.deliveryDiscountType ?? "").toUpperCase().trim();
-  let cut = 0;
-  if (dd === "FULL_WAIVE" && rem.delivery > 0) {
+  let cut = computePlatformDeliveryCut(winner, rem.delivery);
+  // Last-resort: FREE_DELIVERY with a positive delivery fee must never silently no-op.
+  if (cut <= 0 && kindUpper(winner) === "FREE_DELIVERY" && rem.delivery > 0) {
     cut = rem.delivery;
-    rem.delivery = 0;
-  } else if (dd === "PERCENT" && rem.delivery > 0 && num(winner.deliveryDiscountValue) > 0) {
-    cut = (rem.delivery * num(winner.deliveryDiscountValue)) / 100;
-    rem.delivery = Math.max(0, rem.delivery - cut);
-  } else if (dd === "FIXED" && rem.delivery > 0 && num(winner.deliveryDiscountValue) > 0) {
-    cut = Math.min(rem.delivery, num(winner.deliveryDiscountValue));
-    rem.delivery -= cut;
   }
   if (cut <= 0) return;
+  rem.delivery = Math.max(0, rem.delivery - cut);
   state.discountTotal += cut;
-  const label = winner.name?.trim()
-    ? `Delivery discount · ${winner.name}`
-    : `Delivery discount (#${winner.id})`;
+  const k = kindUpper(winner);
+  const offerName = winner.name?.trim();
+  const label =
+    k === "FREE_DELIVERY"
+      ? offerName || "Free Delivery"
+      : offerName
+        ? `Delivery discount · ${offerName}`
+        : `Delivery discount (#${winner.id})`;
   const line: AppliedLine = {
     kind: "discount",
     label,
     amount: cut,
-    hidden: winner.isHidden,
+    // Always surface on checkout so "Applied" / Bill Summary reflect the real cut.
+    hidden: false,
     meta: {
       platformOfferId: winner.id,
       fundingMode: winner.fundingMode,
       platformContribution: (cut * winner.platformSharePct) / 100,
       merchantContribution: (cut * winner.merchantSharePct) / 100,
-      offerKind: kindUpper(winner),
+      offerKind: k,
       consumeMode: winner.consumeMode ?? "ON_PLACED",
     },
   };
@@ -672,7 +761,7 @@ export function applyPlatformDeliveryOffers(
       fundingMode: winner.fundingMode,
       platformContribution: (cut * winner.platformSharePct) / 100,
       merchantContribution: (cut * winner.merchantSharePct) / 100,
-      offerKind: kindUpper(winner),
+      offerKind: k,
       consumeMode: winner.consumeMode ?? "ON_PLACED",
     },
   });
@@ -686,9 +775,7 @@ export function applyPlatformFeeBucketOffers(
   itemPlusAddon: number,
   rem: FeeRem
 ): void {
-  const grossCart = cartPromoQualifyingSubtotal(ctx, itemPlusAddon);
-
-  const winner = pickPlatformOfferWinner(ctx, dataset, grossCart, (o) => {
+  const winner = pickPlatformOfferWinner(ctx, dataset, itemPlusAddon, (o) => {
     const k = kindUpper(o);
     const remKey = FEE_KIND_TO_REM_KEY[k];
     if (!remKey) return false;

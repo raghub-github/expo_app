@@ -11,12 +11,13 @@
  */
 
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useLocationStore } from "@/store/locationStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
 import { useAddresses, useActiveLocation } from "@/hooks/useAddresses";
 import { resolveMerchantListingCoords } from "@/lib/resolveMerchantListingCoords";
 import { checkPreventServices } from "@/services/preventServices.service";
+import { pollIntervalWithBackoff } from "@/lib/query-poll-backoff";
 
 export const PREVENT_CHECK_QUERY_KEY = ["prevent", "check"] as const;
 
@@ -88,10 +89,12 @@ export function usePreventServicesAtPin() {
       return checkPreventServices({ lat, lng });
     },
     enabled,
-    staleTime: 0,
-    refetchInterval: 12_000,
-    refetchOnWindowFocus: true,
-    refetchOnMount: "always",
+    staleTime: 45_000,
+    refetchInterval: (query) => pollIntervalWithBackoff(query, 60_000),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: true,
+    placeholderData: keepPreviousData,
   });
 
   const blockedServices = query.data?.blockedServices ?? [];

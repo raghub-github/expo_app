@@ -1,5 +1,14 @@
 import type { RuleRow, TaxConfigRow } from "./types.js";
 
+/**
+ * GROCERY checkout reuses FOOD pricing/charge/tax rules (GST slabs, delivery/platform
+ * fees, packaging). Platform offers and coupons stay GROCERY-scoped at the caller.
+ */
+export function mapBillingServiceTypeForChargesAndTaxes(serviceType: string): string {
+  const st = serviceType.trim().toUpperCase();
+  return st === "GROCERY" ? "FOOD" : st;
+}
+
 /** Charge types that should apply at most once per service line in the pipeline. */
 export const SINGLETON_CHARGE_RULE_TYPES = new Set([
   "PLATFORM_FEE",
@@ -56,14 +65,16 @@ export function preferServiceSpecificTaxConfigs(
 }
 
 export function narrowBillingRulesForService(rules: RuleRow[], serviceType: string): RuleRow[] {
-  const scoped = rules.filter((r) => r.serviceType === serviceType || r.serviceType === "ALL");
-  return dedupeSingletonChargeRules(preferServiceSpecificBillingRules(scoped, serviceType));
+  const chargeTaxSt = mapBillingServiceTypeForChargesAndTaxes(serviceType);
+  const scoped = rules.filter((r) => r.serviceType === chargeTaxSt || r.serviceType === "ALL");
+  return dedupeSingletonChargeRules(preferServiceSpecificBillingRules(scoped, chargeTaxSt));
 }
 
 export function narrowTaxConfigsForService(
   taxConfigs: TaxConfigRow[],
   serviceType: string
 ): TaxConfigRow[] {
-  const scoped = taxConfigs.filter((t) => t.serviceType === serviceType || t.serviceType === "ALL");
-  return preferServiceSpecificTaxConfigs(scoped, serviceType);
+  const chargeTaxSt = mapBillingServiceTypeForChargesAndTaxes(serviceType);
+  const scoped = taxConfigs.filter((t) => t.serviceType === chargeTaxSt || t.serviceType === "ALL");
+  return preferServiceSpecificTaxConfigs(scoped, chargeTaxSt);
 }

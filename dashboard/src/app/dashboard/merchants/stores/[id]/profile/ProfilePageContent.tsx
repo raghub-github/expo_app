@@ -96,6 +96,8 @@ export type ProfilePageContentProps = {
   canStoreVerify: boolean;
   /** Store management / banner / address / phone edits */
   canEditProfile?: boolean;
+  /** Admin-only hero video upload/remove */
+  canManageBannerVideo?: boolean;
   /** Bank account create/update */
   canEditBank?: boolean;
   /**
@@ -108,8 +110,11 @@ export type ProfilePageContentProps = {
   openProfileMediaVerification: () => void;
   onChangeAddress: () => void;
   bannerInputRef: React.RefObject<HTMLInputElement | null>;
+  bannerVideoInputRef: React.RefObject<HTMLInputElement | null>;
   galleryInputRef: React.RefObject<HTMLInputElement | null>;
   onBannerUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onBannerVideoUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onRemoveBannerVideo: () => void;
   onGalleryUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onRemoveGalleryImage: (index: number) => void;
   uploadingImages: string[];
@@ -137,6 +142,7 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
     revertAlternatePhone,
     canStoreVerify,
     canEditProfile = false,
+    canManageBannerVideo = false,
     canEditBank = false,
     legalDocsRestricted = false,
     openDocumentsVerification,
@@ -144,8 +150,11 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
     openProfileMediaVerification,
     onChangeAddress,
     bannerInputRef,
+    bannerVideoInputRef,
     galleryInputRef,
     onBannerUpload,
+    onBannerVideoUpload,
+    onRemoveBannerVideo,
     onGalleryUpload,
     onRemoveGalleryImage,
     uploadingImages,
@@ -158,6 +167,10 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
     null;
   const todayHours = formatOperatingHoursToday(operatingHours);
   const gallery = (editData?.gallery_images ?? displayStore.gallery_images ?? []) as string[];
+  const bannerVideoUrl = (editData?.banner_video_url ?? displayStore.banner_video_url) as
+    | string
+    | null
+    | undefined;
 
   return (
     <div className="bg-gray-50 flex-1 flex flex-col overflow-hidden">
@@ -656,6 +669,58 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                         <span className="text-xs text-gray-500 ml-2">No banner</span>
                       </div>
                     )}
+                    {canManageBannerVideo ? (
+                      <div className="mt-4 pt-4 border-t border-blue-200/80">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <div>
+                            <h4 className="text-xs font-semibold text-gray-900">Hero video (Admin)</h4>
+                            <p className="text-[10px] text-gray-600 mt-0.5">
+                              Plays on store inner page instead of banner. Banner image is kept.
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              className="flex items-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded-lg text-[10px] font-medium"
+                              onClick={() => bannerVideoInputRef.current?.click()}
+                            >
+                              <Upload size={11} />
+                              Upload video
+                            </button>
+                            {bannerVideoUrl ? (
+                              <button
+                                type="button"
+                                className="text-[10px] font-medium text-red-600 hover:text-red-700 px-2 py-1"
+                                onClick={onRemoveBannerVideo}
+                              >
+                                Remove
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                        <input
+                          type="file"
+                          accept="video/mp4,video/webm,video/quicktime"
+                          ref={bannerVideoInputRef}
+                          className="hidden"
+                          onChange={onBannerVideoUpload}
+                        />
+                        {bannerVideoUrl ? (
+                          <video
+                            src={bannerVideoUrl}
+                            className="mt-1 rounded-lg w-full h-40 object-cover bg-black"
+                            controls
+                            muted
+                            playsInline
+                            preload="metadata"
+                          />
+                        ) : (
+                          <div className="mt-1 h-24 bg-white/70 rounded-lg border border-dashed border-indigo-200 flex items-center justify-center">
+                            <span className="text-[10px] text-gray-500">No hero video — inner page uses banner image</span>
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg p-4 border border-green-100">

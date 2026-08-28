@@ -1,7 +1,7 @@
 /**
  * Food floating cart + multi-order tracking dock.
- * Cart visible only on food browse: /home, /home/merchant/*, /home/category/*, etc.
- * Hidden on Home tab (/(tabs)/index), Profile, Orders, checkout, search, and other non-food routes.
+ * Cart visible on food browse (/home, /home/category/*) for food carts, and on
+ * /home/grocery for grocery carts only — never cross-tab.
  * Order tracking dock: filtered by service — food on food browse, parcel on Courier home.
  * Parcel tracking must never appear on food home (and vice versa).
  */
@@ -67,6 +67,18 @@ const FLOAT_BAR_BORDER = "rgba(19, 114, 67, 0.22)";
  * `usePathname()`/`useSegments()` independently — this component previously
  * subscribed to the router 7 separate times per render.
  */
+
+function normalizeCartStoreType(raw: string | null | undefined): "FOOD" | "GROCERY" {
+  return (raw ?? "FOOD").trim().toUpperCase() === "GROCERY" ? "GROCERY" : "FOOD";
+}
+
+/** Grocery browse — floating cart only when cart is from a grocery store. */
+function computeIsGroceryServicePage(pathname: string | null, segments: string[]): boolean {
+  if (typeof pathname !== "string") return false;
+  const p = pathname as string;
+  if (segments[0] === "(auth)" || segments[0] === "(onboarding)") return false;
+  return p === "/home/grocery" || p.startsWith("/home/grocery?");
+}
 
 /** Show on: /home, /home/merchant/*, /home/category/*. Not meals-under-price or /search. */
 function computeIsFoodServicePage(pathname: string | null, segments: string[]): boolean {
@@ -230,6 +242,8 @@ export function GlobalFloatingCart() {
   // Computed once from the single pathname/segments subscription above,
   // instead of each of these independently calling usePathname()/useSegments().
   const isFoodServicePage = computeIsFoodServicePage(pathname, segments);
+  const isGroceryServicePage = computeIsGroceryServicePage(pathname, segments);
+  const merchantStoreType = useCartStore((s) => s.merchantStoreType);
   const isParcelServiceHome = computeIsParcelServiceHome(pathname);
   const discoveryLayout = useDiscoveryLayout();
   const dockDark = discoveryLayout && isFoodServicePage;
@@ -333,6 +347,18 @@ export function GlobalFloatingCart() {
     staleTime: 2 * 60 * 1000,
   });
 
+  const resolvedCartStoreType = useMemo(
+    () =>
+      normalizeCartStoreType(
+        merchantStoreType ?? cartMerchantQuery.data?.storeType ?? null
+      ),
+    [merchantStoreType, cartMerchantQuery.data?.storeType]
+  );
+  const isGroceryCart = resolvedCartStoreType === "GROCERY";
+  const cartMatchesBrowseRoute =
+    (isGroceryCart && isGroceryServicePage) ||
+    (!isGroceryCart && isFoodServicePage);
+
   const liveStatusFromStore = useStoreStatusStore((s) =>
     merchantId ? (s.statusMap[merchantId] ?? null) : null
   );
@@ -389,7 +415,7 @@ export function GlobalFloatingCart() {
     !checkoutSheetVisible &&
     !outsideRangeVisible &&
     !hideForCheckoutNav &&
-    isFoodServicePage;
+    cartMatchesBrowseRoute;
   /** Paged dock when tracking + (cart on food page or multiple orders). */
   const showScrollDock =
     showActiveOrderTracking &&
@@ -509,7 +535,7 @@ export function GlobalFloatingCart() {
       aboveTabBar: inTabs,
       tabBarOffset: inTabs ? customerTabBarOffset(rawBottom) : undefined,
     }) +
-    (isFoodServicePage ? FLOATING_CART_UI_LIFT : 0) +
+    (isFoodServicePage || isGroceryServicePage ? FLOATING_CART_UI_LIFT : 0) +
     // Courier: sit above prohibited-items + T&Cs footer, not on top of it.
     (isParcelServiceHome && showActiveOrderTracking ? PARCEL_TRACK_ABOVE_LEGAL_LIFT : 0);
 

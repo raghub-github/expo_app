@@ -30,7 +30,7 @@ import { useAuthStore } from "@/store/authStore";
 import { useCartStore } from "@/store/cartStore";
 import { useLanguageStore } from "@/store/languageStore";
 import { useLocationStore, getDeviceLocationReadiness, coordsMovedSignificantly } from "@/store/locationStore";
-import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
+import { debouncedInvalidateFoodHomeListingQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import { reconcileActiveLocationFromGps } from "@/lib/reconcileActiveLocationFromGps";
 import { runExclusiveActiveLocationReconcile } from "@/lib/activeLocationReconcileGate";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
@@ -40,7 +40,6 @@ import { useRiderOnlineCheckRealtime } from "@/hooks/useRiderOnlineCheckRealtime
 import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { useActiveOrdersHydration } from "@/hooks/useActiveOrdersHydration";
 import { LocationWatchSync } from "@/components/LocationWatchSync";
-import { LocationDebugOverlay } from "@/components/LocationDebugOverlay";
 import { CustomerPermissionSheetsHost } from "@/components/CustomerPermissionSheetsHost";
 import { ServiceBlockedGateHost } from "@/components/ServiceBlockedGateHost";
 import { CustomerAccountBlockedGateHost } from "@/components/CustomerAccountBlockedGateHost";
@@ -325,7 +324,7 @@ export default function RootLayout() {
           reconciled?.switchedToCurrent ||
           reconciled?.source === "selected"
         ) {
-          void invalidateFoodHomeLocationQueries(queryClient);
+          debouncedInvalidateFoodHomeListingQueries(queryClient);
         }
         return "done";
       });
@@ -367,7 +366,6 @@ export default function RootLayout() {
                   <CustomerPermissionsRealtimeSync />
                   <LocationPermissionResumeCheck />
                   <LocationWatchSync />
-                  {__DEV__ ? <LocationDebugOverlay /> : null}
                   <LanguageSync />
                 </AppErrorBoundary>
                 <AuthNavigationGate />
@@ -722,7 +720,7 @@ function LocationPermissionResumeCheck() {
             reconciled?.switchedToCurrent ||
             reconciled?.source === "selected"
           ) {
-            void invalidateFoodHomeLocationQueries(queryClient);
+            debouncedInvalidateFoodHomeListingQueries(queryClient);
           }
           if (after) lastResumeCoordsRef.current = after;
           return "done";

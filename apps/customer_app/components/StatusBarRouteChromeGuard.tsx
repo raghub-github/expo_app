@@ -53,9 +53,17 @@ function routeAllowsImmersiveStatusBar(
 
   // Grid-first food home opts in via hideStatusBarSpacer. Discovery must keep the
   // root spacer — treating every /home as immersive slides CTA/categories under search.
-  if (root === "home" && (leaf === "" || leaf === "index")) return hideStatusBarSpacer;
+  if (root === "home" && (leaf === "" || leaf === "index" || leaf === "grocery")) {
+    return hideStatusBarSpacer;
+  }
+  // Merchant store inner page with hero video — same opt-in via hideStatusBarSpacer.
+  if (root === "home" && leaf === "merchant") {
+    return hideStatusBarSpacer;
+  }
   // Meals-under-price uses the same immersive hero chrome
   if (root === "home" && leaf === "meals-under-price") return true;
+  // Category browse pads its own header — avoid root spacer + header insets.top double gap.
+  if (root === "home" && leaf === "category") return true;
   // Payment success — green hero must paint under the status bar (never force white).
   // Live route is /orders/payment-success; /checkout/success is the legacy alias.
   if (root === "checkout" && leaf === "success") return true;

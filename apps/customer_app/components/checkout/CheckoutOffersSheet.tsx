@@ -326,6 +326,12 @@ export function CheckoutOffersSheet({
     data?.merchantOffersIneligible,
   ]);
 
+  const resolvedAppliedPlatformOfferId = useMemo(() => {
+    if (appliedPlatformOfferId == null) return null;
+    const savings = savingsForPlatform(appliedPlatformOfferId);
+    return savings != null && savings > 0.005 ? appliedPlatformOfferId : null;
+  }, [appliedPlatformOfferId, appliedDiscounts]);
+
   const fetchedCart = data?.fetchedCartSubtotal ?? cartSubtotal;
 
   /** Remember platform min-cart thresholds across eligible↔ineligible flips. */
@@ -484,8 +490,10 @@ export function CheckoutOffersSheet({
   );
 
   const hasAppliedPromo =
-    Boolean(appliedCouponCode || appliedPlatformOfferId || appliedMerchantOfferId) ||
-    appliedDiscounts.length > 0;
+    Boolean(resolvedAppliedPlatformOfferId || resolvedAppliedMerchantOfferId) ||
+    appliedDiscounts.some((d) => d.amount > 0.005) ||
+    (Boolean(appliedCouponCode) &&
+      appliedDiscounts.some((d) => d.amount > 0.005));
 
   const subscriptionSavings = subscriptionBenefits.reduce((s, d) => s + d.amount, 0);
   const promoSavings = appliedDiscounts.reduce((s, d) => s + d.amount, 0);
@@ -590,7 +598,9 @@ export function CheckoutOffersSheet({
                   {hasAppliedPromo ? (
                     <View style={styles.section}>
                       <CheckoutText style={styles.sectionLabel}>APPLIED ON THIS ORDER</CheckoutText>
-                      {appliedCouponCode ? (
+                      {appliedCouponCode &&
+                      resolvedAppliedPlatformOfferId == null &&
+                      appliedDiscounts.some((d) => d.amount > 0.005) ? (
                         <OfferRow
                           title={`'${appliedCouponCode}'`}
                           subtitle="Coupon code"
@@ -599,25 +609,25 @@ export function CheckoutOffersSheet({
                           onRemove={onRemoveCoupon}
                         />
                       ) : null}
-                      {appliedPlatformOfferId != null ? (
+                      {resolvedAppliedPlatformOfferId != null ? (
                         <OfferRow
                           title={
                             displayPlatformOfferTitle(
-                              data?.platformOffers.find((o) => o.id === appliedPlatformOfferId)?.name ??
-                                appliedDiscounts.find((d) => d.platformOfferId === appliedPlatformOfferId)
+                              data?.platformOffers.find((o) => o.id === resolvedAppliedPlatformOfferId)?.name ??
+                                appliedDiscounts.find((d) => d.platformOfferId === resolvedAppliedPlatformOfferId)
                                   ?.label
                             )
                           }
                           subtitle={
-                            data?.platformOffers.find((o) => o.id === appliedPlatformOfferId)?.summary ?? ""
+                            data?.platformOffers.find((o) => o.id === resolvedAppliedPlatformOfferId)?.summary ?? ""
                           }
                           couponCode={
-                            data?.platformOffers.find((o) => o.id === appliedPlatformOfferId)?.couponCode ??
-                            data?.platformOffersIneligible?.find((o) => o.id === appliedPlatformOfferId)
+                            data?.platformOffers.find((o) => o.id === resolvedAppliedPlatformOfferId)?.couponCode ??
+                            data?.platformOffersIneligible?.find((o) => o.id === resolvedAppliedPlatformOfferId)
                               ?.couponCode
                           }
                           applied
-                          savings={savingsForPlatform(appliedPlatformOfferId)}
+                          savings={savingsForPlatform(resolvedAppliedPlatformOfferId)}
                           onRemove={onRemovePlatformOffer}
                         />
                       ) : null}

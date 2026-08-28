@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check } from "lucide-react";
 
 import { DiscoveryCtaPanel } from "@/components/cxapp-home/DiscoveryCtaPanel";
+import { CxAppGroceryHomeStatePanel } from "@/components/cxapp-home/CxAppGroceryHomeStatePanel";
 import { FoodHomeLayoutPhonePreview } from "@/components/cxapp-home/FoodHomeLayoutPhonePreview";
 import { GridFirstHeroMediaPanel } from "@/components/cxapp-home/GridFirstHeroMediaPanel";
 import { GridFirstSubscriptionRowPanel } from "@/components/cxapp-home/GridFirstSubscriptionRowPanel";
@@ -209,6 +210,7 @@ export default function CxAppHomeStateDetailPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   /** Mount live preview after first paint so layout cards aren't blocked. */
   const [previewReady, setPreviewReady] = useState(false);
+  const [verticalTab, setVerticalTab] = useState<"food" | "grocery">("food");
 
   useEffect(() => {
     let idleId: number | undefined;
@@ -360,6 +362,42 @@ export default function CxAppHomeStateDetailPage() {
         ) : null}
       </div>
 
+      <div className="px-3">
+        <div
+          className="inline-flex rounded-full bg-slate-100 p-1 ring-1 ring-slate-200/90"
+          role="tablist"
+          aria-label="Home vertical"
+        >
+          {(
+            [
+              ["food", "Food home"],
+              ["grocery", "Grocery home"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={verticalTab === id}
+              onClick={() => setVerticalTab(id)}
+              className={cn(
+                "rounded-full px-4 py-2 text-[13px] font-semibold transition",
+                verticalTab === id
+                  ? "bg-white text-cyan-900 shadow-sm ring-1 ring-cyan-200/80"
+                  : "text-slate-500 hover:text-slate-800"
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {verticalTab === "grocery" ? (
+        <div className="px-3">
+          <CxAppGroceryHomeStatePanel stateId={stateId} />
+        </div>
+      ) : (
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_300px] xl:items-start">
         <div className="order-2 rounded-xl border border-gray-200 bg-white p-4 shadow-sm xl:order-1">
           <h2 className="text-sm font-semibold text-slate-900">Food delivery home screen</h2>
@@ -544,6 +582,7 @@ export default function CxAppHomeStateDetailPage() {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

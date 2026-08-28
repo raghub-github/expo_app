@@ -33,13 +33,19 @@ import { merchantService } from "@/services/merchant.service";
 import { mapAnchorPairsToCompanionItems } from "@/components/store/storeMenuUtils";
 import {
   clearCachedMenuItemFullConfig,
+  getCachedMenuItemFullConfig,
   menuItemConfigQueryKey,
+  prefetchMenuItemFullConfig,
   resolveFullConfigItemId,
+  fullConfigMatchesItemKey,
 } from "@/lib/menu-item-config-query";
+import { MENU_ITEM_CONFIG_CACHE_TTL_MS } from "@/lib/menu-item-config-cache";
 import {
   normalizeMenuItemFullConfig,
   resolveInitialVariantId,
 } from "@/lib/normalize-menu-item-full-config";
+import { isBaseMenuItemVariantId } from "@/lib/menu-item-base-variant";
+import { buildCompositeMenuItemId } from "@/lib/cart-line-identity";
 import {
   formatMenuOptionDisplayName,
   formatMenuPortionLabel,
@@ -50,6 +56,12 @@ import {
   type ItemOfferDisplay,
 } from "@/lib/itemOfferDisplay";
 import { useCookingSheetKeyboardDock } from "@/hooks/useCookingSheetKeyboardDock";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { buildGrocerySheetCarouselItems } from "@/lib/buildGrocerySheetCarouselItems";
+import {
+  GrocerySheetProductCarousel,
+  groceryCarouselBottomInset,
+} from "@/components/store/GrocerySheetProductCarousel";
 
 import {
   normalizeOrderItemSpecialInstructions,
@@ -79,8 +91,13 @@ export type ItemCustomizationSheetProps = {
   item: MenuItem;
   merchantName: string;
   isStoreClosed?: boolean;
-  /** Full store menu — used to resolve co-purchase companion items. */
+  /** FOOD | GROCERY — cooking request is hidden for grocery stores. */
+  storeType?: string | null;
+  /** Full store menu — powers the grocery peek carousel. */
   storeMenu?: MenuItem[];
+  /** Locks grocery carousel sheets to a stable height (never shrinks mid-session). */
+  grocerySheetHeightMode?: "base" | "expanded";
+  onSelectMenuItem?: (item: MenuItem) => void;
   onAddCompanionItem?: (item: MenuItem) => void;
   /** Pre-select variant/addons/qty when editing from checkout cart. */
   initialSelection?: ItemCustomizationInitialSelection | null;
@@ -110,6 +127,12 @@ export type ItemCustomizationSheetProps = {
     specialInstructions?: string | null;
   }) => void;
 };
+
+function isDuplicateHeaderName(primary: string, secondary: string | null | undefined): boolean {
+  if (!secondary?.trim()) return true;
+  const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
+  return normalize(primary) === normalize(secondary);
+}
 
 function sectionSubtitle(isRequired: boolean, maxSelection: number): string {
   if (isRequired && maxSelection === 1) return "Select any 1 option";
@@ -359,7 +382,10 @@ export function ItemCustomizationSheet({
   item,
   merchantName,
   isStoreClosed = false,
+  storeType = null,
   storeMenu = [],
+  grocerySheetHeightMode: _grocerySheetHeightMode,
+  onSelectMenuItem,
   onAddCompanionItem,
   initialSelection = null,
   itemOffer = null,
@@ -367,9 +393,26 @@ export function ItemCustomizationSheet({
 }: ItemCustomizationSheetProps) {
   const queryClient = useQueryClient();
   const dark = useMerchantUiDark();
+  const insets = useSafeAreaInsets();
   const { height: screenHeight } = useWindowDimensions();
-  const sheetMaxHeight = Math.round(screenHeight * SHEET_MAX_HEIGHT_RATIO);
+  const isGroceryStore = (storeType ?? "FOOD").trim().toUpperCase() === "GROCERY";
   const { keyboardLift, reset } = useCookingSheetKeyboardDock(visible);
+  const carouselItems = useMemo(
+    () => (isGroceryStore ? buildGrocerySheetCarouselItems(storeMenu, item) : []),
+    [isGroceryStore, item, storeMenu]
+  );
+  const carouselInset = groceryCarouselBottomInset(carouselItems.length, insets.bottom);
+  const closeBtnBlock = 54;
+  const groceryAvailableH = Math.max(
+    240,
+    screenHeight - carouselInset - closeBtnBlock - 8
+  );
+  const sheetMaxHeight = isGroceryStore
+    ? Math.min(Math.round(screenHeight * 0.88), groceryAvailableH + closeBtnBlock)
+    : Math.round(screenHeight * SHEET_MAX_HEIGHT_RATIO);
+  const sheetBodyMaxH = sheetMaxHeight - closeBtnBlock;
+  const optionsMaxHeight = Math.max(140, sheetBodyMaxH - 196);
+  const footerPadBottom = isGroceryStore && carouselInset > 0 ? 10 : insets.bottom;
 
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
   const [selectedAddons, setSelectedAddons] = useState<Record<string, string[]>>({});
@@ -377,38 +420,83 @@ export function ItemCustomizationSheet({
   const [cookingRequest, setCookingRequest] = useState("");
   const appliedConfigKeyRef = useRef<string | null>(null);
   const addTapLockRef = useRef(false);
+  const wasVisibleRef = useRef(false);
+  const contentOpacity = useRef(new Animated.Value(1)).current;
 
   const configItemKey = resolveFullConfigItemId(item);
   const isEditMode = initialSelection != null;
   const hasConfigFlags = item.hasVariants || item.hasAddons || item.hasCustomizations;
 
+  const trackedConfigItemKeyRef = useRef<string | null>(null);
+
   useEffect(() => {
-    if (visible && storeId && configItemKey) {
-      clearCachedMenuItemFullConfig(storeId, configItemKey);
-      void queryClient.invalidateQueries({
-        queryKey: menuItemConfigQueryKey(storeId, configItemKey),
-      });
+    if (!visible) {
+      wasVisibleRef.current = false;
+      trackedConfigItemKeyRef.current = null;
+      return;
     }
-  }, [visible, storeId, configItemKey, queryClient]);
+    if (!storeId || !configItemKey) return;
+
+    wasVisibleRef.current = true;
+    trackedConfigItemKeyRef.current = configItemKey;
+
+    void prefetchMenuItemFullConfig(queryClient, storeId, configItemKey);
+    if (isGroceryStore && carouselItems.length > 1) {
+      const idx = carouselItems.findIndex(
+        (row) => resolveFullConfigItemId(row) === configItemKey
+      );
+      const neighbors = [carouselItems[idx - 1], carouselItems[idx + 1], carouselItems[idx + 2]];
+      for (const neighbor of neighbors) {
+        if (!neighbor) continue;
+        void prefetchMenuItemFullConfig(queryClient, storeId, resolveFullConfigItemId(neighbor));
+      }
+    }
+  }, [visible, storeId, configItemKey, queryClient, isGroceryStore, carouselItems]);
+
+  useEffect(() => {
+    setSelectedVariantId(null);
+    setSelectedAddons({});
+    setQuantity(1);
+    appliedConfigKeyRef.current = null;
+  }, [configItemKey]);
+
+  useEffect(() => {
+    contentOpacity.setValue(0.55);
+    Animated.timing(contentOpacity, {
+      toValue: 1,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [configItemKey, contentOpacity]);
 
   const {
     data: config,
-    isLoading: configLoading,
-    isFetching: configFetching,
+    isError,
+    refetch,
   } = useQuery({
     queryKey: menuItemConfigQueryKey(storeId, configItemKey),
-    queryFn: () =>
-      merchantService.getMenuItemFullConfig(storeId, configItemKey, { skipMemoryCache: true }),
+    queryFn: async () => {
+      const data = await merchantService.getMenuItemFullConfig(storeId, configItemKey);
+      if (!data) throw new Error("Item config unavailable");
+      return data;
+    },
     enabled: visible && !!storeId && !!configItemKey,
-    staleTime: 0,
+    initialData: () =>
+      storeId && configItemKey ? getCachedMenuItemFullConfig(storeId, configItemKey) : undefined,
+    staleTime: MENU_ITEM_CONFIG_CACHE_TTL_MS,
     gcTime: 30 * 60 * 1000,
-    refetchOnMount: "always",
+    retry: 0,
   });
 
   const displayConfig = useMemo(
     () => (config ? normalizeMenuItemFullConfig(config) : null),
     [config]
   );
+
+  const configReadyForItem = useMemo(() => {
+    if (!displayConfig) return false;
+    return fullConfigMatchesItemKey(displayConfig, configItemKey);
+  }, [displayConfig, configItemKey]);
 
   const itemPhotoUrl = useMemo(() => {
     const raw = displayConfig?.item?.imageUrl ?? item.imageUrl ?? null;
@@ -417,7 +505,8 @@ export function ItemCustomizationSheet({
     return abs;
   }, [displayConfig?.item?.imageUrl, item.imageUrl]);
 
-  const loading = visible && !displayConfig && (configLoading || configFetching);
+  const optionsLoading = visible && !configReadyForItem && !isError;
+  const optionsFailed = visible && !configReadyForItem && isError;
 
   const { data: anchorCoPurchasePairs = [] } = useQuery({
     queryKey: ["ordered-together", storeId, configItemKey],
@@ -426,7 +515,7 @@ export function ItemCustomizationSheet({
         anchorMenuItemId: configItemKey,
         limit: 6,
       }),
-    enabled: visible && !!storeId && !!configItemKey,
+    enabled: visible && configReadyForItem && !!storeId && !!configItemKey,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -551,6 +640,11 @@ export function ItemCustomizationSheet({
     if (!canAdd || addTapLockRef.current) return;
     addTapLockRef.current = true;
     Keyboard.dismiss();
+    const variant =
+      displayConfig?.variants?.length && selectedVariantId
+        ? displayConfig.variants.find((v) => v.id === selectedVariantId)
+        : null;
+    const effectiveVariantId = isBaseMenuItemVariantId(selectedVariantId) ? null : selectedVariantId;
     const addonIds = displayConfig?.customizations?.flatMap((c) => selectedAddons[c.id] ?? []) ?? [];
     const addonsList: Array<{
       addonId: string;
@@ -579,15 +673,15 @@ export function ItemCustomizationSheet({
         }
       });
     });
-    const variant =
-      displayConfig?.variants?.length && selectedVariantId
-        ? displayConfig.variants.find((v) => v.id === selectedVariantId)
-        : null;
     const catalogUnit = variantPrice + addonsTotal;
     const baseMenuItemId = String(item.menuItemId != null ? item.menuItemId : item.id);
     onAdd({
       menuItemId: displayConfig?.variants?.length
-        ? `${baseMenuItemId}_${selectedVariantId ?? ""}_${addonIds.sort().join(",")}`
+        ? buildCompositeMenuItemId({
+            baseMenuItemId,
+            variantId: effectiveVariantId,
+            addonIds: addonIds.sort(),
+          })
         : baseMenuItemId,
       name: item.name,
       // Catalog all-in — Boost is display-only; checkout/billing re-apply from offers.
@@ -595,7 +689,7 @@ export function ItemCustomizationSheet({
       quantity,
       isVeg: item.isVeg,
       basePrice: variant ? variant.price : (displayConfig?.item?.price ?? item.price),
-      variantId: selectedVariantId ?? undefined,
+      variantId: effectiveVariantId ?? undefined,
       variantName: selectedVariantDisplayName ?? variant?.name,
       variantSizeValue: variant?.sizeValue ?? null,
       variantSizeUnit: variant?.sizeUnit ?? null,
@@ -660,7 +754,7 @@ export function ItemCustomizationSheet({
   );
 
   const footerBar = (
-    <View style={[styles.footer, dark && styles.footerDark, { paddingBottom: 8 }]}>
+    <View style={[styles.footer, dark && styles.footerDark, { paddingBottom: footerPadBottom }]}>
       <View style={styles.stepper}>
         <TouchableOpacity
           accessibilityRole="button"
@@ -733,7 +827,8 @@ export function ItemCustomizationSheet({
       transparent
       animationType="none"
       onRequestClose={handleClose}
-      statusBarTranslucent={false}
+      statusBarTranslucent
+      navigationBarTranslucent
       presentationStyle="overFullScreen"
     >
       <View style={styles.root}>
@@ -749,7 +844,14 @@ export function ItemCustomizationSheet({
           Never swap to a compact tree (that remounted TextInput and auto-dismissed).
         */}
         <Animated.View
-          style={[styles.anchor, { maxHeight: sheetMaxHeight, marginBottom: keyboardLift }]}
+          style={[
+            styles.anchor,
+            {
+              maxHeight: sheetMaxHeight,
+              bottom:
+                carouselInset > 0 ? Animated.add(keyboardLift, carouselInset) : keyboardLift,
+            },
+          ]}
         >
           <TouchableOpacity
             style={styles.closeBtn}
@@ -760,75 +862,99 @@ export function ItemCustomizationSheet({
             <Ionicons name="close" size={22} color="#fff" />
           </TouchableOpacity>
 
-          <View style={[styles.sheet, dark && styles.sheetDark, { maxHeight: sheetMaxHeight - 54 }]}>
+          <View
+            style={[
+              styles.sheet,
+              dark && styles.sheetDark,
+              { maxHeight: sheetBodyMaxH },
+            ]}
+          >
             <View style={[styles.sheetHandle, dark && styles.sheetHandleDark]} />
-            {loading ? (
-              <View style={styles.loadingWrap}>
-                <ActivityIndicator size="large" color={dark ? MerchantDarkPalette.accent : StoreTheme.accentMint} />
-                <AppText style={[styles.loadingText, dark && styles.loadingTextDark]}>Loading options…</AppText>
-              </View>
-            ) : (
-              <View style={styles.sheetBody}>
-                <View style={[styles.header, dark && styles.headerDark]}>
-                  <View style={styles.headerTopRow}>
-                    <View style={[styles.headerImageWrap, dark && styles.headerImageWrapDark]}>
-                      {itemPhotoUrl ? (
-                        <Image
-                          source={{ uri: itemPhotoUrl }}
-                          style={styles.headerImage}
-                          resizeMode="cover"
-                        />
-                      ) : (
-                        <View style={[styles.headerImagePlaceholder, dark && styles.headerImagePlaceholderDark]}>
-                          <DietIndicator type={getItemDiet(item)} />
-                        </View>
-                      )}
-                      {itemPhotoUrl ? (
-                        <View style={[styles.dietOnThumb, dark && styles.dietOnThumbDark]}>
-                          <DietIndicator type={getItemDiet(item)} />
-                        </View>
-                      ) : null}
-                    </View>
+            <View style={styles.sheetBody}>
+              <View style={[styles.header, dark && styles.headerDark]}>
+                <View style={styles.headerTopRow}>
+                  <View style={[styles.headerImageWrap, dark && styles.headerImageWrapDark]}>
+                    {itemPhotoUrl ? (
+                      <Image
+                        source={{ uri: itemPhotoUrl }}
+                        style={styles.headerImage}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <View style={[styles.headerImagePlaceholder, dark && styles.headerImagePlaceholderDark]}>
+                        <DietIndicator type={getItemDiet(item)} />
+                      </View>
+                    )}
+                    {itemPhotoUrl ? (
+                      <View style={[styles.dietOnThumb, dark && styles.dietOnThumbDark]}>
+                        <DietIndicator type={getItemDiet(item)} />
+                      </View>
+                    ) : null}
+                  </View>
 
-                    <View style={styles.headerTitleCol}>
-                      <AppText style={[styles.headerName, dark && styles.headerNameDark]} numberOfLines={2}>
-                        {item.name}
+                  <View style={styles.headerTitleCol}>
+                    <AppText style={[styles.headerName, dark && styles.headerNameDark]} numberOfLines={2}>
+                      {item.name}
+                    </AppText>
+                    {!optionsLoading &&
+                    selectedVariantDisplayName &&
+                    !isDuplicateHeaderName(item.name, selectedVariantDisplayName) ? (
+                      <AppText style={[styles.headerPortion, dark && styles.headerPortionDark]} numberOfLines={2}>
+                        {selectedVariantDisplayName}
                       </AppText>
-                      {selectedVariantDisplayName ? (
-                        <AppText style={[styles.headerPortion, dark && styles.headerPortionDark]} numberOfLines={2}>
-                          {selectedVariantDisplayName}
-                        </AppText>
-                      ) : null}
-                    </View>
+                    ) : null}
+                  </View>
 
-                    <View style={styles.headerIcons}>
-                      <TouchableOpacity
-                        hitSlop={8}
-                        style={[styles.headerIconCircle, dark && styles.headerIconCircleDark]}
-                        activeOpacity={0.75}
-                      >
-                        <Feather name="share-2" size={17} color={dark ? MerchantDarkPalette.text : StoreTheme.textPrimary} />
-                      </TouchableOpacity>
-                    </View>
+                  <View style={styles.headerIcons}>
+                    <TouchableOpacity
+                      hitSlop={8}
+                      style={[styles.headerIconCircle, dark && styles.headerIconCircleDark]}
+                      activeOpacity={0.75}
+                    >
+                      <Feather name="share-2" size={17} color={dark ? MerchantDarkPalette.text : StoreTheme.textPrimary} />
+                    </TouchableOpacity>
                   </View>
                 </View>
+              </View>
 
+              <Animated.View style={[styles.optionsPane, { opacity: contentOpacity }]}>
+              {optionsLoading ? (
+                <View style={styles.loadingWrap}>
+                  <ActivityIndicator size="large" color={dark ? MerchantDarkPalette.accent : StoreTheme.accentMint} />
+                  <AppText style={[styles.loadingText, dark && styles.loadingTextDark]}>Loading options…</AppText>
+                </View>
+              ) : (
                 <ScrollView
-                  style={[styles.scroll, dark && styles.scrollDark, { maxHeight: Math.max(sheetMaxHeight - 200, 180) }]}
+                  style={[styles.scroll, dark && styles.scrollDark, { maxHeight: optionsMaxHeight }]}
                   contentContainerStyle={styles.scrollContent}
                   showsVerticalScrollIndicator={false}
                   keyboardShouldPersistTaps="always"
                   keyboardDismissMode="none"
+                  nestedScrollEnabled
                 >
-                  {!loading &&
-                  !displayConfig?.variants?.length &&
-                  !displayConfig?.customizations?.length ? (
+                  {optionsFailed ||
+                  (!displayConfig?.variants?.length && !displayConfig?.customizations?.length) ? (
                     <View style={styles.sectionBlock}>
                       <AppText style={styles.sectionSub}>
-                        {hasConfigFlags
+                        {hasConfigFlags || optionsFailed
                           ? "Customization options could not be loaded. Try again."
                           : "No customization options are available for this item right now."}
                       </AppText>
+                      {hasConfigFlags || optionsFailed ? (
+                        <TouchableOpacity
+                          style={styles.retryBtn}
+                          onPress={() => {
+                            clearCachedMenuItemFullConfig(storeId, configItemKey);
+                            void queryClient.resetQueries({
+                              queryKey: menuItemConfigQueryKey(storeId, configItemKey),
+                            });
+                            void refetch();
+                          }}
+                          activeOpacity={0.85}
+                        >
+                          <AppText style={styles.retryBtnText}>Retry</AppText>
+                        </TouchableOpacity>
+                      ) : null}
                     </View>
                   ) : null}
 
@@ -956,14 +1082,23 @@ export function ItemCustomizationSheet({
                     </View>
                   ))}
 
-                  {cookingField}
+                  {!isGroceryStore ? cookingField : null}
                 </ScrollView>
+              )}
+              </Animated.View>
 
-                {footerBar}
-              </View>
-            )}
+              {footerBar}
+            </View>
           </View>
         </Animated.View>
+
+        {carouselItems.length > 1 && onSelectMenuItem ? (
+          <GrocerySheetProductCarousel
+            items={carouselItems}
+            activeItemId={String(item.id)}
+            onSelectItem={onSelectMenuItem}
+          />
+        ) : null}
       </View>
     </Modal>
   );
@@ -971,14 +1106,17 @@ export function ItemCustomizationSheet({
 
 const styles = StyleSheet.create({
   root: {
-    flex: 1,
-    justifyContent: "flex-end",
+    ...StyleSheet.absoluteFillObject,
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.55)",
   },
   anchor: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
     width: "100%",
     alignItems: "center",
   },
@@ -1025,11 +1163,29 @@ const styles = StyleSheet.create({
   sheetBody: {
     flexDirection: "column",
     flexShrink: 1,
-    minHeight: 0,
+  },
+  optionsPane: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  retryBtn: {
+    marginTop: 12,
+    alignSelf: "flex-start",
+    backgroundColor: ADD_GREEN,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  retryBtnText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
   },
   loadingWrap: {
-    paddingVertical: 48,
+    paddingVertical: 28,
+    paddingHorizontal: 16,
     alignItems: "center",
+    justifyContent: "center",
     gap: 12,
   },
   loadingText: {

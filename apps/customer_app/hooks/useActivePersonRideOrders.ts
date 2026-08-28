@@ -66,9 +66,8 @@ export function useActivePersonRideOrders(enabled = true) {
       return list;
     },
     enabled,
-    staleTime: 4_000,
-    refetchInterval: enabled ? 5_000 : false,
-    refetchOnMount: "always",
+    staleTime: 30_000,
+    refetchOnMount: false,
     refetchOnReconnect: true,
     initialData: cachedOrders,
     initialDataUpdatedAt: getMyOrdersCachedAt(),

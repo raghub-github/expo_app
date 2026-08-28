@@ -38,6 +38,7 @@ function HeroSquareBtn({
       accessibilityRole="button"
       accessibilityLabel={label}
       hitSlop={6}
+      style={styles.heroBtnHit}
     >
       <View style={[styles.squareBtn, { backgroundColor }]}>{children}</View>
     </TouchableOpacity>
@@ -124,7 +125,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     minHeight: BTN_SIZE,
-    gap: 10,
+    gap: 8,
+    minWidth: 0,
   },
   storeName: {
     flex: 1,
@@ -141,8 +143,13 @@ const styles = StyleSheet.create({
   right: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
     flexShrink: 0,
+    maxWidth: "46%",
+    zIndex: 2,
+  },
+  heroBtnHit: {
+    zIndex: 1,
   },
   squareBtn: {
     width: BTN_SIZE,

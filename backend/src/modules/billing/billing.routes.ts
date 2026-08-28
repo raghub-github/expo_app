@@ -39,7 +39,7 @@ const checkoutOffersQuerySchema = z.object({
   merchantId: z.string().min(1),
   addressId: z.coerce.number().int().positive(),
   cartSubtotal: z.coerce.number().nonnegative().optional().default(0),
-  serviceType: z.enum(["FOOD", "PARCEL", "RIDE", "ALL"]).optional(),
+  serviceType: z.enum(["FOOD", "GROCERY", "PARCEL", "RIDE", "ALL"]).optional(),
   userSegment: z.enum(["NEW", "EXISTING", "ALL"]).optional(),
   // Live location from the customer app's location store. Preferred over the saved
   // address fields (which may carry "—" placeholders if reverse-geocoding failed
@@ -87,7 +87,7 @@ const calculateBodySchema = z.object({
   couponCode: z.string().optional().nullable(),
   pickupLat: z.number().optional(),
   pickupLon: z.number().optional(),
-  serviceType: z.enum(["FOOD", "PARCEL", "RIDE", "ALL"]).optional(),
+  serviceType: z.enum(["FOOD", "GROCERY", "PARCEL", "RIDE", "ALL"]).optional(),
   cityName: z.string().optional().nullable(),
   userSegment: z.enum(["NEW", "EXISTING", "ALL"]).optional(),
   subscriptionOptIn: z.boolean().optional(),
@@ -195,14 +195,37 @@ function mapBillingToResponse(b: BillingResult, snapshot?: Record<string, unknow
       return x > 0.005 ? x : null;
     })(),
     deliveryFeeWaivedInr: (() => {
+      const fromSnap = snapshot?.deliveryFeeWaivedInr;
+      if (typeof fromSnap === "number" && Number.isFinite(fromSnap) && fromSnap > 0.005) {
+        return round2(fromSnap);
+      }
       const marker = b.charges.find(
         (c) => c.meta?.source === "customer_subscription_delivery_waived_marker"
       );
       if (marker && marker.amount > 0.005) return round2(marker.amount);
+      const subDisc = b.discounts.find(
+        (d) => d.meta?.source === "customer_subscription_free_delivery"
+      );
+      const platformWaived = b.discounts
+        .filter((d) => {
+          const kind = String(d.meta?.offerKind ?? "").toUpperCase();
+          return kind === "FREE_DELIVERY" && d.amount > 0.005;
+        })
+        .reduce((s, d) => s + d.amount, 0);
+      const subWaived = subDisc && subDisc.amount > 0.005 ? subDisc.amount : 0;
+      const combined = round2(subWaived + platformWaived);
+      if (combined > 0.005) return combined;
       if (b.delivery_fee > 0.005) return null;
-      const disc = b.discounts.find((d) => d.meta?.source === "customer_subscription_free_delivery");
-      return disc && disc.amount > 0.005 ? round2(disc.amount) : null;
+      return subDisc && subDisc.amount > 0.005 ? round2(subDisc.amount) : null;
     })(),
+    subscriptionDeliveryBenefit:
+      snapshot && typeof snapshot.subscriptionDeliveryBenefit === "object"
+        ? snapshot.subscriptionDeliveryBenefit
+        : null,
+    subscriptionDeliveryBenefitEstimate:
+      snapshot && typeof snapshot.subscriptionDeliveryBenefitEstimate === "object"
+        ? snapshot.subscriptionDeliveryBenefitEstimate
+        : null,
     platformFee: b.platform_fee,
     packagingFee: b.packaging_fee,
     surgeFee: b.surge_fee,

@@ -74,6 +74,7 @@ function isTrackableActiveOrder(order: OrderSummary): boolean {
 export function useActiveOrdersHydration() {
   const hydrated = useAuthStore((s) => s.hydrated);
   const hasSession = useAuthStore((s) => !!s.session);
+  const hasTrackableOrders = useOrderStore((s) => s.activeOrders.length > 0);
   const addActiveOrder = useOrderStore((s) => s.addActiveOrder);
   const removeActiveOrder = useOrderStore((s) => s.removeActiveOrder);
   const cachedOrders = readSyncMyOrders() as OrderSummary[] | undefined;
@@ -86,8 +87,9 @@ export function useActiveOrdersHydration() {
       return list;
     },
     enabled: hydrated && hasSession,
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    staleTime: 60_000,
+    refetchInterval:
+      hydrated && hasSession && hasTrackableOrders ? 90_000 : false,
     initialData: cachedOrders,
     initialDataUpdatedAt: getMyOrdersCachedAt(),
     placeholderData: (previous) => previous ?? cachedOrders,

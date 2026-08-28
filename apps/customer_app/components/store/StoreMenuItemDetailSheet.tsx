@@ -20,7 +20,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppText } from "@/components/AppText";
 import { StoreTheme } from "@/constants/storeTheme";
 import { StoreFonts } from "@/constants/storeTypography";
-import { formatOfferRupee, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
+import { formatOfferRupee, computeCatalogDiscountPercent, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import type { MenuItem } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useCookingSheetKeyboardDock } from "@/hooks/useCookingSheetKeyboardDock";
@@ -31,6 +31,11 @@ import {
   normalizeOrderItemSpecialInstructions,
   ORDER_ITEM_SPECIAL_INSTRUCTIONS_MAX_LENGTH,
 } from "@/lib/order-item-special-instructions";
+import { buildGrocerySheetCarouselItems } from "@/lib/buildGrocerySheetCarouselItems";
+import {
+  GrocerySheetProductCarousel,
+  groceryCarouselBottomInset,
+} from "./GrocerySheetProductCarousel";
 
 /**
  * Item detail bottom sheet.
@@ -92,8 +97,15 @@ export type StoreMenuItemDetailSheetProps = {
   item: MenuItem | null;
   isBookmarked?: boolean;
   isStoreClosed?: boolean;
+  /** FOOD | GROCERY — cooking request is hidden for grocery stores. */
+  storeType?: string | null;
   itemOffer?: ItemOfferDisplay | null;
   initialSelection?: StoreMenuItemDetailInitialSelection | null;
+  /** Full store menu — powers the grocery peek carousel. */
+  storeMenu?: MenuItem[];
+  /** Locks grocery carousel sheets to a stable height (never shrinks mid-session). */
+  grocerySheetHeightMode?: "base" | "expanded";
+  onSelectMenuItem?: (item: MenuItem) => void;
   onClose: () => void;
   onAdd: (item: MenuItem, quantity: number, specialInstructions?: string | null) => void;
   onBookmark?: (item: MenuItem) => void;
@@ -105,8 +117,12 @@ export function StoreMenuItemDetailSheet({
   item,
   isBookmarked: _isBookmarked = false,
   isStoreClosed = false,
+  storeType = null,
   itemOffer = null,
   initialSelection = null,
+  storeMenu = [],
+  grocerySheetHeightMode,
+  onSelectMenuItem,
   onClose,
   onAdd,
   onBookmark: _onBookmark,
@@ -119,6 +135,7 @@ export function StoreMenuItemDetailSheet({
   const inputRef = useRef<TextInput>(null);
   const requestYRef = useRef(0);
   const addTapLockRef = useRef(false);
+  const contentOpacity = useRef(new Animated.Value(1)).current;
   /** Lock sheet max-height for the keyboard session so window resize cannot resize the tree. */
   const { keyboardLift, isKeyboardVisibleRef, reset } = useCookingSheetKeyboardDock(visible);
 
@@ -144,6 +161,17 @@ export function StoreMenuItemDetailSheet({
     setInputFocused(false);
     reset();
   }, [initialSelection?.quantity, initialSelection?.specialInstructions, item?.id, reset, visible]);
+
+  useEffect(() => {
+    if (!visible || !item?.id) return;
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+    contentOpacity.setValue(0.55);
+    Animated.timing(contentOpacity, {
+      toValue: 1,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [contentOpacity, item?.id, visible]);
 
   const handleClose = useCallback(() => {
     inputRef.current?.blur();
@@ -178,6 +206,16 @@ export function StoreMenuItemDetailSheet({
     });
   }, []);
 
+  const isGroceryStore = (storeType ?? "FOOD").trim().toUpperCase() === "GROCERY";
+  const carouselItems = useMemo(
+    () =>
+      isGroceryStore && item
+        ? buildGrocerySheetCarouselItems(storeMenu, item)
+        : [],
+    [isGroceryStore, item, storeMenu]
+  );
+  const carouselInset = groceryCarouselBottomInset(carouselItems.length, insets.bottom);
+
   if (!item) return null;
 
   const hasImage = !!imageUri && !imageFailed;
@@ -190,17 +228,19 @@ export function StoreMenuItemDetailSheet({
   const basePrice = getBasePrice(item);
   const { payable: payablePrice, strike: strikePrice, showStrike: showStrikePrice } =
     resolveMenuOfferPriceDisplay({ sellingPrice, basePrice, itemOffer });
+  const catalogDiscountPct = computeCatalogDiscountPercent(basePrice, sellingPrice);
   const total = payablePrice * quantity;
   const diet = getItemDiet(item);
 
-  // Above the home indicator when idle; sits directly on the keyboard when open.
-  const footerPadBottom = Math.max(insets.bottom, 10);
+  // Safe-area only — sheet background extends to the physical screen edge.
+  const footerPadBottom = insets.bottom;
   const footerBlockH = CTA_HEIGHT + 24 + footerPadBottom;
-  // Live max height — NOT frozen. On Android the OS shrinks `windowHeight` when the
-  // keyboard opens (adjustResize), so the sheet shrinks with it and its footer stays
-  // pinned above the keyboard. Freezing the height was what detached the footer.
-  const sheetMaxH = Math.round(windowHeight * (hasImage ? 0.88 : 0.7));
-  const scrollMaxH = Math.max(140, sheetMaxH - WAVE_HEIGHT - footerBlockH);
+  const sheetMaxH = Math.round(windowHeight * (hasImage || isGroceryStore ? 0.88 : 0.7));
+  const scrollMaxH = Math.max(
+    140,
+    sheetMaxH - WAVE_HEIGHT - footerBlockH - carouselInset
+  );
+  const useStableGroceryHero = isGroceryStore;
 
   const addBtnWidth = Math.max(
     140,
@@ -208,7 +248,9 @@ export function StoreMenuItemDetailSheet({
   );
 
   const ctaLabel = isStoreClosed
-    ? "Restaurant closed"
+    ? isGroceryStore
+      ? "Store closed"
+      : "Restaurant closed"
     : isCustomisable
       ? `Customise • ${formatOfferRupee(payablePrice)}`
       : `Add item ${formatOfferRupee(total)}`;
@@ -252,7 +294,8 @@ export function StoreMenuItemDetailSheet({
       transparent
       animationType="none"
       onRequestClose={handleClose}
-      statusBarTranslucent={false}
+      statusBarTranslucent
+      navigationBarTranslucent
       presentationStyle="overFullScreen"
     >
       <View style={styles.root} pointerEvents="box-none">
@@ -269,7 +312,7 @@ export function StoreMenuItemDetailSheet({
             {
               width: windowWidth,
               maxHeight: sheetMaxH,
-              bottom: keyboardLift,
+              bottom: carouselInset > 0 ? Animated.add(keyboardLift, carouselInset) : keyboardLift,
             },
           ]}
           // Keep touches on the sheet from falling through to the backdrop during lift.
@@ -280,11 +323,18 @@ export function StoreMenuItemDetailSheet({
             fill={dark ? MerchantDarkPalette.surface : "#FFFFFF"}
           />
 
-          <View style={[styles.body, dark && styles.bodyDark, { width: windowWidth }]}>
+          <View
+            style={[
+              styles.body,
+              dark && styles.bodyDark,
+              { width: windowWidth },
+            ]}
+          >
             {/*
               SINGLE TREE — never branch on keyboard visibility.
               TextInput stays mounted for the lifetime of the open sheet.
             */}
+            <Animated.View style={{ opacity: contentOpacity, maxHeight: scrollMaxH, width: windowWidth }}>
             <ScrollView
               ref={scrollRef}
               style={{ maxHeight: scrollMaxH, width: windowWidth }}
@@ -327,16 +377,20 @@ export function StoreMenuItemDetailSheet({
                 </View>
               ) : (
                 <View key="header">
-                  {hasImage ? (
+                  {hasImage || useStableGroceryHero ? (
                     <View style={styles.heroWrap}>
-                      <Image
-                        source={{ uri: imageUri! }}
-                        style={styles.heroImage}
-                        contentFit="contain"
-                        cachePolicy="memory-disk"
-                        transition={120}
-                        onError={() => setImageFailed(true)}
-                      />
+                      {hasImage ? (
+                        <Image
+                          source={{ uri: imageUri! }}
+                          style={styles.heroImage}
+                          contentFit="contain"
+                          cachePolicy="memory-disk"
+                          transition={120}
+                          onError={() => setImageFailed(true)}
+                        />
+                      ) : (
+                        <View style={[styles.heroPlaceholder, dark && styles.heroPlaceholderDark]} />
+                      )}
                       <View style={[styles.dietOnImage, dark && styles.dietOnImageDark]}>
                         <DietIndicator type={diet} />
                       </View>
@@ -344,7 +398,7 @@ export function StoreMenuItemDetailSheet({
                   ) : null}
 
                   <View style={[styles.detailsCard, dark && styles.detailsCardDark]}>
-                    {!hasImage ? (
+                    {!hasImage && !useStableGroceryHero ? (
                       <View style={styles.dietRow}>
                         <DietIndicator type={diet} />
                       </View>
@@ -365,6 +419,12 @@ export function StoreMenuItemDetailSheet({
                             <View style={styles.offerBadge}>
                               <AppText style={styles.offerBadgeText}>{itemOffer.label}</AppText>
                             </View>
+                          ) : catalogDiscountPct != null ? (
+                            <View style={styles.catalogDiscountBadge}>
+                              <AppText style={styles.catalogDiscountBadgeText}>
+                                {catalogDiscountPct}% OFF
+                              </AppText>
+                            </View>
                           ) : null}
                         </View>
                       </View>
@@ -381,6 +441,7 @@ export function StoreMenuItemDetailSheet({
                 </View>
               )}
 
+              {!isGroceryStore ? (
               <View
                 key="request"
                 style={[styles.requestCard, dark && styles.requestCardDark]}
@@ -417,7 +478,9 @@ export function StoreMenuItemDetailSheet({
                   </AppText>
                 </View>
               </View>
+              ) : null}
             </ScrollView>
+            </Animated.View>
 
             <View
               style={[
@@ -488,6 +551,14 @@ export function StoreMenuItemDetailSheet({
             </View>
           </View>
         </Animated.View>
+
+        {carouselItems.length > 1 && onSelectMenuItem ? (
+          <GrocerySheetProductCarousel
+            items={carouselItems}
+            activeItemId={String(item.id)}
+            onSelectItem={onSelectMenuItem}
+          />
+        ) : null}
       </View>
     </Modal>
   );
@@ -495,7 +566,7 @@ export function StoreMenuItemDetailSheet({
 
 const styles = StyleSheet.create({
   root: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -537,6 +608,15 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
     backgroundColor: "transparent",
+  },
+  heroPlaceholder: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#F3F4F6",
+    borderRadius: 12,
+  },
+  heroPlaceholderDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
   },
   dietOnImage: {
     position: "absolute",
@@ -650,6 +730,19 @@ const styles = StyleSheet.create({
     color: "#15803D",
     fontSize: 10,
     fontWeight: "700",
+  },
+  catalogDiscountBadge: {
+    borderRadius: 5,
+    backgroundColor: "#FEF9C3",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(245, 158, 11, 0.3)",
+  },
+  catalogDiscountBadgeText: {
+    color: "#B45309",
+    fontSize: 10,
+    fontWeight: "800",
   },
   actionRow: {
     flexDirection: "row",

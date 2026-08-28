@@ -13,7 +13,12 @@ import {
   getOrderedTogetherRecommendations,
   search,
   listNearbyStoresByRoadDistance,
+  listStoresForDishCategoryLabel,
+  effectiveServiceRadiusKm,
+  getStoreFssaiLicenseNumber,
 } from "./merchant.service.js";
+import { listGroceryHomeMenuCategories } from "./groceryHomeMenuCategories.service.js";
+import { matchesCustomerMerchantListStoreType } from "./merchantStoreTypeFilters.js";
 import { listUserAppCategories } from "./userAppCategory.service.js";
 import { listFoodItemsUnderPrice, listFoodItemsUnderPriceGrouped } from "./foodHomeItemsUnderPrice.service.js";
 import type { NearbyStoreRow } from "./merchant.types.js";
@@ -187,6 +192,18 @@ const querySchema = z.object({
     .string()
     .optional()
     .transform((v) => v === "true" || v === "1"),
+  /**
+   * Customer vertical filter. FOOD (default) excludes grocery/pharmacy/etc.
+   * GROCERY returns grocery stores only. Omit / ALL returns every store type.
+   */
+  storeType: z
+    .string()
+    .trim()
+    .min(1)
+    .max(32)
+    .optional()
+    .default("FOOD")
+    .transform((v) => v.trim().toUpperCase()),
 });
 
 const searchQuerySchema = z.object({
@@ -288,6 +305,7 @@ export async function merchantRoutes(app: FastifyInstance) {
                 completedOrderCount: z.number().optional(),
                 packagingChargeAmount: z.number().nullable().optional(),
                 isPureVeg: z.boolean().optional(),
+                storeType: z.string().nullable().optional(),
               })
             ),
           }),
@@ -296,15 +314,20 @@ export async function merchantRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const q = request.query as z.infer<typeof querySchema>;
-      const { items } = await listStores({
-        limit: q.limit,
+      const requestedStoreType = (q.storeType ?? "FOOD").toUpperCase();
+      const pageLimit = q.limit ?? 20;
+      // Over-fetch before store_type filter so FOOD/GROCERY pages stay full.
+      const fetchLimit =
+        requestedStoreType === "ALL" ? pageLimit : Math.min(50, Math.max(pageLimit * 3, pageLimit));
+      const { items: rawItems } = await listStores({
+        limit: fetchLimit,
         offset: q.offset,
         lat: q.lat,
         lng: q.lng,
         veg_mode: q.veg ?? false,
         distanceMode: q.distanceMode,
       });
-      const storeInternalIds = items
+      const storeInternalIds = rawItems
         .map((s) => Number((s as { id?: number }).id))
         .filter((id) => Number.isFinite(id) && id > 0);
       const mediaByStoreId = new Map<
@@ -318,6 +341,8 @@ export async function merchantRoutes(app: FastifyInstance) {
           next_open_at: string | null;
           next_close_at: string | null;
           manual_override_active: boolean;
+          store_type: string | null;
+          delivery_radius_km: number | null;
         }
       >();
       if (storeInternalIds.length > 0) {
@@ -326,7 +351,7 @@ export async function merchantRoutes(app: FastifyInstance) {
           const { data: mediaRows, error: mediaErr } = await supabase
             .from("merchant_stores")
             .select(
-              "id, banner_url, gallery_images, packaging_charge_amount, live_schedule_phase, next_open_at, next_close_at, manual_override_active"
+              "id, banner_url, gallery_images, packaging_charge_amount, live_schedule_phase, next_open_at, next_close_at, manual_override_active, store_type, delivery_radius_km"
             )
             .in("id", storeInternalIds);
           if (mediaErr) throw mediaErr;
@@ -340,6 +365,8 @@ export async function merchantRoutes(app: FastifyInstance) {
             next_open_at?: string | null;
             next_close_at?: string | null;
             manual_override_active?: boolean | null;
+            store_type?: string | null;
+            delivery_radius_km?: number | string | null;
           }>) {
             const packagingRaw = row.packaging_charge_amount;
             const packagingNum =
@@ -357,6 +384,16 @@ export async function merchantRoutes(app: FastifyInstance) {
               next_open_at: row.next_open_at ?? null,
               next_close_at: row.next_close_at ?? null,
               manual_override_active: row.manual_override_active === true,
+              store_type:
+                typeof row.store_type === "string" && row.store_type.trim()
+                  ? row.store_type.trim().toUpperCase()
+                  : null,
+              delivery_radius_km: (() => {
+                const raw = row.delivery_radius_km;
+                if (raw == null || raw === "") return null;
+                const n = Number(raw);
+                return Number.isFinite(n) && n > 0 ? n : null;
+              })(),
             });
           }
         } catch (err) {
@@ -367,6 +404,48 @@ export async function merchantRoutes(app: FastifyInstance) {
           );
         }
       }
+
+      const GLOBAL_LIST_RADIUS_KM = 15;
+
+      const items = (
+        requestedStoreType === "ALL"
+          ? rawItems
+          : rawItems.filter((s) => {
+              const id = Number((s as { id?: number }).id);
+              const fromMedia =
+                Number.isFinite(id) && id > 0
+                  ? mediaByStoreId.get(id)?.store_type ?? null
+                  : null;
+              const fromRow = String(
+                (s as { store_type?: string | null }).store_type ?? ""
+              )
+                .trim()
+                .toUpperCase();
+              const st = fromMedia || fromRow || "FOOD";
+              if (!matchesCustomerMerchantListStoreType(st, requestedStoreType)) {
+                return false;
+              }
+              const distanceKm =
+                "distance_km" in s && typeof (s as NearbyStoreRow).distance_km === "number"
+                  ? (s as NearbyStoreRow).distance_km
+                  : null;
+              if (distanceKm == null || !Number.isFinite(distanceKm)) return true;
+              const storeRadius =
+                Number.isFinite(id) && id > 0
+                  ? mediaByStoreId.get(id)?.delivery_radius_km ??
+                    (() => {
+                      const raw = (s as { delivery_radius_km?: number | string | null })
+                        .delivery_radius_km;
+                      const n = Number(raw);
+                      return Number.isFinite(n) && n > 0 ? n : null;
+                    })()
+                  : null;
+              return distanceKm <= effectiveServiceRadiusKm(GLOBAL_LIST_RADIUS_KM, storeRadius);
+            })
+      ).slice(0, pageLimit);
+      const filteredInternalIds = items
+        .map((s) => Number((s as { id?: number }).id))
+        .filter((id) => Number.isFinite(id) && id > 0);
       // These four lookups enrich the card (offer labels, rating, schedule,
       // order count) but none of them are load-bearing — if any one fails
       // (e.g. pgBouncer statement_timeout under burst load), we still want
@@ -389,21 +468,28 @@ export async function merchantRoutes(app: FastifyInstance) {
       };
       const [offerHeadlines, ratingSummaries, scheduleTimes, orderCounts, menuPrepAvgs, prepBuffers, menuHeroPhotos] =
         await Promise.all([
-        settleEnrichment("offer-headlines", getPrimaryOfferHeadlinesForStores(storeInternalIds), new Map()),
-        settleEnrichment("rating-summaries", getStoreRatingsForStores(storeInternalIds), new Map()),
-        settleEnrichment("schedule-times", getScheduleTimesForStores(storeInternalIds), new Map()),
-        settleEnrichment("order-counts", getCompletedOrderCountsForStores(storeInternalIds), new Map()),
+        settleEnrichment(
+          "offer-headlines",
+          // Grocery list must not surface food/platform offer headlines on cards.
+          requestedStoreType === "GROCERY"
+            ? Promise.resolve(new Map<number, string>())
+            : getPrimaryOfferHeadlinesForStores(filteredInternalIds),
+          new Map()
+        ),
+        settleEnrichment("rating-summaries", getStoreRatingsForStores(filteredInternalIds), new Map()),
+        settleEnrichment("schedule-times", getScheduleTimesForStores(filteredInternalIds), new Map()),
+        settleEnrichment("order-counts", getCompletedOrderCountsForStores(filteredInternalIds), new Map()),
         settleEnrichment(
           "menu-prep-averages",
-          getAverageMenuPrepMinutesForStores(storeInternalIds),
+          getAverageMenuPrepMinutesForStores(filteredInternalIds),
           new Map()
         ),
         settleEnrichment(
           "prep-buffers",
-          getPreparationBufferMinutesForStores(storeInternalIds),
+          getPreparationBufferMinutesForStores(filteredInternalIds),
           new Map()
         ),
-        settleEnrichment("menu-hero-photos", getStoreMenuHeroPhotos(storeInternalIds), new Map()),
+        settleEnrichment("menu-hero-photos", getStoreMenuHeroPhotos(filteredInternalIds), new Map()),
       ]);
 
       const body = items.map((s) => {
@@ -527,9 +613,114 @@ export async function merchantRoutes(app: FastifyInstance) {
               ? mediaByStoreId.get(storeInternalId)?.packaging_charge_amount ?? 0
               : 0,
           isPureVeg: s.is_pure_veg === true,
+          storeType:
+            Number.isFinite(storeInternalId) && storeInternalId > 0
+              ? mediaByStoreId.get(storeInternalId)?.store_type ??
+                (typeof (s as { store_type?: string | null }).store_type === "string"
+                  ? String((s as { store_type?: string | null }).store_type).trim().toUpperCase() || null
+                  : null)
+              : null,
         };
       });
       return reply.send({ items: body });
+    }
+  );
+
+  // GET /v1/merchants/by-dish-category – category chip browse (item name OR menu section)
+  const dishCategoryQuerySchema = z.object({
+    q: z.string().min(1).max(120),
+    lat: z.coerce.number().min(-90).max(90).optional(),
+    lng: z.coerce.number().min(-180).max(180).optional(),
+    maxDistanceKm: z.coerce.number().min(1).max(50).optional(),
+    limit: z.coerce.number().min(1).max(50).optional(),
+    veg: z.coerce.boolean().optional(),
+  });
+
+  app.get(
+    "/merchants/by-dish-category",
+    {
+      schema: {
+        querystring: dishCategoryQuerySchema,
+        response: {
+          200: z.object({
+            stores: z.array(
+              z.object({
+                id: z.string(),
+                name: z.string(),
+                bannerUrl: z.string().nullable().optional(),
+                cuisines: z.array(z.string()).nullable().optional(),
+                distanceKm: z.number().nullable().optional(),
+                matchVia: z.enum(["item", "menu_category", "both"]),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const q = request.query as z.infer<typeof dishCategoryQuerySchema>;
+      const stores = await listStoresForDishCategoryLabel({
+        q: q.q.trim(),
+        lat: q.lat,
+        lng: q.lng,
+        maxDistanceKm: q.maxDistanceKm,
+        limit: q.limit,
+        vegMode: q.veg === true,
+      });
+      return reply.send({
+        stores: stores.map((s) => ({
+          id: s.id,
+          name: s.name,
+          bannerUrl: toAbsoluteClientMediaUrl(s.bannerUrl) ?? s.bannerUrl,
+          cuisines: s.cuisines,
+          distanceKm: s.distanceKm,
+          matchVia: s.matchVia,
+        })),
+      });
+    }
+  );
+
+  const groceryHomeCategoriesQuerySchema = z.object({
+    lat: z.coerce.number().min(-90).max(90).optional(),
+    lng: z.coerce.number().min(-180).max(180).optional(),
+    veg: z.coerce.boolean().optional(),
+    storeIds: z.string().max(2000).optional(),
+  });
+
+  app.get(
+    "/merchants/grocery-home-categories",
+    {
+      schema: {
+        querystring: groceryHomeCategoriesQuerySchema,
+        response: {
+          200: z.object({
+            items: z.array(
+              z.object({
+                id: z.string(),
+                name: z.string(),
+                slug: z.string(),
+                imageUrl: z.string().nullable(),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const q = request.query as z.infer<typeof groceryHomeCategoriesQuerySchema>;
+      const storeIds = q.storeIds
+        ? q.storeIds
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : undefined;
+      const items = await listGroceryHomeMenuCategories({
+        lat: q.lat,
+        lng: q.lng,
+        vegMode: q.veg === true,
+        storeIds,
+      });
+      return reply.send({ items });
     }
   );
 
@@ -552,6 +743,8 @@ export async function merchantRoutes(app: FastifyInstance) {
               hasCustomizations: z.boolean(),
               hasAddons: z.boolean(),
               hasVariants: z.boolean(),
+              sizeValue: z.string().nullable().optional(),
+              sizeUnit: z.string().nullable().optional(),
             }),
             variants: z.array(z.object({
               id: z.string(),
@@ -886,6 +1079,7 @@ export async function merchantRoutes(app: FastifyInstance) {
             id: z.string(),
             name: z.string(),
             imageUrl: z.string().nullable().optional(),
+            bannerVideoUrl: z.string().nullable().optional(),
             address: z.string().optional(),
             bannerImages: z.array(z.string()).optional(),
             latitude: z.number().nullable().optional(),
@@ -934,6 +1128,8 @@ export async function merchantRoutes(app: FastifyInstance) {
             rushRemainingMinutes: z.number().nullable().optional(),
             menuVersion: z.number().optional(),
             etag: z.string().optional(),
+            fssaiNumber: z.string().nullable().optional(),
+            storeType: z.string().nullable().optional(),
           }),
           404: z.object({ error: z.string() }),
         },
@@ -1009,10 +1205,19 @@ export async function merchantRoutes(app: FastifyInstance) {
         .map((u) => toAbsoluteClientMediaUrl(u))
         .filter((u): u is string => Boolean(u));
 
+      const fssaiNumber =
+        Number.isFinite(storeInternalId) && storeInternalId > 0
+          ? await getStoreFssaiLicenseNumber(storeInternalId)
+          : null;
+
       return reply.send({
         id: store.store_id,
         name: store.store_display_name ?? store.store_name,
         imageUrl: toAbsoluteClientMediaUrl(store.banner_url ?? null) ?? undefined,
+        bannerVideoUrl:
+          toAbsoluteClientMediaUrl(
+            (store as { banner_video_url?: string | null }).banner_video_url ?? null
+          ) ?? undefined,
         address: store.store_description ?? undefined,
         bannerImages: bannerImagesAbsolute.length > 0 ? bannerImagesAbsolute : undefined,
         latitude: store.latitude != null ? Number(store.latitude) : undefined,
@@ -1036,6 +1241,11 @@ export async function merchantRoutes(app: FastifyInstance) {
         rushRemainingMinutes: surface.activeRush?.remainingMinutes ?? null,
         menuVersion: versionInfo?.menuVersion,
         etag: versionInfo?.etag,
+        fssaiNumber,
+        storeType:
+          typeof (store as { store_type?: string | null }).store_type === "string"
+            ? String((store as { store_type?: string | null }).store_type).trim().toUpperCase() || null
+            : null,
       });
     }
   );

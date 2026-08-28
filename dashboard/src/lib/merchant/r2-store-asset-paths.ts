@@ -41,11 +41,11 @@ export function getStoreOnboardingAssetsBase(
 export function buildStoreProfileMediaR2Key(
   parentPk: number | string,
   storePublicId: string,
-  type: "banner" | "gallery",
+  type: "banner" | "gallery" | "banner_video",
   fileName: string
 ): string {
   const base = getStoreAssetsBase(parentPk, storePublicId);
-  const folder = type === "banner" ? "banners" : "gallery";
+  const folder = type === "banner" ? "banners" : type === "banner_video" ? "videos" : "gallery";
   const safe = String(fileName || "upload").replace(/^\/+/, "");
   return `${base}/${folder}/${safe}`;
 }

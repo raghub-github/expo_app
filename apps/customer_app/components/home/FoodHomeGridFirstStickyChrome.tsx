@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { StyleSheet, View } from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
   Extrapolation,
   interpolate,
@@ -10,9 +9,13 @@ import Animated, {
   useAnimatedStyle,
   type SharedValue,
 } from "react-native-reanimated";
-import { FoodHomeGridFirstHeader } from "@/components/home/FoodHomeGridFirstHeader";
+import {
+  FoodHomeGridFirstHeader,
+  GRID_FIRST_LOCATION_ROW_H,
+} from "@/components/home/FoodHomeGridFirstHeader";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
+  GRID_FIRST_SEARCH_ROW_H,
   GRID_FIRST_STICK_HANDOFF_PX,
   GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
   gridFirstStickyCategoryTop,
@@ -32,8 +35,13 @@ type Props = {
   categoryStickAt: SharedValue<number>;
   filterStickAt: SharedValue<number>;
   onSearchPress: () => void;
+  onLocationPress?: () => void;
+  locationPrimary?: string;
+  locationSecondary?: string;
   vegOnly: boolean;
   onVegChange: (value: boolean) => void;
+  showVegToggle?: boolean;
+  searchPlaceholders?: string[];
   categories: React.ReactNode;
   filters?: React.ReactNode;
   /** When false, only the search bar pins on scroll (classic 2-row category rail). */
@@ -49,16 +57,30 @@ export function FoodHomeGridFirstStickyChrome({
   categoryStickAt,
   filterStickAt,
   onSearchPress,
+  onLocationPress = () => {},
+  locationPrimary = "",
+  locationSecondary = "",
   vegOnly,
   onVegChange,
+  showVegToggle = true,
+  searchPlaceholders,
   categories,
   filters,
   enableCategorySticky = true,
   enableFilterSticky = true,
 }: Props) {
+  const pinFullHeader = Boolean(locationPrimary || locationSecondary);
   const searchTop = gridFirstStickySearchTop(metrics);
-  const categoryTop = gridFirstStickyCategoryTop(metrics);
-  const filterTop = gridFirstStickyFilterTop(metrics);
+  const categoryTop = pinFullHeader
+    ? metrics.topInset +
+      GRID_FIRST_LOCATION_ROW_H +
+      10 +
+      GRID_FIRST_SEARCH_ROW_H +
+      GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP
+    : gridFirstStickyCategoryTop(metrics);
+  const filterTop = pinFullHeader
+    ? categoryTop + metrics.categoryBlockHeight
+    : gridFirstStickyFilterTop(metrics);
 
   const [searchStickyOn, setSearchStickyOn] = useState(false);
   const [categoryStickyOn, setCategoryStickyOn] = useState(false);
@@ -272,12 +294,18 @@ export function FoodHomeGridFirstStickyChrome({
           pointerEvents="box-none"
         >
           <FoodHomeGridFirstHeader
-            variant="search"
+            variant={pinFullHeader ? "full" : "search"}
             topInset={0}
             highlightSearchPill
+            heroReady={false}
+            locationPrimary={locationPrimary}
+            locationSecondary={locationSecondary}
+            onLocationPress={onLocationPress}
             onSearchPress={onSearchPress}
             vegOnly={vegOnly}
             onVegChange={onVegChange}
+            showVegToggle={showVegToggle}
+            searchPlaceholders={searchPlaceholders}
           />
         </View>
       </Animated.View>

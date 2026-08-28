@@ -381,6 +381,7 @@ export default function MealsUnderPriceScreen() {
         lng: merchantsAnchorCoords!.longitude,
         vegOnly,
         distanceMode: "road",
+        storeType: "FOOD",
       }),
     enabled: merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
     staleTime: 60_000,

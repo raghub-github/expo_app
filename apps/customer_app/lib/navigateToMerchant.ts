@@ -24,9 +24,11 @@ export function navigateToMerchant(
 ): void {
   if (!merchantId) return;
 
+  const isGrocery = (merchant?.storeType ?? "").trim().toUpperCase() === "GROCERY";
+  const discovery = !isGrocery && peekCachedFoodHomeLayoutKey() === "discovery";
+
   // 1) Shutter Modal first — must beat the native stack paint.
-  useMerchantNavTransitionStore.getState().show(merchantId);
-  const discovery = peekCachedFoodHomeLayoutKey() === "discovery";
+  useMerchantNavTransitionStore.getState().show(merchantId, { dark: discovery });
   useScreenChromeStore.setState({
     statusBarBackground: discovery ? "#121212" : "#FFFFFF",
     statusBarStyle: discovery ? "light" : "dark",

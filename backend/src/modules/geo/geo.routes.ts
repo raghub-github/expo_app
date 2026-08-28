@@ -4,6 +4,7 @@ import { getSql, withSqlRetry, isDbConnectionError } from "../../db/client.js";
 import { isTransientDbError, hasTransientDbCause } from "../../lib/db/is-transient-db-error.js";
 import { resolveGeoServiceAvailability } from "./geoServiceAvailability.service.js";
 import { resolveFoodHomeLayout } from "../cxapp-home/cxappFoodHomeLayout.service.js";
+import { resolveGroceryHomeLayout } from "../cxapp-home/cxappGroceryHomeLayout.service.js";
 
 const ResolveQuerySchema = z.object({
   pincode: z.string().min(3).max(12),
@@ -95,6 +96,38 @@ export async function geoRoutes(app: FastifyInstance) {
     } catch (e) {
       const msg = e instanceof Error ? e.message : "resolve_failed";
       request.log.error({ err: e }, "food_home_layout_resolve_failed");
+      const transient =
+        isDbConnectionError(e) || isTransientDbError(e) || hasTransientDbCause(e);
+      if (transient) {
+        return reply.code(503).send({
+          error: "database_unavailable",
+          message: "Database is busy. Please try again in a moment.",
+        });
+      }
+      return reply.code(500).send({ error: "resolve_failed", message: msg });
+    }
+  });
+
+  /** Customer grocery home — per-state CXApp Home layout + hero media. */
+  app.get("/geo/grocery-home-layout", async (request, reply) => {
+    const q = ServicesQuerySchema.safeParse(request.query);
+    if (!q.success) {
+      return reply.code(400).send({ error: "invalid_query", details: q.error.flatten() });
+    }
+    const { pincode, state, lat, lng } = q.data;
+    if (!pincode && !state && (lat == null || lng == null)) {
+      return reply.code(400).send({
+        error: "missing_location",
+        message: "Provide pincode, state, or lat+lng",
+      });
+    }
+    try {
+      const result = await withSqlRetry(() => resolveGroceryHomeLayout({ pincode, state, lat, lng }));
+      void reply.header("Cache-Control", "private, max-age=0, must-revalidate");
+      return reply.send({ ok: true, ...result });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "resolve_failed";
+      request.log.error({ err: e }, "grocery_home_layout_resolve_failed");
       const transient =
         isDbConnectionError(e) || isTransientDbError(e) || hasTransientDbCause(e);
       if (transient) {

@@ -51,7 +51,7 @@ export function computeGridFirstCategoryTabMetrics(
   const itemW = Math.floor((inner - gap * (cols - 1)) / cols);
   const used = itemW * cols + gap * (cols - 1);
   const trailingSlack = Math.max(0, inner - used);
-  const circle = Math.min(50, Math.max(42, itemW - 2));
+  const circle = Math.min(48, Math.max(40, itemW - 6));
   const imgSize = circle;
   return {
     itemW,
@@ -95,7 +95,7 @@ function CategoryPhoto({
   layout: FoodHomeCategoryTabLayout;
   fallbackIcon?: keyof typeof Ionicons.glyphMap;
 }) {
-  const { circle, imgSize } = layout;
+  const { circle } = layout;
   const hasImage = !!imageUrl?.trim();
   const dark = useMerchantUiDark();
 
@@ -109,22 +109,34 @@ function CategoryPhoto({
         justifyContent: "center",
       }}
     >
-      {hasImage ? (
-        <UserAppCategoryImage
-          imageUrl={imageUrl ?? null}
-          cacheKey={cacheKey}
-          contentFit="cover"
-          style={{ width: imgSize, height: imgSize, borderRadius: imgSize / 2 }}
-        />
-      ) : (
-        <View style={[styles.photoFallback, dark && styles.photoFallbackDark, { width: imgSize, height: imgSize, borderRadius: imgSize / 2 }]}>
-          <Ionicons
-            name={fallbackIcon}
-            size={Math.max(20, Math.round(circle * 0.38))}
-            color={dark ? MerchantDarkPalette.textMuted : "#94A3B8"}
+      <View
+        style={[
+          styles.circleClip,
+          dark && styles.circleClipDark,
+          {
+            width: circle,
+            height: circle,
+            borderRadius: circle / 2,
+          },
+        ]}
+      >
+        {hasImage ? (
+          <UserAppCategoryImage
+            imageUrl={imageUrl ?? null}
+            cacheKey={cacheKey}
+            contentFit="cover"
+            style={{ width: circle, height: circle }}
           />
-        </View>
-      )}
+        ) : (
+          <View style={[styles.photoFallback, dark && styles.photoFallbackDark, StyleSheet.absoluteFillObject]}>
+            <Ionicons
+              name={fallbackIcon}
+              size={Math.max(20, Math.round(circle * 0.38))}
+              color={dark ? MerchantDarkPalette.textMuted : "#94A3B8"}
+            />
+          </View>
+        )}
+      </View>
     </View>
   );
 }
@@ -492,6 +504,18 @@ const styles = StyleSheet.create({
   },
   photoClip: {
     overflow: "hidden",
+  },
+  circleClip: {
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F8FAFC",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(15,23,42,0.06)",
+  },
+  circleClipDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
+    borderColor: "rgba(255,255,255,0.08)",
   },
   photoFallback: {
     alignItems: "center",

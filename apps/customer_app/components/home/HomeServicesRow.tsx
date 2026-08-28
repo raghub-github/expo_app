@@ -1,7 +1,12 @@
 /**
  * Six service cards in a 2-column grid — height adapts to fill one-screen home layout.
+ *
+ * Order (default when parcel + grocery both active):
+ * 1 Food, 2 Ride, 3 Parcel, 4 Grocery, 5 E-Commerce, 6 Nearby
+ * When parcel is inactive and grocery is active, Grocery shifts to slot 3.
  */
 
+import { useMemo } from "react";
 import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -20,7 +25,7 @@ const CARD_W = Math.floor((SCREEN_W - PAD * 2 - GAP * (COLS - 1)) / COLS);
 const DEFAULT_CARD_H = 118;
 
 type ServiceItem = {
-  id: string;
+  id: CustomerHomeServiceId;
   title: string;
   pill?: string;
   arrowColor: string;
@@ -28,58 +33,67 @@ type ServiceItem = {
   route: string;
 };
 
-const ALWAYS_DISABLED_IDS = new Set(["ecom", "vouchers", "near-me"]);
+const ALWAYS_DISABLED_IDS = new Set<string>(["ecom", "near-me"]);
 
-const SERVICES: ServiceItem[] = [
-  {
-    id: "food",
-    title: "Order Food",
-    pill: "Fresh & Fast Delivery",
-    arrowColor: "#7C3AED",
-    assetKey: CX.home.serviceFood,
-    route: "/home",
-  },
-  {
-    id: "ride",
-    title: "Book a Ride",
-    pill: "Going Out",
-    arrowColor: "#16A34A",
-    assetKey: CX.home.serviceRide,
-    route: "/home/service/ride",
-  },
-  {
-    id: "parcels",
-    title: "Courier Service",
-    pill: "Send Parcels",
-    arrowColor: "#EA580C",
-    assetKey: CX.home.serviceParcel,
-    route: "/home/service/parcels",
-  },
-  {
-    id: "ecom",
-    title: "E-Commerce",
-    pill: "Elect & Ecom",
-    arrowColor: "#2563EB",
-    assetKey: CX.home.serviceEcommerce,
-    route: "/home/shop",
-  },
-  {
-    id: "vouchers",
-    title: "Online Vouchers",
-    pill: "Offers",
-    arrowColor: "#EA580C",
-    assetKey: CX.home.serviceVoucher,
-    route: "/home/service/vouchers",
-  },
-  {
-    id: "near-me",
-    title: "Explore Nearby",
-    pill: "Near Me",
-    arrowColor: "#DB2777",
-    assetKey: CX.home.serviceLocation,
-    route: "/home/service/near-me",
-  },
-];
+const FOOD: ServiceItem = {
+  id: "food",
+  title: "Order Food",
+  pill: "Fresh & Fast Delivery",
+  arrowColor: "#7C3AED",
+  assetKey: CX.home.serviceFood,
+  route: "/home",
+};
+const RIDE: ServiceItem = {
+  id: "ride",
+  title: "Book a Ride",
+  pill: "Going Out",
+  arrowColor: "#16A34A",
+  assetKey: CX.home.serviceRide,
+  route: "/home/service/ride",
+};
+const PARCELS: ServiceItem = {
+  id: "parcels",
+  title: "Courier Service",
+  pill: "Send Parcels",
+  arrowColor: "#EA580C",
+  assetKey: CX.home.serviceParcel,
+  route: "/home/service/parcels",
+};
+const GROCERY: ServiceItem = {
+  id: "grocery",
+  title: "Grocery",
+  pill: "Fresh Daily",
+  arrowColor: "#EA580C",
+  // Reuse former Online Vouchers artwork for Grocery.
+  assetKey: CX.home.serviceVoucher,
+  route: "/home/grocery",
+};
+const ECOM: ServiceItem = {
+  id: "ecom",
+  title: "E-Commerce",
+  pill: "Elect & Ecom",
+  arrowColor: "#2563EB",
+  assetKey: CX.home.serviceEcommerce,
+  route: "/home/shop",
+};
+const NEAR_ME: ServiceItem = {
+  id: "near-me",
+  title: "Explore Nearby",
+  pill: "Near Me",
+  arrowColor: "#DB2777",
+  assetKey: CX.home.serviceLocation,
+  route: "/home/service/near-me",
+};
+
+/** Parcel inactive + grocery active → grocery takes slot 3; otherwise parcel stays at 3. */
+export function orderHomeServices(opts: {
+  parcelEnabled: boolean;
+  groceryEnabled: boolean;
+}): ServiceItem[] {
+  const groceryBeforeParcel = !opts.parcelEnabled && opts.groceryEnabled;
+  const mid = groceryBeforeParcel ? [GROCERY, PARCELS] : [PARCELS, GROCERY];
+  return [FOOD, RIDE, ...mid, ECOM, NEAR_ME];
+}
 
 type ServiceTileProps = {
   item: ServiceItem;
@@ -92,6 +106,7 @@ type Props = {
     food: boolean;
     ride: boolean;
     parcels: boolean;
+    grocery?: boolean;
   };
   accountBlocks?: CustomerAccountBlocksMap;
   onAccountBlockedPress?: (
@@ -111,6 +126,7 @@ function isServiceEnabled(
   if (id === "food") return enabledServices.food;
   if (id === "ride") return enabledServices.ride;
   if (id === "parcels") return enabledServices.parcels;
+  if (id === "grocery") return enabledServices.grocery === true;
   return false;
 }
 
@@ -119,11 +135,10 @@ function accountBlockReasonFor(
   accountBlocks?: CustomerAccountBlocksMap
 ): string | undefined {
   if (!accountBlocks) return undefined;
-  if (id === "food") return accountBlocks.food;
+  if (id === "food" || id === "grocery") return accountBlocks.food;
   if (id === "ride") return accountBlocks.ride;
   if (id === "parcels") return accountBlocks.parcels;
   if (id === "ecom") return accountBlocks.ecom;
-  if (id === "vouchers") return accountBlocks.vouchers;
   if (id === "near-me") return accountBlocks["near-me"];
   return undefined;
 }
@@ -158,7 +173,7 @@ function ServiceTile({
       onPress={() => {
         if (isAccountBlocked && accountBlockReason) {
           onAccountBlockedPress?.(
-            item.id as CustomerHomeServiceId,
+            item.id,
             accountBlockReason,
             item.title,
             item.assetKey
@@ -216,9 +231,18 @@ export function HomeServicesRow({
   accountBlocks,
   onAccountBlockedPress,
 }: Props) {
+  const services = useMemo(
+    () =>
+      orderHomeServices({
+        parcelEnabled: enabledServices?.parcels === true,
+        groceryEnabled: enabledServices?.grocery === true,
+      }),
+    [enabledServices?.parcels, enabledServices?.grocery]
+  );
+
   return (
     <View style={styles.grid}>
-      {SERVICES.map((s) => (
+      {services.map((s) => (
         <ServiceTile
           key={s.id}
           item={s}

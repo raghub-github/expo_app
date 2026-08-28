@@ -31,6 +31,7 @@ import { StoreOpenStatusBadge } from "@/components/home/StoreOpenStatusBadge";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AppText } from "@/components/AppText";
 import { usePreventServicesAtPin } from "@/hooks/usePreventServicesAtPin";
+import { useStoreMembershipFreeDelivery } from "@/hooks/useStoreMembershipFreeDelivery";
 
 const { width } = Dimensions.get("window");
 const PAGE_PAD = 16;
@@ -96,6 +97,8 @@ function GMRestaurantCardV2Inner({
       }),
     [merchant, weatherDelayMinutes]
   );
+
+  const membershipFreeDelivery = useStoreMembershipFreeDelivery(merchant.distanceKm);
 
   const toggleBookmark = useCallback(
     async (e?: any) => {
@@ -222,6 +225,7 @@ function GMRestaurantCardV2Inner({
               deliveryTime={deliveryTimeLabel}
               distanceKm={merchant.distanceKm}
               compact
+              freeDelivery={membershipFreeDelivery}
             />
             <MerchantOfferRow offerText={merchant.offerText} />
           </View>

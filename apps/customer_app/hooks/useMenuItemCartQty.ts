@@ -13,19 +13,10 @@ export function useMenuItemCartQty(
   const numId = menuItemId != null ? String(menuItemId) : null;
   return useCartStore((s) => {
     if (!merchantCartMatchesRoute(s.merchantId, merchantId)) return 0;
-    let sum = 0;
-    for (const line of s.items) {
-      const mid = line.menuItemId;
-      if (mid === itemId || mid.startsWith(`${itemId}_`) || mid.startsWith(`${itemId}::`)) {
-        sum += line.quantity;
-        continue;
-      }
-      if (
-        numId != null &&
-        (mid === numId || mid.startsWith(`${numId}_`) || mid.startsWith(`${numId}::`))
-      ) {
-        sum += line.quantity;
-      }
+    const index = s.menuItemQtyIndex;
+    let sum = index[itemId] ?? 0;
+    if (numId != null && numId !== itemId) {
+      sum += index[numId] ?? 0;
     }
     return sum;
   });

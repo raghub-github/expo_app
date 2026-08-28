@@ -8,11 +8,12 @@ import {
   runOnJS,
   type SharedValue,
 } from "react-native-reanimated";
-import { HEADER_COLLAPSED_THRESHOLD } from "../constants/layout";
+import { HEADER_COLLAPSED_THRESHOLD, merchantStickySearchFadeStart } from "../constants/layout";
 
 type UseMerchantScrollAnimationOpts = {
   headerSearchExpandedSv: SharedValue<boolean>;
   userMenuScrollStarted?: SharedValue<boolean>;
+  heroBannerHeightSv?: SharedValue<number>;
   onScrollEnd?: (y: number) => void;
   /** Cancel pending programmatic scroll when the user takes over. */
   onBeginDrag?: () => void;
@@ -23,6 +24,7 @@ type UseMerchantScrollAnimationOpts = {
 export function useMerchantScrollAnimation({
   headerSearchExpandedSv,
   userMenuScrollStarted,
+  heroBannerHeightSv,
   onScrollEnd,
   onBeginDrag,
   pinned = false,
@@ -68,18 +70,11 @@ export function useMerchantScrollAnimation({
     if (pinned || headerSearchExpandedSv.value) {
       return { opacity: 1, transform: [{ translateY: 0 }] };
     }
-    const opacity = interpolate(
-      scrollY.value,
-      [HEADER_COLLAPSED_THRESHOLD - 24, HEADER_COLLAPSED_THRESHOLD],
-      [0, 1],
-      Extrapolation.CLAMP
-    );
-    const translateY = interpolate(
-      scrollY.value,
-      [HEADER_COLLAPSED_THRESHOLD - 24, HEADER_COLLAPSED_THRESHOLD],
-      [-8, 0],
-      Extrapolation.CLAMP
-    );
+    const heroH = heroBannerHeightSv?.value ?? HEADER_COLLAPSED_THRESHOLD;
+    const fadeStart = merchantStickySearchFadeStart(heroH);
+    const fadeEnd = fadeStart + 24;
+    const opacity = interpolate(scrollY.value, [fadeStart, fadeEnd], [0, 1], Extrapolation.CLAMP);
+    const translateY = interpolate(scrollY.value, [fadeStart, fadeEnd], [-8, 0], Extrapolation.CLAMP);
     return { opacity, transform: [{ translateY }] };
   });
 
@@ -87,9 +82,11 @@ export function useMerchantScrollAnimation({
     if (pinned || headerSearchExpandedSv.value) {
       return { opacity: 1 };
     }
+    const heroH = heroBannerHeightSv?.value ?? HEADER_COLLAPSED_THRESHOLD;
+    const fadeStart = merchantStickySearchFadeStart(heroH);
     const opacity = interpolate(
       scrollY.value,
-      [HEADER_COLLAPSED_THRESHOLD, HEADER_COLLAPSED_THRESHOLD + 28],
+      [fadeStart + 24, fadeStart + 52],
       [0.9, 1],
       Extrapolation.CLAMP
     );

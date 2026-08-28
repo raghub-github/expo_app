@@ -728,23 +728,35 @@ export async function orderRoutes(app: FastifyInstance) {
       for (const [pk, summary] of refundSummaryByCorePk) {
         refundStatusByCorePk.set(pk, summary.status);
       }
-      const customerOrderRatings =
-        pageOrderPks.length > 0
-          ? await db
-              .select({
-                orderId: merchantStoreRatings.orderId,
-                rating: merchantStoreRatings.rating,
-                foodRating: merchantStoreRatings.foodRating,
-                serviceRating: merchantStoreRatings.serviceRating,
-              })
-              .from(merchantStoreRatings)
-              .where(
-                and(
-                  eq(merchantStoreRatings.customerId, customerPk),
-                  inArray(merchantStoreRatings.orderId, pageOrderPks)
-                )
+      let customerOrderRatings: Array<{
+        orderId: number;
+        rating: number;
+        foodRating: number | null;
+        serviceRating: number | null;
+      }> = [];
+      if (pageOrderPks.length > 0) {
+        try {
+          customerOrderRatings = await db
+            .select({
+              orderId: merchantStoreRatings.orderId,
+              rating: merchantStoreRatings.rating,
+              foodRating: merchantStoreRatings.foodRating,
+              serviceRating: merchantStoreRatings.serviceRating,
+            })
+            .from(merchantStoreRatings)
+            .where(
+              and(
+                eq(merchantStoreRatings.customerId, customerPk),
+                inArray(merchantStoreRatings.orderId, pageOrderPks)
               )
-          : [];
+            );
+        } catch (err) {
+          req.log.warn(
+            { err: (err as Error)?.message },
+            "orders list: merchant_store_ratings lookup failed; continuing without per-order ratings"
+          );
+        }
+      }
       const orderRatingByPk = new Map(
         customerOrderRatings.map((r) => [Number(r.orderId), r] as const)
       );

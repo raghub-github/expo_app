@@ -18,10 +18,10 @@ export function useStoreDetailLiveStatus(storeId: string | null) {
     queryKey: STORE_LIVE_STATUS_QUERY_KEY(storeId ?? ""),
     queryFn: () => merchantService.getStoreLiveStatusSnapshot(storeId!),
     enabled: !!storeId,
-    staleTime: 30_000,
+    staleTime: 60_000,
     gcTime: 5 * 60_000,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {

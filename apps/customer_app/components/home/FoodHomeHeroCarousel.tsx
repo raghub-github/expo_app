@@ -120,7 +120,16 @@ type Props = {
   onHeroHeightChange?: (totalHeight: number) => void;
   /** Lets the parent keep compact chrome until the first hero is decoded. */
   onHeroReadyChange?: (ready: boolean) => void;
+  /** Flat placeholder behind hero media while it decodes (grocery uses page bg). */
+  placeholderColor?: string;
 };
+
+function HeroPlaceholder({ color }: { color?: string }) {
+  if (color) {
+    return <View style={[StyleSheet.absoluteFillObject, { backgroundColor: color }]} />;
+  }
+  return <GridFirstDefaultHeroBg />;
+}
 
 function HeroMediaSlide({
   slide,
@@ -133,6 +142,7 @@ function HeroMediaSlide({
   onAspectRatio,
   onMediaReady,
   hideSlidePlaceholder = false,
+  placeholderColor,
 }: {
   slide: Slide;
   slideWidth: number;
@@ -144,6 +154,7 @@ function HeroMediaSlide({
   onAspectRatio?: (ratio: number) => void;
   onMediaReady?: () => void;
   hideSlidePlaceholder?: boolean;
+  placeholderColor?: string;
 }) {
   const hasMedia = !!slide.mediaUrl && !imageFailed;
   const [imageReady, setImageReady] = useState(false);
@@ -178,7 +189,7 @@ function HeroMediaSlide({
 
   const content = (
     <>
-      {!hideSlidePlaceholder ? <GridFirstDefaultHeroBg /> : null}
+      {!hideSlidePlaceholder ? <HeroPlaceholder color={placeholderColor} /> : null}
 
       {slide.kind === "video" && hasMedia ? (
         <Video
@@ -237,6 +248,7 @@ export function FoodHomeHeroCarousel({
   topInset = 0,
   onHeroHeightChange,
   onHeroReadyChange,
+  placeholderColor,
 }: Props) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -357,10 +369,11 @@ export function FoodHomeHeroCarousel({
         styles.wrap,
         embeddedInSky && styles.wrapEmbedded,
         immersive && embeddedInSky && styles.wrapImmersiveAbsolute,
+        placeholderColor ? { backgroundColor: placeholderColor } : null,
         { height: slideHeight, width: slideWidth || "100%" },
       ]}
     >
-      {immersive ? <GridFirstDefaultHeroBg /> : null}
+      {immersive ? <HeroPlaceholder color={placeholderColor} /> : null}
       <ScrollView
         ref={scrollRef}
         horizontal
@@ -386,6 +399,7 @@ export function FoodHomeHeroCarousel({
             onImageError={() => setFailedIds((s) => new Set(s).add(slide.id))}
             isActive={index === activeIndex}
             hideSlidePlaceholder={immersive}
+            placeholderColor={placeholderColor}
             onAspectRatio={
               slide.aspectRatio
                 ? undefined

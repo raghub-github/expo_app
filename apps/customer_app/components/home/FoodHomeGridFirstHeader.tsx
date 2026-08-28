@@ -38,6 +38,12 @@ const PLACEHOLDERS = [
   "Search restaurants…",
   "Search dishes near you…",
 ];
+export const GROCERY_SEARCH_PLACEHOLDERS = [
+  'Search "milk & bread"',
+  "Search snacks…",
+  "Search groceries…",
+  "Search items near you…",
+];
 const ROTATE_MS = 3500;
 
 /** White label + dark halo — readable on light or dark hero media without a box. */
@@ -56,11 +62,17 @@ type Props = {
   onSearchPress: () => void;
   vegOnly: boolean;
   onVegChange: (value: boolean) => void;
+  /** Hide veg switch (e.g. grocery home). */
+  showVegToggle?: boolean;
+  /** Rotating search hints — defaults to food placeholders. */
+  searchPlaceholders?: string[];
   /** Sticky overlay — clearer search pill border on white chrome. */
   highlightSearchPill?: boolean;
   /** Fade in-flow search when staged sticky search takes over. */
   stickyScrollY?: SharedValue<number>;
   searchStickAt?: SharedValue<number>;
+  /** Fade location row with search when the pinned header includes location + wallet. */
+  fadeLocationOnSticky?: boolean;
   /** Compact pre-hero state uses dark text on the page soft background. */
   heroReady?: boolean;
 };
@@ -74,9 +86,12 @@ export function FoodHomeGridFirstHeader({
   onSearchPress,
   vegOnly,
   onVegChange,
+  showVegToggle = true,
+  searchPlaceholders = PLACEHOLDERS,
   highlightSearchPill = false,
   stickyScrollY,
   searchStickAt,
+  fadeLocationOnSticky = false,
   heroReady = true,
 }: Props) {
   const router = useRouter();
@@ -104,15 +119,15 @@ export function FoodHomeGridFirstHeader({
   }, [profileImageUrl]);
 
   useEffect(() => {
-    if (PLACEHOLDERS.length <= 1) return;
+    if (searchPlaceholders.length <= 1) return;
     const id = setInterval(() => {
       setPlaceholderIndex((i) => {
-        const next = (i + 1) % PLACEHOLDERS.length;
+        const next = (i + 1) % searchPlaceholders.length;
         return next === i ? i : next;
       });
     }, ROTATE_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [searchPlaceholders]);
 
   useEffect(() => {
     micScale.value = withRepeat(
@@ -148,9 +163,7 @@ export function FoodHomeGridFirstHeader({
     };
   });
 
-  return (
-    <View style={[styles.wrap, { paddingTop: topInset }]}>
-      {showLocation ? (
+  const locationRow = showLocation ? (
       <View style={styles.topRow}>
         <TouchableOpacity
           style={styles.locationBlock}
@@ -208,6 +221,16 @@ export function FoodHomeGridFirstHeader({
           </TouchableOpacity>
         </View>
       </View>
+  ) : null;
+
+  return (
+    <View style={[styles.wrap, { paddingTop: topInset }]}>
+      {locationRow ? (
+        fadeLocationOnSticky ? (
+          <Animated.View style={inFlowSearchFadeStyle}>{locationRow}</Animated.View>
+        ) : (
+          locationRow
+        )
       ) : null}
 
       {showSearch ? (
@@ -223,13 +246,14 @@ export function FoodHomeGridFirstHeader({
         >
           <Ionicons name="search" size={20} color={SEARCH_ICON} />
           <AppText style={styles.searchPlaceholder} numberOfLines={1}>
-            {PLACEHOLDERS[placeholderIndex]}
+            {searchPlaceholders[placeholderIndex % searchPlaceholders.length]}
           </AppText>
           <Animated.View style={micStyle}>
             <Ionicons name="mic" size={18} color={SEARCH_ICON} />
           </Animated.View>
         </TouchableOpacity>
 
+        {showVegToggle ? (
         <View style={styles.vegCol}>
           <View style={styles.vegLabelBadge}>
             <AppText style={styles.vegLabel}>VEG</AppText>
@@ -244,6 +268,7 @@ export function FoodHomeGridFirstHeader({
             <View style={[styles.vegThumb, vegOnly && styles.vegThumbOn]} />
           </TouchableOpacity>
         </View>
+        ) : null}
       </View>
       </Animated.View>
       ) : null}

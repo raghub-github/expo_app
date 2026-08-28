@@ -195,13 +195,93 @@ function platformDiscountRows(state: MutableBillState) {
 }
 
 describe("applyExclusiveCheckoutOffer — auto-pick priority", () => {
-  it("auto mode: platform-only eligible never auto-applies", () => {
-    const ctx = baseCtx();
+  it("auto mode: platform-only eligible never auto-applies without promo_config.auto_apply", () => {
+    const ctx = baseCtx({
+      platformOfferGeoBindingEffectiveIds: new Set([900]),
+    });
     const state = emptyState();
     const dataset = datasetWith([], [platformOffer({ id: 900 })]);
     applyExclusiveCheckoutOffer(ctx, dataset, state, 500, remFor(500), unexpectedCoupon);
 
     assert.equal(platformDiscountRows(state).length, 0);
+    assert.equal(merchantDiscountRows(state).length, 0);
+  });
+
+  it("auto mode: platform FREE_DELIVERY with auto_apply applies delivery cut", () => {
+    const ctx = baseCtx({
+      platformOfferGeoBindingEffectiveIds: new Set([901]),
+    });
+    const state = emptyState();
+    const rem = remFor(500);
+    const dataset = datasetWith(
+      [],
+      [
+        platformOffer({
+          id: 901,
+          name: "Free Delivery",
+          offerKind: "FREE_DELIVERY",
+          discountType: "PERCENTAGE",
+          valueNumeric: null,
+          deliveryDiscountType: "PERCENTAGE",
+          deliveryDiscountValue: 100,
+          promoConfig: { auto_apply: true },
+        }),
+      ]
+    );
+    applyExclusiveCheckoutOffer(ctx, dataset, state, 500, rem, unexpectedCoupon);
+
+    assert.equal(rem.delivery, 0);
+    assert.equal(platformDiscountRows(state).length, 1);
+    assert.equal(platformDiscountRows(state)[0]!.amount, 40);
+    assert.equal(platformDiscountRows(state)[0]!.meta?.offerKind, "FREE_DELIVERY");
+  });
+
+  it("auto mode: platform auto_apply OFF stays manual even when eligible", () => {
+    const ctx = baseCtx({
+      platformOfferGeoBindingEffectiveIds: new Set([902]),
+    });
+    const state = emptyState();
+    const rem = remFor(500);
+    const dataset = datasetWith(
+      [],
+      [
+        platformOffer({
+          id: 902,
+          name: "Free Delivery",
+          offerKind: "FREE_DELIVERY",
+          deliveryDiscountType: "FULL_WAIVE",
+          promoConfig: { auto_apply: false },
+        }),
+      ]
+    );
+    applyExclusiveCheckoutOffer(ctx, dataset, state, 500, rem, unexpectedCoupon);
+    assert.equal(rem.delivery, 40);
+    assert.equal(platformDiscountRows(state).length, 0);
+  });
+
+  it("manual selectedPlatformOfferId FREE_DELIVERY with PERCENTAGE type cuts delivery", () => {
+    const ctx = baseCtx({
+      selectedPlatformOfferId: 903,
+      platformOfferGeoBindingEffectiveIds: new Set([903]),
+    });
+    const state = emptyState();
+    const rem = remFor(500);
+    const dataset = datasetWith(
+      [merchantOffer({ id: 1 })],
+      [
+        platformOffer({
+          id: 903,
+          name: "Free Delivery",
+          offerKind: "FREE_DELIVERY",
+          deliveryDiscountType: "PERCENTAGE",
+          deliveryDiscountValue: 100,
+          promoConfig: { auto_apply: false },
+        }),
+      ]
+    );
+    applyExclusiveCheckoutOffer(ctx, dataset, state, 500, rem, unexpectedCoupon);
+    assert.equal(rem.delivery, 0);
+    assert.equal(platformDiscountRows(state).length, 1);
     assert.equal(merchantDiscountRows(state).length, 0);
   });
 
@@ -217,6 +297,31 @@ describe("applyExclusiveCheckoutOffer — auto-pick priority", () => {
     assert.equal(merchantDiscountRows(state).length, 1);
     assert.equal(merchantDiscountRows(state)[0]!.meta?.merchantOfferId, 1);
     assert.equal(platformDiscountRows(state).length, 0);
+  });
+
+  it("auto mode: FREE_DELIVERY with auto_apply preferred over merchant Precision", () => {
+    const ctx = baseCtx({
+      platformOfferGeoBindingEffectiveIds: new Set([910]),
+    });
+    const state = emptyState();
+    const rem = remFor(500);
+    const dataset = datasetWith(
+      [merchantOffer({ id: 1, discountPercentage: 20 })],
+      [
+        platformOffer({
+          id: 910,
+          name: "Free Delivery",
+          offerKind: "FREE_DELIVERY",
+          deliveryDiscountType: "FULL_WAIVE",
+          promoConfig: { auto_apply: true },
+        }),
+      ]
+    );
+    applyExclusiveCheckoutOffer(ctx, dataset, state, 500, rem, unexpectedCoupon);
+    assert.equal(rem.delivery, 0);
+    assert.equal(platformDiscountRows(state).length, 1);
+    assert.equal(platformDiscountRows(state)[0]!.meta?.offerKind, "FREE_DELIVERY");
+    assert.equal(merchantDiscountRows(state).length, 0);
   });
 
   it("previously-selected merchant offer now below min-order: re-picks another eligible merchant offer instead of going silent", () => {

@@ -33,11 +33,11 @@ export function featuredOffersRideQueryOptions(params: FeaturedOffersRideParams)
         serviceType: "RIDE",
         limit: 10,
       }),
-    staleTime: 0,
-    gcTime: 30 * 1000,
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
     retry: 1,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
     refetchOnReconnect: true,
   } as const;
 }

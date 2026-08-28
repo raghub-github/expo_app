@@ -117,11 +117,20 @@ export function RightSidebar({
       if (!anchor || !(anchor instanceof HTMLAnchorElement)) return;
       const rawHref = anchor.getAttribute("href");
       if (!rawHref || rawHref.startsWith("http") || rawHref.startsWith("#")) return;
-      // Intent only — never preventDefault; <Link> owns navigation.
       const target = rawHref.split("?")[0].split("#")[0];
+
+      // Store tab nav: overlay is off — never startNavigation (re-render drops first Link click).
+      const onStoreTab =
+        /^\/dashboard\/merchants\/stores\/\d+(\/|$)/.test(cleanPathname) &&
+        /^\/dashboard\/merchants\/stores\/\d+(\/|$)/.test(target);
+      if (onStoreTab) {
+        if (!isDashboardNavAlreadyAtTarget(cleanPathname, target)) {
+          prefetchDashboardSection(getQueryClient(), rawHref);
+        }
+        return;
+      }
+
       if (isDashboardNavAlreadyAtTarget(cleanPathname, target)) return;
-      // Defer overlay state until after this click finishes. setState in capture
-      // re-renders the rail and drops the first navigation (needs a second click).
       window.setTimeout(() => {
         currentRoute?.startNavigation(target);
       }, 0);

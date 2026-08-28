@@ -18,6 +18,8 @@ export type StoreFooterSectionProps = {
   similarMerchants: MerchantSummary[];
   /** Extra bottom pad (FAB / cart clearance) — same gray as footer so no white strip shows. */
   bottomPadding?: number;
+  /** FSSAI license — Zomato-style footer on store menu. */
+  fssaiNumber?: string | null;
 };
 
 /** Split offer copy into up to 2 short lines for the image badge (e.g. "60% OFF" / "up to ₹120"). */
@@ -111,6 +113,7 @@ function SimilarRestaurantCard({
 export function StoreFooterSection({
   similarMerchants,
   bottomPadding = 0,
+  fssaiNumber,
 }: StoreFooterSectionProps) {
   const router = useRouter();
   const dark = useMerchantUiDark();
@@ -193,6 +196,15 @@ export function StoreFooterSection({
             </View>
           ))}
         </View>
+
+        {fssaiNumber?.trim() ? (
+          <View style={styles.fssaiBlock}>
+            <AppText style={[styles.fssaiBrand, dark && styles.fssaiBrandDark]}>fssai</AppText>
+            <AppText style={[styles.fssaiLic, dark && styles.fssaiLicDark]} numberOfLines={2}>
+              Lic. No. {fssaiNumber.trim()}
+            </AppText>
+          </View>
+        ) : null}
 
         <BrandingFooter compact />
       </View>
@@ -415,6 +427,32 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   disclaimerDark: {
+    color: MerchantDarkPalette.textDim,
+  },
+  fssaiBlock: {
+    alignItems: "flex-end",
+    marginBottom: 20,
+    marginTop: 4,
+    gap: 6,
+  },
+  fssaiBrand: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#1D4ED8",
+    letterSpacing: -0.5,
+    textTransform: "lowercase",
+  },
+  fssaiBrandDark: {
+    color: "#60A5FA",
+  },
+  fssaiLic: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: StoreTheme.textSecondary,
+    textAlign: "right",
+    lineHeight: 17,
+  },
+  fssaiLicDark: {
     color: MerchantDarkPalette.textDim,
   },
 });

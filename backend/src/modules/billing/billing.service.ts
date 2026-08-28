@@ -38,11 +38,13 @@ import {
   platformOfferConditionsPass,
   platformOfferConflictsWithSubscriptionFreeDelivery,
   platformOfferGeoMatches,
+  platformOfferMinOrderBase,
   isPlatformOfferHardVisibilityRejection,
   platformOfferLocationVisible,
+  platformOfferServiceMatches,
 } from "./platformOffersApply.js";
 import { platformOfferRequiresFirstRideOnly } from "./platformOfferFirstRide.js";
-import { countCompletedParcelsForCustomer } from "./rideParcelPromoApply.js";
+import { countCompletedParcelsForCustomer, rideParcelPromoPasses } from "./rideParcelPromoApply.js";
 import {
   countDeliveredOrdersForCustomer,
   userSegmentFromOrderCount,
@@ -61,6 +63,10 @@ import {
 import { canonicalStoreToCustomerRouteArgs, getRoute } from "../distance/distance.service.js";
 import { computeItemPackagingTotal } from "./packagingFromItems.js";
 import { formatDeliverySlabExplainSubtext } from "../delivery-slab-pricing/formatDeliverySlabExplain.js";
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
 import { getDeliveryFallbackRates } from "../delivery/deliveryFallback.config.js";
 import {
   billingDatasetCacheKey,
@@ -535,7 +541,8 @@ export async function computeBillForOrder(
     subscriptionOptIn:
       subscriptionBillingCtx?.effectiveSubscriptionOptIn ?? input.subscriptionOptIn === true,
     customerSubscriptionActive: subscriptionBillingCtx?.hasSubscriptionBenefits ?? false,
-    customerSubscriptionFreeDeliveryEligible: subscriptionBillingCtx?.freeDeliveryEligible ?? false,
+    customerSubscriptionFreeDeliveryEligible:
+      subscriptionBillingCtx?.subscriptionDeliveryBenefitEligible ?? false,
     subscriptionPlanId:
       subscriptionBillingCtx?.planId ??
       (input.subscriptionPlanId != null && input.subscriptionPlanId > 0
@@ -555,11 +562,12 @@ export async function computeBillForOrder(
     selectedPlatformOfferId: (() => {
       const explicit = input.selectedPlatformOfferId ?? null;
       if (explicit != null) return explicit;
-      // Manual coupon entry: resolve platform offer codes through the same engine
-      // (billing_discounts still win when dataset.coupon is set).
-      if (couponCode && !dataset.coupon) {
-        const matched = dataset.platformOffers.find((o) =>
-          platformOfferCouponCodesMatch(o.couponCode, couponCode)
+      // Prefer platform-offer codes over billing_discounts when the same code exists in both.
+      if (couponCode) {
+        const matched = dataset.platformOffers.find(
+          (o) =>
+            platformOfferCouponCodesMatch(o.couponCode, couponCode) &&
+            platformOfferServiceMatches(serviceType, o.serviceType)
         );
         if (matched) return matched.id;
       }
@@ -690,9 +698,16 @@ export async function computeBillForOrder(
 
   const billing = executeBillingPipeline(ctx, dataset);
 
-  const deliveryFeeBeforeBenefitsInr = Math.round(Math.max(0, billing.delivery_fee) * 100) / 100;
+  const deliveryFeeBeforeBenefitsInr =
+    Math.round(Math.max(0, billing.delivery_fee_gross ?? billing.delivery_fee) * 100) / 100;
 
   let adjustedBilling = billing;
+  const deliveryPricing = {
+    pricingEngine: quote.pricing_engine,
+    progressiveSlabs: quote._progressiveSlabs ?? null,
+    fallbackRates: deliveryFallbackRates,
+  };
+
   if (input.customerId > 0) {
     const { applyCustomerSubscriptionBillingAdjustments } = await import(
       "../subscription/customer-subscription.service.js"
@@ -705,6 +720,7 @@ export async function computeBillForOrder(
       subscriptionOptIn: input.subscriptionOptIn,
       subscriptionPlanId: input.subscriptionPlanId,
       subscriptionBillingCycle: input.subscriptionBillingCycle,
+      deliveryPricing,
     });
   }
 
@@ -745,9 +761,91 @@ export async function computeBillForOrder(
     return disc && disc.amount > 0.005 ? Math.round(disc.amount * 100) / 100 : 0;
   })();
 
+  const platformDeliveryWaivedInr = (() => {
+    let sum = 0;
+    for (const d of adjustedBilling.discounts) {
+      const kind = String(d.meta?.offerKind ?? "").toUpperCase();
+      if (kind === "FREE_DELIVERY" && d.amount > 0.005) sum += d.amount;
+      else if (
+        typeof d.meta?.platformOfferId === "number" &&
+        d.amount > 0.005 &&
+        /free\s*delivery|delivery\s*discount/i.test(String(d.label ?? ""))
+      ) {
+        sum += d.amount;
+      }
+    }
+    return Math.round(sum * 100) / 100;
+  })();
+
+  const deliveryFeeWaivedInrTotal = Math.round(
+    (subscriptionDeliveryWaivedInr + platformDeliveryWaivedInr) * 100
+  ) / 100;
+
   /** Pipeline-computed delivery before membership waivers — single source for UI + persistence. */
   const deliveryFeeQuotedInr =
     deliveryFeeBeforeBenefitsInr > 0.005 ? deliveryFeeBeforeBenefitsInr : routeDeliveryFeeInr;
+
+  const subscriptionDeliveryBenefitSnapshot = (() => {
+    const subDisc = adjustedBilling.discounts.find(
+      (d) => d.meta?.source === "customer_subscription_free_delivery"
+    );
+    if (subDisc && subDisc.amount > 0.005) {
+      const membershipFee = Number(subDisc.meta?.membershipDeliveryFeeInr ?? adjustedBilling.delivery_fee);
+      const waived = round2(subDisc.amount);
+      const partial = subDisc.meta?.partial === true;
+      const coveredRadius = Number(subDisc.meta?.maxFreeDeliveryRadiusKm ?? 0);
+      const excessKm = Number(subDisc.meta?.excessDistanceKm ?? 0);
+      return {
+        waivedInr: waived,
+        membershipDeliveryFeeInr: round2(membershipFee),
+        coveredRadiusKm: coveredRadius,
+        excessDistanceKm: excessKm,
+        isPartial: partial,
+        applied: true,
+      };
+    }
+    return null;
+  })();
+
+  const subscriptionDeliveryBenefitEstimate = await (async () => {
+    if (subscriptionDeliveryBenefitSnapshot) return null;
+    if (input.deliveryType === "self_pickup") return null;
+    const fullFeeForEstimate = Math.max(
+      deliveryFeeBeforeBenefitsInr,
+      routeDeliveryFeeInr,
+      deliveryFeeQuotedInr ?? 0
+    );
+    if (fullFeeForEstimate <= 0.005) return null;
+    const {
+      resolveSubscriptionPlanDeliveryPreview,
+      computeSubscriptionDeliveryBenefitPreview,
+    } = await import("../subscription/customer-subscription.service.js");
+    const previewPlan =
+      subscriptionBillingCtx != null && input.subscriptionOptIn === true
+        ? {
+            freeDeliveryEnabled: subscriptionBillingCtx.freeDeliveryEnabled,
+            maxFreeDeliveryRadiusKm: subscriptionBillingCtx.maxFreeDeliveryRadiusKm,
+          }
+        : await resolveSubscriptionPlanDeliveryPreview(input.subscriptionPlanId);
+    if (!previewPlan?.freeDeliveryEnabled) return null;
+    const benefit = computeSubscriptionDeliveryBenefitPreview({
+      distanceKm,
+      coveredRadiusKm: previewPlan.maxFreeDeliveryRadiusKm,
+      freeDeliveryEnabled: previewPlan.freeDeliveryEnabled,
+      fullDeliveryFeeInr: fullFeeForEstimate,
+      isSelfPickup: input.deliveryType === "self_pickup",
+      deliveryPricing,
+    });
+    if (!benefit || benefit.waivedInr <= 0.005) return null;
+    return {
+      waivedInr: benefit.waivedInr,
+      membershipDeliveryFeeInr: benefit.membershipDeliveryFeeInr,
+      coveredRadiusKm: benefit.coveredRadiusKm,
+      excessDistanceKm: benefit.excessDistanceKm,
+      isPartial: benefit.isPartial,
+      applied: false,
+    };
+  })();
 
   const snapshot = {
     ...adjustedBilling,
@@ -755,8 +853,8 @@ export async function computeBillForOrder(
     orderLineEligibility: adjustedBilling.order_line_eligibility,
     orderLinePricing: adjustedBilling.order_line_pricing,
     deliveryFeeBeforeBenefitsInr,
-    ...(subscriptionDeliveryWaivedInr > 0.005
-      ? { deliveryFeeWaivedInr: subscriptionDeliveryWaivedInr }
+    ...(deliveryFeeWaivedInrTotal > 0.005
+      ? { deliveryFeeWaivedInr: deliveryFeeWaivedInrTotal }
       : {}),
     merchantStoreId: resolved.merchantStoreId,
     distanceKm,
@@ -781,6 +879,12 @@ export async function computeBillForOrder(
     deliveryType: input.deliveryType ?? "delivery",
     /** Pre-benefit delivery fee from billing pipeline (matches deliveryFeeBeforeBenefitsInr). */
     deliveryFeeQuotedInr,
+    ...(subscriptionDeliveryBenefitSnapshot
+      ? { subscriptionDeliveryBenefit: subscriptionDeliveryBenefitSnapshot }
+      : {}),
+    ...(subscriptionDeliveryBenefitEstimate
+      ? { subscriptionDeliveryBenefitEstimate }
+      : {}),
     ...(dynFood && dynFood.surcharges.length > 0
       ? { dynamic_surcharges: dynFood.surcharges, company_dynamic_subsidy: companyDynamicSubsidy }
       : {}),
@@ -878,6 +982,15 @@ function estimateMerchantOfferSavingsInr(
 }
 
 function estimatePlatformOfferSavingsInr(o: PlatformOfferRow, cartSubtotal: number): number | null {
+  const kind = String(o.offerKind ?? "").toUpperCase();
+  if (kind === "FREE_DELIVERY") {
+    // Exact delivery fee is bill-time; surface a positive hint so the sheet doesn't look empty.
+    const dd = String(o.deliveryDiscountType ?? "").toUpperCase().trim();
+    if (dd === "FIXED" && num(o.deliveryDiscountValue) > 0) {
+      return Math.round(num(o.deliveryDiscountValue));
+    }
+    return null;
+  }
   const dt = String(o.discountType ?? "").toUpperCase();
   const v = num(o.valueNumeric);
   if (dt === "FIXED" && v > 0) return Math.round(v);
@@ -1098,8 +1211,11 @@ export async function listCheckoutBillOffers(
   const dropLat = addrRow.latitude != null ? Number(addrRow.latitude) : 0;
   const dropLon = addrRow.longitude != null ? Number(addrRow.longitude) : 0;
 
-  // Selected delivery address only — never live device GPS for offer eligibility.
+  // Geo: live app location → saved address → reverse-geocode coords (same cascade as calculate).
   const geo = await resolveGeoLocation({
+    livePincode: input.livePincode,
+    liveState: input.liveState,
+    liveCity: input.liveCity,
     savedPincode: addrRow.postalCode,
     savedState: addrRow.state,
     savedCity: addrRow.city,
@@ -1280,7 +1396,8 @@ export async function listCheckoutBillOffers(
     donationAmount: 0,
     subscriptionOptIn: subscriptionBillingCtx?.effectiveSubscriptionOptIn ?? false,
     customerSubscriptionActive: subscriptionBillingCtx?.hasSubscriptionBenefits ?? false,
-    customerSubscriptionFreeDeliveryEligible: subscriptionBillingCtx?.freeDeliveryEligible ?? false,
+    customerSubscriptionFreeDeliveryEligible:
+      subscriptionBillingCtx?.subscriptionDeliveryBenefitEligible ?? false,
     subscriptionPlanId: subscriptionBillingCtx?.planId,
     checkoutAudience: "CUSTOMER",
   };
@@ -1479,7 +1596,7 @@ export async function listCheckoutBillOffers(
   });
 
   const { eligible: platformRows, rejections: platformRejections } =
-    listEligiblePlatformOffersForCheckoutWithReasons(ctx, dataset, grossCart);
+    listEligiblePlatformOffersForCheckoutWithReasons(ctx, dataset, itemPlusAddon);
   const platformOffers: CheckoutOfferPlatformRow[] = platformRows.map((o) => ({
     id: o.id,
     name: platformOfferCheckoutDisplayName(o),
@@ -1580,9 +1697,9 @@ export async function listCheckoutBillOffers(
 function listEligiblePlatformOffersForCheckoutWithReasons(
   ctx: BillContext,
   dataset: { platformOffers: PlatformOfferRow[] },
-  grossCart: number
+  itemPlusAddon: number
 ): { eligible: PlatformOfferRow[]; rejections: Array<{ id: number; name: string | null; reason: string }> } {
-  const eligible = listEligiblePlatformOffersForCheckout(ctx, dataset as any, grossCart);
+  const eligible = listEligiblePlatformOffersForCheckout(ctx, dataset as any, itemPlusAddon);
   const eligibleSet = new Set(eligible.map((o) => o.id));
   const rejections: Array<{ id: number; name: string | null; reason: string }> = [];
   const now = new Date();
@@ -1592,7 +1709,7 @@ function listEligiblePlatformOffersForCheckoutWithReasons(
     const audience = String(o.offerAudience ?? "CUSTOMER").toUpperCase().trim();
     if (audience !== "CUSTOMER") reasons.push(`audience=${audience}`);
     const st = ctx.serviceType || "FOOD";
-    if (o.serviceType !== st && o.serviceType !== "ALL") reasons.push(`serviceType=${o.serviceType}`);
+    if (!platformOfferServiceMatches(st, o.serviceType)) reasons.push(`serviceType=${o.serviceType}`);
     if (o.startsAt && now < o.startsAt) reasons.push(`starts_at=${o.startsAt.toISOString()}`);
     if (o.endsAt && now > o.endsAt) reasons.push(`ends_at=${o.endsAt.toISOString()}`);
     const cohort = String(o.customerSegment ?? "ALL").toUpperCase();
@@ -1625,7 +1742,8 @@ function listEligiblePlatformOffersForCheckoutWithReasons(
       const fallback = Number(cond.min_order_value ?? 0);
       return Number.isFinite(fallback) ? fallback : 0;
     })();
-    if (minAmt > 0 && grossCart < minAmt) reasons.push(`minCart=${minAmt} cart=${grossCart}`);
+    const minBase = platformOfferMinOrderBase(o, ctx, itemPlusAddon);
+    if (minAmt > 0 && minBase < minAmt) reasons.push(`minCart=${minAmt} cart=${minBase}`);
     const cond = (o.conditions ?? {}) as Record<string, unknown>;
     if (!platformOfferConditionsPass(cond, ctx)) reasons.push("conditions=failed");
     if (platformOfferRequiresFirstRideOnly(o)) {
@@ -1637,6 +1755,9 @@ function listEligiblePlatformOffersForCheckoutWithReasons(
       } else if (ctx.completedPersonRideCount > 0) {
         reasons.push(`first_ride_only=has_${ctx.completedPersonRideCount}_completed_rides`);
       }
+    }
+    if (!rideParcelPromoPasses(ctx, o)) {
+      reasons.push("ride_parcel_promo=failed");
     }
     rejections.push({ id: o.id, name: o.name ?? null, reason: reasons.length > 0 ? reasons.join("|") : "unknown" });
   }

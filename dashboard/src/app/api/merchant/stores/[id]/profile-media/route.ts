@@ -20,8 +20,21 @@ import {
   profileMediaR2KeyFromUrl,
 } from "@/lib/merchant/store-profile-media";
 import { buildStoreOnboardingMediaR2Key, buildStoreProfileMediaR2Key, getR2MerchantObjectPrefix } from "@/lib/merchant/r2-store-asset-paths";
+import { isSuperAdmin, hasAccessPoint } from "@/lib/permissions/engine";
+import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 
 export const runtime = "nodejs";
+
+const BANNER_VIDEO_MIME = new Set(["video/mp4", "video/webm", "video/quicktime"]);
+
+async function assertAdminBannerVideoAccess(user: { id: string; email?: string }): Promise<boolean> {
+  const email = user.email?.trim() || "";
+  if (await isSuperAdmin(user.id, email || undefined)) return true;
+  if (!email) return false;
+  const systemUser = await getSystemUserByEmail(email);
+  if (!systemUser) return false;
+  return hasAccessPoint(systemUser.id, "MERCHANT", "MERCHANT_ADMIN_MERCHANT_ACCESS");
+}
 
 async function assertStoreAccess(request: NextRequest, storeId: number) {
   const access = await authenticateMerchantStoreForId(request, storeId);
@@ -42,7 +55,7 @@ async function assertStoreAccess(request: NextRequest, storeId: number) {
     supabaseAuthId: access.user.id,
     email: access.user.email ?? "",
   });
-  return { ok: true as const, store: access.store, areaManagerId };
+  return { ok: true as const, store: access.store, areaManagerId, user: access.user };
 }
 
 async function resolveParentIdForPath(
@@ -82,7 +95,12 @@ export async function POST(
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
     const typeRaw = (formData.get("type") as string) || "gallery";
-    const type: "banner" | "gallery" = typeRaw === "banner" ? "banner" : "gallery";
+    const type: "banner" | "gallery" | "banner_video" =
+      typeRaw === "banner"
+        ? "banner"
+        : typeRaw === "banner_video"
+          ? "banner_video"
+          : "gallery";
     const indexRaw = formData.get("index");
     const index =
       typeof indexRaw === "string" && indexRaw.trim() !== "" && Number.isFinite(Number(indexRaw))
@@ -90,6 +108,25 @@ export async function POST(
         : 0;
     if (!file || !(file instanceof File)) {
       return NextResponse.json({ success: false, error: "No file" }, { status: 400 });
+    }
+    if (type === "banner_video") {
+      const videoAllowed = await assertAdminBannerVideoAccess({
+        id: access.user.id,
+        email: access.user.email,
+      });
+      if (!videoAllowed) {
+        return NextResponse.json(
+          { success: false, error: "Only admin can upload store banner video" },
+          { status: 403 }
+        );
+      }
+      const mime = (file.type || "").trim().toLowerCase();
+      if (mime && !BANNER_VIDEO_MIME.has(mime)) {
+        return NextResponse.json(
+          { success: false, error: "Unsupported video format. Use MP4 or WebM." },
+          { status: 400 }
+        );
+      }
     }
     console.log("[profile-media] upload request", {
       storeId,
@@ -103,6 +140,7 @@ export async function POST(
       store_id?: string;
       parent_id?: number | null;
       banner_url?: unknown;
+      banner_video_url?: unknown;
       gallery_images?: unknown;
     };
     const storeCode = storeRow.store_id ?? `GMMC${storeId}`;
@@ -113,11 +151,14 @@ export async function POST(
         { status: 400 }
       );
     }
-    const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+    const ext =
+      file.name.split(".").pop()?.toLowerCase() ||
+      (type === "banner_video" ? "mp4" : "jpg");
     const timestamp = Date.now();
-    const baseName = type === "banner" ? "banner" : "gallery";
+    const baseName =
+      type === "banner" ? "banner" : type === "banner_video" ? "banner_video" : "gallery";
     const fileName =
-      type === "banner"
+      type === "banner" || type === "banner_video"
         ? `${baseName}_${timestamp}.${ext}`
         : `${baseName}_${timestamp}_${index}.${ext}`;
 
@@ -135,13 +176,22 @@ export async function POST(
     const preferLegacy =
       type === "banner"
         ? !!(existingBannerKey && existingBannerKey.startsWith(`${root}/onboarding/assets/banner/`))
-        : !!(existingGalleryKey && existingGalleryKey.startsWith(`${root}/onboarding/assets/gallery/`));
+        : type === "gallery"
+          ? !!(existingGalleryKey && existingGalleryKey.startsWith(`${root}/onboarding/assets/gallery/`))
+          : false;
 
     // Child-store onboarding + partnersite Step 5 share onboarding/assets/{banner|gallery}.
     const key =
-      forceOnboarding || preferLegacy
-        ? buildStoreOnboardingMediaR2Key(parentIdForPath, storeCode, type, fileName)
-        : buildStoreProfileMediaR2Key(parentIdForPath, storeCode, type, fileName);
+      type === "banner_video"
+        ? buildStoreProfileMediaR2Key(parentIdForPath, storeCode, type, fileName)
+        : forceOnboarding || preferLegacy
+          ? buildStoreOnboardingMediaR2Key(
+              parentIdForPath,
+              storeCode,
+              type === "banner" ? "banner" : "gallery",
+              fileName
+            )
+          : buildStoreProfileMediaR2Key(parentIdForPath, storeCode, type, fileName);
     await uploadWithKey(file, key);
     console.log("[profile-media] R2 uploaded", { storeId, type, key });
     const signedUrl = await getSignedUrlFromKey(key, 604800);
@@ -175,6 +225,34 @@ export async function POST(
             await deleteDocument(oldKey);
           } catch (delErr) {
             console.warn("[profile-media] old banner R2 delete:", delErr);
+          }
+        }
+      } else if (type === "banner_video") {
+        const existing = await getMerchantStoreById(storeId, areaManagerId);
+        const oldKey = existing?.banner_video_url
+          ? profileMediaR2KeyFromUrl(String(existing.banner_video_url))
+          : null;
+        const updated = await updateMerchantStore(storeId, areaManagerId, {
+          banner_video_url: proxyUrl,
+        });
+        if (!updated) {
+          console.error("[profile-media] banner_video UPDATE returned no row", { storeId, areaManagerId });
+          try {
+            await deleteDocument(key);
+          } catch {
+            /* ignore */
+          }
+          return NextResponse.json(
+            { success: false, error: "Could not save banner video to store (no row updated)." },
+            { status: 500 }
+          );
+        }
+        console.log("[profile-media] banner_video db updated", { storeId, key });
+        if (oldKey && oldKey !== key) {
+          try {
+            await deleteDocument(oldKey);
+          } catch (delErr) {
+            console.warn("[profile-media] old banner video R2 delete:", delErr);
           }
         }
       } else {

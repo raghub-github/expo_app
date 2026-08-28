@@ -7,6 +7,8 @@ import {
   isCxAppHomeStateDetailPath,
   useCustomerAppSection,
 } from "@/components/cxapp-home/CustomerAppSectionContext";
+import { CxAppHomeStateDetailSkeleton } from "@/components/cxapp-home/CxAppHomeStateDetailSkeleton";
+import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import CustomerAppCategoriesClient from "./customer-app-categories/CustomerAppCategoriesClient";
 import { CxAppHomeClient } from "./cxapp-home/CxAppHomeClient";
 
@@ -48,8 +50,16 @@ function TwinListShell() {
 
 function ShellInner({ children }: { children: ReactNode }) {
   const pathname = useAppPathname();
-  if (isCxAppHomeStateDetailPath(pathname)) {
+  const pendingNavHref = useCurrentRoute()?.pendingNavHref ?? null;
+  const onStateDetail = isCxAppHomeStateDetailPath(pathname);
+  const pendingStateDetail =
+    pendingNavHref != null && isCxAppHomeStateDetailPath(pendingNavHref);
+
+  if (onStateDetail) {
     return <>{children}</>;
+  }
+  if (pendingStateDetail) {
+    return <CxAppHomeStateDetailSkeleton />;
   }
   return <TwinListShell />;
 }

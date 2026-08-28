@@ -18,7 +18,10 @@ import { addressService, type ReconcileActiveLocationResult } from "@/services/a
 import { reverseGeocode } from "@/services/location.service";
 import { useAuthStore } from "@/store/authStore";
 import { useLocationStore } from "@/store/locationStore";
-import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
+import {
+  debouncedInvalidateFoodHomeListingQueries,
+  invalidateFoodHomeLocationQueries,
+} from "@/lib/invalidateFoodHomeLocationQueries";
 import { applyActiveLocationFromBackend } from "@/lib/applyActiveLocationFromBackend";
 import { promptCartIfLocationBrokeServiceability } from "@/lib/promptCartIfLocationBrokeServiceability";
 
@@ -226,8 +229,12 @@ export async function reconcileActiveLocationFromGps(
     if (queryClient) {
       await queryClient.invalidateQueries({ queryKey: ["active-location"] });
       await queryClient.invalidateQueries({ queryKey: ["addresses"] });
-      if (result.switchedToCurrent || result.source === "selected") {
+      if (result.switchedToCurrent) {
+        debouncedInvalidateFoodHomeListingQueries(queryClient);
+      } else if (result.source === "selected") {
         void invalidateFoodHomeLocationQueries(queryClient);
+      }
+      if (result.switchedToCurrent || result.source === "selected") {
         void promptCartIfLocationBrokeServiceability(queryClient);
       }
     }

@@ -45,37 +45,30 @@ export async function checkPreventServices(args: {
   lat2?: number;
   lng2?: number;
 }): Promise<PreventCheckResult> {
-  try {
-    const { data } = await api.post<{
-      blocked?: boolean;
-      blockedServices?: string[];
-      code?: string | null;
-      message?: string | null;
-      title?: string | null;
-      nearest?: unknown;
-    }>("/v1/prevent-services/check", {
+  const { data } = await api.post<{
+    blocked?: boolean;
+    blockedServices?: string[];
+    code?: string | null;
+    message?: string | null;
+    title?: string | null;
+    nearest?: unknown;
+  }>(
+    "/v1/prevent-services/check",
+    {
       lat: args.lat,
       lng: args.lng,
       service: args.service,
       lat2: args.lat2,
       lng2: args.lng2,
-    });
-    return {
-      blocked: data?.blocked === true,
-      blockedServices: data?.blockedServices ?? [],
-      code: data?.code ?? null,
-      message: data?.message ?? null,
-      title: data?.title ?? null,
-      nearest: mapNearest(data?.nearest),
-    };
-  } catch {
-    return {
-      blocked: false,
-      blockedServices: [],
-      code: null,
-      message: null,
-      title: null,
-      nearest: null,
-    };
-  }
+    },
+    { headers: { "X-Silent-Error": "1" } }
+  );
+  return {
+    blocked: data?.blocked === true,
+    blockedServices: data?.blockedServices ?? [],
+    code: data?.code ?? null,
+    message: data?.message ?? null,
+    title: data?.title ?? null,
+    nearest: mapNearest(data?.nearest),
+  };
 }

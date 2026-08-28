@@ -26,7 +26,7 @@ export function coerceGalleryImageList(val: unknown): string[] {
   return [];
 }
 
-/** Resolve R2 object key from a DB URL value (dashboard proxy, raw key, or absolute URL with proxy path). */
+/** Resolve R2 object key from a DB URL value (dashboard proxy, raw key, signed R2 URL, or absolute URL with proxy path). */
 export function profileMediaR2KeyFromUrl(url: string): string | null {
   const t = (url || "").trim();
   if (!t) return null;
@@ -34,6 +34,8 @@ export function profileMediaR2KeyFromUrl(url: string): string | null {
     const k = t.replace(/^\/+/, "");
     if (k.startsWith("docs/merchants/") || k.startsWith("merchants/")) return k;
   }
+  const fromSigned = r2ObjectKeyFromSignedOrPublicUrl(t);
+  if (fromSigned) return fromSigned;
   const tryPath = (pathname: string, search: string): string | null => {
     if (!pathname.includes("attachments/proxy")) return null;
     const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
@@ -67,6 +69,25 @@ export function profileMediaR2KeyFromUrl(url: string): string | null {
       const found = tryPath(path, search);
       if (found) return found;
     }
+  }
+  return null;
+}
+
+/** Extract object key from R2 signed/public URLs (path-style or virtual-hosted). */
+function r2ObjectKeyFromSignedOrPublicUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const path = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
+    const bucket = (process.env.R2_BUCKET_NAME || "").trim();
+    let rest = path;
+    if (bucket && rest.startsWith(`${bucket}/`)) {
+      rest = rest.slice(bucket.length + 1);
+    }
+    const docsIdx = rest.indexOf("docs/merchants/");
+    if (docsIdx >= 0) return rest.slice(docsIdx);
+    if (rest.startsWith("docs/merchants/") || rest.startsWith("merchants/")) return rest;
+  } catch {
+    /* ignore */
   }
   return null;
 }
