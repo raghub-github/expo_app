@@ -1,6 +1,7 @@
 'use client';
 
 import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { fetchMerchantStoreApi } from '@/lib/fetch-merchant-store-api';
 import Link from 'next/link';
 import { Bell, ChevronUp } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
@@ -35,9 +36,9 @@ function MerchantPendingNewOrdersBarInner() {
   const load = useCallback(async () => {
     if (!storeId) return;
     try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/pending-new-orders-count`, {
-        credentials: 'include',
-      });
+      const res = await fetchMerchantStoreApi(
+        `/api/merchant/stores/${storeId}/pending-new-orders-count`
+      );
       const data = (await res.json().catch(() => ({}))) as { count?: number };
       if (res.ok && typeof data.count === 'number') setPending(data.count);
     } catch {
@@ -49,21 +50,24 @@ function MerchantPendingNewOrdersBarInner() {
 
   useEffect(() => {
     if (menuItemFormOpen) return;
-    void load();
+    const boot = window.setTimeout(() => void load(), 400);
     const t = window.setInterval(() => {
       if (document.body?.dataset?.menuItemFormOpen === '1') return;
       void load();
     }, POLL_MS);
-    return () => window.clearInterval(t);
+    return () => {
+      window.clearTimeout(boot);
+      window.clearInterval(t);
+    };
   }, [load, menuItemFormOpen]);
 
   useEffect(() => {
     if (!storeId) return;
     void (async () => {
       try {
-        const res = await fetch(`/api/merchant/stores/${storeId}/store-settings`, {
-          credentials: 'include',
-        });
+        const res = await fetchMerchantStoreApi(
+          `/api/merchant/stores/${storeId}/store-settings`
+        );
         const data = await res.json().catch(() => ({}));
         if (res.ok) setShowFloatingOrders(data.show_floating_orders !== false);
       } catch {

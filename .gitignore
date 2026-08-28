@@ -73,3 +73,6 @@ serviceAccountKey.json
 backend/scripts/_tmp_*
 
 packages/bill-print/dist/
+
+# Local Android SDK extract (nested copies blow past Windows MAX_PATH)
+platform-tools-latest-windows/

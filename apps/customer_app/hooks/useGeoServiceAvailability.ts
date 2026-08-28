@@ -1,5 +1,6 @@
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { getGeoServiceAvailability } from "@/services/geoServices.service";
+import { pollIntervalWithBackoff } from "@/lib/query-poll-backoff";
 
 export type GeoEnabledServices = {
   food: boolean;
@@ -48,10 +49,11 @@ export function useGeoServiceAvailability(args: {
     // Emergency blocks must surface without a manual refresh. usePreventServicesRealtime
     // pushes an invalidation within ~1s of an admin change; these settings are the
     // safety net when Realtime is unavailable and for schedule-based expiry.
-    staleTime: 10_000,
-    refetchInterval: 20_000,
-    refetchOnWindowFocus: true,
-    refetchOnMount: "always",
+    staleTime: 30_000,
+    refetchInterval: (query) => pollIntervalWithBackoff(query, 60_000),
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: true,
     // Keep prior coverage while coords/pincode change so tiles don't flash disabled
     // and remount (which was blanking service-card images on Android).
     placeholderData: keepPreviousData,

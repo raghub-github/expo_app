@@ -19,7 +19,7 @@ export const COUPON_USAGE_MODES = [
 
 export type CouponUsageMode = (typeof COUPON_USAGE_MODES)[number];
 
-export const COUPON_SERVICES = ["FOOD", "PARCEL", "RIDE"] as const;
+export const COUPON_SERVICES = ["FOOD", "GROCERY", "PARCEL", "RIDE"] as const;
 export type CouponServiceType = (typeof COUPON_SERVICES)[number];
 
 export type CheckoutCouponConfig = {

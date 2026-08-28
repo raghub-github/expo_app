@@ -6,24 +6,29 @@ import {
   type SharedValue,
 } from "react-native-reanimated";
 import {
-  HEADER_COLLAPSED_THRESHOLD,
   HEADER_IMAGE_HEIGHT,
+  merchantStickySearchFadeStart,
 } from "../constants/layout";
 
 export const COMPACT_SCROLL_THRESHOLD = 80;
 
-const STICKY_SEARCH_Y = HEADER_COLLAPSED_THRESHOLD - 24;
-
 type ChromeFlags = {
   stickySearchActive: boolean;
   heroActionsVisible: boolean;
+  heroVideoActive: boolean;
   cartCompact: boolean;
 };
 
-function readChromeFlags(y: number, heroHideY: number, pinHeroActions: boolean): ChromeFlags {
+function readChromeFlags(
+  y: number,
+  heroHideY: number,
+  stickySearchY: number,
+  pinHeroActions: boolean
+): ChromeFlags {
   return {
-    stickySearchActive: y >= STICKY_SEARCH_Y,
+    stickySearchActive: y >= stickySearchY,
     heroActionsVisible: pinHeroActions || y < heroHideY,
+    heroVideoActive: y < heroHideY,
     cartCompact: y > COMPACT_SCROLL_THRESHOLD,
   };
 }
@@ -32,6 +37,7 @@ function flagsEqual(a: ChromeFlags, b: ChromeFlags): boolean {
   return (
     a.stickySearchActive === b.stickySearchActive &&
     a.heroActionsVisible === b.heroActionsVisible &&
+    a.heroVideoActive === b.heroVideoActive &&
     a.cartCompact === b.cartCompact
   );
 }
@@ -41,14 +47,14 @@ function chromeFlagsChanged(
   bY: number,
   aPin: boolean,
   bPin: boolean,
-  heroHideY: number
+  heroHideY: number,
+  stickySearchY: number
 ): boolean {
   "worklet";
-  const aHero = aPin || aY < heroHideY;
-  const bHero = bPin || bY < heroHideY;
   return (
-    (aY >= STICKY_SEARCH_Y) !== (bY >= STICKY_SEARCH_Y) ||
-    aHero !== bHero ||
+    (aY >= stickySearchY) !== (bY >= stickySearchY) ||
+    (aPin || aY < heroHideY) !== (bPin || bY < heroHideY) ||
+    (aY < heroHideY) !== (bY < heroHideY) ||
     (aY > COMPACT_SCROLL_THRESHOLD) !== (bY > COMPACT_SCROLL_THRESHOLD)
   );
 }
@@ -69,9 +75,15 @@ export function useMerchantScrollChromeState({
   heroBannerHeight = HEADER_IMAGE_HEIGHT,
 }: UseMerchantScrollChromeStateOpts) {
   const heroHideY = useSharedValue(heroBannerHeight);
+  const stickySearchY = useSharedValue(merchantStickySearchFadeStart(heroBannerHeight));
 
   const [flags, setFlags] = useState<ChromeFlags>(() =>
-    readChromeFlags(0, heroBannerHeight, true)
+    readChromeFlags(
+      0,
+      heroBannerHeight,
+      merchantStickySearchFadeStart(heroBannerHeight),
+      true
+    )
   );
   const applyFlags = useCallback(
     (next: ChromeFlags) => {
@@ -82,32 +94,46 @@ export function useMerchantScrollChromeState({
   );
 
   const applyFlagsFromScroll = useCallback(
-    (y: number, hideY: number, pinHeroActions: boolean) => {
-      applyFlags(readChromeFlags(y, hideY, pinHeroActions));
+    (y: number, hideY: number, searchY: number, pinHeroActions: boolean) => {
+      applyFlags(readChromeFlags(y, hideY, searchY, pinHeroActions));
     },
     [applyFlags]
   );
 
   useEffect(() => {
     heroHideY.value = heroBannerHeight;
+    stickySearchY.value = merchantStickySearchFadeStart(heroBannerHeight);
     const pinHero = !(userMenuScrollStarted?.value ?? true);
-    applyFlagsFromScroll(scrollY.value, heroBannerHeight, pinHero);
-  }, [heroBannerHeight, heroHideY, scrollY, userMenuScrollStarted, applyFlagsFromScroll]);
+    applyFlagsFromScroll(
+      scrollY.value,
+      heroBannerHeight,
+      merchantStickySearchFadeStart(heroBannerHeight),
+      pinHero
+    );
+  }, [heroBannerHeight, heroHideY, stickySearchY, scrollY, userMenuScrollStarted, applyFlagsFromScroll]);
 
   useAnimatedReaction(
     () => ({
       y: scrollY.value,
       hideY: heroHideY.value,
+      searchY: stickySearchY.value,
       pinHero: !(userMenuScrollStarted?.value ?? true),
     }),
     (cur, prev) => {
       if (
         prev != null &&
-        !chromeFlagsChanged(cur.y, prev.y, cur.pinHero, prev.pinHero, cur.hideY)
+        !chromeFlagsChanged(
+          cur.y,
+          prev.y,
+          cur.pinHero,
+          prev.pinHero,
+          cur.hideY,
+          cur.searchY
+        )
       ) {
         return;
       }
-      runOnJS(applyFlagsFromScroll)(cur.y, cur.hideY, cur.pinHero);
+      runOnJS(applyFlagsFromScroll)(cur.y, cur.hideY, cur.searchY, cur.pinHero);
     },
     [applyFlagsFromScroll, userMenuScrollStarted]
   );

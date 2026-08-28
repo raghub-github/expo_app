@@ -5,6 +5,8 @@ import { AppText } from "@/components/AppText";
 
 export type FoodHomeFilterRowProps = {
   variant: "grid_first" | "classic";
+  /** Food-specific chips vs grocery home. */
+  vertical?: "food" | "grocery";
   hasActiveFilters: boolean;
   sortBy: "default" | "rating" | "distance";
   openNow: boolean;
@@ -22,6 +24,7 @@ export type FoodHomeFilterRowProps = {
 
 export function FoodHomeFilterRow({
   variant,
+  vertical = "food",
   hasActiveFilters,
   sortBy,
   openNow,
@@ -74,15 +77,32 @@ export function FoodHomeFilterRow({
                 Near & Fast
               </AppText>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.chip, noPackagingCharges && styles.chipActive]}
-              onPress={onToggleNoPackagingCharges}
-              activeOpacity={0.85}
-            >
-              <AppText style={[styles.chipText, noPackagingCharges && styles.chipTextActive]}>
-                No packaging charges
-              </AppText>
-            </TouchableOpacity>
+            {vertical === "grocery" ? (
+              <TouchableOpacity
+                style={[styles.chip, openNow && styles.chipActive]}
+                onPress={onToggleOpenNow}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name="storefront-outline"
+                  size={16}
+                  color={openNow ? "#fff" : GatiMitraColors.primaryMint}
+                />
+                <AppText style={[styles.chipText, openNow && styles.chipTextActive]}>
+                  Open now
+                </AppText>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={[styles.chip, noPackagingCharges && styles.chipActive]}
+                onPress={onToggleNoPackagingCharges}
+                activeOpacity={0.85}
+              >
+                <AppText style={[styles.chipText, noPackagingCharges && styles.chipTextActive]}>
+                  No packaging charges
+                </AppText>
+              </TouchableOpacity>
+            )}
             {showMealsUnderPriceChip ? (
               <TouchableOpacity
                 style={[styles.chip, styles.chipMeals]}

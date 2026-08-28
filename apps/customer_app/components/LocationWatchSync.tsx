@@ -9,7 +9,7 @@ import {
 } from "@/store/locationStore";
 import { reverseGeocode } from "@/services/location.service";
 import { saveLastKnownLocation } from "@/lib/lastKnownLocationCache";
-import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
+import { debouncedInvalidateFoodHomeListingQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import { syncActiveLocationFromStore } from "@/lib/syncActiveLocationFromStore";
 import { useActiveLocationReconcileReady } from "@/hooks/useActiveLocationReconcileReady";
 
@@ -93,9 +93,9 @@ export function LocationWatchSync() {
                     address,
                   });
                   await syncActiveLocationFromStore();
-                  void invalidateFoodHomeLocationQueries(queryClient);
+                  debouncedInvalidateFoodHomeListingQueries(queryClient);
                 } catch {
-                  void invalidateFoodHomeLocationQueries(queryClient);
+                  debouncedInvalidateFoodHomeListingQueries(queryClient);
                 }
               })();
             }, 400);

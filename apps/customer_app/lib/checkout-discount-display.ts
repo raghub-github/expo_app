@@ -14,7 +14,9 @@ export type CheckoutDiscountLike = {
 export function friendlyCheckoutDiscountLabel(label: string | null | undefined): string {
   const raw = String(label ?? "").trim();
   if (!raw) return "Store offer";
-  return raw;
+  // Platform delivery lines historically used "Delivery discount · {name}".
+  const stripped = raw.replace(/^Delivery discount\s*[·•\-–—]\s*/i, "").trim();
+  return stripped || raw;
 }
 
 export function isSubscriptionBenefitDiscount(d: CheckoutDiscountLike): boolean {

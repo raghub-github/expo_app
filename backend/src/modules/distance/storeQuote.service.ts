@@ -48,7 +48,12 @@ import {
 } from "../delivery/deliveryFallback.config.js";
 import { computeFallbackCustomerFee } from "../fallback-pricing/fallbackSlabPricing.service.js";
 import { buildCustomerPricingBreakdown } from "../../lib/customer-pricing-breakdown.js";
-import type { DeliveryActorType, DeliveryRateSlabRow, DeliveryServiceType } from "../delivery-slab-pricing/types.js";
+import {
+  mapBillingServiceTypeToDeliverySlab,
+  type DeliveryActorType,
+  type DeliveryRateSlabRow,
+  type DeliveryServiceType,
+} from "../delivery-slab-pricing/types.js";
 import { resolveRiderPayoutQuote } from "../rider-payout-pricing/resolveRiderPayoutQuote.js";
 import { loadEffectiveRideCustomerPricing, loadEffectiveParcelCustomerPricing } from "../rider-payout-pricing/riderPayoutPricing.repository.js";
 import type { GeoHierarchyLevel, RideVehiclePricingType } from "../rider-payout-pricing/types.js";
@@ -79,8 +84,8 @@ export type StoreQuoteInput = {
   drop?: { lat: number; lng: number; pincode?: string | null; city?: string | null; state?: string | null } | null;
   /** Defaults to "customer". Rider uses progressive slab calc. */
   actor?: StoreQuoteActor;
-  /** FOOD | PARCEL | RIDE — maps to DeliveryServiceType. Default FOOD. */
-  serviceType?: "FOOD" | "PARCEL" | "RIDE";
+  /** FOOD | GROCERY | PARCEL | RIDE — maps to DeliveryServiceType. Default FOOD. */
+  serviceType?: "FOOD" | "GROCERY" | "PARCEL" | "RIDE";
   /** Optional override for waiting minutes (rider actor only). */
   riderWaitingMinutes?: number;
   /** Rider payout v2: separate pickup (rider→merchant) and drop (merchant→customer) km. */
@@ -152,6 +157,8 @@ export type StoreQuoteResult =
          * items the billing engine used.
          */
         customer_pricing?: import("@gatimitra/contracts").CustomerPricingBreakdown;
+        /** Internal — billing-only slab rows for membership partial delivery pricing. Not exposed in public APIs. */
+        _progressiveSlabs?: DeliveryRateSlabRow[];
       };
     }
   | { ok: false; code: string; message: string };
@@ -277,8 +284,7 @@ export async function resolveStoreDeliveryQuote(
   const env = getEnv();
   const actor: StoreQuoteActor = input.actor === "rider" ? "rider" : "customer";
   const serviceTypeUpper = (input.serviceType ?? "FOOD").toUpperCase();
-  const serviceTypeSlab: DeliveryServiceType =
-    serviceTypeUpper === "RIDE" ? ("person_ride" as DeliveryServiceType) : (serviceTypeUpper.toLowerCase() as DeliveryServiceType);
+  const serviceTypeSlab = mapBillingServiceTypeToDeliverySlab(serviceTypeUpper);
 
   const store = await resolveStore(input.storeId);
   if (!store.ok) return store;
@@ -348,6 +354,7 @@ export async function resolveStoreDeliveryQuote(
   let appliedGeoLevel: string | null = null;
   /** Diagnostic — populated when slabs were found but rejected by validateEffectiveSlabs. */
   let slabValidationError: { code: string; message: string } | null = null;
+  let slabs: DeliveryRateSlabRow[] = [];
 
   if (dropGeoRefs && distanceKm > 0) {
     // Walk ancestor levels from most-specific to least-specific using UUIDs already resolved
@@ -363,7 +370,7 @@ export async function resolveStoreDeliveryQuote(
     if (dropGeoRefs.region)      geoLevelsToTry.push({ level: "region",      refId: dropGeoRefs.region });
     if (dropGeoRefs.state)       geoLevelsToTry.push({ level: "state",       refId: dropGeoRefs.state });
 
-    let slabs: DeliveryRateSlabRow[] = [];
+    slabs = [];
     const slabWalkAttempts: Array<{ level: string; refId: string; rows: number }> = [];
 
     // PARCEL + vehicle: prefer parcel_customer_pricing (RIDE-style), then fall back to delivery_rate_slabs.
@@ -800,6 +807,7 @@ export async function resolveStoreDeliveryQuote(
       slab_quote: slabQuote,
       slab_validation_error: slabValidationError,
       customer_pricing: customerPricing,
+      ...(actor === "customer" && slabs.length > 0 ? { _progressiveSlabs: slabs } : {}),
     },
   };
 }

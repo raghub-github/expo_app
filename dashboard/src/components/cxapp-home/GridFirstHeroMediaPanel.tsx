@@ -16,13 +16,20 @@ type Props = {
   enabled: boolean;
   /** Seed from layout GET so we skip a duplicate hero-media round-trip on first paint. */
   initialItems?: GridFirstHeroMediaItem[];
+  /** API base path without trailing slash, e.g. food-layout or grocery-layout. */
+  apiBasePath?: string;
 };
 
 function mediaPreviewUrl(url: string): string {
   return resolveAttachmentProxyUrl(url) || url;
 }
 
-export function GridFirstHeroMediaPanel({ stateId, enabled, initialItems }: Props) {
+export function GridFirstHeroMediaPanel({
+  stateId,
+  enabled,
+  initialItems,
+  apiBasePath = "food-layout",
+}: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<GridFirstHeroMediaItem[]>(() => initialItems ?? []);
   const [loading, setLoading] = useState(() => enabled && !initialItems);
@@ -30,12 +37,14 @@ export function GridFirstHeroMediaPanel({ stateId, enabled, initialItems }: Prop
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const heroApiBase = `/api/super-admin/cxapp-home/${apiBasePath}/${stateId}/hero-media`;
+
   const loadItems = useCallback(async () => {
     if (!stateId) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/super-admin/cxapp-home/food-layout/${stateId}/hero-media`, {
+      const res = await fetch(heroApiBase, {
         cache: "default",
       });
       const json = (await res.json()) as { items?: GridFirstHeroMediaItem[]; error?: string };
@@ -47,7 +56,7 @@ export function GridFirstHeroMediaPanel({ stateId, enabled, initialItems }: Prop
     } finally {
       setLoading(false);
     }
-  }, [stateId]);
+  }, [stateId, heroApiBase]);
 
   useEffect(() => {
     if (!enabled || !stateId) {
@@ -77,10 +86,7 @@ export function GridFirstHeroMediaPanel({ stateId, enabled, initialItems }: Prop
         if (latest.length >= MAX_GRID_FIRST_HERO_MEDIA) break;
         const fd = new FormData();
         fd.set("file", file);
-        const res = await fetch(
-          `/api/super-admin/cxapp-home/food-layout/${stateId}/hero-media/upload`,
-          { method: "POST", body: fd }
-        );
+        const res = await fetch(`${heroApiBase}/upload`, { method: "POST", body: fd });
         const json = (await res.json()) as {
           items?: GridFirstHeroMediaItem[];
           error?: string;
@@ -102,10 +108,9 @@ export function GridFirstHeroMediaPanel({ stateId, enabled, initialItems }: Prop
     setDeletingId(itemId);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/super-admin/cxapp-home/food-layout/${stateId}/hero-media?itemId=${encodeURIComponent(itemId)}`,
-        { method: "DELETE" }
-      );
+      const res = await fetch(`${heroApiBase}?itemId=${encodeURIComponent(itemId)}`, {
+        method: "DELETE",
+      });
       const json = (await res.json()) as { items?: GridFirstHeroMediaItem[]; error?: string };
       if (!res.ok) throw new Error(json.error ?? "Delete failed");
       setItems(Array.isArray(json.items) ? json.items : []);

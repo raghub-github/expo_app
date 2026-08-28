@@ -22,8 +22,8 @@ import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
 import type { ReverseGeocodeResult } from "@/services/location.service";
 
-/** Short so admin tile/layout edits show on the next home focus. */
-export const FOOD_HOME_LAYOUT_STALE_MS = 5 * 1000;
+/** Admin layout tiles change rarely — avoid refetching on every home tab focus. */
+export const FOOD_HOME_LAYOUT_STALE_MS = 10 * 60 * 1000;
 export const FOOD_HOME_LAYOUT_GC_MS = 30 * 60 * 1000;
 
 type GeoHints = ReturnType<typeof extractCustomerGeoHints>;

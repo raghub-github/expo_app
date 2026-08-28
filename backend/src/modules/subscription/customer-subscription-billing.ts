@@ -4,6 +4,11 @@
  */
 
 import type { AppliedLine, BillingResult } from "../billing/types.js";
+import type {
+  SubscriptionDeliveryBenefit,
+  SubscriptionDeliveryPricingContext,
+} from "./subscriptionDeliveryPricing.js";
+import { computeSubscriptionDeliveryBenefit } from "./subscriptionDeliveryPricing.js";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -12,9 +17,10 @@ function round2(n: number): number {
 export type SubscriptionBillingAdjustmentInput = {
   planId: number;
   planName: string;
-  freeDeliveryEligible: boolean;
+  freeDeliveryEnabled: boolean;
   maxFreeDeliveryRadiusKm: number;
   distanceKm: number | null;
+  deliveryPricing?: SubscriptionDeliveryPricingContext | null;
   /** When the customer opts into a new plan at checkout. */
   subscriptionCharge?: {
     subtotal: number;
@@ -83,6 +89,105 @@ function stripGenericSubscriptionCharges(billing: BillingResult): BillingResult 
   return b;
 }
 
+function applyDeliveryBenefitToBilling(
+  billing: BillingResult,
+  input: SubscriptionBillingAdjustmentInput,
+  benefit: SubscriptionDeliveryBenefit
+): { billing: BillingResult; deliveryFeeWaivedInr: number } {
+  const b = cloneBilling(billing);
+  const oldDeliveryFee = b.delivery_fee;
+  const newDeliveryFee = benefit.membershipDeliveryFeeInr;
+  const waivedFee = benefit.waivedInr;
+
+  const deliveryGstLine = b.gst_components.delivery ?? {
+    original: oldDeliveryFee,
+    discount: 0,
+    taxable_value: oldDeliveryFee,
+    gst: 0,
+  };
+  const oldDeliveryGst = round2(deliveryGstLine.gst ?? 0);
+  const newDeliveryGst =
+    oldDeliveryFee > 0.005
+      ? round2(oldDeliveryGst * (newDeliveryFee / oldDeliveryFee))
+      : 0;
+  const gstReduction = round2(Math.max(0, oldDeliveryGst - newDeliveryGst));
+
+  const discountLabel = benefit.isPartial
+    ? `${input.planName} free delivery (${benefit.coveredRadiusKm} km covered)`
+    : `${input.planName} free delivery`;
+
+  const discountLine: AppliedLine = {
+    kind: "discount",
+    label: discountLabel,
+    amount: waivedFee,
+    meta: {
+      source: "customer_subscription_free_delivery",
+      planId: input.planId,
+      maxFreeDeliveryRadiusKm: input.maxFreeDeliveryRadiusKm,
+      distanceKm: input.distanceKm,
+      partial: benefit.isPartial,
+      excessDistanceKm: benefit.excessDistanceKm,
+      membershipDeliveryFeeInr: newDeliveryFee,
+    },
+  };
+  b.discounts.push(discountLine);
+  b.breakdown_steps.push({
+    step: discountLabel,
+    amount: -waivedFee,
+    meta: discountLine.meta,
+  });
+  b.discount_total = round2(b.discount_total + waivedFee);
+  b.delivery_fee = newDeliveryFee;
+
+  for (const charge of b.charges) {
+    if (
+      charge.kind === "charge" &&
+      !charge.hidden &&
+      charge.meta?.source !== "customer_subscription_delivery_waived_marker" &&
+      charge.meta?.source !== "customer_subscription_checkout" &&
+      charge.meta?.source !== "checkout_tipAmount" &&
+      charge.meta?.source !== "checkout_donationAmount" &&
+      /delivery/i.test(charge.label) &&
+      Math.abs(charge.amount - oldDeliveryFee) < 0.05
+    ) {
+      charge.amount = newDeliveryFee;
+      break;
+    }
+  }
+
+  b.tax_total = round2(Math.max(0, b.tax_total - gstReduction));
+  b.gst_components = {
+    ...b.gst_components,
+    delivery: {
+      original: deliveryGstLine.original ?? oldDeliveryFee,
+      discount: round2((deliveryGstLine.discount ?? 0) + waivedFee),
+      taxable_value: newDeliveryFee,
+      gst: newDeliveryGst,
+    },
+  };
+
+  const finalDelta = round2(-(waivedFee + gstReduction));
+  if (Math.abs(finalDelta) > 0.005) {
+    b.final_amount = round2(Math.max(0, b.final_amount + finalDelta));
+    b.gst_totals = {
+      ...b.gst_totals,
+      total_discount: b.discount_total,
+      total_tax: b.tax_total,
+      final_payable: b.final_amount,
+    };
+  }
+
+  b.charges.push({
+    kind: "charge",
+    label: "__delivery_fee_waived_inr__",
+    amount: waivedFee,
+    hidden: true,
+    meta: { source: "customer_subscription_delivery_waived_marker" },
+  });
+
+  return { billing: b, deliveryFeeWaivedInr: waivedFee };
+}
+
 export function applyCustomerSubscriptionToBilling(
   billing: BillingResult,
   input: SubscriptionBillingAdjustmentInput
@@ -97,38 +202,22 @@ export function applyCustomerSubscriptionToBilling(
   let deliveryFeeWaivedInr = 0;
 
   if (
-    input.freeDeliveryEligible &&
+    input.freeDeliveryEnabled &&
+    input.distanceKm != null &&
+    Number.isFinite(input.distanceKm) &&
     b.delivery_fee > 0.005
   ) {
-    const waivedFee = round2(b.delivery_fee);
-    const deliveryGst = round2(b.gst_components.delivery?.gst ?? 0);
-
-    const discountLine: AppliedLine = {
-      kind: "discount",
-      label: `${input.planName} free delivery`,
-      amount: waivedFee,
-      meta: {
-        source: "customer_subscription_free_delivery",
-        planId: input.planId,
-        maxFreeDeliveryRadiusKm: input.maxFreeDeliveryRadiusKm,
-        distanceKm: input.distanceKm,
-      },
-    };
-    b.discounts.push(discountLine);
-    b.breakdown_steps.push({
-      step: discountLine.label,
-      amount: -waivedFee,
-      meta: discountLine.meta,
+    const benefit = computeSubscriptionDeliveryBenefit({
+      distanceKm: input.distanceKm,
+      coveredRadiusKm: input.maxFreeDeliveryRadiusKm,
+      fullDeliveryFeeInr: b.delivery_fee,
+      pricing: input.deliveryPricing,
     });
-    b.discount_total = round2(b.discount_total + waivedFee);
-    b.delivery_fee = 0;
-    deliveryFeeWaivedInr = waivedFee;
-    finalDelta -= waivedFee + deliveryGst;
-    b.tax_total = round2(Math.max(0, b.tax_total - deliveryGst));
-    b.gst_components = {
-      ...b.gst_components,
-      delivery: { original: 0, discount: 0, taxable_value: 0, gst: 0 },
-    };
+    if (benefit && benefit.waivedInr > 0.005) {
+      const applied = applyDeliveryBenefitToBilling(b, input, benefit);
+      b = applied.billing;
+      deliveryFeeWaivedInr = applied.deliveryFeeWaivedInr;
+    }
   }
 
   const charge = input.subscriptionCharge;
@@ -193,7 +282,7 @@ export function applyCustomerSubscriptionToBilling(
     };
   }
 
-  if (deliveryFeeWaivedInr > 0.005) {
+  if (deliveryFeeWaivedInr > 0.005 && !b.charges.some((c) => c.meta?.source === "customer_subscription_delivery_waived_marker")) {
     b.charges.push({
       kind: "charge",
       label: "__delivery_fee_waived_inr__",
@@ -205,3 +294,5 @@ export function applyCustomerSubscriptionToBilling(
 
   return b;
 }
+
+export type { SubscriptionDeliveryBenefit };

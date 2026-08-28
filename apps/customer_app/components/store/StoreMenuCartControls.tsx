@@ -529,16 +529,6 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
     }
   }, [itemKey, optimisticQty]);
 
-  useEffect(() => {
-    perfMeasure(`tap:${itemKey}`, "row:rendered");
-    cartQtyDebug("ui_render", {
-      itemKey,
-      quantity,
-      optimisticQty,
-      displayQty: optimisticQty ?? quantity,
-    });
-  }, [itemKey, quantity, optimisticQty]);
-
   const addSuppressed = showingAdd && Date.now() < ignoreAddUntilRef.current;
 
   // Cross-fade + subtle scale between the two visuals. Both layers stay mounted;

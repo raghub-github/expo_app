@@ -13,8 +13,19 @@ import {
   profileMediaR2KeyFromUrl,
 } from "@/lib/merchant/store-profile-media";
 import { getR2MerchantObjectPrefix } from "@/lib/merchant/r2-store-asset-paths";
+import { isSuperAdmin, hasAccessPoint } from "@/lib/permissions/engine";
+import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 
 export const runtime = "nodejs";
+
+async function assertAdminBannerVideoAccess(user: { id: string; email?: string }): Promise<boolean> {
+  const email = user.email?.trim() || "";
+  if (await isSuperAdmin(user.id, email || undefined)) return true;
+  if (!email) return false;
+  const systemUser = await getSystemUserByEmail(email);
+  if (!systemUser) return false;
+  return hasAccessPoint(systemUser.id, "MERCHANT", "MERCHANT_ADMIN_MERCHANT_ACCESS");
+}
 
 async function assertStoreAccess(request: NextRequest, storeId: number) {
   const access = await authenticateMerchantStoreForId(request, storeId);
@@ -35,7 +46,7 @@ async function assertStoreAccess(request: NextRequest, storeId: number) {
     supabaseAuthId: access.user.id,
     email: access.user.email ?? "",
   });
-  return { ok: true as const, store: access.store, areaManagerId };
+  return { ok: true as const, store: access.store, areaManagerId, user: access.user };
 }
 
 async function resolveParentIdForPath(
@@ -69,7 +80,8 @@ function keyAllowedForStore(
   const partnerAssets = `${root}/assets/`;
   const legacyOnboarding = `${root}/onboarding/assets/`;
   const underPartner =
-    key.startsWith(partnerAssets) && (key.includes("/banners/") || key.includes("/gallery/"));
+    key.startsWith(partnerAssets) &&
+    (key.includes("/banners/") || key.includes("/gallery/") || key.includes("/videos/"));
   const underLegacy =
     key.startsWith(legacyOnboarding) && (key.includes("/banner/") || key.includes("/gallery/"));
   return underPartner || underLegacy;
@@ -93,14 +105,7 @@ export async function POST(
     const body = await request.json().catch(() => ({}));
     const rawKey = typeof body.key === "string" ? body.key.trim() : "";
     const rawUrl = typeof body.url === "string" ? body.url.trim() : "";
-    const key = rawKey || profileMediaR2KeyFromUrl(rawUrl) || "";
-    if (!key) {
-      return NextResponse.json(
-        { success: false, error: "Provide key or resolvable url" },
-        { status: 400 }
-      );
-    }
-    console.log("[profile-media/remove] request", { storeId, key });
+    const mediaType = typeof body.type === "string" ? body.type.trim() : "";
 
     const storeRow = access.store as { store_id?: string; parent_id?: number | null };
     const parentIdForPath = await resolveParentIdForPath(storeId, storeRow);
@@ -110,6 +115,25 @@ export async function POST(
         { status: 400 }
       );
     }
+
+    const areaManagerId = access.areaManagerId;
+    const fresh = await getMerchantStoreById(storeId, areaManagerId);
+    if (!fresh) {
+      return NextResponse.json({ success: false, error: "Store not found" }, { status: 500 });
+    }
+
+    let key = rawKey || profileMediaR2KeyFromUrl(rawUrl) || "";
+    if (!key && mediaType === "banner_video" && fresh.banner_video_url) {
+      key = profileMediaR2KeyFromUrl(String(fresh.banner_video_url)) || "";
+    }
+    if (!key) {
+      return NextResponse.json(
+        { success: false, error: "Provide key or resolvable url" },
+        { status: 400 }
+      );
+    }
+    console.log("[profile-media/remove] request", { storeId, key, mediaType: mediaType || undefined });
+
     if (!keyAllowedForStore(key, storeId, storeRow.store_id, parentIdForPath)) {
       console.warn("[profile-media/remove] key not allowed for store", {
         storeId,
@@ -123,41 +147,55 @@ export async function POST(
       );
     }
 
-    const areaManagerId = access.areaManagerId;
-    const fresh = await getMerchantStoreById(storeId, areaManagerId);
-    if (!fresh) {
-      return NextResponse.json({ success: false, error: "Store not found" }, { status: 500 });
-    }
-
     const bKey = profileMediaR2KeyFromUrl(String(fresh.banner_url ?? ""));
+    const vKey = profileMediaR2KeyFromUrl(String(fresh.banner_video_url ?? ""));
     const gList = coerceGalleryImageList(fresh.gallery_images);
     const isBanner = bKey === key;
+    const isBannerVideo = Boolean(vKey) && vKey === key;
     const inGallery = gList.some((u) => profileMediaR2KeyFromUrl(u) === key);
-    if (!isBanner && !inGallery) {
+    if (!isBanner && !isBannerVideo && !inGallery) {
       console.warn("[profile-media/remove] key not attached to store", {
         storeId,
         key,
         bannerKey: bKey,
+        bannerVideoKey: vKey,
         galleryCount: gList.length,
+        mediaType: mediaType || undefined,
       });
       return NextResponse.json(
-        { success: false, error: "This image is not attached to this store" },
+        { success: false, error: "This media is not attached to this store" },
         { status: 400 }
       );
     }
 
+    if (isBannerVideo) {
+      const videoAllowed = await assertAdminBannerVideoAccess({
+        id: access.user.id,
+        email: access.user.email,
+      });
+      if (!videoAllowed) {
+        return NextResponse.json(
+          { success: false, error: "Only admin can remove store banner video" },
+          { status: 403 }
+        );
+      }
+    }
+
     const newBanner = isBanner ? null : fresh.banner_url;
+    const newBannerVideo = isBannerVideo ? null : fresh.banner_video_url;
     const newGallery = gList.filter((u) => profileMediaR2KeyFromUrl(u) !== key);
     const galleryPayload = newGallery.length > 0 ? newGallery : null;
 
     await updateMerchantStore(storeId, areaManagerId, {
       banner_url: newBanner ?? null,
+      banner_video_url: newBannerVideo ?? null,
       gallery_images: galleryPayload,
     });
     console.log("[profile-media/remove] db updated", {
       storeId,
       removedKey: key,
       isBanner,
+      isBannerVideo,
       galleryAfter: newGallery.length,
     });
 

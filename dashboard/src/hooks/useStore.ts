@@ -21,6 +21,8 @@ export type StoreProfile = {
   latitude?: number | null;
   longitude?: number | null;
   banner_url?: string | null;
+  /** Admin-only hero video; inner page plays this when set (banner_url kept). */
+  banner_video_url?: string | null;
   gallery_images?: string[] | null;
   cuisine_types?: string[] | null;
   food_categories?: string[] | null;

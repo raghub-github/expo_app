@@ -203,6 +203,19 @@ function toDisplay(best: MerchantOfferItem, item: ItemOfferCatalogItem): ItemOff
   };
 }
 
+/** Catalog MRP discount percent when base price exceeds selling price. */
+export function computeCatalogDiscountPercent(
+  basePrice: number | null,
+  sellingPrice: number
+): number | null {
+  if (basePrice == null || !Number.isFinite(basePrice) || !Number.isFinite(sellingPrice)) {
+    return null;
+  }
+  if (basePrice <= sellingPrice + 0.001) return null;
+  const pct = Math.round(((basePrice - sellingPrice) / basePrice) * 100);
+  return pct > 0 ? pct : null;
+}
+
 /** Menu card payable + strike. Works for baked Boost and client-estimated Boost. */
 export function resolveMenuOfferPriceDisplay(args: {
   sellingPrice: number;

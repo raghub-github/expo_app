@@ -17,6 +17,7 @@ type GateService = "food" | "ride" | "parcel" | "ecom" | "vouchers" | "near-me";
 function isFoodInnerRoute(pathname: string): boolean {
   return (
     pathname === "/home" ||
+    pathname.startsWith("/home/grocery") ||
     pathname.startsWith("/home/merchant") ||
     pathname.startsWith("/home/category") ||
     pathname.startsWith("/home/meals-under-price") ||

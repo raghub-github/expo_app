@@ -29,6 +29,7 @@ import type {
 } from "./types.js";
 import {
   narrowBillingRulesForService,
+  mapBillingServiceTypeForChargesAndTaxes,
   narrowTaxConfigsForService,
 } from "./billingRuleSelection.js";
 
@@ -203,6 +204,7 @@ export async function loadBillingDatasetUncached(
   opts: { merchantStoreId: number; couponCode: string | null; serviceType?: string }
 ): Promise<BillingDataset> {
   const serviceType = (opts.serviceType ?? "FOOD").trim().toUpperCase();
+  const chargeTaxServiceType = mapBillingServiceTypeForChargesAndTaxes(serviceType);
   const rulesetVersion = await getRulesetVersion(db);
 
   const ruleRows = await db
@@ -319,7 +321,7 @@ export async function loadBillingDatasetUncached(
         priority: c.priority,
       })
     )
-    .filter((c) => c.serviceType === serviceType || c.serviceType === "ALL");
+    .filter((c) => c.serviceType === chargeTaxServiceType || c.serviceType === "ALL");
 
   const offerDb = await db
     .select()

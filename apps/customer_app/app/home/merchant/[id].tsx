@@ -15,7 +15,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { useSharedValue } from "react-native-reanimated";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { merchantService, type MenuItem, type MerchantSummary, type OrderedTogetherPair, setMenuItemBookmark } from "@/services/merchant.service";
+import { merchantService, type MenuItem, type MerchantDetail, type MerchantSummary, type OrderedTogetherPair, setMenuItemBookmark } from "@/services/merchant.service";
 import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
 import { offersService, type MerchantOfferItem, type PlatformOfferItem } from "@/services/offers.service";
 import { buildItemOfferDisplayMap, offerPriority, offerTargetsItem, isItemSurface } from "@/lib/itemOfferDisplay";
@@ -80,6 +80,7 @@ import {
   prefetchMenuItemFullConfig,
   prefetchMenuItemFullConfigsForMenu,
   resolveFullConfigItemId,
+  menuItemNeedsCustomization,
 } from "@/lib/menu-item-config-query";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -102,7 +103,7 @@ import {
   type MerchantScrollListHandle,
 } from "@/features/merchant-detail/components/MerchantDetailFlashList";
 import { MerchantStickyChrome } from "@/features/merchant-detail/components/MerchantStickyChrome";
-import { MerchantFloatingFab } from "@/features/merchant-detail/components/MerchantFloatingFab";
+import { MerchantFloatingFabWithCartOffset } from "@/features/merchant-detail/components/MerchantFloatingFab";
 import {
   buildFlashListData,
   buildCategoryChips,
@@ -214,9 +215,8 @@ export default function MerchantDetailScreen() {
   const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
   const safeTopWhenImmersive = Math.max(insets.top, SAFE_TOP_SEED);
   const topPad = hideStatusBarSpacer ? safeTopWhenImmersive : 0;
-  const headerTopGutter = merchantHeaderTopGutter(topPad);
-  const heroActionsTopPad = merchantHeroActionsTopPad(topPad);
   const merchantId = id ?? "";
+  const queryClient = useQueryClient();
   const coords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
   const locationAddress = useLocationStore((s) => s.address);
@@ -224,18 +224,26 @@ export default function MerchantDetailScreen() {
     locationAddress,
     coords
   );
-  const isDiscoveryLayout = (foodHomeLayoutKeyRaw ?? cachedLayoutKey) === "discovery";
+  const groceryStoreHint =
+    (
+      readSyncMerchantMenu(merchantId)?.storeType ??
+      queryClient.getQueryData<MerchantDetail>(MERCHANT_DETAIL_QUERY_KEY(merchantId))
+        ?.storeType ??
+      findMerchantSummaryInCache(queryClient, merchantId)?.storeType ??
+      ""
+    )
+      .trim()
+      .toUpperCase() === "GROCERY";
+  // Grocery inner pages always use grid-first chrome (list + Catalog FAB).
+  // Food discovery layout must not leak onto grocery stores.
+  const isDiscoveryLayout =
+    !groceryStoreHint && (foodHomeLayoutKeyRaw ?? cachedLayoutKey) === "discovery";
   const chromeHeight = isDiscoveryLayout
     ? merchantStickyFilterTop(topPad) + FILTER_BAR_HEIGHT
     : 0;
   const merchantChromeBg = isDiscoveryLayout ? MerchantDarkPalette.bg : "#FFFFFF";
   const merchantStatusBarStyle = isDiscoveryLayout ? ("light-content" as const) : ("dark-content" as const);
   const merchantChromeStoreStyle = isDiscoveryLayout ? ("light" as const) : ("dark" as const);
-  const hasMerchantCartItems = useCartStore(
-    (s) =>
-      merchantCartMatchesRoute(s.merchantId, merchantId) &&
-      s.items.some((cartItem) => cartItem.quantity > 0)
-  );
   // Capture once at mount so shutter + page share the same sentence after hide().
   // When nav shutter didn't run, pick a fresh sentence for this store entry.
   const [loadingMessageIndex] = useState(() =>
@@ -251,6 +259,12 @@ export default function MerchantDetailScreen() {
   const pairingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [filter, setFilter] = useState<StoreFilterId>("all");
   const [menuRefreshing, setMenuRefreshing] = useState(false);
+  const [heroMediaHeight, setHeroMediaHeight] = useState(HEADER_IMAGE_HEIGHT);
+  const heroBannerHeightSv = useSharedValue(HEADER_IMAGE_HEIGHT);
+  const handleHeroHeightChange = useCallback((height: number) => {
+    setHeroMediaHeight((prev) => (prev === height ? prev : height));
+    heroBannerHeightSv.value = height;
+  }, [heroBannerHeightSv]);
   const [advancedFilters, setAdvancedFilters] = useState<StoreMenuFilterState>(DEFAULT_STORE_MENU_FILTERS);
   const [filtersSheetVisible, setFiltersSheetVisible] = useState(false);
   const [menuSheetVisible, setMenuSheetVisible] = useState(false);
@@ -280,6 +294,7 @@ export default function MerchantDetailScreen() {
   } | null>(null);
   const [detailEditLineId, setDetailEditLineId] = useState<string | null>(null);
   const [detailSiblingLineIds, setDetailSiblingLineIds] = useState<string[]>([]);
+  const [grocerySheetExpanded, setGrocerySheetExpanded] = useState(false);
   const focusItemHandledRef = useRef<string | null>(null);
   const pendingMenuNavRef = useRef<{
     scrollTarget: MenuSheetScrollTarget;
@@ -394,6 +409,7 @@ export default function MerchantDetailScreen() {
   } = useMerchantScrollAnimation({
     headerSearchExpandedSv,
     userMenuScrollStarted,
+    heroBannerHeightSv,
     pinned: isDiscoveryLayout,
     onBeginDrag: onUserTakeOverMenuScroll,
     onScrollEnd: (y) => {
@@ -402,61 +418,32 @@ export default function MerchantDetailScreen() {
     },
   });
 
-  const heroBannerHeight = HEADER_IMAGE_HEIGHT;
+  const heroBannerHeight = heroMediaHeight;
   const {
     stickySearchActive,
     heroActionsVisible,
+    heroVideoActive,
   } = useMerchantScrollChromeState({
     scrollY,
     userMenuScrollStarted,
     heroBannerHeight,
   });
 
-  useLayoutEffect(() => {
-    useScreenChromeStore.setState({
-      statusBarBackground: merchantChromeBg,
-      statusBarStyle: merchantChromeStoreStyle,
-      hideStatusBarSpacer: false,
-      bootstrapActive: false,
-    });
-    navigation.setOptions({
-      statusBarStyle: merchantChromeStoreStyle,
-      statusBarBackgroundColor: merchantChromeBg,
-      navigationBarColor: merchantChromeBg,
-    });
-    StatusBar.setHidden(false, "none");
-    StatusBar.setBarStyle(merchantStatusBarStyle, true);
-    if (Platform.OS === "android") {
-      StatusBar.setTranslucent(false);
-      StatusBar.setBackgroundColor(merchantChromeBg, true);
-    }
-  }, [
-    merchantId,
-    merchantChromeBg,
-    merchantChromeStoreStyle,
-    merchantStatusBarStyle,
-    navigation,
-  ]);
-
-  // Declared BEFORE the focus effect below — that effect reads queryClient in its
-  // callback and dependency array, so a later `const` here was a temporal-dead-zone
-  // ReferenceError ("Cannot access 'queryClient' before initialization") that
-  // crashed the screen on render.
-  const queryClient = useQueryClient();
-
   const navShutterActive = useMerchantNavTransitionStore((s) => s.active);
+  const immersiveHeroVideoRef = useRef(false);
 
   const assertMerchantStatusBarChrome = useCallback(() => {
+    const immersive = immersiveHeroVideoRef.current;
     StatusBar.setHidden(false, "none");
-    StatusBar.setBarStyle(merchantStatusBarStyle, true);
+    StatusBar.setBarStyle(immersive ? "light-content" : merchantStatusBarStyle, true);
     if (Platform.OS === "android") {
-      StatusBar.setTranslucent(false);
-      StatusBar.setBackgroundColor(merchantChromeBg, true);
+      StatusBar.setTranslucent(immersive);
+      StatusBar.setBackgroundColor(immersive ? "transparent" : merchantChromeBg, true);
     }
     useScreenChromeStore.setState({
-      statusBarBackground: merchantChromeBg,
-      statusBarStyle: merchantChromeStoreStyle,
-      hideStatusBarSpacer: false,
+      statusBarBackground: immersive ? "transparent" : merchantChromeBg,
+      statusBarStyle: immersive ? "light" : merchantChromeStoreStyle,
+      hideStatusBarSpacer: immersive,
       bootstrapActive: false,
     });
   }, [merchantChromeBg, merchantChromeStoreStyle, merchantStatusBarStyle]);
@@ -643,10 +630,7 @@ export default function MerchantDetailScreen() {
   useEffect(() => {
     if (!merchantId || !merchant?.menu?.length) return;
     void prefetchMenuItemImagesForMenu(merchant.menu);
-    const task = InteractionManager.runAfterInteractions(() => {
-      prefetchMenuItemFullConfigsForMenu(queryClient, merchantId, merchant.menu);
-    });
-    return () => task.cancel();
+    prefetchMenuItemFullConfigsForMenu(queryClient, merchantId, merchant.menu);
   }, [merchantId, merchant?.menu, queryClient]);
 
   /** List cards often carry rating before the menu payload resolves — reuse on inner page. */
@@ -660,6 +644,7 @@ export default function MerchantDetailScreen() {
       totalReviews: merchant.totalReviews ?? summary.totalReviews ?? null,
       forYouRating: merchant.forYouRating ?? summary.forYouRating ?? null,
       userHasRatedStore: merchant.userHasRatedStore ?? summary.userHasRatedStore ?? false,
+      storeType: merchant.storeType ?? summary.storeType ?? null,
     };
   }, [merchant, merchantId, queryClient]);
 
@@ -693,6 +678,11 @@ export default function MerchantDetailScreen() {
     return listCachedBanner;
   }, [merchant, listCachedBanner]);
 
+  const cartMerchantStoreType = useMemo(
+    () => (merchant?.storeType ?? "FOOD").trim().toUpperCase(),
+    [merchant?.storeType]
+  );
+
   /** Header hero: primary banner only (never treated as “gallery” for looping). */
   const merchantBannerHeroUri = useMemo(() => {
     if (!merchant) return null;
@@ -703,6 +693,65 @@ export default function MerchantDetailScreen() {
     if (!t) return null;
     return (toAbsoluteImageUrl(t) ?? t).trim();
   }, [merchant, listCachedBanner]);
+
+  /** Admin hero video — inner page plays this over banner image when set. */
+  const merchantBannerHeroVideoUri = useMemo(() => {
+    if (!merchant) return null;
+    const m = merchant as MerchantSummary & { bannerVideoUrl?: string | null };
+    const raw = m.bannerVideoUrl ?? null;
+    if (raw == null || typeof raw !== "string") return null;
+    const t = raw.trim();
+    if (!t) return null;
+    return (toAbsoluteImageUrl(t) ?? t).trim();
+  }, [merchant]);
+
+  const isGroceryStoreType = cartMerchantStoreType === "GROCERY";
+  const hasHeroVideo = Boolean((merchantBannerHeroVideoUri ?? "").trim());
+  const hasHeroBanner = Boolean((merchantBannerHeroUri ?? "").trim());
+
+  /** Grocery: banner or video bleeds under status bar; food: video only. */
+  const immersiveHeroVideo =
+    !isDiscoveryLayout &&
+    (hasHeroVideo || (isGroceryStoreType && hasHeroBanner));
+  immersiveHeroVideoRef.current = immersiveHeroVideo;
+  const heroStatusBarInset = immersiveHeroVideo ? safeTopWhenImmersive : 0;
+  const headerTopGutter = merchantHeaderTopGutter(
+    immersiveHeroVideo ? safeTopWhenImmersive : topPad
+  );
+  const heroActionsTopPad = merchantHeroActionsTopPad(heroStatusBarInset);
+
+  useLayoutEffect(() => {
+    useScreenChromeStore.setState({
+      statusBarBackground: immersiveHeroVideo ? "transparent" : merchantChromeBg,
+      statusBarStyle: immersiveHeroVideo ? "light" : merchantChromeStoreStyle,
+      hideStatusBarSpacer: immersiveHeroVideo,
+      bootstrapActive: false,
+    });
+    navigation.setOptions({
+      statusBarStyle: immersiveHeroVideo ? "light" : merchantChromeStoreStyle,
+      statusBarBackgroundColor: immersiveHeroVideo ? "transparent" : merchantChromeBg,
+      navigationBarColor: merchantChromeBg,
+      statusBarTranslucent: immersiveHeroVideo,
+    });
+    StatusBar.setHidden(false, "none");
+    StatusBar.setBarStyle(immersiveHeroVideo ? "light-content" : merchantStatusBarStyle, true);
+    if (Platform.OS === "android") {
+      StatusBar.setTranslucent(immersiveHeroVideo);
+      StatusBar.setBackgroundColor(immersiveHeroVideo ? "transparent" : merchantChromeBg, true);
+    }
+  }, [
+    immersiveHeroVideo,
+    merchantId,
+    merchantChromeBg,
+    merchantChromeStoreStyle,
+    merchantStatusBarStyle,
+    navigation,
+  ]);
+
+  useEffect(() => {
+    setHeroMediaHeight(HEADER_IMAGE_HEIGHT);
+    heroBannerHeightSv.value = HEADER_IMAGE_HEIGHT;
+  }, [merchantId, merchantBannerHeroVideoUri, heroBannerHeightSv]);
 
   /** Gallery URLs excluding the hero so “banner only” stays static; when non-empty, carousel loops. */
   const merchantGalleryBannerUris = useMemo(() => {
@@ -872,8 +921,8 @@ export default function MerchantDetailScreen() {
     enabled: !!merchantId,
     staleTime: STORE_OFFERS_STALE_MS,
     retry: 1,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
     initialData: syncStoreOffers,
     // Mirror Food Home merchants list: disk/RQ seed is immediately stale so network refresh runs.
@@ -930,9 +979,9 @@ export default function MerchantDetailScreen() {
   );
 
   const { data: myOrders = EMPTY_MY_ORDERS } = useQuery({
-    queryKey: ["my-orders-store", merchantId],
+    queryKey: ["my-orders"],
     queryFn: async () => {
-      const orders = await orderService.getMyOrders({ limit: 40 });
+      const orders = await orderService.getMyOrders({ limit: 50 });
       void writeCachedMyOrders(orders);
       return orders;
     },
@@ -944,6 +993,8 @@ export default function MerchantDetailScreen() {
     // Cache initialData keeps warm revisits instant; the fetch reconciles in place.
     enabled: !!merchantId,
     staleTime: 2 * 60 * 1000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
     initialData: cachedMyOrders,
     initialDataUpdatedAt: getMyOrdersCachedAt(),
     placeholderData: (previous) => previous ?? cachedMyOrders,
@@ -1198,6 +1249,17 @@ export default function MerchantDetailScreen() {
 
   const openCustomizationSheet = useCallback(
     (item: MenuItem) => {
+      if (merchantId) {
+        void prefetchMenuItemFullConfig(
+          queryClient,
+          merchantId,
+          resolveFullConfigItemId(item)
+        );
+      }
+      const storeType = (merchant?.storeType ?? "FOOD").trim().toUpperCase();
+      if (storeType === "GROCERY") {
+        setGrocerySheetExpanded(true);
+      }
       const prefill = resolveCartPrefillForItem(item);
       setCustomizationEditLineId(prefill?.lineId ?? null);
       setCustomizationSiblingLineIds(prefill?.siblingLineIds ?? []);
@@ -1214,15 +1276,8 @@ export default function MerchantDetailScreen() {
       );
       setCustomizationItem(item);
       setCustomizationSheetVisible(true);
-      if (merchantId) {
-        void prefetchMenuItemFullConfig(
-          queryClient,
-          merchantId,
-          resolveFullConfigItemId(item)
-        );
-      }
     },
-    [merchantId, queryClient, resolveCartPrefillForItem]
+    [merchantId, merchant?.storeType, queryClient, resolveCartPrefillForItem]
   );
 
   const handleAddItem = useCallback(
@@ -1230,7 +1285,7 @@ export default function MerchantDetailScreen() {
       // Never no-op after optimistic UI — menu rows only render when we have an id.
       const storeName = (merchant?.name ?? "Restaurant").trim() || "Restaurant";
       if (!merchantId) return;
-      const needsCustomization = !!(item.hasVariants || item.hasAddons || item.hasCustomizations);
+      const needsCustomization = menuItemNeedsCustomization(item, merchantId);
       if (needsCustomization) {
         openCustomizationSheet(item);
         return;
@@ -1248,7 +1303,8 @@ export default function MerchantDetailScreen() {
           specialInstructions: specialInstructions ?? null,
         },
         Math.max(1, quantity),
-        cartMerchantBannerUrl
+        cartMerchantBannerUrl,
+        cartMerchantStoreType
       );
       const pairingKey = item.listRowKey ?? item.id;
       const offer =
@@ -1279,6 +1335,7 @@ export default function MerchantDetailScreen() {
       merchant?.name,
       addItem,
       cartMerchantBannerUrl,
+      cartMerchantStoreType,
       itemOfferById,
       openCustomizationSheet,
     ]
@@ -1403,7 +1460,7 @@ export default function MerchantDetailScreen() {
         }
         replaceLine(editLineId, lineInput, qty);
       } else {
-        addItem(merchantId, merchant.name, lineInput, qty, cartMerchantBannerUrl);
+        addItem(merchantId, merchant.name, lineInput, qty, cartMerchantBannerUrl, cartMerchantStoreType);
       }
       setCustomizationSheetVisible(false);
       setCustomizationItem(null);
@@ -1421,6 +1478,7 @@ export default function MerchantDetailScreen() {
       customizationEditLineId,
       customizationSiblingLineIds,
       cartMerchantBannerUrl,
+      cartMerchantStoreType,
       itemOfferById,
     ]
   );
@@ -1495,10 +1553,12 @@ export default function MerchantDetailScreen() {
   const handleOpenItemDetails = useCallback(
     (item: MenuItem) => {
       const needsCustomization = !!(
-        item.hasVariants ||
-        item.hasAddons ||
-        item.hasCustomizations
+        menuItemNeedsCustomization(item, merchantId)
       );
+      const storeType = (merchant?.storeType ?? "FOOD").trim().toUpperCase();
+      if (storeType === "GROCERY" && detailItem == null && customizationItem == null) {
+        setGrocerySheetExpanded(needsCustomization);
+      }
       if (needsCustomization) {
         openCustomizationSheet(item);
         return;
@@ -1516,7 +1576,7 @@ export default function MerchantDetailScreen() {
       );
       setDetailItem(item);
     },
-    [openCustomizationSheet, resolveCartPrefillForItem]
+    [openCustomizationSheet, resolveCartPrefillForItem, merchant?.storeType, detailItem, customizationItem]
   );
 
   const handleCloseItemDetails = useCallback(() => {
@@ -1524,15 +1584,75 @@ export default function MerchantDetailScreen() {
     setDetailInitialSelection(null);
     setDetailEditLineId(null);
     setDetailSiblingLineIds([]);
+    setGrocerySheetExpanded(false);
   }, []);
+
+  const handleGroceryCarouselItemSelect = useCallback(
+    (item: MenuItem) => {
+      const prefill = resolveCartPrefillForItem(item);
+      const browsingCustomizationSheet =
+        customizationSheetVisible && customizationItem != null;
+
+      let needsCustomization = menuItemNeedsCustomization(item, merchantId);
+      if (merchantId) {
+        void prefetchMenuItemFullConfig(queryClient, merchantId, resolveFullConfigItemId(item));
+      }
+
+      if (needsCustomization || browsingCustomizationSheet) {
+        setGrocerySheetExpanded(true);
+        setDetailItem(null);
+        setDetailInitialSelection(null);
+        setDetailEditLineId(null);
+        setDetailSiblingLineIds([]);
+
+        setCustomizationEditLineId(prefill?.lineId ?? null);
+        setCustomizationSiblingLineIds(prefill?.siblingLineIds ?? []);
+        setCustomizationInitialSelection(
+          prefill
+            ? {
+                variantId: prefill.variantId,
+                variantName: prefill.variantName,
+                addons: prefill.addons,
+                specialInstructions: prefill.specialInstructions,
+                quantity: prefill.quantity,
+              }
+            : null
+        );
+        setCustomizationItem(item);
+        setCustomizationSheetVisible(true);
+        return;
+      }
+
+      setCustomizationSheetVisible(false);
+      setCustomizationItem(null);
+      setCustomizationInitialSelection(null);
+      setCustomizationEditLineId(null);
+      setCustomizationSiblingLineIds([]);
+
+      setDetailEditLineId(prefill?.lineId ?? null);
+      setDetailSiblingLineIds(prefill?.siblingLineIds ?? []);
+      setDetailInitialSelection(
+        prefill
+          ? {
+              specialInstructions: prefill.specialInstructions,
+              quantity: prefill.quantity,
+            }
+          : null
+      );
+      setDetailItem(item);
+    },
+    [
+      merchantId,
+      queryClient,
+      resolveCartPrefillForItem,
+      customizationSheetVisible,
+      customizationItem,
+    ]
+  );
 
   const handleAddFromItemDetails = useCallback(
     (item: MenuItem, quantity: number, specialInstructions?: string | null) => {
-      const needsCustomization = !!(
-        item.hasVariants ||
-        item.hasAddons ||
-        item.hasCustomizations
-      );
+      const needsCustomization = menuItemNeedsCustomization(item, merchantId);
       const editLineId = detailEditLineId;
       const siblings = detailSiblingLineIds;
       setDetailItem(null);
@@ -1674,25 +1794,13 @@ export default function MerchantDetailScreen() {
   const isStoreClosedForStatus =
     merchant != null && effectiveLiveStatus === "CLOSED";
 
-  /** Clearance for Menu FAB / Continue bar — painted inside gray footer, not as white list pad. */
+  /** Always reserve continue-bar space so cart add/remove never reshapes the list footer. */
   const footerBottomPadding = useMemo(() => {
     const fabClearance = isDiscoveryLayout ? 12 : MENU_FAB_HEIGHT + 12;
-    if (!hasMerchantCartItems) {
-      return fabClearance + cartDockBottomInset;
-    }
     return resolveStoreContinueBarHeight(true, cartDockBottomInset) + fabClearance;
-  }, [cartDockBottomInset, hasMerchantCartItems, isDiscoveryLayout]);
+  }, [cartDockBottomInset, isDiscoveryLayout]);
 
   const listContentContainerStyle = useMemo(() => ({ paddingBottom: 0 }), []);
-
-  /** FAB sits above the reserved Continue dock slot (dock self-hides when cart empty). */
-  const floatingFabBottom = useMemo(
-    () =>
-      hasMerchantCartItems
-        ? resolveStoreContinueBarHeight(true, cartDockBottomInset) + 14
-        : cartDockBottomInset + 14,
-    [cartDockBottomInset, hasMerchantCartItems]
-  );
 
   const handleStoreCartContinue = useCallback(() => {
     if (isStoreClosedForStatus) return;
@@ -2176,21 +2284,40 @@ export default function MerchantDetailScreen() {
   }
 
   const pageMerchant = displayMerchant ?? merchant;
+  const isGroceryMerchant =
+    (pageMerchant?.storeType ?? "FOOD").trim().toUpperCase() === "GROCERY";
+  const grocerySheetHeightMode = isGroceryMerchant
+    ? grocerySheetExpanded
+      ? "expanded"
+      : "base"
+    : undefined;
 
   return (
     <MerchantUiThemeProvider dark={isDiscoveryLayout}>
-    <GestureHandlerRootView style={[styles.container, isDiscoveryLayout && styles.containerDark]}>
+    <GestureHandlerRootView
+      style={[
+        styles.container,
+        isDiscoveryLayout && styles.containerDark,
+        immersiveHeroVideo && styles.containerImmersiveHero,
+      ]}
+    >
       <StatusBar
         hidden={false}
-        translucent={false}
-        backgroundColor={merchantChromeBg}
-        barStyle={merchantStatusBarStyle}
+        translucent={immersiveHeroVideo}
+        backgroundColor={immersiveHeroVideo ? "transparent" : merchantChromeBg}
+        barStyle={immersiveHeroVideo ? "light-content" : merchantStatusBarStyle}
       />
       <MerchantStickyChrome
         topGutter={headerTopGutter}
         stickySearchStyle={stickySearchStyle}
         stickySearchBgStyle={stickySearchBgStyle}
-        pointerEvents={isDiscoveryLayout || headerSearchExpanded ? "auto" : "box-none"}
+        pointerEvents={
+          isDiscoveryLayout || headerSearchExpanded || stickySearchActive
+            ? "auto"
+            : heroActionsVisible
+              ? "none"
+              : "box-none"
+        }
         stickySearchActive={isDiscoveryLayout || stickySearchActive}
         headerSearchExpanded={headerSearchExpanded}
         onBack={handleStickyBack}
@@ -2328,6 +2455,7 @@ export default function MerchantDetailScreen() {
         scrollHandler={scrollHandler}
         contentContainerStyle={listContentContainerStyle}
         heroUri={merchantBannerHeroUri}
+        heroVideoUri={merchantBannerHeroVideoUri}
         merchantLogoUri={merchantLogoUri}
         merchant={pageMerchant}
         merchantId={merchantId}
@@ -2363,6 +2491,7 @@ export default function MerchantDetailScreen() {
         onCouponPress={openOffersSheet}
         similarMerchants={filteredSimilarMerchants}
         footerBottomPadding={footerBottomPadding}
+        fssaiNumber={pageMerchant.fssaiNumber ?? merchant.fssaiNumber ?? null}
         highlightedMenuItemKey={highlightedMenuItemKey}
         highlightedOfferId={selectedMenuOfferNumericId}
         highlyReorderedIds={highlyReorderedIds}
@@ -2373,6 +2502,9 @@ export default function MerchantDetailScreen() {
         showHeroActions={!isDiscoveryLayout && heroActionsVisible}
         heroActionsTopPad={heroActionsTopPad}
         heroActions={heroActions}
+        onHeroHeightChange={handleHeroHeightChange}
+        shouldPlayHeroVideo={heroVideoActive}
+        heroStatusBarInset={heroStatusBarInset}
         onListLayout={handleListLayout}
         itemOfferById={itemOfferById}
         categoryChips={categoryChips}
@@ -2510,6 +2642,7 @@ export default function MerchantDetailScreen() {
       <StoreMenuItemDetailSheet
         visible={detailItem != null}
         item={detailItem}
+        storeType={displayMerchant?.storeType ?? merchant?.storeType}
         initialSelection={detailInitialSelection}
         isStoreClosed={isStoreClosedForStatus}
         isBookmarked={
@@ -2530,6 +2663,9 @@ export default function MerchantDetailScreen() {
         }
         onClose={handleCloseItemDetails}
         onAdd={handleAddFromItemDetails}
+        storeMenu={merchant?.menu ?? []}
+        grocerySheetHeightMode={grocerySheetHeightMode}
+        onSelectMenuItem={handleGroceryCarouselItemSelect}
         onBookmark={handleBookmarkMenuItem}
         onShare={handleShareMenuItem}
       />
@@ -2543,12 +2679,16 @@ export default function MerchantDetailScreen() {
             setCustomizationInitialSelection(null);
             setCustomizationEditLineId(null);
             setCustomizationSiblingLineIds([]);
+            setGrocerySheetExpanded(false);
           }}
           storeId={merchantId}
           item={customizationItem}
           merchantName={merchant?.name ?? ""}
+          storeType={displayMerchant?.storeType ?? merchant?.storeType}
           isStoreClosed={isStoreClosedForStatus}
           storeMenu={merchant?.menu ?? []}
+          grocerySheetHeightMode={grocerySheetHeightMode}
+          onSelectMenuItem={handleGroceryCarouselItemSelect}
           onAddCompanionItem={handleAddItem}
           initialSelection={customizationInitialSelection}
           itemOffer={
@@ -2614,10 +2754,13 @@ export default function MerchantDetailScreen() {
       </View>
 
       {!isDiscoveryLayout && !menuSheetVisible ? (
-        <MerchantFloatingFab
-          bottom={floatingFabBottom}
+        <MerchantFloatingFabWithCartOffset
+          merchantId={merchantId}
+          cartDockBottomInset={cartDockBottomInset}
           onPress={() => setMenuSheetVisible(true)}
           animatedStyle={fabStyle}
+          label={isGroceryMerchant ? "Catalog" : "Menu"}
+          iconName={isGroceryMerchant ? "grid-outline" : "restaurant-outline"}
         />
       ) : null}
     </GestureHandlerRootView>
@@ -2630,6 +2773,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: StoreTheme.background,
     overflow: "hidden",
+  },
+  containerImmersiveHero: {
+    overflow: "visible",
   },
   containerDark: {
     backgroundColor: MerchantDarkPalette.bg,
@@ -2689,10 +2835,11 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   stickyHeaderRow: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    minWidth: 0,
+    gap: 8,
   },
   stickyBackBtn: { padding: 6 },
   stickySearchWrap: {

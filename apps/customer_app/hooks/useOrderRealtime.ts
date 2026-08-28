@@ -45,10 +45,10 @@ import {
  * `eta.updated.v1`) and halve the frequency. That takes an active food order
  * from 24 req/min to 6 req/min without changing status latency materially.
  */
-const STATUS_POLL_INTERVAL_MS = 5_000;
-/** Keep status snappy even with WS — ready / accept must not wait 10s+. */
-const STATUS_POLL_INTERVAL_WS_HEALTHY_MS = 5_000;
-const LOCATION_FALLBACK_POLL_MS = 2_000;
+const STATUS_POLL_INTERVAL_MS = 15_000;
+/** With a healthy WS, status can poll less often — realtime events drive invalidations. */
+const STATUS_POLL_INTERVAL_WS_HEALTHY_MS = 45_000;
+const LOCATION_FALLBACK_POLL_MS = 12_000;
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -631,9 +631,9 @@ export function useOrderRealtime() {
       if (t !== "status_changed" && t !== "order.status_changed") return;
       const orderKey = String(payload.orderIdText ?? payload.orderId ?? "").trim();
       if (!orderKey) return;
-      // Instant catch-up — don't wait for the 5s poll.
-      void queryClient.invalidateQueries({ queryKey: ["order"] });
-      void queryClient.invalidateQueries({ queryKey: ["orderEta"] });
+      // Instant catch-up — scoped to the affected order (avoid refetching every open order screen).
+      void queryClient.invalidateQueries({ queryKey: ["order", orderKey] });
+      void queryClient.invalidateQueries({ queryKey: ["orderEta", orderKey] });
       void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
       void syncStatusRef.current?.();
     };
@@ -661,7 +661,7 @@ export function useOrderRealtime() {
         stage === "ARRIVING" ||
         stage === "DELIVERED"
       ) {
-        void queryClient.invalidateQueries({ queryKey: ["order"] });
+        void queryClient.invalidateQueries({ queryKey: ["order", orderKey] });
         void syncStatusRef.current?.();
       }
 

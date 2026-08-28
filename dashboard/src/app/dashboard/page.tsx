@@ -1,28 +1,39 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, MapPin, Shield } from "lucide-react";
 import dynamic from "next/dynamic";
 import { ServicePointForm } from "@/components/map/ServicePointForm";
+import { ChunkLoadErrorBoundary } from "@/components/ChunkLoadErrorBoundary";
 import { useLogout } from "@/hooks/queries/useAuthQuery";
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
 import { queryKeys } from "@/lib/queryKeys";
 
-const ServicePointsMap = dynamic(
-  () => import("@/components/map/ServicePointsMap").then((m) => m.ServicePointsMap),
-  {
-    // Map is heavy and below the fold; show a lightweight placeholder while it loads.
-    loading: () => (
-      <div className="relative h-full w-full min-h-[320px] overflow-hidden rounded-2xl border border-[#121212]/10 bg-white shadow-sm">
-        <div className="absolute inset-0 flex items-center justify-center bg-[#F3F7FA]">
-          <div className="text-center">
-            <p className="text-sm font-medium text-[#121212]/60">Loading map…</p>
-            <p className="mt-1 text-xs text-[#121212]/40">Preparing service points</p>
-          </div>
+function MapLoadingPlaceholder() {
+  return (
+    <div className="relative h-full w-full min-h-[320px] overflow-hidden rounded-2xl border border-[#121212]/10 bg-white shadow-sm">
+      <div className="absolute inset-0 flex items-center justify-center bg-[#F3F7FA]">
+        <div className="text-center">
+          <p className="text-sm font-medium text-[#121212]/60">Loading map…</p>
+          <p className="mt-1 text-xs text-[#121212]/40">Preparing service points</p>
         </div>
       </div>
-    ),
+    </div>
+  );
+}
+
+const ServicePointsMap = dynamic(
+  () =>
+    import("@/components/map/ServicePointsMap")
+      .then((m) => m.ServicePointsMap)
+      .catch((err) => {
+        console.warn("[DashboardHome] ServicePointsMap chunk failed:", err);
+        // Remount via boundary Retry — avoid crashing the whole dashboard shell.
+        throw err;
+      }),
+  {
+    loading: () => <MapLoadingPlaceholder />,
     ssr: false,
   }
 );
@@ -36,9 +47,14 @@ export default function DashboardHome() {
   const { data: userPerms, error, isError } = usePermissionsQuery();
   const logoutMutation = useLogout();
   const [hasMounted, setHasMounted] = useState(false);
+  const [mapRetryKey, setMapRetryKey] = useState(0);
 
   useEffect(() => {
     setHasMounted(true);
+  }, []);
+
+  const handleMapChunkRetry = useCallback(() => {
+    setMapRetryKey((k) => k + 1);
   }, []);
 
   const isSuperAdmin = hasMounted && (userPerms?.isSuperAdmin ?? false);
@@ -124,7 +140,26 @@ export default function DashboardHome() {
       {/* Map + right panel — map fills available main area like the Home layout */}
       <div className="grid h-[calc(100dvh-7.5rem)] min-h-[420px] grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-5">
         <div className="min-h-[320px] lg:col-span-2 lg:min-h-0">
-          <ServicePointsMap className="h-full w-full" />
+          <ChunkLoadErrorBoundary
+            key={mapRetryKey}
+            onRetry={handleMapChunkRetry}
+            fallback={
+              <div className="relative flex h-full min-h-[320px] w-full flex-col items-center justify-center gap-3 overflow-hidden rounded-2xl border border-amber-200 bg-amber-50/80 p-6 text-center">
+                <p className="text-sm font-medium text-amber-900">
+                  Map failed to load (stale chunk). Retry or hard-refresh the page.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleMapChunkRetry}
+                  className="rounded-lg bg-amber-200 px-4 py-2 text-sm font-semibold text-amber-950 hover:bg-amber-300"
+                >
+                  Retry map
+                </button>
+              </div>
+            }
+          >
+            <ServicePointsMap className="h-full w-full" />
+          </ChunkLoadErrorBoundary>
         </div>
 
         <div

@@ -28,6 +28,7 @@ import {
 } from "@/hooks/useFeaturedOffersHome";
 import { reloadCustomerAppAssets } from "@/store/appAssetsStore";
 import { useCustomerGeoServiceAvailability } from "@/hooks/useCustomerGeoServiceAvailability";
+import { useNearbyGroceryAvailability } from "@/hooks/useNearbyGroceryAvailability";
 import { useCustomerServiceBlocks, CUSTOMER_SERVICE_BLOCKS_QUERY_KEY } from "@/hooks/useCustomerServiceBlocks";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { useCustomerServiceBlockSheetStore } from "@/store/customerServiceBlockSheetStore";
@@ -60,6 +61,7 @@ export default function HomeScreen() {
         queryClient.invalidateQueries({ queryKey: ["featured-offers-home"] }),
         queryClient.invalidateQueries({ queryKey: ["weather"] }),
         queryClient.invalidateQueries({ queryKey: ["geo", "services"] }),
+        queryClient.invalidateQueries({ queryKey: ["merchants"] }),
         queryClient.invalidateQueries({ queryKey: CUSTOMER_SERVICE_BLOCKS_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: ["wallet", "balance"] }),
         reloadCustomerAppAssets(),
@@ -93,6 +95,11 @@ export default function HomeScreen() {
     address?.state ??
     [...fullParts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== "india");
   const { enabledServices } = useCustomerGeoServiceAvailability();
+  const { groceryEnabled } = useNearbyGroceryAvailability();
+  const homeEnabledServices = useMemo(
+    () => ({ ...enabledServices, grocery: groceryEnabled }),
+    [enabledServices, groceryEnabled]
+  );
   const { accountBlocks } = useCustomerServiceBlocks();
   const weatherParams = useMemo(
     () => (coords ? resolveHomeWeatherQueryParams(address, coords) : { lat: undefined, lng: undefined }),
@@ -155,7 +162,7 @@ export default function HomeScreen() {
         hideStatusBarSpacer: false,
       });
       const now = Date.now();
-      if (now - lastBlocksRefetchRef.current > 30_000) {
+      if (now - lastBlocksRefetchRef.current > 60_000) {
         lastBlocksRefetchRef.current = now;
         void queryClient.invalidateQueries({
           queryKey: CUSTOMER_SERVICE_BLOCKS_QUERY_KEY,
@@ -203,7 +210,7 @@ export default function HomeScreen() {
 
         <HomeServicesRow
           cardHeight={serviceCardH}
-          enabledServices={enabledServices}
+          enabledServices={homeEnabledServices}
           accountBlocks={accountBlocks}
           onAccountBlockedPress={(_id, reason, label, assetKey) =>
             openBlockSheet({ serviceLabel: label, reason, serviceAssetKey: assetKey })

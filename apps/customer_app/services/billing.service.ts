@@ -86,6 +86,24 @@ export type CalculateBillResponse = {
   deliveryFeeQuotedInr?: number | null;
   /** Delivery fee waived by subscription free-delivery benefit (for strikethrough UI). */
   deliveryFeeWaivedInr?: number | null;
+  /** Membership delivery benefit applied on this bill (full or partial). */
+  subscriptionDeliveryBenefit?: {
+    waivedInr: number;
+    membershipDeliveryFeeInr: number;
+    coveredRadiusKm: number;
+    excessDistanceKm: number;
+    isPartial: boolean;
+    applied: boolean;
+  } | null;
+  /** Preview savings if customer joins the checkout plan (not yet applied). */
+  subscriptionDeliveryBenefitEstimate?: {
+    waivedInr: number;
+    membershipDeliveryFeeInr: number;
+    coveredRadiusKm: number;
+    excessDistanceKm: number;
+    isPartial: boolean;
+    applied: boolean;
+  } | null;
   platformFee: number;
   packagingFee: number;
   surgeFee: number;
@@ -166,7 +184,7 @@ export type CalculateBillPayload = {
   pickupLat?: number;
   pickupLon?: number;
   /** FOOD | PARCEL | RIDE — defaults to FOOD on backend */
-  serviceType?: "FOOD" | "PARCEL" | "RIDE" | "ALL";
+  serviceType?: "FOOD" | "GROCERY" | "PARCEL" | "RIDE" | "ALL";
   cityName?: string | null;
   userSegment?: "NEW" | "EXISTING" | "ALL";
   /** Opt-in platform subscription add-on (DB-driven plan from Super Admin). */
@@ -265,7 +283,7 @@ export const billingService = {
     merchantId: string;
     addressId: string;
     cartSubtotal: number;
-    serviceType?: "FOOD" | "PARCEL" | "RIDE" | "ALL";
+    serviceType?: "FOOD" | "GROCERY" | "PARCEL" | "RIDE" | "ALL";
     userSegment?: "NEW" | "EXISTING" | "ALL";
     /** Live location from the location store — preferred over saved address fields. */
     pincode?: string | null;

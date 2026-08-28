@@ -96,7 +96,7 @@ export const offersService = {
     city?: string | null;
     lat?: number | null;
     lng?: number | null;
-    serviceType?: "FOOD" | "PARCEL" | "RIDE";
+    serviceType?: "FOOD" | "GROCERY" | "PARCEL" | "RIDE";
   }): Promise<StoreOffersResponse> {
     const query: Record<string, string | number> = {
       serviceType: params.serviceType ?? "FOOD",
@@ -119,7 +119,7 @@ export const offersService = {
     city?: string | null;
     lat?: number | null;
     lng?: number | null;
-    serviceType?: "FOOD" | "PARCEL" | "RIDE";
+    serviceType?: "FOOD" | "GROCERY" | "PARCEL" | "RIDE";
     limit?: number;
   }): Promise<FeaturedOffersResponse> {
     const query: Record<string, string | number> = {

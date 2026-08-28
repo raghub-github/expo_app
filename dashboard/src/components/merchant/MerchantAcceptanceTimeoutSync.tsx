@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, useCallback, useEffect, useRef } from 'react';
+import { fetchMerchantStoreApi } from '@/lib/fetch-merchant-store-api';
 import { useStoreContext } from '@/app/dashboard/merchants/stores/[id]/StoreContext';
 
 const SYNC_SESSION_PREFIX = 'merchant-acceptance-sync:';
@@ -20,11 +21,10 @@ function MerchantAcceptanceTimeoutSyncInner() {
 
     runningRef.current = true;
     try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/sync-acceptance-timeout`, {
-        method: 'POST',
-        credentials: 'include',
-        cache: 'no-store',
-      });
+      const res = await fetchMerchantStoreApi(
+        `/api/merchant/stores/${storeId}/sync-acceptance-timeout`,
+        { method: 'POST', cache: 'no-store' }
+      );
       const data = (await res.json().catch(() => ({}))) as { cancelled?: number };
       if (!res.ok) return;
 
@@ -46,8 +46,12 @@ function MerchantAcceptanceTimeoutSyncInner() {
   }, [storeId]);
 
   useEffect(() => {
-    void runSync();
-  }, [runSync]);
+    if (!storeId) return;
+    const t = window.setTimeout(() => {
+      void runSync();
+    }, 600);
+    return () => window.clearTimeout(t);
+  }, [runSync, storeId]);
 
   return null;
 }

@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useFocusEffect } from "expo-router";
 import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
 import {
   DEFAULT_FOOD_HOME_LAYOUT,
@@ -91,8 +90,8 @@ export function useFoodHomeLayout(
     staleTime: FOOD_HOME_LAYOUT_STALE_MS,
     gcTime: FOOD_HOME_LAYOUT_GC_MS,
     retry: 1,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
     initialData: syncCached ?? bootLayout,
   });
@@ -103,13 +102,6 @@ export function useFoodHomeLayout(
   const layoutKey: FoodHomeLayoutKey | null = layoutReady
     ? (effectiveKey ?? DEFAULT_FOOD_HOME_LAYOUT)
     : effectiveKey;
-
-  useFocusEffect(
-    useCallback(() => {
-      if (!canQuery) return;
-      void queryClient.invalidateQueries({ queryKey });
-    }, [canQuery, queryClient, queryKey])
-  );
 
   return {
     ...query,

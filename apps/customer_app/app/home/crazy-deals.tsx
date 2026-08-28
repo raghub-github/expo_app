@@ -75,9 +75,10 @@ export default function CrazyDealsStoresScreen() {
         ? merchantsQueryKey(
             merchantsAnchorCoords.latitude,
             merchantsAnchorCoords.longitude,
-            vegOnly
+            vegOnly,
+            "FOOD"
           )
-        : (["merchants", "pending", vegOnly] as const),
+        : (["merchants", "pending", vegOnly, "FOOD"] as const),
     queryFn: async () => {
       if (merchantsAnchorCoords?.latitude == null || merchantsAnchorCoords?.longitude == null) {
         return [];
@@ -85,7 +86,8 @@ export default function CrazyDealsStoresScreen() {
       return fetchAndCacheMerchantsList(
         merchantsAnchorCoords.latitude,
         merchantsAnchorCoords.longitude,
-        vegOnly
+        vegOnly,
+        "FOOD"
       );
     },
     enabled: merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,

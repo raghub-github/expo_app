@@ -59,14 +59,16 @@ import { filterPureVegMerchants, filterVegSafeCategories } from "@/lib/pureVegFi
 import { appAssetSource } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
+import { resolveTopSafeInset, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { parseGroceryMenuCategorySlug } from "@/lib/groceryMenuCategorySlug";
 
 const { width, height: WINDOW_HEIGHT } = Dimensions.get("window");
 /** Cuisines bottom sheet height (~72% screen): taller drawer, still leaves header/chips visible. */
 const SHEET_MAX_HEIGHT = Math.round(WINDOW_HEIGHT * 0.72);
 /** Stable identity so an empty list never re-triggers FlashList's data diff. */
 const EMPTY_MERCHANTS: MerchantSummary[] = [];
-/** Vertical for user_app_category rows (PHARMA / GROCERY / FASHION when those homes ship). */
-const SHEET_STORE_TYPE = "FOOD";
+/** Vertical for user_app_category rows (FOOD / GROCERY). */
+const DEFAULT_SHEET_STORE_TYPE = "FOOD";
 /** Max category icons on the top rail before "See all" (full list stays in the sheet). */
 const RAIL_MAX_CATEGORY_ITEMS = 14;
 /** First screen: try to fit this many rail chips without horizontal clip. */
@@ -208,7 +210,15 @@ const SHEET_TILE =
 const SHEET_IMG_SIZE = Math.round(SHEET_TILE - 6);
 
 export default function CategoryBrowseScreen() {
-  const { slug: slugParam } = useLocalSearchParams<{ slug?: string | string[] }>();
+  const { slug: slugParam, storeType: storeTypeParam } = useLocalSearchParams<{
+    slug?: string | string[];
+    storeType?: string | string[];
+  }>();
+  const sheetStoreType = useMemo(() => {
+    const raw = Array.isArray(storeTypeParam) ? storeTypeParam[0] : storeTypeParam;
+    const st = String(raw ?? DEFAULT_SHEET_STORE_TYPE).trim().toUpperCase();
+    return st === "GROCERY" ? "GROCERY" : "FOOD";
+  }, [storeTypeParam]);
   const router = useRouter();
   const queryClient = useQueryClient();
   const openMerchantPage = useCallback(
@@ -302,6 +312,7 @@ export default function CategoryBrowseScreen() {
   );
 
   const offerPills = useMemo((): OfferPill[] => {
+    if (sheetStoreType === "GROCERY") return [];
     const pills = [...BASE_OFFER_PILLS];
     if (!gridFirstUnder250Enabled) return pills;
     const label =
@@ -315,19 +326,22 @@ export default function CategoryBrowseScreen() {
     });
     return pills;
   }, [
+    sheetStoreType,
     gridFirstUnder250Enabled,
     gridFirstUnder250FilterLabel,
     gridFirstUnder250MaxPrice,
   ]);
   const { data, isLoading } = useQuery({
-    queryKey: ["merchants", activeCategory, debouncedCoords?.latitude, debouncedCoords?.longitude, effectiveVegOnly],
+    queryKey: ["merchants", activeCategory, debouncedCoords?.latitude, debouncedCoords?.longitude, effectiveVegOnly, sheetStoreType],
     queryFn: () =>
       merchantService.getMerchants({
+        // API max is 50 — higher values 400 and empty the whole category list.
         limit: activeCategory !== "all" ? 50 : 20,
         ...(debouncedCoords?.latitude != null && debouncedCoords?.longitude != null
           ? { lat: debouncedCoords.latitude, lng: debouncedCoords.longitude }
           : {}),
         vegOnly: effectiveVegOnly,
+        storeType: sheetStoreType,
       }),
     enabled: debouncedCoords?.latitude != null && debouncedCoords?.longitude != null,
     staleTime: 60 * 1000,
@@ -346,11 +360,11 @@ export default function CategoryBrowseScreen() {
 
   const { data: sheetCategoriesResponse, isSuccess: sheetCategoriesReady, isFetching: sheetCategoriesFetching } =
     useQuery({
-      queryKey: userAppCategoriesQueryKey(SHEET_STORE_TYPE),
-      queryFn: () => fetchUserAppCategoriesWithCache(SHEET_STORE_TYPE),
+      queryKey: userAppCategoriesQueryKey(sheetStoreType),
+      queryFn: () => fetchUserAppCategoriesWithCache(sheetStoreType),
       ...USER_APP_CATEGORIES_QUERY_OPTIONS,
-      initialData: () => readSyncUserAppCategories(SHEET_STORE_TYPE),
-      initialDataUpdatedAt: () => getUserAppCategoriesCachedAt(SHEET_STORE_TYPE),
+      initialData: () => readSyncUserAppCategories(sheetStoreType),
+      initialDataUpdatedAt: () => getUserAppCategoriesCachedAt(sheetStoreType),
       placeholderData: (previousData) => previousData,
     });
 
@@ -400,6 +414,17 @@ export default function CategoryBrowseScreen() {
 
     if (activeCategory === "all") return [allChip, ...limitedChips];
 
+    const menuCatName = parseGroceryMenuCategorySlug(activeCategory);
+    if (menuCatName && sheetStoreType === "GROCERY") {
+      const selectedChip: BrowseCategoryChip = {
+        kind: "item",
+        id: activeCategory,
+        name: menuCatName,
+        remoteUri: null,
+      };
+      return [allChip, selectedChip, ...limitedChips];
+    }
+
     const selRow = deduped.find((r) => String(r.id) === activeCategory);
     if (!selRow) return [allChip, ...limitedChips];
 
@@ -410,7 +435,7 @@ export default function CategoryBrowseScreen() {
       .map(rowToChip);
 
     return [allChip, selectedChip, ...othersChips];
-  }, [sheetCategoriesReady, apiSheetCategories, activeCategory, sheetCategoryAllTab.label, sheetCategoryAllTab.imageUrl]);
+  }, [sheetCategoriesReady, apiSheetCategories, activeCategory, sheetCategoryAllTab.label, sheetCategoryAllTab.imageUrl, sheetStoreType]);
 
   const merchants = filterPureVegMerchants(Array.isArray(data) ? data : [], effectiveVegOnly);
   const searchQ = searchQuery.trim().toLowerCase();
@@ -435,23 +460,80 @@ export default function CategoryBrowseScreen() {
 
   const selectedCategoryLabel = useMemo(() => {
     if (activeCategory === "all") return null;
+    const menuCat = parseGroceryMenuCategorySlug(activeCategory);
+    if (menuCat && sheetStoreType === "GROCERY") return menuCat;
     const deduped = dedupeUserAppCategories(apiSheetCategories ?? []);
     return deduped.find((r) => String(r.id) === activeCategory)?.name?.trim() ?? null;
-  }, [activeCategory, apiSheetCategories]);
+  }, [activeCategory, apiSheetCategories, sheetStoreType]);
+
+  /** Match kitchens that sell this dish / have this menu section — not only cuisine tags. */
+  const { data: categoryDishSearch } = useQuery({
+    queryKey: [
+      "category-dish-stores",
+      selectedCategoryLabel,
+      debouncedCoords?.latitude,
+      debouncedCoords?.longitude,
+      effectiveVegOnly,
+    ],
+    queryFn: () =>
+      merchantService.listStoresByDishCategory({
+        q: selectedCategoryLabel!,
+        limit: 50,
+        maxDistanceKm: 15,
+        ...(debouncedCoords?.latitude != null && debouncedCoords?.longitude != null
+          ? { lat: debouncedCoords.latitude, lng: debouncedCoords.longitude }
+          : {}),
+        vegOnly: effectiveVegOnly,
+      }),
+    enabled:
+      Boolean(selectedCategoryLabel) &&
+      debouncedCoords?.latitude != null &&
+      debouncedCoords?.longitude != null,
+    staleTime: 60 * 1000,
+  });
 
   const categoryScopedMerchants = useMemo(() => {
-    let list = filteredMerchants;
-    if (activeCategory !== "all" && selectedCategoryLabel) {
-      const needle = selectedCategoryLabel.toLowerCase();
-      list = list.filter((m) => {
-        if (m.cuisines?.some((c) => c.toLowerCase().includes(needle) || needle.includes(c.toLowerCase())))
-          return true;
-        if (m.name.toLowerCase().includes(needle)) return true;
-        return false;
+    if (activeCategory === "all" || !selectedCategoryLabel) return filteredMerchants;
+
+    const nearbyById = new Map(filteredMerchants.map((m) => [m.id, m]));
+    const fromApi = categoryDishSearch?.stores ?? [];
+
+    // Primary: stores that sell this dish OR have a matching menu section.
+    if (fromApi.length > 0) {
+      return fromApi.map((s) => {
+        const existing = nearbyById.get(s.id);
+        if (existing) {
+          return {
+            ...existing,
+            distanceKm: existing.distanceKm ?? s.distanceKm ?? undefined,
+          };
+        }
+        return {
+          id: s.id,
+          name: s.name || s.id,
+          displayImage: s.bannerUrl ?? null,
+          banner_url: s.bannerUrl ?? null,
+          cuisines: s.cuisines ?? undefined,
+          distanceKm: s.distanceKm ?? undefined,
+          isOpen: true,
+        } as MerchantSummary;
       });
     }
-    return list;
-  }, [filteredMerchants, activeCategory, selectedCategoryLabel]);
+
+    // Fallback while API empty: soft cuisine / name match on nearby list.
+    const needle = selectedCategoryLabel.toLowerCase();
+    return filteredMerchants.filter((m) => {
+      if (m.cuisines?.some((c) => c.toLowerCase().includes(needle) || needle.includes(c.toLowerCase())))
+        return true;
+      if (m.name.toLowerCase().includes(needle)) return true;
+      return false;
+    });
+  }, [
+    filteredMerchants,
+    activeCategory,
+    selectedCategoryLabel,
+    categoryDishSearch?.stores,
+  ]);
 
   const displayMerchants = useMemo(
     () =>
@@ -702,7 +784,7 @@ export default function CategoryBrowseScreen() {
             backgroundColor: isDiscoveryDark ? DiscoveryColors.bg : CARD_BG,
             borderBottomColor: borderColor,
             borderBottomWidth: StyleSheet.hairlineWidth,
-            paddingTop: insets.top + 10,
+            paddingTop: resolveTopSafeInset(insets.top) + STATUS_BAR_TO_HEADER_GAP,
             shadowOpacity: 0,
             elevation: 0,
           },

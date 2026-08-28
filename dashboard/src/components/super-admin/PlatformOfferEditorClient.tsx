@@ -11,6 +11,7 @@ import {
 } from "@/store/api/billingAdminApi";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { PLATFORM_OFFER_KINDS } from "@/lib/billing/platformOfferKinds";
+import { PLATFORM_OFFER_SERVICE_TYPES } from "@/lib/billing/platformOfferServiceTypes";
 import {
   getPlatformOfferKindSections,
   validatePlatformOfferKindForm,
@@ -117,6 +118,8 @@ const emptyForm = () => ({
   value_numeric: "",
   delivery_discount_type: "",
   delivery_discount_value: "",
+  /** Food platform offers only — stored in promo_config.auto_apply */
+  food_auto_apply: false,
   buy_qty: "",
   get_qty: "",
   exclusion_group: "",
@@ -218,8 +221,19 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
       is_stackable: o.is_stackable ?? false,
       discount_type: o.discount_type,
       value_numeric: o.value_numeric ?? "",
-      delivery_discount_type: o.delivery_discount_type ?? "",
+      delivery_discount_type: (() => {
+        const t = String(o.delivery_discount_type ?? "").toUpperCase().trim();
+        if (t === "PERCENTAGE") return "PERCENT";
+        return t;
+      })(),
       delivery_discount_value: o.delivery_discount_value ?? "",
+      food_auto_apply: (() => {
+        const pc = (o as { promo_config?: unknown }).promo_config;
+        if (pc && typeof pc === "object" && !Array.isArray(pc)) {
+          return (pc as { auto_apply?: unknown }).auto_apply === true;
+        }
+        return false;
+      })(),
       buy_qty: o.buy_qty != null && String(o.buy_qty) !== "" ? String(o.buy_qty) : "",
       get_qty: o.get_qty != null && String(o.get_qty) !== "" ? String(o.get_qty) : "",
       exclusion_group: o.exclusion_group ?? "",
@@ -342,7 +356,23 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
     }
 
     const aud = form.offer_audience.toUpperCase();
-    const delType = rideParcelService ? "" : form.delivery_discount_type;
+    let delTypeRaw = rideParcelService ? "" : form.delivery_discount_type;
+    // FREE_DELIVERY with PERCENT/FIXED but empty value would cut ₹0 — coerce to FULL_WAIVE.
+    if (
+      !rideParcelService &&
+      form.offer_kind === "FREE_DELIVERY" &&
+      (String(delTypeRaw).toUpperCase() === "PERCENT" ||
+        String(delTypeRaw).toUpperCase() === "PERCENTAGE" ||
+        String(delTypeRaw).toUpperCase() === "FIXED") &&
+      !String(form.delivery_discount_value ?? "").trim()
+    ) {
+      delTypeRaw = "FULL_WAIVE";
+    }
+    if (!rideParcelService && form.offer_kind === "FREE_DELIVERY" && !String(delTypeRaw).trim()) {
+      delTypeRaw = "FULL_WAIVE";
+    }
+    const delType =
+      String(delTypeRaw).toUpperCase() === "PERCENTAGE" ? "PERCENT" : delTypeRaw;
     const delValTrim = String(form.delivery_discount_value ?? "").trim();
     const deliveryDiscountValue =
       !delType || delType === "FULL_WAIVE" ? null : delValTrim === "" ? null : Number(delValTrim);
@@ -350,6 +380,10 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
       setErr("Delivery discount value must be a number.");
       return;
     }
+
+    const foodPromoConfig = rideParcelService
+      ? promoConfig
+      : { auto_apply: form.food_auto_apply === true };
 
     const payload: Record<string, unknown> = {
       name: form.name || null,
@@ -391,7 +425,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
       get_qty: rideParcelService ? null : form.get_qty.trim() === "" ? null : parseInt(form.get_qty, 10),
       exclusion_group: form.exclusion_group.trim() || null,
       conditions,
-      promo_config: rideParcelService ? promoConfig : {},
+      promo_config: foodPromoConfig,
     };
 
     try {
@@ -503,7 +537,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                   }
                 }}
               >
-                {["FOOD", "RIDE", "PARCEL", "ALL"].map((v) => (
+                {PLATFORM_OFFER_SERVICE_TYPES.map((v) => (
                   <option key={v} value={v}>
                     {v}
                   </option>
@@ -516,7 +550,17 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                 className={selectCls}
                 value={form.offer_kind}
                 disabled={isRideOrParcel}
-                onChange={(e) => setForm((f) => ({ ...f, offer_kind: e.target.value }))}
+                onChange={(e) => {
+                  const kind = e.target.value;
+                  setForm((f) => ({
+                    ...f,
+                    offer_kind: kind,
+                    ...(kind === "FREE_DELIVERY" && !String(f.delivery_discount_type).trim()
+                      ? { delivery_discount_type: "FULL_WAIVE" }
+                      : {}),
+                    ...(kind === "FREE_DELIVERY" ? { food_auto_apply: true } : {}),
+                  }));
+                }}
               >
                 {PLATFORM_OFFER_KINDS.map((k) => (
                   <option key={k} value={k}>
@@ -701,15 +745,15 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                   onChange={(e) => setForm((f) => ({ ...f, delivery_discount_type: e.target.value }))}
                 >
                   <option value="">None</option>
-                  <option value="FULL_WAIVE">FULL_WAIVE</option>
-                  <option value="PERCENTAGE">PERCENTAGE</option>
-                  <option value="FIXED">FIXED</option>
+                  <option value="FULL_WAIVE">FULL_WAIVE (₹0 delivery)</option>
+                  <option value="PERCENT">PERCENT (%)</option>
+                  <option value="FIXED">FIXED (₹)</option>
                 </select>
               </FormField>
               <FormField
                 label="Delivery discount value"
                 htmlFor="po-ddval"
-                hint="Ignored for FULL_WAIVE."
+                hint="Ignored for FULL_WAIVE. Cap via Max discount amount."
               >
                 <input
                   id="po-ddval"
@@ -732,6 +776,29 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                 </FormField>
               ) : null}
             </div>
+            <label className="mt-4 flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                checked={form.food_auto_apply === true}
+                onChange={(e) => setForm((f) => ({ ...f, food_auto_apply: e.target.checked }))}
+              />
+              Auto Apply when eligible (OFF = customer must apply manually at checkout)
+            </label>
+          </FormSection>
+        ) : null}
+
+        {!isRideOrParcel && !offerKindUi.showDeliveryBlock ? (
+          <FormSection title="Apply behaviour" description="Whether checkout may auto-apply this platform offer.">
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                checked={form.food_auto_apply === true}
+                onChange={(e) => setForm((f) => ({ ...f, food_auto_apply: e.target.checked }))}
+              />
+              Auto Apply when eligible (OFF = customer must apply manually at checkout)
+            </label>
           </FormSection>
         ) : null}
 

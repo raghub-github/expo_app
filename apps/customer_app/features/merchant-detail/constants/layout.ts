@@ -7,11 +7,43 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 export const HEADER_IMAGE_HEIGHT = 196;
 export const HEADER_COLLAPSED_THRESHOLD = 100;
 
+/** Min/max when merchant hero height is derived from video aspect ratio. */
+export const MERCHANT_HERO_MEDIA_MIN_H = 130;
+export const MERCHANT_HERO_MEDIA_MAX_H = Math.min(380, Math.round(SCREEN_HEIGHT * 0.42));
+
+/** Visible hero height from media width ÷ height aspect ratio. */
+export function merchantHeroMediaVisibleHeight(
+  screenWidth: number,
+  aspectRatio: number | null | undefined,
+  maxMediaH = MERCHANT_HERO_MEDIA_MAX_H
+): number {
+  const w = Math.max(1, screenWidth);
+  const ar =
+    aspectRatio != null && Number.isFinite(aspectRatio) && aspectRatio > 0.15 && aspectRatio <= 8
+      ? aspectRatio
+      : w / HEADER_IMAGE_HEIGHT;
+  const raw = w / ar;
+  const maxH = Math.min(maxMediaH, Math.round(w * 1.2));
+  return Math.round(Math.min(maxH, Math.max(MERCHANT_HERO_MEDIA_MIN_H, raw)));
+}
+
 /** Sticky chrome row heights — keep in sync with component styles. */
 export const STICKY_TITLE_ROW_HEIGHT = 36;
 export const STICKY_SEARCH_ROW_HEIGHT = 48;
 export const CATEGORY_ROW_HEIGHT = 44;
 export const FILTER_BAR_HEIGHT = 52;
+
+/** Scroll offset where sticky search fades in — later for tall video heroes. */
+export function merchantStickySearchFadeStart(heroBannerHeight: number): number {
+  "worklet";
+  if (heroBannerHeight > HEADER_IMAGE_HEIGHT + 8) {
+    return Math.max(
+      HEADER_COLLAPSED_THRESHOLD - 24,
+      heroBannerHeight - STICKY_SEARCH_ROW_HEIGHT - 20
+    );
+  }
+  return HEADER_COLLAPSED_THRESHOLD - 24;
+}
 
 /**
  * Gap under status bar before sticky search.

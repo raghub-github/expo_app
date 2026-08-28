@@ -27,6 +27,7 @@ import {
   resolvePlatformOfferGeoBindingEffectiveIds,
 } from "../billing/geoRefFromPincode.js";
 import { resolveGeoLocation } from "../billing/geoLocationResolver.js";
+import { PLATFORM_OFFER_CHECKOUT_SERVICE_TYPES } from "../billing/platformOfferServiceTypes.js";
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import {
@@ -820,7 +821,7 @@ async function resolveNearbyStores(
   if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) {
     return [];
   }
-  const { items } = await listStores({ lat, lng, limit });
+  const { items } = await listStores({ lat, lng, limit, distanceMode: "air" });
   const out: NearbyStoreRef[] = [];
   for (const row of items) {
     const internalId = Number((row as { id?: number }).id);
@@ -1387,7 +1388,7 @@ export async function offersRoutes(app: FastifyInstance) {
           city:        z.string().optional(),
           lat:         z.coerce.number().optional(),
           lng:         z.coerce.number().optional(),
-          serviceType: z.enum(["FOOD", "PARCEL", "RIDE"]).optional().default("FOOD"),
+          serviceType: z.enum(PLATFORM_OFFER_CHECKOUT_SERVICE_TYPES).optional().default("FOOD"),
         }),
         response: {
           200: z.object({
@@ -1466,7 +1467,7 @@ export async function offersRoutes(app: FastifyInstance) {
           city:        z.string().optional(),
           lat:         z.coerce.number().optional(),
           lng:         z.coerce.number().optional(),
-          serviceType: z.enum(["FOOD", "PARCEL", "RIDE"]).optional().default("FOOD"),
+          serviceType: z.enum(PLATFORM_OFFER_CHECKOUT_SERVICE_TYPES).optional().default("FOOD"),
           limit:       z.coerce.number().int().positive().max(12).optional().default(6),
         }),
         response: {

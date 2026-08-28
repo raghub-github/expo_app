@@ -154,6 +154,7 @@ function BillLineRow({
   rowStyle,
   labelAccent,
   dashedUnderline = false,
+  labelStyle,
 }: {
   label: string;
   value?: string;
@@ -161,13 +162,14 @@ function BillLineRow({
   onLabelPress?: () => void;
   valueNode?: ReactNode;
   valueStyle?: object;
+  labelStyle?: object;
   rowStyle?: StyleProp<ViewStyle>;
   labelAccent?: boolean;
   dashedUnderline?: boolean;
 }) {
   const dark = useMerchantUiDark();
   const labelText = (
-    <CheckoutText style={[dashedUnderline ? styles.dashedLabelText : styles.plainLabelText, dark && styles.textDark, labelAccent && (dark ? styles.discountLabelDark : styles.discountLabel)]}>
+    <CheckoutText style={[dashedUnderline ? styles.dashedLabelText : styles.plainLabelText, dark && styles.textDark, labelAccent && (dark ? styles.discountLabelDark : styles.discountLabel), labelStyle]}>
       {label}
     </CheckoutText>
   );
@@ -204,12 +206,12 @@ function DeliveryFeeValue({
 }) {
   const dark = useMerchantUiDark();
   const animatedOriginal = useAnimatedCount(originalInr);
-  const waived = originalInr > 0.005 && currentInr <= 0.005;
-  if (waived) {
+  const showStrike = originalInr > currentInr + 0.005 && originalInr > 0.005;
+  if (showStrike) {
     return (
       <View style={styles.deliveryValueCluster}>
         <CheckoutText style={[styles.strikeValue, dark && styles.strikeDark]}>{fmt(animatedOriginal)}</CheckoutText>
-        <CheckoutText style={styles.waivedValue}>{fmt(0)}</CheckoutText>
+        <CheckoutText style={styles.waivedValue}>{fmt(Math.max(0, currentInr))}</CheckoutText>
       </View>
     );
   }
@@ -226,6 +228,8 @@ function DeliveryFeeBreakdownModal({
   smallOrderInr,
   subscriptionWaivedInr,
   deliverySubtext,
+  subscriptionDeliveryPartial,
+  subscriptionCoveredRadiusKm,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -236,6 +240,8 @@ function DeliveryFeeBreakdownModal({
   smallOrderInr: number;
   subscriptionWaivedInr: number;
   deliverySubtext?: string | null;
+  subscriptionDeliveryPartial?: boolean;
+  subscriptionCoveredRadiusKm?: number;
 }) {
   const dark = useMerchantUiDark();
   const kmLabel = formatDeliveryDistanceKmLabel(distanceKm);
@@ -271,7 +277,9 @@ function DeliveryFeeBreakdownModal({
               <View style={[styles.breakdownDivider, dark && styles.dividerDark]} />
               <View style={styles.breakdownLine}>
                 <CheckoutText style={[styles.breakdownTitle, styles.brandText]}>
-                  Free delivery with {planName}
+                  {subscriptionDeliveryPartial && subscriptionCoveredRadiusKm != null
+                    ? `${planName} free delivery (${subscriptionCoveredRadiusKm} km covered)`
+                    : `Free delivery with ${planName}`}
                 </CheckoutText>
                 <CheckoutText style={[styles.breakdownAmount, styles.brandText]}>
                   − {fmt(subscriptionWaivedInr)}
@@ -335,6 +343,8 @@ export type BillSummarySheetProps = {
    * must use this — never a divergent local recalculation.
    */
   toPayAmount?: number | null;
+  /** Live membership delivery benefit (applied or checkout estimate) — updates before bill refetch settles. */
+  subscriptionDeliveryBenefitLive?: CalculateBillResponse["subscriptionDeliveryBenefit"] | null;
 } & CheckoutGratitudeSectionsProps;
 
 export function BillSummarySheet({
@@ -364,6 +374,7 @@ export function BillSummarySheet({
   missedOfferUnlockDiscount = 0,
   missedOfferUnlockLabel = "Offer unlocked",
   toPayAmount: toPayAmountProp = null,
+  subscriptionDeliveryBenefitLive = null,
   tipValue,
   onTipSelect,
   tipCustomMode,
@@ -385,14 +396,21 @@ export function BillSummarySheet({
   const [infoModal, setInfoModal] = useState<null | "packaging" | "platform">(null);
 
   const subscriptionWaivedInr = useMemo(() => {
+    if (subscriptionDeliveryBenefitLive?.waivedInr != null && subscriptionDeliveryBenefitLive.waivedInr > 0.005) {
+      return subscriptionDeliveryBenefitLive.waivedInr;
+    }
     if (!serverBill) return 0;
+    const fromBenefit = serverBill.subscriptionDeliveryBenefit?.waivedInr;
+    if (fromBenefit != null && fromBenefit > 0.005) return fromBenefit;
+    const fromEstimate = serverBill.subscriptionDeliveryBenefitEstimate?.waivedInr;
+    if (fromEstimate != null && fromEstimate > 0.005) return fromEstimate;
     const fromApi = serverBill.deliveryFeeWaivedInr ?? 0;
     if (fromApi > 0.005) return fromApi;
     const disc = (serverBill.discounts ?? []).find(
       (d) => !d.hidden && d.meta?.source === "customer_subscription_free_delivery"
     );
     return disc?.amount ?? 0;
-  }, [serverBill]);
+  }, [serverBill, subscriptionDeliveryBenefitLive]);
 
   const deliverySubtext = useMemo(() => {
     if (!serverBill) return null;
@@ -494,7 +512,6 @@ export function BillSummarySheet({
   const showSavingsBanner = youSavedAmount > 0.005 || (serverBill != null && serverBill.discountTotal > 0.005);
   const savingsBannerTotal =
     youSavedAmount > 0.005 ? youSavedAmount : serverBill?.discountTotal ?? 0;
-  const showYouSavedRow = youSavedAmount > 0.005;
 
   const itemTotalStrikeValue =
     itemTotalStrikeAmount != null && itemTotalStrikeAmount > 0.005
@@ -503,13 +520,82 @@ export function BillSummarySheet({
   const itemTotalNetValue =
     itemTotalNetOverride ?? serverBill?.itemsNetAfterDiscounts ?? serverBill?.itemTotal ?? 0;
 
-  const deliveryOriginalInr =
-    deliveryFeeStrikeAmount ??
-    serverBill?.deliveryFeeQuotedInr ??
-    serverBill?.components.delivery.taxable_value ??
-    0;
+  const deliveryOriginalInr = (() => {
+    if (deliveryFeeStrikeAmount != null && deliveryFeeStrikeAmount > 0.005) {
+      return deliveryFeeStrikeAmount;
+    }
+    const quoted = serverBill?.deliveryFeeQuotedInr ?? 0;
+    const gstOrig = serverBill?.components?.delivery?.original ?? 0;
+    const current = serverBill?.components?.delivery?.taxable_value ?? 0;
+    // Prefer the higher pre-discount figure so platform FREE_DELIVERY strikethrough works.
+    const gross = Math.max(quoted, gstOrig);
+    if (gross > current + 0.005) return gross;
+    return quoted > 0.005 ? quoted : current;
+  })();
   const deliveryCurrentInr = serverBill?.components.delivery.taxable_value ?? 0;
   const smallOrderInr = serverBill?.components.small_order.taxable_value ?? 0;
+
+  const subscriptionDeliveryBenefitApplied = useMemo(() => {
+    if (subscriptionDeliveryBenefitLive) return subscriptionDeliveryBenefitLive;
+    if (!serverBill || deliveryType !== "delivery") return null;
+    return (
+      serverBill.subscriptionDeliveryBenefit ??
+      serverBill.subscriptionDeliveryBenefitEstimate ??
+      null
+    );
+  }, [serverBill, deliveryType, subscriptionDeliveryBenefitLive]);
+
+  const deliveryPartnerFeeLabel = useMemo(() => {
+    if (distanceKm != null && Number.isFinite(distanceKm) && distanceKm > 0) {
+      return `Delivery partner fee for ${formatDeliveryDistanceKmLabel(distanceKm)}`;
+    }
+    return "Delivery partner fee";
+  }, [distanceKm]);
+
+  const membershipBenefitRow = useMemo(() => {
+    if (deliveryType !== "delivery" || deliveryFeePending) return null;
+    const benefit = subscriptionDeliveryBenefitApplied;
+    const waived = subscriptionWaivedInr;
+    const plan = subscriptionPlanName?.trim() || "Membership";
+
+    if (benefit?.isPartial && benefit.coveredRadiusKm != null && benefit.coveredRadiusKm > 0) {
+      const dist = distanceKm;
+      const beyondCovered = dist != null && dist > benefit.coveredRadiusKm + 0.001;
+      if (beyondCovered || deliveryCurrentInr > 0.005 || waived > 0.005) {
+        return {
+          label: `Free with ${plan} up to ${benefit.coveredRadiusKm} km`,
+          waived: waived > 0.005 ? waived : null,
+        };
+      }
+    }
+
+    if (waived > 0.005) {
+      return {
+        label: benefit?.isPartial
+          ? `${plan} free delivery (${benefit.coveredRadiusKm} km covered)`
+          : `Free delivery with ${plan}`,
+        waived,
+      };
+    }
+
+    if (benefit?.applied) {
+      return {
+        label: `Free delivery with ${plan}`,
+        waived: null,
+      };
+    }
+
+    return null;
+  }, [
+    deliveryType,
+    deliveryFeePending,
+    subscriptionDeliveryBenefitApplied,
+    subscriptionWaivedInr,
+    subscriptionPlanName,
+    distanceKm,
+    deliveryCurrentInr,
+  ]);
+
   const walletDeduction =
     gatiCashApplyAmount > 0.005 ? Math.round(gatiCashApplyAmount * 100) / 100 : 0;
   const pendingWalletCredit =
@@ -583,20 +669,6 @@ export function BillSummarySheet({
                     }
                   />
 
-                  {showYouSavedRow ? (
-                    <BillLineRow
-                      label="You saved"
-                      valueNode={
-                        <AnimatedBillValue
-                          value={youSavedAmount}
-                          style={[styles.discountValue, dark && styles.discountValueDark]}
-                        />
-                      }
-                      labelAccent
-                      rowStyle={styles.discountRow}
-                    />
-                  ) : null}
-
                   {serverBill.addonTotal > 0.005 ? (
                     <BillLineRow label="Add-ons" value={fmt(serverBill.addonTotal)} />
                   ) : null}
@@ -618,17 +690,33 @@ export function BillSummarySheet({
                         value="Calculated after address selection"
                       />
                     ) : (
-                    <BillLineRow
-                      label="Delivery partner fee"
-                      dashedUnderline
-                      onLabelPress={() => setDeliveryBreakdownOpen(true)}
-                      valueNode={
-                        <DeliveryFeeValue
-                          originalInr={deliveryOriginalInr}
-                          currentInr={deliveryCurrentInr}
+                    <>
+                      <BillLineRow
+                        label={deliveryPartnerFeeLabel}
+                        dashedUnderline
+                        onLabelPress={() => setDeliveryBreakdownOpen(true)}
+                        valueNode={
+                          <DeliveryFeeValue
+                            originalInr={deliveryOriginalInr}
+                            currentInr={deliveryCurrentInr}
+                          />
+                        }
+                      />
+                      {membershipBenefitRow ? (
+                        <BillLineRow
+                          label={membershipBenefitRow.label}
+                          rowStyle={styles.membershipBenefitRow}
+                          labelStyle={styles.membershipBenefitLabel}
+                          valueNode={
+                            membershipBenefitRow.waived != null ? (
+                              <CheckoutText style={styles.waivedValue}>
+                                − {fmt(membershipBenefitRow.waived)}
+                              </CheckoutText>
+                            ) : undefined
+                          }
                         />
-                      }
-                    />
+                      ) : null}
+                    </>
                     )
                   ) : null}
 
@@ -831,6 +919,8 @@ export function BillSummarySheet({
         smallOrderInr={smallOrderInr}
         subscriptionWaivedInr={subscriptionWaivedInr}
         deliverySubtext={deliverySubtext}
+        subscriptionDeliveryPartial={subscriptionDeliveryBenefitApplied?.isPartial === true}
+        subscriptionCoveredRadiusKm={subscriptionDeliveryBenefitApplied?.coveredRadiusKm}
       />
     </>
   );
@@ -883,6 +973,8 @@ const styles = StyleSheet.create({
   dashedLabelText: { fontSize: 14, fontWeight: "600", color: "#111827" },
   plainLabelText: { fontSize: 14, fontWeight: "600", color: "#111827" },
   lineSubtext: { fontSize: 11, color: GM.textSecondary, marginTop: 4, lineHeight: 15, maxWidth: 260 },
+  membershipBenefitRow: { paddingTop: 0, paddingBottom: 6 },
+  membershipBenefitLabel: { fontSize: 12, fontWeight: "500", color: "#6B7280" },
   lineValue: { fontSize: 14, fontWeight: "600", color: "#111827", flexShrink: 0 },
   deliveryValueCluster: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 },
   strikeValue: {

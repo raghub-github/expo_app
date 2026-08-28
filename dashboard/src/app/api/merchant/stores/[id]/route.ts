@@ -138,6 +138,7 @@ export async function GET(
           latitude: store.latitude ?? null,
           longitude: store.longitude ?? null,
           logo_url: null,          banner_url: store.banner_url ?? null,
+          banner_video_url: store.banner_video_url ?? null,
           gallery_images: store.gallery_images ?? null,
           cuisine_types: store.cuisine_types ?? null,
           food_categories: null,

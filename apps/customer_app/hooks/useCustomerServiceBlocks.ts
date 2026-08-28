@@ -8,8 +8,8 @@ import {
 
 export const CUSTOMER_SERVICE_BLOCKS_QUERY_KEY = ["customer", "service-blocks"] as const;
 
-/** Poll while app is open — admin block/unblock should land within a few seconds. */
-const SERVICE_BLOCKS_POLL_MS = 8_000;
+/** Poll while app is open — admin block/unblock should land within ~60s. */
+const SERVICE_BLOCKS_POLL_MS = 60_000;
 
 export function useCustomerServiceBlocks() {
   const hydrated = useAuthStore((s) => s.hydrated);
@@ -19,14 +19,12 @@ export function useCustomerServiceBlocks() {
     queryKey: CUSTOMER_SERVICE_BLOCKS_QUERY_KEY,
     queryFn: fetchCustomerServiceBlocks,
     enabled: hydrated && !!session,
-    staleTime: 0,
+    staleTime: 20_000,
     gcTime: 30 * 60 * 1000,
     refetchInterval: hydrated && session ? SERVICE_BLOCKS_POLL_MS : false,
     refetchIntervalInBackground: false,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
     refetchOnReconnect: true,
-    retry: 2,
+    retry: 1,
     placeholderData: (previous) => previous,
   });
 

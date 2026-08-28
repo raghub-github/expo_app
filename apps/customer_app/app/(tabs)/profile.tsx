@@ -2,14 +2,14 @@
  * Profile tab — GatiMitra-style account card with GMitra Plus subscription strip.
  */
 
-import { useCallback, useMemo, useState, useEffect } from "react";
+import { useCallback, useMemo, useState, useEffect, useLayoutEffect } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable, ActivityIndicator } from "react-native";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useRouter, useSegments } from "expo-router";
 import { markWalletEntrySource } from "@/store/walletChromeStore";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -55,23 +55,40 @@ type MenuItem = {
 export default function ProfileScreen() {
   const { t } = useTranslation();
   const router = useRouter();
+  const segments = useSegments();
   const queryClient = useQueryClient();
   const insets = useAppSafeAreaInsets();
+  /** Pushed from food home (`/profile`) — root layout omits the status-bar spacer. */
+  const inProfileStack = segments[0] === "profile";
   const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
-  // Root spacer owns safe-top when present; only pad when immersive left it off.
-  const profileTopPad = (hideStatusBarSpacer ? insets.top : 0) + STATUS_BAR_TO_HEADER_GAP + 6;
+  const profileTopPad =
+    (inProfileStack || hideStatusBarSpacer ? insets.top : 0) + STATUS_BAR_TO_HEADER_GAP + 6;
   const { data: profile } = useProfile();
   const { data: subscriptionStatus } = useCurrentSubscription(true);
 
+  useLayoutEffect(() => {
+    if (!inProfileStack) return;
+    // Food grid-first leaves immersive chrome; reset before first paint on /profile stack.
+    useScreenChromeStore.getState().setImmersiveStatusBarChrome(false);
+    useScreenChromeStore.setState({
+      statusBarBackground: PAGE_BG,
+      statusBarStyle: "dark",
+      hideStatusBarSpacer: false,
+    });
+  }, [inProfileStack]);
+
   useFocusEffect(
     useCallback(() => {
+      if (inProfileStack) {
+        useScreenChromeStore.getState().setImmersiveStatusBarChrome(false);
+      }
       useScreenChromeStore.setState({
         statusBarBackground: PAGE_BG,
         statusBarStyle: "dark",
         hideStatusBarSpacer: false,
       });
       void queryClient.invalidateQueries({ queryKey: ["referral", "config", "customer"] });
-    }, [queryClient])
+    }, [queryClient, inProfileStack])
   );
 
   const displayName = profile?.full_name?.trim() || t("common.customer");

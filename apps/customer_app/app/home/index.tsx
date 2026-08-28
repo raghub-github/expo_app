@@ -63,7 +63,7 @@ import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroM
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { resolveMerchantListingCoords } from "@/lib/resolveMerchantListingCoords";
 import { resolveDeliveryLocationLabel } from "@/lib/resolveDeliveryLocationLabel";
-import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
+import { debouncedInvalidateFoodHomeListingQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import {
   type UserAppCategoryItem,
 } from "@/services/userAppCategory.service";
@@ -184,6 +184,7 @@ const DELIVERY_OPTIONS: { id: DeliveryFilter; label: string }[] = [
 const CUISINE_OPTIONS = ["North Indian", "South Indian", "Chinese", "Fast Food", "Bakery", "Desserts"];
 
 const HOME_CATEGORY_STORE_TYPE = "FOOD";
+const HOME_MERCHANTS_STORE_TYPE = "FOOD" as const;
 const EMPTY_MERCHANTS: MerchantSummary[] = [];
 
 function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryItem[] {
@@ -349,7 +350,8 @@ export default function FoodMerchantsScreen() {
         queryClient,
         merchantsAnchorCoords.latitude,
         merchantsAnchorCoords.longitude,
-        vegOnly
+        vegOnly,
+        HOME_MERCHANTS_STORE_TYPE
       );
     }
   }, [
@@ -383,7 +385,8 @@ export default function FoodMerchantsScreen() {
     const entry = readSyncMerchantsListEntry(
       merchantsAnchorCoords.latitude,
       merchantsAnchorCoords.longitude,
-      vegOnly
+      vegOnly,
+      HOME_MERCHANTS_STORE_TYPE
     );
     // Only hydrate non-empty cache — empty buckets must wait for a live network confirm.
     return entry?.items?.length ? entry.items : undefined;
@@ -403,9 +406,10 @@ export default function FoodMerchantsScreen() {
         ? merchantsQueryKey(
             merchantsAnchorCoords.latitude,
             merchantsAnchorCoords.longitude,
-            vegOnly
+            vegOnly,
+            HOME_MERCHANTS_STORE_TYPE
           )
-        : (["merchants", "pending", vegOnly] as const),
+        : (["merchants", "pending", vegOnly, HOME_MERCHANTS_STORE_TYPE] as const),
     queryFn: async () => {
       if (merchantsAnchorCoords?.latitude == null || merchantsAnchorCoords?.longitude == null) {
         return [];
@@ -413,7 +417,8 @@ export default function FoodMerchantsScreen() {
       return fetchAndCacheMerchantsList(
         merchantsAnchorCoords.latitude,
         merchantsAnchorCoords.longitude,
-        vegOnly
+        vegOnly,
+        HOME_MERCHANTS_STORE_TYPE
       );
     },
     // Industry-standard: only fetch restaurants once we have an active location (GPS or user-selected)
@@ -687,7 +692,7 @@ export default function FoodMerchantsScreen() {
   const handleCategorySelect = useCallback((id: string, slug: string) => {
     setActiveCategoryId(id);
     setGridFirstCategoryTabId(id);
-    router.push(`/home/category/${slug}`);
+    router.push({ pathname: "/home/category/[slug]", params: { slug, storeType: "FOOD" } });
   }, [router]);
   const handleMealsUnderPricePress = useCallback(
     (tile?: { id?: string; maxPrice?: number | null; heroImageUrl?: string | null; label?: string | null }) => {
@@ -1004,26 +1009,35 @@ export default function FoodMerchantsScreen() {
   }, [addresses, listingCoords, locationSource, activeLocation, address]);
 
   const locationSyncKeyRef = useRef("");
+  const locationSyncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (listingCoords?.latitude == null || listingCoords.longitude == null) return;
     const syncKey = [
       locationSource ?? "unset",
-      listingCoords.latitude.toFixed(5),
-      listingCoords.longitude.toFixed(5),
+      listingCoords.latitude.toFixed(4),
+      listingCoords.longitude.toFixed(4),
       address?.pincode ?? "",
       address?.state ?? "",
-      address?.fullAddress ?? "",
     ].join("|");
     if (locationSyncKeyRef.current === syncKey) return;
     locationSyncKeyRef.current = syncKey;
-    void invalidateFoodHomeLocationQueries(queryClient);
+    if (locationSyncDebounceRef.current) clearTimeout(locationSyncDebounceRef.current);
+    locationSyncDebounceRef.current = setTimeout(() => {
+      locationSyncDebounceRef.current = null;
+      debouncedInvalidateFoodHomeListingQueries(queryClient);
+    }, 800);
+    return () => {
+      if (locationSyncDebounceRef.current) {
+        clearTimeout(locationSyncDebounceRef.current);
+        locationSyncDebounceRef.current = null;
+      }
+    };
   }, [
     listingCoords?.latitude,
     listingCoords?.longitude,
     locationSource,
     address?.pincode,
     address?.state,
-    address?.fullAddress,
     queryClient,
   ]);
 
@@ -1654,6 +1668,7 @@ export default function FoodMerchantsScreen() {
                     onVegChange={setVegOnly}
                     stickyScrollY={gridFirstScrollY}
                     searchStickAt={gridFirstSearchStickAtSv}
+                    fadeLocationOnSticky
                     heroReady={gridFirstHeroReady}
                   />
                 </View>
@@ -1913,6 +1928,9 @@ export default function FoodMerchantsScreen() {
             categoryStickAt={gridFirstCategoryStickAtSv}
             filterStickAt={gridFirstFilterStickAtSv}
             onSearchPress={handleSearch}
+            onLocationPress={handleLocationPress}
+            locationPrimary={gridFirstLocationLabels.primary}
+            locationSecondary={gridFirstLocationLabels.secondary}
             vegOnly={vegOnly}
             onVegChange={setVegOnly}
             categories={useGridFirstCategoryTabs ? gridFirstCategoryTabsEl : null}

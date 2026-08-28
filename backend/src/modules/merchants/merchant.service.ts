@@ -54,6 +54,7 @@ import {
   fetchAddonsForCustomizationIds,
   fetchVariantsForFullConfig,
 } from "../../lib/menu-full-config-sql.js";
+import { prependBaseMenuItemVariant } from "../../lib/menu-item-base-variant.js";
 
 /**
  * Stamps the canonical customer-facing ETA range on a store row using its
@@ -570,53 +571,82 @@ export async function listStoresNearby(params: {
     return list.filter((r) => eligible.has(Number(r.id)));
   };
 
-  const { data, error } = await supabase.rpc("get_nearby_merchant_stores", {
-    user_lat: params.lat,
-    user_lng: params.lng,
-    radius_km,
-    max_limit: limit,
-    veg_mode: false,
-  });
+  const listStoresNearbyHaversineFallback = async (): Promise<NearbyStoreRow[]> => {
+    const storesQuery = supabase
+      .from("merchant_stores")
+      .select(
+        "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, parent_id, is_pure_veg, has_customer_visible_menu"
+      )
+      .eq("status", "ACTIVE")
+      .eq("has_customer_visible_menu", true)
+      .not("latitude", "is", null)
+      .not("longitude", "is", null);
+    let stores: MerchantStoreRow[] | null = null;
+    try {
+      const { data, error: storesError } = await storesQuery;
+      if (storesError) {
+        if (shouldUseHaversineFallback(storesError)) return [];
+        throw storesError;
+      }
+      stores = (data ?? []) as MerchantStoreRow[];
+    } catch (err) {
+      if (shouldUseHaversineFallback(err as { code?: string; message?: string })) return [];
+      throw err;
+    }
+
+    const user = { lat: params.lat, lng: params.lng };
+    return ((stores ?? []) as MerchantStoreRow[])
+      .map((s) => {
+        const lat = toNumber(s.latitude);
+        const lng = toNumber(s.longitude);
+        if (lat == null || lng == null) return null;
+        const distance_km = haversineDistanceKm(user, { lat, lng });
+        if (distance_km > radius_km) return null;
+        return {
+          ...s,
+          distance_km: Number(distance_km.toFixed(2)),
+          display_image: s.banner_url ?? null,
+        } as NearbyStoreRow;
+      })
+      .filter((x): x is NearbyStoreRow => Boolean(x))
+      .sort((a, b) => a.distance_km - b.distance_km)
+      .slice(0, limit);
+  };
+
+  const shouldUseHaversineFallback = (err: { code?: string; message?: string } | null): boolean => {
+    if (!err) return false;
+    const message = (err.message ?? "").toLowerCase();
+    const missingFunction = err.code === "42883";
+    const removedLogoColumn =
+      err.code === "42703" || message.includes("logo_url") || message.includes("column ms.logo_url");
+    const networkFailure =
+      message.includes("fetch failed") ||
+      message.includes("network") ||
+      message.includes("econnreset") ||
+      message.includes("etimedout");
+    return missingFunction || removedLogoColumn || networkFailure;
+  };
+
+  let data: unknown = null;
+  let error: { code?: string; message?: string } | null = null;
+  try {
+    const rpcResult = await supabase.rpc("get_nearby_merchant_stores", {
+      user_lat: params.lat,
+      user_lng: params.lng,
+      radius_km,
+      max_limit: limit,
+      veg_mode: false,
+    });
+    data = rpcResult.data;
+    error = rpcResult.error;
+  } catch (err) {
+    const e = err as { code?: string; message?: string };
+    error = { message: String(e?.message ?? err), code: e?.code };
+  }
 
   if (error) {
-    const message = (error.message ?? "").toLowerCase();
-    const missingFunction = error.code === "42883";
-    const removedLogoColumn =
-      error.code === "42703" || message.includes("logo_url") || message.includes("column ms.logo_url");
-    if (missingFunction || removedLogoColumn) {
-      // Fallback path when DB RPC is missing/outdated (e.g., ms.logo_url removed).
-      const storesQuery = supabase
-        .from("merchant_stores")
-        .select(
-          "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, parent_id, is_pure_veg, has_customer_visible_menu"
-        )
-        .eq("status", "ACTIVE")
-        .eq("has_customer_visible_menu", true)
-        .not("latitude", "is", null)
-        .not("longitude", "is", null);
-      // Veg filtering is applied uniformly below via applyVegFilter (effective-veg
-      // derivation), so the fallback query no longer pre-filters on is_pure_veg.
-      const { data: stores, error: storesError } = await storesQuery;
-      if (storesError) throw storesError;
-
-      const user = { lat: params.lat, lng: params.lng };
-      const items = ((stores ?? []) as MerchantStoreRow[])
-        .map((s) => {
-          const lat = toNumber(s.latitude);
-          const lng = toNumber(s.longitude);
-          if (lat == null || lng == null) return null;
-          const distance_km = haversineDistanceKm(user, { lat, lng });
-          if (distance_km > radius_km) return null;
-          return {
-            ...s,
-            distance_km: Number(distance_km.toFixed(2)),
-            display_image: s.banner_url ?? null,
-          } as NearbyStoreRow;
-        })
-        .filter((x): x is NearbyStoreRow => Boolean(x))
-        .sort((a, b) => a.distance_km - b.distance_km)
-        .slice(0, limit);
-
+    if (shouldUseHaversineFallback(error)) {
+      const items = await listStoresNearbyHaversineFallback();
       return { items: await applyVegFilter(items) };
     }
     throw error;
@@ -653,15 +683,19 @@ export async function listStores(params: {
     });
     const mode = params.distanceMode ?? "road";
     if (mode === "road") {
-      const env = getEnv();
-      const withRoad = await enrichNearbyWithRoadDistance({
-        userLat: params.lat,
-        userLng: params.lng,
-        items,
-        mapboxToken: env.MAPBOX_ACCESS_TOKEN ?? undefined,
-        osrmBaseUrl: env.OSRM_BASE_URL ?? undefined,
-      });
-      return { items: withRoad };
+      try {
+        const env = getEnv();
+        const withRoad = await enrichNearbyWithRoadDistance({
+          userLat: params.lat,
+          userLng: params.lng,
+          items,
+          mapboxToken: env.MAPBOX_ACCESS_TOKEN ?? undefined,
+          osrmBaseUrl: env.OSRM_BASE_URL ?? undefined,
+        });
+        return { items: withRoad };
+      } catch {
+        return { items };
+      }
     }
     return { items };
   }
@@ -677,8 +711,49 @@ async function enrichNearbyWithRoadDistance(params: {
   osrmBaseUrl?: string;
 }): Promise<NearbyStoreRow[]> {
   if (!validCoord(params.userLat, params.userLng)) return params.items;
-  const token = params.mapboxToken;
+  const token = params.mapboxToken?.trim();
   const osrm = params.osrmBaseUrl;
+
+  // One Mapbox Matrix call for the whole page — avoids N Directions requests that
+  // stall listing/featured-offer routes under burst load or flaky networks.
+  if (token && params.items.length > 0) {
+    const indexed = params.items.map((s, index) => {
+      const lat = toNumber(s.latitude);
+      const lng = toNumber(s.longitude);
+      return { s, index, lat, lng };
+    });
+    const routable = indexed.filter(
+      (x): x is { s: NearbyStoreRow; index: number; lat: number; lng: number } =>
+        x.lat != null && x.lng != null
+    );
+    if (routable.length > 0) {
+      try {
+        const matrix = await getMatrixDistances({
+          origin: { lat: params.userLat, lng: params.userLng },
+          destinations: routable.map((r) => ({ lat: r.lat, lng: r.lng })),
+          mapboxToken: token,
+        });
+        const distanceByIndex = new Map<number, number>();
+        for (let i = 0; i < routable.length; i++) {
+          const cell = matrix[i];
+          if (!cell) continue;
+          distanceByIndex.set(
+            routable[i].index,
+            Number((cell.distanceMeters / 1000).toFixed(2))
+          );
+        }
+        if (distanceByIndex.size > 0) {
+          const enriched = params.items.map((s, index) => {
+            const km = distanceByIndex.get(index);
+            return km != null ? { ...s, distance_km: km } : s;
+          });
+          return [...enriched].sort((a, b) => (a.distance_km ?? 0) - (b.distance_km ?? 0));
+        }
+      } catch {
+        // fall through to per-store getRoute
+      }
+    }
+  }
 
   const enriched = await mapWithConcurrency(params.items, MAPBOX_CONCURRENCY, async (s) => {
     const lat = toNumber(s.latitude);
@@ -717,7 +792,7 @@ export async function getStoreByStoreId(storeId: string): Promise<MerchantStoreR
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("merchant_stores")
-    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km, store_phones, has_customer_visible_menu")
+    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, banner_video_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km, store_phones, has_customer_visible_menu, store_type")
     .eq("store_id", storeId)
     .single();
   if (error || !data) return null;
@@ -744,6 +819,24 @@ export async function assertStoreHasCustomerVisibleMenu(
   } catch {
     // Pre-migration environments: do not block listings until 0473 is applied.
     return true;
+  }
+}
+
+/** FSSAI license number for customer-facing store footer (menu / about). */
+export async function getStoreFssaiLicenseNumber(storeInternalId: number): Promise<string | null> {
+  if (!Number.isFinite(storeInternalId) || storeInternalId <= 0) return null;
+  try {
+    const supabase = getSupabase();
+    const { data } = await supabase
+      .from("merchant_store_documents")
+      .select("fssai_document_number")
+      .eq("store_id", storeInternalId)
+      .maybeSingle();
+    const n = (data as { fssai_document_number?: string | null } | null)?.fssai_document_number;
+    const trimmed = (n ?? "").trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
   }
 }
 
@@ -871,15 +964,15 @@ export async function getStoreDetailsForFoodOrder(
 
 export async function getStoreByIdForOrder(
   merchantStoreId: number
-): Promise<{ parentId: number | null; storeId: string | null; fullAddress: string | null; bannerUrl: string | null; storeName: string | null; storeDisplayName: string | null; latitude: number | null; longitude: number | null; is_accepting_orders: boolean } | null> {
+): Promise<{ parentId: number | null; storeId: string | null; fullAddress: string | null; bannerUrl: string | null; storeName: string | null; storeDisplayName: string | null; latitude: number | null; longitude: number | null; is_accepting_orders: boolean; storeType: string | null } | null> {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("merchant_stores")
-    .select("parent_id, store_id, full_address, banner_url, store_name, store_display_name, latitude, longitude, is_accepting_orders")
+    .select("parent_id, store_id, full_address, banner_url, store_name, store_display_name, latitude, longitude, is_accepting_orders, store_type")
     .eq("id", merchantStoreId)
     .single();
   if (error || !data) return null;
-  const row = data as { parent_id?: number | null; store_id?: string | null; full_address?: string | null; banner_url?: string | null; store_name?: string | null; store_display_name?: string | null; latitude?: number | string | null; longitude?: number | string | null; is_accepting_orders?: boolean | null };
+  const row = data as { parent_id?: number | null; store_id?: string | null; full_address?: string | null; banner_url?: string | null; store_name?: string | null; store_display_name?: string | null; latitude?: number | string | null; longitude?: number | string | null; is_accepting_orders?: boolean | null; store_type?: string | null };
   return {
     parentId: row.parent_id != null ? Number(row.parent_id) : null,
     storeId: row.store_id ?? null,
@@ -890,6 +983,7 @@ export async function getStoreByIdForOrder(
     latitude: row.latitude != null ? Number(row.latitude) : null,
     longitude: row.longitude != null ? Number(row.longitude) : null,
     is_accepting_orders: row.is_accepting_orders === true,
+    storeType: row.store_type ?? null,
   };
 }
 
@@ -1282,6 +1376,7 @@ export async function getMenuDelta(
 export type MenuItemFullConfig = {
   item: {
     id: string;
+    menuItemId?: number;
     name: string;
     description: string | null;
     price: number;
@@ -1290,6 +1385,8 @@ export type MenuItemFullConfig = {
     hasCustomizations: boolean;
     hasAddons: boolean;
     hasVariants: boolean;
+    sizeValue?: string | null;
+    sizeUnit?: string | null;
   };
   variants: Array<{
     id: string;
@@ -1980,7 +2077,7 @@ export async function getMenuItemFullConfig(
   if (!store) return null;
 
   const itemSelect =
-    "id, item_id, item_name, item_description, item_image_url, food_type, base_price, selling_price, packaging_charges, has_customizations, has_addons, has_variants";
+    "id, item_id, item_name, short_name, item_description, item_image_url, food_type, base_price, selling_price, packaging_charges, item_size_value, item_size_unit, has_customizations, has_addons, has_variants";
 
   let itemRow: Record<string, unknown> | null = null;
 
@@ -2017,16 +2114,13 @@ export async function getMenuItemFullConfig(
   const pg = getSql();
   const customerImage = getCustomerVisibleItemImageExpr(pg, "m");
 
-  const [variantRowsRaw, customizationsRes, addonOrderCounts, imageRows] = await Promise.all([
+  const [variantRowsRaw, customizationsRes, imageRows, commission, offers] = await Promise.all([
     fetchVariantsForFullConfig(Number(item.id)),
     supabase
       .from("merchant_menu_item_customizations")
       .select("id, customization_id, customization_title, customization_type, is_required, min_selection, max_selection, display_order")
       .eq("menu_item_id", item.id)
       .order("display_order", { ascending: true }),
-    Number.isFinite(menuItemPk) && menuItemPk > 0
-      ? fetchAddonOrderCounts(store.id, menuItemPk)
-      : Promise.resolve(new Map<number, number>()),
     Number.isFinite(menuItemPk) && menuItemPk > 0
       ? pg<{ item_image_url: string | null }[]>`
           SELECT ${customerImage} AS item_image_url
@@ -2035,7 +2129,10 @@ export async function getMenuItemFullConfig(
           LIMIT 1
         `
       : Promise.resolve([] as { item_image_url: string | null }[]),
+    resolveStoreCommission(store.id),
+    loadMerchantOffersForPricing(store.id),
   ]);
+  const addonOrderCounts = new Map<number, number>();
   const visibleImageUrl = imageRows[0]?.item_image_url ?? null;
 
   const variants = dedupeVariantRows(
@@ -2122,12 +2219,6 @@ export async function getMenuItemFullConfig(
       return !isVariantMirrorCustomizationGroup(c.title, addonNames, variantNameSet);
     });
 
-  // Mark up the merchant's stored prices to the customer-visible amount.
-  // Same rule as getMenuByStoreId: selling_price/variant_price/addon_price
-  // are the merchant's net intent; we add commission on top exactly once
-  // here on the read path so cart and bill stay consistent.
-  const commission = await resolveStoreCommission(store.id);
-  const offers = await loadMerchantOffersForPricing(store.id);
   const aliases = [item.item_id, String(item.id)].filter(Boolean) as string[];
   const priceItem = (net: number) =>
     resolveItemPricing({
@@ -2140,20 +2231,18 @@ export async function getMenuItemFullConfig(
     });
   const markup = (rupees: number): number => markupRupeesPaise(rupees, commission.percent);
   const itemPriced = priceItem(parseFloat(item.selling_price));
+  const itemSizeValue =
+    (item as { item_size_value?: number | string | null }).item_size_value != null &&
+    String((item as { item_size_value?: number | string | null }).item_size_value).trim() !== ""
+      ? String((item as { item_size_value?: number | string | null }).item_size_value).trim()
+      : null;
+  const itemSizeUnit =
+    (item as { item_size_unit?: string | null }).item_size_unit != null &&
+    String((item as { item_size_unit?: string | null }).item_size_unit).trim() !== ""
+      ? String((item as { item_size_unit?: string | null }).item_size_unit).trim()
+      : null;
 
-  return {
-    item: {
-      id: item.item_id,
-      name: item.item_name,
-      description: item.item_description ?? null,
-      price: itemPriced.customerItemPriceUnit,
-      imageUrl: toAbsoluteClientMediaUrl(visibleImageUrl),
-      isVeg: foodTypeIsListedAsVeg(item.food_type),
-      hasCustomizations: item.has_customizations === true,
-      hasAddons: item.has_addons === true,
-      hasVariants: item.has_variants === true,
-    },
-    variants: variants.map((v) => ({
+  const mappedVariants = variants.map((v) => ({
       id: String(v.id),
       name: v.variant_name,
       type: v.variant_type ?? null,
@@ -2168,6 +2257,37 @@ export async function getMenuItemFullConfig(
       price: priceItem(parseFloat(v.variant_price)).customerItemPriceUnit,
       isDefault: v.is_default === true,
       displayOrder: v.display_order ?? 0,
+    }));
+
+  return {
+    item: {
+      id: item.item_id,
+      menuItemId: Number(item.id) || undefined,
+      name: item.item_name,
+      description: item.item_description ?? null,
+      price: itemPriced.customerItemPriceUnit,
+      imageUrl: toAbsoluteClientMediaUrl(visibleImageUrl),
+      isVeg: foodTypeIsListedAsVeg(item.food_type),
+      hasCustomizations: item.has_customizations === true,
+      hasAddons: item.has_addons === true,
+      hasVariants: item.has_variants === true,
+      sizeValue: itemSizeValue,
+      sizeUnit: itemSizeUnit,
+    },
+    variants: prependBaseMenuItemVariant(
+      {
+        name: item.item_name,
+        shortName: (item as { short_name?: string | null }).short_name ?? null,
+        price: itemPriced.customerItemPriceUnit,
+        sizeValue: itemSizeValue,
+        sizeUnit: itemSizeUnit,
+      },
+      mappedVariants
+    ).map((v) => ({
+      ...v,
+      type: v.type ?? null,
+      sizeValue: v.sizeValue ?? null,
+      sizeUnit: v.sizeUnit ?? null,
     })),
     customizations: customizationsWithAddons.map((c) => ({
       ...c,
@@ -2179,6 +2299,7 @@ export async function getMenuItemFullConfig(
 /**
  * Search menu items and stores. When lat/lng provided, uses scored nearby RPCs (15km, approval_status).
  * Otherwise uses FTS search_menu_items + store fetch (no location filter).
+ * Also matches merchant_menu_categories.category_name so dish-style chips (e.g. Rasgulla) surface kitchens.
  */
 export async function search(params: {
   q: string;
@@ -2202,10 +2323,57 @@ export async function search(params: {
     return { dishes: [], stores: [] };
   }
 
+  /** Stores whose menu section name matches q (independent of item titles). */
+  async function storesMatchingMenuCategory(): Promise<MerchantStoreRow[]> {
+    try {
+      const pg = getSql();
+      const pattern = `%${q}%`;
+      const rows = await pg`
+        SELECT
+          s.id,
+          s.store_id,
+          s.store_name,
+          s.store_display_name,
+          s.store_description,
+          s.banner_url,
+          s.cuisine_types,
+          s.city,
+          s.is_active,
+          s.is_accepting_orders,
+          s.status,
+          s.has_customer_visible_menu
+        FROM merchant_menu_categories c
+        INNER JOIN merchant_stores s ON s.id = c.store_id
+        WHERE c.is_active = true
+          AND c.category_name ILIKE ${pattern}
+          AND s.is_active = true
+          AND s.has_customer_visible_menu = true
+          ${vegMode ? pg`AND s.is_pure_veg = true` : pg``}
+        ORDER BY c.category_name ASC
+        LIMIT ${Math.min(limit, 30)}
+      `;
+      return (rows ?? []) as unknown as MerchantStoreRow[];
+    } catch {
+      return [];
+    }
+  }
+
+  function mergeStores(primary: MerchantStoreRow[], extra: MerchantStoreRow[]): MerchantStoreRow[] {
+    const seen = new Set(primary.map((s) => Number(s.id)));
+    const out = [...primary];
+    for (const s of extra) {
+      const id = Number(s.id);
+      if (!Number.isFinite(id) || seen.has(id)) continue;
+      seen.add(id);
+      out.push(s);
+    }
+    return out;
+  }
+
   if (useNearby) {
     const lat = params.lat!;
     const lng = params.lng!;
-    const [storesRes, dishesRes] = await Promise.all([
+    const [storesRes, dishesRes, categoryStores] = await Promise.all([
       supabase.rpc("search_stores_nearby", {
         query_text: q,
         user_lat: lat,
@@ -2218,6 +2386,7 @@ export async function search(params: {
         user_lng: lng,
         lim: limit,
       }),
+      storesMatchingMenuCategory(),
     ]);
 
     const storeRows = (storesRes.data ?? []) as Array<{
@@ -2246,7 +2415,7 @@ export async function search(params: {
       is_recommended: boolean | null;
     }>;
 
-    const stores: MerchantStoreRow[] = storeRows.map((s) => ({
+    let stores: MerchantStoreRow[] = storeRows.map((s) => ({
       id: s.id,
       store_id: s.store_id,
       store_name: s.store_name,
@@ -2264,6 +2433,7 @@ export async function search(params: {
       is_available: null,
       status: null,
     }));
+    stores = mergeStores(stores, categoryStores);
 
     const items: MerchantMenuItemRow[] = dishRows.map((d) => ({
       id: 0,
@@ -2299,7 +2469,6 @@ export async function search(params: {
       const visibleIds = new Set(
         ((visRows ?? []) as Array<{ id: number }>).map((r) => Number(r.id)),
       );
-      // If column missing / query failed empty unexpectedly, fall through unfiltered.
       if ((visRows ?? []).length > 0 || ids.length > 0) {
         return {
           stores: stores.filter((s) => visibleIds.has(Number(s.id))),
@@ -2353,7 +2522,14 @@ export async function search(params: {
     items = (ilikeData ?? []) as MerchantMenuItemRow[];
   }
 
-  const storeIds = [...new Set(items.map((i) => i.store_id))];
+  const categoryStores = await storesMatchingMenuCategory();
+  const storeIds = [
+    ...new Set([
+      ...items.map((i) => i.store_id),
+      ...categoryStores.map((s) => Number(s.id)),
+    ]),
+  ].filter((id) => Number.isFinite(Number(id)) && Number(id) > 0);
+
   if (storeIds.length === 0) {
     return { dishes: items, stores: [] };
   }
@@ -2368,12 +2544,138 @@ export async function search(params: {
   const { data: storeRows, error: storeError } = await storesQuery;
 
   if (storeError) throw storeError;
-  // Narrower projection than MerchantStoreRow (no geo/prep-time columns needed here).
-  const stores = (storeRows ?? []) as unknown as MerchantStoreRow[];
+  let stores = (storeRows ?? []) as unknown as MerchantStoreRow[];
+  stores = mergeStores(stores, categoryStores);
   if (!vegMode) return { dishes: items, stores };
   const pureStoreIdSet = new Set(stores.map((s) => Number(s.id)));
   return {
     dishes: items.filter((d) => pureStoreIdSet.has(Number(d.store_id))),
     stores,
   };
+}
+
+export type DishCategoryStoreMatch = {
+  id: string;
+  name: string;
+  bannerUrl: string | null;
+  cuisines: string[] | null;
+  distanceKm: number | null;
+  matchVia: "item" | "menu_category" | "both";
+};
+
+/**
+ * Category-chip browse: stores that sell an item named like `q` OR have a menu
+ * section/category named like `q`. Lightweight ILIKE — not FTS RPCs.
+ */
+export async function listStoresForDishCategoryLabel(params: {
+  q: string;
+  lat?: number | null;
+  lng?: number | null;
+  maxDistanceKm?: number;
+  limit?: number;
+  vegMode?: boolean;
+}): Promise<DishCategoryStoreMatch[]> {
+  const q = (params.q ?? "").trim();
+  if (!q) return [];
+  const limit = Math.min(Math.max(params.limit ?? 40, 1), 50);
+  const maxKm = Math.min(Math.max(params.maxDistanceKm ?? 15, 1), 50);
+  const vegMode = params.vegMode === true;
+  const pattern = `%${q}%`;
+  const hasGeo = validCoord(params.lat ?? 0, params.lng ?? 0);
+  const lat = hasGeo ? params.lat! : null;
+  const lng = hasGeo ? params.lng! : null;
+
+  const pg = getSql();
+  const approval = getCustomerVisibleApprovalExpr(pg, "m");
+  const inStock = getMenuItemEffectiveInStockExpr(pg);
+
+  try {
+    const rows = await pg`
+      WITH item_hits AS (
+        SELECT DISTINCT m.store_id AS store_pk
+        FROM merchant_menu_items m
+        LEFT JOIN merchant_menu_categories c ON c.id = m.category_id
+        WHERE m.is_active = true
+          AND ${approval}
+          AND ${inStock}
+          AND m.item_name ILIKE ${pattern}
+      ),
+      cat_hits AS (
+        SELECT DISTINCT c.store_id AS store_pk
+        FROM merchant_menu_categories c
+        WHERE c.is_active = true
+          AND c.category_name ILIKE ${pattern}
+      ),
+      matched AS (
+        SELECT store_pk, true AS via_item, false AS via_cat FROM item_hits
+        UNION ALL
+        SELECT store_pk, false AS via_item, true AS via_cat FROM cat_hits
+      ),
+      rolled AS (
+        SELECT
+          store_pk,
+          bool_or(via_item) AS via_item,
+          bool_or(via_cat) AS via_cat
+        FROM matched
+        GROUP BY store_pk
+      )
+      SELECT
+        s.store_id AS public_id,
+        COALESCE(s.store_display_name, s.store_name) AS name,
+        s.banner_url,
+        s.cuisine_types,
+        s.latitude,
+        s.longitude,
+        r.via_item,
+        r.via_cat
+      FROM rolled r
+      INNER JOIN merchant_stores s ON s.id = r.store_pk
+      WHERE s.is_active = true
+        AND s.has_customer_visible_menu = true
+        ${vegMode ? pg`AND s.is_pure_veg = true` : pg``}
+      LIMIT ${limit * 3}
+    `;
+
+    type Row = {
+      public_id: string;
+      name: string;
+      banner_url: string | null;
+      cuisine_types: string[] | null;
+      latitude: number | string | null;
+      longitude: number | string | null;
+      via_item: boolean;
+      via_cat: boolean;
+    };
+
+    const out: DishCategoryStoreMatch[] = [];
+    for (const raw of (rows ?? []) as unknown as Row[]) {
+      const id = String(raw.public_id ?? "").trim();
+      if (!id) continue;
+      let distanceKm: number | null = null;
+      if (hasGeo && lat != null && lng != null) {
+        const slat = Number(raw.latitude);
+        const slng = Number(raw.longitude);
+        if (Number.isFinite(slat) && Number.isFinite(slng) && !(slat === 0 && slng === 0)) {
+          distanceKm = haversineDistanceKm({ lat, lng }, { lat: slat, lng: slng });
+          if (distanceKm > maxKm) continue;
+        }
+      }
+      const viaItem = raw.via_item === true;
+      const viaCat = raw.via_cat === true;
+      out.push({
+        id,
+        name: String(raw.name ?? id),
+        bannerUrl: raw.banner_url ?? null,
+        cuisines: Array.isArray(raw.cuisine_types) ? raw.cuisine_types : null,
+        distanceKm: distanceKm != null ? Math.round(distanceKm * 100) / 100 : null,
+        matchVia: viaItem && viaCat ? "both" : viaCat ? "menu_category" : "item",
+      });
+    }
+
+    out.sort((a, b) => (a.distanceKm ?? 999) - (b.distanceKm ?? 999));
+    return out.slice(0, limit);
+  } catch (err) {
+    console.warn("[listStoresForDishCategoryLabel] failed", err);
+    return [];
+  }
 }

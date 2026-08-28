@@ -1,4 +1,5 @@
 import type { Query } from "@tanstack/react-query";
+import { isNetworkError } from "@/utils/networkError";
 
 function isServerBusyError(error: unknown): boolean {
   const err = error as { response?: { status?: number }; status?: number };
@@ -15,8 +16,11 @@ export function pollIntervalWithBackoff<
   normalMs: number,
   busyMs = 15_000
 ): number | false {
-  if (query.state.error && isServerBusyError(query.state.error)) {
-    return busyMs;
+  const err = query.state.error;
+  if (err) {
+    // Backend unreachable — stop hammering until reconnect / manual invalidation.
+    if (isNetworkError(err)) return false;
+    if (isServerBusyError(err)) return busyMs;
   }
   return normalMs;
 }

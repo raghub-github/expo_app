@@ -23,7 +23,7 @@ import { getBasePrice, getItemDiet, getSellingPrice } from "./storeMenuUtils";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 import { isMenuItemImagePrefetched } from "@/lib/prefetchMenuItemImages";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
-import { formatOfferRupee, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
+import { formatOfferRupee, computeCatalogDiscountPercent, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { MENU_MASONRY_CARD_RADIUS } from "@/features/merchant-detail/constants/layout";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
@@ -152,6 +152,10 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
   const basePrice = getBasePrice(item);
   const { payable: payableAmount, strike: strikeAmount, showStrike: showDiscount } =
     resolveMenuOfferPriceDisplay({ sellingPrice, basePrice, itemOffer });
+  const catalogDiscountPct =
+    basePrice != null && basePrice > sellingPrice
+      ? computeCatalogDiscountPercent(basePrice, sellingPrice)
+      : null;
   const showRemoteImage = !!imageUri && !imageFailed && !skipRemoteImage;
   const diet = getItemDiet(item);
   const displayName = item.name.replace(/\s+/g, " ").trim();
@@ -209,6 +213,15 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
               </View>
             )}
             {controlsDisabled ? <View style={styles.closedOverlay} /> : null}
+            {catalogDiscountPct != null ? (
+              <View style={styles.discountOnImage}>
+                <View style={styles.discountPctBadge}>
+                  <AppText style={styles.discountPctBadgeText} numberOfLines={1}>
+                    {catalogDiscountPct}% OFF
+                  </AppText>
+                </View>
+              </View>
+            ) : null}
             {itemOffer?.kind === "bogo" || itemOffer ? (
               <View style={styles.offerOnImage}>
                 <View style={itemOffer?.kind === "bogo" ? styles.bogoBadge : styles.boostBadge}>
@@ -421,6 +434,13 @@ const styles = StyleSheet.create({
     bottom: 8,
     maxWidth: "62%",
   },
+  discountOnImage: {
+    position: "absolute",
+    left: 8,
+    top: 8,
+    maxWidth: "72%",
+    zIndex: 2,
+  },
   bogoBadge: {
     backgroundColor: "#ECFDF5",
     borderRadius: 6,
@@ -446,6 +466,19 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "700",
     color: "#1D4ED8",
+  },
+  discountPctBadge: {
+    backgroundColor: "#FEF9C3",
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(245, 158, 11, 0.3)",
+  },
+  discountPctBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#B45309",
   },
   timeBadge: {
     position: "absolute",

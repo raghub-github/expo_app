@@ -2,14 +2,20 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   applyPlatformCartOffers,
+  applyPlatformDeliveryOffers,
   applyPlatformFeeBucketOffers,
+  computePlatformDeliveryCut,
+  estimateOfferDiscountValue,
   platformOfferEligible,
   platformOfferGeoMatches,
   platformOfferMerchantScopeMatches,
   isPlatformOfferHardVisibilityRejection,
   platformOfferLocationVisible,
+  platformOfferWantsAutoApply,
+  platformOfferCheckoutAutoApply,
   qualifyingCartFromRem,
   listEligiblePlatformOffersForCheckout,
+  platformOfferServiceMatches,
 } from "./platformOffersApply.js";
 import {
   platformOfferFirstRideOnlyPasses,
@@ -202,6 +208,30 @@ describe("qualifyingCartFromRem", () => {
     assert.equal(listEligiblePlatformOffersForCheckout(ctx, ds, 250).length, 0);
     assert.equal(listEligiblePlatformOffersForCheckout(ctx, ds, 299).length, 1);
   });
+
+  it("FREE_DELIVERY min-order uses full cart even when order lines are ITEM_PROMO ineligible", () => {
+    const ctx = baseCtx();
+    ctx.orderLines = [
+      {
+        menuItemId: "x",
+        quantity: 1,
+        lineTotal: 768,
+        discountEligible: false,
+        ineligibilityReason: "ITEM_PROMO",
+      },
+    ];
+    ctx.platformOfferGeoBindingEffectiveIds = new Set([77]);
+    const o = {
+      ...baseOffer(),
+      id: 77,
+      offerKind: "FREE_DELIVERY",
+      deliveryDiscountType: "FULL_WAIVE",
+      minOrderAmount: 298,
+    };
+    const ds = datasetWithOffers([o]);
+    // Promo-eligible subtotal is 0, but FREE_DELIVERY still unlocks on full ₹768.
+    assert.equal(listEligiblePlatformOffersForCheckout(ctx, ds, 768).length, 1);
+  });
 });
 
 describe("platformOfferGeoMatches", () => {
@@ -287,6 +317,33 @@ describe("platformOfferGeoMatches", () => {
     o.merchantIds = [42];
     o.conditions = {};
     assert.equal(platformOfferGeoMatches(ctx, o), true);
+  });
+});
+
+describe("platformOfferServiceMatches", () => {
+  it("matches exact service and ALL", () => {
+    assert.equal(platformOfferServiceMatches("GROCERY", "GROCERY"), true);
+    assert.equal(platformOfferServiceMatches("GROCERY", "ALL"), true);
+    assert.equal(platformOfferServiceMatches("FOOD", "GROCERY"), false);
+    assert.equal(platformOfferServiceMatches("RIDE", "FOOD"), false);
+  });
+});
+
+describe("platformOfferEligible service type", () => {
+  it("rejects FOOD offer on GROCERY checkout", () => {
+    const ctx = baseCtx();
+    ctx.serviceType = "GROCERY";
+    const o = baseOffer();
+    o.serviceType = "FOOD";
+    assert.equal(platformOfferEligible(ctx, o, 500), false);
+  });
+
+  it("accepts GROCERY offer on GROCERY checkout when geo-bound", () => {
+    const ctx = baseCtx();
+    ctx.serviceType = "GROCERY";
+    const o = baseOffer();
+    o.serviceType = "GROCERY";
+    assert.equal(platformOfferEligible(ctx, o, 500), true);
   });
 });
 
@@ -519,5 +576,111 @@ describe("First Ride Only eligibility", () => {
     ctx.platformOfferUsagesByUser = new Map([[1, { lifetime: 1, day: 1, month: 1 }]]);
     assert.equal(platformOfferFirstRideOnlyPasses(ctx, o), true);
     assert.equal(platformOfferEligible(ctx, o, 100), false);
+  });
+});
+
+describe("FREE_DELIVERY / platform delivery discount", () => {
+  function freeDeliveryOffer(overrides: Partial<PlatformOfferRow> = {}): PlatformOfferRow {
+    return {
+      ...baseOffer(),
+      id: 77,
+      name: "Free Delivery",
+      couponCode: "FREEDELIVERY299",
+      offerKind: "FREE_DELIVERY",
+      discountType: "PERCENTAGE",
+      valueNumeric: null,
+      deliveryDiscountType: "FULL_WAIVE",
+      deliveryDiscountValue: null,
+      ...overrides,
+    };
+  }
+
+  it("PERCENTAGE alias waives delivery like PERCENT (admin save mismatch)", () => {
+    const o = freeDeliveryOffer({
+      deliveryDiscountType: "PERCENTAGE",
+      deliveryDiscountValue: 100,
+    });
+    assert.equal(computePlatformDeliveryCut(o, 74.21), 74.21);
+    const rem: FeeRem = {
+      items: 915,
+      delivery: 74.21,
+      platform: 2,
+      packaging: 10,
+      surge: 0,
+      smallOrder: 0,
+      convenience: 0,
+      misc: 0,
+    };
+    assert.equal(estimateOfferDiscountValue(o, baseCtx(), rem), 74.21);
+  });
+
+  it("FULL_WAIVE zeroes delivery and never goes negative", () => {
+    const ctx = baseCtx();
+    ctx.selectedPlatformOfferId = 77;
+    ctx.platformOfferGeoBindingEffectiveIds = new Set([77]);
+    const rem: FeeRem = {
+      items: 915,
+      delivery: 74.21,
+      platform: 2,
+      packaging: 10,
+      surge: 0,
+      smallOrder: 0,
+      convenience: 0,
+      misc: 0,
+    };
+    const state = emptyState();
+    applyPlatformDeliveryOffers(ctx, datasetWithOffers([freeDeliveryOffer()]), state, 915, rem);
+    assert.equal(rem.delivery, 0);
+    assert.equal(state.discountTotal, 74.21);
+    assert.equal(state.discounts[0]?.meta?.offerKind, "FREE_DELIVERY");
+    assert.equal(state.discounts[0]?.label, "Free Delivery");
+  });
+
+  it("FIXED never exceeds delivery fee; max_discount_amount caps PERCENT", () => {
+    const fixed = freeDeliveryOffer({
+      deliveryDiscountType: "FIXED",
+      deliveryDiscountValue: 100,
+    });
+    assert.equal(computePlatformDeliveryCut(fixed, 74.21), 74.21);
+
+    const pct = freeDeliveryOffer({
+      deliveryDiscountType: "PERCENT",
+      deliveryDiscountValue: 100,
+      maxDiscountAmount: 50,
+    });
+    assert.equal(computePlatformDeliveryCut(pct, 74.21), 50);
+  });
+
+  it("empty delivery_discount_type on FREE_DELIVERY defaults to FULL_WAIVE", () => {
+    const o = freeDeliveryOffer({ deliveryDiscountType: null });
+    assert.equal(computePlatformDeliveryCut(o, 40), 40);
+  });
+
+  it("FREE_DELIVERY PERCENT with empty value falls back to FULL_WAIVE", () => {
+    const o = freeDeliveryOffer({
+      deliveryDiscountType: "PERCENTAGE",
+      deliveryDiscountValue: null,
+    });
+    assert.equal(computePlatformDeliveryCut(o, 74.21), 74.21);
+  });
+
+  it("Food checkout auto_apply requires promo_config.auto_apply === true", () => {
+    assert.equal(platformOfferWantsAutoApply(freeDeliveryOffer({ promoConfig: {} })), true);
+    assert.equal(
+      platformOfferCheckoutAutoApply(freeDeliveryOffer({ promoConfig: {} })),
+      false
+    );
+    assert.equal(
+      platformOfferCheckoutAutoApply(freeDeliveryOffer({ promoConfig: { auto_apply: true } })),
+      true
+    );
+    assert.equal(
+      platformOfferCheckoutAutoApply(freeDeliveryOffer({ promoConfig: { auto_apply: false } })),
+      false
+    );
+    assert.equal(
+      platformOfferWantsAutoApply(freeDeliveryOffer({ promoConfig: { auto_apply: false } })),
+      false
+    );
   });
 });

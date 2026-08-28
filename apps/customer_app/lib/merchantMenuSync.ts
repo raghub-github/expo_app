@@ -15,6 +15,9 @@ import { prefetchMenuItemImagesForMenu } from "@/lib/prefetchMenuItemImages";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 
 const syncInFlight = new Set<string>();
+const lastSyncAtByMerchant = new Map<string, number>();
+/** Skip repeat menu version checks while browsing the same store. */
+const MIN_MENU_SYNC_GAP_MS = 90_000;
 
 async function refreshLiveStatusInCache(
   queryClient: QueryClient,
@@ -41,6 +44,11 @@ export async function syncMerchantMenuInBackground(
     const cached =
       queryClient.getQueryData<MerchantDetail>(queryKey) ?? readSyncMerchantMenu(merchantId);
 
+    const lastSyncAt = lastSyncAtByMerchant.get(merchantId) ?? 0;
+    if (cached?.menu?.length && Date.now() - lastSyncAt < MIN_MENU_SYNC_GAP_MS) {
+      return;
+    }
+
     if (!cached?.menu?.length) {
       const detail = await merchantService.getMerchantById(merchantId);
       if (!detail) return;
@@ -54,7 +62,6 @@ export async function syncMerchantMenuInBackground(
     if (!version) return;
 
     if (menuVersionsMatch(cached.menuVersion, version.menuVersion)) {
-      await refreshLiveStatusInCache(queryClient, merchantId);
       return;
     }
 
@@ -121,6 +128,7 @@ export async function syncMerchantMenuInBackground(
   } catch {
     // Silent — cached UI remains.
   } finally {
+    lastSyncAtByMerchant.set(merchantId, Date.now());
     syncInFlight.delete(merchantId);
   }
 }

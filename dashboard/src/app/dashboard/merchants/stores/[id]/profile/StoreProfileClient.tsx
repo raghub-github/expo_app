@@ -33,9 +33,11 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
   const { agreementAcceptance: verificationAgreement } = useStoreVerificationData(storeId);
   const { openVerificationSheet } = useStoreVerificationSheet();
   const { canStoreVerify } = useCanStoreVerify();
-  const { canManageStore, canManageBank, isViewOnly } = useMerchantDashboardAccess();
+  const { canManageStore, canManageBank, isViewOnly, isSuperAdmin, hasAdminMerchantAccess } =
+    useMerchantDashboardAccess();
   const canEditProfile = canManageStore && !isViewOnly;
   const canEditBank = canManageBank && !isViewOnly;
+  const canManageBannerVideo = (isSuperAdmin || hasAdminMerchantAccess) && !isViewOnly;
   const updateStore = useStoreMutation(storeId);
 
   const openDocumentsVerification = () => openVerificationSheet(storeId, 4);
@@ -48,6 +50,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
   const [uploadingImages, setUploadingImages] = useState<string[]>([]);
   const [addressModalOpen, setAddressModalOpen] = useState(false);
   const bannerInputRef = useRef<HTMLInputElement>(null);
+  const bannerVideoInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
 
   const displayStore = displayStoreFromApi as StoreProfile | null;
@@ -98,7 +101,10 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
     }
   };
 
-  const uploadImage = async (file: File, type: "banner" | "gallery"): Promise<string | null> => {
+  const uploadImage = async (
+    file: File,
+    type: "banner" | "gallery" | "banner_video"
+  ): Promise<string | null> => {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("type", type);
@@ -109,7 +115,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.error ?? "Upload failed");
-    return data?.url ? String(data.url) : null;
+    return data?.proxyUrl ? String(data.proxyUrl) : data?.url ? String(data.url) : null;
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: "banner" | "gallery") => {
@@ -147,6 +153,58 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
       }
     } catch (err) {
       toast(err instanceof Error ? err.message : "Upload failed");    } finally {
+      setUploadingImages([]);
+    }
+  };
+
+  const handleRemoveBannerVideo = async () => {
+    if (!canManageBannerVideo) {
+      toast("Only admin can remove banner video");
+      return;
+    }
+    const url = (editData?.banner_video_url ?? displayStore?.banner_video_url) as string | null | undefined;
+    if (!url) return;
+    try {
+      const res = await fetch(`/api/merchant/stores/${storeId}/profile-media/remove`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, type: "banner_video" }),
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? "Remove failed");
+      const next = { ...(editData ?? displayStore), banner_video_url: null };
+      setEditData(next);
+      toast("Banner video removed");
+      queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
+      queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
+      router.refresh();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Failed to remove video");
+    }
+  };
+
+  const handleBannerVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canManageBannerVideo) {
+      toast("Only admin can upload banner video");
+      return;
+    }
+    const file = e.target.files?.[0];
+    if (!file || !storeId || !editData) return;
+    e.target.value = "";
+    setUploadingImages([URL.createObjectURL(file)]);
+    try {
+      const url = await uploadImage(file, "banner_video");
+      if (!url) throw new Error("Video upload failed");
+      const next = { ...editData, banner_video_url: url };
+      setEditData(next);
+      toast("Banner video uploaded — inner page will play this over the banner image");
+      queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
+      queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
+      router.refresh();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Upload failed");
+    } finally {
       setUploadingImages([]);
     }
   };
@@ -219,6 +277,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
         revertAlternatePhone={revertAlternatePhone}
         canStoreVerify={canStoreVerify}
         canEditProfile={canEditProfile}
+        canManageBannerVideo={canManageBannerVideo}
         canEditBank={canEditBank}
         legalDocsRestricted={legalDocsRestricted}
         openDocumentsVerification={openDocumentsVerification}
@@ -232,8 +291,11 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
           setAddressModalOpen(true);
         }}
         bannerInputRef={bannerInputRef}
+        bannerVideoInputRef={bannerVideoInputRef}
         galleryInputRef={galleryInputRef}
         onBannerUpload={(e) => handleImageUpload(e, "banner")}
+        onBannerVideoUpload={handleBannerVideoUpload}
+        onRemoveBannerVideo={handleRemoveBannerVideo}
         onGalleryUpload={(e) => handleImageUpload(e, "gallery")}
         onRemoveGalleryImage={handleRemoveGalleryImage}
         uploadingImages={uploadingImages}

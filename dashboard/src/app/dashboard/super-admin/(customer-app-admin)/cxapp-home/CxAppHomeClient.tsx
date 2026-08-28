@@ -1,9 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import Link from "next/link";
 import { ChevronLeft, ChevronRight, Filter, MapPinned, Search } from "lucide-react";
 
+import { CxAppHomeStateLink } from "@/components/cxapp-home/CxAppHomeStateLink";
 import { CxAppHomeSectionToggle } from "@/components/cxapp-home/CxAppHomeSectionToggle";
 import { useGeoStatesQuery } from "@/store/api/geoAdminApi";
 import type { GeoStateRow } from "@/lib/geo/list-active-states";
@@ -104,15 +104,7 @@ export function CxAppHomeClient({ initialStates }: Props) {
             <div className="relative mt-3">
               <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
                 {paged.map((state) => (
-                  <Link
-                    key={state.id}
-                    href={`/dashboard/super-admin/cxapp-home/${state.id}`}
-                    prefetch
-                    className="group flex min-h-[40px] items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-slate-800 transition hover:border-cyan-300 hover:bg-cyan-50/40"
-                  >
-                    <span className="truncate text-[13px] font-semibold">{state.name}</span>
-                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 transition group-hover:text-cyan-700" />
-                  </Link>
+                  <CxAppHomeStateLink key={state.id} stateId={state.id} name={state.name} />
                 ))}
               </div>
             </div>

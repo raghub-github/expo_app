@@ -169,7 +169,7 @@ function NearFastDeliveryMetaInner({
               ]}
               numberOfLines={1}
             >
-              Free
+              FREE
             </AppText>
           </View>
         </>

@@ -1,4 +1,5 @@
 import type { MenuItemFullConfig } from "@/services/merchant.service";
+import { BASE_MENU_ITEM_VARIANT_ID, prependBaseMenuItemVariant } from "@/lib/menu-item-base-variant";
 
 const VARIANT_MIRROR_TITLES = new Set(["quantity", "size", "portion", "variant", "variants"]);
 
@@ -48,7 +49,19 @@ function isVariantMirrorGroup(
 
 /** Client-side cleanup for sheet UI (dedupe, drop empty rows, hide variant clones). */
 export function normalizeMenuItemFullConfig(config: MenuItemFullConfig): MenuItemFullConfig {
-  const variants = dedupeVariants(config.variants ?? []);
+  const deduped = dedupeVariants(config.variants ?? []);
+  const variants =
+    deduped.some((v) => v.id === BASE_MENU_ITEM_VARIANT_ID)
+      ? deduped
+      : prependBaseMenuItemVariant(
+          {
+            name: config.item.name,
+            price: config.item.price,
+            sizeValue: config.item.sizeValue ?? null,
+            sizeUnit: config.item.sizeUnit ?? null,
+          },
+          deduped
+        ).map((v) => ({ ...v, type: v.type ?? null }));
   const variantNames = new Set(variants.map((v) => v.name.trim().toLowerCase()).filter(Boolean));
   const customizations = (config.customizations ?? [])
     .map((c) => ({
@@ -74,6 +87,10 @@ export function resolveInitialVariantId(
     const key = initial.variantName.trim().toLowerCase();
     const byName = variants.find((v) => v.name.trim().toLowerCase() === key);
     if (byName) return byName.id;
+  }
+  if (!initial?.variantId && !initial?.variantName?.trim()) {
+    const baseVariant = variants.find((v) => v.id === BASE_MENU_ITEM_VARIANT_ID);
+    if (baseVariant) return baseVariant.id;
   }
   const def = variants.find((v) => v.isDefault) ?? variants[0];
   return def?.id ?? null;

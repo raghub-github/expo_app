@@ -26,6 +26,8 @@ export type BillingCalculateKeyParams = {
   /** Store coords — without these the first bill is item-only (no delivery quote). */
   pickupLat?: number | null;
   pickupLon?: number | null;
+  /** FOOD (default) | GROCERY — grocery must not receive FOOD platform offers. */
+  serviceType?: "FOOD" | "GROCERY" | "PARCEL" | "RIDE" | "ALL";
 };
 
 export function buildBillingCalculateQueryKey(p: BillingCalculateKeyParams): readonly unknown[] {
@@ -48,6 +50,7 @@ export function buildBillingCalculateQueryKey(p: BillingCalculateKeyParams): rea
     p.deliveryType,
     p.pickupLat ?? null,
     p.pickupLon ?? null,
+    p.serviceType ?? "FOOD",
   ] as const;
 }
 
@@ -61,6 +64,11 @@ export type BillingCalculateParamsInput = BillingCalculateKeyParams & {
 };
 
 export function buildBillingCalculateParams(p: BillingCalculateParamsInput): CalculateBillPayload {
+  // Platform offers apply by selectedPlatformOfferId. Do not also send their
+  // couponCode as billing_discounts lookup — that can steal the exclusive winner
+  // or load the wrong dataset cache key when codes collide.
+  const couponForBilling =
+    p.selectedPlatformOfferId != null ? undefined : p.couponCode ?? undefined;
   return {
     merchantId: p.merchantId!,
     ...(p.addressId != null && String(p.addressId).trim() !== ""
@@ -72,13 +80,13 @@ export function buildBillingCalculateParams(p: BillingCalculateParamsInput): Cal
     items: p.items,
     tipAmount: p.tipAmount,
     donationAmount: p.donationAmount,
-    couponCode: p.couponCode ?? undefined,
+    couponCode: couponForBilling,
     selectedPlatformOfferId: p.selectedPlatformOfferId,
     selectedMerchantOfferId: p.selectedMerchantOfferId,
     forceNoAutoOffer: p.forceNoAutoOffer,
-    serviceType: "FOOD",
+    serviceType: p.serviceType ?? "FOOD",
     subscriptionOptIn: p.showSubscriptionPromo ? p.subscriptionOptIn : undefined,
-    subscriptionPlanId: p.showSubscriptionPromo && p.subscriptionOptIn ? p.subscriptionPlanId : undefined,
+    subscriptionPlanId: p.showSubscriptionPromo ? p.subscriptionPlanId : undefined,
     subscriptionBillingCycle:
       p.showSubscriptionPromo && p.subscriptionOptIn ? p.subscriptionBillingCycle : undefined,
     deliveryType: p.deliveryType,

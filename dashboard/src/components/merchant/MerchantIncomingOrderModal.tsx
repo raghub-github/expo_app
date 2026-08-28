@@ -21,6 +21,7 @@ import {
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
 import { merchantFoodRowId, merchantOrderApiId } from '@/lib/merchantOrderApiId';
 import { useStoreContext } from '@/app/dashboard/merchants/stores/[id]/StoreContext';
+import { fetchMerchantStoreApi } from '@/lib/fetch-merchant-store-api';
 import { subscribeMenuItemFormModalOpen } from '@/lib/merchant-menu-form-modal-bus';
 import {
   dispatchMerchantStoreOrderUpdated,
@@ -240,9 +241,9 @@ export function MerchantIncomingOrderModal() {
   const reloadAcceptanceSettings = useCallback(async () => {
     if (!storeId) return;
     try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/order-acceptance-settings`, {
-        credentials: 'include',
-      });
+      const res = await fetchMerchantStoreApi(
+        `/api/merchant/stores/${storeId}/order-acceptance-settings`
+      );
       const data = (await res.json().catch(() => ({}))) as { settings?: Partial<AcceptanceSettings> };
       if (res.ok && data.settings) setSettings({ ...DEFAULT_SETTINGS, ...data.settings });
       else setSettings(DEFAULT_SETTINGS);
@@ -266,9 +267,8 @@ export function MerchantIncomingOrderModal() {
   const fetchByFoodRow = useCallback(
     async (foodRowId: number) => {
       if (!storeId) return null;
-      const res = await fetch(
-        `/api/merchant/stores/${storeId}/orders?orders_food_id=${foodRowId}`,
-        { credentials: 'include' }
+      const res = await fetchMerchantStoreApi(
+        `/api/merchant/stores/${storeId}/orders?orders_food_id=${foodRowId}`
       );
       const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
       if (!res.ok || !Array.isArray(data.orders) || data.orders.length === 0) return null;
@@ -280,9 +280,8 @@ export function MerchantIncomingOrderModal() {
   const fetchByCoreId = useCallback(
     async (coreId: number) => {
       if (!storeId) return null;
-      const res = await fetch(
-        `/api/merchant/stores/${storeId}/orders?orders_core_id=${coreId}`,
-        { credentials: 'include' }
+      const res = await fetchMerchantStoreApi(
+        `/api/merchant/stores/${storeId}/orders?orders_core_id=${coreId}`
       );
       const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
       if (!res.ok || !Array.isArray(data.orders) || data.orders.length === 0) return null;
@@ -298,10 +297,10 @@ export function MerchantIncomingOrderModal() {
         Number.isFinite(foodRowId) && Number(foodRowId) > 0
           ? `orders_food_id=${foodRowId}&lightweight=1`
           : `orders_core_id=${coreId}&lightweight=1`;
-      const res = await fetch(`/api/merchant/stores/${storeId}/orders?${qs}`, {
-        credentials: 'include',
-        cache: 'no-store',
-      });
+      const res = await fetchMerchantStoreApi(
+        `/api/merchant/stores/${storeId}/orders?${qs}`,
+        { cache: 'no-store' }
+      );
       const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
       if (!res.ok || !Array.isArray(data.orders) || data.orders.length === 0) return null;
       return data.orders[0] ?? null;
@@ -410,9 +409,8 @@ export function MerchantIncomingOrderModal() {
     if (!storeId) return;
     if (modalOrder) return;
     try {
-      const res = await fetch(
-        `/api/merchant/stores/${storeId}/orders?limit=${FALLBACK_SCAN_LIMIT}&lightweight=1`,
-        { credentials: 'include' }
+      const res = await fetchMerchantStoreApi(
+        `/api/merchant/stores/${storeId}/orders?limit=${FALLBACK_SCAN_LIMIT}&lightweight=1`
       );
       const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
       if (!res.ok || !Array.isArray(data.orders)) return;

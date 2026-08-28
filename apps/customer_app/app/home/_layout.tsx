@@ -43,6 +43,17 @@ export default function HomeLayout() {
         }}
       />
       <Stack.Screen
+        name="grocery"
+        options={{
+          statusBarTranslucent: true,
+          statusBarHidden: false,
+          statusBarStyle: barStyle,
+          statusBarBackgroundColor: "transparent",
+          navigationBarColor: barBg,
+          contentStyle: { backgroundColor: barBg },
+        }}
+      />
+      <Stack.Screen
         name="meals-under-price"
         options={{
           statusBarTranslucent: true,
@@ -96,10 +107,10 @@ export default function HomeLayout() {
         options={{
           animation: "none",
           animationDuration: 0,
-          statusBarTranslucent: false,
+          statusBarTranslucent: true,
           statusBarHidden: false,
           statusBarStyle: barStyle,
-          statusBarBackgroundColor: barBg,
+          statusBarBackgroundColor: "transparent",
           navigationBarColor: barBg,
           // Match shutter / skeleton — never flash a grey/blank route.
           contentStyle: { backgroundColor: barBg },

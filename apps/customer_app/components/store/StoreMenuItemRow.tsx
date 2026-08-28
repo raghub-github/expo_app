@@ -24,7 +24,7 @@ import { getBasePrice, getItemDiet, getSellingPrice, isItemSpicy } from "./store
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 import { isMenuItemImagePrefetched } from "@/lib/prefetchMenuItemImages";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
-import { formatOfferRupee, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
+import { formatOfferRupee, computeCatalogDiscountPercent, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { MENU_ITEM_ROW_HEIGHT } from "@/features/merchant-detail/constants/layout";
 
 export type StoreMenuItemRowProps = {
@@ -176,6 +176,9 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
     itemOffer?.offerPrice != null &&
     itemOffer.offerPrice < sellingPrice - 0.001;
   const catalogMrpDiscount = basePrice != null && basePrice > sellingPrice;
+  const catalogDiscountPct = catalogMrpDiscount
+    ? computeCatalogDiscountPercent(basePrice, sellingPrice)
+    : null;
   const showCouponIneligibleNote = catalogMrpDiscount && !showOfferPrice;
   const showRemoteImage = !!imageUri && !imageFailed;
   const diet = getItemDiet(item);
@@ -241,6 +244,12 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
             <View style={styles.offerBadgeSlot}>
               <View style={styles.boostBadge}>
                 <AppText style={styles.boostBadgeText}>{itemOffer.label}</AppText>
+              </View>
+            </View>
+          ) : catalogDiscountPct != null ? (
+            <View style={styles.offerBadgeSlot}>
+              <View style={styles.discountPctBadge}>
+                <AppText style={styles.discountPctBadgeText}>{catalogDiscountPct}% OFF</AppText>
               </View>
             </View>
           ) : null}
@@ -501,6 +510,19 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
     color: "#1D4ED8",
+  },
+  discountPctBadge: {
+    backgroundColor: "#FEF9C3",
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(245, 158, 11, 0.3)",
+  },
+  discountPctBadgeText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#B45309",
   },
   priceBlock: {
     marginBottom: 6,

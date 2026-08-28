@@ -223,8 +223,9 @@ const styles = StyleSheet.create({
   titleActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
     flexShrink: 0,
+    maxWidth: "46%",
   },
   ratingChip: {
     flexShrink: 0,
@@ -276,6 +277,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
     minWidth: 0,
+    width: "100%",
   },
   backBtn: {
     width: 36,

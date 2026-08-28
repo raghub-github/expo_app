@@ -63,6 +63,7 @@ export type MerchantScrollListHandle = {
 export type MerchantDetailFlashListProps = {
   data: MerchantFlashListItem[];
   heroUri: string | null;
+  heroVideoUri?: string | null;
   scrollHandler: ScrollHandlerProcessed;
   contentContainerStyle?: object;
   merchantLogoUri: string | null;
@@ -100,6 +101,7 @@ export type MerchantDetailFlashListProps = {
   similarMerchants: MerchantSummary[];
   /** FAB / cart dock clearance applied inside footer (gray), not as white list padding. */
   footerBottomPadding?: number;
+  fssaiNumber?: string | null;
   highlightedMenuItemKey: string | null;
   highlightedOfferId?: number | null;
   highlyReorderedIds: Set<string>;
@@ -111,6 +113,12 @@ export type MerchantDetailFlashListProps = {
   /** Safe-area + gap above hero CTAs (merchant owns status-bar padding). */
   heroActionsTopPad?: number;
   heroActions: MerchantHeroTopBarActions;
+  /** Video hero reports measured height so scroll chrome can track banner size. */
+  onHeroHeightChange?: (height: number) => void;
+  /** Keep hero video playing only while the banner is on screen. */
+  shouldPlayHeroVideo?: boolean;
+  /** Extend hero media under the translucent status bar (video hero). */
+  heroStatusBarInset?: number;
   onListLayout?: () => void;
   itemOfferById?: Map<string, ItemOfferDisplay>;
   /** Shared visit sentence index so inline skeleton matches shutter / full-screen loader. */
@@ -136,6 +144,7 @@ const MerchantDetailFlashListInner = forwardRef<
   const {
     data,
     heroUri,
+    heroVideoUri,
     scrollHandler,
     contentContainerStyle,
     merchantLogoUri,
@@ -172,6 +181,7 @@ const MerchantDetailFlashListInner = forwardRef<
     onCouponPress,
     similarMerchants,
     footerBottomPadding = 0,
+    fssaiNumber = null,
     highlightedMenuItemKey,
     highlightedOfferId = null,
     highlyReorderedIds,
@@ -182,6 +192,9 @@ const MerchantDetailFlashListInner = forwardRef<
     showHeroActions,
     heroActionsTopPad = MERCHANT_HERO_ACTIONS_TOP_PAD,
     heroActions,
+    onHeroHeightChange,
+    shouldPlayHeroVideo = true,
+    heroStatusBarInset = 0,
     onListLayout,
     itemOfferById,
     loadingMessageIndex,
@@ -315,7 +328,14 @@ const MerchantDetailFlashListInner = forwardRef<
       case "hero":
         return (
           <View style={styles.heroCell} collapsable={false}>
-            <MerchantHeroBannerRow uri={heroUri} merchantId={merchantId} />
+            <MerchantHeroBannerRow
+              uri={heroUri}
+              videoUri={heroVideoUri}
+              merchantId={merchantId}
+              statusBarInset={heroStatusBarInset}
+              onHeroHeightChange={onHeroHeightChange}
+              shouldPlayVideo={shouldPlayHeroVideo}
+            />
             {showHeroActions ? (
               <View
                 style={[
@@ -511,6 +531,7 @@ const MerchantDetailFlashListInner = forwardRef<
           <StoreFooterSection
             similarMerchants={similarMerchants}
             bottomPadding={footerBottomPadding}
+            fssaiNumber={fssaiNumber}
           />
         );
 
@@ -719,8 +740,8 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    paddingHorizontal: 12,
-    zIndex: 4,
+    paddingHorizontal: 16,
+    zIndex: 30,
     justifyContent: "flex-start",
   },
   menuLoading: {

@@ -102,6 +102,7 @@ export async function getGeoServiceAvailability(params: {
         ...(params.lat != null ? { lat: params.lat } : {}),
         ...(params.lng != null ? { lng: params.lng } : {}),
       },
+      headers: { "X-Silent-Error": "1" },
     });
     if (!data?.ok) return { ok: false, error: "Service availability unavailable" };
     const { ok: _ok, ...availability } = data;

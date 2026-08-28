@@ -155,6 +155,20 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
     return;
   }
 
+  const cxAppHomeStateMatch = /^\/dashboard\/super-admin\/cxapp-home\/([^/]+)$/.exec(path);
+  if (cxAppHomeStateMatch) {
+    const stateId = cxAppHomeStateMatch[1];
+    void fetch(`/api/super-admin/cxapp-home/food-layout/${stateId}`, {
+      credentials: "include",
+      cache: "force-cache",
+    }).catch(() => undefined);
+    void fetch(`/api/super-admin/cxapp-home/grocery-layout/${stateId}`, {
+      credentials: "include",
+      cache: "force-cache",
+    }).catch(() => undefined);
+    return;
+  }
+
   if (path.startsWith("/dashboard/orders")) {
     queryClient.prefetchQuery({
       queryKey: queryKeys.ordersCore.foodList(

@@ -3,8 +3,10 @@ import { describe, it } from "node:test";
 import {
   dedupeSingletonChargeRules,
   narrowBillingRulesForService,
+  narrowTaxConfigsForService,
   preferServiceSpecificBillingRules,
 } from "./billingRuleSelection.js";
+import type { TaxConfigRow } from "./types.js";
 import type { RuleRow } from "./types.js";
 
 function rule(
@@ -51,6 +53,47 @@ describe("billingRuleSelection", () => {
       out.map((r) => r.id).sort(),
       [2, 3]
     );
+  });
+
+  it("GROCERY inherits FOOD charge rules and GST slabs", () => {
+    const rules = [
+      rule({ id: 1, type: "PLATFORM_FEE", serviceType: "FOOD", chargeOrderKey: 10 }),
+      rule({ id: 2, type: "DELIVERY", serviceType: "FOOD", chargeOrderKey: 20 }),
+      rule({ id: 3, type: "PLATFORM_FEE", serviceType: "GROCERY", chargeOrderKey: 99 }),
+    ];
+    const narrowed = narrowBillingRulesForService(rules, "GROCERY");
+    assert.deepEqual(
+      narrowed.map((r) => r.id).sort(),
+      [1, 2]
+    );
+
+    const taxes: TaxConfigRow[] = [
+      {
+        id: 10,
+        name: "GST items",
+        rate: 0.05,
+        applicableBase: "ITEM_AFTER_DISCOUNT",
+        taxGroup: "item",
+        priority: 1,
+        chargeOrderKey: 1,
+        isHidden: false,
+        serviceType: "FOOD",
+      },
+      {
+        id: 11,
+        name: "GROCERY-only",
+        rate: 0.12,
+        applicableBase: "ITEM_AFTER_DISCOUNT",
+        taxGroup: "item",
+        priority: 2,
+        chargeOrderKey: 2,
+        isHidden: false,
+        serviceType: "GROCERY",
+      },
+    ];
+    const taxOut = narrowTaxConfigsForService(taxes, "GROCERY");
+    assert.equal(taxOut.length, 1);
+    assert.equal(taxOut[0]?.id, 10);
   });
 
   it("narrows active RIDE billing rules for checkout", () => {

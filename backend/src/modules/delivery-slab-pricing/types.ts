@@ -2,6 +2,15 @@ export type DeliveryActorType = "customer" | "rider";
 
 export type DeliveryServiceType = "food" | "parcel" | "person_ride";
 
+/** Maps billing checkout `serviceType` (FOOD | GROCERY | PARCEL | RIDE) to `order_type` slab keys. */
+export function mapBillingServiceTypeToDeliverySlab(serviceTypeUpper: string): DeliveryServiceType {
+  const st = serviceTypeUpper.trim().toUpperCase();
+  if (st === "RIDE") return "person_ride";
+  if (st === "PARCEL") return "parcel";
+  // GROCERY uses the same delivery slabs as FOOD; Postgres order_type has no grocery value.
+  return "food";
+}
+
 export type DeliveryRateSlabRow = {
   id: number;
   geoLevel: string;

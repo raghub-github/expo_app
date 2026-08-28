@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import { platformOfferKindSchema } from "@/lib/billing/platformOfferKinds";
+import { PLATFORM_OFFER_SERVICE_TYPES } from "@/lib/billing/platformOfferServiceTypes";
 import { validatePlatformOfferKindFieldsForApi } from "@/lib/billing/platformOfferKindUi";
 import { insertPlatformOffer, listPlatformOffers, formatPlatformOfferDbError } from "@/lib/db/operations/billing-advanced";
 import { auditPlatformOfferMutation } from "@/lib/audit/platform-offer-audit";
@@ -28,7 +29,7 @@ const postSchema = z.object({
     .regex(/^[A-Za-z0-9_-]+$/, "Coupon code may only use A–Z, 0–9, underscore, and hyphen")
     .optional()
     .nullable(),
-  service_type: z.string().optional(),
+  service_type: z.enum(PLATFORM_OFFER_SERVICE_TYPES).optional(),
   offer_kind: platformOfferKindSchema.optional(),
   offer_audience: offerAudienceSchema.optional(),
   funding_mode: z.string().optional(),

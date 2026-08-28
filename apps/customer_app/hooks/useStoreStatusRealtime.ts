@@ -198,9 +198,6 @@ export function useStoreStatusRealtime() {
             if (prevStatus != null && prevStatus !== liveStatus) {
               void queryClient.invalidateQueries({ queryKey: ["merchants"] });
               void queryClient.invalidateQueries({ queryKey: ["search"] });
-            } else if (prevSig != null) {
-              void queryClient.invalidateQueries({ queryKey: ["merchants"] });
-              void queryClient.invalidateQueries({ queryKey: ["search"] });
             }
           }
 

@@ -69,6 +69,8 @@ export type MerchantSummary = {
   packagingChargeAmount?: number | null;
   /** True when merchant_stores.is_pure_veg — used for the Pure Veg toggle. */
   isPureVeg?: boolean;
+  /** FOOD | GROCERY | … from merchant_stores.store_type */
+  storeType?: string | null;
 };
 
 export type MenuItem = {
@@ -118,6 +120,8 @@ export type MenuItemFullConfig = {
     hasCustomizations: boolean;
     hasAddons: boolean;
     hasVariants: boolean;
+    sizeValue?: string | null;
+    sizeUnit?: string | null;
   };
   variants: Array<{
     id: string;
@@ -172,6 +176,8 @@ export type MerchantDetail = MerchantSummary & {
   etag?: string;
   /** Hero banner from GET /menu (store banner_url). */
   imageUrl?: string | null;
+  /** Admin-uploaded hero video; inner page plays this over banner when set. */
+  bannerVideoUrl?: string | null;
   address?: string;
   /** Carousel images: gallery_images, or [banner_url] fallback */
   bannerImages?: string[];
@@ -182,6 +188,8 @@ export type MerchantDetail = MerchantSummary & {
   city?: string | null;
   /** Numeric PK from merchant_stores.id — used for store-scoped Supabase realtime filters. */
   storeNumericId?: number | null;
+  /** FSSAI food license — shown at bottom of store menu (Zomato-style). */
+  fssaiNumber?: string | null;
 };
 
 export type NearbyStore = {
@@ -204,6 +212,7 @@ export type MerchantAbout = {
   state?: string | null;
   postal_code: string | null;
   cuisine_types: string[] | null;
+  store_type?: string | null;
   operational_status: string | null;
   avg_preparation_time_minutes: number | null;
   logo_url: string | null;
@@ -317,6 +326,14 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
       item.isPureVeg === true ||
       (item as Record<string, unknown>).is_pure_veg === true ||
       (item as Record<string, unknown>).isPureVeg === true,
+    storeType: (() => {
+      const raw =
+        item.storeType ??
+        (item as Record<string, unknown>).store_type ??
+        (item as Record<string, unknown>).storeType;
+      if (typeof raw !== "string" || !raw.trim()) return item.storeType ?? null;
+      return raw.trim().toUpperCase();
+    })(),
     avgPreparationTimeMinutes: (() => {
       const raw =
         item.avgPreparationTimeMinutes ??
@@ -362,11 +379,59 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
 }
 
 /** Detail /menu response: fix relative URLs and localhost so header BannerCarousel can load on device. */
+function normalizeMenuItem(raw: MenuItem & Record<string, unknown>): MenuItem {
+  const sellingRaw = raw.price ?? raw.selling_price ?? raw.sellingPrice;
+  const price = Number(sellingRaw);
+  const safePrice = Number.isFinite(price) ? price : 0;
+
+  const strikeRaw =
+    raw.customer_strike_price ??
+    raw.customerStrikePrice ??
+    (raw.canonicalPricing as { customer_strike_unit?: unknown } | undefined)?.customer_strike_unit ??
+    (raw.canonical_pricing as { customer_strike_unit?: unknown } | undefined)?.customer_strike_unit;
+  const strike = strikeRaw != null ? Number(strikeRaw) : NaN;
+  const mrpRaw = raw.basePrice ?? raw.base_price;
+  const mrp = mrpRaw != null ? Number(mrpRaw) : NaN;
+  const resolvedBase =
+    Number.isFinite(strike) && strike > safePrice
+      ? strike
+      : Number.isFinite(mrp) && mrp > safePrice
+        ? mrp
+        : raw.basePrice != null && Number(raw.basePrice) > safePrice
+          ? Number(raw.basePrice)
+          : undefined;
+
+  const discountRaw = raw.discountPercentage ?? raw.discount_percentage;
+  const discountPercentage =
+    discountRaw != null && Number.isFinite(Number(discountRaw))
+      ? Number(discountRaw)
+      : raw.discountPercentage;
+
+  return {
+    ...raw,
+    price: safePrice,
+    basePrice: resolvedBase,
+    discountPercentage,
+    imageUrl: toAbsoluteImageUrl(raw.imageUrl ?? null) ?? raw.imageUrl,
+    canonicalPricing:
+      raw.canonicalPricing ??
+      (typeof raw.canonical_pricing === "object" && raw.canonical_pricing != null
+        ? (raw.canonical_pricing as Record<string, unknown>)
+        : raw.canonicalPricing),
+  };
+}
+
+/** Detail /menu response: fix relative URLs and localhost so header BannerCarousel can load on device. */
 function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
   const r = data as MerchantDetail & Record<string, unknown>;
   const imageUrlRaw = pickFirstString(data.imageUrl, r.image_url);
   const displayRaw = pickFirstString(data.displayImage, r.display_image);
   const bannerRaw = pickFirstString(data.banner_url, r.banner_url);
+  const bannerVideoRaw = pickFirstString(
+    data.bannerVideoUrl,
+    r.bannerVideoUrl,
+    r.banner_video_url
+  );
 
   const rawBannerImages = Array.isArray(data.bannerImages)
     ? data.bannerImages
@@ -395,10 +460,7 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
 
   const bannerImages: string[] | undefined = mergedBanner.length > 0 ? mergedBanner : undefined;
 
-  const menu = (data.menu ?? []).map((m) => ({
-    ...m,
-    imageUrl: toAbsoluteImageUrl(m.imageUrl ?? null) ?? m.imageUrl,
-  }));
+  const menu = (data.menu ?? []).map((raw) => normalizeMenuItem(raw));
 
   const avgRatingRaw = data.avgRating ?? r.avg_rating ?? r.avgRating;
   const totalReviewsRaw = data.totalReviews ?? r.total_reviews ?? r.totalReviews;
@@ -424,6 +486,7 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
     imageUrl: resolvedHero ?? undefined,
     displayImage: resolvedHero ?? undefined,
     banner_url: toAbsoluteImageUrl(bannerRaw) ?? bannerRaw ?? data.banner_url,
+    bannerVideoUrl: toAbsoluteImageUrl(bannerVideoRaw) ?? bannerVideoRaw ?? undefined,
     bannerImages,
     menu,
     avgRating,
@@ -464,6 +527,12 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
       const raw = (r as Record<string, unknown>).storeNumericId ?? (r as Record<string, unknown>).id;
       const n = raw != null ? Number(raw) : NaN;
       return Number.isFinite(n) && n > 0 ? n : (data.storeNumericId ?? null);
+    })(),
+    fssaiNumber: pickFirstString(data.fssaiNumber, r.fssaiNumber, r.fssai_number) ?? null,
+    storeType: (() => {
+      const raw = data.storeType ?? r.storeType ?? r.store_type;
+      if (typeof raw !== "string" || !raw.trim()) return data.storeType ?? null;
+      return raw.trim().toUpperCase();
     })(),
   };
 }
@@ -547,6 +616,8 @@ export const merchantService = {
     vegOnly?: boolean;
     /** air = straight-line, road = backend routing engine (Mapbox/OSRM). */
     distanceMode?: "air" | "road";
+    /** FOOD (default) | GROCERY | ALL */
+    storeType?: string;
   }): Promise<MerchantSummary[]> {
     // Propagate errors so callers/React Query do not cache a false empty area.
     const { data } = await api.get<{ items: MerchantSummary[] }>(MERCHANTS_PREFIX, {
@@ -558,6 +629,7 @@ export const merchantService = {
         offset: params?.offset ?? 0,
         distanceMode: params?.distanceMode,
         veg: params?.vegOnly === true ? "true" : undefined,
+        storeType: (params?.storeType ?? "FOOD").trim().toUpperCase(),
       },
     });
     const list = Array.isArray(data?.items) ? data.items : [];
@@ -767,6 +839,53 @@ export const merchantService = {
       return data ?? { dishes: [], stores: [] };
     } catch {
       return { dishes: [], stores: [] };
+    }
+  },
+
+  /**
+   * Category chip browse: stores with a matching menu item name OR menu section/category name.
+   */
+  async listStoresByDishCategory(params: {
+    q: string;
+    limit?: number;
+    lat?: number;
+    lng?: number;
+    maxDistanceKm?: number;
+    vegOnly?: boolean;
+    signal?: AbortSignal;
+  }): Promise<{
+    stores: Array<{
+      id: string;
+      name: string;
+      bannerUrl?: string | null;
+      cuisines?: string[] | null;
+      distanceKm?: number | null;
+      matchVia: "item" | "menu_category" | "both";
+    }>;
+  }> {
+    try {
+      const { data } = await api.get<{
+        stores: Array<{
+          id: string;
+          name: string;
+          bannerUrl?: string | null;
+          cuisines?: string[] | null;
+          distanceKm?: number | null;
+          matchVia: "item" | "menu_category" | "both";
+        }>;
+      }>("/v1/merchants/by-dish-category", {
+        params: {
+          q: params.q.trim(),
+          limit: params.limit ?? 40,
+          maxDistanceKm: params.maxDistanceKm ?? 15,
+          veg: params.vegOnly === true ? "true" : undefined,
+          ...(params.lat != null && params.lng != null ? { lat: params.lat, lng: params.lng } : {}),
+        },
+        signal: params.signal,
+      });
+      return data ?? { stores: [] };
+    } catch {
+      return { stores: [] };
     }
   },
 };

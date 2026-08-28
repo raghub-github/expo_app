@@ -16,9 +16,9 @@ function sanitizePromoConfig(
 ): Record<string, unknown> {
   const st = serviceType.trim().toUpperCase();
   if (st !== "RIDE" && st !== "PARCEL") {
-    // Preserve an explicit empty object for Food; never invent ride fields.
+    // Food: only persist auto_apply (checkout exclusive). Never invent ride fields.
     if (input != null && typeof input === "object" && !Array.isArray(input)) {
-      return input as Record<string, unknown>;
+      return { auto_apply: (input as Record<string, unknown>).auto_apply === true };
     }
     return {};
   }

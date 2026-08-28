@@ -751,6 +751,69 @@ async function insertPendingOrderRow(
   }
 }
 
+type StoreForPendingOrder = NonNullable<Awaited<ReturnType<typeof getStoreByIdForOrder>>>;
+
+function checkoutBillingServiceType(storeType: string | null | undefined): "FOOD" | "GROCERY" {
+  return String(storeType ?? "").trim().toUpperCase() === "GROCERY" ? "GROCERY" : "FOOD";
+}
+
+async function resolveStoreForPendingOrder(merchantId: string): Promise<
+  | {
+      ok: true;
+      merchantStoreId: number;
+      store: StoreForPendingOrder;
+      storeType: string | null;
+      billingServiceType: "FOOD" | "GROCERY";
+    }
+  | { ok: false; code: string; message: string }
+> {
+  const parsed = parseInt(String(merchantId).trim(), 10);
+  if (!Number.isNaN(parsed) && parsed >= 1) {
+    const store = await getStoreByIdForOrder(parsed);
+    if (!store) {
+      return {
+        ok: false,
+        code: "INVALID_MERCHANT",
+        message: "Store not found. Please try again from the restaurant page.",
+      };
+    }
+    return {
+      ok: true,
+      merchantStoreId: parsed,
+      store,
+      storeType: store.storeType ?? null,
+      billingServiceType: checkoutBillingServiceType(store.storeType),
+    };
+  }
+  const row = await getStoreByStoreId(merchantId);
+  if (!row) {
+    return {
+      ok: false,
+      code: "INVALID_MERCHANT",
+      message: "Store not found. Please try again from the restaurant page.",
+    };
+  }
+  const storeType = row.store_type ?? null;
+  return {
+    ok: true,
+    merchantStoreId: Number(row.id),
+    store: {
+      parentId: row.parent_id != null ? Number(row.parent_id) : null,
+      storeId: row.store_id ?? null,
+      fullAddress: row.full_address ?? null,
+      bannerUrl: row.banner_url ?? null,
+      storeName: row.store_name ?? null,
+      storeDisplayName: row.store_display_name ?? null,
+      latitude: row.latitude != null ? Number(row.latitude) : null,
+      longitude: row.longitude != null ? Number(row.longitude) : null,
+      is_accepting_orders: row.is_accepting_orders === true,
+      storeType,
+    },
+    storeType,
+    billingServiceType: checkoutBillingServiceType(storeType),
+  };
+}
+
 export async function createPendingOrder(
   db: PostgresJsDatabase<Record<string, unknown>>,
   input: PendingOrderInput
@@ -799,6 +862,13 @@ export async function createPendingOrder(
     });
   }
 
+  const storeResolved = await resolveStoreForPendingOrder(merchantId);
+  if (!storeResolved.ok) return storeResolved;
+  const merchantStoreId = storeResolved.merchantStoreId;
+  const storeForOrder = storeResolved.store;
+  const storeType = storeResolved.storeType;
+  const billingServiceType = storeResolved.billingServiceType;
+
   // Production-critical serviceability gate. Run this before idempotency
   // lookup and independently of billing flags so even retries cannot reuse a
   // pending delivery after its address becomes unserviceable.
@@ -808,7 +878,7 @@ export async function createPendingOrder(
       customerId,
       addressId,
       actor: "customer",
-      serviceType: "FOOD",
+      serviceType: billingServiceType,
       skipCache: true,
     });
     if (!deliveryQuote.ok) {
@@ -854,20 +924,6 @@ export async function createPendingOrder(
       .limit(1);
     const dropLat = addrCoords?.latitude != null ? Number(addrCoords.latitude) : null;
     const dropLng = addrCoords?.longitude != null ? Number(addrCoords.longitude) : null;
-    // store_type decides which prevent codes apply (grocery / pharmacy / courier).
-    let storeType: string | null = null;
-    try {
-      const { getSql } = await import("../../db/client.js");
-      const [storeRow] = await getSql()<Array<{ store_type: string | null }>>`
-        SELECT store_type
-        FROM merchant_stores
-        WHERE id = ${Number(merchantId)}
-        LIMIT 1
-      `;
-      storeType = storeRow?.store_type ?? null;
-    } catch {
-      storeType = null;
-    }
     for (const code of preventCodesForStoreType(storeType)) {
       const blocked = await assertServiceNotPrevented({
         lat: dropLat,
@@ -918,31 +974,6 @@ export async function createPendingOrder(
     const lineAddon = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity * i.quantity, 0);
     return s + lineAddon;
   }, 0);
-
-  let merchantStoreId: number;
-  let storeForOrder: Awaited<ReturnType<typeof getStoreByIdForOrder>> = null;
-  const parsed = parseInt(String(merchantId).trim(), 10);
-  if (!Number.isNaN(parsed) && parsed >= 1) {
-    merchantStoreId = parsed;
-    storeForOrder = await getStoreByIdForOrder(merchantStoreId);
-  } else {
-    const store = await getStoreByStoreId(merchantId);
-    if (!store) {
-      return { ok: false, code: "INVALID_MERCHANT", message: "Store not found. Please try again from the restaurant page." };
-    }
-    merchantStoreId = Number(store.id);
-    storeForOrder = {
-      parentId: store.parent_id != null ? Number(store.parent_id) : null,
-      storeId: store.store_id ?? null,
-      fullAddress: store.full_address ?? null,
-      bannerUrl: store.banner_url ?? null,
-      storeName: store.store_name ?? null,
-      storeDisplayName: store.store_display_name ?? null,
-      latitude: store.latitude != null ? Number(store.latitude) : null,
-      longitude: store.longitude != null ? Number(store.longitude) : null,
-      is_accepting_orders: store.is_accepting_orders === true,
-    };
-  }
 
   // Defense-in-depth entitlement gate: a plan-locked menu item must NEVER be orderable,
   // even if it was cached/bookmarked/reordered before the merchant's plan downgraded.
@@ -1034,6 +1065,7 @@ export async function createPendingOrder(
       selectedPlatformOfferId: input.selectedPlatformOfferId ?? null,
       selectedMerchantOfferId: input.selectedMerchantOfferId ?? null,
       forceNoAutoOffer: input.forceNoAutoOffer,
+      serviceType: billingServiceType,
     });
     if (!billRes.ok) {
       return { ok: false, code: billRes.code, message: billRes.message };
