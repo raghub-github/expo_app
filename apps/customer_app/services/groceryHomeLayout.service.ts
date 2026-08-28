@@ -11,10 +11,10 @@ export type GroceryHomeLayoutResult = {
 };
 
 export async function getGroceryHomeLayout(params: {
-  pincode?: string;
-  state?: string;
-  lat?: number;
-  lng?: number;
+  pincode?: string | null;
+  state?: string | null;
+  lat?: number | null;
+  lng?: number | null;
 }): Promise<GroceryHomeLayoutResult> {
   try {
     const { data } = await api.get<GroceryHomeLayoutResult & { ok: true }>(

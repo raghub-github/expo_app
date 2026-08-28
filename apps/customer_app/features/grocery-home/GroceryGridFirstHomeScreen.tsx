@@ -13,7 +13,7 @@ import {
   Easing as NativeEasing,
 } from "react-native";
 import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
-import { FlashList, type ListRenderItem } from "@shopify/flash-list";
+import { FlashList, type FlashListRef, type ListRenderItem } from "@shopify/flash-list";
 import { StatusBar } from "expo-status-bar";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -147,7 +147,7 @@ export default function GroceryGridFirstHomeScreen() {
   const [sortBy, setSortBy] = useState<MerchantListSort>("default");
   const [refreshing, setRefreshing] = useState(false);
   const [gridFirstCategoryTabId, setGridFirstCategoryTabId] = useState("all");
-  const merchantListRef = useRef<FlashList<MerchantSummary>>(null);
+  const merchantListRef = useRef<FlashListRef<MerchantSummary>>(null);
 
   const listingCoords = locationSource === "selected" ? coords : debouncedCoords;
   const merchantsAnchorCoords = useMemo(
@@ -647,7 +647,7 @@ export default function GroceryGridFirstHomeScreen() {
     () => gridFirstScrollY.value >= gridFirstSearchStickAtSv.value - 10,
     (searchSticky, prev) => {
       if (searchSticky === prev) return;
-      runOnJS(syncGridFirstStickyStatusBar)();
+      runOnJS(syncGridFirstStickyStatusBar)(searchSticky);
     },
     [syncGridFirstStickyStatusBar]
   );

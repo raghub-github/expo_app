@@ -833,7 +833,7 @@ export async function computeBillForOrder(
       coveredRadiusKm: previewPlan.maxFreeDeliveryRadiusKm,
       freeDeliveryEnabled: previewPlan.freeDeliveryEnabled,
       fullDeliveryFeeInr: fullFeeForEstimate,
-      isSelfPickup: input.deliveryType === "self_pickup",
+      isSelfPickup: false,
       deliveryPricing,
     });
     if (!benefit || benefit.waivedInr <= 0.005) return null;

@@ -2283,7 +2283,12 @@ export async function getMenuItemFullConfig(
         sizeUnit: itemSizeUnit,
       },
       mappedVariants
-    ),
+    ).map((v) => ({
+      ...v,
+      type: v.type ?? null,
+      sizeValue: v.sizeValue ?? null,
+      sizeUnit: v.sizeUnit ?? null,
+    })),
     customizations: customizationsWithAddons.map((c) => ({
       ...c,
       addons: c.addons.map((a) => ({ ...a, price: markup(a.price) })),
@@ -2643,7 +2648,7 @@ export async function listStoresForDishCategoryLabel(params: {
     };
 
     const out: DishCategoryStoreMatch[] = [];
-    for (const raw of (rows ?? []) as Row[]) {
+    for (const raw of (rows ?? []) as unknown as Row[]) {
       const id = String(raw.public_id ?? "").trim();
       if (!id) continue;
       let distanceKm: number | null = null;

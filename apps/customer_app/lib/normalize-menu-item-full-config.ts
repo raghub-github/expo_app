@@ -61,7 +61,7 @@ export function normalizeMenuItemFullConfig(config: MenuItemFullConfig): MenuIte
             sizeUnit: config.item.sizeUnit ?? null,
           },
           deduped
-        );
+        ).map((v) => ({ ...v, type: v.type ?? null }));
   const variantNames = new Set(variants.map((v) => v.name.trim().toLowerCase()).filter(Boolean));
   const customizations = (config.customizations ?? [])
     .map((c) => ({

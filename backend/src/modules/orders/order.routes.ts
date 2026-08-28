@@ -2435,6 +2435,7 @@ export async function orderRoutes(app: FastifyInstance) {
           latitude: store.latitude != null ? Number(store.latitude) : null,
           longitude: store.longitude != null ? Number(store.longitude) : null,
           is_accepting_orders: store.is_accepting_orders === true,
+          storeType: store.store_type ?? null,
         };
       }
 

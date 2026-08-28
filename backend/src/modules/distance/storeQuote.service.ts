@@ -84,8 +84,8 @@ export type StoreQuoteInput = {
   drop?: { lat: number; lng: number; pincode?: string | null; city?: string | null; state?: string | null } | null;
   /** Defaults to "customer". Rider uses progressive slab calc. */
   actor?: StoreQuoteActor;
-  /** FOOD | PARCEL | RIDE — maps to DeliveryServiceType. Default FOOD. */
-  serviceType?: "FOOD" | "PARCEL" | "RIDE";
+  /** FOOD | GROCERY | PARCEL | RIDE — maps to DeliveryServiceType. Default FOOD. */
+  serviceType?: "FOOD" | "GROCERY" | "PARCEL" | "RIDE";
   /** Optional override for waiting minutes (rider actor only). */
   riderWaitingMinutes?: number;
   /** Rider payout v2: separate pickup (rider→merchant) and drop (merchant→customer) km. */

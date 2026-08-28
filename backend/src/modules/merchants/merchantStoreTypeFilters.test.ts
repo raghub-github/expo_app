@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
 import {
   CUSTOMER_FOOD_PAGE_STORE_TYPES,
   matchesCustomerMerchantListStoreType,
@@ -7,18 +8,18 @@ import {
 describe("matchesCustomerMerchantListStoreType", () => {
   it("FOOD request includes restaurant verticals", () => {
     for (const st of ["RESTAURANT", "CLOUD_KITCHEN", "BAKERY", "CAFE", "FOOD"]) {
-      expect(matchesCustomerMerchantListStoreType(st, "FOOD")).toBe(true);
+      assert.equal(matchesCustomerMerchantListStoreType(st, "FOOD"), true);
     }
-    expect(matchesCustomerMerchantListStoreType("GROCERY", "FOOD")).toBe(false);
+    assert.equal(matchesCustomerMerchantListStoreType("GROCERY", "FOOD"), false);
   });
 
   it("GROCERY request is exact", () => {
-    expect(matchesCustomerMerchantListStoreType("GROCERY", "GROCERY")).toBe(true);
-    expect(matchesCustomerMerchantListStoreType("RESTAURANT", "GROCERY")).toBe(false);
+    assert.equal(matchesCustomerMerchantListStoreType("GROCERY", "GROCERY"), true);
+    assert.equal(matchesCustomerMerchantListStoreType("RESTAURANT", "GROCERY"), false);
   });
 
   it("exports food page set", () => {
-    expect(CUSTOMER_FOOD_PAGE_STORE_TYPES.has("RESTAURANT")).toBe(true);
-    expect(CUSTOMER_FOOD_PAGE_STORE_TYPES.has("GROCERY")).toBe(false);
+    assert.equal(CUSTOMER_FOOD_PAGE_STORE_TYPES.has("RESTAURANT"), true);
+    assert.equal(CUSTOMER_FOOD_PAGE_STORE_TYPES.has("GROCERY"), false);
   });
 });

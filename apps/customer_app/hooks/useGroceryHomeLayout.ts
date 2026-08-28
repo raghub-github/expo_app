@@ -43,10 +43,11 @@ export function useGroceryHomeLayout(
   });
 
   const effectiveLayout = query.data;
+  const rawLayoutKey = effectiveLayout?.layoutKey ?? null;
   const layoutReady = !canQuery || effectiveLayout != null || query.isError;
   const layoutKey: FoodHomeLayoutKey | null = layoutReady
-    ? (effectiveLayout?.layoutKey ?? "grid_first")
-    : effectiveLayout?.layoutKey ?? null;
+    ? (rawLayoutKey ?? "grid_first")
+    : rawLayoutKey;
 
   const gridFirstHeroMedia = effectiveLayout?.gridFirstHeroMedia ?? [];
 

@@ -95,6 +95,7 @@ export type MerchantStoreRow = {
   live_status?: string | null;
   /** Parent merchant id; used by order creation (never from frontend). */
   parent_id?: number | null;
+  store_type?: string | null;
 };
 
 /** Fallback when DB live_status not available. OPEN only when all four conditions met. */
