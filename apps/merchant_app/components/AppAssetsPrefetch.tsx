@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 import { Image, Platform, View, StyleSheet } from "react-native";
-import { fetchMerchantAppAssets } from "@/services/appAssets.service";
 import {
   getAppAssetUrl,
   isAppAssetsLoaded,
   needsAppAssetsFetch,
-  setAppAssets,
+  ensureMerchantAppAssetsLoaded,
   useAppAssetUrl,
 } from "@/store/appAssetsStore";
 import { MX } from "@/lib/appAssetKeys";
@@ -72,9 +71,8 @@ export function AppAssetsPrefetch() {
         return;
       }
       try {
-        const res = await fetchMerchantAppAssets();
-        if (cancelled) return;
-        setAppAssets(res.assets ?? {});
+        const ok = await ensureMerchantAppAssetsLoaded();
+        if (cancelled || !ok) return;
         prefetchKnownImages();
         tick((t) => t + 1);
       } catch {

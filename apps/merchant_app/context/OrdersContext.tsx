@@ -22,7 +22,7 @@ import {
 } from "@/services/ordersApi";
 import { prefetchMenuItemsForOrders } from "@/lib/menuItemCache";
 import { prefetchOrderTimeline } from "@/lib/orderTimelineCache";
-import { cacheFoodOrders, setCachedFoodOrder } from "@/lib/foodOrderCache";
+import { cacheFoodOrders, getCachedFoodOrdersForStore, setCachedFoodOrder } from "@/lib/foodOrderCache";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { useMerchantOrdersRealtime } from "@/hooks/useMerchantOrdersRealtime";
 import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
@@ -202,6 +202,23 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
 
     const run = (async () => {
       setError(null);
+      if (ordersCountRef.current === 0) {
+        const cachedRows = orderStoreIds.flatMap((sid) => {
+          const list = getCachedFoodOrdersForStore(sid);
+          return list
+            .filter((row) => row != null && (row.orders_core_id != null || row.orders_food_id != null))
+            .map((row) => mapWithStore(row, sid));
+        });
+        if (cachedRows.length > 0) {
+          cachedRows.sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+          ordersRef.current = cachedRows;
+          ordersCountRef.current = cachedRows.length;
+          setOrders(cachedRows);
+          setLoading(false);
+        }
+      }
       try {
         if (__DEV__) {
           console.log(`[orders] fetching food-orders stores=${orderStoreIds.join(",")}`);
@@ -291,7 +308,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         fetchFailStreakRef.current += 1;
         setPollFailStreak(fetchFailStreakRef.current);
         // Keep last good board on timeout/network blips; only show error when empty.
-        if (ordersCountRef.current === 0) setError(msg);
+        if (ordersRef.current.length === 0) setError(msg);
       } finally {
         setLoading(false);
       }

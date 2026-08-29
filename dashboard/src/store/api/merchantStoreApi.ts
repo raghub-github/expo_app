@@ -8,6 +8,7 @@ export interface WalletSummary {
   total_earned: number;
   total_withdrawn: number;
   pending_withdrawal_total: number;
+  in_process_withdrawal_total?: number;
   locked_settlement_total?: number;
   locked_balance?: number;
   total_balance?: number;
@@ -42,6 +43,7 @@ export interface LedgerEntry {
   order_id: number | null;
   formatted_order_id: string | null;
   table_id: string | null;
+  pg_transaction_id?: string | null;
 }
 
 export interface LedgerResponse {
@@ -115,7 +117,11 @@ export interface PayoutDetails {
     commission_amount: number;
     status: string;
     utr_reference: string | null;
+    pg_transaction_id?: string | null;
     requested_at: string;
+    approved_at?: string | null;
+    processed_at?: string | null;
+    completed_at?: string | null;
   };
   bank: {
     account_holder_name: string;
@@ -193,6 +199,19 @@ export const merchantStoreApi = baseApi.injectEndpoints({
           total_earned: Number(src?.total_earned ?? 0),
           total_withdrawn: Number(src?.total_withdrawn ?? 0),
           pending_withdrawal_total: Number(src?.pending_withdrawal_total ?? 0),
+          in_process_withdrawal_total: Number(src?.in_process_withdrawal_total ?? 0),
+          withdrawable_balance: Number(
+            src?.withdrawable_balance ?? src?.available_balance ?? 0,
+          ),
+          locked_settlement_total:
+            src?.locked_settlement_total != null
+              ? Number(src.locked_settlement_total)
+              : undefined,
+          locked_balance:
+            src?.locked_balance != null ? Number(src.locked_balance) : undefined,
+          total_balance:
+            src?.total_balance != null ? Number(src.total_balance) : undefined,
+          settlement_paused: Boolean(src?.settlement_paused),
         };
       },
       providesTags: (result, _error, storeId) =>

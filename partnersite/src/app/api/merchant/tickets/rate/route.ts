@@ -107,6 +107,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const bucket = rating >= 4 ? "CSAT" : rating <= 2 ? "DSAT" : "Neutral";
+    try {
+      await db.from("unified_ticket_activity_audit").insert({
+        ticket_id: ticket_id,
+        activity_type: "satisfaction_rating",
+        activity_category: "feedback",
+        activity_description: `${bucket} ${rating}/5 submitted`,
+        actor_type: "MERCHANT",
+        actor_name: user.email ?? "Merchant",
+        actor_email: user.email ?? null,
+        new_value: { rating, feedback: feedback || null, bucket: bucket.toLowerCase() },
+        changed_fields: [
+          "satisfaction_rating",
+          "satisfaction_feedback",
+          "satisfaction_collected_at",
+        ],
+        update_source: "system",
+      });
+    } catch (auditErr) {
+      console.warn("[merchant/tickets/rate] activity audit skipped:", auditErr);
+    }
+
     return NextResponse.json({
       success: true,
       message: "Rating submitted successfully.",

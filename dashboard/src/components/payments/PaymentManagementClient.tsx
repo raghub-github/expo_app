@@ -8,7 +8,7 @@ import {
   X,
   Store,
   Bike,
-  Users,
+  Gauge,
   ArrowRight,
   MoreVertical,
   Wallet,
@@ -25,10 +25,14 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
+import { useDispatch } from "react-redux";
 import { readApiJson } from "@/lib/payment/read-api-json";
 import { formatInr } from "@/lib/format-inr";
+import { merchantStoreApi } from "@/store/api/merchantStoreApi";
+import { PaymentThresholdPanel } from "@/components/payments/PaymentThresholdPanel";
+import { usePaymentPayoutsLiveSync } from "@/hooks/usePaymentPayoutsLiveSync";
 
-type PaymentParty = "merchant" | "rider" | "customer";
+type PaymentParty = "merchant" | "rider" | "threshold";
 
 type MerchantPayoutRow = {
   id: number;
@@ -43,6 +47,7 @@ type MerchantPayoutRow = {
   pg_transaction_id?: string | null;
   utr_reference?: string | null;
   rejection_reason?: string | null;
+  hold_reason?: string | null;
   requested_at?: string;
   approved_at?: string;
   completed_at?: string;
@@ -119,6 +124,7 @@ function matchesPayoutFilters(
 }
 
 export function PaymentManagementClient() {
+  const dispatch = useDispatch();
   const [party, setParty] = useState<PaymentParty>("merchant");
   const [migrationRequired, setMigrationRequired] = useState(false);
   const [payouts, setPayouts] = useState<MerchantPayoutRow[]>([]);
@@ -134,6 +140,7 @@ export function PaymentManagementClient() {
   const [pageSize, setPageSize] = useState<number>(10);
   const [editModal, setEditModal] = useState<{ row: MerchantPayoutRow; field: EditField } | null>(null);
   const [rejectModal, setRejectModal] = useState<MerchantPayoutRow | null>(null);
+  const [holdModal, setHoldModal] = useState<MerchantPayoutRow | null>(null);
 
   const loadConfig = useCallback(async () => {
     try {
@@ -153,6 +160,10 @@ export function PaymentManagementClient() {
   }, []);
 
   const loadPayouts = useCallback(async () => {
+    if (party === "threshold") {
+      setPayouts([]);
+      return;
+    }
     try {
       const query = party === "rider" ? "?party=rider" : "";
       const res = await fetch(`/api/super-admin/payment-payouts${query}`, { cache: "no-store" });
@@ -191,6 +202,11 @@ export function PaymentManagementClient() {
     void loadPayouts();
   }, [loadConfig, loadPayouts]);
 
+  usePaymentPayoutsLiveSync(() => {
+    if (party === "threshold") return;
+    return loadPayouts();
+  });
+
   const payoutAction = async (
     payoutId: number,
     action: "approve" | "reject" | "complete" | "updateRefs",
@@ -211,12 +227,14 @@ export function PaymentManagementClient() {
       if (action === "complete") {
         toast.success("Withdrawal transferred to the bank successfully.");
       } else if (action === "approve") {
-        toast.success("Withdrawal approved");
+        toast.success("Withdrawal put on hold");
       } else if (action === "reject") {
         toast.success("Withdrawal rejected");
       } else if (action === "updateRefs") {
         toast.success(extras?.field === "pg" ? "PG TNX ID updated" : "UTR updated");
       }
+      // Refresh merchant portal wallet / ledger CTAs immediately when this dashboard has them open.
+      dispatch(merchantStoreApi.util.invalidateTags([{ type: "Payment" }]));
       await loadPayouts();
       return true;
     } catch (e) {
@@ -353,8 +371,8 @@ export function PaymentManagementClient() {
         </div>
       )}
 
-      {party === "customer" ? (
-        <PaymentPartyComingSoon party={party} />
+      {party === "threshold" ? (
+        <PaymentThresholdPanel />
       ) : (
         <>
           {/* Filters */}
@@ -515,6 +533,7 @@ export function PaymentManagementClient() {
             onUtrChange={(id, v) => setUtrInputs((prev) => ({ ...prev, [id]: v }))}
             onAction={payoutAction}
             onRejectClick={(row) => setRejectModal(row)}
+            onHoldClick={(row) => setHoldModal(row)}
             onEditField={(row, field) => setEditModal({ row, field })}
           />
 
@@ -594,7 +613,8 @@ export function PaymentManagementClient() {
       ) : null}
 
       {rejectModal ? (
-        <RejectPayoutReasonModal
+        <PayoutReasonModal
+          mode="reject"
           row={rejectModal}
           party={party}
           saving={savingId === `payout-${rejectModal.id}`}
@@ -602,6 +622,20 @@ export function PaymentManagementClient() {
           onConfirm={async (reason) => {
             const ok = await payoutAction(Number(rejectModal.id), "reject", { reason });
             if (ok) setRejectModal(null);
+          }}
+        />
+      ) : null}
+
+      {holdModal ? (
+        <PayoutReasonModal
+          mode="hold"
+          row={holdModal}
+          party={party}
+          saving={savingId === `payout-${holdModal.id}`}
+          onClose={() => setHoldModal(null)}
+          onConfirm={async (reason) => {
+            const ok = await payoutAction(Number(holdModal.id), "approve", { reason });
+            if (ok) setHoldModal(null);
           }}
         />
       ) : null}
@@ -663,10 +697,10 @@ function PaymentPartyTabs({
   party: PaymentParty;
   onChange: (p: PaymentParty) => void;
 }) {
-  const items: { id: PaymentParty; label: string; icon: ReactNode; soon?: boolean }[] = [
+  const items: { id: PaymentParty; label: string; icon: ReactNode }[] = [
     { id: "merchant", label: "Merchant", icon: <Store className="h-4 w-4" /> },
     { id: "rider", label: "Rider", icon: <Bike className="h-4 w-4" /> },
-    { id: "customer", label: "Customer", icon: <Users className="h-4 w-4" />, soon: true },
+    { id: "threshold", label: "Threshold", icon: <Gauge className="h-4 w-4" /> },
   ];
 
   return (
@@ -688,27 +722,10 @@ function PaymentPartyTabs({
           >
             {item.icon}
             {item.label}
-            {item.soon ? (
-              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-gray-500">
-                Soon
-              </span>
-            ) : null}
           </button>
         );
       })}
     </nav>
-  );
-}
-
-function PaymentPartyComingSoon({ party }: { party: PaymentParty }) {
-  const label = party === "rider" ? "Rider" : "Customer";
-  return (
-    <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 px-6 py-16 text-center">
-      <p className="text-lg font-semibold text-gray-900">{label} payment settings</p>
-      <p className="mx-auto mt-2 max-w-md text-sm text-gray-500">
-        Coming soon. Use <strong>Merchant</strong> for withdrawal approvals.
-      </p>
-    </div>
   );
 }
 
@@ -741,6 +758,7 @@ function PayoutsTable({
   onUtrChange,
   onAction,
   onRejectClick,
+  onHoldClick,
   onEditField,
 }: {
   party: PaymentParty;
@@ -756,6 +774,7 @@ function PayoutsTable({
     extras?: { reason?: string; pgTransactionId?: string; utrReference?: string; field?: EditField; value?: string }
   ) => Promise<boolean>;
   onRejectClick: (row: MerchantPayoutRow) => void;
+  onHoldClick: (row: MerchantPayoutRow) => void;
   onEditField: (row: MerchantPayoutRow, field: EditField) => void;
 }) {
   return (
@@ -768,7 +787,7 @@ function PayoutsTable({
               <th className="px-3 py-2">Amount</th>
               <th className="px-3 py-2">Status</th>
               <th className="px-3 py-2 min-w-[150px]">PG TNX ID</th>
-              <th className="px-3 py-2 min-w-[120px]">UTR (Optional)</th>
+              <th className="px-3 py-2 min-w-[120px]">UTR</th>
               <th className="px-3 py-2">Requested On</th>
               <th className="px-3 py-2 text-right">Actions</th>
             </tr>
@@ -823,6 +842,11 @@ function PayoutsTable({
                             {String(p.rejection_reason)}
                           </span>
                         ) : null}
+                        {disp === "HOLD" && p.hold_reason ? (
+                          <span className="max-w-[180px] truncate text-[10px] text-violet-700" title={String(p.hold_reason)}>
+                            {String(p.hold_reason)}
+                          </span>
+                        ) : null}
                       </div>
                     </td>
                     <td className="px-3 py-2">
@@ -862,12 +886,32 @@ function PayoutsTable({
                           <>
                             <button
                               type="button"
-                              disabled={busy}
-                              onClick={() => void onAction(id, "approve")}
-                              className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                              disabled={busy || (!pg.trim() && !utr.trim())}
+                              title={
+                                !pg.trim() && !utr.trim()
+                                  ? "Enter PG TNX ID or UTR to approve (marks Completed)"
+                                  : "Mark paid — completes withdrawal"
+                              }
+                              onClick={() =>
+                                void onAction(id, "complete", {
+                                  pgTransactionId: pg.trim(),
+                                  utrReference: utr.trim(),
+                                })
+                              }
+                              className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               <Check className="h-3 w-3" />
                               Approve
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              title="Put withdrawal on hold for later release"
+                              onClick={() => onHoldClick(p)}
+                              className="inline-flex items-center gap-1 rounded-md border border-violet-300 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-50"
+                            >
+                              <PauseCircle className="h-3 w-3" />
+                              Hold
                             </button>
                             <button
                               type="button"
@@ -882,20 +926,36 @@ function PayoutsTable({
                         )}
 
                         {isHold && (
-                          <button
-                            type="button"
-                            disabled={busy || !pg.trim()}
-                            title={!pg.trim() ? "Enter PG TNX ID first" : "Release funds to bank"}
-                            onClick={() =>
-                              void onAction(id, "complete", {
-                                pgTransactionId: pg.trim(),
-                                utrReference: utr.trim() || undefined,
-                              })
-                            }
-                            className="inline-flex items-center rounded-md bg-violet-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-violet-200 disabled:text-violet-500"
-                          >
-                            Release
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              disabled={busy || (!pg.trim() && !utr.trim())}
+                              title={
+                                !pg.trim() && !utr.trim()
+                                  ? "Enter PG TNX ID or UTR to release"
+                                  : "Release funds to bank (Completed)"
+                              }
+                              onClick={() =>
+                                void onAction(id, "complete", {
+                                  pgTransactionId: pg.trim(),
+                                  utrReference: utr.trim(),
+                                })
+                              }
+                              className="inline-flex items-center rounded-md bg-violet-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-violet-200 disabled:text-violet-500"
+                            >
+                              Release
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              title="Reject this held withdrawal and return funds"
+                              onClick={() => onRejectClick(p)}
+                              className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+                            >
+                              <X className="h-3 w-3" />
+                              Reject
+                            </button>
+                          </>
                         )}
 
                         <RowActionsMenu
@@ -1096,13 +1156,15 @@ function partyLabelName(row: MerchantPayoutRow): string {
   return String(row.store_name ?? row.rider_name ?? "—");
 }
 
-function RejectPayoutReasonModal({
+function PayoutReasonModal({
+  mode,
   row,
   party,
   saving,
   onClose,
   onConfirm,
 }: {
+  mode: "reject" | "hold";
   row: MerchantPayoutRow;
   party: PaymentParty;
   saving: boolean;
@@ -1112,6 +1174,7 @@ function RejectPayoutReasonModal({
   const [reason, setReason] = useState("");
   const trimmed = reason.trim();
   const canSubmit = trimmed.length >= 3 && !saving;
+  const isHold = mode === "hold";
   const subject =
     party === "rider"
       ? String(row.rider_name ?? `Rider #${row.rider_id ?? ""}`)
@@ -1125,7 +1188,9 @@ function RejectPayoutReasonModal({
       >
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-base font-bold text-gray-900">Reject withdrawal</h3>
+            <h3 className="text-base font-bold text-gray-900">
+              {isHold ? "Hold withdrawal" : "Reject withdrawal"}
+            </h3>
             <p className="mt-0.5 text-sm text-gray-500">
               {subject} · {formatInr(Number(row.amount ?? 0))}
             </p>
@@ -1137,7 +1202,7 @@ function RejectPayoutReasonModal({
 
         <div className="mt-4">
           <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-500">
-            Reject reason <span className="text-red-500">*</span>
+            {isHold ? "Hold reason" : "Reject reason"} <span className="text-red-500">*</span>
           </label>
           <textarea
             value={reason}
@@ -1145,11 +1210,19 @@ function RejectPayoutReasonModal({
             rows={4}
             autoFocus
             maxLength={500}
-            placeholder="Explain why this withdrawal is being rejected…"
-            className="w-full resize-y rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-red-400 focus:ring-1 focus:ring-red-200"
+            placeholder={
+              isHold
+                ? "Explain why this withdrawal is being put on hold…"
+                : "Explain why this withdrawal is being rejected…"
+            }
+            className={`w-full resize-y rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none ${
+              isHold
+                ? "focus:border-violet-400 focus:ring-1 focus:ring-violet-200"
+                : "focus:border-red-400 focus:ring-1 focus:ring-red-200"
+            }`}
           />
           <p className="mt-1 text-xs text-gray-500">
-            Required (min 3 characters). Saved on the payout and wallet ledger.
+            Required (min 3 characters). Saved with the payout for audit.
           </p>
         </div>
 
@@ -1166,9 +1239,17 @@ function RejectPayoutReasonModal({
             type="button"
             disabled={!canSubmit}
             onClick={() => void onConfirm(trimmed)}
-            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+            className={`rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 ${
+              isHold ? "bg-violet-600 hover:bg-violet-700" : "bg-red-600 hover:bg-red-700"
+            }`}
           >
-            {saving ? "Rejecting…" : "Confirm reject"}
+            {saving
+              ? isHold
+                ? "Holding…"
+                : "Rejecting…"
+              : isHold
+                ? "Confirm hold"
+                : "Confirm reject"}
           </button>
         </div>
       </div>

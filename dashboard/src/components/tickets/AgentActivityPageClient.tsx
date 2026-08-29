@@ -202,10 +202,11 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
       if (!res.ok) throw new Error("Failed to fetch activity");
       return res.json();
     },
-    staleTime: 60_000,
+    staleTime: 15_000,
     gcTime: 24 * 60 * 60_000,
     placeholderData: keepPreviousData,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
+    refetchInterval: activityFetchEnabled ? 12_000 : false,
   });
 
   /** localStorage is unavailable on the server — never use snapshot as initialData or SSR and first paint diverge. */

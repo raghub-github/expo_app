@@ -752,8 +752,9 @@ export function getCurrentPageName(pathname: string): string {
     "/dashboard/super-admin/tracking-config": "Real-time tracking & geo-scoping",
     "/dashboard/super-admin/tracking-violations": "Geo-engine violations",
     "/dashboard/super-admin/rider-surge-management": "Rider surge management",
-    "/dashboard/super-admin/cxapp-home": "CX App Home",
-    "/dashboard/super-admin/customer-app-categories": "App Category",
+    "/dashboard/super-admin/cxapp-home": "Super Admin",
+    "/dashboard/super-admin/customer-app-categories": "Super Admin",
+    "/dashboard/super-admin/app-images": "Super Admin",
   };
   
   // Check exact matches first

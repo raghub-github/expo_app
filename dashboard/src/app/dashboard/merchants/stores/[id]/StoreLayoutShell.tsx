@@ -97,7 +97,8 @@ function StoreLayoutFallback({
   });
   const [isLoading, setIsLoading] = useState(!store);
   const isOrdersPage = pathname.includes("/orders");
-  const isFullHeightScrollPage = isOrdersPage || pathname.includes("/menu");
+  const isFullHeightScrollPage =
+    isOrdersPage || pathname.includes("/menu") || pathname.includes("/activity");
 
   useEffect(() => {
     if (store) return;
@@ -217,7 +218,8 @@ export function StoreLayoutShell({
   };
 
   const isOrdersPage = pathname.includes("/orders");
-  const isFullHeightScrollPage = isOrdersPage || pathname.includes("/menu");
+  const isFullHeightScrollPage =
+    isOrdersPage || pathname.includes("/menu") || pathname.includes("/activity");
   const numericStoreId = parseNumericStoreId(storeId);
 
   useEffect(() => {

@@ -23,6 +23,7 @@ import {
   BUTTON_RADIUS,
 } from "@/constants/theme";
 import type { ChildStore } from "@/context/AuthContext";
+import { canEnterMerchantApp, enterableStoresOf } from "@/lib/merchantStoreEntry";
 
 const LOGO_SIZE = 72;
 import { AppAssetImage } from "@/components/AppAssetImage";
@@ -38,11 +39,6 @@ function greetingForNow(date = new Date()): string {
   if (hour < 12) return "Good Morning";
   if (hour < 17) return "Good Afternoon";
   return "Good Evening";
-}
-
-function canEnterMerchantApp(store: ChildStore): boolean {
-  const status = String(store.approval_status || "").toUpperCase();
-  return status === "APPROVED" || status === "DELISTED";
 }
 
 function isOnboardingPending(store: ChildStore): boolean {
@@ -161,7 +157,7 @@ export default function PartnerHomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { partner, token, supabaseUserId, signOut, isAuthenticated } = useAuth();
-  const { setSelectedStore } = useSelectedStore();
+  const { setSelectedStore, selectedStore } = useSelectedStore();
   const { openPermissionGate } = useNotificationPermissionGate();
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
   const [accountSheetVisible, setAccountSheetVisible] = useState(false);
@@ -176,6 +172,12 @@ export default function PartnerHomeScreen() {
     await signOut();
     router.replace("/(auth)/welcome");
   };
+
+  useEffect(() => {
+    if (selectedStore) {
+      router.replace("/(tabs)");
+    }
+  }, [selectedStore, router]);
 
   // Prompt only when OS ?Allow notifications? is off. Once on, this is a no-op.
   useEffect(() => {
@@ -213,10 +215,18 @@ export default function PartnerHomeScreen() {
     return list.sort((a, b) => b.id - a.id);
   }, [partner, sortMode]);
 
-  /** Single child store ? skip this picker and enter that store (or continue onboarding). */
+  /** Single enterable outlet — skip picker and open it (or continue onboarding for the only draft). */
   const singleChildBypassRef = useRef(false);
   useEffect(() => {
     if (!partner || singleChildBypassRef.current) return;
+    const enterable = enterableStoresOf(partner.childStores);
+    if (enterable.length === 1) {
+      const only = enterable[0]!;
+      singleChildBypassRef.current = true;
+      setSelectedStore(only);
+      router.replace("/(tabs)");
+      return;
+    }
     if (partner.childStores.length !== 1) return;
     const only = partner.childStores[0];
     if (!only) return;
@@ -227,7 +237,7 @@ export default function PartnerHomeScreen() {
       router.replace("/(tabs)");
       return;
     }
-    // One incomplete child ? same as tapping the card (partner onboarding).
+    // One incomplete child — same as tapping the card (partner onboarding).
     void (async () => {
       if (!isAuthenticated || !token) return;
       try {
@@ -297,7 +307,8 @@ export default function PartnerHomeScreen() {
   }
 
   // Avoid flashing the picker while we auto-enter the only child store.
-  if (partner.childStores.length === 1) {
+  const enterableOnly = enterableStoresOf(partner.childStores);
+  if (enterableOnly.length === 1 || partner.childStores.length === 1) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator color={GatiMitraMerchant.primary} />

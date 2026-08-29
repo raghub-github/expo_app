@@ -9,9 +9,11 @@ import {
   Keyboard,
   type KeyboardEvent,
 } from "react-native";
+import { FullWindowOverlay } from "react-native-screens";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
+import { acquireMerchantChromeDim } from "@/lib/merchantChromeDim";
 
 /** Extra lift above keyboard so actions aren't clipped by suggestion/tool bars. */
 const KEYBOARD_CLEARANCE_PX = 36;
@@ -40,6 +42,11 @@ export function MerchantBottomSheetShell({
 }: Props) {
   const insets = useSafeAreaInsets();
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  useEffect(() => {
+    if (!visible) return;
+    return acquireMerchantChromeDim();
+  }, [visible]);
 
   useEffect(() => {
     if (!keyboardAware || !visible) {
@@ -104,10 +111,10 @@ export function MerchantBottomSheetShell({
   );
 
   const overlayBody = (
-    <>
+    <View style={styles.overlay}>
       <Pressable style={styles.dismissArea} onPress={onClose} accessibilityLabel="Close" />
       {sheet}
-    </>
+    </View>
   );
 
   return (
@@ -117,9 +124,14 @@ export function MerchantBottomSheetShell({
       animationType="slide"
       onRequestClose={onClose}
       statusBarTranslucent
+      presentationStyle="overFullScreen"
       {...(Platform.OS === "android" ? { navigationBarTranslucent: true } : null)}
     >
-      <View style={styles.overlay}>{overlayBody}</View>
+      {Platform.OS === "ios" ? (
+        <FullWindowOverlay>{overlayBody}</FullWindowOverlay>
+      ) : (
+        overlayBody
+      )}
     </Modal>
   );
 }
@@ -127,7 +139,7 @@ export function MerchantBottomSheetShell({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(15, 23, 42, 0.45)",
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
     justifyContent: "flex-end",
   },
   dismissArea: {

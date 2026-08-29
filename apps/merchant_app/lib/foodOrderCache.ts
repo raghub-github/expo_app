@@ -36,6 +36,16 @@ export function cacheFoodOrders(storeId: number, orders: ApiFoodOrder[]): void {
   }
 }
 
+export function getCachedFoodOrdersForStore(storeId: number): ApiFoodOrder[] {
+  if (!Number.isFinite(storeId) || storeId <= 0) return [];
+  const prefix = `${storeId}:`;
+  const out: ApiFoodOrder[] = [];
+  for (const [k, order] of cache) {
+    if (k.startsWith(prefix)) out.push(order);
+  }
+  return out;
+}
+
 /** Prefer store-scoped hit; otherwise any cached row for this food id. */
 export function getCachedFoodOrder(
   foodId: number,

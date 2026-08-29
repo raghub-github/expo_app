@@ -229,7 +229,9 @@ export function AuthProxyImage({
         setRenderUri(local);
         setFailed(false);
       } else if (needsAuthDownload(resolved)) {
-        setFailed(true);
+        // Proxy 302s to a signed R2 URL. expo-image follows that; FileSystem sometimes cannot.
+        setRenderUri(resolved);
+        setFailed(false);
       }
       setLoading(false);
     })();

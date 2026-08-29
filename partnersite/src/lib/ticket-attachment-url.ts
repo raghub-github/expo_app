@@ -15,8 +15,27 @@ export function getTicketAttachmentViewUrl(
   if (!rawUrlOrKey || typeof rawUrlOrKey !== "string") return "";
   const s = rawUrlOrKey.trim();
   if (!s) return "";
-  // Already a proxy URL
+  // Already a partnersite proxy URL
   if (s.startsWith("/api/attachments/proxy")) return s;
+  // Backend/mobile stores `/v1/attachments/proxy?key=...` — same query, partnersite path.
+  if (s.startsWith("/v1/attachments/proxy")) {
+    return `/api/attachments/proxy${s.slice("/v1/attachments/proxy".length)}`;
+  }
+  try {
+    const u = /^https?:\/\//i.test(s) ? new URL(s) : new URL(s, "http://local.invalid");
+    const key = u.searchParams.get("key");
+    if (key) {
+      let decoded = key;
+      try {
+        decoded = decodeURIComponent(key);
+      } catch {
+        /* keep */
+      }
+      return `/api/attachments/proxy?key=${encodeURIComponent(decoded)}`;
+    }
+  } catch {
+    /* fall through */
+  }
   // Stored as R2 key (no scheme) → use proxy by key
   if (!s.startsWith("http://") && !s.startsWith("https://")) {
     return `/api/attachments/proxy?key=${encodeURIComponent(s)}`;

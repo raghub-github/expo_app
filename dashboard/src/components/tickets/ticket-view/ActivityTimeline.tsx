@@ -166,6 +166,9 @@ function formatActionLabel(actionType: string): string {
     closed: "Ticket closed",
     resolution: "Resolved",
     closure: "Closed",
+    satisfaction_rating: "C&D-SAT rating",
+    csat: "CSAT rating",
+    dsat: "DSAT rating",
   };
   return labels[actionType] ?? actionType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }

@@ -546,8 +546,9 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/super-admin/offers-coupons/analytics": "Platform offer analytics",
   "/dashboard/super-admin/offers-coupons/new": "Create platform offer",
   "/dashboard/super-admin/offers-coupons/coupons/new": "Create checkout coupon",
-  "/dashboard/super-admin/cxapp-home": "CX App Home",
-  "/dashboard/super-admin/customer-app-categories": "App Category",
+  "/dashboard/super-admin/cxapp-home": "Super Admin",
+  "/dashboard/super-admin/customer-app-categories": "Super Admin",
+  "/dashboard/super-admin/app-images": "Super Admin",
   "/dashboard/super-admin/commission": "Commission Engine",
   "/dashboard/users": "User Management",
 };
@@ -1290,10 +1291,15 @@ function HeaderComponent() {
           <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
             <HeaderBackButton
               href={resolveSuperAdminBackHref(cleanPathname)}
-              ariaLabel="Back"
-              title="Back"
+              ariaLabel="Back to Super Admin"
+              title="Back to Super Admin"
+              label={pageName === "Super Admin" ? "Super Admin" : undefined}
             />
-            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+            {pageName !== "Super Admin" ? (
+              <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">
+                {pageName}
+              </h2>
+            ) : null}
           </div>
         ) : isStoreVerificationDetail ? (
           <div className="verification-typo flex min-w-0 items-center gap-2 sm:gap-2.5">

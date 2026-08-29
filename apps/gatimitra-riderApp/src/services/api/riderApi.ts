@@ -222,6 +222,7 @@ const EarningsSummarySchema = z.object({
   thisMonth: z.number(),
   hasBankAccount: z.boolean(),
   minWithdrawal: z.number().optional(),
+  maxWithdrawal: z.number().optional(),
   canWithdraw: z.boolean().optional(),
   isFrozen: z.boolean().optional(),
   freezeReason: z.string().nullable().optional(),

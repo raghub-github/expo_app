@@ -6,6 +6,7 @@ import { fetchMerchantAppAssets } from "@/services/appAssets.service";
 let assets: Record<string, AppAssetItem> = {};
 /** True only after a successful network fetch (not after a failed/timeout attempt). */
 let loaded = false;
+let fetchInflight: Promise<boolean> | null = null;
 const listeners = new Set<() => void>();
 
 function emit() {
@@ -75,7 +76,7 @@ export function useAppAssetSource(key: string) {
   return url ? { uri: url } : null;
 }
 
-/** Refetch CMS images (startup can time out before new uploads appear). */
+/** Force refresh CMS images (e.g. after super-admin upload). */
 export async function reloadMerchantAppAssets(): Promise<boolean> {
   try {
     const res = await fetchMerchantAppAssets();
@@ -84,6 +85,24 @@ export async function reloadMerchantAppAssets(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Single in-flight fetch — _layout + AppAssetsPrefetch must not stampede the API. */
+export async function ensureMerchantAppAssetsLoaded(): Promise<boolean> {
+  if (loaded) return true;
+  if (fetchInflight) return fetchInflight;
+  fetchInflight = (async () => {
+    try {
+      const res = await fetchMerchantAppAssets();
+      setAppAssets(res.assets ?? {});
+      return true;
+    } catch {
+      return false;
+    } finally {
+      fetchInflight = null;
+    }
+  })();
+  return fetchInflight;
 }
 
 /** Retry when the initial bootstrap fetch timed out or failed. */

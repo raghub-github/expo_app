@@ -45,6 +45,8 @@ export async function GET(
         today_earning: 0,
         yesterday_earning: 0,
         pending_withdrawal_total: 0,
+        in_process_withdrawal_total: 0,
+        withdrawable_balance: 0,
       };
     }
     return NextResponse.json({ success: true, ...summary });

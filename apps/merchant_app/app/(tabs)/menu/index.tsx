@@ -91,6 +91,8 @@ type CatalogSection = {
   key: string;
   categoryName: string;
   allInStock: boolean;
+  /** True only when every item in the category is OOS — drives full-category red border. */
+  allOutOfStock: boolean;
   outOfStockCount: number;
   totalItems: number;
   data: MenuItemRow[];
@@ -2255,10 +2257,13 @@ export default function MenuScreen() {
       const allInStock =
         (group.items?.length ?? 0) > 0 && group.items.every((i) => effectiveInStock(i));
       const outOfStockInGroup = group.items.filter((i) => !effectiveInStock(i)).length;
+      const allOutOfStock =
+        (group.items?.length ?? 0) > 0 && outOfStockInGroup === group.items.length;
       return {
         key: group.key,
         categoryName: group.categoryName,
         allInStock,
+        allOutOfStock,
         outOfStockCount: outOfStockInGroup,
         totalItems: group.items.length,
         data: isOpen ? group.items : [],
@@ -2272,6 +2277,11 @@ export default function MenuScreen() {
     const isOpen = openTreeGroups[key] ?? true;
     const allActive =
       visibleCombos.every((c) => effectiveComboInStock(c, comboDetails.get(c.id) ?? null, itemById));
+    const allCombosOutOfStock =
+      visibleCombos.length > 0 &&
+      visibleCombos.every(
+        (c) => !effectiveComboInStock(c, comboDetails.get(c.id) ?? null, itemById),
+      );
 
     const outOfStockCombos = visibleCombos.filter(
       (c) => !effectiveComboInStock(c, comboDetails.get(c.id) ?? null, itemById),
@@ -2279,7 +2289,7 @@ export default function MenuScreen() {
 
     return (
       <View
-        style={[styles.treeGroupCard, !allActive && styles.treeGroupCardOos]}
+        style={[styles.treeGroupCard, allCombosOutOfStock && styles.treeGroupCardOos]}
       >
         <CatalogCategoryHeader
           title="Combos"
@@ -2501,7 +2511,7 @@ export default function MenuScreen() {
             style={[
               styles.treeGroupCard,
               styles.treeGroupCardHeaderOnly,
-              !section.allInStock && styles.treeGroupCardOos,
+              section.allOutOfStock && styles.treeGroupCardOos,
             ]}
           >
             <CatalogCategoryHeader
@@ -2532,17 +2542,19 @@ export default function MenuScreen() {
         <View
           style={[
             styles.treeGroupCardFooter,
-            !section.allInStock && styles.treeGroupCardOos,
+            section.allOutOfStock && styles.treeGroupCardOos,
           ]}
         />
       )}
       renderItem={({ item, section }) => {
+        const itemOos = !effectiveInStock(item);
         if (viewMode === "card") {
           return (
             <View
               style={[
                 styles.treeGroupBody,
-                !section.allInStock && styles.treeGroupCardOos,
+                section.allOutOfStock && styles.treeGroupCardOos,
+                !section.allOutOfStock && itemOos && styles.treeItemOos,
               ]}
             >
               <MenuItemCard
@@ -2564,7 +2576,8 @@ export default function MenuScreen() {
           <View
             style={[
               styles.treeGroupBody,
-              !section.allInStock && styles.treeGroupCardOos,
+              section.allOutOfStock && styles.treeGroupCardOos,
+              !section.allOutOfStock && itemOos && styles.treeItemOos,
             ]}
           >
           <View style={[styles.treeRow, treeLocked && styles.treeRowLocked]}>
@@ -3794,6 +3807,10 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: CARD_RADIUS,
   },
   treeGroupCardOos: {
+    borderLeftWidth: 3,
+    borderLeftColor: GatiMitraMerchant.error,
+  },
+  treeItemOos: {
     borderLeftWidth: 3,
     borderLeftColor: GatiMitraMerchant.error,
   },

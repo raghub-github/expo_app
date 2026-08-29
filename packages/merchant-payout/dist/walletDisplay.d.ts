@@ -41,4 +41,21 @@ export declare function resolveLedgerCategoryLabel(entry: {
     category: string;
     metadata?: Record<string, unknown> | null;
 }): string;
+export type LedgerRowStatusBadge = {
+    label: "Settled" | "Pending" | "Hold" | "Rejected" | "Debited" | "Credit" | "Debit" | "Cancelled";
+    tone: "emerald" | "amber" | "yellow" | "red" | "slate";
+};
+/**
+ * Merchant-facing Status column: withdrawals use Pending / Hold / Settled / Debited / Rejected
+ * instead of generic Credit / Debit.
+ *
+ * The original HOLD_LOCK debit stays "Debited" after reject/fail — the return credit row is "Rejected".
+ */
+export declare function resolveLedgerRowStatusBadge(entry: {
+    direction?: string | null;
+    category?: string | null;
+    metadata?: Record<string, unknown> | null;
+}): LedgerRowStatusBadge;
+/** Remarks for the merchant-facing withdrawal request (HOLD_LOCK AVAILABLE debit) row. */
+export declare function resolveWithdrawalRequestDisplayDescription(entry: MerchantLedgerVisibilityEntry): string;
 //# sourceMappingURL=walletDisplay.d.ts.map

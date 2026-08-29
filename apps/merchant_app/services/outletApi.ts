@@ -63,6 +63,8 @@ export type OutletInfo = {
   logo_url: string | null;
   /** Banner: from child store only (merchant_stores.banner_url). Each store has its own banner. */
   banner_url: string | null;
+  /** Up to 5 gallery images (proxy URLs), same column as partnersite. */
+  gallery_images?: string[];
   /** Logo: from parent only (merchant_parents.store_logo). All child stores under same parent share this logo. Use this for UI; do not use store logo_url for display. */
   parent_logo_url?: string | null;
   cuisine_types: string[];
@@ -93,6 +95,7 @@ export type OutletUpdateBody = Partial<{
   longitude: number | null;
   logo_url: string | null;
   banner_url: string | null;
+  gallery_images: string[];
   cuisine_types: string[];
   food_categories: string[];
   min_order_amount: number;
@@ -211,6 +214,47 @@ export async function removeStoreLogo(storeId: number, token: string): Promise<v
     throw new Error((err as any).error || (err as any).message || "Failed to remove store photo");
   }
   invalidateOutletCache(storeId);
+}
+
+export async function uploadGalleryImage(
+  storeId: number,
+  token: string,
+  file: { uri: string; type: string; name: string },
+  slot?: number,
+): Promise<{ image_url: string; gallery_images: string[]; slot: number }> {
+  const formData = new FormData();
+  formData.append("file", { uri: file.uri, type: file.type, name: file.name } as any);
+  const qs =
+    slot != null && Number.isInteger(slot) ? `?slot=${encodeURIComponent(String(slot))}` : "";
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/upload-gallery-image${qs}`,
+    token,
+    { method: "POST", body: formData },
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error || (err as any).message || "Failed to upload gallery image");
+  }
+  const data = (await res.json()) as {
+    image_url?: string;
+    gallery_images?: string[];
+    slot?: number;
+  };
+  invalidateOutletCache(storeId);
+  return {
+    image_url: data.image_url ?? "",
+    gallery_images: Array.isArray(data.gallery_images) ? data.gallery_images : [],
+    slot: typeof data.slot === "number" ? data.slot : slot ?? 0,
+  };
+}
+
+export async function updateGalleryImages(
+  storeId: number,
+  galleryImages: string[],
+  token: string,
+): Promise<void> {
+  const cleaned = galleryImages.filter((g) => typeof g === "string" && g.trim()).slice(0, 5);
+  await updateOutlet(storeId, { gallery_images: cleaned }, token);
 }
 
 export async function getOutlet(

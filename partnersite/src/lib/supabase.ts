@@ -24,6 +24,11 @@ const safeAnonKey = supabaseAnonKey || 'placeholder-anon-key';
 // Client-side Supabase client using @supabase/ssr for proper cookie handling.
 export const supabase = createBrowserClient(safeUrl, safeAnonKey, {
   global: { fetch: browserFetch },
+  auth: {
+    detectSessionInUrl: false,
+    persistSession: true,
+    autoRefreshToken: true,
+  },
 });
 
 // Service-key usage is intentionally not exposed from the frontend bundle;

@@ -51,8 +51,8 @@ function buildDualLineChart(
 function donutSegments(summary: { paid: number; in_process: number; pending: number; failed: number }) {
   const parts = [
     { value: summary.paid, color: '#10b981' },
-    { value: summary.in_process, color: '#f97316' },
-    { value: summary.pending, color: '#ef4444' },
+    { value: summary.pending, color: '#f59e0b' },
+    { value: summary.in_process, color: '#8b5cf6' },
     { value: summary.failed, color: '#a855f7' },
   ];
   const total = parts.reduce((s, p) => s + p.value, 0);
@@ -294,8 +294,8 @@ export function PaymentsOverviewCharts({
             {(
               [
                 ['Paid', payoutSummary.paid, 'bg-emerald-500'],
-                ['In Process', payoutSummary.in_process, 'bg-orange-500'],
-                ['Pending', payoutSummary.pending, 'bg-red-500'],
+                ['Pending', payoutSummary.pending, 'bg-amber-500'],
+                ['Hold', payoutSummary.in_process, 'bg-violet-500'],
                 ['Failed', payoutSummary.failed, 'bg-purple-500'],
               ] as const
             ).map(([label, amt, dot]) => (

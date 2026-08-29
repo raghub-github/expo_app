@@ -18,6 +18,7 @@ import {
   ClipboardList,
   FileUp,
   Bell,
+  Star,
 } from "lucide-react";
 import {
   getCurrentDashboard,
@@ -440,7 +441,11 @@ export function RightSidebar({
 
   const onAgentActivityPage = cleanPathname === AGENT_ACTIVITY_PATH;
   const onTicketsHelpdeskDashboard = cleanPathname === TICKETS_HELPDESK_DASHBOARD_PATH;
-  const onTicketsHubSectionsPage = onAgentActivityPage || onTicketsHelpdeskDashboard;
+  const onCsatAnalysisPage =
+    cleanPathname === "/dashboard/tickets/csat" ||
+    cleanPathname.startsWith("/dashboard/tickets/csat/");
+  const onTicketsHubSectionsPage =
+    onAgentActivityPage || onTicketsHelpdeskDashboard || onCsatAnalysisPage;
   const agentActivitySection = searchParams.get("section") === "automation" ? "automation" : "activity";
   const onQueueHome =
     cleanPathname === TICKETS_QUEUE_HOME_PATH ||
@@ -836,6 +841,16 @@ export function RightSidebar({
                   >
                     <LineChart className="h-4 w-4 shrink-0" aria-hidden />
                     Activity track
+                  </Link>
+                  <Link
+                    href="/dashboard/tickets/csat"
+                    scroll={false}
+                    className={`flex cursor-pointer items-center gap-2 rounded-[10px] px-2 py-2 text-xs font-medium transition-colors ${
+                      onCsatAnalysisPage ? rsbNavActive : rsbNavIdle
+                    }`}
+                  >
+                    <Star className="h-4 w-4 shrink-0" aria-hidden />
+                    C&D SAT Analysis
                   </Link>
                 </nav>
               </div>

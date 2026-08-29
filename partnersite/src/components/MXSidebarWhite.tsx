@@ -651,7 +651,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
     <>
       {/* Desktop: fixed sidebar — hidden on viewport < 768px so never visible on mobile load */}
       <aside
-        className={`hidden md:flex flex-col fixed z-40 shrink-0 transition-[width] duration-[220ms] ease-in-out inset-y-0 left-0 h-screen ${effectiveCollapsed ? 'w-16' : 'w-56'} ${
+        className={`hidden md:flex flex-col fixed z-[10100] shrink-0 transition-[width] duration-[220ms] ease-in-out inset-y-0 left-0 h-screen ${effectiveCollapsed ? 'w-16' : 'w-56'} ${
           partnerShell && !isRight
             ? 'dark-sidebar-chrome overflow-hidden'
             : `bg-white ${isRight ? 'right-0 border-l border-gray-200 shadow-lg' : 'left-0 border-r border-gray-200 shadow-lg'}`

@@ -3,6 +3,28 @@
  * Use clearSupabaseClientSession() on login page load to avoid stale sessions conflicting with OAuth.
  */
 
+function expireCookie(name: string) {
+  if (typeof document === 'undefined') return;
+  document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+  document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=${window.location.hostname}`;
+}
+
+/** Drop leftover PKCE verifiers so a new Google sign-in does not collide with a stale flow. */
+export function clearPkceVerifierCookies() {
+  if (typeof document === 'undefined') return;
+  try {
+    document.cookie.split(';').forEach((cookie) => {
+      const eqPos = cookie.indexOf('=');
+      const name = (eqPos > -1 ? cookie.slice(0, eqPos) : cookie).trim();
+      if (name.startsWith('sb-') && name.includes('code-verifier')) {
+        expireCookie(name);
+      }
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Clear only Supabase client keys (sb-*) so auth_redirect and other app state are preserved. */
 export function clearSupabaseClientSession() {
   if (typeof window === 'undefined') return;
@@ -13,6 +35,7 @@ export function clearSupabaseClientSession() {
         if (key.startsWith('sb-')) store.removeItem(key);
       });
     });
+    clearPkceVerifierCookies();
   } catch (error) {
     console.error('[clear-auth-storage] Error clearing Supabase session:', error);
   }

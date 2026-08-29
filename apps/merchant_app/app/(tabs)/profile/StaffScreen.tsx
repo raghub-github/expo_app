@@ -20,6 +20,7 @@ import {
   logoutUserSessions,
   type UserDeviceSession,
 } from "@/services/userSessionsApi";
+import { getOrCreateMerchantDeviceId } from "@/lib/merchantDeviceId";
 
 function parsePgTimestamp(iso: string): Date | null {
   if (!iso) return null;
@@ -104,6 +105,7 @@ export default function StaffScreen() {
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [sessions, setSessions] = useState<StoreSession[]>([]);
   const [userSessions, setUserSessions] = useState<UserDeviceSession[]>([]);
+  const [currentDeviceId, setCurrentDeviceId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,15 +120,17 @@ export default function StaffScreen() {
     }
     setLoading(true);
     try {
-      const [staffList, storeSess, userSess] = await Promise.all([
+      const [staffList, storeSess, userSess, deviceId] = await Promise.all([
         getStaff(storeId, token),
         // keep store sessions for future use; currently we surface account-level sessions in UI
         Promise.resolve<StoreSession[]>([]),
         getUserSessions(token),
+        getOrCreateMerchantDeviceId().catch(() => null),
       ]);
       setStaff(staffList);
       setSessions(storeSess);
       setUserSessions(userSess);
+      setCurrentDeviceId(deviceId);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load staff details");
@@ -222,11 +226,19 @@ export default function StaffScreen() {
     );
   };
 
-  const handleLogoutSession = async (sessionId: number) => {
+  const handleLogoutSession = async (sess: UserDeviceSession) => {
     if (!token) return;
+    const isCurrent =
+      !!sess.device_id &&
+      !!currentDeviceId &&
+      String(sess.device_id) === String(currentDeviceId);
     try {
-      await logoutUserSessions(token, [sessionId]);
-      setUserSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      await logoutUserSessions(token, [sess.id]);
+      setUserSessions((prev) => prev.filter((s) => s.id !== sess.id));
+      if (isCurrent) {
+        await signOut();
+        router.replace("/(auth)/login");
+      }
     } catch (e) {
       Alert.alert("Failed", e instanceof Error ? e.message : "Could not logout device.");
     }
@@ -240,7 +252,7 @@ export default function StaffScreen() {
       setUserSessions([]);
       // Clear local auth state and return to auth flow
       await signOut();
-      router.replace("/");
+      router.replace("/(auth)/login");
     } catch (e) {
       Alert.alert("Failed", e instanceof Error ? e.message : "Could not logout all devices.");
     }
@@ -440,7 +452,7 @@ export default function StaffScreen() {
                             {
                               text: "Logout",
                               style: "destructive",
-                              onPress: () => handleLogoutSession(sess.id),
+                              onPress: () => handleLogoutSession(sess),
                             },
                           ],
                           { cancelable: true },

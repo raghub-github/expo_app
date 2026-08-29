@@ -237,6 +237,22 @@ select option {
   }
 }
 
+/** C&D SAT — filter Apply / Clear feedback on main content */
+@keyframes csat-filter-slide-up {
+  from {
+    opacity: 0.35;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.csat-filter-slide-up {
+  animation: csat-filter-slide-up 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 @keyframes store-closed-marquee {
   0% {
     transform: translateX(0);

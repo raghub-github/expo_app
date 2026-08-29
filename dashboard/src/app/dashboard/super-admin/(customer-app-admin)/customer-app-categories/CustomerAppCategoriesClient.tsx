@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  LayoutGrid,
   Pencil,
   Plus,
   X,
@@ -571,72 +570,71 @@ export default function CustomerAppCategoriesClient() {
 
   return (
     <div className="w-full min-w-0 max-w-none space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="p-1.5 rounded-lg bg-cyan-50 text-cyan-600 shrink-0 mt-0.5">
-            <LayoutGrid className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-xl font-semibold text-gray-900 leading-tight">Customer app categories</h1>
-            <p className="text-xs text-gray-500 mt-0.5">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold tracking-tight text-slate-900 sm:text-xl">
+              Customer app categories
+            </h1>
+            <p className="mt-0.5 text-xs text-slate-500 sm:text-sm">
               Tiles for the mobile app — images, active/inactive, store vertical.
             </p>
           </div>
-        </div>
-        <CxAppHomeSectionToggle />
-      </div>
-
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between xl:gap-6">
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-2 text-xs font-medium text-gray-700">
-            <Store className="h-3.5 w-3.5 text-cyan-600 shrink-0" />
-            <span className="whitespace-nowrap">Store vertical</span>
-            <select
-              value={storeType}
-              onChange={(e) => setStoreType(e.target.value as UserAppCategoryStoreType)}
-              className="rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs min-h-[32px] focus:ring-1 focus:ring-cyan-500"
-            >
-              {USER_APP_CATEGORY_STORE_TYPES.map((st) => (
-                <option key={st} value={st}>
-                  {st}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center gap-2 text-xs font-medium text-gray-700">
-            <span className="text-gray-500 whitespace-nowrap">Status</span>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-              className="rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs min-h-[32px] focus:ring-1 focus:ring-cyan-500"
-            >
-              <option value="all">All</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
-          </label>
+          <CxAppHomeSectionToggle />
         </div>
 
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-3 w-full min-w-0 xl:w-auto xl:shrink-0">
-          <div className="relative w-full sm:w-56 md:w-60 max-w-[min(100%,16rem)] shrink-0">
-            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400 pointer-events-none" />
-            <input
-              type="search"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by name…"
-              className="w-full rounded-md border border-gray-300 bg-white pl-9 pr-2.5 py-1.5 text-xs min-h-[32px] focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500"
-              autoComplete="off"
-            />
+        <div className="mt-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
+              <Store className="h-3.5 w-3.5 shrink-0 text-teal-600" />
+              <span className="whitespace-nowrap">Store vertical</span>
+              <select
+                value={storeType}
+                onChange={(e) => setStoreType(e.target.value as UserAppCategoryStoreType)}
+                className="min-h-[36px] rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+              >
+                {USER_APP_CATEGORY_STORE_TYPES.map((st) => (
+                  <option key={st} value={st}>
+                    {st}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
+              <span className="whitespace-nowrap text-slate-500">Status</span>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+                className="min-h-[36px] rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+              >
+                <option value="all">All</option>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </label>
           </div>
-          <button
-            type="button"
-            onClick={openCreate}
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md bg-cyan-600 text-white text-xs font-medium hover:bg-cyan-700 shrink-0 min-h-[32px] w-full sm:w-auto"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Add category
-          </button>
+
+          <div className="flex w-full min-w-0 flex-col gap-3 sm:flex-row sm:items-center xl:w-auto xl:shrink-0">
+            <div className="relative w-full max-w-[min(100%,16rem)] shrink-0 sm:w-56 md:w-60">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search by name…"
+                className="min-h-[36px] w-full rounded-lg border border-slate-200 bg-white py-1.5 pl-9 pr-2.5 text-xs focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                autoComplete="off"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={openCreate}
+              className="inline-flex min-h-[36px] w-full shrink-0 items-center justify-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 sm:w-auto"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add category
+            </button>
+          </div>
         </div>
       </div>
 
@@ -663,15 +661,15 @@ export default function CustomerAppCategoriesClient() {
         <div className="text-xs text-cyan-900 bg-cyan-50 border border-cyan-100 rounded-md px-3 py-2">{info}</div>
       )}
 
-      <div className="rounded-lg border border-cyan-100 bg-cyan-50/40 p-4 shadow-sm">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold text-gray-900">All tab (fixed first tile)</h2>
-            <p className="mt-0.5 text-xs text-gray-500">
+            <h2 className="text-sm font-semibold text-slate-900">All tab (fixed first tile)</h2>
+            <p className="mt-0.5 text-xs text-slate-500">
               Shown first in category tabs on grid-first food home. Image appears for every user.
             </p>
           </div>
-          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-cyan-800 ring-1 ring-cyan-200">
+          <span className="rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-teal-800 ring-1 ring-slate-200">
             Top tile
           </span>
         </div>
@@ -702,7 +700,7 @@ export default function CustomerAppCategoriesClient() {
                     key={allTabImageUrl}
                     src={allTabImageUrl}
                     alt=""
-                    className="h-12 w-12 rounded-full border-2 border-cyan-500 object-cover bg-white"
+                    className="h-12 w-12 rounded-full border-2 border-teal-500 object-cover bg-white"
                   />
                   {allTabUploading ? (
                     <span className="absolute inset-0 flex items-center justify-center rounded-full bg-white/60">
@@ -711,7 +709,7 @@ export default function CustomerAppCategoriesClient() {
                   ) : null}
                 </span>
               ) : (
-                <div className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-dashed border-cyan-300 bg-white text-cyan-600">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-dashed border-slate-300 bg-slate-50 text-teal-600">
                   {allTabUploading ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
@@ -735,7 +733,7 @@ export default function CustomerAppCategoriesClient() {
             type="button"
             disabled={allTabSaving || allTabUploading}
             onClick={() => void saveAllTabMeta({ label: allTabLabel.trim() || "All" })}
-            className="inline-flex items-center justify-center rounded-md bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-700 disabled:opacity-50 min-h-[32px]"
+            className="inline-flex min-h-[36px] items-center justify-center rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50"
           >
             {allTabSaving ? "Saving…" : "Save All tab"}
           </button>

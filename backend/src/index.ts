@@ -603,6 +603,36 @@ app.post<{
   }
 });
 
+app.post<{ Params: { payoutRequestId: string } }>(
+  "/v1/internal/merchant/payout-requests/:payoutRequestId/withdrawal-completed-email",
+  async (req, reply) => {
+    const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+    if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    const payoutRequestId = Number((req.params as { payoutRequestId: string }).payoutRequestId);
+    if (!Number.isInteger(payoutRequestId) || payoutRequestId < 1) {
+      return reply.code(400).send({ error: "invalid_payout_request_id" });
+    }
+    try {
+      const { notifyMerchantWithdrawalCompletedEmail } = await import(
+        "./lib/merchant-withdrawal-request-email.js"
+      );
+      const result = await notifyMerchantWithdrawalCompletedEmail(payoutRequestId);
+      if (result.skipped) {
+        return reply.code(200).send({ success: true, skipped: true, reason: result.error ?? "skipped" });
+      }
+      if (!result.ok) {
+        return reply.code(502).send({ success: false, error: result.error ?? "email_failed" });
+      }
+      return reply.send({ success: true });
+    } catch (e) {
+      req.log.error({ err: e, payoutRequestId }, "merchant_withdrawal_completed_email_failed");
+      return reply.code(500).send({ error: "email_dispatch_failed" });
+    }
+  },
+);
+
 await app.register(authRoutes, { prefix: "/v1/auth" });
 await app.register(riderRoutes, { prefix: "/v1/rider" });
 await app.register(onboardingRoutes, { prefix: "/v1/onboarding" });

@@ -1,7 +1,7 @@
 import type { WalletSummary } from '@/hooks/useMerchantApi';
 
-const WALLET_SESSION_PREFIX = 'mx_dashboard_wallet_v2:';
-const WALLET_LOCAL_PREFIX = 'mx_dashboard_wallet_v2_ls:';
+const WALLET_SESSION_PREFIX = 'mx_dashboard_wallet_v3:';
+const WALLET_LOCAL_PREFIX = 'mx_dashboard_wallet_v3_ls:';
 const DELIVERY_STATS_SESSION_PREFIX = 'mx_dashboard_delivery_stats_v1:';
 const DELIVERY_STATS_LOCAL_PREFIX = 'mx_dashboard_delivery_stats_v1_ls:';
 const STORE_OVERVIEW_SESSION_PREFIX = 'mx_dashboard_store_overview_v1:';
@@ -176,6 +176,14 @@ export function warmDashboardWalletCache(storeId: string): void {
         isFrozen: data.isFrozen === true || String(data.status ?? "").toUpperCase() === "FROZEN",
         freezeReason: data.freezeReason ?? null,
         frozenAt: data.frozenAt ?? null,
+        min_withdrawal_amount:
+          Number.isFinite(Number(data.min_withdrawal_amount)) && Number(data.min_withdrawal_amount) > 0
+            ? Number(data.min_withdrawal_amount)
+            : undefined,
+        max_withdrawal_amount:
+          Number.isFinite(Number(data.max_withdrawal_amount)) && Number(data.max_withdrawal_amount) > 0
+            ? Number(data.max_withdrawal_amount)
+            : undefined,
       });
     })
     .catch(() => {

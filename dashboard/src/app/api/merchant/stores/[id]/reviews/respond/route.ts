@@ -74,10 +74,10 @@ export async function POST(
         { status: 404 },
       );
     }
-    if (msg === "FORBIDDEN") {
+    if (msg === "REPLY_CAP") {
       return NextResponse.json(
-        { success: false, error: "You don't have permission to respond to this review." },
-        { status: 403 },
+        { success: false, error: "Maximum replies reached for this review." },
+        { status: 409 },
       );
     }
     if (msg === "Failed to save response.") {

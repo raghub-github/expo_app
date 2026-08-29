@@ -151,6 +151,8 @@ export const WalletSummarySchema = z.object({
   isFrozen: z.boolean().optional(),
   freezeReason: z.string().nullable().optional(),
   frozenAt: z.string().nullable().optional(),
+  min_withdrawal_amount: z.number().optional(),
+  max_withdrawal_amount: z.number().optional(),
 });
 export type WalletSummary = z.infer<typeof WalletSummarySchema>;
 
@@ -242,6 +244,7 @@ export type ReconciliationReport = z.infer<typeof ReconciliationReportSchema>;
 
 export const WALLET_CONSTANTS = {
   MIN_WITHDRAWAL_AMOUNT: 100,
+  MAX_WITHDRAWAL_AMOUNT: 100_000,
   MAX_PENDING_WITHDRAWALS: 3,
   DEFAULT_REFUND_WINDOW_DAYS: 3,
   MAX_LEDGER_PAGE_SIZE: 100,

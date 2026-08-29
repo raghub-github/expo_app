@@ -2,7 +2,7 @@
 
 import { CxAppHomeClient } from "./CxAppHomeClient";
 
-/** List UI is owned by the shared layout twin shell; keep a null page for the route. */
+/** App Router page slot — list chrome is in the shared customer-app-admin layout. */
 export default function CxAppHomePage() {
   return <CxAppHomeClient initialStates={[]} />;
 }

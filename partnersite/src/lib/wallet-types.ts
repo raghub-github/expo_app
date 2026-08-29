@@ -36,6 +36,8 @@ export interface WalletSummary {
   isFrozen?: boolean;
   freezeReason?: string | null;
   frozenAt?: string | null;
+  min_withdrawal_amount?: number;
+  max_withdrawal_amount?: number;
 }
 
 export interface LedgerEntry {

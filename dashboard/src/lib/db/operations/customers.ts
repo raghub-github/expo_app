@@ -55,6 +55,8 @@ export interface CustomerAddressRow {
   isDefault: boolean;
   landmark: string | null;
   addressAuto: string | null;
+  /** Optional door / building photo uploaded by the customer. */
+  deliveryDoorImageUrl: string | null;
 }
 
 export interface CustomerWalletSummary {
@@ -164,6 +166,10 @@ function mapCustomerAddressRow(r: Record<string, unknown>): CustomerAddressRow {
     isDefault: def === true || def === "t",
     landmark: r.landmark != null ? String(r.landmark) : null,
     addressAuto: r.address_auto != null ? String(r.address_auto) : null,
+    deliveryDoorImageUrl:
+      r.delivery_door_image_url != null && String(r.delivery_door_image_url).trim() !== ""
+        ? String(r.delivery_door_image_url).trim()
+        : null,
   };
 }
 
@@ -273,7 +279,8 @@ export async function getCustomerAddresses(
       country,
       is_default,
       landmark,
-      address_auto
+      address_auto,
+      delivery_door_image_url
     FROM customer_addresses
     WHERE customer_id = ${customerDbId}
     AND deleted_at IS NULL

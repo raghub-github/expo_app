@@ -664,7 +664,8 @@ export function PayoutDetailClient({
                           bold
                           green
                         />
-                        {(settlement.withdrawalReversalCredits ?? 0) > 0 ? (
+                        {(status === "RETURNED" || status === "FAILED") &&
+                        (settlement.withdrawalReversalCredits ?? 0) > 0 ? (
                           <SettlementRow
                             label="Withdrawal returned (not payout)"
                             amount={settlement.withdrawalReversalCredits ?? 0}

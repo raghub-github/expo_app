@@ -560,22 +560,22 @@ export async function listPayoutCycles(
         order_count: settlement
           ? settlement.order_count
           : n(row.delivered_orders) + n(row.rejected_orders),
-        // The money returned *for this cycle* is the withdrawal that closed it. The ledger
-        // window sum can hold a neighbouring cycle's reversal too, so it is not per-cycle.
+        // Only when this cycle closed as a reject/fail — never for COMPLETED/SETTLED.
         withdrawal_returned: roundMoney(
-          closedAsReturn && n(row.request_amount) > 0
-            ? n(row.request_amount)
-            : status === "CLOSED"
-              ? n(row.withdrawal_reversal_credits)
-              : n(settlement?.withdrawal_reversal_credits),
+          closedAsReturn
+            ? n(row.request_amount) > 0
+              ? n(row.request_amount)
+              : n(row.withdrawal_reversal_credits)
+            : 0,
         ),
         withdrawal_amount: roundMoney(n(row.request_amount)),
-        close_note:
-          row.rejection_reason != null && String(row.rejection_reason).trim() !== ""
+        close_note: closedAsReturn
+          ? row.rejection_reason != null && String(row.rejection_reason).trim() !== ""
             ? String(row.rejection_reason).trim()
             : row.failure_reason != null && String(row.failure_reason).trim() !== ""
               ? String(row.failure_reason).trim()
-              : null,
+              : null
+          : null,
         settlement,
       });
     }

@@ -1,4 +1,5 @@
 import { getSql } from "../client";
+import { backendFetch } from "@/lib/notif-backend";
 
 export type PaymentConfigBundle = {
   globalSettings: Record<string, unknown>[];
@@ -52,6 +53,7 @@ export async function listMerchantPayouts(limit = 200) {
         pr.pg_transaction_id,
         pr.utr_reference,
         pr.rejection_reason,
+        ppa.approval_notes AS hold_reason,
         pr.requested_at,
         pr.approved_at,
         pr.completed_at,
@@ -62,6 +64,8 @@ export async function listMerchantPayouts(limit = 200) {
       FROM merchant_payout_requests pr
       JOIN merchant_wallet w ON w.id = pr.wallet_id
       JOIN merchant_stores ms ON ms.id = w.merchant_store_id
+      LEFT JOIN payment_payout_approvals ppa
+        ON ppa.payout_request_id = pr.id AND ppa.payout_type = 'MERCHANT'
       ORDER BY pr.requested_at DESC
       LIMIT ${limit}
     `;
@@ -142,19 +146,34 @@ export async function completeMerchantPayoutWithPgTxn(
   }
 
   const pg = pgTransactionId.trim();
-  if (!pg) throw new Error("PG transaction ID is required");
+  const utr = (utrReference ?? "").trim();
+  const txnRef = pg || utr;
+  if (!txnRef) throw new Error("PG transaction ID or UTR is required");
   const [row] = await sql`
     SELECT payment_complete_merchant_payout(
       ${payoutId}::bigint,
-      ${pg},
+      ${txnRef},
       ${systemUserId}::bigint,
-      ${utrReference?.trim() || null}
+      ${utr || null}
     )::jsonb AS result
   `;
-  return (row as { result?: Record<string, unknown> })?.result;
+  const result = (row as { result?: Record<string, unknown> })?.result;
+  void backendFetch(
+    `/v1/internal/merchant/payout-requests/${payoutId}/withdrawal-completed-email`,
+    { method: "POST", body: {} },
+  ).catch(() => undefined);
+  return result;
 }
 
-export async function approvePayoutRpc(payoutId: number, systemUserId: number) {
+export async function approvePayoutRpc(
+  payoutId: number,
+  systemUserId: number,
+  reason: string,
+) {
+  const notes = reason.trim();
+  if (notes.length < 3) {
+    throw new Error("Hold reason is required (min 3 characters)");
+  }
   const sql = getSql();
   let payoutType = "";
   try {
@@ -169,10 +188,10 @@ export async function approvePayoutRpc(payoutId: number, systemUserId: number) {
   }
   const [wr] = await sql`SELECT id FROM withdrawal_requests WHERE id = ${payoutId} LIMIT 1`;
   if (payoutType === "RIDER" || wr) {
-    return approveRiderWithdrawal(payoutId, systemUserId);
+    return approveRiderWithdrawal(payoutId, systemUserId, notes);
   }
   const [row] = await sql`
-    SELECT payment_approve_merchant_payout(${payoutId}::bigint, ${systemUserId}::bigint, NULL::text)::jsonb AS result
+    SELECT payment_approve_merchant_payout(${payoutId}::bigint, ${systemUserId}::bigint, ${notes})::jsonb AS result
   `;
   return (row as { result?: Record<string, unknown> })?.result;
 }
@@ -212,6 +231,7 @@ export async function listRiderPayouts(limit = 200) {
         wr.status,
         wr.transaction_id AS pg_transaction_id,
         wr.failure_reason AS rejection_reason,
+        ppa.approval_notes AS hold_reason,
         wr.created_at AS requested_at,
         wr.processed_at AS completed_at,
         wr.account_holder_name,
@@ -221,6 +241,8 @@ export async function listRiderPayouts(limit = 200) {
         r.mobile AS rider_mobile
       FROM withdrawal_requests wr
       JOIN riders r ON r.id = wr.rider_id
+      LEFT JOIN payment_payout_approvals ppa
+        ON ppa.payout_request_id = wr.id AND ppa.payout_type = 'RIDER'
       ORDER BY wr.created_at DESC
       LIMIT ${limit}
     `;
@@ -231,14 +253,23 @@ export async function listRiderPayouts(limit = 200) {
   }
 }
 
-export async function approveRiderWithdrawal(withdrawalId: number, systemUserId: number) {
+export async function approveRiderWithdrawal(
+  withdrawalId: number,
+  systemUserId: number,
+  holdReason: string,
+) {
   const sql = getSql();
+  const notes = holdReason.trim();
+  if (notes.length < 3) {
+    throw new Error("Hold reason is required (min 3 characters)");
+  }
   const [row] = await sql`
-    SELECT status FROM withdrawal_requests WHERE id = ${withdrawalId} LIMIT 1
+    SELECT status, amount FROM withdrawal_requests WHERE id = ${withdrawalId} LIMIT 1
   `;
   if (!row) throw new Error("Withdrawal not found");
   const status = String((row as { status?: string }).status ?? "");
   if (status !== "pending") throw new Error(`Cannot approve withdrawal in status: ${status}`);
+  const amount = Number((row as { amount?: unknown }).amount ?? 0);
 
   await sql`
     UPDATE withdrawal_requests
@@ -248,12 +279,21 @@ export async function approveRiderWithdrawal(withdrawalId: number, systemUserId:
 
   try {
     await sql`
-      UPDATE payment_payout_approvals
-      SET status = 'APPROVED', approved_by_system_user_id = ${systemUserId}, updated_at = NOW()
-      WHERE payout_request_id = ${withdrawalId} AND payout_type = 'RIDER'
+      INSERT INTO payment_payout_approvals (
+        payout_request_id, payout_type, status, amount, net_amount,
+        approved_by_system_user_id, approval_notes
+      ) VALUES (
+        ${withdrawalId}, 'RIDER', 'APPROVED', ${amount}, ${amount},
+        ${systemUserId}, ${notes}
+      )
+      ON CONFLICT (payout_request_id, payout_type) DO UPDATE
+      SET status = 'APPROVED',
+          approved_by_system_user_id = ${systemUserId},
+          approval_notes = ${notes},
+          updated_at = NOW()
     `;
   } catch {
-    /* optional */
+    /* optional table */
   }
   return { ok: true };
 }
@@ -265,7 +305,9 @@ export async function completeRiderWithdrawal(
   utrReference?: string | null,
 ) {
   const pg = pgTransactionId.trim();
-  if (!pg) throw new Error("PG transaction ID is required");
+  const utr = (utrReference ?? "").trim();
+  const txnRef = pg || utr;
+  if (!txnRef) throw new Error("PG transaction ID or UTR is required");
   const sql = getSql();
   const [row] = await sql`
     SELECT status FROM withdrawal_requests WHERE id = ${withdrawalId} LIMIT 1
@@ -279,7 +321,7 @@ export async function completeRiderWithdrawal(
 
   await sql`
     UPDATE withdrawal_requests
-    SET status = 'completed', transaction_id = ${pg}, processed_at = NOW(), updated_at = NOW()
+    SET status = 'completed', transaction_id = ${txnRef}, processed_at = NOW(), updated_at = NOW()
     WHERE id = ${withdrawalId}
   `;
 
@@ -288,8 +330,8 @@ export async function completeRiderWithdrawal(
       UPDATE payment_payout_approvals
       SET
         status = 'COMPLETED',
-        gateway_payout_id = ${pg},
-        utr_reference = ${utrReference?.trim() || null},
+        gateway_payout_id = ${txnRef},
+        utr_reference = ${utr || null},
         approved_by_system_user_id = COALESCE(approved_by_system_user_id, ${systemUserId}),
         updated_at = NOW()
       WHERE payout_request_id = ${withdrawalId} AND payout_type = 'RIDER'

@@ -15,5 +15,13 @@ export function createClient() {
       // Local http://localhost must not set Secure or PKCE verifier cookies are dropped.
       secure: typeof window !== "undefined" ? window.location.protocol === "https:" : false,
     },
+    auth: {
+      // Callback page exchanges `?code=` explicitly. Auto-detect consumes the PKCE
+      // verifier before /api/auth/callback can, which surfaces as
+      // "invalid flow state, no valid flow state found" on the first Google sign-in.
+      detectSessionInUrl: false,
+      persistSession: true,
+      autoRefreshToken: true,
+    },
   });
 }

@@ -2,13 +2,31 @@
  * GET /api/merchant/stores/[id]/ledger
  * Query: limit, offset, from, to, direction, category
  * Returns { success, entries: LedgerEntry[], total }.
+ * Merchant-facing parity with partnersite wallet ledger (visibility + enrichment).
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
-import { queryLedger } from "@/lib/db/operations/merchant-wallet";
+import {
+  queryLedger,
+  getPayoutStatusesForLedger,
+  getPayoutLinksByHoldLedgerIds,
+  getLedgerBucketSnapshotsForWallet,
+  getPgTransactionIdsForPayoutRequests,
+  enrichLedgerFormattedOrderIds,
+} from "@/lib/db/operations/merchant-wallet";
+import {
+  enrichLedgerEntriesWithHoldPayoutLinks,
+  enrichLedgerEntriesWithPayoutStatus,
+  isMerchantVisibleLedgerEntry,
+} from "@/lib/merchant-ledger-visibility";
+import {
+  applyWithdrawableBalanceToLedgerEntries,
+  buildWithdrawableBalanceByLedgerId,
+} from "@/lib/merchant-wallet-ledger-display";
+import { mergeCancellationLedgerEntries } from "@/lib/merge-cancellation-ledger-entries";
 
 export const runtime = "nodejs";
 
@@ -51,10 +69,49 @@ export async function GET(
     const to = searchParams.get("to") ?? undefined;
     const directionRaw = searchParams.get("direction");
     const direction =
-      directionRaw === "CREDIT" || directionRaw === "DEBIT" ? directionRaw : undefined;    const category = searchParams.get("category") ?? undefined;
+      directionRaw === "CREDIT" || directionRaw === "DEBIT" ? directionRaw : undefined;
+    const category = searchParams.get("category") ?? undefined;
 
     const result = await queryLedger(store.id, { limit, offset, from, to, direction, category });
-    return NextResponse.json({ success: true, entries: result.entries, total: result.total });
+
+    const withOrderIds = await enrichLedgerFormattedOrderIds(result.entries);
+
+    const holdIds = withOrderIds
+      .filter((e) => String(e.category ?? "").toUpperCase() === "HOLD_LOCK")
+      .map((e) => Number(e.id));
+    const holdLinks = await getPayoutLinksByHoldLedgerIds(store.id, holdIds);
+    const withHoldLinks = enrichLedgerEntriesWithHoldPayoutLinks(withOrderIds, holdLinks);
+
+    const requestIds = withHoldLinks
+      .map((e) => Number(e.reference_id))
+      .filter((rid) => Number.isFinite(rid) && rid > 0);
+    const statusMap = await getPayoutStatusesForLedger(store.id, requestIds);
+    const enriched = enrichLedgerEntriesWithPayoutStatus(withHoldLinks, statusMap);
+
+    const withdrawalIds = enriched
+      .filter((e) => String(e.category ?? "").toUpperCase() === "WITHDRAWAL")
+      .map((e) => Number(e.reference_id))
+      .filter((rid) => Number.isFinite(rid) && rid > 0);
+    const pgByRequestId = await getPgTransactionIdsForPayoutRequests(store.id, withdrawalIds);
+    const withPg = enriched.map((entry) => {
+      if (String(entry.category ?? "").toUpperCase() !== "WITHDRAWAL") return entry;
+      const rid = Number(entry.reference_id);
+      const pg = pgByRequestId.get(rid);
+      return pg ? { ...entry, pg_transaction_id: pg } : entry;
+    });
+
+    const bucketRows = await getLedgerBucketSnapshotsForWallet(store.id);
+    const withdrawableById = buildWithdrawableBalanceByLedgerId(bucketRows);
+    const withBalance = applyWithdrawableBalanceToLedgerEntries(withPg, withdrawableById);
+
+    const visible = withBalance.filter(isMerchantVisibleLedgerEntry);
+    const { entries } = mergeCancellationLedgerEntries(visible);
+
+    return NextResponse.json({
+      success: true,
+      entries,
+      total: Math.max(0, result.total - (result.entries.length - entries.length)),
+    });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/ledger]", e);
     return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });

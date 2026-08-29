@@ -1002,8 +1002,10 @@ export async function riderRoutes(app: FastifyInstance) {
     thisWeek: z.number(),
     thisMonth: z.number(),
     hasBankAccount: z.boolean(),
-    /** Rider can withdraw only when the wallet is positive and above this amount. */
+    /** Min amount per withdrawal request (from Threshold / payment_payout_rules). */
     minWithdrawal: z.number().optional(),
+    /** Max amount per withdrawal request. */
+    maxWithdrawal: z.number().optional(),
     canWithdraw: z.boolean().optional(),
     isFrozen: z.boolean().optional(),
     freezeReason: z.string().nullable().optional(),
@@ -1104,15 +1106,15 @@ export async function riderRoutes(app: FastifyInstance) {
       const food = wallet ? Number(wallet.earningsFood ?? 0) : 0;
       const parcel = wallet ? Number(wallet.earningsParcel ?? 0) : 0;
       const ride = wallet ? Number(wallet.earningsPersonRide ?? 0) : 0;
-      const { getRiderWithdrawableBalance } = await import(
+      const { getRiderWithdrawableBalance, getRiderWithdrawalLimits } = await import(
         "../../lib/rider-withdrawal.service.js"
       );
       const { getRiderWalletBreakdown } = await import("../../lib/rider-wallet-breakdown.js");
-      const [withdrawable, breakdownDetail] = await Promise.all([
+      const [withdrawable, breakdownDetail, limits] = await Promise.all([
         getRiderWithdrawableBalance(riderId),
         getRiderWalletBreakdown(riderId),
+        getRiderWithdrawalLimits(),
       ]);
-      const MIN_WITHDRAWAL_BALANCE = 300;
       const isFrozen = Boolean(wallet?.isFrozen);
       let freezeReason = isFrozen
         ? (typeof wallet?.freezeReason === "string" && wallet.freezeReason.trim()
@@ -1144,8 +1146,12 @@ export async function riderRoutes(app: FastifyInstance) {
         thisWeek: periodTotals.thisWeek,
         thisMonth: periodTotals.thisMonth,
         hasBankAccount,
-        minWithdrawal: MIN_WITHDRAWAL_BALANCE,
-        canWithdraw: total > MIN_WITHDRAWAL_BALANCE && !isFrozen && !accountRestrictions.globalWalletBlock,
+        minWithdrawal: limits.minAmount,
+        maxWithdrawal: limits.maxAmount,
+        canWithdraw:
+          withdrawable >= limits.minAmount &&
+          !isFrozen &&
+          !accountRestrictions.globalWalletBlock,
         isFrozen,
         freezeReason,
         frozenAt,

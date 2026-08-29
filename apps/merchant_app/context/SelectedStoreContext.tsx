@@ -17,6 +17,7 @@ import {
   writeLastSelectedStore,
   writeManagedStores,
 } from "@/lib/selectedStoreStorage";
+import { canEnterMerchantApp, enterableStoresOf } from "@/lib/merchantStoreEntry";
 
 type SelectedStoreContextValue = {
   selectedStore: ChildStore | null;
@@ -41,6 +42,10 @@ const SelectedStoreContext = createContext<SelectedStoreContextValue | null>(nul
 
 function isApprovedStore(store: ChildStore): boolean {
   return String(store.approval_status || "").toUpperCase() === "APPROVED";
+}
+
+function isEnterableStore(store: ChildStore): boolean {
+  return canEnterMerchantApp(store);
 }
 
 function approvedStoresOf(partner: PartnerData | null): ChildStore[] {
@@ -89,6 +94,7 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
   const [isStoreReady, setIsStoreReady] = useState(false);
 
   const approvedStores = useMemo(() => approvedStoresOf(partner), [partner]);
+  const enterableStores = useMemo(() => enterableStoresOf(partner?.childStores), [partner?.childStores]);
 
   const manageAllStores = useMemo(() => {
     if (approvedStores.length <= 1) return false;
@@ -140,10 +146,19 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
             persistedPrimary.storeDbId,
             persistedPrimary.storePublicId,
           );
-          if (match && isApprovedStore(match)) {
+          if (match && isEnterableStore(match)) {
             setSelectedStoreState(match);
             setManagedStoresState([match]);
+            return;
           }
+        }
+
+        // No saved outlet — auto-pick when there is exactly one enterable store.
+        if (enterableStores.length === 1) {
+          const only = enterableStores[0]!;
+          setSelectedStoreState(only);
+          setManagedStoresState([only]);
+          persistSelection(partner, only, [only]);
         }
       } finally {
         if (!cancelled) setIsStoreReady(true);
@@ -153,7 +168,7 @@ export function SelectedStoreProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [authLoading, partner?.parent?.id, partner?.childStores?.length]);
+  }, [authLoading, partner?.parent?.id, partner?.childStores?.length, enterableStores]);
 
   useEffect(() => {
     if (!authLoading && !partner) {

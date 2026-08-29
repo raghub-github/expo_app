@@ -5,6 +5,18 @@ import {
   resolveOrderMetaByRatingOrderIds,
   type RatingOrderMeta,
 } from "@/lib/resolve-order-meta-for-ratings";
+import {
+  formattedOrderIdFromTicketMetadata,
+  loadOrderRelatedTicketsForStore,
+  mergeTicketMessageAttachments,
+  ticketComplaintListId,
+  extractTicketImageUrls,
+} from "@/lib/order-related-ticket-complaints";
+import {
+  parseMerchantReviewReplies,
+  encodeLegacyMerchantResponse,
+} from "@/lib/merchant-review-replies";
+import { getTicketAttachmentViewUrl } from "@/lib/ticket-attachment-url";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -28,6 +40,7 @@ type RatingRow = {
   review_title: string | null;
   review_images: string[] | null;
   merchant_response: string | null;
+  merchant_responses?: unknown;
   merchant_responded_at: string | null;
   is_verified: boolean | null;
   is_flagged: boolean | null;
@@ -91,7 +104,7 @@ export async function GET(request: NextRequest) {
     const { data: rows, error } = await db
       .from("merchant_store_ratings")
       .select(
-        "id, store_id, order_id, customer_id, rating, food_rating, service_rating, packaging_rating, review_text, review_title, review_images, merchant_response, merchant_responded_at, is_verified, is_flagged, flag_reason, created_at"
+        "id, store_id, order_id, customer_id, rating, food_rating, service_rating, packaging_rating, review_text, review_title, review_images, merchant_response, merchant_responses, merchant_responded_at, is_verified, is_flagged, flag_reason, created_at"
       )
       .eq("store_id", storeInternalId)
       .order("created_at", { ascending: false })
@@ -121,12 +134,12 @@ export async function GET(request: NextRequest) {
       ),
     ];
 
-    const customerById: Record<number, { name: string | null; mobile: string | null; email: string | null }> = {};
+    const customerById: Record<number, { name: string | null; mobile: string | null; email: string | null; avatar: string | null }> = {};
     if (customerIds.length > 0) {
       // Customers schema uses `full_name` + `primary_mobile` (see backend drizzle customers migrations).
       const { data: custRows } = await db
         .from("customers")
-        .select("id, full_name, primary_mobile, email")
+        .select("id, full_name, primary_mobile, email, profile_image_url")
         .in("id", customerIds);
       for (const c of custRows ?? []) {
         const id = (c as { id?: number }).id;
@@ -135,6 +148,7 @@ export async function GET(request: NextRequest) {
             name: (c as { full_name?: string | null }).full_name ?? null,
             mobile: (c as { primary_mobile?: string | null }).primary_mobile ?? null,
             email: (c as { email?: string | null }).email ?? null,
+            avatar: (c as { profile_image_url?: string | null }).profile_image_url ?? null,
           };
         }
       }
@@ -160,7 +174,69 @@ export async function GET(request: NextRequest) {
       orderIds,
     );
 
-    const formattedReviews = filtered.map((review) => {
+    let ticketRows: Awaited<ReturnType<typeof loadOrderRelatedTicketsForStore>> = [];
+    try {
+      const { data: storeOrderRows } = await db
+        .from("orders_core")
+        .select("id")
+        .eq("merchant_store_id", storeInternalId)
+        .order("created_at", { ascending: false })
+        .limit(200);
+      const storeOrderIds = [
+        ...new Set([
+          ...orderIds,
+          ...((storeOrderRows ?? []) as Array<{ id?: number }>)
+            .map((r) => Number(r.id))
+            .filter((n) => Number.isInteger(n) && n > 0),
+        ]),
+      ];
+      ticketRows = await loadOrderRelatedTicketsForStore(db, storeInternalId, storeOrderIds);
+      await mergeTicketMessageAttachments(db, ticketRows);
+
+      const extraTicketOrderIds = [
+        ...new Set(
+          ticketRows
+            .map((t) => t.order_id)
+            .filter((id): id is number => typeof id === "number" && id > 0 && !orderMetaByRatingOrderId.has(id)),
+        ),
+      ];
+      if (extraTicketOrderIds.length > 0) {
+        const extraMeta = await resolveOrderMetaByRatingOrderIds(db, extraTicketOrderIds);
+        for (const [k, v] of extraMeta) orderMetaByRatingOrderId.set(k, v);
+      }
+
+      const extraCustomerIds = [
+        ...new Set(
+          ticketRows
+            .map((t) => t.customer_id)
+            .filter(
+              (id): id is number =>
+                typeof id === "number" && id > 0 && customerById[id] == null,
+            ),
+        ),
+      ];
+      if (extraCustomerIds.length > 0) {
+        const { data: extraCustRows } = await db
+          .from("customers")
+          .select("id, full_name, primary_mobile, email, profile_image_url")
+          .in("id", extraCustomerIds);
+        for (const c of extraCustRows ?? []) {
+          const id = (c as { id?: number }).id;
+          if (typeof id === "number") {
+            customerById[id] = {
+              name: (c as { full_name?: string | null }).full_name ?? null,
+              mobile: (c as { primary_mobile?: string | null }).primary_mobile ?? null,
+              email: (c as { email?: string | null }).email ?? null,
+              avatar: (c as { profile_image_url?: string | null }).profile_image_url ?? null,
+            };
+          }
+        }
+      }
+    } catch (ticketErr) {
+      console.error("[merchant/reviews] order-related tickets:", ticketErr);
+    }
+
+    const ratingReviews = filtered.map((review) => {
       const customer = review.customer_id != null ? customerById[review.customer_id] : undefined;
       const orderMeta =
         review.order_id != null
@@ -172,12 +248,23 @@ export async function GET(request: NextRequest) {
       else if (orderCount >= 5) userType = "repeated";
 
       const type = review.rating >= 4 ? "Review" : "Complaint";
-      const imgs = Array.isArray(review.review_images) ? review.review_images : [];
+      const imgs = (Array.isArray(review.review_images) ? review.review_images : [])
+        .filter((u): u is string => typeof u === "string" && u.trim().length > 0)
+        .map((u) => getTicketAttachmentViewUrl(u.trim()))
+        .filter(Boolean);
+
+      const replies = parseMerchantReviewReplies(
+        review.merchant_responses,
+        review.merchant_response,
+        review.merchant_responded_at,
+      );
+      const last = replies[replies.length - 1];
 
       return {
         id: review.id,
         customerId: review.customer_id ?? 0,
         customerName: customer?.name || "Anonymous",
+        customerAvatarUrl: customer?.avatar ? getTicketAttachmentViewUrl(customer.avatar) : null,
         customerEmail: customer?.email ?? null,
         customerMobile: customer?.mobile ?? null,
         orderId: orderMeta?.coreId ?? review.order_id,
@@ -186,8 +273,9 @@ export async function GET(request: NextRequest) {
         date: review.created_at,
         type,
         message: review.review_text || review.review_title || "",
-        response: review.merchant_response || "",
-        respondedAt: review.merchant_responded_at,
+        response: last ? encodeLegacyMerchantResponse(last.text, last.images) : review.merchant_response || "",
+        replies,
+        respondedAt: last?.at ?? review.merchant_responded_at,
         userType,
         rating: review.rating,
         foodQualityRating: review.food_rating,
@@ -199,8 +287,55 @@ export async function GET(request: NextRequest) {
         isVerified: review.is_verified === true,
         isFlagged: review.is_flagged === true,
         flagReason: review.flag_reason ?? null,
+        source: "rating" as const,
       };
     });
+
+    const ticketComplaints = ticketRows.map((ticket) => {
+      const customer =
+        ticket.customer_id != null ? customerById[ticket.customer_id] : undefined;
+      const orderMeta =
+        ticket.order_id != null ? orderMetaByRatingOrderId.get(ticket.order_id) : undefined;
+      const orderCount =
+        ticket.customer_id != null ? orderCounts[ticket.customer_id] || 0 : 0;
+      const publicId =
+        orderMeta?.orderPublicId ?? formattedOrderIdFromTicketMetadata(ticket.metadata);
+      return {
+        id: ticketComplaintListId(ticket.id),
+        customerId: ticket.customer_id ?? 0,
+        customerName: customer?.name || ticket.raised_by_name || "Customer",
+        customerAvatarUrl: customer?.avatar ? getTicketAttachmentViewUrl(customer.avatar) : null,
+        customerEmail: customer?.email ?? null,
+        customerMobile: customer?.mobile ?? null,
+        orderId: orderMeta?.coreId ?? ticket.order_id ?? null,
+        orderPublicId: publicId,
+        orderSummary: orderSummaryFromOrderMeta(orderMeta) ?? "Order complaint",
+        date: ticket.created_at || new Date().toISOString(),
+        type: "Complaint" as const,
+        message: ticket.description || ticket.subject || "Order complaint",
+        response: "",
+        respondedAt: null as string | null,
+        userType: (orderCount >= 5 ? "repeated" : "new") as "repeated" | "new" | "fraud",
+        rating: 0,
+        foodQualityRating: null as number | null,
+        deliveryRating: null as number | null,
+        packagingRating: null as number | null,
+        reviewImages: extractTicketImageUrls(ticket.attachments)
+          .map((u) => getTicketAttachmentViewUrl(u))
+          .filter(Boolean),
+        reviewTags: [] as string[],
+        orderCount,
+        isVerified: false,
+        isFlagged: false,
+        flagReason: null as string | null,
+        source: "ticket" as const,
+        ticketStatus: ticket.status ? String(ticket.status) : "OPEN",
+      };
+    });
+
+    const formattedReviews = [...ratingReviews, ...ticketComplaints].sort(
+      (a, b) => Date.parse(b.date) - Date.parse(a.date),
+    );
 
     const stats = {
       total: formattedReviews.length,
