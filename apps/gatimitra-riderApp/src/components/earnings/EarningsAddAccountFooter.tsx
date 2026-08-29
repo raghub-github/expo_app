@@ -7,16 +7,21 @@ import { colors } from "@/src/theme";
 import type { RiderBankPaymentMethod } from "@/src/services/api/riderApi";
 import { useRiderBankAddGate } from "@/src/hooks/useRiderBankAccount";
 import { useUnlockCountdown } from "@/src/hooks/useUnlockCountdown";
+import { WithdrawProgressButton } from "@/src/components/earnings/WithdrawProgressButton";
 
-/** Minimum wallet balance (₹) required before a rider can withdraw. */
-export const MIN_WITHDRAWAL_BALANCE = 300;
+/** Default shown when earnings summary has not loaded yet. */
+export const MIN_WITHDRAWAL_BALANCE = 100;
 
 type Props = {
   bankAccount: RiderBankPaymentMethod | null | undefined;
   isLoading?: boolean;
   hasBankAccount?: boolean;
-  /** Enable the withdrawal button only when the wallet is positive and > ₹300. */
+  /** Enable the withdrawal button only when backend canWithdraw is true. */
   canWithdraw?: boolean;
+  /** Withdrawable balance — drives min progress fill on the CTA. */
+  withdrawable?: number;
+  /** Min amount from Threshold settings (for helper copy). */
+  minWithdrawal?: number;
   isFrozen?: boolean;
   freezeReason?: string | null;
   onAddAccount: () => void;
@@ -28,6 +33,8 @@ export function EarningsAddAccountFooter({
   isLoading,
   hasBankAccount = false,
   canWithdraw = false,
+  withdrawable = 0,
+  minWithdrawal = MIN_WITHDRAWAL_BALANCE,
   isFrozen = false,
   freezeReason = null,
   onAddAccount,
@@ -55,6 +62,7 @@ export function EarningsAddAccountFooter({
       return;
     }
     if (!canWithdraw) return;
+    if (withdrawable < minWithdrawal) return;
     if (onRequestWithdrawal) {
       onRequestWithdrawal();
       return;
@@ -89,7 +97,8 @@ export function EarningsAddAccountFooter({
   const showVerifiedFooter =
     status === "verified" || (isLoading && hasBankAccount && status == null);
 
-  const withdrawEnabled = canWithdraw && !isFrozen;
+  const balanceTowardMin = isFrozen ? 0 : Math.max(0, withdrawable);
+  const withdrawBlockedExtra = isFrozen || !canWithdraw;
 
   if (showVerifiedFooter) {
     return (
@@ -101,19 +110,14 @@ export function EarningsAddAccountFooter({
               .join(" · ")}
           </Text>
         ) : null}
-        <TouchableOpacity
-          activeOpacity={withdrawEnabled ? 0.88 : 1}
+        <WithdrawProgressButton
+          current={balanceTowardMin}
+          minAmount={minWithdrawal}
           onPress={handleRequestWithdrawal}
-          disabled={!withdrawEnabled && !isFrozen}
-          style={[styles.button, !withdrawEnabled && styles.buttonDisabled]}
-          accessibilityRole="button"
-          accessibilityState={{ disabled: !withdrawEnabled }}
-          accessibilityLabel={t("earnings.requestWithdrawal", "Request Withdrawal")}
-        >
-          <Text style={styles.buttonText}>
-            {t("earnings.requestWithdrawal", "Request Withdrawal")}
-          </Text>
-        </TouchableOpacity>
+          disabled={withdrawBlockedExtra}
+          labelReady={t("earnings.requestWithdrawal", "Request Withdrawal")}
+          style={styles.progressBtn}
+        />
         <TouchableOpacity
           activeOpacity={0.85}
           onPress={() => router.push("/payout-accounts")}
@@ -130,10 +134,10 @@ export function EarningsAddAccountFooter({
                   reason: freezeReason,
                 })
               : t("earnings.walletFrozen", "Withdrawals are currently disabled.")
-            : withdrawEnabled
+            : balanceTowardMin >= minWithdrawal && canWithdraw
               ? t("earnings.withdrawalNote", "Withdrawals are processed weekly")
               : t("earnings.withdrawalMinNote", "Minimum ₹{{min}} balance required to withdraw", {
-                  min: MIN_WITHDRAWAL_BALANCE,
+                  min: minWithdrawal,
                 })}
         </Text>
       </View>
@@ -288,6 +292,10 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontWeight: "700",
     fontSize: 16,
+  },
+  progressBtn: {
+    width: "100%",
+    marginTop: 0,
   },
   secondaryBtn: {
     marginTop: 10,

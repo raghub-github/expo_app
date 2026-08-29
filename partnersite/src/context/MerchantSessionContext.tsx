@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { clearPartnerStoreSelection } from "@/lib/partner-selected-store";
 import {
   PARTNER_CROSS_TAB_LOGOUT_KEY,
@@ -55,7 +56,22 @@ const MerchantSessionContext = createContext<MerchantSessionContextValue | null>
 
 const FATAL_SESSION_CODES = new Set(["SESSION_INVALID", "DEVICE_SESSION_INVALID"]);
 
+/** Login / OAuth callback — do not probe merchant-session (PKCE cookies are not a session). */
+function isAuthEntryPath(pathname: string | null | undefined): boolean {
+  const p = (pathname ?? "").replace(/\/$/, "") || "/";
+  if (p === "/auth" || p === "/auth/login") return true;
+  if (p === "/auth/callback") return true;
+  if (p === "/auth/app-handoff") return true;
+  if (p === "/auth/register") return true;
+  if (p.startsWith("/auth/register-phone")) return true;
+  if (p.startsWith("/auth/register-parent")) return true;
+  if (p.startsWith("/auth/register-business")) return true;
+  if (p.startsWith("/auth/search")) return true;
+  return false;
+}
+
 export function MerchantSessionProvider({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
   const [user, setUser] = useState<MerchantSessionUser | null>(null);
   const [sessionStatus, setSessionStatus] = useState<MerchantSessionStatus | null>(null);
   const [parent, setParent] = useState<MerchantParentSummary | null>(null);
@@ -140,7 +156,11 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
         } else {
           const code = String(sessionData.code || "").toUpperCase();
           const hasSbCookie =
-            typeof document !== "undefined" && /(?:^|;\s*)sb-/.test(document.cookie);
+            typeof document !== "undefined" &&
+            document.cookie.split(";").some((part) => {
+              const name = part.split("=")[0]?.trim() ?? "";
+              return name.startsWith("sb-") && !name.includes("code-verifier");
+            });
           // Compile / cookie-miss probes — do not wipe a live session.
           if (
             code === "SESSION_REQUIRED" ||
@@ -181,12 +201,20 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
   }, []);
 
   useEffect(() => {
+    if (isAuthEntryPath(pathname)) {
+      if (initialLoadRef.current) {
+        setIsLoading(false);
+        initialLoadRef.current = false;
+      }
+      return;
+    }
     void fetchSession({ force: true });
-  }, [fetchSession]);
+  }, [fetchSession, pathname]);
 
   // Re-validate session when the tab regains focus so downstream queries don't
   // hit /api/* with stale cookies while Supabase refresh is still in flight.
   useEffect(() => {
+    if (isAuthEntryPath(pathname)) return;
     const refresh = () => {
       void fetchSession({ background: true });
     };
@@ -203,7 +231,7 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [fetchSession]);
+  }, [fetchSession, pathname]);
 
   // Synchronize logout across tabs (storage event fires in other tabs only).
   useEffect(() => {

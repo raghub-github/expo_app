@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ImageIcon, Loader2, Trash2, Upload, RefreshCw, Plus } from "lucide-react";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -201,25 +200,18 @@ export default function AppImagesPage() {
   if (!isSuperAdmin) return null;
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
-      <div className="mb-6">
-        <Link
-          href="/dashboard/super-admin"
-          className="text-sm text-slate-500 hover:text-slate-800"
-        >
-          ← Super Admin
-        </Link>
-        <h1 className="mt-2 text-2xl font-bold text-slate-900">
+    <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
+      <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <h1 className="text-lg font-semibold tracking-tight text-slate-900 sm:text-xl">
           {tab === "learning" ? "Learning Centre" : "App images"}
         </h1>
-        <p className="mt-1 text-sm text-slate-600">
+        <p className="mt-1 max-w-3xl text-xs text-slate-500 sm:text-sm">
           {tab === "learning"
             ? "Add section title, video title, thumbnail, and a YouTube link. Select Rider, Merchant, or Customer for each video. Tapping a card in the app opens YouTube."
             : "Upload images and videos to R2 for Customer, Rider & Merchant apps. Files are served via signed URLs — no bundled assets in app code. Branding → App icon updates in-app after the next app open; the Expo bundling / phone home-screen icon is native and needs a store rebuild. Packaging tips video: MP4, max 80 MB."}
         </p>
-      </div>
 
-      <div className="mb-6 flex flex-wrap gap-2">
+        <div className="mt-4 flex flex-wrap items-center gap-2">
         {APP_STATIC_ASSET_APPS.map((appTab) => (
           <button
             key={appTab}
@@ -259,6 +251,7 @@ export default function AppImagesPage() {
           <RefreshCw className={cn("h-4 w-4", tab !== "learning" && loading && "animate-spin")} />
           Refresh
         </button>
+        </div>
       </div>
 
       {tab === "learning" ? (

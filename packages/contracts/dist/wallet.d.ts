@@ -127,6 +127,8 @@ export declare const WalletSummarySchema: z.ZodObject<{
     failed_amount: z.ZodOptional<z.ZodNumber>;
     is_frozen: z.ZodOptional<z.ZodBoolean>;
     withdrawal_allowed: z.ZodOptional<z.ZodBoolean>;
+    min_withdrawal_amount: z.ZodOptional<z.ZodNumber>;
+    max_withdrawal_amount: z.ZodOptional<z.ZodNumber>;
 }, z.core.$strip>;
 export type WalletSummary = z.infer<typeof WalletSummarySchema>;
 export declare const LedgerEntrySchema: z.ZodObject<{
@@ -216,6 +218,7 @@ export declare const ReconciliationReportSchema: z.ZodObject<{
 export type ReconciliationReport = z.infer<typeof ReconciliationReportSchema>;
 export declare const WALLET_CONSTANTS: {
     readonly MIN_WITHDRAWAL_AMOUNT: 100;
+    readonly MAX_WITHDRAWAL_AMOUNT: 100000;
     readonly MAX_PENDING_WITHDRAWALS: 3;
     readonly DEFAULT_REFUND_WINDOW_DAYS: 3;
     readonly MAX_LEDGER_PAGE_SIZE: 100;

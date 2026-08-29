@@ -25,8 +25,10 @@ export function hasReachedNavTarget(pathname: string, target: string): boolean {
   const tgt = cleanDashboardHref(target);
   if (path === tgt) return true;
   if (tgt === "/dashboard") return path === "/dashboard";
-  // Reached only when we landed on the target or a deeper path under it —
-  // not when we're still on a sibling under the same module (e.g. super-admin tabs).
+  // Nested Super Admin settings (App Category, App images, …) must not count as
+  // having reached the hub — that dropped the in-flight back push on first click.
+  if (tgt === "/dashboard/super-admin") return false;
+  // Module-root clicks may land on a nested child (e.g. /dashboard/riders/123).
   if (path.startsWith(`${tgt}/`)) return true;
   return false;
 }

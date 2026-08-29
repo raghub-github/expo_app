@@ -251,6 +251,24 @@ export async function GET(req: NextRequest) {
         .from('merchant_payout_requests')
         .select('id, hold_ledger_id, status')
         .in('hold_ledger_id', holdLedgerIds);
+      const payoutIds = (payoutRows ?? []).map((p: { id: number }) => Number(p.id));
+      const holdReasonByPayoutId = new Map<number, string>();
+      if (payoutIds.length > 0) {
+        const { data: approvalRows } = await db
+          .from('payment_payout_approvals')
+          .select('payout_request_id, approval_notes')
+          .eq('payout_type', 'MERCHANT')
+          .in('payout_request_id', payoutIds);
+        for (const a of approvalRows ?? []) {
+          const notes = String((a as { approval_notes?: string | null }).approval_notes ?? '').trim();
+          if (notes) {
+            holdReasonByPayoutId.set(
+              Number((a as { payout_request_id: number }).payout_request_id),
+              notes,
+            );
+          }
+        }
+      }
       const payoutByHoldId = new Map(
         (payoutRows ?? []).map((p: { id: number; hold_ledger_id: number; status: string }) => [
           Number(p.hold_ledger_id),
@@ -260,10 +278,12 @@ export async function GET(req: NextRequest) {
       for (const entry of enrichedList) {
         const linked = payoutByHoldId.get(entry.id);
         if (!linked) continue;
+        const holdReason = holdReasonByPayoutId.get(linked.id);
         entry.metadata = {
           ...(entry.metadata ?? {}),
           payout_request_id: linked.id,
           payout_status: linked.status,
+          ...(holdReason ? { hold_reason: holdReason } : {}),
         };
         if (entry.reference_id == null || Number(entry.reference_id) <= 0) {
           entry.reference_id = linked.id;

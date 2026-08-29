@@ -3,19 +3,20 @@
  * Google OAuth and Phone OTP are configured in Supabase Dashboard — no Google client/secret in app .env.
  *
  * OAuth redirect uses the current origin. We redirect to /auth/callback so it matches your
- * Supabase Redirect URLs list; the callback page then forwards to /api/auth/callback for
- * server-side code exchange and cookie setting (reliable on all devices).
+ * Supabase Redirect URLs list; the callback page exchanges the PKCE code in the same
+ * browser that stored the verifier, then posts tokens to /api/merchant-auth/set-cookie
+ * (same path as phone OTP).
  *
  * Supabase Dashboard > Authentication > URL Configuration (for partner app at partner.gatimitra.com):
  * - Redirect URLs: must include the OAuth landing PAGE — https://partner.gatimitra.com/auth/callback
- *   (and http://localhost:3002/auth/callback for dev). NOT /api/auth/callback — that's the internal
- *   API route the page forwards to, and Supabase never redirects there directly.
+ *   (and http://localhost:3002/auth/callback for dev).
  * - Site URL is shared with the dashboard; the allowlist entry above is what makes Supabase honor
  *   the partner redirect instead of falling back to the Site URL.
  */
 
 import { createClient } from "@/lib/supabase/client";
 import { getPartnerOAuthCallbackUrl } from "@/lib/auth/auth-redirect-url";
+import { clearPkceVerifierCookies } from "@/lib/auth/clear-auth-storage";
 
 export interface AuthResponse {
   success: boolean;
@@ -48,10 +49,14 @@ export async function signInWithGoogle(redirectTo?: string): Promise<AuthRespons
       const existing = sessionStorage.getItem("auth_redirect");
       if (!existing) sessionStorage.setItem("auth_redirect", "/partners/all-stores");
     }
+    // A leftover code-verifier from an abandoned first attempt is what makes
+    // the *next* Google click succeed after "invalid flow state" — wipe it first.
+    clearPkceVerifierCookies();
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
         redirectTo: redirectUrl,
+        skipBrowserRedirect: true,
         queryParams: {
           prompt: "select_account", // Always show Google account picker (like main dashboard)
         },
@@ -59,7 +64,7 @@ export async function signInWithGoogle(redirectTo?: string): Promise<AuthRespons
     });
     if (error) return { success: false, error: error.message };
     if (data?.url) {
-      window.location.href = data.url;
+      window.location.assign(data.url);
       return { success: true, data: { url: data.url } };
     }
     return { success: true, data: data as unknown as AuthResponse["data"] };

@@ -11,6 +11,7 @@ import {
 } from "./rider-bank-payment-method.js";
 import { readRiderWalletBalance } from "./rider-subscription-wallet.js";
 import { WalletFrozenError } from "./wallet-freeze.js";
+import { readPayoutAmountLimits } from "./payout-amount-limits.js";
 
 export const MIN_RIDER_WITHDRAWAL_AMOUNT = 100;
 export const MAX_RIDER_WITHDRAWAL_AMOUNT = 100_000;
@@ -33,24 +34,20 @@ export type RiderWithdrawalView = {
   processedAt: string | null;
 };
 
-async function readMinPayoutAmount(): Promise<number> {
-  const sql = getSql();
+async function readRiderPayoutLimits(): Promise<{ minAmount: number; maxAmount: number }> {
   try {
-    const rows = await sql`
-      SELECT min_payout_amount
-      FROM payment_payout_rules
-      WHERE is_active AND party_type = 'RIDER'
-      ORDER BY id DESC
-      LIMIT 1
-    `;
-    if (rows.length > 0) {
-      const min = Number((rows[0] as { min_payout_amount?: unknown }).min_payout_amount);
-      if (Number.isFinite(min) && min > 0) return min;
-    }
+    return await readPayoutAmountLimits("RIDER");
   } catch {
-    /* pre-0239 or no rider rule */
+    return { minAmount: MIN_RIDER_WITHDRAWAL_AMOUNT, maxAmount: MAX_RIDER_WITHDRAWAL_AMOUNT };
   }
-  return MIN_RIDER_WITHDRAWAL_AMOUNT;
+}
+
+async function readMinPayoutAmount(): Promise<number> {
+  return (await readRiderPayoutLimits()).minAmount;
+}
+
+export async function getRiderWithdrawalLimits(): Promise<{ minAmount: number; maxAmount: number }> {
+  return readRiderPayoutLimits();
 }
 
 export async function getRiderPendingWithdrawalTotal(riderId: number): Promise<number> {
@@ -182,8 +179,9 @@ export async function createRiderWithdrawalRequest(
   if (amount < minAmount) {
     throw new Error(`Amount must be at least ₹${minAmount}`);
   }
-  if (amount > MAX_RIDER_WITHDRAWAL_AMOUNT) {
-    throw new Error(`Maximum ₹${MAX_RIDER_WITHDRAWAL_AMOUNT.toLocaleString("en-IN")} per request`);
+  const { maxAmount } = await readRiderPayoutLimits();
+  if (amount > maxAmount) {
+    throw new Error(`Maximum ₹${maxAmount.toLocaleString("en-IN")} per request`);
   }
 
   await assertRiderCanWithdraw(riderId);

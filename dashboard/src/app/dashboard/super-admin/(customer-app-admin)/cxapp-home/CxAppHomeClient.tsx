@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Filter, MapPinned, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, Filter, Search } from "lucide-react";
 
 import { CxAppHomeStateLink } from "@/components/cxapp-home/CxAppHomeStateLink";
 import { CxAppHomeSectionToggle } from "@/components/cxapp-home/CxAppHomeSectionToggle";
@@ -39,16 +39,11 @@ export function CxAppHomeClient({ initialStates }: Props) {
 
   return (
     <div className="w-full min-w-0 max-w-none space-y-4">
-      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="p-1.5 rounded-lg bg-cyan-50 text-cyan-600 shrink-0 mt-0.5">
-              <MapPinned className="h-5 w-5" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-gray-900 leading-tight">CXApp Home</h2>
-              <p className="text-xs text-gray-500 mt-0.5">App Category - CXApp Home: states and UT coverage list.</p>
-            </div>
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold leading-tight text-slate-900">CXApp Home</h2>
+            <p className="mt-0.5 text-xs text-slate-500">States and UT coverage list.</p>
           </div>
           <CxAppHomeSectionToggle />
         </div>

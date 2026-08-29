@@ -1,7 +1,7 @@
 /**
  * Floating dual-dock bottom nav (GatiMitra light theme — not dark mode).
  * Main dock: Home, Orders, Catalog, Profile + Flow satellite to open the Flow hub.
- * Hub dock: Earnings, Insight, Review (scroll) + Home satellite to return.
+ * Hub dock: Earnings, Insight, Feedback (scroll) + Home satellite to return.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -30,6 +30,7 @@ import { useActiveTab } from "@/context/ActiveTabContext";
 import { useProfileNav } from "@/context/ProfileNavContext";
 import { hubTabFromPath, isHubPath } from "@/lib/merchantNavigation";
 import { OffersPercentBadgeIcon } from "@/components/OffersPercentBadgeIcon";
+import { useMerchantChromeDimmed } from "@/lib/merchantChromeDim";
 
 const MAIN_TAB_ORDER = ["index", "orders", "menu", "profile"] as const;
 
@@ -91,7 +92,7 @@ function isMainTab(name: string): name is MainTabName {
   return (MAIN_TAB_ORDER as readonly string[]).includes(name);
 }
 
-// Hub bottom bar: Earnings, Growth, Offers, Reviews (+ Complaints via Reviews toggle).
+// Hub bottom bar: Earnings, Growth, Offers, Feedback (+ Complaints via Feedback toggle).
 const HUB_TAB_ORDER = ["earnings", "growth", "offers", "reviews"] as const;
 type HubTabName = (typeof HUB_TAB_ORDER)[number];
 
@@ -181,6 +182,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   } = useProfileNav();
   const bottomInset = insets.bottom;
   const keyboardShown = useIsKeyboardShown();
+  const chromeDimmed = useMerchantChromeDimmed();
   const focusedOptions = descriptors[state.routes[state.index].key].options;
   const hideTabBarOnKeyboard = focusedOptions.tabBarHideOnKeyboard === true;
 
@@ -200,7 +202,10 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
     !offersHubPage;
   const packagingTipsPage = (pathname ?? "").includes("packaging-tips");
   const tabBarHidden =
-    (hideTabBarOnKeyboard && keyboardShown) || profileInnerPage || packagingTipsPage;
+    (hideTabBarOnKeyboard && keyboardShown) ||
+    profileInnerPage ||
+    packagingTipsPage ||
+    chromeDimmed;
 
   const [dock, setDock] = useState<"main" | "hub">(() =>
     isHubTab(currentName) ? "hub" : "main"
@@ -540,9 +545,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                         ? "Growth"
                         : routeName === "offers"
                           ? "Offers"
-                          : complaintsActive
-                            ? "Complaints"
-                            : "Reviews";
+                          : "Feedback";
                   return (
                     <Pressable
                       key={routeName}
@@ -590,9 +593,9 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                               name={
                                 routeName === "earnings"
                                   ? "wallet-outline"
-                                  : complaintsActive
-                                    ? "warning-outline"
-                                    : "star-outline"
+                                  : isFocused
+                                    ? "chatbubble-ellipses"
+                                    : "chatbubble-ellipses-outline"
                               }
                               size={ICON_SIZE}
                               color={isFocused ? TAB_ACTIVE_FG : TAB_INACTIVE_FG}

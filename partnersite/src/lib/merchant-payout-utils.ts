@@ -12,9 +12,12 @@ import {
   isMerchantVisibleLedgerEntry,
   resolveWalletDisplayBalance,
   resolveWithdrawalReversalDisplayDescription,
+  resolveWithdrawalRequestDisplayDescription,
   resolveLedgerCategoryLabel,
+  resolveLedgerRowStatusBadge,
   LEDGER_CATEGORY_LABELS,
   type MerchantLedgerVisibilityEntry,
+  type LedgerRowStatusBadge,
 } from "@gatimitra/merchant-payout";
 
 export {
@@ -23,8 +26,11 @@ export {
   isMerchantVisibleLedgerEntry,
   resolveWalletDisplayBalance,
   resolveWithdrawalReversalDisplayDescription,
+  resolveWithdrawalRequestDisplayDescription,
   resolveLedgerCategoryLabel,
+  resolveLedgerRowStatusBadge,
   type MerchantLedgerVisibilityEntry,
+  type LedgerRowStatusBadge,
 };
 
 /** @deprecated Prefer LEDGER_CATEGORY_LABELS from @gatimitra/merchant-payout */
@@ -59,6 +65,8 @@ export type PayoutCard = {
   withdrawalAmount?: number;
   /** Admin rejection reason / bank failure reason for the closing withdrawal. */
   closeNote?: string | null;
+  /** PG / UTR reference when the withdrawal was completed. */
+  pgTransactionId?: string;
   /** Closed cycle with no orders and nothing paid out — collapse in the UI. */
   isZeroActivity?: boolean;
 };
@@ -416,7 +424,7 @@ export function statusBadgeStyle(status: PayoutStatus) {
     case "PENDING":
       return { bg: "#FFF8E1", text: "#F57F17" };
     case "PROCESSING":
-      return { bg: "#FFF3E0", text: "#E65100" };
+      return { bg: "#EDE9FE", text: "#5B21B6" };
     case "FAILED":
       return { bg: "#FFEBEE", text: "#C62828" };
     case "RETURNED":
@@ -433,7 +441,7 @@ export function statusLabel(status: PayoutStatus): string {
     case "PENDING":
       return "PENDING";
     case "PROCESSING":
-      return "IN PROCESS";
+      return "HOLD";
     case "FAILED":
       return "FAILED";
     case "RETURNED":
@@ -443,7 +451,7 @@ export function statusLabel(status: PayoutStatus): string {
   }
 }
 
-export type OrderSettlementBadgeVariant = "settled" | "to_be_paid" | "processing" | "failed";
+export type OrderSettlementBadgeVariant = "settled" | "to_be_paid" | "processing" | "failed" | "hold";
 
 export function orderSettlementBadge(
   payoutStatus: PayoutStatus,
@@ -454,7 +462,7 @@ export function orderSettlementBadge(
     case "PENDING":
       return { label: "PENDING", variant: "processing" };
     case "PROCESSING":
-      return { label: "IN PROCESS", variant: "processing" };
+      return { label: "HOLD", variant: "hold" };
     case "FAILED":
       return { label: "FAILED", variant: "failed" };
     case "RETURNED":
@@ -475,8 +483,17 @@ export function payoutCardToParams(card: PayoutCard): Record<string, string> {
     status: card.status,
     isCurrentCycle: card.isCurrentCycle ? "1" : "",
     ledgerEntryId: card.sourceEntry?.id != null ? String(card.sourceEntry.id) : "",
-    pgTransactionId: card.sourceEntry?.pg_transaction_id ?? "",
+    pgTransactionId:
+      card.pgTransactionId?.trim() ||
+      card.sourceEntry?.pg_transaction_id?.trim() ||
+      "",
     cycleId: card.cycleId != null ? String(card.cycleId) : "",
+    payoutRequestId: card.payoutRequestId != null ? String(card.payoutRequestId) : "",
+    withdrawalReturned: String(
+      card.status === "RETURNED" || card.status === "FAILED"
+        ? card.withdrawalReturned ?? 0
+        : 0,
+    ),
   };
 }
 
@@ -490,9 +507,11 @@ export function buildPayoutCardsFromCycles(
     net_payout: number;
     estimated_payout: number;
     order_count: number;
+    payout_request_id?: number | null;
     withdrawal_returned?: number;
     withdrawal_amount?: number;
     close_note?: string | null;
+    pg_transaction_id?: string | null;
   }>,
 ): PayoutCard[] {
   return cycles.map((c) => {
@@ -506,6 +525,10 @@ export function buildPayoutCardsFromCycles(
     const periodStart = parsePgTimestamp(c.period_start);
     const periodEnd = c.period_end ? parsePgTimestamp(c.period_end) : endOfIstDay(new Date());
     const netPayout = isOpen ? Math.max(0, c.estimated_payout) : Math.max(0, c.net_payout);
+    const withdrawalReturned =
+      status === "RETURNED" || status === "FAILED"
+        ? Math.max(0, Number(c.withdrawal_returned ?? 0))
+        : 0;
     return {
       id: isOpen ? "current-cycle" : `cycle-${c.id}`,
       netPayout,
@@ -517,9 +540,14 @@ export function buildPayoutCardsFromCycles(
       isCurrentCycle: isOpen,
       cycleId: c.id,
       closeReason: c.close_reason,
-      withdrawalReturned: Math.max(0, Number(c.withdrawal_returned ?? 0)),
+      payoutRequestId:
+        c.payout_request_id != null && Number(c.payout_request_id) > 0
+          ? Number(c.payout_request_id)
+          : null,
+      withdrawalReturned,
       withdrawalAmount: Math.max(0, Number(c.withdrawal_amount ?? 0)),
       closeNote: c.close_note ?? null,
+      pgTransactionId: c.pg_transaction_id?.trim() || undefined,
       isZeroActivity: !isOpen && c.order_count === 0 && netPayout === 0,
     };
   });
@@ -531,6 +559,8 @@ export function buildPayoutCardsFromCycles(
  * amount the merchant actually asked to withdraw when it is known.
  */
 export function payoutReturnedDisplayAmount(card: PayoutCard): number {
+  // Only show returned amounts when the payout actually failed or was rejected.
+  if (card.status !== "RETURNED" && card.status !== "FAILED") return 0;
   const returned = card.withdrawalReturned ?? 0;
   if (returned <= 0) return 0;
   return (card.withdrawalAmount ?? 0) > 0 ? (card.withdrawalAmount ?? 0) : returned;
@@ -543,6 +573,9 @@ export type ActivePayoutRequestSource = {
   status: string;
   requested_at: string;
   completed_at?: string | null;
+  pg_transaction_id?: string | null;
+  failure_reason?: string | null;
+  rejection_reason?: string | null;
 };
 
 /** Live withdrawal requests that are not yet terminal — shown as PENDING / IN PROCESS cards. */
@@ -566,6 +599,50 @@ export function buildActivePayoutRequestCards(
         payoutDate: requestedAt,
         status: (s === "PENDING" ? "PENDING" : "PROCESSING") as PayoutStatus,
         payoutRequestId: r.id,
+        pgTransactionId: r.pg_transaction_id?.trim() || undefined,
+      };
+    })
+    .sort((a, b) => (b.payoutDate?.getTime() ?? 0) - (a.payoutDate?.getTime() ?? 0));
+}
+
+/** Recent completed / returned withdrawals from payout-requests (keeps list fresh vs cycles). */
+export function buildTerminalPayoutRequestCards(
+  requests: ActivePayoutRequestSource[],
+): PayoutCard[] {
+  return requests
+    .filter((r) => {
+      const s = String(r.status ?? "").toUpperCase();
+      return (
+        s === "COMPLETED" ||
+        s === "REJECTED" ||
+        s === "FAILED" ||
+        s === "CANCELLED" ||
+        s === "RETURNED" ||
+        s === "REVERSED"
+      );
+    })
+    .map((r) => {
+      const s = String(r.status ?? "").toUpperCase();
+      const at = parsePgTimestamp(r.completed_at ?? r.requested_at);
+      const status: PayoutStatus =
+        s === "COMPLETED" ? "PAID" : s === "FAILED" ? "FAILED" : "RETURNED";
+      const note =
+        (r.rejection_reason ?? r.failure_reason ?? "").trim() || null;
+      const amount = Math.max(0, Number(r.net_payout_amount ?? r.amount ?? 0));
+      return {
+        id: `pr-${r.id}`,
+        netPayout: status === "PAID" ? amount : 0,
+        orderCount: status === "PAID" ? 1 : 0,
+        periodStart: at,
+        periodEnd: at,
+        payoutDate: at,
+        status,
+        payoutRequestId: r.id,
+        withdrawalReturned: status === "PAID" ? 0 : amount,
+        withdrawalAmount: amount,
+        closeNote: note,
+        pgTransactionId: r.pg_transaction_id?.trim() || undefined,
+        isZeroActivity: status !== "PAID",
       };
     })
     .sort((a, b) => (b.payoutDate?.getTime() ?? 0) - (a.payoutDate?.getTime() ?? 0));
@@ -573,6 +650,7 @@ export function buildActivePayoutRequestCards(
 
 /**
  * Keep current-cycle card, then insert active withdrawal request cards, then closed cycles.
+ * Also merges recent terminal withdrawals from payout-requests so Settled rows stay up to date.
  */
 export function mergePayoutCardsWithActiveRequests(
   cycleOrLedgerCards: PayoutCard[],
@@ -586,7 +664,35 @@ export function mergePayoutCardsWithActiveRequests(
     periodEnd: current?.periodEnd ?? card.periodEnd,
     cycleId: current?.cycleId ?? null,
   }));
-  return [...(current ? [current] : []), ...active, ...past];
+
+  const knownRequestIds = new Set(
+    past
+      .map((c) => c.payoutRequestId)
+      .filter((id): id is number => id != null && id > 0),
+  );
+  const pgByRequestId = new Map<number, string>();
+  for (const r of requests) {
+    const pg = r.pg_transaction_id?.trim();
+    if (pg) pgByRequestId.set(r.id, pg);
+  }
+  const pastWithPg = past.map((card) => {
+    if (card.pgTransactionId?.trim()) return card;
+    if (card.payoutRequestId == null) return card;
+    const pg = pgByRequestId.get(card.payoutRequestId);
+    return pg ? { ...card, pgTransactionId: pg } : card;
+  });
+  const terminal = buildTerminalPayoutRequestCards(requests).filter((card) => {
+    if (card.payoutRequestId != null && knownRequestIds.has(card.payoutRequestId)) {
+      return false;
+    }
+    return true;
+  });
+
+  const pastMerged = [...terminal, ...pastWithPg].sort(
+    (a, b) => (b.payoutDate?.getTime() ?? 0) - (a.payoutDate?.getTime() ?? 0),
+  );
+
+  return [...(current ? [current] : []), ...active, ...pastMerged];
 }
 
 export type OrderPayoutBreakdown = {
@@ -742,7 +848,7 @@ export function resolveLedgerDisplayDescription(entry: LedgerEntry): string {
   }
 
   if (isMerchantFacingWithdrawalRequest(entry)) {
-    return "Withdrawal requested — funds held from your wallet.";
+    return resolveWithdrawalRequestDisplayDescription(entry);
   }
 
   if (

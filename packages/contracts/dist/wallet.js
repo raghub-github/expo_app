@@ -141,6 +141,9 @@ export const WalletSummarySchema = z.object({
     failed_amount: z.number().optional(),
     is_frozen: z.boolean().optional(),
     withdrawal_allowed: z.boolean().optional(),
+    /** Admin Threshold → payment_payout_rules (MERCHANT). */
+    min_withdrawal_amount: z.number().optional(),
+    max_withdrawal_amount: z.number().optional(),
 });
 // ─── Ledger Entry ─────────────────────────────────────────────────────────────
 export const LedgerEntrySchema = z.object({
@@ -217,6 +220,7 @@ export const ReconciliationReportSchema = z.object({
 // ─── Constants ────────────────────────────────────────────────────────────────
 export const WALLET_CONSTANTS = {
     MIN_WITHDRAWAL_AMOUNT: 100,
+    MAX_WITHDRAWAL_AMOUNT: 100_000,
     MAX_PENDING_WITHDRAWALS: 3,
     DEFAULT_REFUND_WINDOW_DAYS: 3,
     MAX_LEDGER_PAGE_SIZE: 100,

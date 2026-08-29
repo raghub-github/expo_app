@@ -146,6 +146,7 @@ export const MerchantHeroBannerRow = React.memo(
               source={{ uri: video }}
               style={[StyleSheet.absoluteFill, { height: totalHeight }]}
               resizeMode={ResizeMode.COVER}
+              shouldPlay={shouldPlayVideo}
               isLooping
               isMuted
               volume={0}

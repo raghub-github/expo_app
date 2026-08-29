@@ -5290,21 +5290,18 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                       <span className={`pointer-events-none inline-block h-5 w-5 shrink-0 transform rounded-full bg-white shadow ring-0 transition ${storeSetup.accepts_online_payment ? 'translate-x-5' : 'translate-x-0.5'}`} />
                     </button>
                   </div>
-                  <div className="flex items-center justify-between gap-2 sm:gap-3 p-2 sm:p-2.5 border border-slate-200 rounded-lg bg-white">
+                  <div className="flex items-center justify-between gap-2 sm:gap-3 p-2 sm:p-2.5 border border-slate-200 rounded-lg bg-slate-50 opacity-75">
                     <div>
                       <div className="text-xs sm:text-sm font-medium text-gray-700">Cash on Delivery</div>
-                      <div className="text-xs text-gray-500">Accept cash payments</div>
+                      <div className="text-xs text-gray-500">Managed by GatiMitra — cannot be changed here</div>
                     </div>
                     <button
                       type="button"
                       role="switch"
                       aria-checked={storeSetup.accepts_cash}
-                      onClick={() => {
-                        const next = !storeSetup.accepts_cash;
-                        setStoreSetup(prev => ({ ...prev, accepts_cash: next }));
-                        onStoreFeaturesSave?.({ is_pure_veg: storeSetup.is_pure_veg, accepts_online_payment: storeSetup.accepts_online_payment, accepts_cash: next });
-                      }}
-                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1 ${storeSetup.accepts_cash ? 'bg-indigo-600' : 'bg-slate-200'}`}
+                      aria-disabled="true"
+                      disabled
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-not-allowed items-center rounded-full border-2 border-transparent transition-colors focus:outline-none ${storeSetup.accepts_cash ? 'bg-indigo-400' : 'bg-slate-200'}`}
                     >
                       <span className={`pointer-events-none inline-block h-5 w-5 shrink-0 transform rounded-full bg-white shadow ring-0 transition ${storeSetup.accepts_cash ? 'translate-x-5' : 'translate-x-0.5'}`} />
                     </button>

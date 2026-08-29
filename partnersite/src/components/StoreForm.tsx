@@ -993,14 +993,16 @@ export default function StoreForm({ parentId, onSuccess }: { parentId: number; o
               />
               <label className="text-sm font-medium text-slate-700">Accepts Online Payment</label>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 opacity-60">
               <input 
                 type="checkbox" 
                 name="accepts_cash" 
                 checked={storeConfig.accepts_cash} 
-                onChange={handleConfigInputChange} 
+                disabled
+                readOnly
+                aria-disabled="true"
               />
-              <label className="text-sm font-medium text-slate-700">Accepts Cash</label>
+              <label className="text-sm font-medium text-slate-700">Accepts Cash (managed by GatiMitra)</label>
             </div>
           </div>
           

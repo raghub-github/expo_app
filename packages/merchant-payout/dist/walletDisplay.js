@@ -106,3 +106,63 @@ export function resolveLedgerCategoryLabel(entry) {
         return LEDGER_CATEGORY_LABELS[txType];
     return LEDGER_CATEGORY_LABELS[entry.category] ?? entry.category.replace(/_/g, " ");
 }
+/**
+ * Merchant-facing Status column: withdrawals use Pending / Hold / Settled / Debited / Rejected
+ * instead of generic Credit / Debit.
+ *
+ * The original HOLD_LOCK debit stays "Debited" after reject/fail — the return credit row is "Rejected".
+ */
+export function resolveLedgerRowStatusBadge(entry) {
+    const meta = entry.metadata ?? null;
+    if (meta?.entry_type === "order_cancellation" &&
+        (meta?.balance_impact === "none" ||
+            Number(meta?.cancellation_display?.creditAmount ?? 1) <= 0)) {
+        return { label: "Cancelled", tone: "amber" };
+    }
+    const cat = String(entry.category ?? "").trim().toUpperCase();
+    const payoutStatus = String(meta?.payout_status ?? "").trim().toUpperCase();
+    const direction = String(entry.direction ?? "").trim().toUpperCase();
+    if (cat === "FAILED_WITHDRAWAL_REVERSAL" || cat === "WITHDRAWAL_REVERSAL") {
+        return { label: "Rejected", tone: "red" };
+    }
+    if (cat === "WITHDRAWAL") {
+        // Bank-transfer completion row
+        if (["REJECTED", "CANCELLED", "FAILED", "RETURNED"].includes(payoutStatus)) {
+            return { label: "Debited", tone: "slate" };
+        }
+        return { label: "Settled", tone: "emerald" };
+    }
+    if (isMerchantFacingWithdrawalRequest(entry)) {
+        if (["APPROVED", "PROCESSING", "HOLD"].includes(payoutStatus)) {
+            return { label: "Hold", tone: "yellow" };
+        }
+        if (["REJECTED", "CANCELLED", "FAILED", "RETURNED"].includes(payoutStatus)) {
+            return { label: "Debited", tone: "slate" };
+        }
+        if (payoutStatus === "COMPLETED") {
+            return { label: "Settled", tone: "emerald" };
+        }
+        return { label: "Pending", tone: "amber" };
+    }
+    if (direction === "CREDIT")
+        return { label: "Credit", tone: "emerald" };
+    return { label: "Debit", tone: "red" };
+}
+/** Remarks for the merchant-facing withdrawal request (HOLD_LOCK AVAILABLE debit) row. */
+export function resolveWithdrawalRequestDisplayDescription(entry) {
+    const status = payoutStatusFromEntry(entry);
+    const meta = entry.metadata ?? null;
+    const holdReason = String(meta?.hold_reason ?? meta?.approval_notes ?? meta?.hold_notes ?? "").trim();
+    if (["APPROVED", "PROCESSING", "HOLD"].includes(status)) {
+        return holdReason
+            ? `Withdrawal on hold — ${holdReason}`
+            : "Withdrawal on hold — awaiting release by admin.";
+    }
+    if (["REJECTED", "CANCELLED", "FAILED", "RETURNED"].includes(status)) {
+        return "Withdrawal debited from your wallet.";
+    }
+    if (status === "COMPLETED") {
+        return "Funds have been successfully transferred to the registered bank account.";
+    }
+    return "Withdrawal requested — funds held from your wallet.";
+}

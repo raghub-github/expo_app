@@ -5,6 +5,7 @@ import { useAppPathname } from "@/hooks/useAppSearchParams";
 import {
   CustomerAppSectionProvider,
   isCxAppHomeStateDetailPath,
+  tabFromCustomerAppPath,
   useCustomerAppSection,
 } from "@/components/cxapp-home/CustomerAppSectionContext";
 import { CxAppHomeStateDetailSkeleton } from "@/components/cxapp-home/CxAppHomeStateDetailSkeleton";
@@ -14,10 +15,13 @@ import { CxAppHomeClient } from "./cxapp-home/CxAppHomeClient";
 
 /**
  * Keeps both list UIs mounted and toggles visibility instantly.
- * URL still updates via router.replace so bookmarks / refresh stay correct.
+ * The App Router page slot (`children`) stays mounted for the current route so
+ * header back / parent-route Link clicks are not no-ops.
  */
-function TwinListShell() {
+function TwinListShell({ children }: { children: ReactNode }) {
+  const pathname = useAppPathname();
   const { activeTab } = useCustomerAppSection();
+  const routeTab = tabFromCustomerAppPath(pathname);
   const [mountedCx, setMountedCx] = useState(activeTab === "cxapp-home");
   const [mountedCat, setMountedCat] = useState(activeTab === "app-category");
 
@@ -26,22 +30,19 @@ function TwinListShell() {
     if (activeTab === "app-category") setMountedCat(true);
   }, [activeTab]);
 
+  const showCat = activeTab === "app-category";
+  const showCx = activeTab === "cxapp-home";
+
   return (
     <>
-      {mountedCat ? (
-        <div
-          className={activeTab === "app-category" ? "block" : "hidden"}
-          aria-hidden={activeTab !== "app-category"}
-        >
-          <CustomerAppCategoriesClient />
+      {mountedCat || routeTab === "app-category" ? (
+        <div className={showCat ? "block" : "hidden"} aria-hidden={!showCat}>
+          {routeTab === "app-category" ? children : <CustomerAppCategoriesClient />}
         </div>
       ) : null}
-      {mountedCx ? (
-        <div
-          className={activeTab === "cxapp-home" ? "block" : "hidden"}
-          aria-hidden={activeTab !== "cxapp-home"}
-        >
-          <CxAppHomeClient initialStates={[]} />
+      {mountedCx || routeTab === "cxapp-home" ? (
+        <div className={showCx ? "block" : "hidden"} aria-hidden={!showCx}>
+          {routeTab === "cxapp-home" ? children : <CxAppHomeClient initialStates={[]} />}
         </div>
       ) : null}
     </>
@@ -61,7 +62,7 @@ function ShellInner({ children }: { children: ReactNode }) {
   if (pendingStateDetail) {
     return <CxAppHomeStateDetailSkeleton />;
   }
-  return <TwinListShell />;
+  return <TwinListShell>{children}</TwinListShell>;
 }
 
 export default function CustomerAppAdminLayout({ children }: { children: ReactNode }) {

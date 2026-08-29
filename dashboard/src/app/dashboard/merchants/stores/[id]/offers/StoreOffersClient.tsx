@@ -160,7 +160,7 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
   const [isLoading, setIsLoading] = useState(true);
   const [offers, setOffers] = useState<Offer[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItemForOffer[]>([]);
-  const [pageTab, setPageTab] = useState<"create" | "track">(canEditOffers ? "create" : "track");
+  const [pageTab, setPageTab] = useState<"create" | "track">("track");
   const [trackFilter, setTrackFilter] = useState<OfferTrackFilter>("all");
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);

@@ -49,6 +49,9 @@ export interface WalletSummary {
   paid_amount?: number;
   failed_amount?: number;
   withdrawal_allowed?: boolean;
+  /** From Threshold (`payment_payout_rules`) via wallet engine */
+  min_withdrawal_amount?: number;
+  max_withdrawal_amount?: number;
 }
 
 export type WalletAnalyticsPeriod = 'week' | 'month' | 'quarter';
@@ -220,6 +223,14 @@ async function fetchWallet(storeId: string, options?: { lite?: boolean }): Promi
     paid_amount: data.paid_amount ?? data.total_withdrawn ?? 0,
     failed_amount: data.failed_amount ?? 0,
     withdrawal_allowed: data.withdrawal_allowed !== false && !(data.isFrozen === true || data.is_frozen === true),
+    min_withdrawal_amount:
+      Number.isFinite(Number(data.min_withdrawal_amount)) && Number(data.min_withdrawal_amount) > 0
+        ? Number(data.min_withdrawal_amount)
+        : undefined,
+    max_withdrawal_amount:
+      Number.isFinite(Number(data.max_withdrawal_amount)) && Number(data.max_withdrawal_amount) > 0
+        ? Number(data.max_withdrawal_amount)
+        : undefined,
   };
   return applyPartnerWalletFreezeOverlay(storeId, mapped);
 }
@@ -470,14 +481,16 @@ export function useMerchantWalletAnalytics(
 export function useMerchantPayoutRequests(
   storeId: string | null,
   limit = 5,
-  options?: { enabled?: boolean }
+  options?: { enabled?: boolean; live?: boolean }
 ) {
   const enabled = (options?.enabled ?? true) && !!storeId;
   return useQuery({
     queryKey: merchantKeys.payoutRequests(storeId ?? '', limit),
     queryFn: () => fetchPayoutRequests(storeId!, limit),
     enabled,
-    staleTime: 45 * 1000,
+    staleTime: options?.live ? 0 : 45 * 1000,
+    refetchInterval: options?.live ? 3000 : false,
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -521,7 +534,7 @@ export function usePayoutCycles(storeId: string | null, options?: { enabled?: bo
 export function useMerchantLedger(
   storeId: string | null,
   params: { limit: number; offset: number; from?: string; to?: string; direction?: string; category?: string; search?: string },
-  options?: { enabled?: boolean }
+  options?: { enabled?: boolean; live?: boolean }
 ) {
   const enabled = (options?.enabled ?? true) && !!storeId && isValidPartnerStoreId(storeId);
   return useQuery({
@@ -529,8 +542,10 @@ export function useMerchantLedger(
     queryFn: () => fetchLedger(storeId!, params),
     enabled,
     placeholderData: keepPreviousData,
-    staleTime: 30 * 1000,
+    staleTime: options?.live ? 0 : 30 * 1000,
     refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
+    refetchInterval: options?.live ? 3000 : false,
   });
 }
 

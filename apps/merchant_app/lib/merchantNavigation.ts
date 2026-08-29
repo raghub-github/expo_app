@@ -34,6 +34,7 @@ export function isSafeMerchantPushHref(url: string): boolean {
   if (!path.startsWith("/")) return false;
   if (/^\/order\/\d+$/.test(path)) return true;
   if (/^\/order-review\/\d+$/.test(path)) return true;
+  if (/^\/feedback-reply\/\d+$/.test(path)) return true;
   if (path === "/restaurant-status" || path.startsWith("/restaurant-status/")) return true;
   if (path === "/order-history" || path.startsWith("/order-history/")) return true;
   if (path === "/(tabs)" || path.startsWith("/(tabs)/")) return true;
@@ -103,7 +104,7 @@ export function merchantOrdersTabHrefFromPush(data: Record<string, unknown>): st
   return "/(tabs)/orders?tab=preparing";
 }
 
-/** Flow hub routes (Earnings, Growth, Offers, Reviews). */
+/** Flow hub routes (Earnings, Growth, Offers, Feedback). */
 export function isHubPath(path: string | undefined | null): boolean {
   const p = normalizePath(path);
   return (
@@ -129,6 +130,7 @@ function resolveTabGroup(path: string): MerchantTabGroup {
   if (p === "/order-history" || p.endsWith("/order-history")) return "root";
   if (p.includes("/restaurant-status")) return "root";
   if (p.includes("/order-review/")) return "order-detail";
+  if (p.includes("/feedback-reply/")) return "order-detail";
   if (p.includes("/order/")) return "order-detail";
   if (p.includes("/profile")) return "profile";
   if (p.includes("/menu")) return "menu";
@@ -171,6 +173,7 @@ export function inferMerchantBackFallback(pathname: string | undefined): string 
   if (p.includes("/orders")) return "/(tabs)/orders";
   if (p === "/order-history") return "/(tabs)/orders";
   if (p.includes("/restaurant-status")) return "/(tabs)";
+  if (p.includes("/feedback-reply/")) return "/(tabs)/reviews";
   if (p.includes("/order-review/")) return "/(tabs)/orders?tab=completed";
   if (p.includes("/order/")) return "/(tabs)/orders";
   if (p.includes("/support/chat")) return "/(tabs)/profile/tickets";
@@ -187,6 +190,7 @@ function isRootStackScreen(pathname: string | undefined): boolean {
   return (
     p.includes("/order/") ||
     p.includes("/order-review/") ||
+    p.includes("/feedback-reply/") ||
     p === "/order-history" ||
     p.includes("/restaurant-status")
   );

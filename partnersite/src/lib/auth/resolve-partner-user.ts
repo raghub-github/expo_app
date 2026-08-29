@@ -7,6 +7,7 @@ import { cookies } from "next/headers";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import {
   hasSupabaseAuthCookies,
+  isSupabaseSessionCookieName,
   parseCookieHeaderPairs,
   readCookieAccessSession,
   type CookieReader,
@@ -63,7 +64,7 @@ async function readCookieUser(reader?: CookieReader | null): Promise<PartnerAuth
 
 function cookieReaderFromHeader(header: string): CookieReader | null {
   const pairs = parseCookieHeaderPairs(header);
-  if (!pairs.some((c) => c.name.startsWith("sb-") && c.value)) return null;
+  if (!pairs.some((c) => isSupabaseSessionCookieName(c.name) && c.value)) return null;
   return {
     get: (name: string) => pairs.find((c) => c.name === name),
     getAll: () => pairs,
@@ -80,7 +81,9 @@ export function requestHasPartnerAuthCookies(req?: {
     /* ignore */
   }
   const header = req?.headers?.get?.("cookie") ?? "";
-  return /(?:^|;\s*)sb-/.test(header);
+  return parseCookieHeaderPairs(header).some(
+    (c) => isSupabaseSessionCookieName(c.name) && Boolean(c.value)
+  );
 }
 
 export async function resolvePartnerUser(options?: {

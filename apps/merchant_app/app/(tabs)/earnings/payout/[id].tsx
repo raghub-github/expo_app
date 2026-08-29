@@ -482,9 +482,11 @@ export default function PayoutDetailScreen() {
     : Math.max(0, netPayout);
 
   // Prefer the per-cycle figure passed in from the card: the ledger window sum can also
-  // contain a neighbouring cycle's reversal.
+  // contain a neighbouring cycle's reversal — never show "returned" on Settled payouts.
   const withdrawalReturned =
-    Number(params.withdrawalReturned ?? 0) || settlement.withdrawalReversalCredits || 0;
+    status === "RETURNED" || status === "FAILED"
+      ? Number(params.withdrawalReturned ?? 0) || settlement.withdrawalReversalCredits || 0
+      : 0;
 
   const settlementSections = buildSettlementDetailSections(settlement);
 
@@ -520,12 +522,22 @@ export default function PayoutDetailScreen() {
   const pgTnxId = useMemo(() => {
     const fromParams = params.pgTransactionId?.trim();
     if (fromParams) return fromParams;
+    const payoutRequestId = Number(params.payoutRequestId);
+    if (Number.isFinite(payoutRequestId) && payoutRequestId > 0) {
+      const byRequest = ledger.find(
+        (e) =>
+          e.category === "WITHDRAWAL" &&
+          Number(e.reference_id) === payoutRequestId &&
+          e.pg_transaction_id?.trim(),
+      );
+      if (byRequest?.pg_transaction_id?.trim()) return byRequest.pg_transaction_id.trim();
+    }
     const ledgerId = params.id?.startsWith("w-") ? Number(params.id.slice(2)) : NaN;
     const withdrawal = Number.isFinite(ledgerId)
       ? ledger.find((e) => e.id === ledgerId && e.category === "WITHDRAWAL")
       : ledger.find((e) => e.category === "WITHDRAWAL" && e.pg_transaction_id);
     return withdrawal?.pg_transaction_id?.trim() || "—";
-  }, [ledger, params.id, params.pgTransactionId]);
+  }, [ledger, params.id, params.pgTransactionId, params.payoutRequestId]);
   const accountMasked = bank?.account_number_masked ?? bank?.account_number?.slice(-6) ?? "—";
   const accountHolder = bank?.account_holder_name?.trim() || "—";
   const bankName = bank?.bank_name?.trim() || "";
@@ -588,14 +600,6 @@ export default function PayoutDetailScreen() {
           <>
             <View style={s.sectionHead}>
               <Text style={s.sectionTitle}>Settlement summary</Text>
-              <View style={s.iconRow}>
-                <View style={s.iconBtn}>
-                  <Ionicons name="download-outline" size={18} color={GatiMitraMerchant.textPrimary} />
-                </View>
-                <View style={s.iconBtn}>
-                  <Ionicons name="mail-outline" size={18} color={GatiMitraMerchant.textPrimary} />
-                </View>
-              </View>
             </View>
 
             <View style={s.totalOrdersCard}>

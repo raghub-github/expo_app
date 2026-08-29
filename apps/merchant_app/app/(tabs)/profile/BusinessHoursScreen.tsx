@@ -1,12 +1,35 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert, Modal, TextInput, KeyboardAvoidingView, Platform } from "react-native";
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Platform,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS, BUTTON_RADIUS } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { useStoreStatus } from "@/context/StoreStatusContext";
-import { getOperatingHours, getOperatingHoursFresh, peekOperatingHoursCache, updateOperatingHours, type OperatingHours, type DaySlots } from "@/services/outletApi";
+import {
+  getOperatingHours,
+  getOperatingHoursFresh,
+  peekOperatingHoursCache,
+  updateOperatingHours,
+  type OperatingHours,
+  type DaySlots,
+} from "@/services/outletApi";
+
+let NativeDateTimePicker: ComponentType<any> | null = null;
+try {
+  NativeDateTimePicker = require("@react-native-community/datetimepicker").default;
+} catch {
+  NativeDateTimePicker = null;
+}
 
 const DAY_KEYS: Array<{ key: keyof OperatingHours; label: string }> = [
   { key: "monday", label: "Monday" },
@@ -21,7 +44,9 @@ const DAY_KEYS: Array<{ key: keyof OperatingHours; label: string }> = [
 type DayKey = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
 
 function isDayKey(key: keyof OperatingHours): key is DayKey {
-  return ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].includes(key as string);
+  return ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].includes(
+    key as string
+  );
 }
 
 function formatTime(time: string | null): string {
@@ -59,10 +84,27 @@ function durationLabel(start: string | null, end: string | null): string {
   return "";
 }
 
+function hhmmssFromDate(d: Date): string {
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:00`;
+}
+
+function dateFromTimeString(raw: string | null | undefined, fallbackH = 10, fallbackM = 0): Date {
+  const d = new Date();
+  const t = (raw ?? "").trim();
+  const m = /^(\d{1,2}):(\d{2})/.exec(t);
+  if (m) {
+    d.setHours(Number(m[1]) || 0, Number(m[2]) || 0, 0, 0);
+  } else {
+    d.setHours(fallbackH, fallbackM, 0, 0);
+  }
+  return d;
+}
+
 type LocalDay = DaySlots & { hasSecond: boolean };
 
 type LocalState = {
   is_24_hours: boolean;
+  same_for_all_days: boolean;
   days: Record<DayKey, LocalDay>;
 };
 
@@ -70,8 +112,8 @@ type SlotModalState = {
   visible: boolean;
   dayKey: DayKey;
   slot: 1 | 2;
-  start: string;
-  end: string;
+  start: Date;
+  end: Date;
 };
 
 type CloseWarningState = {
@@ -79,8 +121,9 @@ type CloseWarningState = {
   dayKey: DayKey;
 };
 
+type ActivePicker = "start" | "end" | null;
+
 function todayKey(): DayKey {
-  // JS: Sunday=0 ... Saturday=6
   const idx = new Date().getDay();
   return (["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][idx] ??
     "monday") as DayKey;
@@ -107,7 +150,7 @@ function fromApi(hours: OperatingHours | null): LocalState {
     saturday: makeEmptyDay(),
     sunday: makeEmptyDay(),
   };
-  if (!hours) return { is_24_hours: false, days };
+  if (!hours) return { is_24_hours: false, same_for_all_days: false, days };
   for (const d of DAY_KEYS) {
     const k = d.key;
     if (!isDayKey(k)) continue;
@@ -121,55 +164,21 @@ function fromApi(hours: OperatingHours | null): LocalState {
       hasSecond: !!(src.slot2_start || src.slot2_end),
     };
   }
-  return { is_24_hours: !!hours.is_24_hours, days };
+  return {
+    is_24_hours: !!hours.is_24_hours,
+    same_for_all_days: !!hours.same_for_all_days,
+    days,
+  };
 }
 
-function toApiPayload(local: LocalState): { is_24_hours: boolean; days: Record<string, DaySlots> } {
-  const days: Record<string, DaySlots> = {};
-  for (const d of DAY_KEYS) {
-    const key = d.key as DayKey;
-    const src = local.days[key];
-    days[d.key] = {
-      open: src.open,
-      // Important UX: closing a day should NOT wipe saved slots.
-      // Keep slot values in DB so reopening the day restores times instantly.
-      slot1_start: src.slot1_start,
-      slot1_end: src.slot1_end,
-      slot2_start: src.hasSecond ? src.slot2_start : null,
-      slot2_end: src.hasSecond ? src.slot2_end : null,
-    };
-  }
-  return { is_24_hours: local.is_24_hours, days };
-}
-
-function normalizeTimeInput(raw: string): string {
-  let t = raw.trim();
-  if (!t) return "";
-  // Allow 12.00 or 1200 style input from number pad
-  t = t.replace(/\./g, ":");
-  let m = /^(\d{1,2}):(\d{2})$/.exec(t);
-  if (!m) {
-    const compact = /^(\d{3,4})$/.exec(t);
-    if (compact) {
-      const digits = compact[1];
-      const hPart = digits.length === 3 ? digits.slice(0, 1) : digits.slice(0, 2);
-      const mPart = digits.slice(-2);
-      m = [digits, hPart, mPart] as any;
-    }
-  }
-  if (!m) return t;
-  const h = Number(m[1]);
-  const mm = Number(m[2]);
-  if (!Number.isFinite(h) || !Number.isFinite(mm) || mm < 0 || mm > 59) return t;
-  if (h < 0 || h > 23) return t;
-  return `${h.toString().padStart(2, "0")}:${mm.toString().padStart(2, "0")}`;
-}
-
-function toDbTime(raw: string): string | null {
-  const t = normalizeTimeInput(raw);
-  const m = /^(\d{2}):(\d{2})$/.exec(t);
-  if (!m) return null;
-  return `${m[1]}:${m[2]}:00`;
+function dayToSlots(src: LocalDay): DaySlots {
+  return {
+    open: src.open,
+    slot1_start: src.slot1_start,
+    slot1_end: src.slot1_end,
+    slot2_start: src.hasSecond ? src.slot2_start : null,
+    slot2_end: src.hasSecond ? src.slot2_end : null,
+  };
 }
 
 export default function BusinessHoursScreen() {
@@ -183,7 +192,9 @@ export default function BusinessHoursScreen() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [slotModal, setSlotModal] = useState<SlotModalState | null>(null);
+  const [activePicker, setActivePicker] = useState<ActivePicker>(null);
   const [closeWarning, setCloseWarning] = useState<CloseWarningState | null>(null);
+  const [savedModal, setSavedModal] = useState<{ visible: boolean; message: string } | null>(null);
   const [expandedDays, setExpandedDays] = useState<Set<DayKey>>(
     () => new Set<DayKey>([todayKey()])
   );
@@ -195,9 +206,7 @@ export default function BusinessHoursScreen() {
       else if (!storeId) setError("No store selected.");
       return;
     }
-    // Default accordion state: always expand today's day when screen opens.
     setExpandedDays(new Set<DayKey>([todayKey()]));
-    // Instant paint: hydrate from cache if available (no spinner).
     const cached = peekOperatingHoursCache(storeId);
     if (cached !== undefined) {
       setLocal(fromApi(cached));
@@ -222,7 +231,12 @@ export default function BusinessHoursScreen() {
     };
   }, [storeId, token]);
 
-  const syncToBackend = async (next: LocalState, showToast: boolean) => {
+  /** Partnersite parity: PATCH only the day(s) that changed; backend merges the rest. */
+  const syncDayToBackend = async (
+    next: LocalState,
+    dayKeysToSave: DayKey[],
+    showToast: boolean
+  ) => {
     if (!storeId || !token) {
       setLocal(next);
       return;
@@ -230,16 +244,37 @@ export default function BusinessHoursScreen() {
     setSaving(true);
     setLocal(next);
     try {
-      await updateOperatingHours(storeId, toApiPayload(next), token);
+      const days: Record<string, DaySlots> = {};
+      for (const key of dayKeysToSave) {
+        days[key] = dayToSlots(next.days[key]);
+      }
+      await updateOperatingHours(
+        storeId,
+        {
+          is_24_hours: next.is_24_hours,
+          same_for_all_days: next.same_for_all_days,
+          days,
+        },
+        token
+      );
       const fresh = await getOperatingHoursFresh(storeId, token);
       setLocal(fromApi(fresh));
-      // So Store Status header and countdown update immediately without app reload.
       void refreshStoreStatus();
       if (showToast) {
-        Alert.alert("Saved", "Business hours updated.");
+        const label =
+          dayKeysToSave.length === 1
+            ? DAY_KEYS.find((d) => d.key === dayKeysToSave[0])?.label ?? "Day"
+            : "Timings";
+        setSavedModal({ visible: true, message: `${label} updated.` });
       }
     } catch (e) {
       Alert.alert("Save failed", e instanceof Error ? e.message : "Could not update business hours.");
+      try {
+        const fresh = await getOperatingHoursFresh(storeId, token);
+        setLocal(fromApi(fresh));
+      } catch {
+        /* keep optimistic local */
+      }
     } finally {
       setSaving(false);
     }
@@ -249,19 +284,18 @@ export default function BusinessHoursScreen() {
     if (!local) return;
     const day = local.days[dayKey];
     if (day.open) {
-      // warn before closing
       setCloseWarning({ visible: true, dayKey });
     } else {
       const next: LocalState = {
         ...local,
+        same_for_all_days: false,
         days: {
           ...local.days,
           [dayKey]: { ...day, open: true },
         },
       };
-      // Make it obvious the toggle worked: expand the day immediately.
       setExpandedDays((prev) => new Set<DayKey>([...prev, dayKey]));
-      syncToBackend(next, false);
+      void syncDayToBackend(next, [dayKey], false);
     }
   };
 
@@ -269,47 +303,41 @@ export default function BusinessHoursScreen() {
     if (!local || !closeWarning) return;
     const { dayKey } = closeWarning;
     const cur = local.days[dayKey];
-    const updated: LocalDay = {
-      ...cur,
-      open: false,
-    };
     const next: LocalState = {
       ...local,
-      // When any single day is marked closed, disable 24/7 mode so
-      // remaining days can use individual slots again.
       is_24_hours: false,
+      same_for_all_days: false,
       days: {
         ...local.days,
-        [dayKey]: updated,
+        [dayKey]: { ...cur, open: false },
       },
     };
     setCloseWarning(null);
-    syncToBackend(next, false);
+    void syncDayToBackend(next, [dayKey], false);
   };
 
   const openSlotEditor = (dayKey: DayKey, slot: 1 | 2) => {
     if (!local) return;
     const day = local.days[dayKey];
-    const start = (slot === 1 ? day.slot1_start : day.slot2_start) ?? "";
-    const end = (slot === 1 ? day.slot1_end : day.slot2_end) ?? "";
+    const startRaw = slot === 1 ? day.slot1_start : day.slot2_start;
+    const endRaw = slot === 1 ? day.slot1_end : day.slot2_end;
+    setActivePicker(null);
     setSlotModal({
       visible: true,
       dayKey,
       slot,
-      start: start ? start.slice(0, 5) : "",
-      end: end ? end.slice(0, 5) : "",
+      start: dateFromTimeString(startRaw, 10, 0),
+      end: dateFromTimeString(endRaw, 22, 0),
     });
   };
 
   const saveSlotFromModal = () => {
     if (!local || !slotModal) return;
-    const startDb = toDbTime(slotModal.start);
-    const endDb = toDbTime(slotModal.end);
-    if (!startDb || !endDb) {
-      Alert.alert("Invalid time", "Please enter times in HH:MM (24h) format.");
-      return;
-    }
-    if (endDb <= startDb) {
+    const startDb = hhmmssFromDate(slotModal.start);
+    const endDb = hhmmssFromDate(slotModal.end);
+    const startMin = slotModal.start.getHours() * 60 + slotModal.start.getMinutes();
+    const endMin = slotModal.end.getHours() * 60 + slotModal.end.getMinutes();
+    if (endMin <= startMin) {
       Alert.alert("Invalid range", "End time must be after start time.");
       return;
     }
@@ -324,15 +352,26 @@ export default function BusinessHoursScreen() {
       updated.slot2_start = startDb;
       updated.slot2_end = endDb;
     }
+    if (slot === 2 && updated.slot1_end) {
+      const [h, m] = updated.slot1_end.split(":").map(Number);
+      const slot1EndMin = h * 60 + m;
+      if (startMin <= slot1EndMin) {
+        Alert.alert("Invalid range", "Slot 2 must start after Slot 1 ends.");
+        return;
+      }
+    }
     const next: LocalState = {
       ...local,
+      is_24_hours: false,
+      same_for_all_days: false,
       days: {
         ...local.days,
         [dayKey]: updated,
       },
     };
     setSlotModal(null);
-    syncToBackend(next, true);
+    setActivePicker(null);
+    void syncDayToBackend(next, [dayKey], true);
   };
 
   const removeSlot = (dayKey: DayKey, slot: 1 | 2) => {
@@ -349,18 +388,42 @@ export default function BusinessHoursScreen() {
     }
     const next: LocalState = {
       ...local,
+      same_for_all_days: false,
       days: {
         ...local.days,
         [dayKey]: updated,
       },
     };
-    syncToBackend(next, true);
+    void syncDayToBackend(next, [dayKey], true);
   };
 
   const toggle24Hours = () => {
     if (!local) return;
-    const next: LocalState = { ...local, is_24_hours: !local.is_24_hours };
-    syncToBackend(next, true);
+    const turningOn = !local.is_24_hours;
+    const next: LocalState = {
+      ...local,
+      is_24_hours: turningOn,
+      same_for_all_days: turningOn ? false : local.same_for_all_days,
+    };
+    // 24/7 touches all day columns on the backend — send full week flags via is_24_hours only.
+    void syncDayToBackend(next, turningOn ? [] : (Object.keys(next.days) as DayKey[]), true);
+  };
+
+  const dayLabel = useMemo(() => {
+    if (!slotModal) return "";
+    return DAY_KEYS.find((d) => d.key === slotModal.dayKey)?.label ?? "";
+  }, [slotModal]);
+
+  const onNativeTimeChange = ( whichtime: "start" | "end", event: { type?: string }, date?: Date) => {
+    if (Platform.OS === "android") {
+      setActivePicker(null);
+      if (event?.type === "dismissed" || !date) return;
+    }
+    if (!date) return;
+    setSlotModal((prev) => {
+      if (!prev) return prev;
+      return whichtime === "start" ? { ...prev, start: date } : { ...prev, end: date };
+    });
   };
 
   if (loading) {
@@ -383,7 +446,11 @@ export default function BusinessHoursScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.infoRow}>
           <Ionicons name="time-outline" size={18} color={GatiMitraMerchant.textSecondary} />
           <Text style={styles.infoText}>Configure when your store accepts online orders.</Text>
@@ -398,6 +465,7 @@ export default function BusinessHoursScreen() {
           </View>
           <Pressable
             onPress={toggle24Hours}
+            disabled={saving}
             style={({ pressed }) => [
               styles.openToggle,
               local.is_24_hours ? styles.openToggleOn : styles.openToggleOff,
@@ -417,7 +485,11 @@ export default function BusinessHoursScreen() {
           const isExpanded = expandedDays.has(key);
           const slot1Summary = formatRange(day.slot1_start, day.slot1_end);
           const slot2Summary = day.hasSecond ? formatRange(day.slot2_start, day.slot2_end) : null;
-          const hasAnySlot = !!(day.slot1_start || day.slot1_end || (day.hasSecond && (day.slot2_start || day.slot2_end)));
+          const hasAnySlot = !!(
+            day.slot1_start ||
+            day.slot1_end ||
+            (day.hasSecond && (day.slot2_start || day.slot2_end))
+          );
           return (
             <View key={d.key} style={styles.dayCard}>
               <View style={styles.dayHeaderRow}>
@@ -442,7 +514,9 @@ export default function BusinessHoursScreen() {
                     <Text style={styles.dayLabel}>{d.label}</Text>
                     <Text style={styles.daySubtitle}>
                       {isOpen ? "Open" : "Closed"}
-                      {hasAnySlot ? ` • ${slot1Summary}${slot2Summary ? `, ${slot2Summary}` : ""}` : ""}
+                      {hasAnySlot
+                        ? ` • ${slot1Summary}${slot2Summary ? `, ${slot2Summary}` : ""}`
+                        : ""}
                     </Text>
                   </View>
                   <Ionicons
@@ -453,11 +527,17 @@ export default function BusinessHoursScreen() {
                 </Pressable>
 
                 <View style={styles.dayHeaderRight}>
-                  <Text style={[styles.openPillText, isOpen ? styles.openPillTextOn : styles.openPillTextOff]}>
+                  <Text
+                    style={[
+                      styles.openPillText,
+                      isOpen ? styles.openPillTextOn : styles.openPillTextOff,
+                    ]}
+                  >
                     {isOpen ? "Open" : "Closed"}
                   </Text>
                   <Pressable
                     onPress={() => requestToggleOpen(key)}
+                    disabled={saving}
                     style={({ pressed }) => [
                       styles.openToggle,
                       isOpen ? styles.openToggleOn : styles.openToggleOff,
@@ -471,11 +551,12 @@ export default function BusinessHoursScreen() {
 
               {isExpanded && isOpen && !local.is_24_hours && (
                 <View style={styles.slotsWrapZomato}>
-                  {/* Slot 1 */}
                   <View style={styles.slotRowZ}>
                     <View style={styles.slotLeft}>
                       <Text style={styles.slotLabel}>Slot 1</Text>
-                      <Text style={styles.slotTimeZ}>{formatRange(day.slot1_start, day.slot1_end)}</Text>
+                      <Text style={styles.slotTimeZ}>
+                        {formatRange(day.slot1_start, day.slot1_end)}
+                      </Text>
                       {!!slot1Duration && <Text style={styles.slotDuration}>{slot1Duration}</Text>}
                     </View>
                     <View style={styles.slotActions}>
@@ -500,7 +581,6 @@ export default function BusinessHoursScreen() {
 
                   <View style={styles.divider} />
 
-                  {/* Slot 2 */}
                   <View style={styles.slotRowZ}>
                     <View style={styles.slotLeft}>
                       <Text style={styles.slotLabel}>Slot 2 (optional)</Text>
@@ -537,7 +617,6 @@ export default function BusinessHoursScreen() {
         })}
       </ScrollView>
 
-      {/* Warning modal for closing a day */}
       <Modal
         visible={!!closeWarning?.visible}
         transparent
@@ -552,13 +631,21 @@ export default function BusinessHoursScreen() {
             </Text>
             <View style={styles.modalActions}>
               <Pressable
-                style={({ pressed }) => [styles.modalBtn, styles.modalBtnSecondary, pressed && styles.pressed]}
+                style={({ pressed }) => [
+                  styles.modalBtn,
+                  styles.modalBtnSecondary,
+                  pressed && styles.pressed,
+                ]}
                 onPress={() => setCloseWarning(null)}
               >
                 <Text style={styles.modalBtnSecondaryText}>Cancel</Text>
               </Pressable>
               <Pressable
-                style={({ pressed }) => [styles.modalBtn, styles.modalBtnPrimary, pressed && styles.pressed]}
+                style={({ pressed }) => [
+                  styles.modalBtn,
+                  styles.modalBtnPrimary,
+                  pressed && styles.pressed,
+                ]}
                 onPress={confirmCloseDay}
               >
                 <Text style={styles.modalBtnPrimaryText}>Yes, close</Text>
@@ -568,75 +655,168 @@ export default function BusinessHoursScreen() {
         </Pressable>
       </Modal>
 
-      {/* Slot edit modal */}
+      {/* Saved confirmation (custom modal — not system Alert) */}
+      <Modal
+        visible={!!savedModal?.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSavedModal(null)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setSavedModal(null)}>
+          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>Saved</Text>
+            <Text style={styles.modalMessage}>{savedModal?.message ?? "Timings updated."}</Text>
+            <View style={styles.modalActions}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.modalBtn,
+                  styles.modalBtnPrimary,
+                  pressed && styles.pressed,
+                ]}
+                onPress={() => setSavedModal(null)}
+              >
+                <Text style={styles.modalBtnPrimaryText}>OK</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Slot editor — pick times with native clock, not HH:MM text fields */}
       <Modal
         visible={!!slotModal?.visible}
         transparent
         animationType="fade"
-        onRequestClose={() => setSlotModal(null)}
+        onRequestClose={() => {
+          setSlotModal(null);
+          setActivePicker(null);
+        }}
       >
-        <Pressable style={styles.modalOverlay} onPress={() => setSlotModal(null)}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-            style={styles.modalKeyboard}
-          >
-            <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-              <Text style={styles.modalTitle}>
-                {slotModal?.slot === 1 ? "Edit Slot 1" : "Edit Slot 2"} –{" "}
-                {slotModal ? DAY_KEYS.find((d) => d.key === slotModal.dayKey)?.label : ""}
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => {
+            setSlotModal(null);
+            setActivePicker(null);
+          }}
+        >
+          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>
+              {slotModal?.slot === 1 ? "Edit Slot 1" : "Edit Slot 2"} – {dayLabel}
+            </Text>
+            <Text style={styles.modalMessageSmall}>Tap a time to open the clock picker.</Text>
+
+            <View style={styles.timeInputsRow}>
+              <View style={styles.timeInputWrap}>
+                <Text style={styles.timeInputLabel}>Start</Text>
+                <Pressable
+                  style={({ pressed }) => [styles.timePickerBtn, pressed && styles.pressed]}
+                  onPress={() => setActivePicker("start")}
+                  disabled={NativeDateTimePicker == null}
+                >
+                  <Ionicons name="time-outline" size={18} color={GatiMitraMerchant.primary} />
+                  <Text style={styles.timePickerBtnText}>
+                    {slotModal ? formatTime(hhmmssFromDate(slotModal.start)) : "--"}
+                  </Text>
+                </Pressable>
+              </View>
+              <View style={styles.timeInputWrap}>
+                <Text style={styles.timeInputLabel}>End</Text>
+                <Pressable
+                  style={({ pressed }) => [styles.timePickerBtn, pressed && styles.pressed]}
+                  onPress={() => setActivePicker("end")}
+                  disabled={NativeDateTimePicker == null}
+                >
+                  <Ionicons name="time-outline" size={18} color={GatiMitraMerchant.primary} />
+                  <Text style={styles.timePickerBtnText}>
+                    {slotModal ? formatTime(hhmmssFromDate(slotModal.end)) : "--"}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+
+            {NativeDateTimePicker == null ? (
+              <Text style={styles.pickerUnavailable}>
+                Time picker is not available on this device.
               </Text>
-              <Text style={styles.modalMessageSmall}>Enter times in 24-hour HH:MM format.</Text>
-              <View style={styles.timeInputsRow}>
-                <View style={styles.timeInputWrap}>
-                  <Text style={styles.timeInputLabel}>Start</Text>
-                  <TextInput
-                    style={styles.timeInput}
-                    value={slotModal?.start ?? ""}
-                    onChangeText={(t) => setSlotModal((prev) => (prev ? { ...prev, start: t } : prev))}
-                    keyboardType="number-pad"
-                    placeholder="10:00"
-                    placeholderTextColor={GatiMitraMerchant.textTertiary}
-                  />
-                </View>
-                <View style={styles.timeInputWrap}>
-                  <Text style={styles.timeInputLabel}>End</Text>
-                  <TextInput
-                    style={styles.timeInput}
-                    value={slotModal?.end ?? ""}
-                    onChangeText={(t) => setSlotModal((prev) => (prev ? { ...prev, end: t } : prev))}
-                    keyboardType="number-pad"
-                    placeholder="22:30"
-                    placeholderTextColor={GatiMitraMerchant.textTertiary}
-                  />
-                </View>
+            ) : null}
+
+            {/* iOS: spinner inside the sheet */}
+            {Platform.OS === "ios" && NativeDateTimePicker && activePicker && slotModal ? (
+              <View style={styles.iosPickerWrap}>
+                <NativeDateTimePicker
+                  value={activePicker === "start" ? slotModal.start : slotModal.end}
+                  mode="time"
+                  display="spinner"
+                  onChange={(event: { type?: string }, date?: Date) =>
+                    onNativeTimeChange(activePicker, event, date)
+                  }
+                />
               </View>
-              <View style={styles.modalActions}>
-                <Pressable
-                  style={({ pressed }) => [styles.modalBtn, styles.modalBtnSecondary, pressed && styles.pressed]}
-                  onPress={() => setSlotModal(null)}
-                >
-                  <Text style={styles.modalBtnSecondaryText}>Cancel</Text>
-                </Pressable>
-                <Pressable
-                  style={({ pressed }) => [styles.modalBtn, styles.modalBtnPrimary, pressed && styles.pressed]}
-                  onPress={saveSlotFromModal}
-                >
-                  <Text style={styles.modalBtnPrimaryText}>Save</Text>
-                </Pressable>
-              </View>
-            </Pressable>
-          </KeyboardAvoidingView>
+            ) : null}
+
+            <View style={styles.modalActions}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.modalBtn,
+                  styles.modalBtnSecondary,
+                  pressed && styles.pressed,
+                ]}
+                onPress={() => {
+                  setSlotModal(null);
+                  setActivePicker(null);
+                }}
+              >
+                <Text style={styles.modalBtnSecondaryText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.modalBtn,
+                  styles.modalBtnPrimary,
+                  pressed && styles.pressed,
+                ]}
+                onPress={saveSlotFromModal}
+              >
+                <Text style={styles.modalBtnPrimaryText}>Save</Text>
+              </Pressable>
+            </View>
+          </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Android: system time dialog */}
+      {Platform.OS === "android" &&
+        NativeDateTimePicker &&
+        activePicker &&
+        slotModal && (
+          <NativeDateTimePicker
+            value={activePicker === "start" ? slotModal.start : slotModal.end}
+            mode="time"
+            display="default"
+            is24Hour={false}
+            onChange={(event: { type?: string }, date?: Date) =>
+              onNativeTimeChange(activePicker, event, date)
+            }
+          />
+        )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: GatiMitraMerchant.surfaceWarm },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: H_PADDING },
+  centered: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: H_PADDING,
+  },
   loadingText: { marginTop: 12, fontSize: 14, color: GatiMitraMerchant.textSecondary },
-  errorText: { marginTop: 12, fontSize: 15, color: GatiMitraMerchant.textSecondary, textAlign: "center" },
+  errorText: {
+    marginTop: 12,
+    fontSize: 15,
+    color: GatiMitraMerchant.textSecondary,
+    textAlign: "center",
+  },
 
   scroll: { flex: 1 },
   scrollContent: { padding: H_PADDING, paddingBottom: 40 },
@@ -708,14 +888,21 @@ const styles = StyleSheet.create({
   },
   openToggleThumbOn: { alignSelf: "flex-end" },
 
-  slotsWrap: { marginTop: 10 },
   slotsWrapZomato: { marginTop: 10 },
-  slotRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 },
-  slotRowZ: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 12 },
+  slotRowZ: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
+  },
   slotLeft: { flex: 1, marginRight: 10 },
   slotLabel: { fontSize: 13, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
-  slotTime: { fontSize: 13, color: GatiMitraMerchant.textPrimary, marginTop: 2 },
-  slotTimeZ: { fontSize: 15, fontWeight: "700", color: GatiMitraMerchant.textPrimary, marginTop: 2 },
+  slotTimeZ: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    marginTop: 2,
+  },
   slotDuration: { fontSize: 11, color: GatiMitraMerchant.textTertiary, marginTop: 2 },
   slotActions: { alignItems: "flex-end", gap: 4 },
   slotActionBtn: { paddingVertical: 4, paddingHorizontal: 6 },
@@ -724,9 +911,6 @@ const styles = StyleSheet.create({
 
   divider: { height: 1, backgroundColor: GatiMitraMerchant.divider, marginVertical: 8 },
 
-  twentyFourHint: { marginTop: 10 },
-  twentyFourHintText: { fontSize: 12, color: GatiMitraMerchant.textSecondary },
-
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.4)",
@@ -734,7 +918,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     padding: 20,
   },
-  modalKeyboard: { width: "100%", maxWidth: 400 },
   modalCard: {
     width: "100%",
     maxWidth: 400,
@@ -744,9 +927,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
   },
-  modalTitle: { fontSize: 17, fontWeight: "700", color: GatiMitraMerchant.textPrimary, marginBottom: 8 },
+  modalTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    marginBottom: 8,
+  },
   modalMessage: { fontSize: 14, color: GatiMitraMerchant.textSecondary, marginBottom: 14 },
-  modalMessageSmall: { fontSize: 13, color: GatiMitraMerchant.textSecondary, marginBottom: 10 },
+  modalMessageSmall: {
+    fontSize: 13,
+    color: GatiMitraMerchant.textSecondary,
+    marginBottom: 10,
+  },
   modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: 10, marginTop: 10 },
   modalBtn: {
     paddingVertical: 8,
@@ -758,22 +950,41 @@ const styles = StyleSheet.create({
   modalBtnPrimary: { backgroundColor: GatiMitraMerchant.primary },
   modalBtnSecondary: { backgroundColor: GatiMitraMerchant.surfaceSubtle },
   modalBtnPrimaryText: { fontSize: 14, fontWeight: "600", color: "#fff" },
-  modalBtnSecondaryText: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
+  modalBtnSecondaryText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+  },
 
   timeInputsRow: { flexDirection: "row", gap: 10, marginTop: 6 },
   timeInputWrap: { flex: 1 },
   timeInputLabel: { fontSize: 12, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
-  timeInput: {
+  timePickerBtn: {
     marginTop: 4,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
     borderRadius: 10,
     paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+  },
+  timePickerBtnText: {
     fontSize: 15,
+    fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
+  },
+  pickerUnavailable: {
+    marginTop: 8,
+    fontSize: 12,
+    color: GatiMitraMerchant.textTertiary,
+  },
+  iosPickerWrap: {
+    marginTop: 8,
+    alignItems: "center",
   },
 
   pressed: { opacity: 0.8 },
 });
-

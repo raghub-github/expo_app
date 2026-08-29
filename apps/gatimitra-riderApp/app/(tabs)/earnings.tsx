@@ -251,6 +251,8 @@ export default function EarningsScreen() {
             isLoading={isBankAccountLoading}
             hasBankAccount={display.hasBankAccount}
             canWithdraw={Boolean(display.canWithdraw) && !display.isFrozen}
+            withdrawable={display.withdrawable}
+            minWithdrawal={display.minWithdrawal ?? 100}
             isFrozen={Boolean(display.isFrozen)}
             freezeReason={display.freezeReason ?? null}
             onAddAccount={() => {
@@ -267,6 +269,8 @@ export default function EarningsScreen() {
         <EarningsWithdrawalModal
           visible={withdrawOpen && !display.isFrozen}
           withdrawable={display.withdrawable}
+          minWithdrawal={display.minWithdrawal}
+          maxWithdrawal={display.maxWithdrawal}
           bankAccount={bankAccount}
           onClose={() => setWithdrawOpen(false)}
           onSuccess={() => {

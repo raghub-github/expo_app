@@ -322,11 +322,6 @@ export default function NotificationsScreen() {
           </View>
         </View>
 
-        <View style={styles.helperNote}>
-          <Text style={styles.helperText}>
-            The pill only shows a live count, never order details. New orders also arrive as push notifications even when the app is closed.
-          </Text>
-        </View>
         <View style={styles.prefsSectionHeaderRow}>
           <Text style={styles.prefsTitle}>Store preferences</Text>
           {detailsLoading && (
@@ -489,16 +484,17 @@ export default function NotificationsScreen() {
             style={[
               styles.prefsToggleCard,
               acceptsCash && styles.prefsToggleCardOn,
+              styles.prefsToggleCardDisabled,
             ]}
           >
             <View style={styles.switchRow}>
               <View style={styles.switchLeft}>
                 <Text style={styles.prefsLabel}>Accepts cash</Text>
-                <Text style={styles.prefsHint}>Cash on delivery available</Text>
+                <Text style={styles.prefsHint}>Cash on delivery is managed by GatiMitra and cannot be changed here</Text>
               </View>
               <Switch
                 value={acceptsCash}
-                onValueChange={handleToggleAcceptsCash}
+                disabled
                 trackColor={{ false: "#4B5563", true: GatiMitraMerchant.primary }}
                 thumbColor={acceptsCash ? "#FFFFFF" : "#F9FAFB"}
               />
@@ -662,6 +658,9 @@ const styles = StyleSheet.create({
   prefsToggleCardOn: {
     borderColor: GatiMitraMerchant.primary,
     backgroundColor: "#ECFEF3",
+  },
+  prefsToggleCardDisabled: {
+    opacity: 0.72,
   },
   prefsRow: {
     flexDirection: "row",

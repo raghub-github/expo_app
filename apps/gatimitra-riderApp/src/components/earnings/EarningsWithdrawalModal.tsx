@@ -5,21 +5,22 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  ActivityIndicator,
   Alert,
   Pressable,
 } from "react-native";
 import { useTranslation } from "react-i18next";
-import { colors } from "@/src/theme";
 import type { RiderBankPaymentMethod } from "@/src/services/api/riderApi";
 import { riderApi } from "@/src/services/api/riderApi";
+import { WithdrawProgressButton } from "@/src/components/earnings/WithdrawProgressButton";
 
-const MIN_WITHDRAWAL = 100;
-const MAX_WITHDRAWAL_PER_REQUEST = 100_000;
+const FALLBACK_MIN = 100;
+const FALLBACK_MAX = 100_000;
 
 type Props = {
   visible: boolean;
   withdrawable: number;
+  minWithdrawal?: number;
+  maxWithdrawal?: number;
   bankAccount: RiderBankPaymentMethod | null | undefined;
   onClose: () => void;
   onSuccess: () => void;
@@ -34,13 +35,15 @@ function formatWithdrawalInputAmount(amount: number): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2);
 }
 
-function getMaxWithdrawalLimit(withdrawable: number): number {
-  return Math.min(Math.max(0, withdrawable), MAX_WITHDRAWAL_PER_REQUEST);
+function getMaxWithdrawalLimit(withdrawable: number, maxCap: number): number {
+  return Math.min(Math.max(0, withdrawable), maxCap);
 }
 
 export function EarningsWithdrawalModal({
   visible,
   withdrawable,
+  minWithdrawal,
+  maxWithdrawal,
   bankAccount,
   onClose,
   onSuccess,
@@ -49,17 +52,28 @@ export function EarningsWithdrawalModal({
   const [amount, setAmount] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const maxLimit = getMaxWithdrawalLimit(withdrawable);
-  const canSubmit = maxLimit >= MIN_WITHDRAWAL && !submitting;
+  const minAmount =
+    Number.isFinite(minWithdrawal) && (minWithdrawal as number) > 0
+      ? (minWithdrawal as number)
+      : FALLBACK_MIN;
+  const maxCap =
+    Number.isFinite(maxWithdrawal) && (maxWithdrawal as number) > 0
+      ? (maxWithdrawal as number)
+      : FALLBACK_MAX;
+  const maxLimit = getMaxWithdrawalLimit(withdrawable, maxCap);
+  const canEdit = maxLimit >= minAmount && !submitting;
+  const parsedAmount =
+    amount.trim() === "" || Number.isNaN(parseFloat(amount)) ? 0 : parseFloat(amount);
+  const amountOverMax = parsedAmount > maxLimit;
 
   useEffect(() => {
     if (!visible) return;
-    if (maxLimit >= MIN_WITHDRAWAL) {
+    if (maxLimit >= minAmount) {
       setAmount(formatWithdrawalInputAmount(maxLimit));
     } else {
       setAmount("");
     }
-  }, [visible, maxLimit]);
+  }, [visible, maxLimit, minAmount]);
 
   const handleAmountChange = (raw: string) => {
     if (raw === "") {
@@ -77,10 +91,10 @@ export function EarningsWithdrawalModal({
 
   const handleSubmit = async () => {
     const amt = parseFloat(amount);
-    if (Number.isNaN(amt) || amt < MIN_WITHDRAWAL) {
+    if (Number.isNaN(amt) || amt < minAmount) {
       Alert.alert(
         t("earnings.withdrawInvalid", "Invalid amount"),
-        t("earnings.withdrawMin", "Minimum withdrawal is ₹{{min}}", { min: MIN_WITHDRAWAL }),
+        t("earnings.withdrawMin", "Minimum withdrawal is ₹{{min}}", { min: minAmount }),
       );
       return;
     }
@@ -89,7 +103,8 @@ export function EarningsWithdrawalModal({
         t("earnings.withdrawInvalid", "Invalid amount"),
         t(
           "earnings.withdrawMax",
-          "Amount exceeds available balance or ₹1,00,000 limit",
+          "Amount exceeds available balance or max ₹{{max}}",
+          { max: maxLimit.toLocaleString("en-IN") },
         ),
       );
       return;
@@ -146,9 +161,9 @@ export function EarningsWithdrawalModal({
             value={amount}
             onChangeText={handleAmountChange}
             keyboardType="decimal-pad"
-            editable={canSubmit}
+            editable={canEdit}
             style={styles.input}
-            placeholder={`Min ₹${MIN_WITHDRAWAL}`}
+            placeholder={`Min ₹${minAmount}`}
             placeholderTextColor="#9CA3AF"
           />
 
@@ -156,24 +171,19 @@ export function EarningsWithdrawalModal({
             {t(
               "earnings.withdrawLimits",
               "Min ₹{{min}} · Max ₹{{max}} per request",
-              { min: MIN_WITHDRAWAL, max: MAX_WITHDRAWAL_PER_REQUEST.toLocaleString("en-IN") },
+              { min: minAmount, max: maxLimit.toLocaleString("en-IN") },
             )}
           </Text>
 
-          <TouchableOpacity
-            activeOpacity={0.88}
+          <WithdrawProgressButton
+            current={parsedAmount}
+            minAmount={minAmount}
             onPress={() => void handleSubmit()}
-            disabled={!canSubmit}
-            style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
-          >
-            {submitting ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <Text style={styles.submitText}>
-                {t("earnings.submitWithdrawal", "Submit withdrawal")}
-              </Text>
-            )}
-          </TouchableOpacity>
+            loading={submitting}
+            disabled={!canEdit || amountOverMax}
+            labelReady={t("earnings.submitWithdrawal", "Submit withdrawal")}
+            style={styles.submitProgress}
+          />
 
           <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
             <Text style={styles.cancelText}>{t("common.cancel", "Cancel")}</Text>
@@ -247,21 +257,8 @@ const styles = StyleSheet.create({
     color: "#6B7280",
     textAlign: "center",
   },
-  submitBtn: {
+  submitProgress: {
     marginTop: 20,
-    height: 52,
-    borderRadius: 12,
-    backgroundColor: colors.primary[500],
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  submitBtnDisabled: {
-    opacity: 0.5,
-  },
-  submitText: {
-    color: "#FFFFFF",
-    fontWeight: "700",
-    fontSize: 16,
   },
   cancelBtn: {
     marginTop: 12,

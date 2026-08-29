@@ -53,6 +53,7 @@ export async function GET(request: NextRequest) {
       .select("*")
       .eq("merchant_parent_id", merchant_parent_id)
       .eq("ticket_source", "MERCHANT")
+      .eq("raised_by_type", "MERCHANT")
       .order("created_at", { ascending: false })
       .limit(50);
 

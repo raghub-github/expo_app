@@ -1,9 +1,19 @@
 import { normalizeMenuItemImageUri } from "@/lib/normalizeMenuItemImage";
 
+export type PickStoreLogoPhotoOptions = {
+  /**
+   * Gallery slots (Outlet info) — skip crop UI.
+   * Android Google Photos + allowsEditing often leaves the picker sheet stuck open.
+   */
+  purpose?: "logo" | "gallery";
+};
+
 export async function pickStoreLogoPhoto(
   source: "camera" | "gallery",
+  options?: PickStoreLogoPhotoOptions,
 ): Promise<{ uri: string; type: string; name: string } | null> {
   const ImagePicker = await import("expo-image-picker");
+  const forGallery = options?.purpose === "gallery";
 
   if (source === "camera") {
     const camPerm = await ImagePicker.requestCameraPermissionsAsync?.();
@@ -24,9 +34,10 @@ export async function pickStoreLogoPhoto(
   const pickerOpts = {
     mediaTypes:
       (ImagePicker as { MediaTypeOptions?: { Images: string } }).MediaTypeOptions?.Images ?? "images",
-    allowsEditing: true,
-    aspect: [1, 1] as [number, number],
-    quality: 0.9,
+    // Crop/editor keeps Google Photos open on many Android builds after selection.
+    allowsEditing: !forGallery,
+    ...(forGallery ? {} : { aspect: [1, 1] as [number, number] }),
+    quality: forGallery ? 0.85 : 0.9,
   } as unknown as Parameters<typeof ImagePicker.launchImageLibraryAsync>[0];
 
   const result =
@@ -45,6 +56,6 @@ export async function pickStoreLogoPhoto(
 
   return {
     ...normalized.file,
-    name: "store-logo.jpg",
+    name: forGallery ? "gallery.jpg" : "store-logo.jpg",
   };
 }

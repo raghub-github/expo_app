@@ -48,6 +48,11 @@ function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
 }
 
+function isMerchantComplaintPush(data: Record<string, unknown>): boolean {
+  const t = String(data.type ?? data.event ?? data.gmType ?? data.template_code ?? "").toLowerCase();
+  return t === "merchant_complaint" || data.screen === "complaints";
+}
+
 function isMerchantNewOrderPush(data: Record<string, unknown>): boolean {
   const t = String(data.type ?? data.event ?? data.gmType ?? data.template_code ?? "").toLowerCase();
   return (
@@ -64,10 +69,6 @@ function isMerchantNewOrderPush(data: Record<string, unknown>): boolean {
  * remote push registration is skipped there.
  */
 export default function NotificationSetup() {
-  return <NotificationSetupImpl />;
-}
-
-function NotificationSetupImpl() {
   const router = useRouter();
   const pathname = usePathname();
   const { token: authToken, isAuthenticated, partner } = useAuth();
@@ -181,6 +182,10 @@ function NotificationSetupImpl() {
         router.push("/(tabs)/reviews" as never);
         return;
       }
+      if (data?.screen === "complaints" || String(data.type ?? "") === "merchant_complaint") {
+        router.push("/(tabs)/complaints" as never);
+        return;
+      }
       if (data?.screen === "orders" || data?.type === "store_online") {
         const numeric = extractMerchantFoodOrderIdFromPush(data);
         if (numeric) {
@@ -233,6 +238,12 @@ function NotificationSetupImpl() {
           name: "New orders",
           lightColor: "#3EB489",
           // AndroidImportance.MAX
+          importance: 5,
+        },
+        {
+          channelId: "merchant_complaints",
+          name: "Complaints",
+          lightColor: "#1E3A5F",
           importance: 5,
         },
         { channelId: "merchant_default", name: "Store & Orders", lightColor: "#3EB489" },
@@ -309,16 +320,19 @@ function NotificationSetupImpl() {
           }
           return null;
         };
-        applyIncomingPushRef.current({
-          notificationId: pick("notification_id", "notificationId"),
-          title: pick("gmTitle", "title") ?? payload.title ?? null,
-          body: pick("gmMessage", "body") ?? payload.body ?? null,
-          deepLink: pick("deepLink", "deep_link", "url"),
-          templateCode: pick("template_code", "gmType"),
-          orderId: pick("foodOrderId", "orderId", "order_id"),
-        });
+        if (!isMerchantComplaintPush(data)) {
+          applyIncomingPushRef.current({
+            notificationId: pick("notification_id", "notificationId"),
+            title: pick("gmTitle", "title") ?? payload.title ?? null,
+            body: pick("gmMessage", "body") ?? payload.body ?? null,
+            deepLink: pick("deepLink", "deep_link", "url"),
+            templateCode: pick("template_code", "gmType"),
+            orderId: pick("foodOrderId", "orderId", "order_id"),
+          });
+        }
         dispatchMerchantForegroundPush(payload);
         if (isMerchantNewOrderPush(data)) return;
+        if (isMerchantComplaintPush(data)) return;
         if (isMerchantIdleStatusNotification(data)) return;
         enqueueInAppBannerFromPush(payload);
       },

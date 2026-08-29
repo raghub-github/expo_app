@@ -12,6 +12,7 @@ export type UserInsightReview = {
   type: "Review" | "Complaint";
   message: string;
   response: string;
+  replies?: Array<{ text: string; at: string; images?: string[] }>;
   respondedAt: string | null;
   userType: "new" | "repeated" | "fraud";
   rating: number;

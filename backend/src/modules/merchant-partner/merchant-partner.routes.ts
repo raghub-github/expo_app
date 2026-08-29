@@ -7,6 +7,7 @@ import { getEnv } from "../../config/env.js";
 import { logStoreActivity } from "../../lib/store-activity-feed.js";
 import { syncedGeneratedOfferTitle } from "../../lib/merchant-offer-title.js";
 import { auth } from "../../plugins/auth.js";
+import { writeDeviceSessionCache } from "../../lib/device-session-cache.js";
 import { send as sendNotification } from "../notifications/notificationService.js";
 import {
   isWithinOperatingHours,
@@ -28,6 +29,8 @@ import {
 } from "../../lib/store-surface-online.js";
 import { resolveTicketTitleForUnifiedTicketsInsert } from "./unified-ticket-title-for-insert.js";
 import { buildGrowthBusinessInsights } from "./growth-business-insights.js";
+import { insertSatisfactionRatingAudit } from "../../lib/ticket-satisfaction-audit.js";
+import { repliesApiFields } from "../../lib/merchant-review-replies.js";
 import { buildLivePreviewInsights } from "./live-preview-insights.js";
 import { buildGrowthQuickInsights } from "./growth-quick-insights.js";
 import { buildGrowthKitchenInsights } from "./growth-kitchen-insights.js";
@@ -78,7 +81,7 @@ function auditSectionForField(field: string | null): string {
   if (["store_name", "store_display_name", "store_description", "store_email", "store_phones"].includes(f)) {
     return "store_info";
   }
-  if (["banner_url", "logo_url", "parent_logo_url"].includes(f)) return "media";
+  if (["banner_url", "logo_url", "parent_logo_url", "gallery_images"].includes(f)) return "media";
   if (["pickup_instruction"].includes(f)) return "pickup";
   return "store";
 }
@@ -145,7 +148,7 @@ async function getStoreForPartner(
       SELECT ms.id, ms.store_id, ms.store_name, ms.store_display_name, ms.store_description,
              ms.store_email, ms.store_phones, ms.full_address, ms.landmark, ms.city, ms.state,
              ms.postal_code, ms.country, ms.latitude, ms.longitude,
-             ms.banner_url, ms.cuisine_types, ms.food_categories,
+             ms.banner_url, ms.gallery_images, ms.cuisine_types, ms.food_categories,
              ms.min_order_amount, ms.delivery_radius_km, ms.avg_preparation_time_minutes,
              ms.is_pure_veg, ms.accepts_online_payment, ms.accepts_cash,
              mp.store_logo AS parent_logo_url
@@ -161,7 +164,7 @@ async function getStoreForPartner(
       SELECT ms.id, ms.store_id, ms.store_name, ms.store_display_name, ms.store_description,
              ms.store_email, ms.store_phones, ms.full_address, ms.landmark, ms.city, ms.state,
              ms.postal_code, ms.country, ms.latitude, ms.longitude,
-             ms.banner_url, ms.cuisine_types,
+             ms.banner_url, ms.gallery_images, ms.cuisine_types,
              ARRAY[]::text[] AS food_categories,
              ms.min_order_amount, ms.delivery_radius_km, ms.avg_preparation_time_minutes,
              ms.is_pure_veg, ms.accepts_online_payment, ms.accepts_cash,
@@ -382,12 +385,16 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           }
           try {
             // Use postgres.js tuple expansion for a safe IN (...) clause.
-            await sql`
-              UPDATE user_device_sessions
-              SET is_active = FALSE, last_active = now()
+            const revoked = await sql`
+              DELETE FROM user_device_sessions
               WHERE user_id = ${req.auth.sub} AND id IN ${sql(ids)}
+              RETURNING device_id
             `;
-            return { ok: true };
+            for (const row of revoked as { device_id?: string | null }[]) {
+              const deviceId = row.device_id != null ? String(row.device_id).trim() : "";
+              if (deviceId) writeDeviceSessionCache(req.auth.sub, deviceId, false);
+            }
+            return { ok: true, removed: revoked.length };
           } catch {
             return reply.code(500).send({ error: "logout_failed" });
           }
@@ -411,20 +418,25 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const includeCurrent = body?.includeCurrent ?? false;
           const currentDeviceId = req.auth.device_id;
           try {
+            let revoked: { device_id?: string | null }[] = [];
             if (!includeCurrent && currentDeviceId) {
-              await sql`
-                UPDATE user_device_sessions
-                SET is_active = FALSE, last_active = now()
+              revoked = (await sql`
+                DELETE FROM user_device_sessions
                 WHERE user_id = ${req.auth.sub} AND device_id IS DISTINCT FROM ${currentDeviceId}
-              `;
+                RETURNING device_id
+              `) as { device_id?: string | null }[];
             } else {
-              await sql`
-                UPDATE user_device_sessions
-                SET is_active = FALSE, last_active = now()
+              revoked = (await sql`
+                DELETE FROM user_device_sessions
                 WHERE user_id = ${req.auth.sub}
-              `;
+                RETURNING device_id
+              `) as { device_id?: string | null }[];
             }
-            return { ok: true };
+            for (const row of revoked) {
+              const deviceId = row.device_id != null ? String(row.device_id).trim() : "";
+              if (deviceId) writeDeviceSessionCache(req.auth.sub, deviceId, false);
+            }
+            return { ok: true, removed: revoked.length };
           } catch {
             return reply.code(500).send({ error: "logout_all_failed" });
           }
@@ -564,6 +576,9 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           logo_url: store.parent_logo_url ?? null,
           banner_url: store.banner_url ?? null,
           parent_logo_url: store.parent_logo_url ?? null,
+          gallery_images: Array.isArray(store.gallery_images)
+            ? (store.gallery_images as unknown[]).filter((g): g is string => typeof g === "string" && g.trim().length > 0)
+            : [],
           cuisine_types: store.cuisine_types ?? [],
           food_categories: store.food_categories ?? [],
           pickup_instruction: pickupInstruction,
@@ -733,7 +748,15 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
         if (typeof b.is_pure_veg === "boolean") updates.is_pure_veg = b.is_pure_veg;
         if (typeof b.accepts_online_payment === "boolean") updates.accepts_online_payment = b.accepts_online_payment;
-        if (typeof b.accepts_cash === "boolean") updates.accepts_cash = b.accepts_cash;
+        // COD / accepts_cash is platform-managed — ignore client toggles.
+        if (Array.isArray(b.gallery_images)) {
+          const cleaned = (b.gallery_images as unknown[])
+            .filter((g): g is string => typeof g === "string")
+            .map((g) => g.trim())
+            .filter(Boolean)
+            .slice(0, 5);
+          updates.gallery_images = cleaned;
+        }
         if (Object.keys(updates).length === 0) {
           return reply.send({ ok: true, message: "no_updates" });
         }
@@ -748,6 +771,12 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             [...values, storeId, parentId]
           );
         };
+        // Best-effort: delete orphaned gallery R2 keys when gallery_images shrinks/replaces.
+        const prevGallery: string[] = Array.isArray((existing as any).gallery_images)
+          ? ((existing as any).gallery_images as unknown[]).filter(
+              (g): g is string => typeof g === "string" && g.trim().length > 0
+            )
+          : [];
         try {
           await runStoreUpdate(updates);
         } catch (e) {
@@ -760,6 +789,22 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             await runStoreUpdate(updates);
           } else {
             throw e;
+          }
+        }
+        if (Array.isArray(updates.gallery_images)) {
+          try {
+            const { deleteFromR2 } = await import("../../services/r2/r2Service.js");
+            const nextSet = new Set(updates.gallery_images as string[]);
+            for (const prev of prevGallery) {
+              if (nextSet.has(prev)) continue;
+              const m = /key=([^&]+)/.exec(prev);
+              const prevKey = m?.[1] ? decodeURIComponent(m[1]) : null;
+              if (prevKey && /\/gallery\//i.test(prevKey)) {
+                deleteFromR2(prevKey).catch(() => undefined);
+              }
+            }
+          } catch {
+            /* ignore R2 cleanup failures */
           }
         }
         const parentRow = await getParentForAudit(sql, parentId);
@@ -1214,7 +1259,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         return reply.send(out);
       });
 
-      /** PATCH /merchant-partner/stores/:storeId/operating-hours — upsert. */
+      /** PATCH /merchant-partner/stores/:storeId/operating-hours — upsert (partnersite-parity merge). */
       protectedApp.patch<{ Params: { storeId: string }; Body: any }>("/stores/:storeId/operating-hours", async (req, reply) => {
         if (req.auth?.role !== "merchant" || !req.auth?.sub) {
           return reply.code(401).send({ error: "merchant_required" });
@@ -1231,14 +1276,30 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         `;
         if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
         const b = (req.body || {}) as Record<string, unknown>;
-        const is24 = b.is_24_hours === true;
-        const sameForAll = b.same_for_all_days === true;
-        const closedDaysRaw = is24 ? [] : Array.isArray(b.closed_days) ? b.closed_days : [];
-        const closedDays = closedDaysRaw.filter((x): x is string => typeof x === "string");
         const existingRows = await sql`SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1`;
         const existing = existingRows as any[];
+        const existingRow = (existing[0] as Record<string, unknown> | undefined) ?? null;
         const dayKeys = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
+
+        // Partnersite parity: only overwrite fields that were explicitly sent.
+        // Missing days keep their existing DB values (single-day edits must not reset the week).
+        const is24 =
+          typeof b.is_24_hours === "boolean"
+            ? b.is_24_hours
+            : existingRow
+              ? existingRow.is_24_hours === true
+              : false;
+        const sameForAll =
+          typeof b.same_for_all_days === "boolean"
+            ? b.same_for_all_days
+            : existingRow
+              ? existingRow.same_for_all_days === true
+              : false;
+
         const dayPayload = (b.days || {}) as Record<string, Record<string, unknown>>;
+        const hasDayPayload = Object.keys(dayPayload).some((k) =>
+          (dayKeys as readonly string[]).includes(k)
+        );
 
         const normalizeTime = (v: unknown): string | null => {
           if (v == null || v === "") return null;
@@ -1254,7 +1315,26 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           return null;
         };
 
-        const buildSlots = (day: string) => {
+        const existingSlots = (day: (typeof dayKeys)[number]) => {
+          if (!existingRow) {
+            return {
+              open: false,
+              slot1_start: null as string | null,
+              slot1_end: null as string | null,
+              slot2_start: null as string | null,
+              slot2_end: null as string | null,
+            };
+          }
+          return {
+            open: existingRow[`${day}_open`] === true,
+            slot1_start: normalizeTime(existingRow[`${day}_slot1_start`]),
+            slot1_end: normalizeTime(existingRow[`${day}_slot1_end`]),
+            slot2_start: normalizeTime(existingRow[`${day}_slot2_start`]),
+            slot2_end: normalizeTime(existingRow[`${day}_slot2_end`]),
+          };
+        };
+
+        const buildSlots = (day: (typeof dayKeys)[number]) => {
           if (is24) {
             return {
               open: true,
@@ -1264,15 +1344,44 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               slot2_end: null as string | null,
             };
           }
+          const prev = existingSlots(day);
+          if (!(day in dayPayload)) {
+            // Day not in this PATCH — keep existing values.
+            return prev;
+          }
           const d = dayPayload[day] || {};
           return {
             open: d.open === true,
-            slot1_start: normalizeTime(d.slot1_start),
-            slot1_end: normalizeTime(d.slot1_end),
-            slot2_start: normalizeTime(d.slot2_start),
-            slot2_end: normalizeTime(d.slot2_end),
+            slot1_start: "slot1_start" in d ? normalizeTime(d.slot1_start) : prev.slot1_start,
+            slot1_end: "slot1_end" in d ? normalizeTime(d.slot1_end) : prev.slot1_end,
+            slot2_start: "slot2_start" in d ? normalizeTime(d.slot2_start) : prev.slot2_start,
+            slot2_end: "slot2_end" in d ? normalizeTime(d.slot2_end) : prev.slot2_end,
           };
         };
+
+        // Recompute closed_days from final day open flags unless client sent an explicit array.
+        const builtByDay = Object.fromEntries(dayKeys.map((d) => [d, buildSlots(d)])) as Record<
+          (typeof dayKeys)[number],
+          ReturnType<typeof buildSlots>
+        >;
+        let closedDays: string[] | null;
+        if (is24) {
+          closedDays = null;
+        } else if (Array.isArray(b.closed_days)) {
+          closedDays = (b.closed_days as unknown[])
+            .filter((x): x is string => typeof x === "string")
+            .filter((d) => (dayKeys as readonly string[]).includes(d));
+          closedDays = closedDays.length > 0 ? closedDays : null;
+        } else if (hasDayPayload || existingRow == null) {
+          const computed = dayKeys.filter((d) => !builtByDay[d].open);
+          closedDays = computed.length > 0 ? computed : null;
+        } else {
+          const raw = existingRow.closed_days;
+          closedDays = Array.isArray(raw)
+            ? (raw as unknown[]).filter((x): x is string => typeof x === "string")
+            : null;
+          if (closedDays && closedDays.length === 0) closedDays = null;
+        }
 
         try {
           if (existing.length > 0) {
@@ -1280,9 +1389,9 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             const updateParams = [
               is24,
               sameForAll,
-              closedDays.length > 0 ? closedDays : null,
+              closedDays,
               ...dayKeys.flatMap((d) => {
-                const s = buildSlots(d);
+                const s = builtByDay[d];
                 return [s.open, s.slot1_start, s.slot1_end, s.slot2_start, s.slot2_end];
               }),
               id,
@@ -1302,7 +1411,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             );
           } else {
             const slots = dayKeys.flatMap((d) => {
-              const s = buildSlots(d);
+              const s = builtByDay[d];
               return [s.open, s.slot1_start, s.slot1_end, s.slot2_start, s.slot2_end];
             });
             const placeholders = Array.from({ length: 39 }, (_, i) => `$${i + 1}`).join(", ");
@@ -1316,7 +1425,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                 saturday_open, saturday_slot1_start, saturday_slot1_end, saturday_slot2_start, saturday_slot2_end,
                 sunday_open, sunday_slot1_start, sunday_slot1_end, sunday_slot2_start, sunday_slot2_end)
                 VALUES (${placeholders})`,
-              [storeId, is24, sameForAll, closedDays.length > 0 ? closedDays : null, ...slots]
+              [storeId, is24, sameForAll, closedDays, ...slots]
             );
           }
         } catch (err: unknown) {
@@ -4056,6 +4165,127 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         },
       );
 
+      /**
+       * POST /merchant-partner/stores/:storeId/upload-gallery-image
+       * Multipart: file, optional slot (0–4). Uploads to same R2 gallery path as partnersite,
+       * stores `/api/attachments/proxy?key=...` in merchant_stores.gallery_images (max 5).
+       */
+      protectedApp.post<{ Params: { storeId: string } }>(
+        "/stores/:storeId/upload-gallery-image",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeCheck = await sql`
+            SELECT ms.id, ms.store_id AS store_code, ms.gallery_images,
+                   mp.parent_merchant_id AS parent_code, ms.parent_id
+            FROM merchant_stores ms
+            LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
+            WHERE ms.id = ${storeId} AND ms.parent_id = ${parentId} AND ms.deleted_at IS NULL
+            LIMIT 1
+          `;
+          if ((storeCheck as any[]).length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const data = await (req as any).file?.();
+          if (!data) return reply.code(400).send({ error: "no_file" });
+          const fileBuffer = await data.toBuffer();
+          if (fileBuffer.length > 10 * 1024 * 1024) return reply.code(400).send({ error: "file_too_large" });
+          const mime = data.mimetype || "image/jpeg";
+          const filename = String(data.filename || "gallery.jpg");
+          const slotRaw =
+            (req.query as { slot?: string } | undefined)?.slot ??
+            (typeof (data as { fields?: { slot?: { value?: string } } }).fields?.slot?.value === "string"
+              ? (data as { fields?: { slot?: { value?: string } } }).fields?.slot?.value
+              : null);
+
+          const existingGallery: string[] = Array.isArray((storeCheck[0] as any).gallery_images)
+            ? ((storeCheck[0] as any).gallery_images as unknown[])
+                .filter((g): g is string => typeof g === "string" && g.trim().length > 0)
+                .map((g) => g.trim())
+            : [];
+          // Normalize to 5 slots (partnersite parity) — empty holes as ""
+          const slots: string[] = Array.from({ length: 5 }, (_, i) => existingGallery[i] ?? "");
+          let slot =
+            slotRaw != null && String(slotRaw).trim() !== ""
+              ? Number(slotRaw)
+              : slots.findIndex((s) => !s);
+          if (!Number.isInteger(slot) || slot < 0 || slot > 4) {
+            return reply.code(400).send({ error: "invalid_slot", message: "slot must be 0–4" });
+          }
+          if (!slots[slot] && existingGallery.filter(Boolean).length >= 5) {
+            return reply.code(400).send({ error: "gallery_full", message: "Maximum 5 gallery images" });
+          }
+
+          const ext = (filename && /\.(webp|jpe?g|png)$/i.exec(filename)?.[1]) || "jpg";
+          const safeExt = ext.toLowerCase() === "jpeg" ? "jpg" : ext.toLowerCase();
+          const storeCode = String((storeCheck[0] as any).store_code ?? storeId);
+          const parentCode = String((storeCheck[0] as any).parent_code ?? parentId);
+          const key = `docs/merchants/${parentCode}/stores/${storeCode}/onboarding/assets/gallery/gallery_${Date.now()}_${slot}.${safeExt}`;
+
+          const { uploadToR2, deleteFromR2 } = await import("../../services/r2/r2Service.js");
+          let uploadedKey: string | null = null;
+          try {
+            const result = await uploadToR2(fileBuffer, key, mime);
+            uploadedKey = result.key;
+          } catch (e: any) {
+            req.log.error(e, "gallery_image_upload_failed");
+            return reply.code(500).send({ error: "upload_failed", message: e?.message });
+          }
+
+          // Partnersite stores /api/… proxy URLs — keep the same shape for shared DB rows.
+          const imageUrl = `/api/attachments/proxy?key=${encodeURIComponent(uploadedKey)}`;
+          const prevUrl = slots[slot];
+          slots[slot] = imageUrl;
+          const nextGallery = slots.filter(Boolean);
+
+          await sql`
+            UPDATE merchant_stores
+            SET gallery_images = ${nextGallery}, updated_at = NOW()
+            WHERE id = ${storeId} AND parent_id = ${parentId}
+          `;
+
+          if (prevUrl) {
+            try {
+              const m = /key=([^&]+)/.exec(prevUrl);
+              const prevKey = m?.[1] ? decodeURIComponent(m[1]) : null;
+              if (prevKey && prevKey !== uploadedKey) {
+                deleteFromR2(prevKey).catch(() => undefined);
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+
+          try {
+            await logStoreActivity({
+              storeId,
+              section: "media",
+              action: "gallery_upload",
+              summary: `Uploaded gallery image (slot ${slot + 1})`,
+              diff: { slot, gallery_images: nextGallery, r2_key: uploadedKey },
+              actorType: "merchant",
+              source: "merchant_app",
+            });
+          } catch {}
+
+          return reply.code(201).send({
+            success: true,
+            image_url: imageUrl,
+            gallery_images: nextGallery,
+            slot,
+            r2_key: uploadedKey,
+          });
+        },
+      );
+
       /** DELETE /merchant-partner/stores/:storeId/store-logo — clear parent brand logo. */
       protectedApp.delete<{ Params: { storeId: string } }>(
         "/stores/:storeId/store-logo",
@@ -6155,7 +6385,122 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
-      /** GET /merchant-partner/stores/:storeId/ratings/complaints — list low-rated reviews (complaints) for this store. */
+      function isFeedbackImageRef(raw: string): boolean {
+        const t = raw.trim().toLowerCase();
+        if (!t) return false;
+        if (/\.(pdf|mp3|wav|m4a|mp4|mov|webm|doc|docx)(\?|$)/i.test(t)) return false;
+        return true;
+      }
+
+      function asPositiveInt(v: unknown): number | null {
+        if (v == null || v === "") return null;
+        const n = typeof v === "number" ? v : Number(v);
+        if (!Number.isFinite(n)) return null;
+        const i = Math.trunc(n);
+        return i > 0 ? i : null;
+      }
+
+      async function customerOrderCountsForStore(
+        sql: ReturnType<typeof getSql>,
+        storeId: number,
+        customerIds: Array<unknown>,
+      ): Promise<Map<number, number>> {
+        const ids = [
+          ...new Set(
+            customerIds.map(asPositiveInt).filter((n): n is number => n != null),
+          ),
+        ];
+        const map = new Map<number, number>();
+        if (ids.length === 0) return map;
+        const rows = await sql`
+          SELECT customer_id, COUNT(*)::int AS cnt
+          FROM orders_core
+          WHERE merchant_store_id = ${storeId}
+            AND customer_id = ANY(${ids}::bigint[])
+          GROUP BY customer_id
+        `;
+        for (const r of rows as unknown as Array<{ customer_id: unknown; cnt: unknown }>) {
+          const cid = asPositiveInt(r.customer_id);
+          if (cid != null) map.set(cid, Number(r.cnt) || 0);
+        }
+        return map;
+      }
+
+      function parseFeedbackImages(raw: unknown): string[] {
+        const out: string[] = [];
+        const push = (s: string) => {
+          const t = s.trim();
+          if (t && isFeedbackImageRef(t) && !out.includes(t)) out.push(t);
+        };
+        const walk = (v: unknown) => {
+          if (v == null) return;
+          if (typeof v === "string") {
+            const s = v.trim();
+            if (!s) return;
+            if ((s.startsWith("[") || s.startsWith("{")) && (s.includes("http") || s.includes("/") || s.includes("key"))) {
+              try {
+                walk(JSON.parse(s));
+                return;
+              } catch {
+                /* fall through */
+              }
+            }
+            push(s);
+            return;
+          }
+          if (Array.isArray(v)) {
+            v.forEach(walk);
+            return;
+          }
+          if (typeof v === "object") {
+            const o = v as Record<string, unknown>;
+            const storageKey =
+              (typeof o.storageKey === "string" && o.storageKey.trim()) ||
+              (typeof o.key === "string" && o.key.trim()) ||
+              "";
+            const u = o.url ?? o.src ?? o.uri;
+            if (storageKey) push(storageKey);
+            else if (typeof u === "string") push(u);
+          }
+        };
+        walk(raw);
+        return out.slice(0, 8).map(toMerchantAppFeedbackImageUrl).filter(Boolean);
+      }
+
+      function toMerchantAppFeedbackImageUrl(raw: string): string {
+        const s = raw.trim();
+        if (!s) return s;
+        if (s.startsWith("data:")) return s;
+        if (s.startsWith("/v1/attachments/proxy")) return s;
+        if (s.startsWith("/api/attachments/proxy")) {
+          return `/v1/attachments/proxy${s.slice("/api/attachments/proxy".length)}`;
+        }
+        try {
+          const u = /^https?:\/\//i.test(s) ? new URL(s) : new URL(s, "http://local.invalid");
+          const key = u.searchParams.get("key");
+          if (key) {
+            let decoded = key;
+            try {
+              decoded = decodeURIComponent(key);
+            } catch {
+              /* keep */
+            }
+            return `/v1/attachments/proxy?key=${encodeURIComponent(decoded)}`;
+          }
+          if (/^https?:\/\//i.test(s) && (/\.r2\./i.test(u.hostname) || /cloudflarestorage/i.test(u.hostname))) {
+            const pathKey = u.pathname.replace(/^\/+/, "");
+            if (pathKey) return `/v1/attachments/proxy?key=${encodeURIComponent(pathKey)}`;
+          }
+        } catch {
+          /* ignore */
+        }
+        if (!s.startsWith("/") && !s.includes(" ")) {
+          return `/v1/attachments/proxy?key=${encodeURIComponent(s.replace(/^\/+/, ""))}`;
+        }
+        return s;
+      }
+
+      /** GET /merchant-partner/stores/:storeId/ratings/complaints — low ratings + order-related tickets. */
       protectedApp.get<{ Params: { storeId: string } }>(
         "/stores/:storeId/ratings/complaints",
         async (req, reply) => {
@@ -6176,56 +6521,201 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           `;
           if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
 
+          const toIso = (v: Date | string | null | undefined): string | null => {
+            if (v == null) return null;
+            if (v instanceof Date) return Number.isFinite(v.getTime()) ? v.toISOString() : null;
+            const d = new Date(String(v));
+            return Number.isFinite(d.getTime()) ? d.toISOString() : String(v);
+          };
+
+          const formattedFromMetadata = (metadata: unknown): string | null => {
+            if (metadata == null) return null;
+            let obj: Record<string, unknown>;
+            if (typeof metadata === "string") {
+              try {
+                obj = JSON.parse(metadata) as Record<string, unknown>;
+              } catch {
+                return null;
+              }
+            } else if (typeof metadata === "object") {
+              obj = metadata as Record<string, unknown>;
+            } else {
+              return null;
+            }
+            const pick = (node: unknown): string | null => {
+              if (node == null || typeof node !== "object") return null;
+              const v = (node as Record<string, unknown>).formatted_order_id;
+              return typeof v === "string" && v.trim() ? v.trim() : null;
+            };
+            return pick(obj.customer_help) ?? pick(obj.live_order_support);
+          };
+
           // Complaints = ratings 1–3 for this merchant store.
           const rows = await sql`
-            SELECT id,
-                   store_id,
-                   order_id,
-                   customer_id,
-                   rating,
-                   review_title,
-                   review_text,
-                   merchant_response,
-                   merchant_responded_at,
-                   is_flagged,
-                   created_at
-            FROM merchant_store_ratings
-            WHERE store_id = ${storeId}
-              AND rating <= 3
-            ORDER BY created_at DESC
+            SELECT msr.id,
+                   msr.store_id,
+                   msr.order_id,
+                   msr.customer_id,
+                   msr.rating,
+                   msr.review_title,
+                   msr.review_text,
+                   msr.review_images,
+                   msr.merchant_response,
+                   msr.merchant_responses,
+                   msr.merchant_responded_at,
+                   msr.is_flagged,
+                   msr.created_at,
+                   oc.formatted_order_id,
+                   c.full_name AS customer_name,
+                   c.profile_image_url AS customer_avatar_url
+            FROM merchant_store_ratings msr
+            LEFT JOIN orders_core oc ON oc.id = msr.order_id
+            LEFT JOIN customers c ON c.id = msr.customer_id
+            WHERE msr.store_id = ${storeId}
+              AND msr.rating <= 3
+            ORDER BY msr.created_at DESC
             LIMIT 200
           `;
 
-          const data = (rows as unknown as Array<{
-            id: number;
-            store_id: number;
+          const ratingItems = (rows as unknown as Array<{
+            id: unknown;
             order_id: number | null;
-            customer_id: number | null;
+            customer_id: unknown;
             rating: number;
             review_title: string | null;
             review_text: string | null;
+            review_images: unknown;
             merchant_response: string | null;
+            merchant_responses: unknown;
             merchant_responded_at: Date | string | null;
             is_flagged: boolean | null;
             created_at: Date | string;
+            formatted_order_id: string | null;
+            customer_name: string | null;
+            customer_avatar_url: string | null;
           }>).map((r) => ({
-            id: r.id,
+            id: asPositiveInt(r.id) ?? Number(r.id),
+            source: "rating" as "rating" | "ticket",
             overallRating: r.rating,
             reviewTitle: r.review_title,
             reviewText: r.review_text,
-            replyText: r.merchant_response,
-            repliedAt:
-              r.merchant_responded_at instanceof Date
-                ? r.merchant_responded_at.toISOString()
-                : r.merchant_responded_at
-                ? String(r.merchant_responded_at)
-                : null,
+            ...repliesApiFields(r.merchant_responses, r.merchant_response, r.merchant_responded_at),
             isFlagged: r.is_flagged === true,
-            createdAt:
-              r.created_at instanceof Date
-                ? r.created_at.toISOString()
-                : String(r.created_at),
+            createdAt: toIso(r.created_at) ?? new Date().toISOString(),
+            orderId: r.order_id != null ? Number(r.order_id) : null,
+            foodOrderId: null as number | null,
+            formattedOrderId: r.formatted_order_id ? String(r.formatted_order_id) : null,
+            ticketPublicId: null as string | null,
+            ticketStatus: null as string | null,
+            reviewImages: parseFeedbackImages(r.review_images),
+            customerName: r.customer_name != null ? String(r.customer_name).trim() || null : null,
+            customerAvatarUrl:
+              r.customer_avatar_url != null ? String(r.customer_avatar_url).trim() || null : null,
+            orderCount: 0,
           }));
+
+          // Order-linked tickets (customer mentioned / attached an order ID) also surface as complaints.
+          let ticketItems: typeof ratingItems = [];
+          try {
+            const ticketRows = await sql`
+              SELECT ut.id,
+                     ut.ticket_id,
+                     ut.subject,
+                     ut.description,
+                     ut.status,
+                     ut.order_id,
+                     ut.created_at,
+                     ut.ticket_type::text AS ticket_type,
+                     ut.metadata,
+                     ut.attachments,
+                     ut.raised_by_name,
+                     oc.formatted_order_id AS core_formatted_order_id
+              FROM unified_tickets ut
+              LEFT JOIN orders_core oc ON oc.id = ut.order_id
+              WHERE (
+                ut.merchant_store_id = ${storeId}
+                OR oc.merchant_store_id = ${storeId}
+              )
+                AND ut.raised_by_type = 'CUSTOMER'::unified_ticket_source
+                AND (
+                  ut.order_id IS NOT NULL
+                  OR ut.ticket_type::text = 'ORDER_RELATED'
+                  OR COALESCE(ut.subject, '') ~* '(GM[A-Z]{0,3}[0-9]{4,})'
+                  OR COALESCE(ut.description, '') ~* '(GM[A-Z]{0,3}[0-9]{4,})'
+                  OR COALESCE(ut.metadata::text, '') ~* '(GM[A-Z]{0,3}[0-9]{4,})'
+                )
+              ORDER BY ut.created_at DESC
+              LIMIT 200
+            `;
+            ticketItems = (ticketRows as unknown as Array<{
+              id: number;
+              ticket_id: string | null;
+              subject: string | null;
+              description: string | null;
+              status: string | null;
+              order_id: number | null;
+              created_at: Date | string;
+              ticket_type: string | null;
+              metadata: unknown;
+              attachments: unknown;
+              raised_by_name: string | null;
+              core_formatted_order_id: string | null;
+            }>).map((t) => ({
+              id: Number(t.id),
+              source: "ticket" as "rating" | "ticket",
+              overallRating: 0,
+              reviewTitle: t.subject ? String(t.subject) : "Order complaint",
+              reviewText: t.description ? String(t.description) : null,
+              ...repliesApiFields(null, null, null),
+              isFlagged: false,
+              createdAt: toIso(t.created_at) ?? new Date().toISOString(),
+              orderId: t.order_id != null ? Number(t.order_id) : null,
+              foodOrderId: null as number | null,
+              formattedOrderId:
+                (t.core_formatted_order_id ? String(t.core_formatted_order_id) : null) ??
+                formattedFromMetadata(t.metadata),
+              ticketPublicId: null as string | null,
+              ticketStatus: t.status ? String(t.status) : null,
+              reviewImages: parseFeedbackImages(t.attachments),
+              customerName: t.raised_by_name != null ? String(t.raised_by_name).trim() || null : null,
+              customerAvatarUrl: null as string | null,
+              orderCount: 0,
+            }));
+            const ticketPks = ticketItems.map((t) => t.id).filter((id) => Number.isInteger(id) && id > 0);
+            if (ticketPks.length > 0) {
+              try {
+                const msgRows = await sql`
+                  SELECT ticket_id, attachments
+                  FROM unified_ticket_messages
+                  WHERE ticket_id = ANY(${ticketPks}::bigint[])
+                    AND COALESCE(is_internal_note, FALSE) = FALSE
+                    AND attachments IS NOT NULL
+                `;
+                const extraByTicket = new Map<number, unknown[]>();
+                for (const row of msgRows as unknown as Array<{ ticket_id: number; attachments: unknown }>) {
+                  const tid = Number(row.ticket_id);
+                  const prev = extraByTicket.get(tid) ?? [];
+                  extraByTicket.set(tid, [...prev, row.attachments]);
+                }
+                ticketItems = ticketItems.map((t) => {
+                  const extra = extraByTicket.get(t.id);
+                  if (!extra?.length) return t;
+                  const merged = parseFeedbackImages([...(t.reviewImages ?? []), ...extra]);
+                  return { ...t, reviewImages: merged };
+                });
+              } catch (msgErr) {
+                req.log.warn({ err: msgErr, storeId }, "complaints ticket message attachments hydrate failed");
+              }
+            }
+          } catch (e) {
+            req.log.warn({ err: e, storeId }, "complaints ticket hydrate failed");
+          }
+
+          const data = [...ratingItems, ...ticketItems].sort((a, b) => {
+            const ta = Date.parse(a.createdAt) || 0;
+            const tb = Date.parse(b.createdAt) || 0;
+            return tb - ta;
+          });
 
           return reply.send({ success: true, data });
         }
@@ -6234,7 +6724,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
       /** GET /merchant-partner/stores/:storeId/ratings/reviews — list reviews with optional date & rating filters. */
       protectedApp.get<{
         Params: { storeId: string };
-        Querystring: { from?: string; to?: string; minRating?: string; orderId?: string };
+        Querystring: { from?: string; to?: string; minRating?: string; orderId?: string; reviewId?: string };
       }>("/stores/:storeId/ratings/reviews", async (req, reply) => {
         if (req.auth?.role !== "merchant" || !req.auth?.sub) {
           return reply.code(401).send({ error: "merchant_required" });
@@ -6256,6 +6746,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
 
         const minRating = req.query.minRating ? Number(req.query.minRating) : null;
         const orderIdFilter = req.query.orderId ? Number(req.query.orderId) : null;
+        const reviewIdFilter = asPositiveInt(req.query.reviewId);
         const from =
           req.query.from && !Number.isNaN(Date.parse(req.query.from))
             ? new Date(req.query.from)
@@ -6265,43 +6756,81 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             ? new Date(req.query.to)
             : null;
 
-        const rows = await sql`
-          SELECT msr.id,
-                 msr.store_id,
-                 msr.order_id,
-                 msr.customer_id,
-                 msr.rating,
-                 msr.review_title,
-                 msr.review_text,
-                 msr.merchant_response,
-                 msr.merchant_responded_at,
-                 msr.created_at,
-                 c.full_name AS customer_name,
-                 oc.formatted_order_id
-          FROM merchant_store_ratings msr
-          LEFT JOIN customers c ON c.id = msr.customer_id
-          LEFT JOIN orders_core oc ON oc.id = msr.order_id
-          WHERE msr.store_id = ${storeId}
-          ORDER BY msr.created_at DESC
-          LIMIT 200
-        `;
+        const rows = reviewIdFilter
+          ? await sql`
+              SELECT msr.id,
+                     msr.store_id,
+                     msr.order_id,
+                     msr.customer_id,
+                     msr.rating,
+                     msr.review_title,
+                     msr.review_text,
+                     msr.review_images,
+                     msr.merchant_response,
+                     msr.merchant_responses,
+                     msr.merchant_responded_at,
+                     msr.created_at,
+                     c.full_name AS customer_name,
+                     c.profile_image_url AS customer_avatar_url,
+                     oc.formatted_order_id,
+                     ofd.id AS food_order_id
+              FROM merchant_store_ratings msr
+              LEFT JOIN customers c ON c.id = msr.customer_id
+              LEFT JOIN orders_core oc ON oc.id = msr.order_id
+              LEFT JOIN orders_food ofd ON ofd.order_id = msr.order_id
+              WHERE msr.store_id = ${storeId}
+                AND msr.id = ${reviewIdFilter}
+              LIMIT 1
+            `
+          : await sql`
+              SELECT msr.id,
+                     msr.store_id,
+                     msr.order_id,
+                     msr.customer_id,
+                     msr.rating,
+                     msr.review_title,
+                     msr.review_text,
+                     msr.review_images,
+                     msr.merchant_response,
+                     msr.merchant_responses,
+                     msr.merchant_responded_at,
+                     msr.created_at,
+                     c.full_name AS customer_name,
+                     c.profile_image_url AS customer_avatar_url,
+                     oc.formatted_order_id,
+                     ofd.id AS food_order_id
+              FROM merchant_store_ratings msr
+              LEFT JOIN customers c ON c.id = msr.customer_id
+              LEFT JOIN orders_core oc ON oc.id = msr.order_id
+              LEFT JOIN orders_food ofd ON ofd.order_id = msr.order_id
+              WHERE msr.store_id = ${storeId}
+              ORDER BY msr.created_at DESC
+              LIMIT 200
+            `;
 
         const typedRows = rows as unknown as Array<{
-          id: number;
-          store_id: number;
-          order_id: number | null;
-          customer_id: number | null;
+          id: unknown;
+          store_id: unknown;
+          order_id: unknown;
+          customer_id: unknown;
+          food_order_id: unknown;
           rating: number;
           review_title: string | null;
           review_text: string | null;
+          review_images: unknown;
           merchant_response: string | null;
+          merchant_responses: unknown;
           merchant_responded_at: Date | string | null;
           created_at: Date | string;
           customer_name: string | null;
+          customer_avatar_url: string | null;
           formatted_order_id: string | null;
         }>;
 
         const filteredRows = typedRows.filter((r) => {
+          if (reviewIdFilter != null) {
+            return asPositiveInt(r.id) === reviewIdFilter;
+          }
           if (
             orderIdFilter != null &&
             Number.isFinite(orderIdFilter) &&
@@ -6323,22 +6852,32 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           return true;
         });
 
-        const data = filteredRows.map((r) => ({
-          id: r.id,
-          orderId: r.order_id,
-          overallRating: r.rating,
-          reviewTitle: r.review_title,
-          reviewText: r.review_text,
-          replyText: r.merchant_response,
-          repliedAt:
-            r.merchant_responded_at instanceof Date
-              ? r.merchant_responded_at.toISOString()
-              : r.merchant_responded_at ? String(r.merchant_responded_at) : null,
-          createdAt:
-            r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
-          customerName: r.customer_name != null ? String(r.customer_name).trim() || null : null,
-          formattedOrderId: r.formatted_order_id != null ? String(r.formatted_order_id).trim() || null : null,
-        }));
+        const reviewCountMap = await customerOrderCountsForStore(
+          sql,
+          storeId,
+          filteredRows.map((r) => r.customer_id),
+        );
+
+        const data = filteredRows.map((r) => {
+          const customerId = asPositiveInt(r.customer_id);
+          return {
+            id: asPositiveInt(r.id) ?? Number(r.id),
+            orderId: asPositiveInt(r.order_id),
+            foodOrderId: asPositiveInt(r.food_order_id),
+            overallRating: Number(r.rating) || 0,
+            reviewTitle: r.review_title,
+            reviewText: r.review_text,
+            ...repliesApiFields(r.merchant_responses, r.merchant_response, r.merchant_responded_at),
+            createdAt:
+              r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+            customerName: r.customer_name != null ? String(r.customer_name).trim() || null : null,
+            customerAvatarUrl:
+              r.customer_avatar_url != null ? String(r.customer_avatar_url).trim() || null : null,
+            formattedOrderId: r.formatted_order_id != null ? String(r.formatted_order_id).trim() || null : null,
+            orderCount: customerId != null ? reviewCountMap.get(customerId) ?? 0 : 0,
+            reviewImages: parseFeedbackImages(r.review_images),
+          };
+        });
 
         return reply.send({ success: true, data });
       });
@@ -6374,16 +6913,52 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         `;
         if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
 
+        const nowIso = new Date().toISOString();
+        const nextItemJson = JSON.stringify([{ text: replyText, at: nowIso }]);
         const result = await sql`
           UPDATE merchant_store_ratings
-          SET merchant_response = ${replyText},
+          SET merchant_responses = (
+                CASE
+                  WHEN jsonb_typeof(COALESCE(merchant_responses, '[]'::jsonb)) = 'array'
+                       AND jsonb_array_length(COALESCE(merchant_responses, '[]'::jsonb)) > 0
+                    THEN COALESCE(merchant_responses, '[]'::jsonb)
+                  WHEN merchant_response IS NOT NULL AND btrim(merchant_response) <> ''
+                    THEN jsonb_build_array(jsonb_build_object(
+                      'text', merchant_response,
+                      'at', to_char(
+                        timezone('UTC', COALESCE(merchant_responded_at, updated_at, created_at)),
+                        'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+                      )
+                    ))
+                  ELSE '[]'::jsonb
+                END
+              ) || ${nextItemJson}::text::jsonb,
+              merchant_response = ${replyText},
               merchant_responded_at = now(),
               updated_at = now()
           WHERE id = ${reviewId} AND store_id = ${storeId}
+            AND jsonb_array_length(
+              CASE
+                WHEN jsonb_typeof(COALESCE(merchant_responses, '[]'::jsonb)) = 'array'
+                     AND jsonb_array_length(COALESCE(merchant_responses, '[]'::jsonb)) > 0
+                  THEN COALESCE(merchant_responses, '[]'::jsonb)
+                WHEN merchant_response IS NOT NULL AND btrim(merchant_response) <> ''
+                  THEN jsonb_build_array(jsonb_build_object('text', merchant_response))
+                ELSE '[]'::jsonb
+              END
+            ) < 20
           RETURNING id
         `;
         if (result.length === 0) {
-          return reply.code(404).send({ error: "review_not_found" });
+          const exists = await sql`
+            SELECT id FROM merchant_store_ratings
+            WHERE id = ${reviewId} AND store_id = ${storeId}
+            LIMIT 1
+          `;
+          if (exists.length === 0) {
+            return reply.code(404).send({ error: "review_not_found" });
+          }
+          return reply.code(409).send({ error: "reply_cap" });
         }
 
         return reply.send({ success: true });
@@ -6418,6 +6993,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         const result = await sql`
           UPDATE merchant_store_ratings
           SET merchant_response = NULL,
+              merchant_responses = '[]'::jsonb,
               merchant_responded_at = NULL,
               updated_at = now()
           WHERE id = ${reviewId} AND store_id = ${storeId}
@@ -7357,6 +7933,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           FROM unified_tickets
           WHERE merchant_store_id = ${storeId}
             AND merchant_parent_id = ${parentId}
+            AND ticket_source = 'MERCHANT'::unified_ticket_source
+            AND raised_by_type = 'MERCHANT'::unified_ticket_source
           ORDER BY created_at DESC, id DESC
           LIMIT 50
         `;
@@ -8205,6 +8783,13 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         if (rows.length === 0) return reply.code(404).send({ error: "ticket_not_found" });
 
         const row = rows[0] as any;
+        await insertSatisfactionRatingAudit(sql, {
+          ticketId: ticketIdNum,
+          rating,
+          feedback: body.feedback ?? null,
+          actorType: "MERCHANT",
+          actorName: "Merchant",
+        });
         return reply.send({
           ok: true,
           ticket: {

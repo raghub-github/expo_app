@@ -25,6 +25,31 @@ async function resolveStoreInternalId(db: ReturnType<typeof getDb>, storeId: str
   return data.id as number;
 }
 
+async function readMerchantPayoutAmountLimits(
+  db: ReturnType<typeof getDb>
+): Promise<{ minAmount: number; maxAmount: number }> {
+  const fallback = { minAmount: 100, maxAmount: 100_000 };
+  try {
+    const { data, error } = await db
+      .from('payment_payout_rules')
+      .select('min_payout_amount, max_payout_amount')
+      .eq('party_type', 'MERCHANT')
+      .eq('is_active', true)
+      .order('id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) return fallback;
+    const min = Number(data.min_payout_amount);
+    const max = Number(data.max_payout_amount);
+    return {
+      minAmount: Number.isFinite(min) && min > 0 ? min : fallback.minAmount,
+      maxAmount: Number.isFinite(max) && max > 0 ? max : fallback.maxAmount,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 /**
  * GET /api/merchant/wallet?storeId=GMMC1015
  * Returns wallet summary (V2) for the store: all balance buckets,
@@ -300,6 +325,8 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    const payoutLimits = await readMerchantPayoutAmountLimits(db);
+
     return NextResponse.json({
       success: true,
       wallet_id: walletId,
@@ -328,6 +355,8 @@ export async function GET(req: NextRequest) {
       isFrozen: String(status).toUpperCase() === 'FROZEN',
       freezeReason: String(status).toUpperCase() === 'FROZEN' ? freezeReason : null,
       frozenAt: String(status).toUpperCase() === 'FROZEN' ? frozenAt : null,
+      min_withdrawal_amount: payoutLimits.minAmount,
+      max_withdrawal_amount: payoutLimits.maxAmount,
     });
     });
   } catch (e) {

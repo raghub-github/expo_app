@@ -8,6 +8,7 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
+import { insertSatisfactionRatingAudit } from "@/lib/tickets/satisfaction-activity-audit";
 
 export const runtime = "nodejs";
 
@@ -69,6 +70,13 @@ export async function POST(
       console.error("[POST /api/merchant/stores/[id]/tickets/[ticketId]/rate]", e);
       return NextResponse.json({ success: false, error: "Update failed" }, { status: 500 });
     }
+    await insertSatisfactionRatingAudit(sqlClient, {
+      ticketId,
+      rating,
+      feedback,
+      actorType: "MERCHANT",
+      actorName: "Merchant",
+    });
     return NextResponse.json({ success: true });
   } catch (e) {
     console.error("[POST /api/merchant/stores/[id]/tickets/[ticketId]/rate]", e);

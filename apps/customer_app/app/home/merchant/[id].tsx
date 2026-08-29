@@ -709,7 +709,11 @@ export default function MerchantDetailScreen() {
   const hasHeroVideo = Boolean((merchantBannerHeroVideoUri ?? "").trim());
   const hasHeroBanner = Boolean((merchantBannerHeroUri ?? "").trim());
 
-  /** Grocery: banner or video bleeds under status bar; food: video only. */
+  /**
+   * Classic / Grid First: immersive hero for any store type when admin uploaded
+   * a banner video (same as grocery). Grocery also immerses on static banner.
+   * Discovery keeps its own chrome (no classic hero row).
+   */
   const immersiveHeroVideo =
     !isDiscoveryLayout &&
     (hasHeroVideo || (isGroceryStoreType && hasHeroBanner));

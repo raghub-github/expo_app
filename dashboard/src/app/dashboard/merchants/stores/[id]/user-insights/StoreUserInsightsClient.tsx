@@ -34,6 +34,7 @@ interface Review {
   type: "Review" | "Complaint";
   message: string;
   response: string;
+  replies?: Array<{ text: string; at: string; images?: string[] }>;
   respondedAt: string | null;
   userType: "repeated" | "new" | "fraud";
   rating: number;
@@ -590,6 +591,14 @@ function UserInsightsContent({ storeId }: { storeId: string }) {
                   ...r,
                   response: newResponse,
                   respondedAt: new Date().toISOString(),
+                  replies: [
+                    ...(Array.isArray(r.replies) ? r.replies : []),
+                    {
+                      text: message || "",
+                      at: new Date().toISOString(),
+                      ...(uploadedImageUrls.length > 0 ? { images: uploadedImageUrls } : {}),
+                    },
+                  ],
                 }
               : r,
           ),
@@ -1105,45 +1114,63 @@ function UserInsightsContent({ storeId }: { storeId: string }) {
                                   {review.message}
                                 </div>
 
-                                {review.response ? (
-                                  <div className="mt-6 rounded-xl border border-orange-200 bg-orange-50 p-4">
-                                    <p className="text-xs font-semibold text-orange-800 mb-2">
-                                      Your response
-                                    </p>
-                                    {(() => {
-                                      const { text, images } = parseResponseMedia(review.response);
-                                      return (
-                                        <>
-                                          {text ? (
-                                            <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
-                                              {text}
+                                {(() => {
+                                  const replyItems =
+                                    Array.isArray(review.replies) && review.replies.length > 0
+                                      ? review.replies
+                                      : review.response &&
+                                          !/support ticket\s+tkt-/i.test(review.response) &&
+                                          !/\bTKT-\d{4}-\d+/i.test(review.response)
+                                        ? [{ text: review.response, at: review.respondedAt ?? review.date }]
+                                        : [];
+                                  if (replyItems.length === 0) return null;
+                                  return (
+                                    <div className="mt-6 space-y-3">
+                                      {replyItems.map((reply, ridx) => {
+                                        const parsed = parseResponseMedia(reply.text || "");
+                                        const images = [
+                                          ...(Array.isArray(reply.images) ? reply.images : []),
+                                          ...parsed.images,
+                                        ].filter(Boolean);
+                                        const text = parsed.text || (!images.length ? reply.text : "");
+                                        return (
+                                          <div
+                                            key={`${reply.at ?? ridx}-${ridx}`}
+                                            className="rounded-xl border border-orange-200 bg-orange-50 p-4"
+                                          >
+                                            <p className="text-xs font-semibold text-orange-800 mb-2">
+                                              Your response
                                             </p>
-                                          ) : null}
-                                          {images.length > 0 ? (
-                                            <div className="mt-3 grid grid-cols-3 gap-2">
-                                              {images.map((img, idx) => (
-                                                <a key={idx} href={img} target="_blank" rel="noreferrer">
-                                                  <img
-                                                    src={img}
-                                                    alt=""
-                                                    className="h-24 w-full rounded-lg border border-orange-200 object-cover"
-                                                  />
-                                                </a>
-                                              ))}
-                                            </div>
-                                          ) : null}
-                                        </>
-                                      );
-                                    })()}
-                                  </div>
-                                ) : null}
+                                            {text ? (
+                                              <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
+                                                {text}
+                                              </p>
+                                            ) : null}
+                                            {images.length > 0 ? (
+                                              <div className="mt-3 grid grid-cols-3 gap-2">
+                                                {images.map((img, idx) => (
+                                                  <a key={idx} href={img} target="_blank" rel="noreferrer">
+                                                    <img
+                                                      src={img}
+                                                      alt=""
+                                                      className="h-24 w-full rounded-lg border border-orange-200 object-cover"
+                                                    />
+                                                  </a>
+                                                ))}
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             </div>
                           </div>
 
                           {/* Bottom: fixed reply */}
-                          {!review.response ? (
-                            <div className="flex-shrink-0 border-t border-gray-200 bg-white px-6 py-4">
+                          <div className="flex-shrink-0 border-t border-gray-200 bg-white px-6 py-4">
                               <div className="relative w-full">
                                 <textarea
                                   value={responseValue}
@@ -1172,7 +1199,6 @@ function UserInsightsContent({ storeId }: { storeId: string }) {
                                 </button>
                               </div>
                             </div>
-                          ) : null}
                         </div>
                       );
                     })()
