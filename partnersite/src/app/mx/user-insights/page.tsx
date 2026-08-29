@@ -39,9 +39,83 @@ import {
 import { SkeletonReviewRow } from "@/components/PageSkeleton";
 import { UserInsightsOrderDetailsSidesheet } from "@/components/merchant/UserInsightsOrderDetailsSidesheet";
 import { getTicketAttachmentViewUrl } from "@/lib/ticket-attachment-url";
+import { FeedbackImageLightbox } from "@/components/FeedbackImageLightbox";
 import { MobileHamburgerButton } from "@/components/MobileHamburgerButton";
 import { createClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
+
+function complaintOpenClosed(review: {
+  type: "Review" | "Complaint";
+  source?: "rating" | "ticket";
+  ticketStatus?: string | null;
+  response?: string;
+  replies?: unknown[];
+}): "OPEN" | "CLOSED" | null {
+  if (review.type !== "Complaint") return null;
+  const status = String(review.ticketStatus ?? "").toUpperCase();
+  if (status.includes("RESOLVE") || status.includes("CLOSE")) return "CLOSED";
+  if (review.source === "ticket") return "OPEN";
+  const response = String(review.response ?? "").trim();
+  const replyCount = Array.isArray(review.replies) ? review.replies.length : 0;
+  if ((response || replyCount > 0) && !/support ticket\s+tkt-/i.test(response) && !/\bTKT-\d{4}-\d+/i.test(response)) {
+    return "CLOSED";
+  }
+  return "OPEN";
+}
+
+function isMerchantSupportTicket(row: { ticket_source?: unknown; raised_by_type?: unknown }) {
+  const source = String(row.ticket_source ?? "").toUpperCase();
+  const raised = String(row.raised_by_type ?? "").toUpperCase();
+  return source === "MERCHANT" && (raised === "MERCHANT" || raised === "");
+}
+
+function customerFaceInitial(name: string): string {
+  const trimmed = (name ?? "").trim();
+  if (!trimmed) return "C";
+  return trimmed.charAt(0).toUpperCase();
+}
+
+function usableCustomerPhotoSrc(url?: string | null): string {
+  const raw = typeof url === "string" ? url.trim() : "";
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  if (lower.includes("fallback.png")) return "";
+  if (lower.includes("d=mp") || lower.includes("d=404")) return "";
+  return getTicketAttachmentViewUrl(raw) || raw;
+}
+
+function CustomerFace({
+  name,
+  url,
+  sizeClass = "h-9 w-9 text-xs",
+}: {
+  name: string;
+  url?: string | null;
+  sizeClass?: string;
+}) {
+  const src = usableCustomerPhotoSrc(url);
+  const [imgFailed, setImgFailed] = useState(false);
+
+  useEffect(() => {
+    setImgFailed(false);
+  }, [src]);
+
+  return (
+    <div
+      className={`${sizeClass} relative shrink-0 overflow-hidden rounded-full bg-gray-100 flex items-center justify-center font-semibold text-gray-700`}
+    >
+      <span className="leading-none">{customerFaceInitial(name)}</span>
+      {src && !imgFailed ? (
+        <img
+          src={src}
+          alt=""
+          className="absolute inset-0 h-full w-full rounded-full object-cover"
+          onError={() => setImgFailed(true)}
+        />
+      ) : null}
+    </div>
+  );
+}
 
 const INBOX_PANEL =
   "rounded-xl border border-gray-200 bg-white shadow-sm";
@@ -56,6 +130,7 @@ interface Review {
   id: number;
   customerId: number;
   customerName: string;
+  customerAvatarUrl?: string | null;
   customerEmail: string | null;
   customerMobile: string | null;
   orderId: number | null;
@@ -65,6 +140,7 @@ interface Review {
   type: "Review" | "Complaint";
   message: string;
   response: string;
+  replies?: Array<{ text: string; at: string; images?: string[] }>;
   respondedAt: string | null;
   userType: "repeated" | "new" | "fraud";
   rating: number;
@@ -77,6 +153,8 @@ interface Review {
   isVerified: boolean;
   isFlagged: boolean;
   flagReason: string | null;
+  source?: "rating" | "ticket";
+  ticketStatus?: string | null;
 }
 
 interface Stats {
@@ -692,6 +770,8 @@ const UserInsightsContent = () => {
   >({});
   const [filter, setFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [complaintDatePreset, setComplaintDatePreset] = useState<"7d" | "21d" | "30d" | "all">("7d");
+  const [mediaViewer, setMediaViewer] = useState<{ urls: string[]; index: number } | null>(null);
 
   // Default to User Insights view (reviews/complaints). Support Inbox only when user clicks "Inbox".
   const [showQueueView, setShowQueueView] = useState(false);
@@ -877,7 +957,19 @@ const UserInsightsContent = () => {
         const res = await fetch(`/api/merchant/reviews?storeId=${storeId}`);
         const data = await res.json();
         if (data.success) {
-          setReviews(data.reviews || []);
+          const incoming = Array.isArray(data.reviews) ? data.reviews : [];
+          setReviews(
+            incoming.map((row: Review) => {
+              const isTicket =
+                row.source === "ticket" || /support ticket\s+tkt-/i.test(String(row.response ?? ""));
+              return {
+                ...row,
+                source: isTicket ? "ticket" : row.source ?? "rating",
+                response: isTicket ? "" : String(row.response ?? ""),
+                replies: isTicket ? [] : Array.isArray(row.replies) ? row.replies : [],
+              };
+            }),
+          );
           setStats(
             data.stats || {
               total: 0,
@@ -904,9 +996,9 @@ const UserInsightsContent = () => {
     try {
       const res = await fetch("/api/merchant/tickets/list");
       const data = await res.json();
-      if (data.success && Array.isArray(data.tickets)) {
-        setTickets(data.tickets);
-      }
+        if (data.success && Array.isArray(data.tickets)) {
+          setTickets(data.tickets.filter((t: { ticket_source?: unknown; raised_by_type?: unknown }) => isMerchantSupportTicket(t)));
+        }
     } catch (error) {
       console.error("Error fetching tickets:", error);
     } finally {
@@ -1694,6 +1786,14 @@ const UserInsightsContent = () => {
                   ...r,
                   response: newResponse,
                   respondedAt: new Date().toISOString(),
+                  replies: [
+                    ...(Array.isArray(r.replies) ? r.replies : []),
+                    {
+                      text: message || "",
+                      at: new Date().toISOString(),
+                      ...(uploadedImageUrls.length > 0 ? { images: uploadedImageUrls } : {}),
+                    },
+                  ],
                 }
               : r,
           ),
@@ -1720,12 +1820,27 @@ const UserInsightsContent = () => {
     setResponseText((prev) => ({ ...prev, [id]: value }));
   };
 
-  const filteredReviewsBase =
-    filter === "all"
-      ? reviews
-      : filter === "review"
-        ? reviews.filter((r) => r.type === "Review")
-        : reviews.filter((r) => r.type === "Complaint");
+  const filteredReviewsBase = useMemo(() => {
+    let list =
+      filter === "all"
+        ? reviews
+        : filter === "review"
+          ? reviews.filter((r) => r.type === "Review")
+          : reviews.filter((r) => r.type === "Complaint");
+
+    if (filter === "complaint" && complaintDatePreset !== "all") {
+      const days = complaintDatePreset === "7d" ? 7 : complaintDatePreset === "21d" ? 21 : 30;
+      const from = new Date();
+      from.setHours(0, 0, 0, 0);
+      from.setDate(from.getDate() - days);
+      const fromT = from.getTime();
+      list = list.filter((r) => {
+        const t = Date.parse(r.date);
+        return Number.isFinite(t) && t >= fromT;
+      });
+    }
+    return list;
+  }, [reviews, filter, complaintDatePreset]);
 
   const filteredReviews = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -3347,7 +3462,7 @@ const UserInsightsContent = () => {
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       placeholder="Search reviews"
-                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
+                      className="h-7 w-full rounded-lg border border-gray-200 bg-white px-2.5 text-xs outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20"
                     />
                   </div>
 
@@ -3355,7 +3470,7 @@ const UserInsightsContent = () => {
                     <div className="flex gap-1">
                       <button
                         type="button"
-                        className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
+                        className={`h-7 px-2.5 inline-flex items-center rounded-lg text-xs font-medium transition-all ${
                           filter === "all"
                             ? "bg-gray-900 text-white"
                             : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"
@@ -3366,7 +3481,7 @@ const UserInsightsContent = () => {
                       </button>
                       <button
                         type="button"
-                        className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
+                        className={`h-7 px-2.5 inline-flex items-center rounded-lg text-xs font-medium transition-all ${
                           filter === "review"
                             ? "bg-green-600 text-white"
                             : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"
@@ -3377,7 +3492,7 @@ const UserInsightsContent = () => {
                       </button>
                       <button
                         type="button"
-                        className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
+                        className={`h-7 px-2.5 inline-flex items-center rounded-lg text-xs font-medium transition-all ${
                           filter === "complaint"
                             ? "bg-amber-600 text-white"
                             : "bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"
@@ -3387,10 +3502,30 @@ const UserInsightsContent = () => {
                         Complaints
                       </button>
                     </div>
-                    <span className="text-[11px] text-gray-500">
+                    <span className="text-[11px] text-gray-500 shrink-0">
                       {filteredReviews.length}/{reviews.length}
                     </span>
                   </div>
+                  {filter === "complaint" ? (
+                    <div className="px-3 pb-3">
+                      <label className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-700">
+                        <Calendar size={14} className="text-gray-500" />
+                        <select
+                          value={complaintDatePreset}
+                          onChange={(e) =>
+                            setComplaintDatePreset(e.target.value as "7d" | "21d" | "30d" | "all")
+                          }
+                          className="bg-transparent outline-none text-xs font-medium text-gray-800"
+                          aria-label="Complaint date range"
+                        >
+                          <option value="7d">Last 7 days</option>
+                          <option value="21d">Last 21 days</option>
+                          <option value="30d">Last 30 days</option>
+                          <option value="all">All time</option>
+                        </select>
+                      </label>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2 scrollbar-hide">
@@ -3405,6 +3540,7 @@ const UserInsightsContent = () => {
                   ) : filteredReviews.length > 0 ? (
                     filteredReviews.map((review) => {
                       const active = expandedReview === review.id;
+                      const status = complaintOpenClosed(review);
                       return (
                         <button
                           key={review.id}
@@ -3417,14 +3553,7 @@ const UserInsightsContent = () => {
                           }`}
                         >
                           <div className="flex items-start gap-2">
-                            <div className="h-9 w-9 rounded-full bg-gray-100 flex items-center justify-center text-xs font-semibold text-gray-700 shrink-0">
-                              {review.customerName
-                                .split(" ")
-                                .map((n) => n[0])
-                                .join("")
-                                .substring(0, 2)
-                                .toUpperCase()}
-                            </div>
+                            <CustomerFace name={review.customerName} url={review.customerAvatarUrl} />
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center justify-between gap-2">
                                 <p className="text-sm font-semibold text-gray-900 truncate">
@@ -3436,6 +3565,15 @@ const UserInsightsContent = () => {
                               </div>
                               <div className="mt-1 flex items-center gap-1 flex-wrap">
                                 {getReviewTypeTag(review.type)}
+                                {status ? (
+                                  <span
+                                    className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-extrabold tracking-wide text-white ${
+                                      status === "CLOSED" ? "bg-emerald-500" : "bg-orange-400"
+                                    }`}
+                                  >
+                                    {status}
+                                  </span>
+                                ) : null}
                                 {review.rating ? (
                                   <span className="inline-flex items-center gap-0.5 rounded-full bg-yellow-50 px-2 py-0.5 text-[10px] font-semibold text-yellow-700">
                                     <Star size={10} className="fill-yellow-500 text-yellow-500" />
@@ -3446,6 +3584,13 @@ const UserInsightsContent = () => {
                               <p className="mt-1 text-xs text-gray-600 line-clamp-2">
                                 {review.message}
                               </p>
+                              {Array.isArray(review.reviewImages) && review.reviewImages.length > 0 ? (
+                                <div className="mt-2 flex items-center gap-1 text-[10px] font-medium text-gray-500">
+                                  <ImageIcon size={12} />
+                                  {review.reviewImages.length} photo
+                                  {review.reviewImages.length === 1 ? "" : "s"}
+                                </div>
+                              ) : null}
                             </div>
                           </div>
                         </button>
@@ -3498,6 +3643,7 @@ const UserInsightsContent = () => {
                         (typeof review.orderSummary === "string" && review.orderSummary.trim()) ||
                         null;
                       const responseValue = responseText[String(review.id)] || "";
+                      const complaintStatus = complaintOpenClosed(review);
                       const canSend =
                         (responseValue.trim().length > 0 ||
                           ((responseImages[String(review.id)]?.length ?? 0) > 0)) &&
@@ -3538,14 +3684,11 @@ const UserInsightsContent = () => {
                           {/* Middle: scrollable message */}
                           <div className="flex-1 min-h-0 overflow-y-auto bg-white px-6 py-5">
                             <div className="flex items-start gap-3">
-                              <div className="h-10 w-10 rounded-full bg-gray-100 flex items-center justify-center text-sm font-semibold text-gray-700 shrink-0">
-                                {review.customerName
-                                  .split(" ")
-                                  .map((n) => n[0])
-                                  .join("")
-                                  .substring(0, 2)
-                                  .toUpperCase()}
-                              </div>
+                              <CustomerFace
+                                name={review.customerName}
+                                url={review.customerAvatarUrl}
+                                sizeClass="h-10 w-10 text-sm"
+                              />
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center justify-between gap-3">
                                   <div className="min-w-0">
@@ -3558,6 +3701,15 @@ const UserInsightsContent = () => {
                                   </div>
                                   <div className="shrink-0 flex items-center gap-2">
                                     {getReviewTypeTag(review.type)}
+                                    {complaintStatus ? (
+                                      <span
+                                        className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-extrabold tracking-wide text-white ${
+                                          complaintStatus === "CLOSED" ? "bg-emerald-500" : "bg-orange-400"
+                                        }`}
+                                      >
+                                        {complaintStatus}
+                                      </span>
+                                    ) : null}
                                     {review.rating ? (
                                       <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2 py-1 text-[11px] font-semibold text-orange-700">
                                         <Star size={12} className="fill-orange-500 text-orange-500" />
@@ -3571,44 +3723,92 @@ const UserInsightsContent = () => {
                                   {review.message}
                                 </div>
 
-                                {review.response ? (
-                                  <div className="mt-6 rounded-xl border border-orange-200 bg-orange-50 p-4">
-                                    <p className="text-xs font-semibold text-orange-800 mb-2">
-                                      Your response
-                                    </p>
-                                    {(() => {
-                                      const { text, images } = parseResponseMedia(review.response);
+                                {Array.isArray(review.reviewImages) && review.reviewImages.length > 0 ? (
+                                  <div className="mt-4 grid grid-cols-3 gap-2">
+                                    {review.reviewImages.map((img, idx) => {
+                                      const src = getTicketAttachmentViewUrl(img);
+                                      const gallery = review.reviewImages.map((u) => getTicketAttachmentViewUrl(u));
                                       return (
-                                        <>
-                                          {text ? (
-                                            <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
-                                              {text}
-                                            </p>
-                                          ) : null}
-                                          {images.length > 0 ? (
-                                            <div className="mt-3 grid grid-cols-3 gap-2">
-                                              {images.map((img, idx) => (
-                                                <a key={idx} href={img} target="_blank" rel="noreferrer">
-                                                  <img
-                                                    src={img}
-                                                    alt=""
-                                                    className="h-24 w-full rounded-lg border border-orange-200 object-cover"
-                                                  />
-                                                </a>
-                                              ))}
-                                            </div>
-                                          ) : null}
-                                        </>
+                                        <button
+                                          key={`${src}-${idx}`}
+                                          type="button"
+                                          onClick={() => setMediaViewer({ urls: gallery, index: idx })}
+                                          className="block w-full overflow-hidden rounded-lg border border-gray-200 bg-gray-50 text-left"
+                                        >
+                                          <img
+                                            src={src}
+                                            alt=""
+                                            className="h-24 w-full object-cover"
+                                          />
+                                        </button>
                                       );
-                                    })()}
+                                    })}
                                   </div>
                                 ) : null}
+
+                                {(() => {
+                                  const replyItems =
+                                    Array.isArray(review.replies) && review.replies.length > 0
+                                      ? review.replies
+                                      : review.response &&
+                                          review.source !== "ticket" &&
+                                          !/support ticket\s+tkt-/i.test(review.response) &&
+                                          !/\bTKT-\d{4}-\d+/i.test(review.response)
+                                        ? [{ text: review.response, at: review.respondedAt ?? review.date }]
+                                        : [];
+                                  if (replyItems.length === 0) return null;
+                                  return (
+                                    <div className="mt-6 space-y-3">
+                                      {replyItems.map((reply, ridx) => {
+                                        const parsed = parseResponseMedia(reply.text || "");
+                                        const images = [
+                                          ...(Array.isArray(reply.images) ? reply.images : []),
+                                          ...parsed.images,
+                                        ].filter(Boolean);
+                                        const text = parsed.text || (!images.length ? reply.text : "");
+                                        return (
+                                          <div
+                                            key={`${reply.at ?? ridx}-${ridx}`}
+                                            className="rounded-xl border border-orange-200 bg-orange-50 p-4"
+                                          >
+                                            <p className="text-xs font-semibold text-orange-800 mb-2">
+                                              Your response
+                                            </p>
+                                            {text ? (
+                                              <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
+                                                {text}
+                                              </p>
+                                            ) : null}
+                                            {images.length > 0 ? (
+                                              <div className="mt-3 grid grid-cols-3 gap-2">
+                                                {images.map((img, idx) => (
+                                                  <button
+                                                    key={idx}
+                                                    type="button"
+                                                    onClick={() => setMediaViewer({ urls: images, index: idx })}
+                                                    className="block w-full overflow-hidden rounded-lg border border-orange-200 bg-orange-50 text-left"
+                                                  >
+                                                    <img
+                                                      src={img}
+                                                      alt=""
+                                                      className="h-24 w-full object-cover"
+                                                    />
+                                                  </button>
+                                                ))}
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             </div>
                           </div>
 
                           {/* Bottom: fixed reply */}
-                          {!review.response ? (
+                          {review.source !== "ticket" ? (
                             <div className="flex-shrink-0 border-t border-gray-200 bg-white px-6 py-4">
                               <div className="relative w-full">
                                 <textarea
@@ -3675,6 +3875,16 @@ const UserInsightsContent = () => {
           storeId={storeId}
           ordersCoreId={orderSheetCoreId}
           formattedOrderId={orderSheetPublicId}
+        />
+      ) : null}
+      {mediaViewer ? (
+        <FeedbackImageLightbox
+          urls={mediaViewer.urls}
+          index={mediaViewer.index}
+          onClose={() => setMediaViewer(null)}
+          onIndexChange={(next) =>
+            setMediaViewer((prev) => (prev ? { ...prev, index: next } : prev))
+          }
         />
       ) : null}
     </MXLayoutWhite>

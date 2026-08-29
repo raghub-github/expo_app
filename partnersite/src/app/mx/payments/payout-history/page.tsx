@@ -37,7 +37,7 @@ const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'ACCRUING', label: 'To be paid' },
   { key: 'PENDING', label: 'Pending' },
-  { key: 'PROCESSING', label: 'In process' },
+  { key: 'PROCESSING', label: 'Hold' },
   { key: 'PAID', label: 'Settled' },
   { key: 'RETURNED', label: 'Returned' },
   { key: 'FAILED', label: 'Failed' },

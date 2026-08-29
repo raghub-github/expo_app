@@ -24,7 +24,9 @@ export interface LedgerResponse {
 export type PayoutSettlementSummary = MerchantPayoutSettlementClient;
 
 export async function fetchWalletSummary(storeId: number, token: string): Promise<WalletSummary> {
-  const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/wallet`, token);
+  const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/wallet`, token, {
+    timeoutMs: 20_000,
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error((err as any).error || "Failed to load wallet");
@@ -37,7 +39,9 @@ export async function fetchWalletFreezeStatus(
   storeId: number,
   token: string,
 ): Promise<{ isFrozen: boolean; freezeReason: string | null; status: string; frozenAt: string | null }> {
-  const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/wallet/freeze`, token);
+  const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/wallet/freeze`, token, {
+    timeoutMs: 12_000,
+  });
   if (!res.ok) {
     throw new Error(`freeze_status_${res.status}`);
   }
@@ -127,6 +131,8 @@ export type PayoutCycleCard = {
   withdrawal_amount?: number;
   /** Admin rejection reason / bank failure reason for the closing withdrawal. */
   close_note?: string | null;
+  /** PG / UTR id when the closing withdrawal was completed. */
+  pg_transaction_id?: string | null;
   settlement: Record<string, unknown> | null;
 };
 
@@ -201,6 +207,9 @@ export type PayoutRequestListItem = {
   completed_at: string | null;
   utr_reference: string | null;
   failure_reason: string | null;
+  rejection_reason?: string | null;
+  hold_reason?: string | null;
+  pg_transaction_id?: string | null;
 };
 
 /** Partner Site payout-requests list parity. */

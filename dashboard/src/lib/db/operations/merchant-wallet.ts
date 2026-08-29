@@ -125,6 +125,9 @@ export async function queryLedger(
   const fromFilter = opts.from ? `${opts.from}T00:00:00.000Z` : null;
   const toFilter = opts.to ? `${opts.to}T23:59:59.999Z` : null;
 
+  const categoryFilter = opts.category ?? null;
+  const withdrawalCategoryFilter = categoryFilter === "WITHDRAWAL";
+
   const rows = await sql`
     SELECT id, direction, category, balance_type, amount,
            COALESCE(balance_before, 0) AS balance_before,
@@ -141,7 +144,11 @@ export async function queryLedger(
       AND (${fromFilter}::timestamptz IS NULL OR created_at >= ${fromFilter}::timestamptz)
       AND (${toFilter}::timestamptz IS NULL OR created_at <= ${toFilter}::timestamptz)
       AND (${opts.direction ?? null}::text IS NULL OR direction = ${opts.direction ?? null})
-      AND (${opts.category ?? null}::text IS NULL OR category = ${opts.category ?? null})
+      AND (
+        ${categoryFilter}::text IS NULL
+        OR category = ${categoryFilter}
+        OR (${withdrawalCategoryFilter} AND category IN ('WITHDRAWAL', 'HOLD_LOCK'))
+      )
     ORDER BY created_at DESC
     LIMIT ${limit} OFFSET ${offset}
   `;
@@ -151,7 +158,11 @@ export async function queryLedger(
       AND (${fromFilter}::timestamptz IS NULL OR created_at >= ${fromFilter}::timestamptz)
       AND (${toFilter}::timestamptz IS NULL OR created_at <= ${toFilter}::timestamptz)
       AND (${opts.direction ?? null}::text IS NULL OR direction = ${opts.direction ?? null})
-      AND (${opts.category ?? null}::text IS NULL OR category = ${opts.category ?? null})
+      AND (
+        ${categoryFilter}::text IS NULL
+        OR category = ${categoryFilter}
+        OR (${withdrawalCategoryFilter} AND category IN ('WITHDRAWAL', 'HOLD_LOCK'))
+      )
   `;
   return {
     entries: (rows as any[]).map((r) => ({
@@ -176,6 +187,335 @@ export async function queryLedger(
       formatted_order_id: null,
     })),
     total: Number((countRows[0] as any)?.cnt ?? 0),
+  };
+}
+
+/** Payout request statuses keyed by id — used to hide completed HOLD_LOCK request rows. */
+export async function getPayoutStatusesForLedger(
+  storeId: number,
+  requestIds: number[],
+): Promise<Map<number, string>> {
+  const map = new Map<number, string>();
+  const ids = [...new Set(requestIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (ids.length === 0) return map;
+  const sql = getSql();
+  const walletId = await getOrCreateWalletId(storeId);
+  const rows = await sql`
+    SELECT id, status::text AS status
+    FROM merchant_payout_requests
+    WHERE wallet_id = ${walletId}
+      AND id = ANY(${ids}::bigint[])
+  `;
+  for (const r of rows as unknown as { id: number; status: string }[]) {
+    map.set(Number(r.id), String(r.status ?? "").toUpperCase());
+  }
+  return map;
+}
+
+/** Link HOLD_LOCK ledger ids → payout request (reference_id is often 0 at request time). */
+export async function getPayoutLinksByHoldLedgerIds(
+  storeId: number,
+  holdLedgerIds: number[],
+): Promise<Map<number, { id: number; status: string; hold_reason?: string | null }>> {
+  const map = new Map<number, { id: number; status: string; hold_reason?: string | null }>();
+  const ids = [...new Set(holdLedgerIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (ids.length === 0) return map;
+  const sql = getSql();
+  const walletId = await getOrCreateWalletId(storeId);
+  const rows = await sql`
+    SELECT
+      pr.id,
+      pr.hold_ledger_id,
+      pr.status::text AS status,
+      ppa.approval_notes AS hold_reason
+    FROM merchant_payout_requests pr
+    LEFT JOIN payment_payout_approvals ppa
+      ON ppa.payout_request_id = pr.id AND ppa.payout_type = 'MERCHANT'
+    WHERE pr.wallet_id = ${walletId}
+      AND pr.hold_ledger_id = ANY(${ids}::bigint[])
+  `;
+  for (const r of rows as unknown as {
+    id: number;
+    hold_ledger_id: number;
+    status: string;
+    hold_reason?: string | null;
+  }[]) {
+    map.set(Number(r.hold_ledger_id), {
+      id: Number(r.id),
+      status: String(r.status ?? "").toUpperCase(),
+      hold_reason: r.hold_reason != null ? String(r.hold_reason) : null,
+    });
+  }
+  return map;
+}
+
+/** Attach PG / UTR ids onto WITHDRAWAL ledger rows (partnersite parity). */
+export async function getPgTransactionIdsForPayoutRequests(
+  storeId: number,
+  payoutRequestIds: number[],
+): Promise<Map<number, string>> {
+  const map = new Map<number, string>();
+  const ids = [...new Set(payoutRequestIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (ids.length === 0) return map;
+  const sql = getSql();
+  const walletId = await getOrCreateWalletId(storeId);
+  const rows = await sql`
+    SELECT
+      pr.id,
+      COALESCE(pr.pg_transaction_id, ppa.gateway_payout_id, pr.utr_reference, ppa.utr_reference)
+        AS pg_transaction_id
+    FROM merchant_payout_requests pr
+    LEFT JOIN payment_payout_approvals ppa
+      ON ppa.payout_request_id = pr.id AND ppa.payout_type = 'MERCHANT'
+    WHERE pr.wallet_id = ${walletId}
+      AND pr.id = ANY(${ids}::bigint[])
+  `;
+  for (const r of rows as unknown as { id: number; pg_transaction_id?: string | null }[]) {
+    const pg = String(r.pg_transaction_id ?? "").trim();
+    if (pg) map.set(Number(r.id), pg);
+  }
+  return map;
+}
+
+/** Resolve public formatted order ids for ORDER-linked ledger rows. */
+export async function enrichLedgerFormattedOrderIds<
+  T extends {
+    reference_type?: string | null;
+    reference_id?: number | null;
+    order_id?: number | null;
+    formatted_order_id?: string | null;
+    description?: string | null;
+  },
+>(entries: T[]): Promise<T[]> {
+  const orderRefs = entries.filter(
+    (e) => String(e.reference_type ?? "").toUpperCase() === "ORDER" && e.reference_id != null,
+  );
+  if (orderRefs.length === 0) return entries;
+  const foodIds = [
+    ...new Set(orderRefs.map((e) => Number(e.reference_id)).filter((id) => Number.isFinite(id) && id > 0)),
+  ];
+  if (foodIds.length === 0) return entries;
+  const sql = getSql();
+  const foodRows = await sql`
+    SELECT id, order_id FROM orders_food WHERE id = ANY(${foodIds}::bigint[])
+  `;
+  const foodMap = new Map<number, number>();
+  for (const f of foodRows as unknown as { id: number; order_id: number }[]) {
+    foodMap.set(Number(f.id), Number(f.order_id));
+  }
+  const coreIds = [...new Set([...foodMap.values()].filter((id) => Number.isFinite(id) && id > 0))];
+  if (coreIds.length === 0) return entries;
+  let orderMeta: { id: number; order_id: string | null; formatted_order_id: string | null }[] = [];
+  try {
+    const coreRows = await sql`
+      SELECT id, order_id::text AS order_id, formatted_order_id
+      FROM orders_core
+      WHERE id = ANY(${coreIds}::bigint[])
+    `;
+    orderMeta = coreRows as unknown as typeof orderMeta;
+  } catch {
+    try {
+      const ordRows = await sql`
+        SELECT id, order_id::text AS order_id, formatted_order_id
+        FROM orders
+        WHERE id = ANY(${coreIds}::bigint[])
+      `;
+      orderMeta = ordRows as unknown as typeof orderMeta;
+    } catch {
+      return entries;
+    }
+  }
+  const orderMetaMap = new Map(
+    orderMeta.map((o) => [
+      Number(o.id),
+      (o.formatted_order_id ?? o.order_id ?? "").trim() || null,
+    ]),
+  );
+  return entries.map((entry) => {
+    if (String(entry.reference_type ?? "").toUpperCase() !== "ORDER" || entry.reference_id == null) {
+      return entry;
+    }
+    const oid = foodMap.get(Number(entry.reference_id));
+    if (oid == null) return entry;
+    const formatted = orderMetaMap.get(oid) ?? null;
+    const next = {
+      ...entry,
+      order_id: oid,
+      formatted_order_id: formatted,
+    };
+    if (formatted && next.description) {
+      next.description = String(next.description).replace(/Order #\d+/i, `Order ${formatted}`);
+    }
+    return next;
+  });
+}
+
+/** Full ledger snapshots for withdrawable Balance After rewrite (AVAILABLE running balance). */
+export async function getLedgerBucketSnapshotsForWallet(
+  storeId: number,
+): Promise<
+  {
+    id: number;
+    balance_type: string | null;
+    balance_after: number | null;
+    amount: number | null;
+    direction: string | null;
+    created_at: string;
+    metadata: Record<string, unknown> | null;
+  }[]
+> {
+  const sql = getSql();
+  const walletId = await getOrCreateWalletId(storeId);
+  const rows = await sql`
+    SELECT id, balance_type, balance_after, amount, direction, created_at, metadata
+    FROM merchant_wallet_ledger
+    WHERE wallet_id = ${walletId}
+    ORDER BY created_at ASC, id ASC
+    LIMIT 5000
+  `;
+  return (rows as any[]).map((row) => ({
+    id: Number(row.id),
+    balance_type: row.balance_type as string | null,
+    balance_after: row.balance_after != null ? Number(row.balance_after) : null,
+    amount: row.amount != null ? Number(row.amount) : null,
+    direction: row.direction as string | null,
+    created_at:
+      row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+    metadata: (row.metadata ?? null) as Record<string, unknown> | null,
+  }));
+}
+
+export type WalletAnalyticsPeriod = "week" | "month" | "quarter";
+
+export type WalletAnalyticsResult = {
+  period: WalletAnalyticsPeriod;
+  series: { date: string; label: string; earnings: number; withdrawals: number }[];
+  period_total_earnings: number;
+  period_total_withdrawals: number;
+  period_transaction_count: number;
+  total_earned: number;
+  total_withdrawn: number;
+};
+
+function istDateKeyFromIso(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+  const y = parts.find((p) => p.type === "year")?.value ?? "1970";
+  const m = parts.find((p) => p.type === "month")?.value ?? "01";
+  const day = parts.find((p) => p.type === "day")?.value ?? "01";
+  return `${y}-${m}-${day}`;
+}
+
+function istDateKeysForLastDays(dayCount: number): string[] {
+  const keys: string[] = [];
+  const now = new Date();
+  for (let i = dayCount - 1; i >= 0; i--) {
+    const d = new Date(now.getTime() - i * 86_400_000);
+    keys.push(istDateKeyFromIso(d.toISOString()));
+  }
+  return [...new Set(keys)];
+}
+
+function istDayLabel(dateKey: string, mode: "weekday" | "short"): string {
+  const d = new Date(`${dateKey}T12:00:00+05:30`);
+  if (Number.isNaN(d.getTime())) return dateKey;
+  if (mode === "weekday") {
+    return new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", weekday: "short" }).format(d);
+  }
+  return new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "numeric",
+    month: "short",
+  }).format(d);
+}
+
+/** Earnings overview series — same rules as partnersite wallet/analytics. */
+export async function getWalletAnalytics(
+  storeId: number,
+  period: WalletAnalyticsPeriod,
+): Promise<WalletAnalyticsResult> {
+  const sql = getSql();
+  const walletId = await getOrCreateWalletId(storeId);
+  const dayCount = period === "week" ? 7 : period === "month" ? 30 : 90;
+  const dateKeys = istDateKeysForLastDays(dayCount);
+  const rangeStartKey = dateKeys[0] ?? istDateKeyFromIso(new Date().toISOString());
+  const rangeStartIso = `${rangeStartKey}T00:00:00+05:30`;
+
+  const [walletRow] = await sql`
+    SELECT total_earned, total_withdrawn FROM merchant_wallet WHERE id = ${walletId} LIMIT 1
+  `;
+  const ledgerRows = await sql`
+    SELECT amount, direction, category, created_at
+    FROM merchant_wallet_ledger
+    WHERE wallet_id = ${walletId}
+      AND created_at >= ${rangeStartIso}::timestamptz
+  `;
+
+  const earningsByDay = new Map<string, number>();
+  const withdrawalsByDay = new Map<string, number>();
+  for (const k of dateKeys) {
+    earningsByDay.set(k, 0);
+    withdrawalsByDay.set(k, 0);
+  }
+
+  let period_transaction_count = 0;
+  for (const row of ledgerRows as unknown as { amount: unknown; direction: string; category: string; created_at: Date | string }[]) {
+    const cat = String(row.category ?? "").toUpperCase();
+    const dir = String(row.direction ?? "").toUpperCase();
+    const amt = Number(row.amount ?? 0);
+    if (!(amt > 0)) continue;
+
+    const isEarning =
+      dir === "CREDIT" && (cat === "ORDER_EARNING" || cat === "ORDER_ADJUSTMENT");
+    const isWithdrawal =
+      (cat === "WITHDRAWAL" || cat === "WITHDRAWAL_DEBIT") && dir === "DEBIT";
+    if (!isEarning && !isWithdrawal) continue;
+
+    const created =
+      row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at);
+    const key = istDateKeyFromIso(created);
+    if (!earningsByDay.has(key)) continue;
+
+    period_transaction_count += 1;
+    if (isEarning) earningsByDay.set(key, (earningsByDay.get(key) ?? 0) + amt);
+    else withdrawalsByDay.set(key, (withdrawalsByDay.get(key) ?? 0) + amt);
+  }
+
+  const series = dateKeys.map((date) => ({
+    date,
+    label: istDayLabel(date, period === "week" ? "weekday" : "short"),
+    earnings: roundMoney(earningsByDay.get(date) ?? 0),
+    withdrawals: roundMoney(withdrawalsByDay.get(date) ?? 0),
+  }));
+
+  let totalEarned = roundMoney(Number((walletRow as { total_earned?: number } | undefined)?.total_earned ?? 0));
+  if (totalEarned <= 0) {
+    const [sumRow] = await sql`
+      SELECT COALESCE(SUM(amount), 0) AS s
+      FROM merchant_wallet_ledger
+      WHERE wallet_id = ${walletId}
+        AND direction = 'CREDIT'
+        AND category IN ('ORDER_EARNING', 'ORDER_ADJUSTMENT')
+    `;
+    totalEarned = roundMoney(Number((sumRow as { s?: number } | undefined)?.s ?? 0));
+  }
+
+  return {
+    period,
+    series,
+    period_total_earnings: roundMoney(series.reduce((s, p) => s + p.earnings, 0)),
+    period_total_withdrawals: roundMoney(series.reduce((s, p) => s + p.withdrawals, 0)),
+    period_transaction_count,
+    total_earned: totalEarned,
+    total_withdrawn: roundMoney(
+      Number((walletRow as { total_withdrawn?: number } | undefined)?.total_withdrawn ?? 0),
+    ),
   };
 }
 
@@ -232,6 +572,9 @@ export async function createWithdrawalRequest(
   const quote = await getPaymentPayoutQuote(sql, storeId, amount);
   if (amount < quote.min_payout_amount) {
     throw new Error(`Amount must be at least ₹${quote.min_payout_amount}`);
+  }
+  if (amount > quote.max_payout_amount) {
+    throw new Error(`Amount cannot exceed ₹${quote.max_payout_amount.toLocaleString("en-IN")}`);
   }
 
   const walletId = await getOrCreateWalletId(storeId);

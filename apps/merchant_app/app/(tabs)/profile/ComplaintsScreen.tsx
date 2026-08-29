@@ -1,30 +1,42 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet, FlatList, Pressable, TextInput, Platform, KeyboardAvoidingView, RefreshControl, Modal } from "react-native";
+import { View, StyleSheet, FlatList, Pressable, TextInput, RefreshControl, Platform } from "react-native";
 import { StatusBar } from "expo-status-bar";
-import { LinearGradient } from "expo-linear-gradient";
-import { usePathname, useRouter } from "expo-router";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
-import { getConfig } from "@/config/env";
-import { replyToStoreReview, deleteStoreReviewReply } from "@/services/ratingsApi";
+import { deleteStoreReviewReply, fetchStoreComplaints } from "@/services/ratingsApi";
 import { ReviewsComplaintsSkeleton } from "@/components/ReviewsComplaintsSkeleton";
+import { FeedbackTabs } from "@/components/FeedbackTabs";
+import { FeedbackCard } from "@/components/FeedbackCard";
+import { setFeedbackReplySnapshot } from "@/lib/feedbackReplyCache";
+import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 
 type Complaint = {
   id: number;
+  source?: "rating" | "ticket";
   overallRating: number;
   reviewTitle: string | null;
   reviewText: string | null;
   replyText: string | null;
   repliedAt: string | null;
+  replies?: Array<{ text: string; at: string }>;
   createdAt: string;
   isFlagged: boolean;
+  orderId?: number | null;
+  foodOrderId?: number | null;
+  formattedOrderId?: string | null;
+  ticketPublicId?: string | null;
+  ticketStatus?: string | null;
+  reviewImages?: string[] | null;
+  customerName?: string | null;
+  customerAvatarUrl?: string | null;
+  orderCount?: number | null;
 };
 
-type FilterKey = "all" | "low" | "medium" | "high";
+type FilterKey = "all" | "tickets" | "low" | "medium";
 
 function formatDateOnly(value: string): string {
   if (!value) return "—";
@@ -47,27 +59,8 @@ function formatDateTime(value: string): string {
   return formatDateOnly(value);
 }
 
-function getRatingColors(value: number): { bg: string; fg: string } {
-  if (value >= 4) {
-    return {
-      bg: GatiMitraMerchant.statusCompletedBg,
-      fg: GatiMitraMerchant.statusCompleted,
-    };
-  }
-  if (value >= 3) {
-    return {
-      bg: GatiMitraMerchant.statusPendingBg,
-      fg: GatiMitraMerchant.statusPending,
-    };
-  }
-  return {
-    bg: "#FEE2E2",
-    fg: GatiMitraMerchant.error,
-  };
-}
-
 export default function ComplaintsScreen() {
-  const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
   const [loading, setLoading] = useState(true);
@@ -80,7 +73,7 @@ export default function ComplaintsScreen() {
   const [fromDate, setFromDate] = useState<string>(() => {
     const to = new Date();
     const from = new Date();
-    from.setDate(to.getDate() - 21);
+    from.setDate(to.getDate() - 7);
     return from.toISOString();
   });
   const [toDate, setToDate] = useState<string>(() => {
@@ -88,68 +81,42 @@ export default function ComplaintsScreen() {
     return to.toISOString();
   });
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
-  const [tempRangeKey, setTempRangeKey] = useState<"7" | "21" | "30" | "all">(
-    "21"
-  );
-  const [activeReplyId, setActiveReplyId] = useState<number | null>(null);
-  const [activeReplyComplaint, setActiveReplyComplaint] = useState<Complaint | null>(null);
-  const [replyText, setReplyText] = useState("");
+  const [tempRangeKey, setTempRangeKey] = useState<"7" | "21" | "30" | "all">("7");
+  const [tempFilter, setTempFilter] = useState<FilterKey>("all");
   const [isSavingReply, setIsSavingReply] = useState(false);
-  const [confirmMode, setConfirmMode] = useState<"edit" | "delete" | null>(null);
+  const [confirmMode, setConfirmMode] = useState<"delete" | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<Complaint | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const skipFocusReload = useRef(true);
+
+  const storeHeading = [selectedStore?.store_name?.trim(), selectedStore?.city?.trim()]
+    .filter(Boolean)
+    .join(", ") || "Store";
 
   const handleOpenReply = (complaint: Complaint) => {
-    if (complaint.replyText) {
-      setConfirmMode("edit");
-      setConfirmTarget(complaint);
-      return;
-    }
-    setActiveReplyId(complaint.id);
-    setActiveReplyComplaint(complaint);
-    setReplyText("");
-  };
-
-  const handleSaveReply = async () => {
-    if (!selectedStore?.id || !token || activeReplyId == null || !replyText.trim()) {
-      return;
-    }
-    try {
-      setIsSavingReply(true);
-      await replyToStoreReview({
-        token,
-        storeId: selectedStore.id,
-        reviewId: activeReplyId,
-        replyText: replyText.trim(),
-      });
-      setItems((prev) =>
-        prev.map((c) =>
-          c.id === activeReplyId
-            ? {
-                ...c,
-                replyText: replyText.trim(),
-                repliedAt: new Date().toISOString(),
-              }
-            : c
-        )
-      );
-      setActiveReplyId(null);
-      setActiveReplyComplaint(null);
-      setReplyText("");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save reply.");
-    } finally {
-      setIsSavingReply(false);
-    }
-  };
-
-  const handleConfirmEdit = () => {
-    if (!confirmTarget) return;
-    setActiveReplyId(confirmTarget.id);
-    setActiveReplyComplaint(confirmTarget);
-    setReplyText(confirmTarget.replyText ?? "");
-    setConfirmMode(null);
-    setConfirmTarget(null);
+    if (complaint.source === "ticket") return;
+    setFeedbackReplySnapshot({
+      id: Number(complaint.id),
+      overallRating: complaint.overallRating,
+      reviewTitle: complaint.reviewTitle,
+      reviewText: complaint.reviewText,
+      createdAt: complaint.createdAt,
+      replyText: complaint.replyText,
+      repliedAt: complaint.repliedAt,
+      replies: complaint.replies,
+      customerName: complaint.customerName,
+      customerAvatarUrl: complaint.customerAvatarUrl,
+      formattedOrderId: complaint.formattedOrderId,
+      orderId: complaint.orderId,
+      foodOrderId: complaint.foodOrderId,
+      orderCount: complaint.orderCount,
+      source: "rating",
+      reviewImages: complaint.reviewImages,
+    });
+    router.push({
+      pathname: "/feedback-reply/[id]",
+      params: { id: String(complaint.id), kind: "complaint" },
+    } as never);
   };
 
   const handleConfirmDelete = async () => {
@@ -187,19 +154,10 @@ export default function ComplaintsScreen() {
       setLoading(true);
       setError(null);
       try {
-        const { apiBaseUrl } = getConfig();
-        const res = await fetch(
-          `${apiBaseUrl}/v1/merchant-partner/stores/${selectedStore.id}/ratings/complaints`,
-          {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          }
-        );
-        if (!res.ok) {
-          throw new Error(`Failed to load complaints (${res.status})`);
-        }
-        const data = (await res.json()) as { success: boolean; data: Complaint[] };
+        const data = await fetchStoreComplaints({
+          token,
+          storeId: selectedStore.id,
+        });
         setItems(data.data ?? []);
         setHasLoadedOnce(true);
       } catch (e) {
@@ -211,6 +169,16 @@ export default function ComplaintsScreen() {
     };
     void load();
   }, [selectedStore?.id, token, refreshNonce]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (skipFocusReload.current) {
+        skipFocusReload.current = false;
+        return;
+      }
+      setRefreshNonce((n) => n + 1);
+    }, [])
+  );
 
   const onRefresh = () => {
     if (loading) return;
@@ -234,137 +202,27 @@ export default function ComplaintsScreen() {
         if (to && created > to) return false;
       }
 
+      const isTicket = c.source === "ticket";
       const passesFilter =
         filter === "all"
           ? true
+          : filter === "tickets"
+          ? isTicket
           : filter === "low"
-          ? c.overallRating <= 2
-          : filter === "medium"
-          ? c.overallRating === 3
-          : c.overallRating >= 4;
+          ? !isTicket && c.overallRating <= 2
+          : !isTicket && c.overallRating === 3;
       if (!passesFilter) return false;
       if (!text) return true;
-      const haystack = `${c.reviewTitle ?? ""} ${c.reviewText ?? ""}`.toLowerCase();
+      const haystack = `${c.reviewTitle ?? ""} ${c.reviewText ?? ""} ${c.formattedOrderId ?? ""} ${c.customerName ?? ""}`.toLowerCase();
       return haystack.includes(text);
     });
-  }, [items, filter, searchQuery]);
-
-  const avgRating =
-    items.length === 0
-      ? null
-      : items.reduce((sum, r) => sum + r.overallRating, 0) / items.length;
-
-  const distribution = useMemo(() => {
-    const buckets: Record<number, number> = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
-    for (const r of items) {
-      const star = Math.min(5, Math.max(1, Math.round(r.overallRating || 0)));
-      buckets[star] += 1;
-    }
-    const total = items.length || 1;
-    return Object.keys(buckets)
-      .map((key) => Number(key))
-      .sort((a, b) => b - a)
-      .map((star) => ({
-        star,
-        count: buckets[star],
-        percent: (buckets[star] / total) * 100,
-      }));
-  }, [items]);
+  }, [items, filter, searchQuery, fromDate, toDate]);
 
   const renderHeader = () => (
     <View>
-      <PageTabs active="complaints" />
-
-      {/* Header: same style as Reviews */}
-      <View style={styles.headerBlock}>
-        <Text style={styles.headerEyebrow}>INSIGHTS</Text>
-        <View style={styles.headerTitleRow}>
-          <View style={styles.headerLeft}>
-            <LinearGradient
-              colors={["#fef3c7", "#fde68a"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.headerAvatar}
-            >
-              <View style={styles.headerAvatarInner}>
-                <Ionicons
-                  name="warning-outline"
-                  size={18}
-                  color={GatiMitraMerchant.statusPending}
-                />
-              </View>
-            </LinearGradient>
-            <View style={styles.headerTextCol}>
-              <Text style={styles.headerTitle}>Customer Complaints</Text>
-              <Text style={styles.headerSubtitle} numberOfLines={1}>
-                {selectedStore?.store_name ?? "Your Gatimitra outlet"}
-              </Text>
-            </View>
-          </View>
-          <LinearGradient
-            colors={["#fef3c7", "#fde68a"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.headerPill}
-          >
-            <Ionicons
-              name="alert-circle-outline"
-              size={14}
-              color={GatiMitraMerchant.navy}
-              style={{ marginRight: 4 }}
-            />
-            <Text style={styles.headerPillText}>Complaints</Text>
-          </LinearGradient>
-        </View>
-      </View>
-
-      {/* Summary card: rating + distribution like Reviews */}
-      <View style={styles.summaryCard}>
-        <View style={styles.summaryRow}>
-          <View style={styles.summaryLeft}>
-            <Text style={styles.summaryValue}>
-              {avgRating != null ? avgRating.toFixed(1) : "—"}
-            </Text>
-            <View style={styles.summaryStarsRow}>
-              {Array.from({ length: 5 }).map((_, idx) => (
-                <Ionicons
-                  key={idx}
-                  name="star"
-                  size={14}
-                  color={
-                    avgRating != null && idx < Math.round(avgRating)
-                      ? GatiMitraMerchant.statusCompleted
-                      : GatiMitraMerchant.surfaceSubtle
-                  }
-                  style={{ marginRight: 2 }}
-                />
-              ))}
-            </View>
-            <Text style={styles.summaryMeta}>
-              {items.length} complaint{items.length === 1 ? "" : "s"}
-            </Text>
-            <Text style={styles.summaryMetaSmall}>
-              {getComplaintsFilterSummary({ fromDate, toDate })}
-            </Text>
-          </View>
-          <View style={styles.summaryRight}>
-            {distribution.map((b) => (
-              <View key={b.star} style={styles.distRow}>
-                <Text style={styles.distLabel}>{b.star}★</Text>
-                <View style={styles.distBarTrack}>
-                  <View
-                    style={[
-                      styles.distBarFill,
-                      { width: `${Math.max(5, b.percent)}%` },
-                    ]}
-                  />
-                </View>
-                <Text style={styles.distCount}>{b.count}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      </View>
+      <Text style={styles.countLine}>
+        {filtered.length} complaint{filtered.length === 1 ? "" : "s"}
+      </Text>
 
       {/* Search + filter row */}
       <View style={styles.searchRow}>
@@ -380,6 +238,7 @@ export default function ComplaintsScreen() {
             placeholderTextColor={GatiMitraMerchant.textTertiary}
             value={searchQuery}
             onChangeText={setSearchQuery}
+            underlineColorAndroid="transparent"
           />
         </View>
         <Pressable
@@ -390,6 +249,7 @@ export default function ComplaintsScreen() {
           ]}
           onPress={() => {
             setTempRangeKey(deriveRangeKey(fromDate));
+            setTempFilter(filter);
             setIsFilterSheetOpen(true);
           }}
         >
@@ -400,67 +260,46 @@ export default function ComplaintsScreen() {
           />
         </Pressable>
       </View>
-
-      {/* Rating filter chips: All, Low, Medium, High */}
-      <View style={styles.filterChipsRow}>
-        {[
-          { key: "all" as const, label: "All" },
-          { key: "low" as const, label: "Low (1–2★)" },
-          { key: "medium" as const, label: "Medium (3★)" },
-          { key: "high" as const, label: "High (4–5★)" },
-        ].map((opt) => {
-          const isActive = filter === opt.key;
-          return (
-            <Pressable
-              key={opt.key}
-              onPress={() => setFilter(opt.key)}
-              style={({ pressed }) => [pressed && styles.filterChipPressed]}
-            >
-              {isActive ? (
-                <LinearGradient
-                  colors={["#16a34a", "#22c55e"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.filterChipActive}
-                >
-                  <Text style={styles.filterChipTextActive}>{opt.label}</Text>
-                </LinearGradient>
-              ) : (
-                <View style={styles.filterChipInactive}>
-                  <Text style={styles.filterChipText}>{opt.label}</Text>
-                </View>
-              )}
-            </Pressable>
-          );
-        })}
-      </View>
     </View>
   );
 
   if (loading && !hasLoadedOnce) {
-    return <ReviewsComplaintsSkeleton variant="complaints" />;
+    return (
+      <View style={styles.screen}>
+        <StatusBar style="dark" />
+        <View style={styles.stickyTabs}>
+          <FeedbackTabs active="complaints" />
+        </View>
+        <ReviewsComplaintsSkeleton variant="complaints" hideTabs />
+      </View>
+    );
   }
 
   if (error && !hasLoadedOnce) {
     return (
-      <View style={styles.centered}>
-        <Text style={styles.errorText}>{error}</Text>
+      <View style={styles.screen}>
+        <StatusBar style="dark" />
+        <View style={styles.stickyTabs}>
+          <FeedbackTabs active="complaints" />
+        </View>
+        <View style={styles.centered}>
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
       </View>
     );
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.screen}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      keyboardVerticalOffset={120}
-    >
+    <View style={styles.screen}>
       <StatusBar style="dark" />
+      <View style={styles.stickyTabs}>
+        <FeedbackTabs active="complaints" />
+      </View>
       <FlatList
         style={styles.list}
         contentContainerStyle={styles.listContent}
         data={filtered}
-        keyExtractor={(item) => String(item.id)}
+        keyExtractor={(item) => `${item.source ?? "rating"}-${item.id}`}
         ListHeaderComponent={renderHeader}
         ListEmptyComponent={() => (
           <View style={styles.centered}>
@@ -471,114 +310,26 @@ export default function ComplaintsScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            colors={[GatiMitraMerchant.primary]}
-            tintColor={GatiMitraMerchant.primary}
+            colors={[GatiMitraMerchant.navy]}
+            tintColor={GatiMitraMerchant.navy}
           />
         }
-        renderItem={({ item }) => {
-          const ratingColors = getRatingColors(item.overallRating);
-          const rounded = Math.round(item.overallRating);
-          const isHigh = rounded >= 4;
-          const isLow = rounded <= 2;
-          return (
-            <View style={styles.card}>
-              <View style={styles.cardHeaderRow}>
-                <View
-                  style={[
-                    styles.ratingPill,
-                    isHigh && styles.ratingPillHigh,
-                    isLow && styles.ratingPillLow,
-                    !isHigh && !isLow && { backgroundColor: ratingColors.bg },
-                  ]}
-                >
-                  <Ionicons
-                    name="star"
-                    size={12}
-                    color={isHigh || isLow ? "#FFFFFF" : ratingColors.fg}
-                    style={{ marginRight: 4 }}
-                  />
-                  <Text
-                    style={[
-                      styles.ratingPillText,
-                      (isHigh || isLow) && { color: "#FFFFFF" },
-                      !isHigh && !isLow && { color: ratingColors.fg },
-                    ]}
-                  >
-                    {item.overallRating.toFixed(1)}
-                  </Text>
-                </View>
-                <Text style={styles.title} numberOfLines={1}>
-                  {item.reviewTitle || "Complaint"}
-                </Text>
-              </View>
-              {item.reviewText ? (
-                <Text style={styles.body} numberOfLines={3}>
-                  {item.reviewText}
-                </Text>
-              ) : null}
-              <View style={styles.cardFooterRow}>
-                <Text style={styles.date}>{formatDateTime(item.createdAt)}</Text>
-                <View style={styles.cardFooterRight}>
-                  {item.replyText ? (
-                    <Text style={styles.repliedTag}>Replied</Text>
-                  ) : null}
-                  {item.isFlagged && <Text style={styles.flag}>FLAGGED</Text>}
-                  <Pressable
-                    onPress={() => handleOpenReply(item)}
-                    style={({ pressed }) => [
-                      styles.replyButton,
-                      pressed && styles.replyButtonPressed,
-                      GatiMitraMerchant.cursorPointer,
-                    ]}
-                  >
-                    <Ionicons
-                      name="chatbubble-ellipses-outline"
-                      size={13}
-                      color={GatiMitraMerchant.primary}
-                      style={{ marginRight: 4 }}
-                    />
-                    <Text style={styles.replyButtonLabel}>
-                      {item.replyText ? "Edit reply" : "Reply"}
-                    </Text>
-                  </Pressable>
-                  {item.replyText ? (
-                    <Pressable
-                      onPress={() => {
-                        setConfirmMode("delete");
-                        setConfirmTarget(item);
-                      }}
-                      style={({ pressed }) => [
-                        styles.iconButton,
-                        pressed && styles.replyButtonPressed,
-                        GatiMitraMerchant.cursorPointer,
-                      ]}
-                    >
-                      <Ionicons
-                        name="trash-outline"
-                        size={16}
-                        color={GatiMitraMerchant.error}
-                      />
-                    </Pressable>
-                  ) : null}
-                </View>
-              </View>
-              {item.replyText ? (
-                <View style={styles.replyBubble}>
-                  <Text style={styles.replyLabel}>Your reply</Text>
-                  <Text style={styles.replyText}>{item.replyText}</Text>
-                </View>
-              ) : null}
-            </View>
-          );
-        }}
-      />
-      {isFilterSheetOpen && (
-        <View style={styles.sheetBackdrop}>
-          <Pressable
-            style={styles.sheetBackdropTouch}
-            onPress={() => setIsFilterSheetOpen(false)}
+        renderItem={({ item }) => (
+          <FeedbackCard
+            item={item}
+            token={token}
+            storeHeading={storeHeading}
+            showStatus
+            onReply={item.source === "ticket" ? undefined : () => handleOpenReply(item)}
           />
-          <View style={styles.sheetCard}>
+        )}
+      />
+      <MerchantBottomSheetShell
+        visible={isFilterSheetOpen}
+        onClose={() => setIsFilterSheetOpen(false)}
+        hideCloseFab
+      >
+        <View style={styles.sheetInner}>
             <View style={styles.sheetHandle} />
             <Text style={styles.sheetTitle}>Filters</Text>
 
@@ -658,14 +409,45 @@ export default function ComplaintsScreen() {
               </Pressable>
             </View>
 
+            <Text style={styles.sheetSectionLabel}>Type</Text>
+            <View style={styles.sheetChipRow}>
+              {(
+                [
+                  { key: "all" as const, label: "All" },
+                  { key: "tickets" as const, label: "Tickets" },
+                  { key: "low" as const, label: "1–2★" },
+                  { key: "medium" as const, label: "3★" },
+                ] as const
+              ).map((opt) => (
+                <Pressable
+                  key={opt.key}
+                  onPress={() => setTempFilter(opt.key)}
+                  style={[
+                    styles.sheetPill,
+                    tempFilter === opt.key && styles.sheetPillActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.sheetPillText,
+                      tempFilter === opt.key && styles.sheetPillTextActive,
+                    ]}
+                  >
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
             <View style={styles.sheetActionsRow}>
               <Pressable
                 style={styles.sheetSecondaryButton}
                 onPress={() => {
                   const to = new Date();
                   const from = new Date();
-                  from.setDate(to.getDate() - 21);
-                  setTempRangeKey("21");
+                  from.setDate(to.getDate() - 7);
+                  setTempRangeKey("7");
+                  setTempFilter("all");
                   setFilter("all");
                   setFromDate(from.toISOString());
                   setToDate(to.toISOString());
@@ -682,139 +464,22 @@ export default function ComplaintsScreen() {
                     setFromDate,
                     setToDate,
                   });
+                  setFilter(tempFilter);
                   setIsFilterSheetOpen(false);
                 }}
               >
                 <Text style={styles.sheetPrimaryButtonText}>Done</Text>
               </Pressable>
             </View>
-          </View>
         </View>
-      )}
-
-      <Modal
-        visible={activeReplyId != null && activeReplyComplaint != null}
-        transparent
-        animationType="slide"
-        statusBarTranslucent
-        presentationStyle="overFullScreen"
-        onRequestClose={() => {
-          setActiveReplyId(null);
-          setActiveReplyComplaint(null);
-          setReplyText("");
-        }}
-      >
-        <KeyboardAvoidingView
-          style={styles.sheetModalRoot}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-        >
-          <Pressable
-            style={styles.sheetBackdropTouch}
-            onPress={() => {
-              setActiveReplyId(null);
-              setActiveReplyComplaint(null);
-              setReplyText("");
-            }}
-          />
-          <View
-            style={[
-              styles.sheetCard,
-              { paddingBottom: Math.max(insets.bottom, 16) },
-            ]}
-          >
-            <View style={styles.sheetHandle} />
-            <View style={styles.sheetHeaderRow}>
-              <View style={styles.sheetHeaderLeft}>
-                <Text style={styles.sheetTitle}>Reply to Complaint</Text>
-                {activeReplyComplaint && (
-                <View style={styles.sheetReviewMetaRow}>
-                  <View style={styles.sheetRatingChip}>
-                    <Ionicons
-                      name="star"
-                      size={11}
-                      color="#FFFFFF"
-                      style={{ marginRight: 3 }}
-                    />
-                    <Text style={styles.sheetRatingText}>
-                      {activeReplyComplaint.overallRating.toFixed(1)}
-                    </Text>
-                  </View>
-                  <Text style={styles.sheetSubtitle} numberOfLines={1}>
-                    {activeReplyComplaint.reviewTitle || "Complaint"}
-                  </Text>
-                  <Text style={styles.sheetDateInline}>
-                    {formatDateOnly(activeReplyComplaint.createdAt)}
-                  </Text>
-                </View>
-                )}
-              </View>
-              <Pressable
-                style={styles.sheetCloseButton}
-                onPress={() => {
-                  setActiveReplyId(null);
-                  setActiveReplyComplaint(null);
-                  setReplyText("");
-                }}
-              >
-                <Ionicons name="close" size={18} color={GatiMitraMerchant.textSecondary} />
-              </Pressable>
-            </View>
-            <Text style={styles.sheetHint}>
-              Your reply will be visible to the customer on their order details.
-            </Text>
-            <TextInput
-              style={styles.replyInput}
-              placeholder="Write your reply to the customer"
-              placeholderTextColor={GatiMitraMerchant.textTertiary}
-              multiline
-              value={replyText}
-              onChangeText={setReplyText}
-            />
-            <View style={styles.replyActionsRow}>
-              <Pressable
-                style={styles.sheetSecondaryButton}
-                onPress={() => {
-                  setActiveReplyId(null);
-                  setActiveReplyComplaint(null);
-                  setReplyText("");
-                }}
-              >
-                <Text style={styles.sheetSecondaryButtonText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={styles.sheetPrimaryButtonOuter}
-                disabled={!replyText.trim() || isSavingReply}
-                onPress={handleSaveReply}
-              >
-                <LinearGradient
-                  colors={["#34d399", "#22c55e"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={[
-                    styles.sheetPrimaryButton,
-                    (!replyText.trim() || isSavingReply) && { opacity: 0.6 },
-                  ]}
-                >
-                  <Text style={styles.sheetPrimaryButtonText}>
-                    {isSavingReply ? "Saving…" : "Send Reply"}
-                  </Text>
-                </LinearGradient>
-              </Pressable>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      </MerchantBottomSheetShell>
 
       {confirmMode && confirmTarget && (
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>
-              {confirmMode === "edit" ? "Edit reply?" : "Delete reply?"}
-            </Text>
+            <Text style={styles.modalTitle}>Delete reply?</Text>
             <Text style={styles.modalBody}>
-              {confirmMode === "edit"
-                ? "You are about to edit this review.\nMake sure the updated information is correct before saving."
-                : "Once deleted, this review will be permanently removed and cannot be recovered."}
+              Once deleted, this reply will be permanently removed and cannot be recovered.
             </Text>
             <View style={styles.modalActionsRow}>
               <Pressable
@@ -829,99 +494,19 @@ export default function ComplaintsScreen() {
               <Pressable
                 style={[
                   styles.sheetPrimaryButton,
-                  confirmMode === "delete" && { backgroundColor: GatiMitraMerchant.error },
+                  { backgroundColor: GatiMitraMerchant.error },
                 ]}
-                onPress={confirmMode === "edit" ? handleConfirmEdit : handleConfirmDelete}
+                onPress={handleConfirmDelete}
                 disabled={isSavingReply}
               >
                 <Text style={styles.sheetPrimaryButtonText}>
-                  {confirmMode === "edit"
-                    ? "Continue"
-                    : isSavingReply
-                    ? "Deleting…"
-                    : "Delete reply"}
+                  {isSavingReply ? "Deleting…" : "Delete reply"}
                 </Text>
               </Pressable>
             </View>
           </View>
         </View>
       )}
-    </KeyboardAvoidingView>
-  );
-}
-
-function PageTabs({ active }: { active: "complaints" | "reviews" }) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const inProfile = pathname.includes("/profile/");
-  const complaintsHref = inProfile ? "/(tabs)/profile/complaints" : "/(tabs)/complaints";
-  const reviewsHref = inProfile ? "/(tabs)/profile/reviews" : "/(tabs)/reviews";
-  return (
-    <View style={styles.tabsWrap}>
-      <View style={styles.tabsBackground}>
-        <Pressable
-          onPress={() => router.replace(complaintsHref as any)}
-          style={({ pressed }) => [
-            styles.tabButton,
-            pressed && styles.chipPressed,
-            GatiMitraMerchant.cursorPointer,
-          ]}
-        >
-          {active === "complaints" ? (
-            <LinearGradient
-              colors={["#22c55e", "#16a34a"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={[styles.tabInner, styles.tabInnerActive]}
-            >
-              <Ionicons
-                name="warning-outline"
-                size={13}
-                color="#ffffff"
-                style={{ marginRight: 4 }}
-              />
-              <Text style={[styles.tabButtonLabel, styles.tabButtonLabelActive]}>
-                Complaints
-              </Text>
-            </LinearGradient>
-          ) : (
-            <View style={styles.tabInner}>
-              <Text style={styles.tabButtonLabel}>Complaints</Text>
-            </View>
-          )}
-        </Pressable>
-        <Pressable
-          onPress={() => router.replace(reviewsHref as any)}
-          style={({ pressed }) => [
-            styles.tabButton,
-            pressed && styles.chipPressed,
-            GatiMitraMerchant.cursorPointer,
-          ]}
-        >
-          {active === "reviews" ? (
-            <LinearGradient
-              colors={["#22c55e", "#16a34a"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={[styles.tabInner, styles.tabInnerActive]}
-            >
-              <Ionicons
-                name="star"
-                size={13}
-                color="#ffffff"
-                style={{ marginRight: 4 }}
-              />
-              <Text style={[styles.tabButtonLabel, styles.tabButtonLabelActive]}>
-                Reviews
-              </Text>
-            </LinearGradient>
-          ) : (
-            <View style={styles.tabInner}>
-              <Text style={styles.tabButtonLabel}>Reviews</Text>
-            </View>
-          )}
-        </Pressable>
-      </View>
     </View>
   );
 }
@@ -929,6 +514,13 @@ function PageTabs({ active }: { active: "complaints" | "reviews" }) {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
+  },
+  stickyTabs: {
+    zIndex: 2,
+    paddingHorizontal: H_PADDING,
+    paddingTop: 8,
+    paddingBottom: 4,
     backgroundColor: GatiMitraMerchant.surfaceWarm,
   },
   list: { flex: 1 },
@@ -943,6 +535,12 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontSize: 14,
     color: GatiMitraMerchant.textSecondary,
+  },
+  countLine: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+    marginBottom: 10,
   },
   errorText: {
     fontSize: 14,
@@ -1085,30 +683,36 @@ const styles = StyleSheet.create({
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: H_PADDING,
+    gap: 8,
     marginBottom: 10,
   },
   searchInputWrap: {
     flexGrow: 1,
     flexShrink: 1,
+    height: 36,
+    overflow: "hidden",
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
     borderRadius: 999,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 0,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
   },
   searchInput: {
     flex: 1,
+    height: 36,
     fontSize: 13,
     color: GatiMitraMerchant.textPrimary,
     marginLeft: 6,
+    paddingVertical: 0,
+    textAlignVertical: "center",
+    ...Platform.select({ android: { includeFontPadding: false } }),
   },
   searchFilterBtn: {
-    width: 44,
-    height: 40,
+    width: 36,
+    height: 36,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
@@ -1120,22 +724,25 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
-    paddingHorizontal: H_PADDING,
     marginBottom: 8,
   },
-  filterChipPressed: {
-    opacity: 0.9,
-  },
-  filterChipActive: {
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-  },
-  filterChipInactive: {
+  filterChip: {
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 6,
+  },
+  filterChipIdle: {
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  filterChipActiveComplaints: {
+    backgroundColor: GatiMitraMerchant.navy,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.navy,
+  },
+  filterChipPressed: {
+    opacity: 0.9,
   },
   filterChipText: {
     fontSize: 12,
@@ -1150,12 +757,93 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: GatiMitraMerchant.cardBg,
     borderRadius: 16,
-    paddingVertical: 10,
+    paddingVertical: 12,
     paddingHorizontal: 12,
-    marginBottom: 8,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
     ...GatiMitraMerchant.shadowSm,
+  },
+  complaintTitleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  complaintTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  statusOpen: {
+    backgroundColor: "#FDBA74",
+  },
+  statusResolved: {
+    backgroundColor: GatiMitraMerchant.success,
+  },
+  statusBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: 0.3,
+  },
+  orderMeta: {
+    marginTop: 4,
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+  },
+  userRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 12,
+  },
+  avatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  userName: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  speechBubble: {
+    marginTop: 8,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  speechText: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: GatiMitraMerchant.textPrimary,
+  },
+  mediaSection: {
+    marginTop: 12,
+  },
+  sectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 6,
+  },
+  sectionHeadText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
   },
   cardHeaderRow: {
     flexDirection: "row",
@@ -1202,7 +890,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   ratingPillHigh: {
-    backgroundColor: GatiMitraMerchant.statusCompleted,
+    backgroundColor: GatiMitraMerchant.navy,
   },
   ratingPillLow: {
     backgroundColor: GatiMitraMerchant.error,
@@ -1210,6 +898,38 @@ const styles = StyleSheet.create({
   ratingPillText: {
     fontSize: 12,
     fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  ticketPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: GatiMitraMerchant.navy,
+    marginRight: 8,
+  },
+  ticketMetaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 6,
+  },
+  ticketMeta: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: GatiMitraMerchant.navy,
+  },
+  ticketStatus: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: GatiMitraMerchant.primaryDark,
+    textTransform: "capitalize",
+  },
+  ticketHint: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textTertiary,
   },
   replyButton: {
     flexDirection: "row",
@@ -1218,7 +938,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: GatiMitraMerchant.primary,
+    borderColor: GatiMitraMerchant.navy,
     backgroundColor: "transparent",
   },
   replyButtonPressed: {
@@ -1227,7 +947,7 @@ const styles = StyleSheet.create({
   replyButtonLabel: {
     fontSize: 11,
     fontWeight: "600",
-    color: GatiMitraMerchant.primary,
+    color: GatiMitraMerchant.navy,
   },
   tabsWrap: {
     paddingHorizontal: H_PADDING,
@@ -1334,31 +1054,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     columnGap: 10,
   },
-  sheetModalRoot: {
-    flex: 1,
-    justifyContent: "flex-end",
-    backgroundColor: "rgba(15,23,42,0.35)",
-  },
-  sheetBackdrop: {
-    position: "absolute",
-    inset: 0,
-    justifyContent: "flex-end",
-    backgroundColor: "rgba(15,23,42,0.35)",
-  },
-  sheetBackdropTouch: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  sheetCard: {
-    backgroundColor: GatiMitraMerchant.cardBg,
+  sheetInner: {
     paddingHorizontal: H_PADDING,
     paddingTop: 8,
-    paddingBottom: 18,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    borderBottomLeftRadius: 0,
-    borderBottomRightRadius: 0,
-    width: "100%",
-    ...GatiMitraMerchant.shadow,
   },
   sheetHandle: {
     alignSelf: "center",
@@ -1395,7 +1093,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 999,
-    backgroundColor: GatiMitraMerchant.statusCompleted,
+    backgroundColor: GatiMitraMerchant.navy,
     marginBottom: 2,
   },
   sheetRatingText: {
@@ -1449,7 +1147,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 10,
     borderRadius: 999,
-    backgroundColor: GatiMitraMerchant.primary,
+    backgroundColor: GatiMitraMerchant.navy,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -1472,7 +1170,7 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
   },
   sheetPillActive: {
-    backgroundColor: GatiMitraMerchant.primary,
+    backgroundColor: GatiMitraMerchant.navy,
   },
   sheetPillText: {
     fontSize: 12,
@@ -1508,28 +1206,6 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
   },
 });
-
-function getComplaintsFilterSummary(params: {
-  fromDate: string;
-  toDate: string;
-}): string {
-  const { fromDate } = params;
-  const defaultFrom = (() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 21);
-    return d.toISOString().slice(0, 10);
-  })();
-  const fromShort = formatDateOnly(fromDate);
-
-  if (fromDate.slice(0, 10) === defaultFrom) {
-    return "Recent complaints (last 21 days)";
-  }
-
-  if (fromShort && fromShort !== "—") {
-    return `Complaints from ${fromShort}`;
-  }
-  return "Filtered complaints";
-}
 
 function deriveRangeKey(fromDate: string): "7" | "21" | "30" | "all" {
   if (!fromDate) return "all";

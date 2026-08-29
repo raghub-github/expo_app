@@ -73,7 +73,12 @@ export async function PATCH(req: NextRequest) {
       "platform_keeps_commission", "is_active", "priority",
     ],
     payment_payout_rules: [
-      "rule_name", "min_payout_amount", "requires_admin_approval", "max_retries", "is_active",
+      "rule_name",
+      "min_payout_amount",
+      "max_payout_amount",
+      "requires_admin_approval",
+      "max_retries",
+      "is_active",
     ],
     payment_commission_rules: ["rule_name", "calculation_mode", "commission_value", "is_active"],
     payment_tax_rules: ["rule_name", "tax_value", "calculation_mode", "is_active"],
@@ -104,6 +109,7 @@ export async function PATCH(req: NextRequest) {
       await sql`
         UPDATE payment_payout_rules SET
           min_payout_amount = COALESCE(${sqlOptional(payload.min_payout_amount as number | null)}, min_payout_amount),
+          max_payout_amount = COALESCE(${sqlOptional(payload.max_payout_amount as number | null)}, max_payout_amount),
           requires_admin_approval = COALESCE(${sqlOptional(payload.requires_admin_approval as boolean | null)}, requires_admin_approval),
           is_active = COALESCE(${sqlOptional(payload.is_active as boolean | null)}, is_active),
           updated_at = NOW()

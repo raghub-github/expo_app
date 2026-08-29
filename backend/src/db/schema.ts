@@ -4095,6 +4095,10 @@ export const merchantStoreRatings = pgTable(
     helpfulCount: integer("helpful_count").default(0),
     notHelpfulCount: integer("not_helpful_count").default(0),
     merchantResponse: text("merchant_response"),
+    merchantResponses: jsonb("merchant_responses")
+      .$type<Array<{ text: string; at: string; images?: string[] }>>()
+      .notNull()
+      .default([]),
     merchantRespondedAt: timestamp("merchant_responded_at", {
       withTimezone: true,
     }),

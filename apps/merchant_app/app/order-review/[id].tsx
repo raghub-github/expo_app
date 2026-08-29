@@ -141,6 +141,7 @@ export default function OrderReviewScreen() {
               createdAt: row.createdAt,
               replyText: row.replyText ?? null,
               repliedAt: row.repliedAt ?? null,
+              replies: row.replies ?? [],
             });
             if (row.customerName) setCustomerName(row.customerName);
           }
@@ -200,9 +201,15 @@ export default function OrderReviewScreen() {
         reviewId: review.reviewId,
         replyText: text,
       });
+      const nextAt = new Date().toISOString();
       setReview((prev) =>
         prev
-          ? { ...prev, replyText: text, repliedAt: new Date().toISOString() }
+          ? {
+              ...prev,
+              replyText: text,
+              repliedAt: nextAt,
+              replies: [...(prev.replies ?? (prev.replyText ? [{ text: prev.replyText, at: prev.repliedAt ?? nextAt }] : [])), { text, at: nextAt }],
+            }
           : prev
       );
       setReplyText("");
@@ -293,12 +300,17 @@ export default function OrderReviewScreen() {
             </View>
           </Pressable>
 
-          {review.replyText ? (
-            <View style={styles.replyBubble}>
+          {(review.replies && review.replies.length > 0
+            ? review.replies
+            : review.replyText
+              ? [{ text: review.replyText, at: review.repliedAt ?? review.createdAt }]
+              : []
+          ).map((reply, idx) => (
+            <View key={`${reply.at}-${idx}`} style={styles.replyBubble}>
               <Text style={styles.replyLabel}>Your reply</Text>
-              <Text style={styles.replyBody}>{review.replyText}</Text>
+              <Text style={styles.replyBody}>{reply.text}</Text>
             </View>
-          ) : null}
+          ))}
         </ScrollView>
       ) : (
         <View style={styles.centered}>

@@ -96,8 +96,13 @@ export function CurrentRouteProvider({ children }: { children: React.ReactNode }
       // Never invent pending state for a no-op same-route click.
       if (isDashboardNavAlreadyAtTarget(current, target)) return;
 
-      // Same in-flight target: keep overlay, do not reset from-path / generation.
-      if (pendingNavHrefRef.current === target) return;
+      // Same in-flight target: keep overlay unless the URL never actually moved
+      // (nested Super Admin layouts can no-op the first router.push).
+      if (pendingNavHrefRef.current === target) {
+        const loc =
+          typeof window !== "undefined" ? cleanDashboardHref(window.location.pathname) : current;
+        if (loc === target || current === target) return;
+      }
 
       // Latest click wins — replace any previous pending destination.
       navGenerationRef.current += 1;

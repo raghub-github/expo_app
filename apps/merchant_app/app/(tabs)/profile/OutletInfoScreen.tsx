@@ -7,7 +7,7 @@
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, ScrollView, StyleSheet, Pressable, Image, ActivityIndicator, Linking, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, Switch, Dimensions } from "react-native";
+import { View, ScrollView, StyleSheet, Pressable, Image, ActivityIndicator, Linking, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, Switch, Dimensions, InteractionManager } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets, SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -17,8 +17,10 @@ import { profileSectionTitle } from "@/constants/profileTypography";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { getConfig } from "@/config/env";
-import { getOutlet, updateOutlet, updatePickupInstruction, resolveImageUrl, uploadStoreLogo, removeStoreLogo, type OutletInfo, type OutletUpdateBody } from "@/services/outletApi";
+import { getOutlet, updateOutlet, updatePickupInstruction, resolveImageUrl, uploadStoreLogo, removeStoreLogo, uploadGalleryImage, updateGalleryImages, type OutletInfo, type OutletUpdateBody } from "@/services/outletApi";
 import { StoreLogoPhotoOptionsSheet } from "@/components/StoreLogoPhotoOptionsSheet";
+import { AuthProxyImage } from "@/components/AuthProxyImage";
+import { pickStoreLogoPhoto } from "@/lib/storeLogoPhotoFlow";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { MX } from "@/lib/appAssetKeys";
 import { reverseGeocode, forwardGeocode, type GeocodeAddress } from "@/services/geocoding";
@@ -102,6 +104,7 @@ export default function OutletInfoScreen() {
   const [logoError, setLogoError] = useState(false);
   const [logoPhotoSheetVisible, setLogoPhotoSheetVisible] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
+  const [galleryBusy, setGalleryBusy] = useState(false);
   const [cuisineModalVisible, setCuisineModalVisible] = useState(false);
 
   // Separate edit modals per section
@@ -550,6 +553,84 @@ export default function OutletInfoScreen() {
     ]);
   };
 
+  const gallerySlots = useMemo(() => {
+    const raw = Array.isArray(outlet?.gallery_images) ? outlet!.gallery_images! : [];
+    const filled = raw.filter((g) => typeof g === "string" && g.trim());
+    return Array.from({ length: 5 }, (_, i) => filled[i] ?? "");
+  }, [outlet?.gallery_images]);
+
+  const filledGalleryCount = useMemo(
+    () => gallerySlots.filter(Boolean).length,
+    [gallerySlots],
+  );
+
+  const handleAddGalleryImage = async (slotIndex?: number) => {
+    if (!storeId || !token || galleryBusy) return;
+    if (filledGalleryCount >= 5 && (slotIndex == null || !gallerySlots[slotIndex])) {
+      Alert.alert("Gallery full", "You can upload up to 5 gallery images.");
+      return;
+    }
+    try {
+      const file = await pickStoreLogoPhoto("gallery", { purpose: "gallery" });
+      if (!file) return;
+      // Let Android dismiss Google Photos / system picker before upload UI work.
+      await new Promise<void>((resolve) => {
+        InteractionManager.runAfterInteractions(() => resolve());
+      });
+      await new Promise((r) => setTimeout(r, 280));
+      setGalleryBusy(true);
+      const result = await uploadGalleryImage(
+        storeId,
+        token,
+        file,
+        slotIndex != null ? slotIndex : undefined,
+      );
+      setOutlet((prev) =>
+        prev
+          ? {
+              ...prev,
+              gallery_images: result.gallery_images.length
+                ? result.gallery_images
+                : [...(prev.gallery_images ?? []), result.image_url].filter(Boolean).slice(0, 5),
+            }
+          : prev,
+      );
+      showToast("Gallery image added");
+    } catch (e) {
+      Alert.alert("Upload failed", e instanceof Error ? e.message : "Could not upload image.");
+    } finally {
+      setGalleryBusy(false);
+    }
+  };
+
+  const handleRemoveGalleryImage = (slotIndex: number) => {
+    if (!storeId || !token || galleryBusy) return;
+    const url = gallerySlots[slotIndex];
+    if (!url) return;
+    Alert.alert("Remove image", "Remove this gallery image?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Remove",
+        style: "destructive",
+        onPress: () => {
+          void (async () => {
+            setGalleryBusy(true);
+            try {
+              const next = gallerySlots.filter((_, i) => i !== slotIndex).filter(Boolean);
+              await updateGalleryImages(storeId, next, token);
+              setOutlet((prev) => (prev ? { ...prev, gallery_images: next } : prev));
+              showToast("Gallery image removed");
+            } catch (e) {
+              Alert.alert("Remove failed", e instanceof Error ? e.message : "Could not remove image.");
+            } finally {
+              setGalleryBusy(false);
+            }
+          })();
+        },
+      },
+    ]);
+  };
+
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -758,14 +839,6 @@ export default function OutletInfoScreen() {
             <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
           </Pressable>
           <Pressable
-            onPress={() => Linking.openURL("https://www.gatimitra.com")}
-            style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
-          >
-            <Ionicons name="business-outline" size={20} color={GatiMitraMerchant.primary} />
-            <Text style={styles.linkText}>View on GatiMitra</Text>
-            <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
-          </Pressable>
-          <Pressable
             onPress={() => router.push("/(tabs)/profile/change-history")}
             style={({ pressed }) => [styles.linkRow, styles.linkRowLast, pressed && styles.linkRowPressed]}
           >
@@ -773,6 +846,75 @@ export default function OutletInfoScreen() {
             <Text style={styles.linkText}>Change history</Text>
             <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
           </Pressable>
+        </View>
+
+        {/* Gallery images — same R2 + gallery_images column as partnersite */}
+        <View style={styles.galleryCard}>
+          <View style={styles.galleryHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.galleryTitle}>
+                Gallery images ({filledGalleryCount}/5)
+              </Text>
+              <Text style={styles.galleryHint}>
+                Upload up to 5 promotional images (same storage as Partner Site)
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => void handleAddGalleryImage()}
+              disabled={galleryBusy || filledGalleryCount >= 5}
+              style={({ pressed }) => [
+                styles.galleryUploadBtn,
+                (galleryBusy || filledGalleryCount >= 5) && styles.galleryUploadBtnDisabled,
+                pressed && !galleryBusy && filledGalleryCount < 5 && styles.pressed,
+              ]}
+            >
+              {galleryBusy ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="cloud-upload-outline" size={14} color="#fff" />
+                  <Text style={styles.galleryUploadBtnText}>Upload</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+          <View style={styles.galleryGrid}>
+            {gallerySlots.map((img, index) => {
+              const uri = resolveImageUrl(img);
+              return (
+                <Pressable
+                  key={`gallery-slot-${index}`}
+                  onPress={() => {
+                    if (img) return;
+                    if (filledGalleryCount < 5) void handleAddGalleryImage(index);
+                  }}
+                  style={styles.gallerySlot}
+                >
+                  {img && uri ? (
+                    <>
+                      <AuthProxyImage
+                        uri={uri}
+                        token={token}
+                        style={styles.gallerySlotImg}
+                        resizeMode="cover"
+                      />
+                      <Pressable
+                        onPress={() => handleRemoveGalleryImage(index)}
+                        style={styles.galleryRemoveBtn}
+                        hitSlop={6}
+                      >
+                        <Ionicons name="close" size={14} color="#fff" />
+                      </Pressable>
+                    </>
+                  ) : (
+                    <View style={styles.gallerySlotEmpty}>
+                      <Ionicons name="add" size={22} color={GatiMitraMerchant.textTertiary} />
+                    </View>
+                  )}
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
       </ScrollView>
 
@@ -1663,4 +1805,72 @@ const styles = StyleSheet.create({
   linkRowLast: { borderBottomWidth: 0 },
   linkRowPressed: { backgroundColor: GatiMitraMerchant.surfaceSubtle },
   linkText: { flex: 1, fontSize: 14, fontWeight: "500", color: GatiMitraMerchant.textPrimary },
+  galleryCard: {
+    marginTop: 14,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderRadius: CARD_RADIUS,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    padding: 14,
+  },
+  galleryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 12,
+  },
+  galleryTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  galleryHint: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    marginTop: 2,
+  },
+  galleryUploadBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: GatiMitraMerchant.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: BUTTON_RADIUS,
+  },
+  galleryUploadBtnDisabled: { opacity: 0.5 },
+  galleryUploadBtnText: { fontSize: 12, fontWeight: "700", color: "#fff" },
+  galleryGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  gallerySlot: {
+    width: "18%",
+    minWidth: 56,
+    aspectRatio: 1,
+    borderRadius: 10,
+    overflow: "hidden",
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  gallerySlotImg: { width: "100%", height: "100%" },
+  gallerySlotEmpty: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 56,
+  },
+  galleryRemoveBtn: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
 });

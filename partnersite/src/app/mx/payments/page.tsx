@@ -28,9 +28,15 @@ import {
   resolveLedgerDisplayDescription,
   isMerchantVisibleLedgerEntry,
   resolveWalletDisplayBalance,
-} from '@/lib/merchant-payout-utils';
+  resolveLedgerRowStatusBadge,
+} from '@/lib/merchant-payout-utils'
+import {
+  formatPayoutDateTime,
+  resolvePayoutStatusTimeline,
+} from '@/lib/merchant-payout-timeline';
 import type { LedgerEntry } from '@/lib/wallet-types';
 import { LedgerEntryAmount } from '@/components/payments/LedgerEntryAmount';
+import { WithdrawProgressButton } from '@/components/payments/WithdrawProgressButton';
 import { mergeCancellationLedgerEntries } from '@/lib/merge-cancellation-ledger-entries';
 import { partnerPayoutHistoryHref } from '@/lib/partner-payments-routes';
 import { RefundPolicyContent } from '@/components/RefundPolicyContent'
@@ -88,15 +94,28 @@ const LEDGER_CATEGORIES = [
   'TAX_ADJUSTMENT',
 ] as const
 
-const MIN_WITHDRAWAL = 100
-const MAX_WITHDRAWAL_PER_REQUEST = 100_000
+const FALLBACK_MIN_WITHDRAWAL = 100
+const FALLBACK_MAX_WITHDRAWAL = 100_000
+
+function getMinWithdrawal(wallet: { min_withdrawal_amount?: number } | null | undefined): number {
+  const n = Number(wallet?.min_withdrawal_amount)
+  return Number.isFinite(n) && n > 0 ? n : FALLBACK_MIN_WITHDRAWAL
+}
+
+function getMaxWithdrawalCap(wallet: { max_withdrawal_amount?: number } | null | undefined): number {
+  const n = Number(wallet?.max_withdrawal_amount)
+  return Number.isFinite(n) && n > 0 ? n : FALLBACK_MAX_WITHDRAWAL
+}
 
 function getWithdrawableBalance(wallet: WalletSummary | undefined | null): number {
   return resolveWalletDisplayBalance(wallet)
 }
 
-function getMaxWithdrawalLimit(withdrawable: number): number {
-  return Math.min(Math.max(0, withdrawable), MAX_WITHDRAWAL_PER_REQUEST)
+function getMaxWithdrawalLimit(
+  withdrawable: number,
+  wallet?: { max_withdrawal_amount?: number } | null,
+): number {
+  return Math.min(Math.max(0, withdrawable), getMaxWithdrawalCap(wallet))
 }
 
 function formatWithdrawalInputAmount(amount: number): string {
@@ -123,6 +142,8 @@ interface WalletSummary {
   isFrozen?: boolean
   freezeReason?: string | null
   frozenAt?: string | null
+  min_withdrawal_amount?: number
+  max_withdrawal_amount?: number
 }
 
 interface OrderDetailItem {
@@ -189,14 +210,6 @@ function PgTxnIdCell({ pgId }: { pgId: string | null | undefined }) {
   )
 }
 
-function isCancellationNoCreditEntry(row: LedgerEntry): boolean {
-  const meta = row.metadata as Record<string, unknown> | null
-  if (meta?.entry_type === 'order_cancellation' && meta?.balance_impact === 'none') return true
-  const display = meta?.cancellation_display as { creditAmount?: number } | undefined
-  if (display && Number(display.creditAmount ?? 0) <= 0) return true
-  return false
-}
-
 function formatLedgerRowDescription(row: LedgerEntry): string {
   return resolveLedgerDisplayDescription(row) || '—'
 }
@@ -222,6 +235,8 @@ function PaymentsContent() {
   const [showWithdrawal, setShowWithdrawal] = useState(false)
   const [withdrawalAmount, setWithdrawalAmount] = useState('')
   const [isWithdrawing, setIsWithdrawing] = useState(false)
+  /** Prevents the opener click from also firing the sheet Confirm (ghost click). */
+  const [withdrawConfirmArmed, setWithdrawConfirmArmed] = useState(false)
 
   const [ledgerLimit, setLedgerLimit] = useState(50)
   const [ledgerOffset, setLedgerOffset] = useState(0)
@@ -235,14 +250,16 @@ function PaymentsContent() {
   const [analyticsPeriod, setAnalyticsPeriod] = useState<WalletAnalyticsPeriod>('week')
   const ledgerSectionRef = React.useRef<HTMLDivElement>(null)
 
-  const { data: wallet, isLoading: walletLoading } = useMerchantWallet(storeId, { lite: false })
+  const { data: wallet, isLoading: walletLoading } = useMerchantWallet(storeId, { lite: false, live: true })
   // Gate loading UI until after hydration so SSR HTML matches the first client paint.
   const showWalletSkeleton = !hydrated || !storeId || walletLoading
   const { data: walletAnalytics, isLoading: analyticsLoading } = useMerchantWalletAnalytics(
     storeId,
     analyticsPeriod
   )
-  const { data: payoutData, isLoading: payoutsLoading } = useMerchantPayoutRequests(storeId, 5)
+  const { data: payoutData, isLoading: payoutsLoading } = useMerchantPayoutRequests(storeId, 5, {
+    live: true,
+  })
   const ledgerParams = useMemo(() => ({
     limit: ledgerLimit,
     offset: ledgerOffset,
@@ -272,8 +289,13 @@ function PaymentsContent() {
     if (!walletFrozen) return
     setShowWithdrawal(false)
   }, [walletFrozen])
-  const maxWithdrawalLimit = getMaxWithdrawalLimit(withdrawableBalance)
-  const withdrawalInputEnabled = maxWithdrawalLimit >= MIN_WITHDRAWAL && !isWithdrawing && !walletFrozen
+  const maxWithdrawalLimit = getMaxWithdrawalLimit(
+    withdrawableBalance,
+    wallet as WalletSummary | undefined,
+  )
+  const minWithdrawal = getMinWithdrawal(wallet as WalletSummary | undefined)
+  const withdrawalInputEnabled =
+    maxWithdrawalLimit >= minWithdrawal && !isWithdrawing && !walletFrozen
 
   const openWithdrawalSheet = () => {
     if (walletFrozen) {
@@ -284,14 +306,29 @@ function PaymentsContent() {
       )
       return
     }
-    const limit = getMaxWithdrawalLimit(getWithdrawableBalance(wallet as WalletSummary | undefined))
-    if (limit >= MIN_WITHDRAWAL) {
+    const limit = getMaxWithdrawalLimit(
+      getWithdrawableBalance(wallet as WalletSummary | undefined),
+      wallet as WalletSummary | undefined,
+    )
+    // Prefill for convenience, but never auto-submit — confirm stays disarmed until
+    // the opener click finishes and the user can consciously press Withdraw in-sheet.
+    setWithdrawConfirmArmed(false)
+    if (limit >= minWithdrawal) {
       setWithdrawalAmount(formatWithdrawalInputAmount(limit))
     } else {
       setWithdrawalAmount('')
     }
     setShowWithdrawal(true)
   }
+
+  useEffect(() => {
+    if (!showWithdrawal) {
+      setWithdrawConfirmArmed(false)
+      return
+    }
+    const t = window.setTimeout(() => setWithdrawConfirmArmed(true), 450)
+    return () => window.clearTimeout(t)
+  }, [showWithdrawal])
 
   const handleWithdrawalAmountChange = (raw: string) => {
     if (raw === '') {
@@ -345,7 +382,7 @@ function PaymentsContent() {
   const [expandedRidersLedgerId, setExpandedRidersLedgerId] = useState<number | null>(null)
   const [orderDetailsCache, setOrderDetailsCache] = useState<Record<number, { items: OrderDetailItem[]; riders: OrderDetailRider[] }>>({})
   const [orderDetailsLoading, setOrderDetailsLoading] = useState<number | null>(null)
-  const [payoutDetailsCache, setPayoutDetailsCache] = useState<Record<number, { payout: { id: number; amount: number; net_payout_amount: number; status: string; utr_reference: string | null; pg_transaction_id: string | null; requested_at: string }; bank: { account_holder_name: string; account_number_masked: string | null; bank_name: string; payout_method: string; upi_id: string | null; ifsc_code?: string | null } | null }>>({})
+  const [payoutDetailsCache, setPayoutDetailsCache] = useState<Record<number, { payout: { id: number; amount: number; net_payout_amount: number; status: string; utr_reference: string | null; pg_transaction_id: string | null; requested_at: string; approved_at?: string | null; processed_at?: string | null; completed_at?: string | null }; bank: { account_holder_name: string; account_number_masked: string | null; bank_name: string; payout_method: string; upi_id: string | null; ifsc_code?: string | null } | null }>>({})
   const [payoutDetailsLoading, setPayoutDetailsLoading] = useState<number | null>(null)
 
   useEffect(() => {
@@ -392,6 +429,7 @@ function PaymentsContent() {
   }
 
   const handleWithdrawal = async () => {
+    if (!withdrawConfirmArmed) return
     if (walletFrozen) {
       toast.error(
         freezeReason
@@ -401,21 +439,19 @@ function PaymentsContent() {
       return
     }
     const amount = parseFloat(withdrawalAmount)
-    if (!storeId || isNaN(amount) || amount < MIN_WITHDRAWAL) {
-      toast.error(`Enter a valid amount (min ₹${MIN_WITHDRAWAL})`)
+    if (!storeId || isNaN(amount) || amount < minWithdrawal) {
+      toast.error(`Enter a valid amount (min ₹${minWithdrawal})`)
       return
     }
     const available = getWithdrawableBalance(wallet as WalletSummary | undefined)
-    if (available < MIN_WITHDRAWAL) {
-      toast.error(`Available balance is below the minimum withdrawal (₹${MIN_WITHDRAWAL}).`)
+    if (available < minWithdrawal) {
+      toast.error(`Available balance is below the minimum withdrawal (₹${minWithdrawal}).`)
       return
     }
     if (amount > maxWithdrawalLimit) {
-      toast.error('Requested amount exceeds your available balance or ₹1,00,000 limit.')
-      return
-    }
-    if (amount > MAX_WITHDRAWAL_PER_REQUEST) {
-      toast.error('Maximum withdrawal per request is ₹1,00,000.')
+      toast.error(
+        `Requested amount exceeds your available balance or max ₹${getMaxWithdrawalCap(wallet as WalletSummary | undefined).toLocaleString('en-IN')}.`,
+      )
       return
     }
     const bankId = withdrawBankId === '' ? null : Number(withdrawBankId)
@@ -428,6 +464,7 @@ function PaymentsContent() {
       await payoutMutation.mutateAsync({ storeId, amount, bank_account_id: bankId })
       setWithdrawalAmount('')
       setShowWithdrawal(false)
+      setWithdrawConfirmArmed(false)
       toast.success('Withdrawal request submitted. Full amount will arrive within 24 to 48 hrs.')
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Request failed. Please try again.')
@@ -472,6 +509,9 @@ function PaymentsContent() {
               utr_reference: data.payout.utr_reference ?? null,
               pg_transaction_id: data.payout.pg_transaction_id ?? data.payout.utr_reference ?? null,
               requested_at: data.payout.requested_at,
+              approved_at: data.payout.approved_at ?? null,
+              processed_at: data.payout.processed_at ?? null,
+              completed_at: data.payout.completed_at ?? null,
             },
             bank: data.bank ?? null,
           },
@@ -831,44 +871,6 @@ function PaymentsContent() {
     })
   }, [])
 
-  const downloadLedgerCsv = useCallback(async () => {
-    if (!storeId) return
-    try {
-      const search = new URLSearchParams({ storeId, limit: '2000', offset: '0' })
-      if (filterFrom) search.set('from', filterFrom)
-      if (filterTo) search.set('to', filterTo)
-      if (filterDirection !== 'all') search.set('direction', filterDirection)
-      if (filterCategory) search.set('category', filterCategory)
-      const res = await fetch(`/api/merchant/wallet/ledger?${search}`)
-      const data = await res.json()
-      if (!res.ok) {
-        toast.error(data.error || 'Could not export ledger')
-        return
-      }
-      const rows = (data.entries ?? []) as LedgerEntry[]
-      const header = ['Date', 'Category', 'Description', 'Direction', 'Amount', 'Balance after']
-      const lines = rows.map((r) => [
-        new Date(r.created_at).toISOString(),
-        r.category,
-        resolveLedgerDisplayDescription(r).replace(/"/g, '""'),
-        r.direction,
-        String(r.amount),
-        String(r.balance_after),
-      ])
-      const csv = [header, ...lines].map((line) => line.map((c) => `"${c}"`).join(',')).join('\n')
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `ledger-${storeId}-${new Date().toISOString().slice(0, 10)}.csv`
-      a.click()
-      URL.revokeObjectURL(url)
-      toast.success('Ledger downloaded')
-    } catch {
-      toast.error('Export failed')
-    }
-  }, [storeId, filterFrom, filterTo, filterDirection, filterCategory])
-
   return (
     <>
       <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || DEMO_RESTAURANT_ID}>
@@ -889,14 +891,23 @@ function PaymentsContent() {
                   <FileText size={16} />
                   View refund &amp; cancellation policy
                 </button>
-                <button
-                  onClick={openWithdrawalSheet}
-                  disabled={walletFrozen}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600"
-                >
-                  <ArrowDownToLine size={16} />
-                  {walletFrozen ? 'Wallet Frozen' : 'Withdraw'}
-                </button>
+                {walletFrozen ? (
+                  <button
+                    type="button"
+                    disabled
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium bg-slate-300 text-white text-sm cursor-not-allowed"
+                  >
+                    Wallet Frozen
+                  </button>
+                ) : (
+                  <WithdrawProgressButton
+                    current={withdrawableBalance}
+                    minAmount={minWithdrawal}
+                    onClick={openWithdrawalSheet}
+                    labelReady="Withdraw"
+                    compact
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -1019,7 +1030,7 @@ function PaymentsContent() {
                         {formatInr(wallet?.pending_withdrawal_total ?? 0)}
                       </p>
                     )}
-                    <p className="text-[10px] text-gray-600 mt-1">In process</p>
+                    <p className="text-[10px] text-gray-600 mt-1">Awaiting admin review</p>
                   </div>
                   <div className="p-2 rounded-lg bg-red-100 flex-shrink-0">
                     <ArrowDownToLine size={16} className="text-red-700" />
@@ -1027,11 +1038,11 @@ function PaymentsContent() {
                 </div>
               </div>
 
-              {/* In Process */}
-              <div className="bg-yellow-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+              {/* Hold (admin approved / processing) */}
+              <div className="bg-violet-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
                 <div className="flex items-start justify-between">
                   <div>
-                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">In Process</p>
+                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Hold</p>
                     {showWalletSkeleton ? (
                       <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
@@ -1039,10 +1050,10 @@ function PaymentsContent() {
                         {formatInr(wallet?.in_process_withdrawal_total ?? 0)}
                       </p>
                     )}
-                    <p className="text-[10px] text-gray-600 mt-1">Being processed</p>
+                    <p className="text-[10px] text-gray-600 mt-1">On hold · awaiting release</p>
                   </div>
-                  <div className="p-2 rounded-lg bg-yellow-100 flex-shrink-0">
-                    <Package size={16} className="text-yellow-700" />
+                  <div className="p-2 rounded-lg bg-violet-100 flex-shrink-0">
+                    <Package size={16} className="text-violet-700" />
                   </div>
                 </div>
               </div>
@@ -1155,14 +1166,14 @@ function PaymentsContent() {
                 <div className="grid grid-cols-1 gap-2">
                   <button
                     onClick={openWithdrawalSheet}
-                    disabled={walletFrozen}
+                    disabled={walletFrozen || withdrawableBalance < minWithdrawal}
                     className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors group disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 rounded-lg bg-emerald-100 group-hover:bg-emerald-200 transition-colors">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div className="p-2 rounded-lg bg-emerald-100 group-hover:bg-emerald-200 transition-colors shrink-0">
                         <ArrowDownToLine size={16} className="text-emerald-600" />
                       </div>
-                      <div className="text-left">
+                      <div className="text-left min-w-0 flex-1">
                         <p className="font-medium text-gray-900 text-xs">
                           {walletFrozen ? 'Wallet Frozen' : 'Withdraw Earnings'}
                         </p>
@@ -1171,8 +1182,20 @@ function PaymentsContent() {
                             ? freezeReason
                               ? `Reason: ${freezeReason}`
                               : 'Withdrawals are currently disabled.'
-                            : 'Transfer your earnings to bank account'}
+                            : withdrawableBalance < minWithdrawal
+                              ? `Min ₹${minWithdrawal.toLocaleString('en-IN')} required · ₹${Math.max(0, minWithdrawal - withdrawableBalance).toLocaleString('en-IN')} more`
+                              : 'Transfer your earnings to bank account'}
                         </p>
+                        {!walletFrozen && withdrawableBalance < minWithdrawal ? (
+                          <div className="mt-1.5 h-1.5 w-full max-w-[180px] rounded-full bg-slate-200 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-emerald-600 transition-[width] duration-200"
+                              style={{
+                                width: `${Math.min(100, Math.round((withdrawableBalance / Math.max(1, minWithdrawal)) * 100))}%`,
+                              }}
+                            />
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                     <ChevronRight size={14} className="text-gray-400 flex-shrink-0" />
@@ -1209,22 +1232,6 @@ function PaymentsContent() {
                     </div>
                     <ChevronRight size={14} className="text-gray-400 flex-shrink-0" />
                   </Link>
-
-                  <button
-                    type="button" onClick={() => void downloadLedgerCsv()}
-                    className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors group"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 rounded-lg bg-orange-100 group-hover:bg-orange-200 transition-colors">
-                        <FileText size={16} className="text-orange-600" />
-                      </div>
-                      <div className="text-left">
-                        <p className="font-medium text-gray-900 text-xs">Download Ledger</p>
-                        <p className="text-[10px] text-gray-600">Download your transaction report</p>
-                      </div>
-                    </div>
-                    <ChevronRight size={14} className="text-gray-400 flex-shrink-0" />
-                  </button>
                 </div>
               </div>
             </div>
@@ -1367,7 +1374,52 @@ function PaymentsContent() {
                                     ? `#${row.reference_id}`
                                     : '—')}
                               </td>
-                              <td className="py-3 px-4 text-gray-600 whitespace-nowrap">{new Date(row.created_at).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}</td>
+                              <td className="py-3 px-4 text-gray-600 whitespace-nowrap">
+                                {(() => {
+                                  const isPayoutRow =
+                                    (row.category === 'WITHDRAWAL' || row.category === 'HOLD_LOCK') &&
+                                    row.reference_id != null
+                                  const detail =
+                                    isPayoutRow && row.reference_id != null
+                                      ? payoutDetailsCache[row.reference_id]?.payout
+                                      : null
+                                  if (!isPayoutRow) {
+                                    return new Date(row.created_at).toLocaleString('en-IN', {
+                                      dateStyle: 'short',
+                                      timeStyle: 'short',
+                                    })
+                                  }
+                                  const timeline = resolvePayoutStatusTimeline(detail)
+                                  const requestedIso = detail?.requested_at ?? null
+                                  return (
+                                    <div className="flex flex-col gap-0.5 text-[11px] leading-snug">
+                                      <span>
+                                        <span className="text-slate-400">Req </span>
+                                        {formatPayoutDateTime(requestedIso) !== '—'
+                                          ? formatPayoutDateTime(requestedIso)
+                                          : new Date(row.created_at).toLocaleString('en-IN', {
+                                              dateStyle: 'short',
+                                              timeStyle: 'short',
+                                            })}
+                                      </span>
+                                      {timeline.label && timeline.at ? (
+                                        <span>
+                                          <span className="text-slate-400">{timeline.label} </span>
+                                          {formatPayoutDateTime(timeline.at)}
+                                        </span>
+                                      ) : row.category === 'WITHDRAWAL' ? (
+                                        <span>
+                                          <span className="text-slate-400">Settled </span>
+                                          {new Date(row.created_at).toLocaleString('en-IN', {
+                                            dateStyle: 'short',
+                                            timeStyle: 'short',
+                                          })}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  )
+                                })()}
+                              </td>
                               <td className="py-3 px-4 align-top text-gray-600 min-w-[200px] max-w-xs whitespace-normal break-words leading-relaxed">
                                 {formatLedgerRowDescription(row)}
                               </td>
@@ -1383,26 +1435,31 @@ function PaymentsContent() {
                               </td>
                               <td className="py-3 px-4 text-center">
                                 {(() => {
-                                  if (isCancellationNoCreditEntry(row)) {
-                                    return (
-                                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-medium">
-                                        <div className="w-2 h-2 rounded-full bg-amber-600"/>
-                                        Cancelled
-                                      </span>
-                                    )
-                                  }
-                                  if (row.direction === 'CREDIT') {
-                                    return (
-                                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
-                                        <div className="w-2 h-2 rounded-full bg-emerald-600"/>
-                                        Credit
-                                      </span>
-                                    )
-                                  }
+                                  const badge = resolveLedgerRowStatusBadge(row)
+                                  const toneClass =
+                                    badge.tone === 'emerald'
+                                      ? 'bg-emerald-100 text-emerald-700'
+                                      : badge.tone === 'amber'
+                                        ? 'bg-amber-100 text-amber-800'
+                                        : badge.tone === 'yellow'
+                                          ? 'bg-yellow-100 text-yellow-800'
+                                          : badge.tone === 'red'
+                                            ? 'bg-red-100 text-red-700'
+                                            : 'bg-slate-100 text-slate-700'
+                                  const dotClass =
+                                    badge.tone === 'emerald'
+                                      ? 'bg-emerald-600'
+                                      : badge.tone === 'amber'
+                                        ? 'bg-amber-600'
+                                        : badge.tone === 'yellow'
+                                          ? 'bg-yellow-600'
+                                          : badge.tone === 'red'
+                                            ? 'bg-red-600'
+                                            : 'bg-slate-600'
                                   return (
-                                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-red-100 text-red-700 text-xs font-medium">
-                                      <div className="w-2 h-2 rounded-full bg-red-600"/>
-                                      Debit
+                                    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${toneClass}`}>
+                                      <div className={`w-2 h-2 rounded-full ${dotClass}`} />
+                                      {badge.label}
                                     </span>
                                   )
                                 })()}
@@ -1414,101 +1471,115 @@ function PaymentsContent() {
                             {expandedLedgerId === row.id && (row.category === 'WITHDRAWAL' || row.category === 'HOLD_LOCK') && row.reference_id != null && (() => {
                               const payoutRefId = row.reference_id as number
                               const payoutDetail = payoutDetailsCache[payoutRefId]
+                              const payout = payoutDetail?.payout
+                              const bank = payoutDetail?.bank
+                              const timeline = resolvePayoutStatusTimeline(payout)
                               return (
                               <tr className="bg-slate-50/60 border-b border-slate-200">
                                 <td colSpan={9} className="p-0">
-                                  <div className="px-4 pb-4 pt-1">
+                                  <div className="px-3 py-2">
                                     {payoutDetailsLoading === payoutRefId ? (
-                                      <div className="flex items-center justify-center py-8 text-slate-500">
-                                        <Loader2 size={24} className="animate-spin mr-2" />
+                                      <div className="flex items-center justify-center py-4 text-slate-500 text-sm">
+                                        <Loader2 size={18} className="animate-spin mr-2" />
                                         Loading payout details...
                                       </div>
                                     ) : (
-                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
-                                          <h4 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
-                                            <CreditCard size={18} className="text-emerald-500" />
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                        <div className="bg-white rounded-lg border border-slate-200 p-2.5">
+                                          <h4 className="text-xs font-semibold text-slate-800 mb-1.5 flex items-center gap-1.5">
+                                            <CreditCard size={14} className="text-emerald-500" />
                                             Transaction details
                                           </h4>
-                                          <dl className="space-y-1.5 text-sm">
-                                            <div className="flex justify-between"><dt className="text-slate-500">Request ID</dt><dd className="font-medium tabular-nums">{payoutDetail?.payout?.id ?? '—'}</dd></div>
-                                            <div className="flex justify-between"><dt className="text-slate-500">Status</dt><dd className="font-medium">{payoutDetail?.payout?.status ?? '—'}</dd></div>
-                                            <div className="flex justify-between"><dt className="text-slate-500">Requested</dt><dd>{payoutDetail?.payout?.requested_at ? new Date(payoutDetail.payout.requested_at).toLocaleString('en-IN') : '—'}</dd></div>
-                                            {payoutDetail?.payout?.pg_transaction_id && (
-                                              <div className="flex justify-between gap-3">
-                                                <dt className="shrink-0 text-slate-500">PG TNX ID</dt>
-                                                <dd className="flex items-start justify-end gap-1.5 text-right">
-                                                  <span className="font-mono text-xs break-all">
-                                                    {payoutDetail.payout.pg_transaction_id}
-                                                  </span>
+                                          <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] leading-snug">
+                                            <div className="flex justify-between gap-2">
+                                              <dt className="text-slate-500 shrink-0">Request ID</dt>
+                                              <dd className="font-medium tabular-nums text-right">{payout?.id ?? '—'}</dd>
+                                            </div>
+                                            <div className="flex justify-between gap-2">
+                                              <dt className="text-slate-500 shrink-0">Status</dt>
+                                              <dd className="font-medium text-right">{payout?.status ?? '—'}</dd>
+                                            </div>
+                                            <div className="flex justify-between gap-2 col-span-2 sm:col-span-1">
+                                              <dt className="text-slate-500 shrink-0">Requested</dt>
+                                              <dd className="text-right">{formatPayoutDateTime(payout?.requested_at)}</dd>
+                                            </div>
+                                            {timeline.label && timeline.at ? (
+                                              <div className="flex justify-between gap-2 col-span-2 sm:col-span-1">
+                                                <dt className="text-slate-500 shrink-0">{timeline.label}</dt>
+                                                <dd className="text-right">{formatPayoutDateTime(timeline.at)}</dd>
+                                              </div>
+                                            ) : null}
+                                            {payout?.pg_transaction_id ? (
+                                              <div className="flex justify-between gap-2 col-span-2">
+                                                <dt className="text-slate-500 shrink-0">PG TNX ID</dt>
+                                                <dd className="flex items-start justify-end gap-1 text-right">
+                                                  <span className="font-mono text-[10px] break-all">{payout.pg_transaction_id}</span>
                                                   <button
                                                     type="button"
                                                     onClick={() =>
                                                       void copyTextToClipboard(
-                                                        payoutDetail.payout.pg_transaction_id!,
+                                                        payout.pg_transaction_id!,
                                                         'PG TNX ID copied'
                                                       )
                                                     }
-                                                    className="shrink-0 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                                                    className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
                                                     title="Copy PG TNX ID"
                                                     aria-label="Copy PG TNX ID"
                                                   >
-                                                    <Copy size={14} />
+                                                    <Copy size={12} />
                                                   </button>
                                                 </dd>
                                               </div>
-                                            )}
-                                            {payoutDetail?.payout?.utr_reference && (
-                                              <div className="flex justify-between"><dt className="text-slate-500">UTR</dt><dd className="font-mono text-xs">{payoutDetail.payout.utr_reference}</dd></div>
-                                            )}
-                                            <div className="flex justify-between"><dt className="text-slate-500">Amount</dt><dd className="font-medium">{payoutDetail?.payout?.amount != null ? formatInr(payoutDetail.payout.amount) : '—'}</dd></div>
-                                            {payoutDetail?.payout?.status === 'COMPLETED' && storeId && (
-                                              <div className="pt-2 mt-2 border-t border-slate-100">
-                                                <dt className="text-slate-500 text-xs mb-1">Invoice</dt>
-                                                <dd className="flex gap-2 flex-wrap">
-                                                  <a
-                                                    href={`/api/merchant/invoice/${payoutRefId}?storeId=${encodeURIComponent(storeId)}&format=pdf`}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 hover:text-emerald-700"
-                                                  >
-                                                    <FileText size={14} />
-                                                    PDF
-                                                  </a>
-                                                  <a
-                                                    href={`/api/merchant/invoice/${payoutRefId}?storeId=${encodeURIComponent(storeId)}&format=csv`}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 hover:text-emerald-700"
-                                                  >
-                                                    <FileText size={14} />
-                                                    CSV
-                                                  </a>
-                                                </dd>
+                                            ) : null}
+                                            {payout?.utr_reference ? (
+                                              <div className="flex justify-between gap-2">
+                                                <dt className="text-slate-500 shrink-0">UTR</dt>
+                                                <dd className="font-mono text-[10px] text-right">{payout.utr_reference}</dd>
                                               </div>
-                                            )}
+                                            ) : null}
+                                            <div className="flex justify-between gap-2">
+                                              <dt className="text-slate-500 shrink-0">Amount</dt>
+                                              <dd className="font-medium text-right">{payout?.amount != null ? formatInr(payout.amount) : '—'}</dd>
+                                            </div>
+                                            <div className="flex justify-between gap-2">
+                                              <dt className="text-slate-500 shrink-0">Net payout</dt>
+                                              <dd className="font-medium text-right">{payout?.net_payout_amount != null ? formatInr(payout.net_payout_amount) : '—'}</dd>
+                                            </div>
                                           </dl>
                                         </div>
-                                        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
-                                          <h4 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
-                                            <Building2 size={18} className="text-slate-500" />
+                                        <div className="bg-white rounded-lg border border-slate-200 p-2.5">
+                                          <h4 className="text-xs font-semibold text-slate-800 mb-1.5 flex items-center gap-1.5">
+                                            <Building2 size={14} className="text-slate-500" />
                                             Bank details
                                           </h4>
-                                          {(() => {
-                                            const bank = payoutDetail?.bank;
-                                            if (!bank) return <p className="text-sm text-slate-500">Bank details not available</p>;
-                                            return (
-                                              <dl className="space-y-1.5 text-sm">
-                                                <div><dt className="text-slate-500">Account holder</dt><dd className="font-medium">{bank.account_holder_name}</dd></div>
-                                                <div><dt className="text-slate-500">Account</dt><dd className="tabular-nums">{bank.account_number_masked ?? '—'}</dd></div>
-                                                <div><dt className="text-slate-500">IFSC</dt><dd className="font-mono">{bank.ifsc_code ?? '—'}</dd></div>
-                                                <div><dt className="text-slate-500">Bank</dt><dd>{bank.bank_name}</dd></div>
-                                                {bank.payout_method === 'upi' && bank.upi_id && (
-                                                  <div><dt className="text-slate-500">UPI ID</dt><dd>{bank.upi_id}</dd></div>
-                                                )}
-                                              </dl>
-                                            );
-                                          })()}
+                                          {!bank ? (
+                                            <p className="text-[11px] text-slate-500">Bank details not available</p>
+                                          ) : (
+                                            <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] leading-snug">
+                                              <div className="col-span-2 flex justify-between gap-2">
+                                                <dt className="text-slate-500 shrink-0">Account holder</dt>
+                                                <dd className="font-medium text-right">{bank.account_holder_name}</dd>
+                                              </div>
+                                              <div className="flex justify-between gap-2">
+                                                <dt className="text-slate-500 shrink-0">Account</dt>
+                                                <dd className="tabular-nums text-right">{bank.account_number_masked ?? '—'}</dd>
+                                              </div>
+                                              <div className="flex justify-between gap-2">
+                                                <dt className="text-slate-500 shrink-0">IFSC</dt>
+                                                <dd className="font-mono text-right">{bank.ifsc_code ?? '—'}</dd>
+                                              </div>
+                                              <div className="col-span-2 flex justify-between gap-2">
+                                                <dt className="text-slate-500 shrink-0">Bank</dt>
+                                                <dd className="text-right">{bank.bank_name}</dd>
+                                              </div>
+                                              {bank.payout_method === 'upi' && bank.upi_id ? (
+                                                <div className="col-span-2 flex justify-between gap-2">
+                                                  <dt className="text-slate-500 shrink-0">UPI ID</dt>
+                                                  <dd className="text-right">{bank.upi_id}</dd>
+                                                </div>
+                                              ) : null}
+                                            </dl>
+                                          )}
                                         </div>
                                       </div>
                                     )}
@@ -1691,12 +1762,12 @@ function PaymentsContent() {
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-600 font-bold">₹</span>
                   <input
                     type="number"
-                    min={MIN_WITHDRAWAL}
+                    min={minWithdrawal}
                     max={maxWithdrawalLimit}
                     step="1"
                     value={withdrawalAmount}
                     onChange={(e) => handleWithdrawalAmountChange(e.target.value)}
-                    placeholder={withdrawalInputEnabled ? `Min ₹${MIN_WITHDRAWAL}` : 'Insufficient balance'}
+                    placeholder={withdrawalInputEnabled ? `Min ₹${minWithdrawal}` : 'Insufficient balance'}
                     className="w-full pl-9 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-emerald-200 focus:border-emerald-500 outline-none text-lg font-semibold disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
                     disabled={!withdrawalInputEnabled}
                   />
@@ -1706,11 +1777,11 @@ function PaymentsContent() {
                   if (!withdrawalInputEnabled) {
                     return (
                       <p className="text-xs text-amber-700 mt-2">
-                        Withdrawal unavailable — minimum ₹{MIN_WITHDRAWAL} required in your balance.
+                        Withdrawal unavailable — minimum ₹{minWithdrawal} required in your balance.
                       </p>
                     )
                   }
-                  if (!isNaN(amt) && amt >= MIN_WITHDRAWAL) {
+                  if (!isNaN(amt) && amt >= minWithdrawal) {
                     return (
                       <p className="text-xs text-emerald-700 mt-2 font-medium">
                         You receive full amount: {formatInr(amt)}
@@ -1719,11 +1790,11 @@ function PaymentsContent() {
                   }
                   return (
                     <p className="text-xs text-gray-500 mt-2">
-                      Minimum ₹{MIN_WITHDRAWAL} · Maximum {formatInr(maxWithdrawalLimit)} (up to ₹1,00,000 per request)
+                      Minimum ₹{minWithdrawal} · Maximum {formatInr(maxWithdrawalLimit)}
                     </p>
                   )
                 })()}
-                {withdrawalInputEnabled && withdrawalAmount.trim() !== '' && !isNaN(parseFloat(withdrawalAmount)) && parseFloat(withdrawalAmount) >= MIN_WITHDRAWAL && (
+                {withdrawalInputEnabled && withdrawalAmount.trim() !== '' && !isNaN(parseFloat(withdrawalAmount)) && parseFloat(withdrawalAmount) >= minWithdrawal && (
                   <p className="text-xs text-gray-500 mt-2 leading-relaxed">
                     Feel free to adjust the withdrawal amount as needed, as long as it does not exceed your available balance.
                   </p>
@@ -1814,32 +1885,28 @@ function PaymentsContent() {
               >
                 Cancel
               </button>
-              <button
-                type="button"
-                onClick={handleWithdrawal}
-                disabled={
-                  isWithdrawing
-                  || !withdrawalInputEnabled
-                  || !withdrawalAmount
-                  || parseFloat(withdrawalAmount) < MIN_WITHDRAWAL
-                  || parseFloat(withdrawalAmount) > maxWithdrawalLimit
-                  || (withdrawBankId !== '' && !bankAccounts.some((a) => a.id === withdrawBankId && !a.is_disabled))
-                  || (bankAccounts.filter((a) => !a.is_disabled).length === 0)
-                }
-                className="flex-1 py-3 text-sm bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {isWithdrawing ? (
-                  <>
-                    <Loader2 size={18} className="animate-spin" />
-                    Processing…
-                  </>
-                ) : (
-                  <>
-                    <ArrowDownToLine size={18} />
-                    Withdraw
-                  </>
-                )}
-              </button>
+              <div className="flex-1">
+                <WithdrawProgressButton
+                  current={
+                    withdrawalAmount.trim() === '' || Number.isNaN(parseFloat(withdrawalAmount))
+                      ? 0
+                      : parseFloat(withdrawalAmount)
+                  }
+                  minAmount={minWithdrawal}
+                  onClick={() => void handleWithdrawal()}
+                  loading={isWithdrawing}
+                  disabled={
+                    !withdrawConfirmArmed
+                    || !withdrawalInputEnabled
+                    || (withdrawalAmount.trim() !== ''
+                      && !Number.isNaN(parseFloat(withdrawalAmount))
+                      && parseFloat(withdrawalAmount) > maxWithdrawalLimit)
+                    || (withdrawBankId !== '' && !bankAccounts.some((a) => a.id === withdrawBankId && !a.is_disabled))
+                    || (bankAccounts.filter((a) => !a.is_disabled).length === 0)
+                  }
+                  labelReady="Withdraw"
+                />
+              </div>
             </div>
           </aside>
         </div>,

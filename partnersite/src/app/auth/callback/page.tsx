@@ -4,9 +4,9 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { getOrCreateDeviceId } from "@/lib/auth/device-id-client";
-import { Store } from "lucide-react";
 import { safeSameOriginPath } from "@/lib/auth/auth-redirect-url";
 import { clearPushSessionDismissed } from "@/lib/browser-push/partner-push-state";
+import { PartnerAccountLoadingSpinner } from "@/components/PartnerAccountLoadingSpinner";
 
 function parseHashParams(hash: string): Record<string, string> {
   const params: Record<string, string> = {};
@@ -21,7 +21,8 @@ function parseHashParams(hash: string): Record<string, string> {
 async function setCookieAndRedirect(
   accessToken: string,
   refreshToken: string,
-  next: string
+  next: string,
+  loginMethod?: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const device_id = getOrCreateDeviceId();
   const controller = new AbortController();
@@ -31,7 +32,12 @@ async function setCookieAndRedirect(
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ access_token: accessToken, refresh_token: refreshToken, device_id }),
+      body: JSON.stringify({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        device_id,
+        ...(loginMethod ? { login_method: loginMethod } : {}),
+      }),
       signal: controller.signal,
     });
     const text = await res.text();
@@ -100,16 +106,7 @@ async function redeemAppHandoff(handoffToken: string): Promise<{
 function LoadingSpinner({ message }: { message?: string }) {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50 px-4">
-      <div className="text-center space-y-6">
-        <div className="inline-flex p-4 rounded-full bg-blue-100">
-          <Store className="w-10 h-10 text-blue-600" />
-        </div>
-        <div className="space-y-4">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-600 border-r-transparent mx-auto" />
-          <p className="text-sm font-medium text-slate-700">{message || "Completing sign in..."}</p>
-          <p className="text-xs text-slate-500">Please wait</p>
-        </div>
-      </div>
+      <PartnerAccountLoadingSpinner label={message || "Loading your account..."} />
     </div>
   );
 }
@@ -180,7 +177,8 @@ function AuthCallbackContent() {
           const result = await setCookieAndRedirect(
             redeemed.access_token,
             redeemed.refresh_token,
-            next
+            next,
+            "app_handoff"
           );
           if (!result.ok) {
             await supabase.auth.signOut().catch(() => {});
@@ -210,7 +208,7 @@ function AuthCallbackContent() {
               fail(setError.message);
               return;
             }
-            const result = await setCookieAndRedirect(accessToken, refreshToken, next);
+            const result = await setCookieAndRedirect(accessToken, refreshToken, next, "google");
             if (!result.ok) {
               await supabase.auth.signOut().catch(() => {});
               fail(result.error);
@@ -224,12 +222,33 @@ function AuthCallbackContent() {
 
         const code = searchParams?.get("code");
         if (code) {
-          // Delegate code exchange to the server-side API route to avoid PKCE
-          // verifier mismatch when the browser tab/storage changes between login
-          // and callback (e.g. magic-link opened in a different browser).
-          const apiUrl = `/api/auth/callback?code=${encodeURIComponent(code)}${next && next !== "/partners/all-stores" ? `&next=${encodeURIComponent(next)}` : ""}`;
+          // Exchange in this browser — the PKCE verifier lives in first-party cookies
+          // written at Google click. Forwarding to /api/auth/callback used to race
+          // detectSessionInUrl + merchant-session and fail the first attempt with
+          // "invalid flow state, no valid flow state found".
+          const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+          if (exchangeError) {
+            fail(exchangeError.message);
+            return;
+          }
+          const session = data.session;
+          if (!session?.access_token || !session.refresh_token) {
+            fail("authentication_failed");
+            return;
+          }
+          const result = await setCookieAndRedirect(
+            session.access_token,
+            session.refresh_token,
+            next,
+            "google"
+          );
+          if (!result.ok) {
+            await supabase.auth.signOut().catch(() => {});
+            fail(result.error);
+            return;
+          }
           sessionStorage.removeItem("auth_redirect");
-          window.location.replace(apiUrl);
+          window.location.replace(safeSameOriginPath(next, window.location.origin));
           return;
         }
 

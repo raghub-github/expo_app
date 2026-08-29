@@ -6,6 +6,7 @@ import {
   merchantAppOrderHref,
   merchantAppOrdersTabHref,
 } from "./merchant-app-deeplink.js";
+import { attachmentsProxyUrlFromKeyForApi } from "../utils/attachments-proxy-url.js";
 
 type PushPayload = {
   title: string;
@@ -329,6 +330,15 @@ export async function notifyMerchantNewRating(
   }
 ): Promise<void> {
   const shortName = args.customerName.trim() || "Customer";
+  if (args.stars <= 3) {
+    await notifyMerchantNewComplaint(sql, {
+      storeId: args.storeId,
+      customerName: shortName,
+      displayOrderId: args.displayOrderId,
+      preview: `${args.stars}★ rating`,
+    });
+    return;
+  }
   const title = `${args.stars} stars given by ${shortName}`;
   const body = `New rating on order ID: ${args.displayOrderId}. Click to view details.`;
   const actionUrl = args.foodOrderId != null ? `/order/${args.foodOrderId}` : "/(tabs)/reviews";
@@ -345,6 +355,40 @@ export async function notifyMerchantNewRating(
       foodOrderId: args.foodOrderId,
       url: actionUrl,
       screen: "reviews",
+    },
+  });
+}
+
+/** OS push only (no in-app inbox / floating bubble) when a store receives a complaint. */
+export async function notifyMerchantNewComplaint(
+  sql: Sql,
+  args: {
+    storeId: number;
+    customerName: string;
+    displayOrderId?: string | null;
+    preview?: string | null;
+  }
+): Promise<void> {
+  if (!Number.isInteger(args.storeId) || args.storeId < 1) return;
+  const name = args.customerName.trim() || "Customer";
+  const orderBit = args.displayOrderId?.trim() ? ` on ${args.displayOrderId.trim()}` : "";
+  const preview = (args.preview ?? "").trim();
+  const title = "New complaint";
+  const body = preview
+    ? `${name}: ${preview}`.slice(0, 180)
+    : `${name} submitted a complaint${orderBit}.`;
+  await notifyMerchantStore(sql, {
+    storeId: args.storeId,
+    type: "system",
+    title,
+    body,
+    skipInbox: true,
+    channelId: "merchant_complaints",
+    actionUrl: "/(tabs)/complaints",
+    pushData: {
+      type: "merchant_complaint",
+      url: "/(tabs)/complaints",
+      screen: "complaints",
     },
   });
 }

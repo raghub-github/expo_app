@@ -101,7 +101,7 @@ function LoginPageContent() {
 
   useEffect(() => {
     if (typeof window === 'undefined' || !oauthCode) return;
-    const callbackUrl = new URL('/api/auth/callback', window.location.origin);
+    const callbackUrl = new URL('/auth/callback', window.location.origin);
     searchParams?.forEach((value, key) => callbackUrl.searchParams.set(key, value));
     router.replace(callbackUrl.pathname + '?' + callbackUrl.searchParams.toString());
   }, [oauthCode, router, searchParams]);
@@ -111,6 +111,9 @@ function LoginPageContent() {
     if (!message) return '';
     if (message === 'authentication_failed') {
       return 'Authentication failed. Please try signing in again.';
+    }
+    if (message.toLowerCase().includes('flow state')) {
+      return 'Google sign-in did not complete. Please try again.';
     }
     if (message.toLowerCase().includes('no merchant account found')) {
       return 'No merchant account found for this login. Please register first.';

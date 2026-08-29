@@ -26,9 +26,13 @@ export function loadEnv() {
   // Also include `<repo>/backend` when cwd is the monorepo root.
   const backendFromCwd = path.resolve(cwd, "backend");
   const backendFromInitCwd = initCwd ? path.resolve(initCwd, "backend") : "";
+  // Monorepo root — shared EMAIL_ID / SMTP_* often live only in repo `.env.local`.
+  const repoRoot = path.resolve(backendRoot, "..");
 
   const candidates = Array.from(
-    new Set([cwd, initCwd, backendFromCwd, backendFromInitCwd, backendRoot].filter(Boolean)),
+    new Set(
+      [cwd, initCwd, backendFromCwd, backendFromInitCwd, repoRoot, backendRoot].filter(Boolean),
+    ),
   );
 
   // First pass: non-override fills (later files don't clobber earlier unless override).

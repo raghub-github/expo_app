@@ -7,18 +7,19 @@ export async function getPaymentPayoutQuote(
   sql: Sql,
   storeId: number,
   amount: number
-): Promise<PayoutQuote & { min_payout_amount: number; requires_admin_approval: boolean }> {
+): Promise<PayoutQuote & { min_payout_amount: number; max_payout_amount: number; requires_admin_approval: boolean }> {
   const parentRows = await sql`SELECT parent_id FROM merchant_stores WHERE id = ${storeId} LIMIT 1`;
   const parentId = parentRows.length > 0 ? Number((parentRows[0] as { parent_id?: number }).parent_id) : null;
   const today = new Date().toISOString().slice(0, 10);
 
   let commissionPct = 0;
   let minPayout = 100;
+  let maxPayout = 100_000;
   let requiresApproval = true;
 
   try {
     const payoutRule = await sql`
-      SELECT min_payout_amount, requires_admin_approval,
+      SELECT min_payout_amount, max_payout_amount, requires_admin_approval,
              payout_commission_mode, payout_commission_value
       FROM payment_payout_rules
       WHERE is_active AND party_type = 'MERCHANT'
@@ -29,11 +30,16 @@ export async function getPaymentPayoutQuote(
     if (payoutRule.length > 0) {
       const pr = payoutRule[0] as {
         min_payout_amount?: number;
+        max_payout_amount?: number;
         requires_admin_approval?: boolean;
         payout_commission_mode?: string;
         payout_commission_value?: number;
       };
       minPayout = Number(pr.min_payout_amount ?? 100);
+      maxPayout =
+        pr.max_payout_amount != null && Number(pr.max_payout_amount) > 0
+          ? Number(pr.max_payout_amount)
+          : 100_000;
       requiresApproval = Boolean(pr.requires_admin_approval ?? true);
       if (pr.payout_commission_mode === "PERCENTAGE" && pr.payout_commission_value != null) {
         commissionPct = Number(pr.payout_commission_value);
@@ -96,6 +102,7 @@ export async function getPaymentPayoutQuote(
     commission_amount: commissionAmount,
     net_payout_amount: netPayoutAmount,
     min_payout_amount: minPayout,
+    max_payout_amount: maxPayout,
     requires_admin_approval: requiresApproval,
   };
 }

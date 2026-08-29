@@ -1,5 +1,5 @@
 import { Platform, View } from "react-native";
-import { Tabs } from "expo-router";
+import { Redirect, Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraMerchant, TAB_BAR_HEIGHT, TAB_BAR_FLOATING_GAP, FONT_LORA } from "@/constants/theme";
@@ -9,6 +9,9 @@ import { FloatingPendingOrdersBar } from "@/components/FloatingPendingOrdersBar"
 import { OfflineContentOverlay } from "@/components/OfflineContentOverlay";
 import { usePrefetchLiveOrderSupportTopics } from "@/hooks/useLiveOrderSupportTopics";
 import { usePrefetchMenuCatalog } from "@/hooks/useMenuQueries";
+import { useAuth } from "@/context/AuthContext";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { MerchantBootstrapScreen } from "@/components/MerchantBootstrapScreen";
 
 const LABEL_FONT_SIZE = 12;
 
@@ -31,7 +34,7 @@ function TabIcon({
   );
 }
 
-export default function TabsLayout() {
+function MerchantTabsShell() {
   const insets = useSafeAreaInsets();
   const bottomInset = insets.bottom;
   const tabBarTotalHeight = TAB_BAR_HEIGHT + bottomInset + TAB_BAR_FLOATING_GAP + 6;
@@ -138,10 +141,10 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="reviews"
         options={{
-          title: "Review",
+          title: "Feedback",
           href: null,
           tabBarIcon: ({ color, focused, size }) => (
-            <TabIcon name={focused ? "star" : "star-outline"} color={color} size={size} />
+            <TabIcon name={focused ? "chatbubble-ellipses" : "chatbubble-ellipses-outline"} color={color} size={size} />
           ),
         }}
       />
@@ -171,4 +174,19 @@ export default function TabsLayout() {
       <FloatingPendingOrdersBar />
       </View>
   );
+}
+
+export default function TabsLayout() {
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const { selectedStore, isStoreReady } = useSelectedStore();
+
+  if (authLoading || (isAuthenticated && !isStoreReady)) {
+    return <MerchantBootstrapScreen />;
+  }
+
+  if (isAuthenticated && !selectedStore) {
+    return <Redirect href="/(auth)/partner-home" />;
+  }
+
+  return <MerchantTabsShell />;
 }

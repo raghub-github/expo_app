@@ -485,6 +485,8 @@ export type MerchantPayoutCycleDto = {
   withdrawal_amount: number;
   /** Admin rejection / bank failure reason for the closing withdrawal. */
   close_note: string | null;
+  /** PG / UTR id for the closing withdrawal (when completed). */
+  pg_transaction_id: string | null;
   settlement: MerchantPayoutSettlementSummary | null;
 };
 
@@ -539,7 +541,8 @@ export async function listPayoutCycles(
         s.chargebacks,
         pr.amount AS request_amount,
         pr.rejection_reason,
-        pr.failure_reason
+        pr.failure_reason,
+        COALESCE(pr.pg_transaction_id, pr.utr_reference) AS pg_transaction_id
       FROM merchant_payout_cycles c
       LEFT JOIN merchant_payout_summaries s ON s.id = c.summary_id
       LEFT JOIN merchant_payout_requests pr ON pr.id = c.payout_request_id
@@ -568,21 +571,20 @@ export async function listPayoutCycles(
       const closeReason = row.close_reason != null ? String(row.close_reason) : null;
       const closedAsReturn =
         closeReason === "WITHDRAWAL_REJECTED" || closeReason === "WITHDRAWAL_FAILED";
-      // The money returned *for this cycle* is the withdrawal that closed it. The ledger
-      // window sum can hold a neighbouring cycle's reversal too, so it is not per-cycle.
       const withdrawalReturned = roundMoney(
-        closedAsReturn && n(row.request_amount) > 0
-          ? n(row.request_amount)
-          : status === "CLOSED"
-            ? n(row.withdrawal_reversal_credits)
-            : n(settlement?.withdrawal_reversal_credits),
+        closedAsReturn
+          ? n(row.request_amount) > 0
+            ? n(row.request_amount)
+            : n(row.withdrawal_reversal_credits)
+          : 0,
       );
-      const closeNote =
-        row.rejection_reason != null && String(row.rejection_reason).trim() !== ""
+      const closeNote = closedAsReturn
+        ? row.rejection_reason != null && String(row.rejection_reason).trim() !== ""
           ? String(row.rejection_reason).trim()
           : row.failure_reason != null && String(row.failure_reason).trim() !== ""
             ? String(row.failure_reason).trim()
-            : null;
+            : null
+        : null;
 
       out.push({
         id: Number(row.id),
@@ -604,6 +606,10 @@ export async function listPayoutCycles(
         withdrawal_returned: withdrawalReturned,
         withdrawal_amount: roundMoney(n(row.request_amount)),
         close_note: closeNote,
+        pg_transaction_id:
+          row.pg_transaction_id != null && String(row.pg_transaction_id).trim() !== ""
+            ? String(row.pg_transaction_id).trim()
+            : null,
         settlement,
       });
     }

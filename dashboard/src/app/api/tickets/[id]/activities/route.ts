@@ -150,6 +150,67 @@ export async function GET(
       });
     }
 
+    // Fallback: surface CSAT/DSAT from ticket columns when audit row was never written
+    try {
+      const satRows = await sqlClient`
+        SELECT satisfaction_rating, satisfaction_feedback, satisfaction_collected_at
+        FROM public.unified_tickets
+        WHERE id = ${ticketId}
+        LIMIT 1
+      `;
+      const sat = satRows?.[0] as
+        | {
+            satisfaction_rating: number | null;
+            satisfaction_feedback: string | null;
+            satisfaction_collected_at: string | null;
+          }
+        | undefined;
+      const rating =
+        sat?.satisfaction_rating != null && Number.isFinite(Number(sat.satisfaction_rating))
+          ? Number(sat.satisfaction_rating)
+          : null;
+      const collectedAt =
+        sat?.satisfaction_collected_at != null && String(sat.satisfaction_collected_at).trim() !== ""
+          ? String(sat.satisfaction_collected_at)
+          : null;
+      if (rating != null && collectedAt) {
+        const hasSat = list.some((x) => {
+          const t = String(x.actionType || "").toLowerCase();
+          const d = String(x.activityDescription || "").toLowerCase();
+          return (
+            t === "satisfaction_rating" ||
+            t === "csat" ||
+            t === "dsat" ||
+            d.includes("csat") ||
+            d.includes("dsat") ||
+            d.includes("satisfaction") ||
+            d.includes("rating")
+          );
+        });
+        if (!hasSat) {
+          const bucket = rating >= 4 ? "CSAT" : rating <= 2 ? "DSAT" : "Neutral";
+          list.push({
+            id: "satisfaction-fallback",
+            ticketId,
+            actionType: "satisfaction_rating",
+            activityDescription: `${bucket} ${rating}/5 submitted`,
+            actorType: null,
+            actorName: null,
+            oldValue: null,
+            newValue: {
+              rating,
+              feedback: sat?.satisfaction_feedback ?? null,
+              bucket: bucket.toLowerCase(),
+            },
+            createdAt: collectedAt,
+            sortKey: ts(collectedAt) + "-satisfaction",
+          });
+        }
+      }
+    } catch {
+      // ignore
+    }
+
     // Fallback: legacy unified_ticket_activities if no audit rows yet
     if (list.length === 0) {
       let dbActivities: Array<{

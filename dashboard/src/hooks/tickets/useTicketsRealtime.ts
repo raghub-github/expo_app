@@ -6,8 +6,10 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase/client";
 import { hydrateBrowserSupabaseFromCookies } from "@/lib/auth/hydrate-browser-supabase";
 import {
+  invalidateCsatRelatedCaches,
   invalidateTicketListCaches,
   patchTicketFromPostgresRow,
+  ticketSatisfactionChanged,
 } from "@/lib/tickets/patch-ticket-list-cache";
 import { fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
 
@@ -148,8 +150,12 @@ export function useTicketsRealtime(
           { event: "UPDATE", schema: "public", table: "unified_tickets" },
           (payload) => {
             const row = payload.new as Record<string, unknown> | null;
+            const prev = payload.old as Record<string, unknown> | null;
             if (row && typeof row === "object") {
               patchTicketFromPostgresRow(queryClient, row);
+            }
+            if (ticketSatisfactionChanged(prev, row)) {
+              invalidateCsatRelatedCaches(queryClient);
             }
             scheduleListRefresh();
           }

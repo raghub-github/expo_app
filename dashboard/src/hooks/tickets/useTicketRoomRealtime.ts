@@ -18,7 +18,11 @@ import {
 } from "@/lib/tickets/ticket-realtime-topics";
 import { hydrateBrowserSupabaseFromCookies } from "@/lib/auth/hydrate-browser-supabase";
 import { readUsableClientSessionFromStorage } from "@/lib/auth/client-session-storage";
-import { patchTicketFromPostgresRow } from "@/lib/tickets/patch-ticket-list-cache";
+import {
+  invalidateCsatRelatedCaches,
+  patchTicketFromPostgresRow,
+  ticketSatisfactionChanged,
+} from "@/lib/tickets/patch-ticket-list-cache";
 
 /** Batch rapid postgres_events into one refetch (status + multi-message bursts). */
 const INVALIDATE_DEBOUNCE_MS = 160;
@@ -185,8 +189,12 @@ export function useTicketRoomRealtime(options: {
           },
           (payload) => {
             const row = payload.new as Record<string, unknown> | null;
+            const prev = payload.old as Record<string, unknown> | null;
             if (row && typeof row === "object") {
               patchTicketFromPostgresRow(queryClient, row);
+            }
+            if (ticketSatisfactionChanged(prev, row)) {
+              invalidateCsatRelatedCaches(queryClient);
             }
             scheduleInvalidate();
           }

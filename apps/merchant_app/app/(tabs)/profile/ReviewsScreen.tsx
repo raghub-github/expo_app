@@ -1,42 +1,35 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet, FlatList, Pressable, TextInput, KeyboardAvoidingView, Platform, RefreshControl, Modal } from "react-native";
+import { View, StyleSheet, FlatList, Pressable, TextInput, RefreshControl, Platform } from "react-native";
 import { StatusBar } from "expo-status-bar";
-import { LinearGradient } from "expo-linear-gradient";
-import { usePathname, useRouter } from "expo-router";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import {
   fetchStoreReviews,
-  replyToStoreReview,
   deleteStoreReviewReply,
+  type StoreReview as ApiStoreReview,
 } from "@/services/ratingsApi";
 import { ReviewsComplaintsSkeleton } from "@/components/ReviewsComplaintsSkeleton";
+import { FeedbackTabs } from "@/components/FeedbackTabs";
+import { FeedbackCard } from "@/components/FeedbackCard";
+import { setFeedbackReplySnapshot } from "@/lib/feedbackReplyCache";
+import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 
-type StoreReview = {
-  id: number;
-  overallRating: number;
-  reviewTitle: string | null;
-  reviewText: string | null;
-  createdAt: string;
-  replyText?: string | null;
-  repliedAt?: string | null;
-};
+type StoreReview = ApiStoreReview;
 
 type FilterKey = "all" | "5plus" | "4plus" | "3plus" | "2plus" | "1plus";
 
 export default function ReviewsScreen() {
-  const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [items, setItems] = useState<StoreReview[]>([]);
   const [filter, setFilter] = useState<FilterKey>("all");
-  const [minRating, setMinRating] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [fromDate, setFromDate] = useState<string>(() => {
     const d = new Date();
@@ -46,16 +39,14 @@ export default function ReviewsScreen() {
   const [toDate, setToDate] = useState<string>(() => new Date().toISOString());
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
   const [tempRangeKey, setTempRangeKey] = useState<"7" | "21" | "30" | "all">("21");
-  const [tempMinRating, setTempMinRating] = useState<number | null>(null);
+  const [tempFilter, setTempFilter] = useState<FilterKey>("all");
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
-  const [confirmMode, setConfirmMode] = useState<null | "edit" | "delete">(null);
+  const [confirmMode, setConfirmMode] = useState<null | "delete">(null);
   const [confirmTarget, setConfirmTarget] = useState<StoreReview | null>(null);
-  const [activeReplyId, setActiveReplyId] = useState<number | null>(null);
-  const [activeReplyReview, setActiveReplyReview] = useState<StoreReview | null>(null);
-  const [replyText, setReplyText] = useState("");
   const [isSavingReply, setIsSavingReply] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const skipFocusReload = useRef(true);
 
   useEffect(() => {
     const load = async () => {
@@ -85,59 +76,43 @@ export default function ReviewsScreen() {
     void load();
   }, [selectedStore?.id, token, fromDate, toDate, refreshNonce]);
 
+  useFocusEffect(
+    useCallback(() => {
+      if (skipFocusReload.current) {
+        skipFocusReload.current = false;
+        return;
+      }
+      setRefreshNonce((n) => n + 1);
+    }, [])
+  );
+
+  const storeHeading = [selectedStore?.store_name?.trim(), selectedStore?.city?.trim()]
+    .filter(Boolean)
+    .join(", ") || "Store";
+
   const handleOpenReply = (review: StoreReview) => {
-    // If there's already a reply, ask for confirmation before editing.
-    if (review.replyText) {
-      setConfirmMode("edit");
-      setConfirmTarget(review);
-      return;
-    }
-    // Fresh reply – open composer directly with no warning modal.
-    setActiveReplyId(review.id);
-    setActiveReplyReview(review);
-    setReplyText("");
-  };
-
-  const handleSaveReply = async () => {
-    if (!selectedStore?.id || !token || activeReplyId == null || !replyText.trim()) {
-      return;
-    }
-    try {
-      setIsSavingReply(true);
-      await replyToStoreReview({
-        token,
-        storeId: selectedStore.id,
-        reviewId: activeReplyId,
-        replyText: replyText.trim(),
-      });
-      setItems((prev) =>
-        prev.map((r) =>
-          r.id === activeReplyId
-            ? {
-                ...r,
-                replyText: replyText.trim(),
-                repliedAt: new Date().toISOString(),
-              }
-            : r
-        )
-      );
-      setActiveReplyId(null);
-      setActiveReplyReview(null);
-      setReplyText("");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save reply.");
-    } finally {
-      setIsSavingReply(false);
-    }
-  };
-
-  const handleConfirmEdit = () => {
-    if (!confirmTarget) return;
-    setActiveReplyId(confirmTarget.id);
-    setActiveReplyReview(confirmTarget);
-    setReplyText(confirmTarget.replyText ?? "");
-    setConfirmMode(null);
-    setConfirmTarget(null);
+    setFeedbackReplySnapshot({
+      id: Number(review.id),
+      overallRating: review.overallRating,
+      reviewTitle: review.reviewTitle,
+      reviewText: review.reviewText,
+      createdAt: review.createdAt,
+      replyText: review.replyText,
+      repliedAt: review.repliedAt,
+      replies: review.replies,
+      customerName: review.customerName,
+      customerAvatarUrl: review.customerAvatarUrl,
+      formattedOrderId: review.formattedOrderId,
+      orderId: review.orderId,
+      foodOrderId: review.foodOrderId,
+      orderCount: review.orderCount,
+      source: "rating",
+      reviewImages: review.reviewImages,
+    });
+    router.push({
+      pathname: "/feedback-reply/[id]",
+      params: { id: String(review.id), kind: "review" },
+    } as never);
   };
 
   const handleConfirmDelete = async () => {
@@ -185,143 +160,26 @@ export default function ReviewsScreen() {
           : filter === "5plus"
           ? rounded === 5
           : filter === "4plus"
-          ? rounded >= 4
+          ? rounded === 4
           : filter === "3plus"
-          ? rounded >= 3
+          ? rounded === 3
           : filter === "2plus"
-          ? rounded >= 2
-          : rounded >= 1;
+          ? rounded === 2
+          : rounded === 1;
 
       if (!passesRating) return false;
       if (!text) return true;
 
-      const haystack = `${c.reviewTitle ?? ""} ${c.reviewText ?? ""}`.toLowerCase();
+      const haystack = `${c.reviewTitle ?? ""} ${c.reviewText ?? ""} ${c.customerName ?? ""} ${c.formattedOrderId ?? ""}`.toLowerCase();
       return haystack.includes(text);
     });
   }, [items, filter, searchQuery]);
 
-  const avgRating =
-    items.length === 0
-      ? null
-      : items.reduce((sum, r) => sum + r.overallRating, 0) / items.length;
-
-  const distribution = useMemo(() => {
-    const buckets: Record<number, number> = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
-    for (const r of items) {
-      const star = Math.min(5, Math.max(1, Math.round(r.overallRating || 0)));
-      buckets[star] += 1;
-    }
-    const total = items.length || 1;
-    return Object.keys(buckets)
-      .map((key) => Number(key))
-      .sort((a, b) => b - a)
-      .map((star) => ({
-        star,
-        count: buckets[star],
-        percent: (buckets[star] / total) * 100,
-      }));
-  }, [items]);
-
   const renderHeader = () => (
     <View>
-      <PageTabs active="reviews" />
-
-      {/* Header: title + store name */}
-      <View style={styles.headerBlock}>
-        <Text style={styles.headerEyebrow}>INSIGHTS</Text>
-        <View style={styles.headerTitleRow}>
-          <View style={styles.headerLeft}>
-            <LinearGradient
-              colors={["#7dd3fc", "#4ade80"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.headerAvatar}
-            >
-              <View style={styles.headerAvatarInner}>
-                <Ionicons
-                  name="chatbubble-ellipses-outline"
-                  size={18}
-                  color="#ffffff"
-                />
-              </View>
-            </LinearGradient>
-            <View style={styles.headerTextCol}>
-              <Text style={styles.headerTitle}>Customer Reviews</Text>
-              <Text style={styles.headerSubtitle} numberOfLines={1}>
-                {selectedStore?.store_name ?? "Your Gatimitra outlet"}
-              </Text>
-            </View>
-          </View>
-          <LinearGradient
-            colors={["#e0f7f0", "#d1fae5"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.headerPill}
-          >
-            <Ionicons
-              name="star-outline"
-              size={14}
-              color={GatiMitraMerchant.navy}
-              style={{ marginRight: 4 }}
-            />
-            <Ionicons
-              name="chatbubbles-outline"
-              size={14}
-              color={GatiMitraMerchant.navy}
-              style={{ marginRight: 4 }}
-            />
-            <Text style={styles.headerPillText}>Store Feedback</Text>
-          </LinearGradient>
-        </View>
-      </View>
-
-      {/* Rating summary + distribution */}
-      <View style={styles.summaryCard}>
-        <View style={styles.summaryRow}>
-          <View style={styles.summaryLeft}>
-            <Text style={styles.summaryValue}>
-              {avgRating != null ? avgRating.toFixed(1) : "—"}
-            </Text>
-            <View style={styles.summaryStarsRow}>
-              {Array.from({ length: 5 }).map((_, idx) => (
-                <Ionicons
-                  key={idx}
-                  name="star"
-                  size={14}
-                  color={
-                    avgRating != null && idx < Math.round(avgRating)
-                      ? GatiMitraMerchant.statusCompleted
-                      : GatiMitraMerchant.surfaceSubtle
-                  }
-                  style={{ marginRight: 2 }}
-                />
-              ))}
-            </View>
-            <Text style={styles.summaryMeta}>
-              {items.length} review{items.length === 1 ? "" : "s"}
-            </Text>
-            <Text style={styles.summaryMetaSmall}>
-              {getFilterSummary({ fromDate, toDate, minRating })}
-            </Text>
-          </View>
-          <View style={styles.summaryRight}>
-            {distribution.map((b) => (
-              <View key={b.star} style={styles.distRow}>
-                <Text style={styles.distLabel}>{b.star}★</Text>
-                <View style={styles.distBarTrack}>
-                  <View
-                    style={[
-                      styles.distBarFill,
-                      { width: `${Math.max(5, b.percent)}%` },
-                    ]}
-                  />
-                </View>
-                <Text style={styles.distCount}>{b.count}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      </View>
+      <Text style={styles.countLine}>
+        {filtered.length} review{filtered.length === 1 ? "" : "s"}
+      </Text>
 
       {/* Search + filter row */}
       <View style={styles.searchRow}>
@@ -337,6 +195,7 @@ export default function ReviewsScreen() {
             placeholderTextColor={GatiMitraMerchant.textTertiary}
             value={searchQuery}
             onChangeText={setSearchQuery}
+            underlineColorAndroid="transparent"
           />
         </View>
         <Pressable
@@ -346,8 +205,7 @@ export default function ReviewsScreen() {
             GatiMitraMerchant.cursorPointer,
           ]}
           onPress={() => {
-            // Sync temporary state from currently applied filters
-            setTempMinRating(minRating);
+            setTempFilter(filter);
             setTempRangeKey(deriveRangeKey(fromDate));
             setIsFilterSheetOpen(true);
           }}
@@ -359,77 +217,41 @@ export default function ReviewsScreen() {
           />
         </Pressable>
       </View>
-
-      {/* Rating filter chips */}
-      <View style={styles.filterChipsRow}>
-        {[
-          { key: "all", label: "All" },
-          { key: "5plus", label: "5+" },
-          { key: "4plus", label: "4+" },
-          { key: "3plus", label: "3+" },
-          { key: "2plus", label: "2+" },
-          { key: "1plus", label: "1+" },
-        ].map((opt) => {
-          const isActive = filter === opt.key;
-          return (
-            <Pressable
-              key={opt.key}
-              onPress={() => setFilter(opt.key as FilterKey)}
-              style={({ pressed }) => [
-                pressed && styles.filterChipPressed,
-              ]}
-            >
-              {isActive ? (
-                <LinearGradient
-                  colors={["#16a34a", "#22c55e"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={{
-                    borderRadius: 999,
-                    paddingHorizontal: 14,
-                    paddingVertical: 6,
-                  }}
-                >
-                  <Text style={styles.filterChipTextActive}>{opt.label}</Text>
-                </LinearGradient>
-              ) : (
-                <View
-                  style={{
-                    borderRadius: 999,
-                    paddingHorizontal: 12,
-                    paddingVertical: 6,
-                    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-                  }}
-                >
-                  <Text style={styles.filterChipText}>{opt.label}</Text>
-                </View>
-              )}
-            </Pressable>
-          );
-        })}
-      </View>
     </View>
   );
 
   if (loading && !hasLoadedOnce) {
-    return <ReviewsComplaintsSkeleton variant="reviews" />;
+    return (
+      <View style={styles.screen}>
+        <StatusBar style="dark" />
+        <View style={styles.stickyTabs}>
+          <FeedbackTabs active="reviews" />
+        </View>
+        <ReviewsComplaintsSkeleton variant="reviews" hideTabs />
+      </View>
+    );
   }
 
   if (error && !hasLoadedOnce) {
     return (
-      <View style={styles.centered}>
-        <Text style={styles.errorText}>{error}</Text>
+      <View style={styles.screen}>
+        <StatusBar style="dark" />
+        <View style={styles.stickyTabs}>
+          <FeedbackTabs active="reviews" />
+        </View>
+        <View style={styles.centered}>
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
       </View>
     );
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.screen}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      keyboardVerticalOffset={120}
-    >
+    <View style={styles.screen}>
       <StatusBar style="dark" />
+      <View style={styles.stickyTabs}>
+        <FeedbackTabs active="reviews" />
+      </View>
       <FlatList
         style={styles.list}
         contentContainerStyle={styles.listContent}
@@ -445,106 +267,26 @@ export default function ReviewsScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            colors={[GatiMitraMerchant.primary]}
-            tintColor={GatiMitraMerchant.primary}
+            colors={[GatiMitraMerchant.navy]}
+            tintColor={GatiMitraMerchant.navy}
           />
         }
-        renderItem={({ item }) => {
-          const rounded = Math.round(item.overallRating);
-          const isHigh = rounded >= 4;
-          const isLow = rounded <= 2;
-          return (
-            <View style={styles.card}>
-              <View style={styles.cardHeaderRow}>
-                <View
-                  style={[
-                    styles.ratingPill,
-                    isHigh && styles.ratingPillHigh,
-                    isLow && styles.ratingPillLow,
-                  ]}
-                >
-                  <Ionicons
-                    name="star"
-                    size={12}
-                    color="#FFFFFF"
-                    style={{ marginRight: 4 }}
-                  />
-                  <Text style={styles.ratingPillText}>
-                    {item.overallRating.toFixed(1)}
-                  </Text>
-                </View>
-                <Text style={styles.title} numberOfLines={1}>
-                  {item.reviewTitle || "Great experience"}
-                </Text>
-              </View>
-              {item.reviewText ? (
-                <Text style={styles.body} numberOfLines={3}>
-                  {item.reviewText}
-                </Text>
-              ) : null}
-              <View style={styles.cardFooterRow}>
-                <Text style={styles.date}>{formatDateTime(item.createdAt)}</Text>
-                <View style={styles.cardFooterRight}>
-                  {item.replyText ? (
-                    <Text style={styles.repliedTag}>Replied</Text>
-                  ) : null}
-                  <Pressable
-                    onPress={() => handleOpenReply(item)}
-                    style={({ pressed }) => [
-                      styles.replyButton,
-                      pressed && styles.replyButtonPressed,
-                      GatiMitraMerchant.cursorPointer,
-                    ]}
-                  >
-                    <Ionicons
-                      name="chatbubble-ellipses-outline"
-                      size={13}
-                      color={GatiMitraMerchant.primary}
-                      style={{ marginRight: 4 }}
-                    />
-                    <Text style={styles.replyButtonLabel}>
-                      {item.replyText ? "Edit reply" : "Reply"}
-                    </Text>
-                  </Pressable>
-                  {item.replyText ? (
-                    <Pressable
-                      onPress={() => {
-                        setConfirmMode("delete");
-                        setConfirmTarget(item);
-                      }}
-                      style={({ pressed }) => [
-                        styles.iconButton,
-                        pressed && styles.replyButtonPressed,
-                        GatiMitraMerchant.cursorPointer,
-                      ]}
-                    >
-                      <Ionicons
-                        name="trash-outline"
-                        size={16}
-                        color={GatiMitraMerchant.error}
-                      />
-                    </Pressable>
-                  ) : null}
-                </View>
-              </View>
-              {item.replyText ? (
-                <View style={styles.replyBubble}>
-                  <Text style={styles.replyLabel}>Your reply</Text>
-                  <Text style={styles.replyText}>{item.replyText}</Text>
-                </View>
-              ) : null}
-            </View>
-          );
-        }}
+        renderItem={({ item }) => (
+          <FeedbackCard
+            item={item}
+            token={token}
+            storeHeading={storeHeading}
+            onReply={() => handleOpenReply(item)}
+          />
+        )}
       />
 
-      {isFilterSheetOpen && (
-        <View style={styles.sheetBackdrop}>
-          <Pressable
-            style={styles.sheetBackdropTouch}
-            onPress={() => setIsFilterSheetOpen(false)}
-          />
-          <View style={styles.sheetCard}>
+      <MerchantBottomSheetShell
+        visible={isFilterSheetOpen}
+        onClose={() => setIsFilterSheetOpen(false)}
+        hideCloseFab
+      >
+        <View style={styles.sheetInner}>
             <View style={styles.sheetHandle} />
             <Text style={styles.sheetTitle}>Filters</Text>
 
@@ -624,26 +366,33 @@ export default function ReviewsScreen() {
               </Pressable>
             </View>
 
-            <Text style={styles.sheetSectionLabel}>Minimum rating</Text>
+            <Text style={styles.sheetSectionLabel}>Rating</Text>
             <View style={styles.sheetChipRow}>
-              {[5, 4, 3, 2, 1].map((star) => (
+              {(
+                [
+                  { key: "all" as const, label: "All" },
+                  { key: "5plus" as const, label: "5★" },
+                  { key: "4plus" as const, label: "4★" },
+                  { key: "3plus" as const, label: "3★" },
+                  { key: "2plus" as const, label: "2★" },
+                  { key: "1plus" as const, label: "1★" },
+                ] as const
+              ).map((opt) => (
                 <Pressable
-                  key={star}
-                  onPress={() => {
-                    setTempMinRating(star);
-                  }}
+                  key={opt.key}
+                  onPress={() => setTempFilter(opt.key)}
                   style={[
                     styles.sheetPill,
-                    tempMinRating === star && styles.sheetPillActive,
+                    tempFilter === opt.key && styles.sheetPillActive,
                   ]}
                 >
                   <Text
                     style={[
                       styles.sheetPillText,
-                      tempMinRating === star && styles.sheetPillTextActive,
+                      tempFilter === opt.key && styles.sheetPillTextActive,
                     ]}
                   >
-                    {star}+
+                    {opt.label}
                   </Text>
                 </Pressable>
               ))}
@@ -657,7 +406,7 @@ export default function ReviewsScreen() {
                   const from = new Date();
                   from.setDate(to.getDate() - 21);
                   setTempRangeKey("21");
-                  setTempMinRating(null);
+                  setTempFilter("all");
                   setFilter("all");
                   setFromDate(from.toISOString());
                   setToDate(to.toISOString());
@@ -671,144 +420,25 @@ export default function ReviewsScreen() {
                 onPress={() => {
                   applyTempFilters({
                     tempRangeKey,
-                    tempMinRating,
                     setFromDate,
                     setToDate,
-                    setMinRating,
                   });
+                  setFilter(tempFilter);
                   setIsFilterSheetOpen(false);
                 }}
               >
                 <Text style={styles.sheetPrimaryButtonText}>Done</Text>
               </Pressable>
             </View>
-          </View>
         </View>
-      )}
-
-      <Modal
-        visible={activeReplyId != null}
-        transparent
-        animationType="slide"
-        statusBarTranslucent
-        presentationStyle="overFullScreen"
-        onRequestClose={() => {
-          setActiveReplyId(null);
-          setActiveReplyReview(null);
-          setReplyText("");
-        }}
-      >
-        <KeyboardAvoidingView
-          style={styles.sheetModalRoot}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-        >
-          <Pressable
-            style={styles.sheetBackdropTouch}
-            onPress={() => {
-              setActiveReplyId(null);
-              setActiveReplyReview(null);
-              setReplyText("");
-            }}
-          />
-          <View
-            style={[
-              styles.sheetCard,
-              { paddingBottom: Math.max(insets.bottom, 16) },
-            ]}
-          >
-            <View style={styles.sheetHandle} />
-            <View style={styles.sheetHeaderRow}>
-              <View style={styles.sheetHeaderLeft}>
-                <Text style={styles.sheetTitle}>Reply to Review</Text>
-                {activeReplyReview && (
-                  <View style={styles.sheetReviewMetaRow}>
-                    <View style={styles.sheetRatingChip}>
-                      <Ionicons
-                        name="star"
-                        size={11}
-                        color="#FFFFFF"
-                        style={{ marginRight: 3 }}
-                      />
-                      <Text style={styles.sheetRatingText}>
-                        {activeReplyReview.overallRating.toFixed(1)}
-                      </Text>
-                    </View>
-                    <Text style={styles.sheetSubtitle} numberOfLines={1}>
-                      {activeReplyReview.reviewTitle || "Customer review"}
-                    </Text>
-                    <Text style={styles.sheetDateInline}>
-                      {formatDateOnly(activeReplyReview.createdAt)}
-                    </Text>
-                  </View>
-                )}
-              </View>
-              <Pressable
-                style={styles.sheetCloseButton}
-                onPress={() => {
-                  setActiveReplyId(null);
-                  setActiveReplyReview(null);
-                  setReplyText("");
-                }}
-              >
-                <Ionicons name="close" size={18} color={GatiMitraMerchant.textSecondary} />
-              </Pressable>
-            </View>
-            <Text style={styles.sheetHint}>
-              Your reply will be visible to the customer on their order details.
-            </Text>
-            <TextInput
-              style={styles.replyInput}
-              placeholder="Write your reply to the customer"
-              placeholderTextColor={GatiMitraMerchant.textTertiary}
-              multiline
-              value={replyText}
-              onChangeText={setReplyText}
-            />
-            <View style={styles.replyActionsRow}>
-              <Pressable
-                style={styles.sheetSecondaryButton}
-                onPress={() => {
-                  setActiveReplyId(null);
-                  setActiveReplyReview(null);
-                  setReplyText("");
-                }}
-              >
-                <Text style={styles.sheetSecondaryButtonText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={styles.sheetPrimaryButtonOuter}
-                disabled={!replyText.trim() || isSavingReply}
-                onPress={handleSaveReply}
-              >
-                <LinearGradient
-                  colors={["#34d399", "#22c55e"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={[
-                    styles.sheetPrimaryButton,
-                    (!replyText.trim() || isSavingReply) && { opacity: 0.6 },
-                  ]}
-                >
-                  <Text style={styles.sheetPrimaryButtonText}>
-                    {isSavingReply ? "Saving…" : "Send Reply"}
-                  </Text>
-                </LinearGradient>
-              </Pressable>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      </MerchantBottomSheetShell>
 
       {confirmMode && confirmTarget && (
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>
-              {confirmMode === "edit" ? "Edit reply?" : "Delete reply?"}
-            </Text>
+            <Text style={styles.modalTitle}>Delete reply?</Text>
             <Text style={styles.modalBody}>
-              {confirmMode === "edit"
-                ? "You are about to edit this review.\nMake sure the updated information is correct before saving."
-                : "Once deleted, this review will be permanently removed and cannot be recovered."}
+              Once deleted, this reply will be permanently removed and cannot be recovered.
             </Text>
             <View style={styles.modalActionsRow}>
               <Pressable
@@ -823,24 +453,20 @@ export default function ReviewsScreen() {
               <Pressable
                 style={[
                   styles.sheetPrimaryButton,
-                  confirmMode === "delete" && { backgroundColor: GatiMitraMerchant.error },
+                  { backgroundColor: GatiMitraMerchant.error },
                 ]}
-                onPress={confirmMode === "edit" ? handleConfirmEdit : handleConfirmDelete}
+                onPress={handleConfirmDelete}
                 disabled={isSavingReply}
               >
                 <Text style={styles.sheetPrimaryButtonText}>
-                  {confirmMode === "edit"
-                    ? "Continue"
-                    : isSavingReply
-                    ? "Deleting…"
-                    : "Delete reply"}
+                  {isSavingReply ? "Deleting…" : "Delete reply"}
                 </Text>
               </Pressable>
             </View>
           </View>
         </View>
       )}
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -859,35 +485,6 @@ function formatDateOnly(value: string): string {
   if (parts.length !== 3) return raw;
   const [y, m, d] = parts;
   return `${Number(d)} ${monthShortName(Number(m))} ${y}`;
-}
-
-function getFilterSummary(params: {
-  fromDate: string;
-  toDate: string;
-  minRating: number | null;
-}): string {
-  const { fromDate, minRating } = params;
-  const defaultFrom = (() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 21);
-    return d.toISOString().slice(0, 10);
-  })();
-  const fromShort = formatDateOnly(fromDate);
-
-  if (!minRating && fromDate.slice(0, 10) === defaultFrom) {
-    return "Recent reviews (last 21 days)";
-  }
-
-  if (minRating && fromShort) {
-    return `Filtered from ${fromShort}, rating ${minRating}★+`;
-  }
-  if (minRating) {
-    return `Filtered by rating ${minRating}★+`;
-  }
-  if (fromShort) {
-    return `Filtered from ${fromShort}`;
-  }
-  return "Filtered reviews";
 }
 
 function deriveRangeKey(fromDate: string): "7" | "21" | "30" | "all" {
@@ -911,12 +508,10 @@ function deriveRangeKey(fromDate: string): "7" | "21" | "30" | "all" {
 
 function applyTempFilters(args: {
   tempRangeKey: "7" | "21" | "30" | "all";
-  tempMinRating: number | null;
   setFromDate: (v: string) => void;
   setToDate: (v: string) => void;
-  setMinRating: (v: number | null) => void;
 }) {
-  const { tempRangeKey, tempMinRating, setFromDate, setToDate, setMinRating } = args;
+  const { tempRangeKey, setFromDate, setToDate } = args;
   const to = new Date();
   let from: Date | null = null;
 
@@ -935,7 +530,6 @@ function applyTempFilters(args: {
 
   setFromDate(from ? from.toISOString() : "");
   setToDate(to.toISOString());
-  setMinRating(tempMinRating);
 }
 
 function monthShortName(m: number): string {
@@ -944,106 +538,16 @@ function monthShortName(m: number): string {
   ];
 }
 
-function PageTabs({ active }: { active: "complaints" | "reviews" }) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const inProfile = pathname.includes("/profile/");
-  const complaintsHref = inProfile ? "/(tabs)/profile/complaints" : "/(tabs)/complaints";
-  const reviewsHref = inProfile ? "/(tabs)/profile/reviews" : "/(tabs)/reviews";
-  return (
-    <View style={styles.tabsWrap}>
-      <View style={styles.tabsBackground}>
-        <Pressable
-          onPress={() => router.replace(complaintsHref as any)}
-          style={({ pressed }) => [
-            styles.tabButton,
-            pressed && styles.chipPressed,
-            GatiMitraMerchant.cursorPointer,
-          ]}
-        >
-          <View
-            style={[
-              styles.tabInner,
-              active === "complaints" && styles.tabInnerActive,
-            ]}
-          >
-            <Text
-              style={[
-                styles.tabButtonLabel,
-                active === "complaints" && styles.tabButtonLabelActive,
-              ]}
-            >
-              Complaints
-            </Text>
-          </View>
-        </Pressable>
-        <Pressable
-          onPress={() => router.replace(reviewsHref as any)}
-          style={({ pressed }) => [
-            styles.tabButton,
-            pressed && styles.chipPressed,
-            GatiMitraMerchant.cursorPointer,
-          ]}
-        >
-          {active === "reviews" ? (
-            <LinearGradient
-              colors={["#22c55e", "#16a34a"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={[styles.tabInner, styles.tabInnerActive]}
-            >
-              <Ionicons
-                name="star"
-                size={13}
-                color="#ffffff"
-                style={{ marginRight: 4 }}
-              />
-              <Text
-                style={[styles.tabButtonLabel, styles.tabButtonLabelActive]}
-              >
-                Reviews
-              </Text>
-            </LinearGradient>
-          ) : (
-            <View style={styles.tabInner}>
-              <Text style={styles.tabButtonLabel}>Reviews</Text>
-            </View>
-          )}
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
-function FilterChip({
-  label,
-  active,
-  onPress,
-}: {
-  label: string;
-  active: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.chip,
-        active && styles.chipActive,
-        pressed && styles.chipPressed,
-        GatiMitraMerchant.cursorPointer,
-      ]}
-    >
-      <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
+  },
+  stickyTabs: {
+    zIndex: 2,
+    paddingHorizontal: H_PADDING,
+    paddingTop: 8,
+    paddingBottom: 4,
     backgroundColor: GatiMitraMerchant.surfaceWarm,
   },
   list: { flex: 1 },
@@ -1058,6 +562,12 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontSize: 14,
     color: GatiMitraMerchant.textSecondary,
+  },
+  countLine: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+    marginBottom: 10,
   },
   errorText: {
     fontSize: 14,
@@ -1250,30 +760,36 @@ const styles = StyleSheet.create({
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: H_PADDING,
+    gap: 8,
     marginBottom: 10,
   },
   searchInputWrap: {
     flexGrow: 1,
     flexShrink: 1,
+    height: 36,
+    overflow: "hidden",
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
     borderRadius: 999,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 0,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
   },
   searchInput: {
     flex: 1,
+    height: 36,
     fontSize: 13,
     color: GatiMitraMerchant.textPrimary,
     marginLeft: 6,
+    paddingVertical: 0,
+    textAlignVertical: "center",
+    ...Platform.select({ android: { includeFontPadding: false } }),
   },
   searchFilterBtn: {
-    width: 44,
-    height: 40,
+    width: 36,
+    height: 36,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
@@ -1322,8 +838,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
-    paddingHorizontal: H_PADDING,
     marginBottom: 8,
+  },
+  filterChip: {
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  filterChipIdle: {
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  filterChipActiveReviews: {
+    backgroundColor: GatiMitraMerchant.navy,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.navy,
   },
   filterChipPressed: {
     opacity: 0.9,
@@ -1371,7 +901,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   ratingPillHigh: {
-    backgroundColor: GatiMitraMerchant.statusCompleted,
+    backgroundColor: GatiMitraMerchant.navy,
   },
   ratingPillLow: {
     backgroundColor: GatiMitraMerchant.error,
@@ -1388,7 +918,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: GatiMitraMerchant.primary,
+    borderColor: GatiMitraMerchant.navy,
     backgroundColor: "transparent",
   },
   replyButtonPressed: {
@@ -1397,7 +927,7 @@ const styles = StyleSheet.create({
   replyButtonLabel: {
     fontSize: 11,
     fontWeight: "600",
-    color: GatiMitraMerchant.primary,
+    color: GatiMitraMerchant.navy,
   },
   repliedTag: {
     fontSize: 11,
@@ -1442,32 +972,9 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: GatiMitraMerchant.textTertiary,
   },
-  sheetModalRoot: {
-    flex: 1,
-    justifyContent: "flex-end",
-    backgroundColor: "rgba(15,23,42,0.35)",
-  },
-  sheetBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: "flex-end",
-    backgroundColor: "rgba(15,23,42,0.35)",
-  },
-  sheetBackdropTouch: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  sheetCard: {
-    backgroundColor: "#FFFFFF",
+  sheetInner: {
     paddingHorizontal: 18,
     paddingTop: 10,
-    paddingBottom: 22,
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    borderBottomLeftRadius: 0,
-    borderBottomRightRadius: 0,
-    borderTopWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-    width: "100%",
-    ...GatiMitraMerchant.shadowCard,
   },
   sheetHandle: {
     alignSelf: "center",
@@ -1516,8 +1023,8 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
   },
   sheetPillActive: {
-    backgroundColor: GatiMitraMerchant.primary,
-    borderColor: GatiMitraMerchant.primary,
+    backgroundColor: GatiMitraMerchant.navy,
+    borderColor: GatiMitraMerchant.navy,
   },
   sheetPillText: {
     fontSize: 12,
@@ -1547,7 +1054,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 999,
-    backgroundColor: GatiMitraMerchant.statusCompleted,
+    backgroundColor: GatiMitraMerchant.primary,
     marginBottom: 2,
   },
   sheetRatingText: {
@@ -1626,7 +1133,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 10,
     borderRadius: 999,
-    backgroundColor: GatiMitraMerchant.primary,
+    backgroundColor: GatiMitraMerchant.navy,
     alignItems: "center",
     justifyContent: "center",
   },

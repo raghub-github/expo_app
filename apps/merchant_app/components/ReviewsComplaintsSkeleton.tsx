@@ -37,9 +37,11 @@ function SkeletonBox({
 type Props = {
   /** "reviews" | "complaints" — only affects tab pill count (6 vs 4) and header title width */
   variant: "reviews" | "complaints";
+  /** Real Complaints/Reviews toggle is rendered by the parent so it stays sticky. */
+  hideTabs?: boolean;
 };
 
-export function ReviewsComplaintsSkeleton({ variant }: Props) {
+export function ReviewsComplaintsSkeleton({ variant, hideTabs = false }: Props) {
   const pulse = useRef(new Animated.Value(0.5)).current;
 
   useEffect(() => {
@@ -61,73 +63,27 @@ export function ReviewsComplaintsSkeleton({ variant }: Props) {
     return () => animation.stop();
   }, [pulse]);
 
-  const chipCount = variant === "reviews" ? 6 : 4;
-
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
-      <View style={styles.content}>
-        {/* Tabs */}
-        <View style={styles.tabsWrap}>
-          <View style={styles.tabsBackground}>
-            <SkeletonBox width={100} height={32} borderRadius={999} animatedValue={pulse} />
-            <SkeletonBox width={100} height={32} borderRadius={999} animatedValue={pulse} />
+      <View style={[styles.content, hideTabs && styles.contentEmbedded]}>
+        {hideTabs ? null : (
+          <View style={styles.tabsWrap}>
+            <View style={styles.tabsBackground}>
+              <SkeletonBox width="48%" height={40} borderRadius={10} animatedValue={pulse} />
+              <SkeletonBox width="48%" height={40} borderRadius={10} animatedValue={pulse} />
+            </View>
           </View>
-        </View>
+        )}
 
-        {/* Header */}
-        <View style={styles.headerBlock}>
-          <SkeletonBox width={60} height={10} animatedValue={pulse} style={styles.headerEyebrow} />
-          <View style={styles.headerTitleRow}>
-            <View style={styles.headerLeft}>
-              <SkeletonBox width={38} height={38} borderRadius={19} animatedValue={pulse} />
-              <View style={styles.headerTextCol}>
-                <SkeletonBox width={160} height={18} animatedValue={pulse} style={{ marginBottom: 6 }} />
-                <SkeletonBox width={120} height={12} animatedValue={pulse} />
-              </View>
-            </View>
-            <SkeletonBox width={90} height={28} borderRadius={999} animatedValue={pulse} />
-          </View>
-        </View>
-
-        {/* Summary card */}
-        <View style={styles.summaryCard}>
-          <View style={styles.summaryRow}>
-            <View style={styles.summaryLeft}>
-              <SkeletonBox width={48} height={32} animatedValue={pulse} style={{ marginBottom: 8 }} />
-              <View style={styles.starsRow}>
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <SkeletonBox key={i} width={14} height={14} borderRadius={7} animatedValue={pulse} style={{ marginRight: 4 }} />
-                ))}
-              </View>
-              <SkeletonBox width={80} height={12} animatedValue={pulse} style={{ marginTop: 8 }} />
-              <SkeletonBox width={140} height={12} animatedValue={pulse} style={{ marginTop: 4 }} />
-            </View>
-            <View style={styles.summaryRight}>
-              {[5, 4, 3, 2, 1].map((star) => (
-                <View key={star} style={styles.distRow}>
-                  <SkeletonBox width={24} height={10} animatedValue={pulse} />
-                  <SkeletonBox width="60%" height={6} borderRadius={999} animatedValue={pulse} style={{ marginHorizontal: 6 }} />
-                  <SkeletonBox width={16} height={10} animatedValue={pulse} />
-                </View>
-              ))}
-            </View>
-          </View>
-        </View>
+        <SkeletonBox width={90} height={12} animatedValue={pulse} style={{ marginBottom: 10 }} />
 
         {/* Search + filter */}
         <View style={styles.searchRow}>
           <View style={styles.searchBarWrap}>
             <SkeletonBox width="100%" height={40} borderRadius={999} animatedValue={pulse} />
           </View>
-          <SkeletonBox width={44} height={40} borderRadius={999} animatedValue={pulse} />
-        </View>
-
-        {/* Chips */}
-        <View style={styles.chipsRow}>
-          {Array.from({ length: chipCount }).map((_, i) => (
-            <SkeletonBox key={i} width={i === 0 ? 44 : 72} height={28} borderRadius={999} animatedValue={pulse} style={{ marginRight: 8 }} />
-          ))}
+          <SkeletonBox width={44} height={40} borderRadius={10} animatedValue={pulse} />
         </View>
 
         {/* Card placeholders */}
@@ -161,60 +117,21 @@ const styles = StyleSheet.create({
     padding: H_PADDING,
     paddingTop: 8,
   },
+  contentEmbedded: {
+    paddingTop: 0,
+  },
   tabsWrap: {
-    alignItems: "center",
     marginBottom: 12,
   },
   tabsBackground: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-  },
-  headerBlock: {
-    marginBottom: 12,
-  },
-  headerEyebrow: {
-    marginBottom: 8,
-  },
-  headerTitleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  headerLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  headerTextCol: {
-    marginLeft: 10,
-  },
-  summaryCard: {
+    gap: 4,
     backgroundColor: GatiMitraMerchant.cardBg,
     borderRadius: 14,
-    padding: 14,
-    marginBottom: 12,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
-  },
-  summaryRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-  },
-  summaryLeft: {
-    marginRight: 16,
-  },
-  starsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  summaryRight: {
-    flex: 1,
-  },
-  distRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 6,
+    padding: 4,
   },
   searchRow: {
     flexDirection: "row",
@@ -224,11 +141,6 @@ const styles = StyleSheet.create({
   searchBarWrap: {
     flex: 1,
     marginRight: 8,
-  },
-  chipsRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    marginBottom: 12,
   },
   card: {
     backgroundColor: GatiMitraMerchant.cardBg,

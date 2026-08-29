@@ -36,9 +36,8 @@ import { SessionRevokedGate } from "@/components/SessionRevokedGate";
 import NotificationSetup from "../components/NotificationSetup";
 import BackgroundOrderPermissionsGate from "../components/BackgroundOrderPermissionsGate";
 import NewOrderAutoOpenHandler from "../components/NewOrderAutoOpenHandler";
-import { fetchMerchantAppAssets } from "@/services/appAssets.service";
-import { setAppAssets } from "@/store/appAssetsStore";
 import { AppAssetsPrefetch } from "@/components/AppAssetsPrefetch";
+import { ensureMerchantAppAssetsLoaded } from "@/store/appAssetsStore";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
 import WaitingForOrderNotifier from "../components/WaitingForOrderNotifier";
 import StoreOnlineStatusNotifier from "../components/StoreOnlineStatusNotifier";
@@ -74,7 +73,6 @@ const queryClient = new QueryClient({
   },
 });
 
-const ASSETS_FETCH_TIMEOUT_MS = 8000;
 /** Don't hold splash forever if font download/cache stalls (common with --offline). */
 const FONTS_READY_FALLBACK_MS = 8000;
 /** Keep the branded splash on screen long enough to actually be read. */
@@ -130,19 +128,8 @@ export default function RootLayout() {
   }, [fontsTimedOut, fontsLoaded]);
 
   useEffect(() => {
-    // CMS assets must never block first paint / auth redirect. Soft-fail fast.
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), ASSETS_FETCH_TIMEOUT_MS);
-    void fetchMerchantAppAssets(controller.signal)
-      .then((res) => setAppAssets(res.assets ?? {}))
-      .catch(() => {
-        /* Do not mark loaded — AppAssetsPrefetch / screen focus will retry. */
-      })
-      .finally(() => clearTimeout(timeout));
-    return () => {
-      clearTimeout(timeout);
-      controller.abort();
-    };
+    // CMS assets must never block first paint — AppAssetsPrefetch dedupes the fetch.
+    void ensureMerchantAppAssetsLoaded();
   }, []);
 
   // Prefer real font registration; only soft-timeout so login is never blocked forever.
@@ -225,6 +212,7 @@ export default function RootLayout() {
                                 <Stack.Screen name="(tabs)" />
                                 <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
                                 <Stack.Screen name="order-review/[id]" options={{ headerShown: false }} />
+                                <Stack.Screen name="feedback-reply/[id]" options={{ headerShown: false }} />
                                 <Stack.Screen name="order-history" options={{ headerShown: false }} />
                                 <Stack.Screen name="restaurant-status" options={{ headerShown: false }} />
                               </Stack>

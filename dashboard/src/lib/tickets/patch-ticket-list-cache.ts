@@ -121,7 +121,56 @@ export function mergePostgresRowIntoTicketDetail(
     }
   }
 
+  // CSAT/DSAT — patch immediately so C&D panel updates without waiting for refetch
+  if (row.satisfaction_rating !== undefined) {
+    next.satisfactionRating =
+      row.satisfaction_rating != null && Number.isFinite(Number(row.satisfaction_rating))
+        ? Number(row.satisfaction_rating)
+        : null;
+  }
+  if (row.satisfaction_feedback !== undefined) {
+    next.satisfactionFeedback =
+      typeof row.satisfaction_feedback === "string" && row.satisfaction_feedback.trim() !== ""
+        ? row.satisfaction_feedback.trim()
+        : null;
+  }
+  if (row.satisfaction_collected_at !== undefined) {
+    next.satisfactionCollectedAt =
+      row.satisfaction_collected_at != null && String(row.satisfaction_collected_at).trim() !== ""
+        ? String(row.satisfaction_collected_at)
+        : null;
+  }
+
   return next;
+}
+
+/** True when a postgres UPDATE changed satisfaction fields (CSAT/DSAT). */
+export function ticketSatisfactionChanged(
+  oldRow: Record<string, unknown> | null | undefined,
+  newRow: Record<string, unknown> | null | undefined
+): boolean {
+  if (!newRow || typeof newRow !== "object") return false;
+  const nextRating = newRow.satisfaction_rating;
+  const nextAt = newRow.satisfaction_collected_at;
+  if (nextRating == null && (nextAt == null || String(nextAt).trim() === "")) return false;
+  if (!oldRow || typeof oldRow !== "object") return nextRating != null || nextAt != null;
+  return (
+    String(oldRow.satisfaction_rating ?? "") !== String(nextRating ?? "") ||
+    String(oldRow.satisfaction_collected_at ?? "") !== String(nextAt ?? "") ||
+    String(oldRow.satisfaction_feedback ?? "") !== String(newRow.satisfaction_feedback ?? "")
+  );
+}
+
+/** Refresh agent activity + C&D-SAT analysis caches after a rating lands. */
+export function invalidateCsatRelatedCaches(queryClient: QueryClient): void {
+  void queryClient.invalidateQueries({
+    predicate: (q) => q.queryKey[0] === "agentActivity",
+    refetchType: "active",
+  });
+  void queryClient.invalidateQueries({
+    predicate: (q) => q.queryKey[0] === "csatAnalysis",
+    refetchType: "active",
+  });
 }
 
 export function patchTicketInListCaches(

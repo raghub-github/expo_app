@@ -16,7 +16,7 @@ import {
   type MerchantWalletFreezeLiveState,
 } from "@/lib/merchantWalletFreezeBus";
 
-const POLL_MS = 1500;
+const POLL_MS = 30_000;
 
 function applyFreeze(storeId: number, isFrozen: boolean, freezeReason: string | null): void {
   emitMerchantWalletFreeze({ storeId, isFrozen, freezeReason });
@@ -41,7 +41,7 @@ export function useMerchantWalletFreezeState(
 
 /**
  * Keeps freeze overlay live while the merchant is signed in.
- * Broadcast is instant; postgres_changes + 1.5s poll are backups.
+ * Broadcast is instant; postgres_changes + 30s poll are backups.
  */
 export function useMerchantWalletFreezeLive(options: {
   storeId: number | null;
@@ -69,8 +69,11 @@ export function useMerchantWalletFreezeLive(options: {
       }
     };
 
+    let pollInFlight = false;
+
     const pollOnce = async () => {
-      if (cancelled || AppState.currentState !== "active") return;
+      if (cancelled || AppState.currentState !== "active" || pollInFlight) return;
+      pollInFlight = true;
       try {
         if (!useFullSummary) {
           const freeze = await fetchWalletFreezeStatus(storeId, authToken);
@@ -85,6 +88,8 @@ export function useMerchantWalletFreezeLive(options: {
       } catch (err) {
         const msg = err instanceof Error ? err.message : "";
         if (!useFullSummary && /404/.test(msg)) useFullSummary = true;
+      } finally {
+        pollInFlight = false;
       }
     };
 

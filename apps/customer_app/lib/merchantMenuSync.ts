@@ -16,8 +16,6 @@ import { useStoreStatusStore } from "@/store/storeStatusStore";
 
 const syncInFlight = new Set<string>();
 const lastSyncAtByMerchant = new Map<string, number>();
-/** Skip repeat menu version checks while browsing the same store. */
-const MIN_MENU_SYNC_GAP_MS = 90_000;
 
 async function refreshLiveStatusInCache(
   queryClient: QueryClient,
@@ -44,11 +42,6 @@ export async function syncMerchantMenuInBackground(
     const cached =
       queryClient.getQueryData<MerchantDetail>(queryKey) ?? readSyncMerchantMenu(merchantId);
 
-    const lastSyncAt = lastSyncAtByMerchant.get(merchantId) ?? 0;
-    if (cached?.menu?.length && Date.now() - lastSyncAt < MIN_MENU_SYNC_GAP_MS) {
-      return;
-    }
-
     if (!cached?.menu?.length) {
       const detail = await merchantService.getMerchantById(merchantId);
       if (!detail) return;
@@ -58,6 +51,8 @@ export async function syncMerchantMenuInBackground(
       return;
     }
 
+    // Always version-check (cheap). Admin banner / hero-video uploads bump
+    // merchant_stores.updated_at and must not be skipped by a sync gap.
     const version = await merchantService.getMenuVersion(merchantId);
     if (!version) return;
 
@@ -70,10 +65,19 @@ export async function syncMerchantMenuInBackground(
 
     if (!delta || delta.unchanged) return;
 
-    if (delta.requiresFullSync) {
-      const detail = await merchantService.getMerchantById(merchantId, undefined, {
-        ifNoneMatch: version.etag,
+    const hasMenuItemDelta =
+      (delta.changedItems?.length ?? 0) > 0 || (delta.deletedItemIds?.length ?? 0) > 0;
+
+    // Store shell-only changes (banner video / banner image / gallery) bump
+    // menuVersion via merchant_stores.updated_at but produce an empty menu delta.
+    // Full fetch so Classic / Grid First inner pages pick up hero video.
+    if (delta.requiresFullSync || !hasMenuItemDelta) {
+      let detail = await merchantService.getMerchantById(merchantId, undefined, {
+        ifNoneMatch: cached.etag,
       });
+      if (!detail) {
+        detail = await merchantService.getMerchantById(merchantId);
+      }
       if (!detail) return;
       queryClient.setQueryData(queryKey, detail);
       await writeCachedMerchantMenu(merchantId, detail);

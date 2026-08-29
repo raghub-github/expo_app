@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 import { createClient } from "@supabase/supabase-js";
+import {
+  appendMerchantReviewReply,
+  encodeLegacyMerchantResponse,
+} from "@/lib/merchant-review-replies";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -60,7 +64,7 @@ export async function POST(request: NextRequest) {
 
     const { data: ratingRow, error: ratingErr } = await db
       .from("merchant_store_ratings")
-      .select("id, store_id")
+      .select("id, store_id, merchant_response, merchant_responses, merchant_responded_at")
       .eq("id", reviewId)
       .maybeSingle();
 
@@ -81,22 +85,41 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let responseText = message?.trim() || "";
-    if (images && Array.isArray(images) && images.length > 0) {
-      const imageJson = JSON.stringify(images);
-      if (responseText) {
-        responseText += `\n\n[IMAGES:${imageJson}]`;
-      } else {
-        responseText = `[IMAGES:${imageJson}]`;
+    const imagesList = Array.isArray(images)
+      ? images.map((u: unknown) => String(u).trim()).filter(Boolean)
+      : [];
+    const responseText = encodeLegacyMerchantResponse(message?.trim() || "", imagesList);
+    const nowIso = new Date().toISOString();
+
+    let nextReplies;
+    try {
+      nextReplies = appendMerchantReviewReply(
+        (ratingRow as { merchant_responses?: unknown }).merchant_responses,
+        (ratingRow as { merchant_response?: string | null }).merchant_response,
+        (ratingRow as { merchant_responded_at?: string | null }).merchant_responded_at,
+        {
+          text: (message?.trim() || ""),
+          at: nowIso,
+          ...(imagesList.length > 0 ? { images: imagesList } : {}),
+        },
+      );
+    } catch (err) {
+      if (err instanceof Error && err.message === "REPLY_CAP") {
+        return NextResponse.json(
+          { success: false, error: "Maximum replies reached for this review." },
+          { status: 409 },
+        );
       }
+      throw err;
     }
 
     const { data: updatedReview, error: updateError } = await db
       .from("merchant_store_ratings")
       .update({
         merchant_response: responseText,
-        merchant_responded_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        merchant_responses: nextReplies,
+        merchant_responded_at: nowIso,
+        updated_at: nowIso,
       })
       .eq("id", reviewId)
       .eq("store_id", ratingRow.store_id)

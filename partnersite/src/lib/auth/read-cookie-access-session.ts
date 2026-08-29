@@ -112,6 +112,7 @@ function collectAuthCookieValue(
   const baseNames = new Set<string>();
   for (const name of allNames) {
     if (!name.startsWith("sb-")) continue;
+    if (name.includes("code-verifier")) continue;
     if (name.includes("auth-token")) {
       baseNames.add(name.replace(/\.\d+$/, ""));
     }
@@ -145,6 +146,19 @@ export function parseCookieHeaderPairs(header: string): Array<{ name: string; va
   return out;
 }
 
+/** PKCE verifier cookies are `sb-*` but are not a logged-in session. */
+export function isSupabasePkceCookieName(name: string): boolean {
+  return name.startsWith("sb-") && name.includes("code-verifier");
+}
+
+/** True session cookies only — excludes PKCE `*-auth-token-code-verifier`. */
+export function isSupabaseSessionCookieName(name: string): boolean {
+  if (name === "sb-access-token" || name === "sb-refresh-token") return true;
+  if (!name.startsWith("sb-")) return false;
+  if (isSupabasePkceCookieName(name)) return false;
+  return name.includes("auth-token");
+}
+
 export function hasSupabaseAuthCookies(cookieStore: {
   get: (name: string) => { value: string } | undefined;
   getAll?: () => Array<{ name: string; value: string }>;
@@ -154,7 +168,7 @@ export function hasSupabaseAuthCookies(cookieStore: {
       return true;
     }
     const all = typeof cookieStore.getAll === "function" ? cookieStore.getAll() : [];
-    return all.some((c) => c.name.startsWith("sb-") && Boolean(c.value));
+    return all.some((c) => isSupabaseSessionCookieName(c.name) && Boolean(c.value));
   } catch {
     return false;
   }

@@ -271,6 +271,17 @@ export async function getWalletSummary(
       ? await countMerchantDeliveredOrdersIst(sql, storeId, todayYmd, todayYmd)
       : 0;
 
+  let min_withdrawal_amount: number = WALLET_CONSTANTS.MIN_WITHDRAWAL_AMOUNT;
+  let max_withdrawal_amount = 100_000;
+  try {
+    const { readPayoutAmountLimits } = await import("./payout-amount-limits.js");
+    const limits = await readPayoutAmountLimits("MERCHANT");
+    min_withdrawal_amount = limits.minAmount;
+    max_withdrawal_amount = limits.maxAmount;
+  } catch {
+    /* ignore */
+  }
+
   return {
     wallet_id: walletId,
     available_balance: accounting.available_balance,
@@ -305,6 +316,8 @@ export async function getWalletSummary(
     failed_amount: accounting.failed_amount,
     is_frozen: accounting.is_frozen,
     withdrawal_allowed: accounting.withdrawal_allowed,
+    min_withdrawal_amount,
+    max_withdrawal_amount,
   };
 }
 
@@ -505,20 +518,36 @@ async function enrichLedgerWithPayoutRequestStatus(
 
   try {
     const rows = await sql`
-      SELECT id, hold_ledger_id, status
-      FROM merchant_payout_requests
-      WHERE hold_ledger_id = ANY(${holdIds})
+      SELECT
+        pr.id,
+        pr.hold_ledger_id,
+        pr.status,
+        ppa.approval_notes AS hold_reason
+      FROM merchant_payout_requests pr
+      LEFT JOIN payment_payout_approvals ppa
+        ON ppa.payout_request_id = pr.id AND ppa.payout_type = 'MERCHANT'
+      WHERE pr.hold_ledger_id = ANY(${holdIds})
     `;
-    const byHoldId = new Map<number, { id: number; status: string }>();
-    for (const row of rows as unknown as { id: number; hold_ledger_id: number; status: string }[]) {
+    const byHoldId = new Map<
+      number,
+      { id: number; status: string; hold_reason?: string | null }
+    >();
+    for (const row of rows as unknown as {
+      id: number;
+      hold_ledger_id: number;
+      status: string;
+      hold_reason?: string | null;
+    }[]) {
       byHoldId.set(Number(row.hold_ledger_id), {
         id: Number(row.id),
         status: String(row.status ?? ""),
+        hold_reason: row.hold_reason != null ? String(row.hold_reason) : null,
       });
     }
     return entries.map((entry) => {
       const linked = byHoldId.get(entry.id);
       if (!linked) return entry;
+      const holdReason = String(linked.hold_reason ?? "").trim();
       return {
         ...entry,
         reference_id:
@@ -529,6 +558,7 @@ async function enrichLedgerWithPayoutRequestStatus(
           ...(entry.metadata ?? {}),
           payout_request_id: linked.id,
           payout_status: linked.status,
+          ...(holdReason ? { hold_reason: holdReason } : {}),
         },
       };
     });
@@ -1194,19 +1224,20 @@ export async function createWithdrawalRequest(
   // this `let` would infer the literal type 100 and the reassignment below
   // would fail with TS2322.
   let minAmount: number = WALLET_CONSTANTS.MIN_WITHDRAWAL_AMOUNT;
+  let maxAmount = 100_000;
   try {
-    const payoutRule = await sql`
-      SELECT min_payout_amount FROM payment_payout_rules
-      WHERE is_active AND party_type = 'MERCHANT' ORDER BY id DESC LIMIT 1
-    `;
-    if (payoutRule.length > 0) {
-      minAmount = Number((payoutRule[0] as { min_payout_amount?: number }).min_payout_amount ?? minAmount);
-    }
+    const { readPayoutAmountLimits } = await import("./payout-amount-limits.js");
+    const limits = await readPayoutAmountLimits("MERCHANT");
+    minAmount = limits.minAmount;
+    maxAmount = limits.maxAmount;
   } catch {
     /* pre-0239 */
   }
   if (amount < minAmount) {
     throw new Error(`Amount must be at least ₹${minAmount}`);
+  }
+  if (amount > maxAmount) {
+    throw new Error(`Amount cannot exceed ₹${maxAmount.toLocaleString("en-IN")}`);
   }
 
   const wallet = await getOrCreateWallet(storeId);
@@ -1363,6 +1394,26 @@ export async function createWithdrawalRequest(
     source,
   });
 
+  void import("./merchant-withdrawal-request-email.js")
+    .then(async ({ sendMerchantWithdrawalRequestReceivedEmail }) => {
+      const res = await sendMerchantWithdrawalRequestReceivedEmail({
+        storeId,
+        payoutRequestId,
+        amountRupees: amount,
+      });
+      if (!res.ok) {
+        console.warn(
+          `[merchant-withdrawal-email] not_sent store_id=${storeId} payout_request_id=${payoutRequestId} error=${res.error ?? "unknown"} skipped=${Boolean(res.skipped)}`
+        );
+      }
+    })
+    .catch((err) => {
+      console.warn(
+        `[merchant-withdrawal-email] failed to dispatch store_id=${storeId} payout_request_id=${payoutRequestId}:`,
+        err instanceof Error ? err.message : err
+      );
+    });
+
   return {
     payout_request_id: payoutRequestId,
     amount: Number(pr.amount),
@@ -1391,6 +1442,10 @@ export type PayoutRequestListItem = {
   completed_at: string | null;
   utr_reference: string | null;
   failure_reason: string | null;
+  rejection_reason?: string | null;
+  /** Admin hold reason from payment_payout_approvals.approval_notes */
+  hold_reason?: string | null;
+  pg_transaction_id?: string | null;
 };
 
 /** Partner Site GET /api/merchant/payout-requests parity. */
@@ -1403,16 +1458,36 @@ export async function listPayoutRequests(
   const walletId = wallet.id;
   const lim = Math.min(20, Math.max(1, limit));
 
-  const rows = await sql`
-    SELECT id, amount, net_payout_amount, status, requested_at, completed_at,
-           utr_reference, failure_reason
-    FROM merchant_payout_requests
-    WHERE wallet_id = ${walletId}
-    ORDER BY requested_at DESC
-    LIMIT 500
-  `;
+  let list: any[] = [];
+  try {
+    const rows = await sql`
+      SELECT pr.id, pr.amount, pr.net_payout_amount, pr.status, pr.requested_at, pr.completed_at,
+             pr.utr_reference, pr.failure_reason, pr.rejection_reason,
+             ppa.approval_notes AS hold_reason,
+             COALESCE(pr.pg_transaction_id, ppa.gateway_payout_id, pr.utr_reference, ppa.utr_reference)
+               AS pg_transaction_id
+      FROM merchant_payout_requests pr
+      LEFT JOIN payment_payout_approvals ppa
+        ON ppa.payout_request_id = pr.id AND ppa.payout_type = 'MERCHANT'
+      WHERE pr.wallet_id = ${walletId}
+      ORDER BY pr.requested_at DESC
+      LIMIT 500
+    `;
+    list = rows as any[];
+  } catch {
+    const rows = await sql`
+      SELECT id, amount, net_payout_amount, status, requested_at, completed_at,
+             utr_reference, failure_reason, rejection_reason,
+             NULL::text AS hold_reason,
+             COALESCE(pg_transaction_id, utr_reference) AS pg_transaction_id
+      FROM merchant_payout_requests
+      WHERE wallet_id = ${walletId}
+      ORDER BY requested_at DESC
+      LIMIT 500
+    `;
+    list = rows as any[];
+  }
 
-  const list = rows as any[];
   const sumNet = (subset: any[]) =>
     roundMoney(subset.reduce((s, r) => s + Number(r.net_payout_amount ?? r.amount ?? 0), 0));
 
@@ -1424,7 +1499,13 @@ export async function listPayoutRequests(
   const pendingRows = list.filter((r) => String(r.status) === "PENDING");
   const failedRows = list.filter((r) => {
     const st = String(r.status);
-    return st === "FAILED" || st === "CANCELLED" || st === "REVERSED";
+    return (
+      st === "FAILED" ||
+      st === "CANCELLED" ||
+      st === "REVERSED" ||
+      st === "REJECTED" ||
+      st === "RETURNED"
+    );
   });
 
   const paid = sumNet(paidRows);
@@ -1448,6 +1529,14 @@ export async function listPayoutRequests(
       : null,
     utr_reference: r.utr_reference != null ? String(r.utr_reference) : null,
     failure_reason: r.failure_reason != null ? String(r.failure_reason) : null,
+    rejection_reason: r.rejection_reason != null ? String(r.rejection_reason) : null,
+    hold_reason: r.hold_reason != null && String(r.hold_reason).trim() !== ""
+      ? String(r.hold_reason).trim()
+      : null,
+    pg_transaction_id:
+      r.pg_transaction_id != null && String(r.pg_transaction_id).trim() !== ""
+        ? String(r.pg_transaction_id).trim()
+        : null,
   }));
 
   return {
@@ -1499,6 +1588,22 @@ export async function completeWithdrawal(payoutRequestId: number): Promise<void>
       WHERE id = ${payoutRequestId}
     `;
   });
+
+  void import("./merchant-withdrawal-request-email.js")
+    .then(async ({ notifyMerchantWithdrawalCompletedEmail }) => {
+      const res = await notifyMerchantWithdrawalCompletedEmail(payoutRequestId);
+      if (!res.ok) {
+        console.warn(
+          `[merchant-withdrawal-completed-email] not_sent payout_request_id=${payoutRequestId} error=${res.error ?? "unknown"} skipped=${Boolean(res.skipped)}`
+        );
+      }
+    })
+    .catch((err) => {
+      console.warn(
+        `[merchant-withdrawal-completed-email] failed to dispatch payout_request_id=${payoutRequestId}:`,
+        err instanceof Error ? err.message : err
+      );
+    });
 }
 
 // ─── Fail withdrawal (release HOLD back to AVAILABLE) ─────────────────────────

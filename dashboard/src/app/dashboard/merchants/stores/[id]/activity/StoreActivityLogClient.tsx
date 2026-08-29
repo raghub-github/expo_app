@@ -52,15 +52,18 @@ export function StoreActivityLogClient({ storeId }: { storeId: string }) {
   });
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 md:p-6">
-      <div className="flex items-center gap-2 mb-6">
-        <History className="h-5 w-5 text-blue-600" />
-        <h1 className="text-lg font-semibold text-gray-900">Activity Log</h1>
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white">
+      <div className="shrink-0 border-b border-gray-100 px-4 pt-4 pb-3 md:px-6 md:pt-6">
+        <div className="flex items-center gap-2 mb-2">
+          <History className="h-5 w-5 text-blue-600" />
+          <h1 className="text-lg font-semibold text-gray-900">Activity Log</h1>
+        </div>
+        <p className="text-sm text-gray-600">
+          All agent changes for this store. Latest first.
+        </p>
       </div>
-      <p className="text-sm text-gray-600 mb-6">
-        All agent changes for this store. Latest first.
-      </p>
 
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 md:px-6 md:pb-6">
       {isLoading && (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
@@ -140,6 +143,7 @@ export function StoreActivityLogClient({ storeId }: { storeId: string }) {
       )}
 
       <UnifiedActivityFeed storeId={storeId} />
+      </div>
     </div>
   );
 }

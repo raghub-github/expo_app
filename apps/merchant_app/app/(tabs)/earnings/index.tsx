@@ -43,16 +43,29 @@ import {
 } from "@/lib/merchantPayoutUtils";
 import { LedgerEntryAmount } from "@/components/earnings/LedgerEntryAmount";
 import { WithdrawalSuccessSheet } from "@/components/earnings/WithdrawalSuccessSheet";
+import { WithdrawProgressButton } from "@/components/earnings/WithdrawProgressButton";
 
-const MIN_WITHDRAWAL = 100;
-const MAX_WITHDRAWAL_PER_REQUEST = 100_000;
+const FALLBACK_MIN_WITHDRAWAL = 100;
+const FALLBACK_MAX_WITHDRAWAL = 100_000;
 
 function getWithdrawableBalance(wallet: WalletSummary | null): number {
   return resolveWalletDisplayBalance(wallet);
 }
 
-function getMaxWithdrawalLimit(withdrawable: number): number {
-  return Math.min(Math.max(0, withdrawable), MAX_WITHDRAWAL_PER_REQUEST);
+function getMinWithdrawal(wallet: WalletSummary | null): number {
+  const n = Number(wallet?.min_withdrawal_amount);
+  // Prefer API Threshold value; never invent a stale ₹100 when wallet has loaded without the field.
+  if (Number.isFinite(n) && n > 0) return n;
+  return FALLBACK_MIN_WITHDRAWAL;
+}
+
+function getMaxWithdrawalCap(wallet: WalletSummary | null): number {
+  const n = Number(wallet?.max_withdrawal_amount);
+  return Number.isFinite(n) && n > 0 ? n : FALLBACK_MAX_WITHDRAWAL;
+}
+
+function getMaxWithdrawalLimit(withdrawable: number, wallet: WalletSummary | null): number {
+  return Math.min(Math.max(0, withdrawable), getMaxWithdrawalCap(wallet));
 }
 
 function formatWithdrawalInputAmount(amount: number): string {
@@ -111,6 +124,7 @@ export default function EarningsScreen() {
   const [successSheet, setSuccessSheet] = useState<{ amountLabel: string } | null>(null);
   const [cycleCards, setCycleCards] = useState<PayoutCard[] | null>(null);
   const [recentPayoutRequests, setRecentPayoutRequests] = useState<PayoutRequestListItem[]>([]);
+  const [holdReasonModal, setHoldReasonModal] = useState<PayoutCard | null>(null);
 
   const ledgerQuery = useMemo(
     () => (activeTab === "transactions" ? txFilterToLedgerQuery(txFilter) : {}),
@@ -218,13 +232,14 @@ export default function EarningsScreen() {
   const freezeReason = walletFrozen
     ? (liveFreeze?.isFrozen ? liveFreeze.freezeReason : null) ?? wallet?.freezeReason ?? null
     : null;
-  const maxWithdrawalLimit = getMaxWithdrawalLimit(withdrawableBalance);
+  const maxWithdrawalLimit = getMaxWithdrawalLimit(withdrawableBalance, wallet);
+  const minWithdrawal = getMinWithdrawal(wallet);
   useEffect(() => {
     if (!walletFrozen) return;
     setShowWithdraw(false);
     setBankPickerOpen(false);
   }, [walletFrozen]);
-  const withdrawalInputEnabled = maxWithdrawalLimit >= MIN_WITHDRAWAL && !withdrawing && !walletFrozen;
+  const withdrawalInputEnabled = maxWithdrawalLimit >= minWithdrawal && !withdrawing && !walletFrozen;
 
   const selectTxFilter = (key: TxFilter) => {
     setTxFilter((prev) => (prev === key && key !== "all" ? "all" : key));
@@ -234,7 +249,7 @@ export default function EarningsScreen() {
     if (raw === "") { setWithdrawAmount(""); return; }
     const num = parseFloat(raw);
     if (isNaN(num)) return;
-    const cap = getMaxWithdrawalLimit(getWithdrawableBalance(wallet));
+    const cap = getMaxWithdrawalLimit(getWithdrawableBalance(wallet), wallet);
     if (num > cap) { setWithdrawAmount(formatWithdrawalInputAmount(cap)); return; }
     setWithdrawAmount(raw);
   };
@@ -250,8 +265,8 @@ export default function EarningsScreen() {
       return;
     }
     if (!storeId || !token) return;
-    const limit = getMaxWithdrawalLimit(getWithdrawableBalance(wallet));
-    setWithdrawAmount(limit >= MIN_WITHDRAWAL ? formatWithdrawalInputAmount(limit) : "");
+    const limit = getMaxWithdrawalLimit(getWithdrawableBalance(wallet), wallet);
+    setWithdrawAmount(limit >= minWithdrawal ? formatWithdrawalInputAmount(limit) : "");
     setShowWithdraw(true);
     setBankPickerOpen(false);
     setBanksLoading(true);
@@ -284,9 +299,9 @@ export default function EarningsScreen() {
     }
     if (!storeId || !token || !withdrawBankId) return;
     const amt = parseFloat(withdrawAmount);
-    if (isNaN(amt) || amt < MIN_WITHDRAWAL) { Alert.alert("Invalid", `Min ₹${MIN_WITHDRAWAL}`); return; }
-    if (amt > getMaxWithdrawalLimit(getWithdrawableBalance(wallet))) {
-      Alert.alert("Invalid", "Amount exceeds available balance or ₹1,00,000 limit");
+    if (isNaN(amt) || amt < minWithdrawal) { Alert.alert("Invalid", `Min ₹${minWithdrawal}`); return; }
+    if (amt > getMaxWithdrawalLimit(getWithdrawableBalance(wallet), wallet)) {
+      Alert.alert("Invalid", `Amount exceeds available balance or max ₹${getMaxWithdrawalCap(wallet).toLocaleString("en-IN")}`);
       return;
     }
     setWithdrawing(true);
@@ -379,22 +394,24 @@ export default function EarningsScreen() {
               </>
             ) : null}
           </Pressable>
-          <Pressable
-            onPress={openWithdraw}
-            disabled={walletFrozen}
-            style={({ pressed }) => [
-              s.cardWithdrawBtn,
-              walletFrozen && s.cardWithdrawBtnDisabled,
-              pressed && !walletFrozen && s.pressed,
-            ]}
-          >
-            <Text style={[s.cardWithdrawBtnText, walletFrozen && s.cardWithdrawBtnTextDisabled]}>
-              {walletFrozen ? "Frozen" : "Withdraw"}
-            </Text>
-            {!walletFrozen ? (
-              <Ionicons name="chevron-forward" size={14} color={GatiMitraMerchant.navy} />
-            ) : null}
-          </Pressable>
+          {walletFrozen ? (
+            <Pressable disabled style={[s.cardWithdrawBtn, s.cardWithdrawBtnDisabled]}>
+              <Text style={[s.cardWithdrawBtnText, s.cardWithdrawBtnTextDisabled]}>Frozen</Text>
+            </Pressable>
+          ) : wallet == null ? (
+            <Pressable disabled style={[s.cardWithdrawBtn, s.cardWithdrawBtnDisabled]}>
+              <Text style={[s.cardWithdrawBtnText, s.cardWithdrawBtnTextDisabled]}>Withdraw</Text>
+            </Pressable>
+          ) : (
+            <WithdrawProgressButton
+              current={withdrawableBalance}
+              minAmount={minWithdrawal}
+              onPress={openWithdraw}
+              labelReady="Withdraw ›"
+              compact
+              style={s.cardWithdrawProgress}
+            />
+          )}
         </View>
 
         <View style={[s.cycleRow, s.cycleRowLast]}>
@@ -502,16 +519,35 @@ export default function EarningsScreen() {
               {settledPayoutCards.map((card, idx) => {
                 const badge = statusBadgeStyle(card.status);
                 const periodLabel = formatPeriodRange(card.periodStart, card.periodEnd);
+                const isHold = card.status === "PROCESSING";
+                const openHoldOrDetails = () => {
+                  if (isHold) {
+                    setHoldReasonModal(card);
+                    return;
+                  }
+                  router.push({
+                    pathname: "/(tabs)/earnings/payout/[id]",
+                    params: payoutCardToParams(card),
+                  });
+                };
                 return (
-                  <View key={card.id} style={[s.pastPayoutCard, idx > 0 && s.payoutCardBorder]}>
+                  <Pressable
+                    key={card.id}
+                    onPress={openHoldOrDetails}
+                    style={({ pressed }) => [
+                      s.pastPayoutCard,
+                      idx > 0 && s.payoutCardBorder,
+                      pressed && s.pressed,
+                    ]}
+                  >
                     <View style={s.payoutTopRow}>
                       <View style={s.payoutCol}>
                         <Text style={s.payoutFieldLabel}>Net payout</Text>
                         <Text style={s.payoutAmount}>{formatCurrency(card.netPayout)}</Text>
                         {payoutReturnedDisplayAmount(card) > 0 ? (
                           <Text style={s.payoutRejectedLine}>
-                            {formatCurrency(payoutReturnedDisplayAmount(card))} rejected ·
-                            returned to wallet
+                            {formatCurrency(payoutReturnedDisplayAmount(card))}{" "}
+                            {card.status === "FAILED" ? "failed" : "rejected"} · returned to wallet
                           </Text>
                         ) : null}
                       </View>
@@ -541,23 +577,18 @@ export default function EarningsScreen() {
                         Reason: {card.closeNote}
                       </Text>
                     ) : null}
-                    <Pressable
-                      onPress={() => {
-                        const detailCard =
-                          card.payoutRequestId != null && currentCycleCard
-                            ? { ...currentCycleCard, netPayout: card.netPayout, status: card.status }
-                            : card;
-                        router.push({
-                          pathname: "/(tabs)/earnings/payout/[id]",
-                          params: payoutCardToParams(detailCard),
-                        });
-                      }}
-                      style={({ pressed }) => [s.viewDetailsBtn, pressed && s.pressed]}
-                    >
-                      <Text style={s.viewDetailsText}>View details</Text>
+                    {isHold && card.holdReason ? (
+                      <Text style={s.payoutNoteLine} numberOfLines={2}>
+                        Hold: {card.holdReason}
+                      </Text>
+                    ) : null}
+                    <View style={s.viewDetailsBtn}>
+                      <Text style={s.viewDetailsText}>
+                        {isHold ? "View hold reason" : "View details"}
+                      </Text>
                       <Ionicons name="chevron-forward" size={16} color="#2563EB" />
-                    </Pressable>
-                  </View>
+                    </View>
+                  </Pressable>
                 );
               })}
             </View>
@@ -639,7 +670,7 @@ export default function EarningsScreen() {
                 <Ionicons name="close" size={22} color={GatiMitraMerchant.textSecondary} />
               </Pressable>
             </View>
-            <Text style={s.inputLabel}>Amount (min ₹{MIN_WITHDRAWAL})</Text>
+            <Text style={s.inputLabel}>Amount (min ₹{minWithdrawal})</Text>
             <TextInput
               style={[s.input, !withdrawalInputEnabled && s.inputDisabled]}
               value={withdrawAmount}
@@ -649,10 +680,10 @@ export default function EarningsScreen() {
               editable={withdrawalInputEnabled}
               placeholderTextColor={GatiMitraMerchant.textTertiary}
             />
-            {withdrawalInputEnabled && withdrawAmount.trim() !== "" && !isNaN(parseFloat(withdrawAmount)) && parseFloat(withdrawAmount) >= MIN_WITHDRAWAL ? (
+            {withdrawalInputEnabled && withdrawAmount.trim() !== "" && !isNaN(parseFloat(withdrawAmount)) && parseFloat(withdrawAmount) >= minWithdrawal ? (
               <Text style={s.receiveHint}>You receive: {formatCurrency(parseFloat(withdrawAmount))}</Text>
             ) : (
-              <Text style={s.hintMuted}>Min ₹{MIN_WITHDRAWAL} · Max {formatCurrency(maxWithdrawalLimit)}</Text>
+              <Text style={s.hintMuted}>Min ₹{minWithdrawal} · Max {formatCurrency(maxWithdrawalLimit)}</Text>
             )}
             <Text style={s.inputLabel}>Bank account</Text>
             {banksLoading ? (
@@ -686,23 +717,63 @@ export default function EarningsScreen() {
               </View>
             )}
             <Text style={s.hintMuted}>Funds arrive within 24 to 48 hrs</Text>
-            <Pressable
-              onPress={handleWithdraw}
-              disabled={
-                withdrawing || !withdrawBankId || !withdrawalInputEnabled ||
-                !withdrawAmount || parseFloat(withdrawAmount) < MIN_WITHDRAWAL ||
-                parseFloat(withdrawAmount) > maxWithdrawalLimit
+            <WithdrawProgressButton
+              current={
+                withdrawAmount.trim() === "" || Number.isNaN(parseFloat(withdrawAmount))
+                  ? 0
+                  : parseFloat(withdrawAmount)
               }
-              style={({ pressed }) => [
-                s.confirmBtn,
-                (withdrawing || !withdrawBankId || !withdrawalInputEnabled) && s.confirmBtnDisabled,
-                pressed && s.pressed,
-              ]}
-            >
-              {withdrawing ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.confirmBtnText}>Withdraw</Text>}
-            </Pressable>
+              minAmount={minWithdrawal}
+              onPress={handleWithdraw}
+              loading={withdrawing}
+              disabled={
+                !withdrawBankId ||
+                !withdrawalInputEnabled ||
+                (!!withdrawAmount.trim() &&
+                  !Number.isNaN(parseFloat(withdrawAmount)) &&
+                  parseFloat(withdrawAmount) > maxWithdrawalLimit)
+              }
+              labelReady="Withdraw"
+            />
           </View>
         </View>
+      </Modal>
+
+      <Modal
+        visible={holdReasonModal != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setHoldReasonModal(null)}
+      >
+        <Pressable style={s.holdModalOverlay} onPress={() => setHoldReasonModal(null)}>
+          <Pressable style={s.holdModalCard} onPress={(e) => e.stopPropagation()}>
+            <View style={s.holdModalHeader}>
+              <View style={[s.statusBadge, { backgroundColor: statusBadgeStyle("PROCESSING").bg }]}>
+                <Text style={[s.statusBadgeText, { color: statusBadgeStyle("PROCESSING").text }]}>
+                  HOLD
+                </Text>
+              </View>
+              <Pressable onPress={() => setHoldReasonModal(null)} hitSlop={12}>
+                <Ionicons name="close" size={22} color={GatiMitraMerchant.textSecondary} />
+              </Pressable>
+            </View>
+            <Text style={s.holdModalTitle}>Withdrawal on hold</Text>
+            <Text style={s.holdModalAmount}>
+              {formatCurrency(holdReasonModal?.netPayout ?? 0)}
+            </Text>
+            <Text style={s.holdModalLabel}>Reason</Text>
+            <Text style={s.holdModalReason}>
+              {(holdReasonModal?.holdReason ?? "").trim() ||
+                "This withdrawal is on hold and awaiting release by admin."}
+            </Text>
+            <Pressable
+              style={({ pressed }) => [s.holdModalBtn, pressed && s.pressed]}
+              onPress={() => setHoldReasonModal(null)}
+            >
+              <Text style={s.holdModalBtnText}>Got it</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
       </Modal>
 
       <WithdrawalSuccessSheet
@@ -890,6 +961,10 @@ const s = StyleSheet.create({
     backgroundColor: "#F3F4F6",
   },
   cardWithdrawBtnTextDisabled: { color: "#9CA3AF" },
+  cardWithdrawProgress: {
+    maxWidth: 148,
+    minWidth: 108,
+  },
   frozenBanner: {
     backgroundColor: "#FEF2F2",
     borderRadius: 8,
@@ -970,4 +1045,54 @@ const s = StyleSheet.create({
   confirmBtn: { marginTop: 16, paddingVertical: 15, borderRadius: 12, backgroundColor: GatiMitraMerchant.navy, alignItems: "center" },
   confirmBtnDisabled: { opacity: 0.5 },
   confirmBtnText: { fontSize: 15, fontWeight: "700", color: "#fff" },
+  holdModalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.45)",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  holdModalCard: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 20,
+  },
+  holdModalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  holdModalTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  holdModalAmount: {
+    marginTop: 6,
+    fontSize: 22,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  holdModalLabel: {
+    marginTop: 16,
+    fontSize: 11,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  holdModalReason: {
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 20,
+    color: GatiMitraMerchant.textPrimary,
+  },
+  holdModalBtn: {
+    marginTop: 20,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: GatiMitraMerchant.navy,
+    alignItems: "center",
+  },
+  holdModalBtnText: { fontSize: 14, fontWeight: "700", color: "#fff" },
 });

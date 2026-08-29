@@ -26,6 +26,7 @@ import {
   User,
   UtensilsCrossed,
   Wallet,
+  X,
 } from "lucide-react";
 import {
   LineChart,
@@ -533,6 +534,7 @@ export function CustomerDetailPremiumView(props: CustomerDetailPremiumViewProps)
 
   const [activityRange, setActivityRange] = useState<ActivityRange>("30D");
   const [profilePhotoOpen, setProfilePhotoOpen] = useState(false);
+  const [doorImageModalUrl, setDoorImageModalUrl] = useState<string | null>(null);
 
   const initials = getCustomerNameInitials(customer.fullName, customer.email);
   const hasCustomProfilePhoto = isCustomCustomerProfileImage(customer.profileImageUrl);
@@ -693,22 +695,52 @@ export function CustomerDetailPremiumView(props: CustomerDetailPremiumViewProps)
                 <p className="text-sm text-gray-400">No saved address</p>
               ) : (
                 <div className="relative" ref={addressMenuRef}>
-                  <p className="text-sm leading-relaxed text-gray-800 [overflow-wrap:anywhere]">
-                    {formatAddressDisplay(addresses[safeAddrIdx])}
-                  </p>
+                  <div className="flex items-start gap-3">
+                    <p className="min-w-0 flex-1 text-sm leading-relaxed text-gray-800 [overflow-wrap:anywhere]">
+                      {formatAddressDisplay(addresses[safeAddrIdx])}
+                    </p>
+                    {addresses[safeAddrIdx]?.deliveryDoorImageUrl ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDoorImageModalUrl(addresses[safeAddrIdx].deliveryDoorImageUrl)
+                        }
+                        className="relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm ring-1 ring-black/5 transition hover:ring-teal-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+                        title="View delivery address photo"
+                        aria-label="View delivery address photo"
+                      >
+                        <R2Image
+                          src={addresses[safeAddrIdx].deliveryDoorImageUrl}
+                          alt="Delivery address"
+                          className="h-full w-full object-cover"
+                        />
+                      </button>
+                    ) : null}
+                  </div>
                   {addressMenuOpen && addresses.length > 1 ? (
                     <ul className="absolute left-0 right-0 z-50 mt-2 max-h-48 overflow-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
                       {otherAddressIndices.map((i) => (
                         <li key={addresses[i].id}>
                           <button
                             type="button"
-                            className="w-full px-3 py-2 text-left text-sm text-gray-800 hover:bg-teal-50"
+                            className="flex w-full items-start gap-2 px-3 py-2 text-left text-sm text-gray-800 hover:bg-teal-50"
                             onClick={() => {
                               setAddressIndex(i);
                               setAddressMenuOpen(false);
                             }}
                           >
-                            {formatAddressDisplay(addresses[i])}
+                            <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                              {formatAddressDisplay(addresses[i])}
+                            </span>
+                            {addresses[i]?.deliveryDoorImageUrl ? (
+                              <span className="h-9 w-9 shrink-0 overflow-hidden rounded border border-gray-200">
+                                <R2Image
+                                  src={addresses[i].deliveryDoorImageUrl}
+                                  alt=""
+                                  className="h-full w-full object-cover"
+                                />
+                              </span>
+                            ) : null}
                           </button>
                         </li>
                       ))}
@@ -1054,6 +1086,39 @@ export function CustomerDetailPremiumView(props: CustomerDetailPremiumViewProps)
         customerName={customer.fullName}
         onClose={() => setProfilePhotoOpen(false)}
       />
+
+      {doorImageModalUrl ? (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          role="presentation"
+          onClick={() => setDoorImageModalUrl(null)}
+        >
+          <div
+            className="relative w-full max-w-lg rounded-2xl bg-white p-4 shadow-2xl sm:p-5"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Delivery address photo"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => setDoorImageModalUrl(null)}
+              className="absolute right-3 top-3 flex size-9 items-center justify-center rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200"
+              aria-label="Close"
+            >
+              <X className="size-5" aria-hidden />
+            </button>
+            <p className="mb-3 pr-10 text-base font-semibold text-gray-900">Delivery address photo</p>
+            <div className="overflow-hidden rounded-xl border border-gray-100 bg-gray-50">
+              <R2Image
+                src={doorImageModalUrl}
+                alt="Delivery address"
+                className="max-h-[70vh] w-full object-contain"
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

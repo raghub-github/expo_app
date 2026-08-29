@@ -63,7 +63,7 @@ module.exports = ({ config }) => ({
         backgroundColor: "#0B241C",
       },
       ...(hasGoogleServices ? { googleServicesFile: "./google-services.json" } : {}),
-      softwareKeyboardLayoutMode: "pan",
+      softwareKeyboardLayoutMode: "resize",
       intentFilters: [
         ...(((appJson.expo.android?.intentFilters || []) as object[])),
         {
@@ -119,6 +119,7 @@ module.exports = ({ config }) => ({
         {
           channels: [
             { id: "merchant_new_orders", name: "New orders", importance: 5 },
+            { id: "merchant_complaints", name: "Complaints", importance: 5 },
             { id: "merchant_default", name: "Store & Orders", importance: 4 },
             { id: "merchant_online", name: "Store online status", importance: 4 },
             { id: "default", name: "Store & Orders", importance: 4 },

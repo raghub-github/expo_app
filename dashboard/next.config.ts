@@ -29,12 +29,8 @@ const monorepoRoot = path.join(__dirname, "..");
 type WebpackCompilerKind = "client" | "nodejs" | "edge";
 
 /**
- * Webpack pack cache must stay off OneDrive (this repo is under Desktop\OneDrive)
- * and off %TEMP% (Storage Sense / AV delete packs while webpack still stats them →
- * ENOENT unhandledRejection, then the Windows 3221226505 abort).
- * Client / Node server / Edge (proxy) MUST use unique cache names — sharing
- * "dashboard-server" between nodejs + edge-server caused Fast Refresh full reloads
- * that looked like random logouts.
+ * Legacy filesystem pack cache (kept for reference / emergency restore).
+ * Dev uses memory cache — pack rename races on Windows corrupted modules.
  */
 function webpackFilesystemCache(kind: WebpackCompilerKind) {
   const root =
@@ -46,9 +42,8 @@ function webpackFilesystemCache(kind: WebpackCompilerKind) {
       : path.join(os.homedir(), ".cache", "gatimitra-dashboard-webpack");
   return {
     type: "filesystem" as const,
-    // Bump when webpack graph / Next / supabase deps change so packs are not reused stale.
-    name: `dashboard-${kind}-v3`,
-    version: "pure-expr-v3",
+    name: `dashboard-${kind}-v4`,
+    version: "pure-expr-v4",
     cacheDirectory: path.join(root, kind),
     compression: false as const,
     maxAge: 1000 * 60 * 60 * 24 * 7,
@@ -57,6 +52,7 @@ function webpackFilesystemCache(kind: WebpackCompilerKind) {
     },
   };
 }
+void webpackFilesystemCache;
 
 /** Legacy top-level paths from the removed `(dashboard)` route group → `/dashboard/*`. */
 const LEGACY_DASHBOARD_REDIRECTS = [
@@ -112,17 +108,17 @@ const nextConfig: NextConfig = {
   },
   // Mapbox is loaded from CDN, no webpack config needed
 
-  webpack: (config, { dev, isServer, nextRuntime }) => {
+  webpack: (config, { dev, isServer }) => {
     const onOneDrive = process.platform === "win32" && __dirname.includes("OneDrive");
-    const compilerKind: WebpackCompilerKind = !isServer
-      ? "client"
-      : nextRuntime === "edge"
-        ? "edge"
-        : "nodejs";
     if (dev) {
-      // In-memory webpack cache OOMs this dashboard (Next restarts: "used memory threshold").
-      config.cache = webpackFilesystemCache(compilerKind);
-      // Corrupted packs + PureExpressionDependency: skip inner-graph pure tracking in dev.
+      // Filesystem pack cache races on Windows (ENOENT rename pack_→pack) when
+      // Fast Refresh + concurrent /login compiles collide → corrupted
+      // `__webpack_modules__[moduleId] is not a function` on _not-found/login.
+      // Memory cache with a single generation stays under the 8GB NODE_OPTIONS heap.
+      config.cache = {
+        type: "memory",
+        maxGenerations: 1,
+      };
       config.optimization = {
         ...config.optimization,
         innerGraph: false,

@@ -50,6 +50,7 @@ import {
 import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
 import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 import { useNetworkStatus } from "@/context/NetworkStatusContext";
+import { useMerchantChromeDimmed } from "@/lib/merchantChromeDim";
 
 const DAY_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
 type DayKey = (typeof DAY_KEYS)[number];
@@ -119,7 +120,7 @@ const PAGE_TITLES: Record<string, string> = {
   menu: "Catalog",
   earnings: "Earnings",
   growth: "Growth",
-  reviews: "Reviews",
+  reviews: "Feedback",
   profile: "Profile",
 };
 
@@ -148,7 +149,7 @@ function resolveProfileSubPage(pathname: string | undefined): string | null {
   if (pathname.includes("/tickets")) return "My tickets";
   if (pathname.includes("/help") || pathname.includes("/support/chat")) return "Support chat";
   if (pathname.includes("/complaints")) return "Complaints";
-  if (pathname.includes("/reviews")) return "Reviews";
+  if (pathname.includes("/reviews")) return "Feedback";
   if (pathname.includes("/plans")) return "Plans & Subscription";
   if (pathname.includes("/learning")) return "Learning centre";
   return null;
@@ -321,11 +322,12 @@ function MainHeader({
   const earningsSubPageTitle = isEarningsSection ? resolveEarningsSubPage(pathname) : null;
   const subPageTitle =
     profileSubPageTitle ?? earningsSubPageTitle ?? (isProfileRootWithReturn ? "Profile" : null);
-  /** 3-line menu only on Flow hub (Earnings / Growth / Offers / Reviews) — not Zone/Home tabs. */
+  /** 3-line menu only on Flow hub (Earnings / Growth / Offers / Feedback) — not Zone/Home tabs. */
   const showFlowMenuButton =
     segments.includes("earnings") ||
     segments.includes("growth") ||
     segments.includes("reviews") ||
+    segments.includes("complaints") ||
     (typeof pathname === "string" && pathname.includes("/offers"));
   const pageTitle = PAGE_TITLES[String(tab)] ?? "Dashboard";
   const stores = (partner?.childStores ?? []).filter(
@@ -745,6 +747,7 @@ type WarningModalType = "store-status" | "switch-store" | "outside-hours" | "del
 
 export function MerchantCustomHeader() {
   const insets = useSafeAreaInsets();
+  const chromeDimmed = useMerchantChromeDimmed();
   const pathname = usePathname();
   const router = useRouter();
   const { push: merchantNavPush } = useMerchantNavigate();
@@ -1372,6 +1375,7 @@ export function MerchantCustomHeader() {
     ) : needsRelistManualOpen ? (
       <StoreDelistedMarquee message={STORE_RELISTED_MANUAL_OPEN_MARQUEE} />
     ) : null}
+    {chromeDimmed ? <View pointerEvents="auto" style={styles.chromeDim} /> : null}
     </View>
 
       <Modal
@@ -2002,6 +2006,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 0,
     borderBottomWidth: 1,
     borderBottomColor: GatiMitraMerchant.divider,
+  },
+  chromeDim: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 50,
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
   },
   mainSection: {
     paddingHorizontal: H_PADDING,

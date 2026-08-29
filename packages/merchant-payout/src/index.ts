@@ -30,8 +30,11 @@ export {
   isMerchantVisibleLedgerEntry,
   resolveWalletDisplayBalance,
   resolveWithdrawalReversalDisplayDescription,
+  resolveWithdrawalRequestDisplayDescription,
   resolveLedgerCategoryLabel,
+  resolveLedgerRowStatusBadge,
   LEDGER_CATEGORY_LABELS,
   type MerchantLedgerVisibilityEntry,
   type WalletBalanceSource,
+  type LedgerRowStatusBadge,
 } from "./walletDisplay.js";

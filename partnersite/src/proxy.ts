@@ -63,12 +63,15 @@ export async function proxy(request: NextRequest) {
 
   // Let these API routes always run; they handle their own auth/errors.
   // Merchant auth lives under /api/merchant-auth/ to avoid being shadowed by NextAuth catch-all at /api/auth/[...nextauth].
+  // OAuth callback must not call getUser() — that can consume/wipe the PKCE verifier cookie.
   if (
     pathname.startsWith("/api/merchant-auth/") ||
     pathname.startsWith("/api/attachments/proxy") ||
     pathname === "/api/auth/resolve-session" ||
     pathname === "/api/auth/merchant-session" ||
-    pathname === "/api/auth/set-cookie"
+    pathname === "/api/auth/set-cookie" ||
+    pathname === "/api/auth/callback" ||
+    pathname === "/auth/callback"
   ) {
     return response;
   }
@@ -82,7 +85,7 @@ export async function proxy(request: NextRequest) {
     pathname !== "/api/auth/callback" &&
     !pathname.startsWith("/api/")
   ) {
-    const callbackUrl = new URL("/api/auth/callback", request.url);
+    const callbackUrl = new URL("/auth/callback", request.url);
     request.nextUrl.searchParams.forEach((value, key) => callbackUrl.searchParams.set(key, value));
     return NextResponse.redirect(callbackUrl);
   }

@@ -5,6 +5,11 @@
 import { supabaseAdmin } from "@/lib/supabase/server";
 import { resolveOrderMetaByRatingOrderIds } from "./resolve-order-meta";
 import type { UserInsightReview, UserInsightReviewStats } from "./types";
+import {
+  parseMerchantReviewReplies,
+  encodeLegacyMerchantResponse,
+  appendMerchantReviewReply,
+} from "@/lib/merchant-review-replies";
 
 type RatingRow = {
   id: number;
@@ -19,6 +24,7 @@ type RatingRow = {
   review_title: string | null;
   review_images: string[] | null;
   merchant_response: string | null;
+  merchant_responses?: unknown;
   merchant_responded_at: string | null;
   is_verified: boolean | null;
   is_flagged: boolean | null;
@@ -81,7 +87,7 @@ export async function fetchUserInsightReviews(
   const { data: rows, error } = await db
     .from("merchant_store_ratings")
     .select(
-      "id, store_id, order_id, customer_id, rating, food_rating, service_rating, packaging_rating, review_text, review_title, review_images, merchant_response, merchant_responded_at, is_verified, is_flagged, flag_reason, created_at",
+      "id, store_id, order_id, customer_id, rating, food_rating, service_rating, packaging_rating, review_text, review_title, review_images, merchant_response, merchant_responses, merchant_responded_at, is_verified, is_flagged, flag_reason, created_at",
     )
     .eq("store_id", storeInternalId)
     .order("created_at", { ascending: false })
@@ -183,6 +189,13 @@ export async function fetchUserInsightReviews(
     const type = review.rating >= 4 ? "Review" : "Complaint";
     const imgs = Array.isArray(review.review_images) ? review.review_images : [];
 
+    const replies = parseMerchantReviewReplies(
+      review.merchant_responses,
+      review.merchant_response,
+      review.merchant_responded_at,
+    );
+    const last = replies[replies.length - 1];
+
     return {
       id: review.id,
       customerId: review.customer_id ?? 0,
@@ -195,8 +208,9 @@ export async function fetchUserInsightReviews(
       date: review.created_at,
       type,
       message: review.review_text || review.review_title || "",
-      response: review.merchant_response || "",
-      respondedAt: review.merchant_responded_at,
+      response: last ? encodeLegacyMerchantResponse(last.text, last.images) : review.merchant_response || "",
+      replies,
+      respondedAt: last?.at ?? review.merchant_responded_at,
       userType,
       rating: review.rating,
       foodQualityRating: review.food_rating,
@@ -228,7 +242,7 @@ export async function respondToUserInsightReview(
 
   const { data: ratingRow, error: ratingErr } = await db
     .from("merchant_store_ratings")
-    .select("id, store_id")
+    .select("id, store_id, merchant_response, merchant_responses, merchant_responded_at")
     .eq("id", reviewId)
     .maybeSingle();
 
@@ -240,20 +254,27 @@ export async function respondToUserInsightReview(
     throw new Error("FORBIDDEN");
   }
 
-  let responseText = message?.trim() || "";
-  if (images && images.length > 0) {
-    const imageJson = JSON.stringify(images);
-    responseText = responseText
-      ? `${responseText}\n\n[IMAGES:${imageJson}]`
-      : `[IMAGES:${imageJson}]`;
-  }
+  const imagesList = images ?? [];
+  const responseText = encodeLegacyMerchantResponse(message?.trim() || "", imagesList);
+  const nowIso = new Date().toISOString();
+  const nextReplies = appendMerchantReviewReply(
+    (ratingRow as { merchant_responses?: unknown }).merchant_responses,
+    (ratingRow as { merchant_response?: string | null }).merchant_response,
+    (ratingRow as { merchant_responded_at?: string | null }).merchant_responded_at,
+    {
+      text: message?.trim() || "",
+      at: nowIso,
+      ...(imagesList.length > 0 ? { images: imagesList } : {}),
+    },
+  );
 
   const { data: updatedReview, error: updateError } = await db
     .from("merchant_store_ratings")
     .update({
       merchant_response: responseText,
-      merchant_responded_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      merchant_responses: nextReplies,
+      merchant_responded_at: nowIso,
+      updated_at: nowIso,
     })
     .eq("id", reviewId)
     .eq("store_id", storeInternalId)

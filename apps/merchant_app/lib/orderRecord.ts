@@ -179,6 +179,7 @@ export type StoreOrderRating = {
   createdAt: string;
   replyText: string | null;
   repliedAt: string | null;
+  replies?: Array<{ text: string; at: string }>;
 };
 
 export type OrderCounts = {

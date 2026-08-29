@@ -55,8 +55,15 @@ export async function POST(req: NextRequest) {
 
   try {
     if (body.action === "approve") {
+      const reason = body.reason?.trim() || "";
+      if (reason.length < 3) {
+        return NextResponse.json(
+          { success: false, error: "Hold reason is required (min 3 characters)" },
+          { status: 400 },
+        );
+      }
       try {
-        const result = await approvePayoutRpc(payoutId, systemUserId);
+        const result = await approvePayoutRpc(payoutId, systemUserId, reason);
         return NextResponse.json({ success: true, result: result ?? { ok: true } });
       } catch (rpcErr) {
         const msg = rpcErr instanceof Error ? rpcErr.message : "Approve failed";
@@ -86,16 +93,20 @@ export async function POST(req: NextRequest) {
       }
     }
     if (body.action === "complete") {
-      const pgTransactionId = body.pgTransactionId?.trim();
-      if (!pgTransactionId) {
-        return NextResponse.json({ success: false, error: "pgTransactionId is required" }, { status: 400 });
+      const pgTransactionId = body.pgTransactionId?.trim() || "";
+      const utrReference = body.utrReference?.trim() || "";
+      if (!pgTransactionId && !utrReference) {
+        return NextResponse.json(
+          { success: false, error: "PG TNX ID or UTR is required" },
+          { status: 400 },
+        );
       }
       try {
         const result = await completeMerchantPayoutWithPgTxn(
           payoutId,
-          pgTransactionId,
+          pgTransactionId || utrReference,
           systemUserId,
-          body.utrReference?.trim() || null
+          utrReference || null,
         );
         return NextResponse.json({ success: true, result: result ?? { ok: true } });
       } catch (rpcErr) {

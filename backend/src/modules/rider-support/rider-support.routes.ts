@@ -22,6 +22,7 @@ import { riders } from "../../db/schema.js";
 import { auth } from "../../plugins/auth.js";
 import { resolveTicketTitleForUnifiedTicketsInsert } from "../merchant-partner/unified-ticket-title-for-insert.js";
 import { normalizeTicketAttachmentsForDb } from "../../lib/ticket-attachments-for-db.js";
+import { insertSatisfactionRatingAudit } from "../../lib/ticket-satisfaction-audit.js";
 import { attachmentsProxyUrlFromKeyForApi } from "../../utils/attachments-proxy-url.js";
 
 const UNIFIED_CATEGORY_ENUM = new Set([
@@ -1134,6 +1135,13 @@ export async function riderSupportRoutes(app: FastifyInstance) {
       });
     }
     const tr = (rows as Array<Record<string, unknown>>)[0];
+    await insertSatisfactionRatingAudit(sql, {
+      ticketId: ticketIdNum,
+      rating,
+      feedback,
+      actorType: "RIDER",
+      actorName: "Rider",
+    });
     return reply.send({ ok: true, ticket: mapRiderTicketRow(tr) });
   });
 

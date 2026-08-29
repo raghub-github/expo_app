@@ -38,6 +38,8 @@ import {
   type FraudReportTargetType,
 } from "../../lib/customer-order-fraud-report.js";
 import { normalizeTicketAttachmentsForDb } from "../../lib/ticket-attachments-for-db.js";
+import { insertSatisfactionRatingAudit } from "../../lib/ticket-satisfaction-audit.js";
+import { notifyMerchantNewComplaint } from "../../lib/merchant-push-notify.js";
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Helpers                                                                     */
@@ -1263,6 +1265,15 @@ export async function customerSupportRoutes(app: FastifyInstance) {
       `;
       const reportRow = (reportRows as Array<Record<string, unknown>>)[0];
 
+      if (targetType === "merchant" && orderContext.merchantStoreId != null) {
+        void notifyMerchantNewComplaint(sql, {
+          storeId: Number(orderContext.merchantStoreId),
+          customerName: me.name || "Customer",
+          displayOrderId: orderContext.displayOrderId,
+          preview: subject,
+        }).catch(() => undefined);
+      }
+
       return reply.send({
         ok: true,
         report: {
@@ -1489,6 +1500,18 @@ export async function customerSupportRoutes(app: FastifyInstance) {
       } catch (e) {
         req.log.warn({ err: e, chatSessionId }, "chat session ticket link failed");
       }
+    }
+
+    if (orderContext?.merchantStoreId != null) {
+      void notifyMerchantNewComplaint(sql, {
+        storeId: Number(orderContext.merchantStoreId),
+        customerName: me.name || "Customer",
+        displayOrderId:
+          typeof body.display_order_id === "string" && body.display_order_id.trim()
+            ? body.display_order_id.trim()
+            : null,
+        preview: selectedIssueLabel || subjectRaw,
+      }).catch(() => undefined);
     }
 
     return reply.send({
@@ -1745,6 +1768,19 @@ export async function customerSupportRoutes(app: FastifyInstance) {
     `;
     const row = (rows as Array<Record<string, unknown>>)[0];
 
+    if (attachments.length > 0) {
+      try {
+        await sql`
+          UPDATE unified_tickets
+          SET attachments = ${attachments}::text[]
+          WHERE id = ${ticketIdNum}
+            AND (attachments IS NULL OR cardinality(attachments) = 0)
+        `;
+      } catch (e) {
+        req.log.warn({ err: e }, "customer reply: ticket attachments copy skipped");
+      }
+    }
+
     // Bump ticket last_response_* so agent UI shows fresh activity.
     try {
       await sql`
@@ -1887,6 +1923,13 @@ export async function customerSupportRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "rating_not_allowed", message: "Ticket must be resolved or closed." });
     }
     const r = (rows as Array<Record<string, unknown>>)[0];
+    await insertSatisfactionRatingAudit(sql, {
+      ticketId: ticketIdNum,
+      rating,
+      feedback,
+      actorType: "CUSTOMER",
+      actorName: "Customer",
+    });
     return reply.send({
       ok: true,
       rating: {

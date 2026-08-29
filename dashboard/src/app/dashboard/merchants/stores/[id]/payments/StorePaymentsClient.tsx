@@ -30,6 +30,7 @@ import {
 import { formatInr } from "@/lib/format-inr";
 import {
   PaymentsOverviewCharts,
+  type WalletAnalytics,
   type WalletAnalyticsPeriod,
 } from "@/components/merchants/payments/PaymentsOverviewCharts";
 import { useToast } from "@/context/ToastContext";
@@ -47,7 +48,20 @@ import {
 } from "@/store/api/merchantStoreApi";
 import { useMerchantWalletRequestsSummaryQuery } from "@/hooks/queries/useMerchantWalletRequestsSummaryQuery";
 import { useStore } from "@/hooks/useStore";
+import {
+  resolveLedgerRowStatusBadge,
+  resolveLedgerCategoryLabel,
+  resolveLedgerDisplayDescription,
+  resolveLedgerDisplayAmount,
+  isMerchantVisibleLedgerEntry,
+} from "@/lib/merchant-ledger-visibility";
+import { mergeCancellationLedgerEntries } from "@/lib/merge-cancellation-ledger-entries";
+import {
+  formatPayoutDateTime,
+  resolvePayoutStatusTimeline,
+} from "@/lib/merchant-payout-timeline";
 import { RefundPolicyContent } from "@/components/RefundPolicyContent";
+import { useQuery } from "@tanstack/react-query";
 
 const LEDGER_CATEGORIES = [
   "ORDER_EARNING",
@@ -104,7 +118,11 @@ interface PayoutDetailItem {
     commission_amount: number;
     status: string;
     utr_reference: string | null;
+    pg_transaction_id?: string | null;
     requested_at: string;
+    approved_at?: string | null;
+    processed_at?: string | null;
+    completed_at?: string | null;
   };
   bank: {
     account_holder_name: string;
@@ -117,8 +135,8 @@ interface PayoutDetailItem {
 }
 type PayoutDetailsCache = { [key: number]: PayoutDetailItem };
 
-function formatCategory(cat: string): string {
-  return cat.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+function formatCategory(cat: string, metadata?: Record<string, unknown> | null): string {
+  return resolveLedgerCategoryLabel({ category: cat, metadata });
 }
 
 function pctChangeLabel(current: number, prior: number): { text: string; positive: boolean } {
@@ -157,6 +175,27 @@ export function StorePaymentsClient({
 
   const [analyticsPeriod, setAnalyticsPeriod] = useState<WalletAnalyticsPeriod>("week");
   const ledgerSectionRef = useRef<HTMLDivElement>(null);
+
+  const { data: walletAnalytics, isLoading: analyticsLoading } = useQuery({
+    queryKey: ["storeWalletAnalytics", storeId, analyticsPeriod],
+    queryFn: async (): Promise<WalletAnalytics | undefined> => {
+      const res = await fetch(
+        `/api/merchant/stores/${storeId}/wallet-analytics?period=${analyticsPeriod}`,
+        { credentials: "include" }
+      );
+      const data = await res.json();
+      if (!res.ok || !data.success) return undefined;
+      return {
+        series: Array.isArray(data.series) ? data.series : [],
+        period_total_earnings: Number(data.period_total_earnings ?? 0),
+        period_total_withdrawals: Number(data.period_total_withdrawals ?? 0),
+        period_transaction_count: Number(data.period_transaction_count ?? 0),
+        total_earned: Number(data.total_earned ?? 0),
+      };
+    },
+    enabled: !!storeId,
+    staleTime: 60_000,
+  });
 
   const [wallet, setWallet] = useState<WalletSummary | null>(null);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
@@ -224,9 +263,10 @@ export function StorePaymentsClient({
   const {
     data: walletQueryData,
     isLoading: walletQueryLoading,
-    isFetching: walletFetching,
   } = useGetStoreWalletQuery(storeId, {
     skip: !storeId,
+    refetchOnFocus: true,
+    pollingInterval: 3000,
   });
 
   const { data: walletRequestsSummaryData } = useMerchantWalletRequestsSummaryQuery(storeId);
@@ -234,9 +274,10 @@ export function StorePaymentsClient({
   const {
     data: ledgerQueryData,
     isLoading: ledgerQueryLoading,
-    isFetching: ledgerFetching,
   } = useGetStoreLedgerQuery(ledgerParams, {
     skip: !storeId,
+    refetchOnFocus: true,
+    pollingInterval: 5000,
   });
 
   const {
@@ -262,16 +303,40 @@ export function StorePaymentsClient({
     }
   }, [bankAccountsQueryData]);
 
-  const walletLoading = walletQueryLoading || walletFetching;
+  const walletLoading = walletQueryLoading;
 
-  const ledger: LedgerEntry[] = useMemo(
-    () => (ledgerQueryData?.entries ?? []) as LedgerEntry[],
-    [ledgerQueryData]
-  );
+  const ledger: LedgerEntry[] = useMemo(() => {
+    const raw = (ledgerQueryData?.entries ?? []) as LedgerEntry[];
+    const visible = raw.filter(isMerchantVisibleLedgerEntry);
+    return mergeCancellationLedgerEntries(visible).entries as LedgerEntry[];
+  }, [ledgerQueryData]);
   const ledgerTotal = ledgerQueryData?.total ?? 0;
-  const ledgerLoading = ledgerQueryLoading || ledgerFetching;
+  const ledgerLoading = ledgerQueryLoading;
 
   const bankAccountsLoading = bankAccountsQueryLoading;
+
+  // Prefetch payout timelines so Date & Time can show Requested + Settled/Hold/Rejected.
+  useEffect(() => {
+    if (!storeId || ledger.length === 0) return;
+    const ids = [
+      ...new Set(
+        ledger
+          .filter(
+            (e) =>
+              (e.category === "WITHDRAWAL" || e.category === "HOLD_LOCK") &&
+              e.reference_id != null &&
+              Number(e.reference_id) > 0,
+          )
+          .map((e) => Number(e.reference_id)),
+      ),
+    ].slice(0, 15);
+    for (const id of ids) {
+      if (payoutDetailsCache[id]) continue;
+      void fetchPayoutDetails(id);
+    }
+    // Intentionally omit payoutDetailsCache / fetchPayoutDetails from deps to avoid loops.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeId, ledger]);
 
   useEffect(() => {
     if (bankAccounts.length === 0) return;
@@ -339,11 +404,13 @@ export function StorePaymentsClient({
   const payoutSummaryForCharts = useMemo(
     () => ({
       paid: wallet?.total_withdrawn ?? 0,
-      in_process: 0,
+      in_process: wallet?.in_process_withdrawal_total ?? 0,
       pending: wallet?.pending_withdrawal_total ?? 0,
       failed: 0,
       total:
-        (wallet?.total_withdrawn ?? 0) + (wallet?.pending_withdrawal_total ?? 0),
+        (wallet?.total_withdrawn ?? 0) +
+        (wallet?.pending_withdrawal_total ?? 0) +
+        (wallet?.in_process_withdrawal_total ?? 0),
     }),
     [wallet]
   );
@@ -374,15 +441,21 @@ export function StorePaymentsClient({
         return;
       }
       const rows = (data.entries ?? []) as LedgerEntry[];
-      const header = ["Date", "Category", "Description", "Direction", "Amount", "Balance after"];
-      const lines = rows.map((r) => [
-        new Date(r.created_at).toISOString(),
-        r.category,
-        (r.description ?? "").replace(/"/g, '""'),
-        r.direction,
-        String(r.amount),
-        String(r.balance_after),
-      ]);
+      const header = ["Date", "Type", "Order ID", "Description", "PG TNX ID", "Direction", "Amount", "Status", "Withdrawable After"];
+      const lines = rows.map((r) => {
+        const badge = resolveLedgerRowStatusBadge(r);
+        return [
+          new Date(r.created_at).toISOString(),
+          resolveLedgerCategoryLabel({ category: r.category, metadata: r.metadata }),
+          r.formatted_order_id ?? (r.order_id != null ? String(r.order_id) : ""),
+          resolveLedgerDisplayDescription(r).replace(/"/g, '""'),
+          r.pg_transaction_id ?? "",
+          r.direction,
+          String(r.amount),
+          badge.label,
+          String(r.balance_after),
+        ];
+      });
       const csv = [header, ...lines]
         .map((line) => line.map((c) => `"${c}"`).join(","))
         .join("\n");
@@ -482,28 +555,34 @@ export function StorePaymentsClient({
             [payoutRequestId]: {
               payout: {
                 id: data.payout.id,
-                amount: data.payout.amount,
-                net_payout_amount: data.payout.net_payout_amount,
-                commission_percentage: data.payout.commission_percentage,
-                commission_amount: data.payout.commission_amount,
-                status: data.payout.status,
+                amount: Number(data.payout.amount ?? 0),
+                net_payout_amount: Number(data.payout.net_payout_amount ?? 0),
+                commission_percentage: Number(data.payout.commission_percentage ?? 0),
+                commission_amount: Number(data.payout.commission_amount ?? 0),
+                status: String(data.payout.status ?? "PENDING"),
                 utr_reference: data.payout.utr_reference ?? null,
+                pg_transaction_id: data.payout.pg_transaction_id ?? null,
                 requested_at: data.payout.requested_at,
+                approved_at: data.payout.approved_at ?? null,
+                processed_at: data.payout.processed_at ?? null,
+                completed_at: data.payout.completed_at ?? null,
               },
               bank: data.bank ?? null,
             },
           }));
         } else {
-          setPayoutDetailsCache((prev) => ({
-            ...prev,
-            [payoutRequestId]: { payout: data.payout ?? {}, bank: null },
-          }));
+          setPayoutDetailsCache((prev) => {
+            const next = { ...prev };
+            delete next[payoutRequestId];
+            return next;
+          });
         }
       } catch {
-        setPayoutDetailsCache((prev) => ({
-          ...prev,
-          [payoutRequestId]: { payout: {} as never, bank: null },
-        }));
+        setPayoutDetailsCache((prev) => {
+          const next = { ...prev };
+          delete next[payoutRequestId];
+          return next;
+        });
       } finally {
         setPayoutDetailsLoading(null);
       }
@@ -521,11 +600,12 @@ export function StorePaymentsClient({
     setExpandedRidersLedgerId(null);
     if (entry.order_id != null && !orderDetailsCache[entry.order_id]) fetchOrderDetails(entry.order_id);
     if (
-      entry.category === "WITHDRAWAL" &&
-      entry.reference_id != null &&
-      !payoutDetailsCache[entry.reference_id]
-    )
-      fetchPayoutDetails(entry.reference_id);
+      (entry.category === "WITHDRAWAL" || entry.category === "HOLD_LOCK") &&
+      entry.reference_id != null
+    ) {
+      // Always refresh — stale stub cache used to lock PENDING / ₹0 forever.
+      void fetchPayoutDetails(entry.reference_id);
+    }
   };
 
   const toggleRidersExpand = (ledgerId: number) => {
@@ -772,7 +852,7 @@ export function StorePaymentsClient({
                 ) : (
                   <p className="text-xl font-bold text-gray-900 mt-1">{formatInr(wallet?.pending_withdrawal_total ?? 0)}</p>
                 )}
-                <p className="text-[10px] text-gray-600 mt-1">Awaiting processing</p>
+                <p className="text-[10px] text-gray-600 mt-1">Awaiting admin review</p>
               </div>
               <div className="p-2 rounded-lg bg-red-100 flex-shrink-0">
                 <ArrowDownToLine size={16} className="text-red-700" />
@@ -780,19 +860,19 @@ export function StorePaymentsClient({
             </div>
           </div>
 
-          <div className="bg-yellow-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+          <div className="bg-violet-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">In Process</p>
+                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Hold</p>
                 {walletLoading ? (
                   <div className="h-7 w-16 mt-1.5 bg-gray-200 rounded animate-pulse" />
                 ) : (
-                  <p className="text-xl font-bold text-gray-900 mt-1">{formatInr(0)}</p>
+                  <p className="text-xl font-bold text-gray-900 mt-1">{formatInr(wallet?.in_process_withdrawal_total ?? 0)}</p>
                 )}
-                <p className="text-[10px] text-gray-600 mt-1">Being processed</p>
+                <p className="text-[10px] text-gray-600 mt-1">On hold · awaiting release</p>
               </div>
-              <div className="p-2 rounded-lg bg-yellow-100 flex-shrink-0">
-                <Package size={16} className="text-yellow-700" />
+              <div className="p-2 rounded-lg bg-violet-100 flex-shrink-0">
+                <Package size={16} className="text-violet-700" />
               </div>
             </div>
           </div>
@@ -803,8 +883,8 @@ export function StorePaymentsClient({
         <PaymentsOverviewCharts
           analyticsPeriod={analyticsPeriod}
           onAnalyticsPeriodChange={setAnalyticsPeriod}
-          analytics={undefined}
-          analyticsLoading={false}
+          analytics={walletAnalytics}
+          analyticsLoading={analyticsLoading}
           payoutSummary={payoutSummaryForCharts}
           payoutsLoading={walletLoading}
         />
@@ -954,22 +1034,6 @@ export function StorePaymentsClient({
                 </div>
                 <ChevronRight size={14} className="text-gray-400 flex-shrink-0" />
               </button>
-              <button
-                type="button"
-                onClick={() => void downloadLedgerCsv()}
-                className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 transition-colors group"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-orange-100 group-hover:bg-orange-200 transition-colors">
-                    <FileText size={16} className="text-orange-600" />
-                  </div>
-                  <div className="text-left">
-                    <p className="font-medium text-gray-900 text-xs">Download Ledger</p>
-                    <p className="text-[10px] text-gray-600">Export transaction report (CSV)</p>
-                  </div>
-                </div>
-                <ChevronRight size={14} className="text-gray-400 flex-shrink-0" />
-              </button>
             </div>
           </div>
         </div>
@@ -1097,9 +1161,10 @@ export function StorePaymentsClient({
                       <th className="text-left py-3 px-4 font-semibold text-gray-700">Order ID</th>
                       <th className="text-left py-3 px-4 font-semibold text-gray-700">Date & Time</th>
                       <th className="text-left py-3 px-4 font-semibold text-gray-700">Description</th>
-                      <th className="text-right py-3 px-4 font-semibold text-gray-700">Amount</th>
+                      <th className="text-left py-3 px-4 font-semibold text-gray-700">PG TNX ID</th>
+                      <th className="text-right py-3 px-4 font-semibold text-gray-700 whitespace-nowrap">Amount</th>
                       <th className="text-center py-3 px-4 font-semibold text-gray-700">Status</th>
-                      <th className="text-right py-3 px-4 font-semibold text-gray-700">Balance After</th>
+                      <th className="text-right py-3 px-4 font-semibold text-gray-700">Withdrawable After</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1112,7 +1177,8 @@ export function StorePaymentsClient({
                         >
                           <td className="py-3 px-4">
                             {(row.reference_type === "ORDER" && row.order_id != null) ||
-                            (row.category === "WITHDRAWAL" && row.reference_id != null) ? (
+                            ((row.category === "WITHDRAWAL" || row.category === "HOLD_LOCK") &&
+                              row.reference_id != null) ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(row)}
@@ -1127,182 +1193,266 @@ export function StorePaymentsClient({
                             ) : null}
                           </td>
                           <td className="py-3 px-4 font-medium text-gray-900">
-                            {formatCategory(row.category)}
+                            {formatCategory(row.category, row.metadata as Record<string, unknown> | null)}
                           </td>
-                          <td className="py-3 px-4 text-gray-600 tabular-nums">
-                            {row.order_id != null ? row.order_id : "—"}
+                          <td className="py-3 px-4 text-gray-600 font-mono text-xs">
+                            {row.formatted_order_id ??
+                              (row.reference_type === "ORDER" && row.reference_id != null
+                                ? `#${row.reference_id}`
+                                : row.order_id != null
+                                  ? String(row.order_id)
+                                  : "—")}
                           </td>
                           <td className="py-3 px-4 text-gray-600 whitespace-nowrap">
-                            {new Date(row.created_at).toLocaleString("en-IN", {
-                              dateStyle: "short",
-                              timeStyle: "short",
-                            })}
+                            {(() => {
+                              const isPayoutRow =
+                                (row.category === "WITHDRAWAL" || row.category === "HOLD_LOCK") &&
+                                row.reference_id != null;
+                              const detail =
+                                isPayoutRow && row.reference_id != null
+                                  ? payoutDetailsCache[row.reference_id]?.payout
+                                  : null;
+                              if (!isPayoutRow) {
+                                return new Date(row.created_at).toLocaleString("en-IN", {
+                                  dateStyle: "short",
+                                  timeStyle: "short",
+                                });
+                              }
+                              const timeline = resolvePayoutStatusTimeline(detail);
+                              const requestedIso = detail?.requested_at ?? null;
+                              return (
+                                <div className="flex flex-col gap-0.5 text-[11px] leading-snug">
+                                  <span>
+                                    <span className="text-slate-400">Req </span>
+                                    {formatPayoutDateTime(requestedIso) !== "—"
+                                      ? formatPayoutDateTime(requestedIso)
+                                      : new Date(row.created_at).toLocaleString("en-IN", {
+                                          dateStyle: "short",
+                                          timeStyle: "short",
+                                        })}
+                                  </span>
+                                  {timeline.label && timeline.at ? (
+                                    <span>
+                                      <span className="text-slate-400">{timeline.label} </span>
+                                      {formatPayoutDateTime(timeline.at)}
+                                    </span>
+                                  ) : row.category === "WITHDRAWAL" ? (
+                                    <span>
+                                      <span className="text-slate-400">Settled </span>
+                                      {new Date(row.created_at).toLocaleString("en-IN", {
+                                        dateStyle: "short",
+                                        timeStyle: "short",
+                                      })}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td
-                            className="py-3 px-4 text-gray-600 truncate max-w-xs"
-                            title={row.description ?? row.reference_extra ?? ""}
+                            className="py-3 px-4 text-gray-600 max-w-xs break-words"
+                            title={resolveLedgerDisplayDescription(row) || ""}
                           >
-                            {row.description || row.reference_extra || "—"}
+                            {resolveLedgerDisplayDescription(row) || "—"}
                           </td>
-                          <td
-                            className={`py-3 px-4 text-right font-semibold tabular-nums ${
-                              row.direction === "CREDIT" ? "text-emerald-600" : "text-red-600"
-                            }`}
-                          >
-                            {row.direction === "CREDIT" ? "+" : "-"}
-                            {formatInr(row.amount)}
+                          <td className="py-3 px-4 text-gray-600 font-mono text-[10px]">
+                            {row.category === "WITHDRAWAL" && row.pg_transaction_id
+                              ? row.pg_transaction_id
+                              : "—"}
+                          </td>
+                          <td className="py-3 px-4 text-right font-semibold tabular-nums">
+                            {(() => {
+                              const display = resolveLedgerDisplayAmount(row, formatInr);
+                              if (display.compensationPolicy) {
+                                const { orderCtm, receivedAmount } = display.compensationPolicy;
+                                const showStrike =
+                                  Math.round(orderCtm * 100) / 100 > 0 &&
+                                  Math.abs(orderCtm - receivedAmount) > 0.005;
+                                return (
+                                  <span className="inline-flex flex-col items-end leading-tight whitespace-nowrap">
+                                    {showStrike ? (
+                                      <span className="text-[10px] font-medium text-gray-400 line-through">
+                                        {formatInr(orderCtm)}
+                                      </span>
+                                    ) : null}
+                                    <span
+                                      className={
+                                        receivedAmount > 0 ? "text-emerald-600" : "text-gray-500"
+                                      }
+                                    >
+                                      {receivedAmount > 0
+                                        ? `+${formatInr(receivedAmount)}`
+                                        : formatInr(0)}
+                                    </span>
+                                  </span>
+                                );
+                              }
+                              const color =
+                                display.accent === "credit"
+                                  ? "text-emerald-600"
+                                  : display.accent === "debit"
+                                    ? "text-red-600"
+                                    : "text-gray-500";
+                              return <span className={color}>{display.text}</span>;
+                            })()}
                           </td>
                           <td className="py-3 px-4 text-center">
-                            {row.direction === "CREDIT" ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
-                                <span className="w-2 h-2 rounded-full bg-emerald-600" />
-                                Credit
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-red-100 text-red-700 text-xs font-medium">
-                                <span className="w-2 h-2 rounded-full bg-red-600" />
-                                Debit
-                              </span>
-                            )}
+                            {(() => {
+                              const badge = resolveLedgerRowStatusBadge(row);
+                              const toneClass =
+                                badge.tone === "emerald"
+                                  ? "bg-emerald-100 text-emerald-700"
+                                  : badge.tone === "amber"
+                                    ? "bg-amber-100 text-amber-800"
+                                    : badge.tone === "yellow"
+                                      ? "bg-yellow-100 text-yellow-800"
+                                      : badge.tone === "red"
+                                        ? "bg-red-100 text-red-700"
+                                        : "bg-slate-100 text-slate-700";
+                              const dotClass =
+                                badge.tone === "emerald"
+                                  ? "bg-emerald-600"
+                                  : badge.tone === "amber"
+                                    ? "bg-amber-600"
+                                    : badge.tone === "yellow"
+                                      ? "bg-yellow-600"
+                                      : badge.tone === "red"
+                                        ? "bg-red-600"
+                                        : "bg-slate-600";
+                              return (
+                                <span
+                                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${toneClass}`}
+                                >
+                                  <span className={`w-2 h-2 rounded-full ${dotClass}`} />
+                                  {badge.label}
+                                </span>
+                              );
+                            })()}
                           </td>
                           <td className="py-3 px-4 text-right text-gray-700 tabular-nums">
                             {formatInr(row.balance_after)}
                           </td>
                         </tr>
                         {expandedLedgerId === row.id &&
-                          row.category === "WITHDRAWAL" &&
+                          (row.category === "WITHDRAWAL" || row.category === "HOLD_LOCK") &&
                           row.reference_id != null && (
                             <tr className="bg-slate-50/60 border-b border-slate-200">
-                              <td colSpan={8} className="p-0">
-                                <div className="px-4 pb-4 pt-1">
+                              <td colSpan={9} className="p-0">
+                                <div className="px-3 py-2">
                                   {payoutDetailsLoading === row.reference_id ? (
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4" aria-busy aria-label="Loading payout details">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" aria-busy aria-label="Loading payout details">
                                       {[1, 2].map((i) => (
-                                        <div key={i} className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-3">
-                                          <div className="h-4 w-36 rounded bg-gray-200 animate-pulse" />
-                                          {[1, 2, 3, 4].map((j) => (
-                                            <div key={j} className="flex justify-between gap-3">
-                                              <div className="h-3 w-20 rounded bg-gray-100 animate-pulse" />
-                                              <div className="h-3 w-24 rounded bg-gray-100 animate-pulse" />
-                                            </div>
-                                          ))}
+                                        <div key={i} className="bg-white rounded-lg border border-slate-200 p-2.5 space-y-2">
+                                          <div className="h-3.5 w-28 rounded bg-gray-200 animate-pulse" />
+                                          <div className="grid grid-cols-2 gap-2">
+                                            {[1, 2, 3, 4].map((j) => (
+                                              <div key={j} className="h-3 rounded bg-gray-100 animate-pulse" />
+                                            ))}
+                                          </div>
                                         </div>
                                       ))}
                                     </div>
                                   ) : (
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
-                                        <h4 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
-                                          <CreditCard size={18} className="text-emerald-500" />
+                                    (() => {
+                                      const details = payoutDetailsCache[row.reference_id];
+                                      const payout = details?.payout;
+                                      const bank = details?.bank;
+                                      const timeline = resolvePayoutStatusTimeline(payout);
+                                      return (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                      <div className="bg-white rounded-lg border border-slate-200 p-2.5">
+                                        <h4 className="text-xs font-semibold text-slate-800 mb-1.5 flex items-center gap-1.5">
+                                          <CreditCard size={14} className="text-emerald-500" />
                                           Transaction details
                                         </h4>
-                                        <dl className="space-y-1.5 text-sm">
-                                          <div className="flex justify-between">
-                                            <dt className="text-slate-500">Request ID</dt>
-                                            <dd className="font-medium tabular-nums">
-                                              {payoutDetailsCache[row.reference_id]?.payout?.id ?? "—"}
-                                            </dd>
+                                        <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] leading-snug">
+                                          <div className="flex justify-between gap-2 col-span-1">
+                                            <dt className="text-slate-500 shrink-0">Request ID</dt>
+                                            <dd className="font-medium tabular-nums text-right">{payout?.id ?? "—"}</dd>
                                           </div>
-                                          <div className="flex justify-between">
-                                            <dt className="text-slate-500">Status</dt>
-                                            <dd className="font-medium">
-                                              {payoutDetailsCache[row.reference_id]?.payout?.status ?? "—"}
-                                            </dd>
+                                          <div className="flex justify-between gap-2 col-span-1">
+                                            <dt className="text-slate-500 shrink-0">Status</dt>
+                                            <dd className="font-medium text-right">{payout?.status ?? "—"}</dd>
                                           </div>
-                                          <div className="flex justify-between">
-                                            <dt className="text-slate-500">Requested</dt>
-                                            <dd>
-                                              {payoutDetailsCache[row.reference_id]?.payout?.requested_at
-                                                ? new Date(
-                                                    payoutDetailsCache[row.reference_id].payout
-                                                      .requested_at
-                                                  ).toLocaleString("en-IN")
-                                                : "—"}
-                                            </dd>
+                                          <div className="flex justify-between gap-2 col-span-2 sm:col-span-1">
+                                            <dt className="text-slate-500 shrink-0">Requested</dt>
+                                            <dd className="text-right">{formatPayoutDateTime(payout?.requested_at)}</dd>
                                           </div>
-                                          {payoutDetailsCache[row.reference_id]?.payout
-                                            ?.utr_reference && (
-                                            <div className="flex justify-between">
-                                              <dt className="text-slate-500">UTR / Ref</dt>
-                                              <dd className="font-mono text-xs">
-                                                {
-                                                  payoutDetailsCache[row.reference_id].payout
-                                                    .utr_reference
-                                                }
-                                              </dd>
+                                          {timeline.label && timeline.at ? (
+                                            <div className="flex justify-between gap-2 col-span-2 sm:col-span-1">
+                                              <dt className="text-slate-500 shrink-0">{timeline.label}</dt>
+                                              <dd className="text-right">{formatPayoutDateTime(timeline.at)}</dd>
                                             </div>
-                                          )}
-                                          <div className="flex justify-between">
-                                            <dt className="text-slate-500">Amount</dt>
-                                            <dd>
+                                          ) : null}
+                                          {payout?.pg_transaction_id ? (
+                                            <div className="flex justify-between gap-2 col-span-2">
+                                              <dt className="text-slate-500 shrink-0">PG TNX ID</dt>
+                                              <dd className="font-mono text-[10px] break-all text-right">{payout.pg_transaction_id}</dd>
+                                            </div>
+                                          ) : null}
+                                          {payout?.utr_reference ? (
+                                            <div className="flex justify-between gap-2 col-span-1">
+                                              <dt className="text-slate-500 shrink-0">UTR</dt>
+                                              <dd className="font-mono text-[10px] text-right">{payout.utr_reference}</dd>
+                                            </div>
+                                          ) : null}
+                                          <div className="flex justify-between gap-2 col-span-1">
+                                            <dt className="text-slate-500 shrink-0">Amount</dt>
+                                            <dd className="text-right">
                                               ₹
-                                              {payoutDetailsCache[row.reference_id]?.payout?.amount?.toLocaleString(
-                                                "en-IN",
-                                                { minimumFractionDigits: 2 }
-                                              ) ?? "—"}
+                                              {payout?.amount?.toLocaleString("en-IN", {
+                                                minimumFractionDigits: 2,
+                                              }) ?? "—"}
                                             </dd>
                                           </div>
-                                          <div className="flex justify-between">
-                                            <dt className="text-slate-500">Net payout</dt>
-                                            <dd className="font-medium">
+                                          <div className="flex justify-between gap-2 col-span-1">
+                                            <dt className="text-slate-500 shrink-0">Net payout</dt>
+                                            <dd className="font-medium text-right">
                                               ₹
-                                              {payoutDetailsCache[row.reference_id]?.payout?.net_payout_amount?.toLocaleString(
-                                                "en-IN",
-                                                { minimumFractionDigits: 2 }
-                                              ) ?? "—"}
+                                              {payout?.net_payout_amount?.toLocaleString("en-IN", {
+                                                minimumFractionDigits: 2,
+                                              }) ?? "—"}
                                             </dd>
                                           </div>
                                         </dl>
                                       </div>
-                                      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
-                                        <h4 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
-                                          <Building2 size={18} className="text-slate-500" />
+                                      <div className="bg-white rounded-lg border border-slate-200 p-2.5">
+                                        <h4 className="text-xs font-semibold text-slate-800 mb-1.5 flex items-center gap-1.5">
+                                          <Building2 size={14} className="text-slate-500" />
                                           Bank details
                                         </h4>
-                                        {(() => {
-                                          const details = payoutDetailsCache[row.reference_id];
-                                          const bank = details?.bank;
-                                          if (!bank)
-                                            return (
-                                              <p className="text-sm text-slate-500">
-                                                Bank details not available
-                                              </p>
-                                            );
-                                          return (
-                                            <dl className="space-y-1.5 text-sm">
-                                              <div>
-                                                <dt className="text-slate-500">Account holder</dt>
-                                                <dd className="font-medium">
-                                                  {bank.account_holder_name}
-                                                </dd>
+                                        {!bank ? (
+                                          <p className="text-[11px] text-slate-500">Bank details not available</p>
+                                        ) : (
+                                          <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] leading-snug">
+                                            <div className="col-span-2 flex justify-between gap-2">
+                                              <dt className="text-slate-500 shrink-0">Account holder</dt>
+                                              <dd className="font-medium text-right">{bank.account_holder_name}</dd>
+                                            </div>
+                                            <div className="flex justify-between gap-2">
+                                              <dt className="text-slate-500 shrink-0">Account</dt>
+                                              <dd className="tabular-nums text-right">{bank.account_number_masked ?? "—"}</dd>
+                                            </div>
+                                            <div className="flex justify-between gap-2">
+                                              <dt className="text-slate-500 shrink-0">IFSC</dt>
+                                              <dd className="font-mono text-right">{bank.ifsc_code ?? "—"}</dd>
+                                            </div>
+                                            <div className="col-span-2 flex justify-between gap-2">
+                                              <dt className="text-slate-500 shrink-0">Bank</dt>
+                                              <dd className="text-right">{bank.bank_name}</dd>
+                                            </div>
+                                            {bank.payout_method === "upi" && bank.upi_id ? (
+                                              <div className="col-span-2 flex justify-between gap-2">
+                                                <dt className="text-slate-500 shrink-0">UPI ID</dt>
+                                                <dd className="text-right">{bank.upi_id}</dd>
                                               </div>
-                                              <div>
-                                                <dt className="text-slate-500">Account</dt>
-                                                <dd className="tabular-nums">
-                                                  {bank.account_number_masked ?? "—"}
-                                                </dd>
-                                              </div>
-                                              <div>
-                                                <dt className="text-slate-500">IFSC</dt>
-                                                <dd className="font-mono">
-                                                  {bank.ifsc_code ?? "—"}
-                                                </dd>
-                                              </div>
-                                              <div>
-                                                <dt className="text-slate-500">Bank</dt>
-                                                <dd>{bank.bank_name}</dd>
-                                              </div>
-                                              {bank.payout_method === "upi" && bank.upi_id && (
-                                                <div>
-                                                  <dt className="text-slate-500">UPI ID</dt>
-                                                  <dd>{bank.upi_id}</dd>
-                                                </div>
-                                              )}
-                                            </dl>
-                                          );
-                                        })()}
+                                            ) : null}
+                                          </dl>
+                                        )}
                                       </div>
                                     </div>
+                                      );
+                                    })()
                                   )}
                                 </div>
                               </td>
@@ -1310,7 +1460,7 @@ export function StorePaymentsClient({
                           )}
                         {expandedLedgerId === row.id && row.order_id != null && (
                           <tr className="bg-slate-50/60 border-b border-slate-200">
-                            <td colSpan={8} className="p-0">
+                              <td colSpan={9} className="p-0">
                               <div className="px-4 pb-4 pt-1">
                                 {orderDetailsLoading === row.order_id ? (
                                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4" aria-busy aria-label="Loading order details">
