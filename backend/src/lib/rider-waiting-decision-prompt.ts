@@ -23,6 +23,25 @@ export async function processRiderWaitDecisionPrompt(args: {
   riderWaitMinutes: number;
   promptAfterMinutes?: number;
 }): Promise<void> {
+  try {
+    await processRiderWaitDecisionPromptInner(args);
+  } catch (e) {
+    // Best-effort from the ETA sweep. Tolerate a not-yet-migrated table (0584) and any
+    // transient error — never let it disrupt the sweep or spam unhandled rejections.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/does not exist|relation .* does not exist/i.test(msg)) {
+      console.warn("[rider-wait-decision]", args.orderCoreId, msg);
+    }
+  }
+}
+
+async function processRiderWaitDecisionPromptInner(args: {
+  orderCoreId: number;
+  orderIdText: string;
+  riderId: number | null;
+  riderWaitMinutes: number;
+  promptAfterMinutes?: number;
+}): Promise<void> {
   if (!args.riderId || args.riderId <= 0) return;
   const promptAfter = args.promptAfterMinutes ?? RIDER_WAITING_DECISION_PROMPT_AFTER_MINUTES;
   if (args.riderWaitMinutes < promptAfter) return;
