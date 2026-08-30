@@ -25,6 +25,12 @@ function mapRuleRow(r: Record<string, unknown>): ServicePayoutRuleRow {
     waitingFreeMinutes: Number(r.waiting_free_minutes ?? 2),
     waitingMaxCharge: r.waiting_max_charge == null ? null : Number(r.waiting_max_charge),
     waitingMaxMinutes: r.waiting_max_minutes == null ? null : Number(r.waiting_max_minutes),
+    waitingStartMode:
+      String(r.waiting_start_mode ?? "FIXED_GRACE").toUpperCase() === "KPT_PLUS_GRACE"
+        ? "KPT_PLUS_GRACE"
+        : "FIXED_GRACE",
+    waitingKptGraceMinutes:
+      r.waiting_kpt_grace_minutes == null ? null : Number(r.waiting_kpt_grace_minutes),
     waitingFundingMode: fundingMode as ServicePayoutRuleRow["waitingFundingMode"],
     waitingCustomerSharePct: Number(r.waiting_customer_share_pct ?? 100),
     waitingCompanySharePct: Number(r.waiting_company_share_pct ?? 0),

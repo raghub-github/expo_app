@@ -60,6 +60,10 @@ export type ServicePayoutRuleRow = {
   waitingMaxCharge: number | null;
   /** Duration cap (billable minutes). Null → engine applies the absolute safety ceiling. */
   waitingMaxMinutes: number | null;
+  /** When waiting starts (food): fixed grace from arrival vs after the original KPT + grace. */
+  waitingStartMode: "FIXED_GRACE" | "KPT_PLUS_GRACE";
+  /** Extra grace (minutes) after the original KPT commitment (KPT_PLUS_GRACE). */
+  waitingKptGraceMinutes: number | null;
   waitingFundingMode: "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED";
   waitingCustomerSharePct: number;
   waitingCompanySharePct: number;

@@ -12,6 +12,10 @@ import {
 } from "./ride-rider-payout-snapshot.js";
 import { computeRidePickupWaitSeconds } from "./ride-pickup-wait.js";
 import { applyMerchantFundedWaitingDebit } from "./merchant-funded-waiting-debit.js";
+import {
+  resolveFoodWaitingFreeBudgetSeconds,
+  type WaitingStartMode,
+} from "./food-waiting-start.js";
 
 function round2(n: number): number {
   if (!Number.isFinite(n)) return 0;
@@ -45,6 +49,7 @@ export async function applyFoodPickupWaitingToBilling(
       pickupWaitSeconds: ordersFood.pickupWaitSeconds,
       ordersFoodId: ordersFood.id,
       merchantStoreId: ordersFood.merchantStoreId,
+      prepReadyByAt: ordersFood.prepReadyByAt,
     })
     .from(ordersCore)
     .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
@@ -78,6 +83,8 @@ export async function applyFoodPickupWaitingToBilling(
   let chargePerMin = 0;
   let waitingMax: number | null = null;
   let waitingMaxMinutes: number | null = null;
+  let waitingStartMode: WaitingStartMode = "FIXED_GRACE";
+  let waitingKptGraceMinutes = 0;
   let fundingMode: "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED" = "COMPANY_100";
   let customerSharePct = 0;
   let companySharePct = 100;
@@ -101,6 +108,8 @@ export async function applyFoodPickupWaitingToBilling(
         chargePerMin = Math.max(0, Number(rule.waitingChargePerMin ?? 0));
         waitingMax = rule.waitingMaxCharge;
         waitingMaxMinutes = rule.waitingMaxMinutes;
+        waitingStartMode = rule.waitingStartMode ?? "FIXED_GRACE";
+        waitingKptGraceMinutes = Math.max(0, Number(rule.waitingKptGraceMinutes ?? 0));
         fundingMode = rule.waitingFundingMode ?? "COMPANY_100";
         customerSharePct = rule.waitingCustomerSharePct ?? 0;
         companySharePct = rule.waitingCompanySharePct ?? 100;
@@ -112,8 +121,24 @@ export async function applyFoodPickupWaitingToBilling(
 
   if (chargePerMin <= 0) return { customerWaiting: 0, riderWaiting: 0 };
 
-  const split = computeWaitingCharge(waitSeconds, {
+  // Start-mode (Step 3): FIXED_GRACE keeps the arrival+grace window; KPT_PLUS_GRACE stretches
+  // the free window until the merchant's ORIGINAL prep_ready_by_at + grace (frozen at accept,
+  // so padding KPT afterwards can't defer waiting). Both feed the same engine as `freeMinutes`.
+  const arrivalAtMs = row.riderReachedPickupAt
+    ? new Date(row.riderReachedPickupAt).getTime()
+    : NaN;
+  const originalPrepReadyByMs = row.prepReadyByAt ? new Date(row.prepReadyByAt).getTime() : null;
+  const effectiveFreeSeconds = resolveFoodWaitingFreeBudgetSeconds({
+    startMode: waitingStartMode,
     freeMinutes,
+    kptGraceMinutes: waitingKptGraceMinutes,
+    arrivalAtMs,
+    originalPrepReadyByMs,
+  });
+  const effectiveFreeMinutes = effectiveFreeSeconds / 60;
+
+  const split = computeWaitingCharge(waitSeconds, {
+    freeMinutes: effectiveFreeMinutes,
     chargePerMin,
     maxCharge: waitingMax,
     maxMinutes: waitingMaxMinutes,
