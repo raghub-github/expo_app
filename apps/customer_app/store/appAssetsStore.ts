@@ -49,7 +49,10 @@ export const useAppAssetsStore = create<AppAssetsState>((set) => ({
 
 export function getAppAssetUrl(key: string): string | null {
   const item = useAppAssetsStore.getState().assets[key];
-  return item?.url?.trim() || null;
+  if (!item) return null;
+  const proxy = item.proxyUrl?.trim();
+  if (proxy) return toAbsoluteImageUrl(proxy) ?? proxy;
+  return item.url?.trim() || null;
 }
 
 export function getAppAssetProxyUrl(key: string): string | null {

@@ -106,6 +106,7 @@ export type StoreStatus = {
   within_hours_but_restricted?: boolean;
   is_delisted?: boolean;
   approval_status?: string | null;
+  license_blocked?: boolean;
 };
 
 export type WeeklyDay = {
@@ -407,6 +408,7 @@ async function fetchStoreStatusOnce(storeIdNum: number, tokenStr: string): Promi
     next_close_time: nextCloseTime,
     next_open_iso: nextOpenIso,
     within_hours_but_restricted: withinHoursButRestricted,
+    license_blocked: data?.license_blocked === true,
   };
   } catch (e) {
     if (e instanceof Error && e.message) throw e;
@@ -464,6 +466,14 @@ export async function updateStoreStatus(
       if (errCode === "outside_operating_hours") {
         const e = new Error(msg);
         (e as Error & { code?: string }).code = "outside_operating_hours";
+        throw e;
+      }
+      if (errCode === "LICENSE_BLOCKED") {
+        const e = new Error(
+          msg ||
+            "You cannot go online until expired documents are uploaded and verified by GatiMitra."
+        );
+        (e as Error & { code?: string }).code = "LICENSE_BLOCKED";
         throw e;
       }
       const nestedCode = typeof err?.code === "string" ? err.code.trim() : "";

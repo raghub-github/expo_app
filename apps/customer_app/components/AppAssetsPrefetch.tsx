@@ -2,24 +2,29 @@ import { useEffect, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { Image } from "expo-image";
 import { STORAGE_KEYS } from "@/constants";
-import { fetchCustomerAppAssets } from "@/services/appAssets.service";
+import { fetchCustomerAppAssets, type AppAssetItem } from "@/services/appAssets.service";
 import { prefetchCriticalHomeAssetImages } from "@/lib/homeCriticalAssets";
 import { prefetchCriticalRideAssetImages } from "@/lib/rideCriticalAssets";
 import { readSyncAppAssets } from "@/lib/appAssetsCache";
 import { hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 const prefetched = new Set<string>();
 const RETRY_MS = [0, 2_000, 5_000, 10_000];
 const FOREGROUND_RELOAD_MIN_MS = 8_000;
 
-function prefetchRemainingAssetUrls(assets: Record<string, { url: string | null }>) {
+function prefetchRemainingAssetUrls(assets: Record<string, AppAssetItem>) {
   for (const item of Object.values(assets)) {
-    const uri = item.url?.trim();
-    if (!uri || prefetched.has(uri)) continue;
-    prefetched.add(uri);
-    // Fire-and-forget — never block UI or starve on-screen Image loads.
-    void Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => {});
+    for (const raw of [item.proxyUrl, item.url]) {
+      const trimmed = raw?.trim();
+      if (!trimmed) continue;
+      const uri = toAbsoluteImageUrl(trimmed) ?? trimmed;
+      if (!uri || prefetched.has(uri)) continue;
+      prefetched.add(uri);
+      // Fire-and-forget — never block UI or starve on-screen Image loads.
+      void Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => {});
+    }
   }
 }
 

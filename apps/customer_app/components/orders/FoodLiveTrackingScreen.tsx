@@ -40,6 +40,10 @@ import { useFoodDeliveryRouteProgress } from "@/hooks/useFoodDeliveryRouteProgre
 import { useLiveTrackingEtaMinutes } from "@/hooks/useLiveTrackingEtaMinutes";
 import { resolveOrderTrackingMapSnapshots } from "@/lib/orderTrackingMapSnapshots";
 import {
+  resolveSmoothDurationMs,
+  useSmoothedRiderPosition,
+} from "@gatimitra/map-tracking-engine";
+import {
   FOOD_DELIVERY_GEOFENCE_RADIUS_M,
   FOOD_DELIVERY_GEOFENCE_PROXIMITY_M,
   getFoodDeliveryMapPhase,
@@ -444,7 +448,6 @@ export function FoodLiveTrackingScreen({
     routeJoinPoint,
     remainingDistanceM,
     hideRouteLine,
-    displayRider,
   } = useFoodDeliveryRouteProgress({
     phase: mapPhase,
     rider: riderPos,
@@ -455,6 +458,27 @@ export function FoodLiveTrackingScreen({
     riderHeading,
     hasRider,
   });
+
+  const riderGpsFix = useMemo(() => {
+    if (!hasRider || !riderPos) return undefined;
+    return {
+      lat: riderPos.latitude,
+      lng: riderPos.longitude,
+      headingDeg: riderHeading ?? undefined,
+      speedMps: tracking?.rider?.speedMps ?? undefined,
+    };
+  }, [
+    hasRider,
+    riderPos?.latitude,
+    riderPos?.longitude,
+    riderHeading,
+    tracking?.rider?.speedMps,
+  ]);
+
+  const smoothedRider = useSmoothedRiderPosition(
+    riderGpsFix,
+    resolveSmoothDurationMs(tracking?.rider?.speedMps)
+  );
 
   const selfPickupRouteQuery = useQuery({
     queryKey: [
@@ -633,8 +657,9 @@ export function FoodLiveTrackingScreen({
     setStatusBarBackground(headerBg, headerLight ? "dark" : "light");
   }, [headerBg, headerLight, setStatusBarBackground]);
 
-  const mapRiderLat = displayRider?.latitude ?? riderLat;
-  const mapRiderLng = displayRider?.longitude ?? riderLng;
+  const mapRiderLat = smoothedRider?.lat ?? riderLat;
+  const mapRiderLng = smoothedRider?.lng ?? riderLng;
+  const mapRiderHeading = smoothedRider?.headingDeg ?? riderHeading;
 
   const prevMapPhaseRef = useRef(mapPhase);
   const prevHighlightDropRef = useRef(highlightDropZone);
@@ -675,7 +700,8 @@ export function FoodLiveTrackingScreen({
       // Never show rider pin / GPS until a partner is assigned (avoids ghost marker + dashed arc).
       riderLat: hasRider ? mapRiderLat : null,
       riderLng: hasRider ? mapRiderLng : null,
-      riderHeading: hasRider ? riderHeading : null,
+      riderHeading: hasRider ? mapRiderHeading : null,
+      riderSpeedMps: hasRider ? tracking?.rider?.speedMps ?? null : null,
       fullRoute: hasRider ? fullRoute : [],
       remainingRoute: hasRider ? remainingRoute : [],
       preRiderArcRoute: hasRider ? undefined : preRiderArcRoute ?? undefined,
@@ -700,6 +726,7 @@ export function FoodLiveTrackingScreen({
       deliveryLng,
       mapRiderLat,
       mapRiderLng,
+      mapRiderHeading,
       riderHeading,
       fullRoute,
       remainingRoute,
@@ -712,6 +739,7 @@ export function FoodLiveTrackingScreen({
       riderArrived,
       mapPhase,
       hasRider,
+      tracking?.rider?.speedMps,
     ]
   );
 

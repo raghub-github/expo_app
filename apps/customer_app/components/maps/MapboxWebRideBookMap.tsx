@@ -24,6 +24,7 @@ import {
   useCustomerNativeMapbox,
   useRiderMarkerSource,
 } from "@/components/maps/native-map-shared";
+import { isValidMapCoordinate } from "@/lib/map-coordinates";
 
 type FitOptions = {
   edgePadding: MapEdgePadding;
@@ -68,7 +69,11 @@ export const MapboxWebRideBookMap = forwardRef<CustomerMapRef, Props>(function M
   const pendingFitRef = useRef<{ coords: LatLng[]; options: FitOptions } | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const markerSource = useRiderMarkerSource(riderMarkerImageKey);
-  const initialCenterRef = useRef(center);
+  const initialCenterRef = useRef(
+    isValidMapCoordinate(center.latitude, center.longitude)
+      ? center
+      : { latitude: 20.5937, longitude: 78.9629 }
+  );
 
   const routeLine = showRoadPolyline ? latLngsToLine(routeCoordinates) : null;
 

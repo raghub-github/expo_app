@@ -3,6 +3,7 @@ import { getDb } from "../../db/client.js";
 import { ordersCore, ordersCorePayments, ordersRide } from "../../db/schema.js";
 import { normalizeCustomerOrderStatus } from "../../lib/customer-order-status-resolve.js";
 import { isRideFarePaymentPending } from "../../lib/ride-rider-payout-snapshot.js";
+import { assertRideCustomerPaymentCollectable } from "../../lib/settle-zero-payable-person-ride.js";
 import { insertRideCustomerPaymentSnapshot } from "../../lib/persist-ride-customer-payment-snapshot.js";
 import { computeRideBillForCustomerOrder } from "./ride-bill.service.js";
 import { rideBillingToSettlementComponents } from "./settlement/billingToComponents.js";
@@ -94,6 +95,8 @@ export async function createRideOnlineQr(
     throw Object.assign(new Error("Ride fare is already settled"), { statusCode: 409, code: "ALREADY_SETTLED" });
   }
 
+  const customerBillCap = await assertRideCustomerPaymentCollectable(orderRow.id);
+
   const customerPk = orderRow.customerId != null ? Number(orderRow.customerId) : 0;
   if (!Number.isFinite(customerPk) || customerPk <= 0) {
     throw Object.assign(new Error("Order has no linked customer"), { statusCode: 400 });
@@ -104,8 +107,8 @@ export async function createRideOnlineQr(
   if (!billRes.ok) {
     throw Object.assign(new Error(billRes.message), { statusCode: billRes.statusCode ?? 400, code: billRes.code });
   }
-  const customerBill = Math.round(billRes.billing.final_amount * 100) / 100;
-  if (!(customerBill > 0)) throw Object.assign(new Error("Invalid ride fare amount"), { statusCode: 400 });
+  const customerBill = Math.round(Math.min(billRes.billing.final_amount, customerBillCap) * 100) / 100;
+  if (!(customerBill > 0)) throw Object.assign(new Error("Ride fare is already settled"), { statusCode: 409, code: "ALREADY_SETTLED" });
 
   // Idempotent: reuse an existing still-open QR for this order (rider re-opened the screen).
   const [existing] = await db

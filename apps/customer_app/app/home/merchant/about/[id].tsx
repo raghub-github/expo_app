@@ -2,7 +2,7 @@
  * Restaurant About / Store Information – GatiMitra layout.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Share, Linking, Alert } from "react-native";
@@ -10,7 +10,8 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons, Feather } from "@expo/vector-icons";
-import { merchantService, checkStoreBookmark, setStoreBookmark } from "@/services/merchant.service";
+import { merchantService, setStoreBookmark } from "@/services/merchant.service";
+import { useStoreBookmarkMutations, useStoreBookmarks } from "@/hooks/useStoreBookmarks";
 import { StoreTheme } from "@/constants/storeTheme";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { buildStoreOpenStatusLabel } from "@/lib/storeOpenStatusLabel";
@@ -47,13 +48,10 @@ export default function MerchantAboutScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const storeId = id ?? "";
+  const { bookmarkSet } = useStoreBookmarks();
+  const { syncBookmark } = useStoreBookmarkMutations();
   const [hoursExpanded, setHoursExpanded] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    if (!storeId) return;
-    checkStoreBookmark(storeId).then(setSaved).catch(() => {});
-  }, [storeId]);
+  const saved = Boolean(storeId) && bookmarkSet.has(storeId);
 
   const { data: about, isLoading: aboutLoading, error: aboutError } = useQuery({
     queryKey: ["merchant-about", storeId],
@@ -120,12 +118,14 @@ export default function MerchantAboutScreen() {
   const handleBookmark = useCallback(async () => {
     try {
       const next = !saved;
+      syncBookmark(storeId, next);
       const res = await setStoreBookmark(storeId, next);
-      setSaved(res.saved);
+      if (res.saved !== next) syncBookmark(storeId, res.saved);
     } catch {
+      syncBookmark(storeId, saved);
       Alert.alert("Sign in required", "Please log in to save restaurants to your collection.");
     }
-  }, [saved, storeId]);
+  }, [saved, storeId, syncBookmark]);
 
   const handleCall = useCallback(() => {
     if (!storePhone) {

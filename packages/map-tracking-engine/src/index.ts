@@ -17,3 +17,6 @@ export * from "./off-route";
 export * from "./marker-animation";
 export * from "./debug";
 export * from "./map-runtime";
+export * from "./navigation-style";
+export * from "./navigation-camera";
+export * from "./useSmoothedRiderPosition";

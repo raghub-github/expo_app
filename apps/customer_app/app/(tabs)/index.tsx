@@ -7,7 +7,6 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { View, StyleSheet, ScrollView, RefreshControl, StatusBar as NativeStatusBar, Platform } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useFocusEffect, useRouter } from "expo-router";
-import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { resolveCustomerBottomNavHeight } from "@/constants/layout";
 import { useLocationStore } from "@/store/locationStore";
@@ -33,7 +32,7 @@ import { useCustomerServiceBlocks, CUSTOMER_SERVICE_BLOCKS_QUERY_KEY } from "@/h
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { useCustomerServiceBlockSheetStore } from "@/store/customerServiceBlockSheetStore";
 
-const BG = "#FFFFFF";
+const PAGE_BG = GatiMitraColors.softBackground;
 const TEAL = GatiMitraColors.splashMint;
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
@@ -152,12 +151,11 @@ export default function HomeScreen() {
     useCallback(() => {
       NativeStatusBar.setHidden(false, "none");
       if (Platform.OS === "android") {
-        NativeStatusBar.setTranslucent(false);
-        NativeStatusBar.setBackgroundColor("#FFFFFF", true);
+        NativeStatusBar.setBackgroundColor(PAGE_BG, true);
         NativeStatusBar.setBarStyle("dark-content", true);
       }
       useScreenChromeStore.setState({
-        statusBarBackground: "#FFFFFF",
+        statusBarBackground: PAGE_BG,
         statusBarStyle: "dark",
         hideStatusBarSpacer: false,
       });
@@ -174,7 +172,6 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar style="dark" backgroundColor="#FFFFFF" translucent={false} hidden={false} />
       <HomeLocationHeader
         locationPrimary={locationPrimary}
         locationSecondary={locationSecondary}
@@ -233,7 +230,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: BG,
+    backgroundColor: PAGE_BG,
   },
   body: {
     flex: 1,

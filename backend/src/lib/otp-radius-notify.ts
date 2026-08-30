@@ -19,7 +19,10 @@ function normalizeOtp(raw: string | null | undefined): string | null {
   return digits.length >= 4 ? digits.slice(-4) : digits.padStart(4, "0");
 }
 
-async function riderDisplayName(riderId: number): Promise<string> {
+async function riderDisplayName(
+  riderId: number,
+  service?: DispatchServiceType | null
+): Promise<string> {
   const sqlClient = getSql();
   const rows = await sqlClient<{ name: string | null }[]>`
     SELECT NULLIF(TRIM(name), '') AS name
@@ -27,7 +30,9 @@ async function riderDisplayName(riderId: number): Promise<string> {
     WHERE id = ${riderId}
     LIMIT 1
   `;
-  return rows[0]?.name?.trim() || "Your delivery partner";
+  const name = rows[0]?.name?.trim();
+  if (name) return name;
+  return service === "person_ride" ? "Your captain" : "Your delivery partner";
 }
 
 async function customerUserIdForCorePk(orderCorePk: number): Promise<string | null> {
@@ -161,9 +166,17 @@ async function sendPickupOtpPush(args: {
   orderIdText: string;
   customerUserId: string;
   riderName: string;
-  pickupOtp: string;
+  pickupOtp: string | null;
   liveService: "food" | "ride" | "parcel";
 }): Promise<void> {
+  const isRide = args.liveService === "ride";
+  const liveTitle = isRide ? "Captain Has Arrived" : "Delivery Partner Has Arrived";
+  const liveBody = isRide
+    ? `${args.riderName} has arrived at the pickup location.`
+    : `Pickup OTP ${args.pickupOtp ?? ""}`.trim();
+  const rideBody = args.pickupOtp
+    ? `${args.riderName} has arrived at the pickup location. Share your pickup PIN ${args.pickupOtp} with the captain.`
+    : `${args.riderName} has arrived at the pickup location.`;
   await sendNotification({
     templateCode: "CUSTOMER_PICKUP_OTP_ARRIVED",
     variables: {
@@ -171,18 +184,28 @@ async function sendPickupOtpPush(args: {
       orderShortId: args.orderIdText,
       riderName: args.riderName,
       rider_name: args.riderName,
-      pickupOtp: args.pickupOtp,
-      pickup_otp: args.pickupOtp,
+      pickupOtp: args.pickupOtp ?? "",
+      pickup_otp: args.pickupOtp ?? "",
     },
     target: { user_id: args.customerUserId },
     idempotencyKey: `CUSTOMER_PICKUP_OTP_ARRIVED:${args.orderIdText}`,
+    ...(isRide
+      ? {
+          overrides: {
+            title: liveTitle,
+            body: rideBody,
+          },
+        }
+      : {}),
     metadata: {
       gmLiveProgress: true,
       liveService: args.liveService,
-      liveTitle: "Delivery Partner Has Arrived",
-      liveBody: `Pickup OTP ${args.pickupOtp}`,
+      liveTitle,
+      liveBody,
+      liveStep: 3,
+      liveSteps: 6,
       orderId: args.orderIdText,
-      pickupOtp: args.pickupOtp,
+      pickupOtp: args.pickupOtp ?? "",
       gmType: "CUSTOMER_PICKUP_OTP_ARRIVED",
     },
   });
@@ -232,21 +255,23 @@ export async function notifyCustomerPickupOtpOnRadius(args: {
     const order = await loadOrderForRadius(args.orderIdText);
     if (!order || isTerminal(order.status, order.currentStatus)) return;
     const service = serviceTypeOf(order.orderType);
-    if (!service || !wantsPickupOtpPush(service, order.pickupOtp)) return;
+    if (!service) return;
     const pickupOtp = normalizeOtp(order.pickupOtp);
-    if (!pickupOtp) return;
+    const isRide = service === "person_ride";
+    if (!isRide && !wantsPickupOtpPush(service, order.pickupOtp)) return;
+    if (!isRide && !pickupOtp) return;
     if (!(await claimPickupNotify(order.id))) return;
 
     const customerUserId = await customerUserIdForCorePk(order.id);
     if (!customerUserId) return;
     const riderName =
-      args.riderName?.trim() || (await riderDisplayName(args.riderId));
+      args.riderName?.trim() || (await riderDisplayName(args.riderId, service));
     await sendPickupOtpPush({
       orderIdText: order.orderId.trim(),
       customerUserId,
       riderName,
       pickupOtp,
-      liveService: service === "person_ride" ? "ride" : service,
+      liveService: isRide ? "ride" : service,
     });
   } catch (err) {
     console.warn(
@@ -275,7 +300,7 @@ export async function notifyCustomerDeliveryOtpOnRadius(args: {
     const riderId = args.riderId != null && args.riderId > 0 ? args.riderId : order.riderId;
     const riderName =
       args.riderName?.trim() ||
-      (riderId != null ? await riderDisplayName(Number(riderId)) : "Your delivery partner");
+      (riderId != null ? await riderDisplayName(Number(riderId), service) : "Your delivery partner");
     await sendDeliveryOtpPush({
       orderIdText: order.orderId.trim(),
       customerUserId,

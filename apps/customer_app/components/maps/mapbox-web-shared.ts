@@ -1,4 +1,5 @@
 import { MAPBOX_GL_VERSION } from "@/lib/customer-map-assets";
+import { liveRiderDotMarkerHtml } from "@gatimitra/map-tracking-engine";
 
 export function escToken(token: string): string {
   return token.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
@@ -79,16 +80,9 @@ export function mapboxVehicleMarkerImgStyle(sizePx: number, rotationDeg: string)
   );
 }
 
-/** Captain / booked vehicle marker on live ride tracking maps — vehicle icon only. */
-export function buildTrackingRiderMarkerInnerHtml(escapedUri: string): string {
-  const imgStyle = mapboxVehicleMarkerImgStyle(44, "none");
-  return (
-    '<img id="rider-img" class="gm-vehicle-marker-img" src="' +
-    escapedUri +
-    '" style="' +
-    imgStyle +
-    ';transition:transform 0.32s cubic-bezier(0.22,1,0.36,1);" alt="" />'
-  );
+/** Captain live-location marker on tracking maps — mint circular dot (Rider App). */
+export function buildTrackingRiderMarkerInnerHtml(_escapedUri?: string): string {
+  return liveRiderDotMarkerHtml();
 }
 
 /** Approximate Mapbox zoom from react-native-maps latitudeDelta. */

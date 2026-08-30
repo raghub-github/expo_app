@@ -442,6 +442,10 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
       if (fromInput != null && Number.isFinite(fromInput) && fromInput > 0) {
         (billingSnapshot as Record<string, unknown>).ride_fare_platform_offer_id = fromInput;
       }
+      const coupon = input.couponCode?.trim();
+      if (coupon) {
+        (billingSnapshot as Record<string, unknown>).ride_fare_coupon_code = coupon;
+      }
       if (input.forceNoAutoOffer === true && !(Number.isFinite(fromSnap) && fromSnap > 0) && fromInput == null) {
         (billingSnapshot as Record<string, unknown>).ride_fare_force_no_auto_offer = true;
       }
@@ -574,6 +578,7 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
           ...(input.selectedPlatformOfferId != null && input.selectedPlatformOfferId > 0
             ? { selectedPlatformOfferId: input.selectedPlatformOfferId }
             : {}),
+          ...(input.couponCode?.trim() ? { couponCode: input.couponCode.trim() } : {}),
           ...(input.forceNoAutoOffer === true ? { forceNoAutoOffer: true } : {}),
           ...(fareQuote.waitingChargeNote
             ? { waitingChargeNote: fareQuote.waitingChargeNote }

@@ -4,20 +4,41 @@
 
 import type { QueryClient } from "@tanstack/react-query";
 import type { OrderDetail, OrderSummary } from "@/services/order.service";
+import { mergeCaptainProfile } from "@/lib/mergeCaptainProfile";
+
+export function mergeIncomingOrderDetail(
+  prev: OrderDetail | undefined,
+  incoming: OrderDetail
+): OrderDetail {
+  return {
+    ...incoming,
+    rider: mergeCaptainProfile(prev?.rider, incoming.rider) ?? incoming.rider,
+    billingSnapshot: incoming.billingSnapshot ?? prev?.billingSnapshot ?? null,
+    checkoutMetadata: incoming.checkoutMetadata ?? prev?.checkoutMetadata ?? null,
+    paymentStatus: incoming.paymentStatus ?? prev?.paymentStatus ?? null,
+    paymentMethod: incoming.paymentMethod ?? prev?.paymentMethod ?? null,
+  };
+}
 
 export function seedOrderDetailCache(
   queryClient: QueryClient,
   orderId: string,
   patch: Partial<OrderDetail> & Pick<OrderDetail, "orderId">
 ) {
-  queryClient.setQueryData<OrderDetail>(["order", orderId], (prev) => ({
-    ...(prev ?? {
-      orderId,
-      status: patch.status ?? "ORDER_PLACED",
-      createdAt: patch.createdAt ?? new Date().toISOString(),
-    }),
-    ...patch,
-  }));
+  queryClient.setQueryData<OrderDetail>(["order", orderId], (prev) => {
+    const base = {
+      ...(prev ?? {
+        orderId,
+        status: patch.status ?? "ORDER_PLACED",
+        createdAt: patch.createdAt ?? new Date().toISOString(),
+      }),
+      ...patch,
+    };
+    if (patch.rider !== undefined) {
+      base.rider = mergeCaptainProfile(prev?.rider, patch.rider) ?? patch.rider;
+    }
+    return base;
+  });
 }
 
 export function findOrderInListCache(
@@ -38,15 +59,15 @@ export function findOrderInListCache(
 export function orderSummaryToDetail(summary: OrderSummary): OrderDetail {
   return {
     ...summary,
-    billingSnapshot: null,
+    billingSnapshot: summary.billingSnapshot ?? null,
     deliveryAddress: summary.deliveryAddress ?? undefined,
     deliveryLat: summary.deliveryLat ?? null,
     deliveryLng: summary.deliveryLng ?? null,
     pickupLat: summary.pickupLat ?? null,
     pickupLng: summary.pickupLng ?? null,
     deliveryOtp: null,
-    paymentMethod: null,
-    paymentStatus: null,
+    paymentMethod: summary.paymentMethod ?? null,
+    paymentStatus: summary.paymentStatus ?? null,
     rider: undefined,
     statusHistory: [{ status: summary.status, at: summary.createdAt }],
   };

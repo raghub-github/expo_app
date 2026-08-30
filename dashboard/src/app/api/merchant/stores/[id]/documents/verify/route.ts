@@ -303,6 +303,23 @@ export async function POST(
       [verifiedBy, storeId]
     );
 
+    try {
+      await sql`
+        UPDATE merchant_licence_history
+        SET
+          verification_status = 'verified',
+          is_expired = false,
+          document_metadata = COALESCE(document_metadata, '{}'::jsonb) - 'renewal_pending' - 'renewal_submitted_at',
+          updated_at = now()
+        WHERE store_id = ${storeId}
+          AND licence_type = ${pf}
+          AND is_active IS TRUE
+          AND verification_status IS DISTINCT FROM 'verified'
+      `;
+    } catch (histErr) {
+      console.warn("[POST documents/verify] licence history sync", histErr);
+    }
+
     const storeApproved =
       String(store.approval_status ?? "").toUpperCase() === "APPROVED";
 

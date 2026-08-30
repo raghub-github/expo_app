@@ -17,6 +17,7 @@ export type LocalityInsight = {
   city: string | null;
   state: string | null;
   postal_code: string | null;
+  locality_name: string | null;
   stores_in_area: number;
   your_orders_90d: number;
   your_area_rank: number | null;
@@ -24,12 +25,13 @@ export type LocalityInsight = {
 };
 
 export type MerchantMarketInsights = {
+  store_id: string;
   store_name: string;
   store_logo_url: string | null;
   match_scope: MarketMatchScope;
   computed_at: string | null;
   competitors: CompetitorRow[];
-  /** Own store affinity % (overlap or 90d order-share in area). */
+  /** Own store affinity % (customer overlap, else 90d order-share in area). */
   your_affinity_pct: number;
   locality: LocalityInsight;
 };
@@ -50,6 +52,28 @@ function resolveLogoUrl(raw: string | null | undefined): string | null {
   if (t.startsWith("http://") || t.startsWith("https://")) return t;
   if (t.startsWith("/v1/attachments/proxy")) return t;
   return `/v1/attachments/proxy?key=${encodeURIComponent(t)}`;
+}
+
+/** Short area name from full address (not pincode) — partnersite parity. */
+function localityNameFromAddress(
+  fullAddress: string | null | undefined,
+  city: string | null | undefined,
+  postalCode: string | null | undefined
+): string | null {
+  if (fullAddress?.trim()) {
+    const parts = fullAddress
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (parts.length >= 2) {
+      const candidate = (parts[parts.length - 2] ?? parts[0]!).replace(/^\d{5,6}\s+/, "").trim();
+      if (candidate && !/^\d{5,6}$/.test(candidate)) return candidate;
+    }
+    const first = (parts[0] ?? "").replace(/^\d{5,6}\s+/, "").trim();
+    if (first && !/^\d{5,6}$/.test(first)) return first;
+  }
+  const cityTrim = city?.trim() || null;
+  return cityTrim;
 }
 
 async function snapshotsAreFresh(
@@ -108,7 +132,7 @@ async function loadAreaPeerCompetitors(
   scope: MarketMatchScope,
   limit: number,
   excludeStoreIds: Set<string>
-): Promise<CompetitorRow[]> {
+): Promise<Array<CompetitorRow & { order_count_90d: number }>> {
   const pincodeNorm = (store.postal_code ?? "").replace(/\D/g, "");
   const cityNorm = store.city?.trim().toLowerCase() ?? "";
   if (scope === "locality" && !pincodeNorm) return [];
@@ -155,13 +179,14 @@ async function loadAreaPeerCompetitors(
           LIMIT ${Math.min(Math.max(1, limit + excludeStoreIds.size), 40)}
         `;
 
-  const out: CompetitorRow[] = [];
+  const out: Array<CompetitorRow & { order_count_90d: number }> = [];
   let rank = 1;
   for (const r of peerRows as unknown as Array<{
     competitor_store_id: string;
     name: string;
     banner_url: string | null;
     parent_logo_url: string | null;
+    order_count: number;
   }>) {
     const id = String(r.competitor_store_id);
     if (excludeStoreIds.has(id)) continue;
@@ -173,11 +198,87 @@ async function loadAreaPeerCompetitors(
       affinity_pct: 0,
       rank_delta: null,
       shared_customers: 0,
+      order_count_90d: Number(r.order_count) || 0,
     });
     rank += 1;
     if (out.length >= limit) break;
   }
   return out;
+}
+
+/** Share of your customers who also ordered from ≥1 peer in the same city/pincode (90d). */
+async function computeOwnOverlapAffinityPct(
+  sql: Sql,
+  storePk: number,
+  store: { city: string | null; postal_code: string | null },
+  scope: MarketMatchScope
+): Promise<number> {
+  const pincodeNorm = (store.postal_code ?? "").replace(/\D/g, "");
+  const cityNorm = store.city?.trim().toLowerCase() ?? "";
+  if (scope === "locality" && !pincodeNorm) return 0;
+  if (scope === "city" && !cityNorm) return 0;
+
+  const rows =
+    scope === "locality"
+      ? await sql`
+          WITH yours AS (
+            SELECT DISTINCT oc.customer_id
+            FROM orders_core oc
+            WHERE oc.merchant_store_id = ${storePk}
+              AND oc.customer_id IS NOT NULL
+              AND oc.placed_at >= now() - interval '90 days'
+              AND COALESCE(oc.current_status, '') NOT IN ('CANCELLED', 'CANCELED', 'REJECTED')
+          ),
+          peers AS (
+            SELECT ms.id
+            FROM merchant_stores ms
+            WHERE ms.deleted_at IS NULL
+              AND ms.id <> ${storePk}
+              AND NULLIF(regexp_replace(TRIM(COALESCE(ms.postal_code, '')), '[^0-9]', '', 'g'), '') = ${pincodeNorm}
+          )
+          SELECT
+            (SELECT COUNT(*)::int FROM yours) AS yours_n,
+            (
+              SELECT COUNT(DISTINCT y.customer_id)::int
+              FROM yours y
+              JOIN orders_core oc ON oc.customer_id = y.customer_id
+              JOIN peers p ON p.id = oc.merchant_store_id
+              WHERE oc.placed_at >= now() - interval '90 days'
+                AND COALESCE(oc.current_status, '') NOT IN ('CANCELLED', 'CANCELED', 'REJECTED')
+            ) AS overlap_n
+        `
+      : await sql`
+          WITH yours AS (
+            SELECT DISTINCT oc.customer_id
+            FROM orders_core oc
+            WHERE oc.merchant_store_id = ${storePk}
+              AND oc.customer_id IS NOT NULL
+              AND oc.placed_at >= now() - interval '90 days'
+              AND COALESCE(oc.current_status, '') NOT IN ('CANCELLED', 'CANCELED', 'REJECTED')
+          ),
+          peers AS (
+            SELECT ms.id
+            FROM merchant_stores ms
+            WHERE ms.deleted_at IS NULL
+              AND ms.id <> ${storePk}
+              AND LOWER(TRIM(ms.city)) = ${cityNorm}
+          )
+          SELECT
+            (SELECT COUNT(*)::int FROM yours) AS yours_n,
+            (
+              SELECT COUNT(DISTINCT y.customer_id)::int
+              FROM yours y
+              JOIN orders_core oc ON oc.customer_id = y.customer_id
+              JOIN peers p ON p.id = oc.merchant_store_id
+              WHERE oc.placed_at >= now() - interval '90 days'
+                AND COALESCE(oc.current_status, '') NOT IN ('CANCELLED', 'CANCELED', 'REJECTED')
+            ) AS overlap_n
+        `;
+
+  const yoursN = Number((rows[0] as { yours_n?: number })?.yours_n) || 0;
+  const overlapN = Number((rows[0] as { overlap_n?: number })?.overlap_n) || 0;
+  if (yoursN <= 0) return 0;
+  return Math.round((1000 * overlapN) / yoursN) / 10;
 }
 
 async function loadAreaInsights(
@@ -187,14 +288,17 @@ async function loadAreaInsights(
     city: string | null;
     state: string | null;
     postal_code: string | null;
+    full_address?: string | null;
   },
   scope: MarketMatchScope
 ): Promise<LocalityInsight> {
+  const localityName = localityNameFromAddress(store.full_address, store.city, store.postal_code);
   const base: LocalityInsight = {
     match_scope: scope,
     city: store.city,
     state: store.state,
     postal_code: store.postal_code,
+    locality_name: localityName,
     stores_in_area: 0,
     your_orders_90d: 0,
     your_area_rank: null,
@@ -295,13 +399,13 @@ export async function loadMerchantMarketInsights(
   const periodKey = periodKeyForScope(scope);
 
   const storeRows = await sql`
-    SELECT ms.id,
-           ms.store_id,
+    SELECT ms.store_id,
            COALESCE(NULLIF(TRIM(ms.store_display_name), ''), ms.store_name) AS store_name,
            ms.banner_url,
            ms.city,
            ms.state,
            ms.postal_code,
+           ms.full_address,
            mp.store_logo AS parent_logo_url
     FROM merchant_stores ms
     LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
@@ -311,12 +415,14 @@ export async function loadMerchantMarketInsights(
   `;
   const store = storeRows[0] as
     | {
+        store_id: string;
         store_name: string;
         banner_url: string | null;
         parent_logo_url: string | null;
         city: string | null;
         state: string | null;
         postal_code: string | null;
+        full_address: string | null;
       }
     | undefined;
   if (!store) return null;
@@ -338,7 +444,8 @@ export async function loadMerchantMarketInsights(
     LEFT JOIN merchant_parents mp ON mp.id = cs.parent_id
     WHERE s.merchant_store_id = ${storePk}
       AND s.period_key = ${periodKey}
-    ORDER BY s.rank ASC
+      AND cs.id <> ${storePk}
+    ORDER BY s.affinity_pct DESC NULLS LAST, s.rank ASC
     LIMIT ${Math.min(Math.max(1, limit), 20)}
   `;
 
@@ -355,22 +462,26 @@ export async function loadMerchantMarketInsights(
       shared_customers: number;
       computed_at: Date | string | null;
     }>
-  ).map((r) => {
+  ).map((r, i) => {
     if (r.computed_at && !computedAt) {
       computedAt = new Date(String(r.computed_at)).toISOString();
     }
     return {
-      rank: Number(r.rank) || 0,
+      rank: i + 1,
       competitor_store_id: String(r.competitor_store_id),
       name: String(r.name ?? "Store"),
       logo_url: resolveLogoUrl(r.banner_url ?? r.parent_logo_url),
-      affinity_pct: Number(r.affinity_pct) || 0,
+      affinity_pct: (() => {
+        const n = Number(r.affinity_pct);
+        return Number.isFinite(n) ? n : 0;
+      })(),
       rank_delta: r.rank_delta == null ? null : Number(r.rank_delta),
       shared_customers: Number(r.shared_customers) || 0,
     };
   });
 
   const cap = Math.min(Math.max(1, limit), 20);
+  const peerOrderById = new Map<string, number>();
   if (competitors.length < cap) {
     const seen = new Set(competitors.map((c) => c.competitor_store_id));
     const peers = await loadAreaPeerCompetitors(
@@ -381,39 +492,51 @@ export async function loadMerchantMarketInsights(
       cap - competitors.length,
       seen
     );
-    const baseRank = competitors.length;
-    for (let i = 0; i < peers.length; i++) {
-      competitors.push({ ...peers[i], rank: baseRank + i + 1 });
+    for (const p of peers) {
+      peerOrderById.set(p.competitor_store_id, p.order_count_90d);
+      competitors.push({
+        rank: competitors.length + 1,
+        competitor_store_id: p.competitor_store_id,
+        name: p.name,
+        logo_url: p.logo_url,
+        affinity_pct: p.affinity_pct,
+        rank_delta: p.rank_delta,
+        shared_customers: p.shared_customers,
+      });
     }
   }
 
-  const locality = await loadAreaInsights(sql, storePk, store, scope);
+  const [locality, overlapAffinity] = await Promise.all([
+    loadAreaInsights(sql, storePk, store, scope),
+    computeOwnOverlapAffinityPct(sql, storePk, store, scope),
+  ]);
 
   const yourOrders = locality.your_orders_90d;
-  const orderByStoreId = new Map<string, number>();
-  const ids = competitors.map((c) => c.competitor_store_id);
-  if (ids.length > 0) {
-    const orderRows = await sql`
-      SELECT ms.store_id,
-             COUNT(oc.id)::int AS order_count
-      FROM merchant_stores ms
-      LEFT JOIN orders_core oc
-        ON oc.merchant_store_id = ms.id
-       AND oc.placed_at >= now() - interval '90 days'
-       AND COALESCE(oc.current_status, '') NOT IN ('CANCELLED', 'CANCELED', 'REJECTED')
-      WHERE ms.store_id = ANY(${ids})
-      GROUP BY ms.store_id
-    `;
-    for (const row of orderRows as unknown as Array<{ store_id: string; order_count: number }>) {
-      orderByStoreId.set(String(row.store_id), Number(row.order_count) || 0);
+  const needOrderFill = competitors.some((c) => !(c.affinity_pct > 0) && c.shared_customers <= 0);
+  const orderByStoreId = new Map<string, number>(peerOrderById);
+  if (needOrderFill) {
+    const ids = competitors.map((c) => c.competitor_store_id);
+    if (ids.length > 0) {
+      const orderRows = await sql`
+        SELECT ms.store_id,
+               COUNT(oc.id)::int AS order_count
+        FROM merchant_stores ms
+        LEFT JOIN orders_core oc
+          ON oc.merchant_store_id = ms.id
+         AND oc.placed_at >= now() - interval '90 days'
+         AND COALESCE(oc.current_status, '') NOT IN ('CANCELLED', 'CANCELED', 'REJECTED')
+        WHERE ms.store_id = ANY(${ids})
+        GROUP BY ms.store_id
+      `;
+      for (const row of orderRows as unknown as Array<{ store_id: string; order_count: number }>) {
+        orderByStoreId.set(String(row.store_id), Number(row.order_count) || 0);
+      }
     }
   }
 
-  const peerOrdersSum = competitors.reduce(
-    (sum, c) => sum + (orderByStoreId.get(c.competitor_store_id) ?? 0),
-    0
-  );
-  const areaOrderTotal = yourOrders + peerOrdersSum;
+  const areaOrderTotal =
+    yourOrders +
+    competitors.reduce((sum, c) => sum + (orderByStoreId.get(c.competitor_store_id) ?? 0), 0);
 
   if (areaOrderTotal > 0) {
     for (const c of competitors) {
@@ -429,9 +552,14 @@ export async function loadMerchantMarketInsights(
   });
 
   const yourAffinityPct =
-    areaOrderTotal > 0 ? Math.round((1000 * yourOrders) / areaOrderTotal) / 10 : 0;
+    overlapAffinity > 0
+      ? overlapAffinity
+      : areaOrderTotal > 0
+        ? Math.round((1000 * yourOrders) / areaOrderTotal) / 10
+        : 0;
 
   return {
+    store_id: String(store.store_id),
     store_name: String(store.store_name ?? "Store"),
     store_logo_url: resolveLogoUrl(store.banner_url ?? store.parent_logo_url),
     match_scope: scope,

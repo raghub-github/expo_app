@@ -6,8 +6,6 @@ import {
   revalidateSmsPermissionAfterSettings,
   runSmsAllowPipeline,
 } from "@/lib/smsPermissionManager";
-import { profileService } from "@/services/profile.service";
-import { useAuthStore } from "@/store/authStore";
 
 type SmsPermissionState = {
   showSheet: boolean;
@@ -29,8 +27,11 @@ type SmsPermissionState = {
 };
 
 async function syncProfile(granted: boolean) {
-  if (!useAuthStore.getState().session?.accessToken) return;
   try {
+    // Lazy — avoid authStore ↔ locationStore ↔ smsPermissionStore cycle at boot.
+    const { useAuthStore } = require("@/store/authStore") as typeof import("@/store/authStore");
+    if (!useAuthStore.getState().session?.accessToken) return;
+    const { profileService } = require("@/services/profile.service") as typeof import("@/services/profile.service");
     await profileService.updateProfile({ sms_permission: granted });
   } catch {
     // non-blocking

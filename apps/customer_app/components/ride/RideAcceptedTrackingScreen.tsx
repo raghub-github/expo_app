@@ -51,6 +51,7 @@ import { RideCancelledAckSheet } from "@/components/ride/RideCancelledAckSheet";
 import type { RideCancelReason } from "@/lib/ride-cancel-reasons";
 import { purgeRideOrderFromClientCaches } from "@/lib/ride-order-query-cache";
 import { seedOrderDetailCache } from "@/lib/orderDetailCache";
+import { isPlaceholderCaptainName, mergeCaptainProfile } from "@/lib/mergeCaptainProfile";
 import { useRiderToPickupLiveRoute } from "@/hooks/useRiderToPickupLiveRoute";
 import { bearingDegrees, type MapLatLng } from "@/lib/map-route-utils";
 import {
@@ -58,6 +59,10 @@ import {
   resolveRideDropPoint,
   sanitizeRiderPositionForPickup,
 } from "@/lib/ride-map-coords";
+import {
+  resolveSmoothDurationMs,
+  useSmoothedRiderPosition,
+} from "@gatimitra/map-tracking-engine";
 import {
   buildRidePickupWaitCustomerBanner,
   fitRideWaitBannerFontSize,
@@ -68,7 +73,7 @@ import {
   resolveRidePickupWaitElapsedSeconds,
 } from "@/lib/ride-pickup-wait";
 import { pollIntervalWithBackoff, queryRetryDelay } from "@/lib/query-poll-backoff";
-import { buildActiveRideTripFareBreakdown, resolveRideMapMarkerImageKey, resolveRideVehicleImage } from "@/lib/ride-order-display";
+import { buildActiveRideTripFareBreakdown, resolveRideVehicleImage } from "@/lib/ride-order-display";
 
 const ACCENT_BLUE = "#4285F4";
 const BANNER_NAVY = "#1B3A6B";
@@ -168,25 +173,49 @@ export function RideAcceptedTrackingScreen({
   const dropPoint = useMemo(() => resolveRideDropPoint(order), [order]);
   const orderStatus = normalizeCustomerOrderStatus(order.status);
 
+  const liveStatusQueryKey = [
+    isParcelOrder(order) ? "parcelOrderStatus" : "rideOrderStatus",
+    order.orderId,
+  ] as const;
   const { data: liveRideStatus } = useQuery({
-    queryKey: [isParcelOrder(order) ? "parcelOrderStatus" : "rideOrderStatus", order.orderId],
+    queryKey: liveStatusQueryKey,
     queryFn: () => fetchLiveTrackingStatus(order),
     refetchInterval: (query) => pollIntervalWithBackoff(query, 5_000),
-    staleTime: 2_500,
+    staleTime: 0,
+    refetchOnMount: "always",
+    initialData: () => queryClient.getQueryData<RideOrderStatusResponse>(liveStatusQueryKey),
+    placeholderData: order.rider
+      ? {
+          orderId: order.orderId,
+          coreOrderId: 0,
+          status: order.status,
+          appStatus: orderStatus,
+          riderId: 1,
+          riderAssigned: true,
+          rider: order.rider,
+          totalAmount: order.totalAmount ?? 0,
+          searchExpiresAt: null,
+          cancelled: false,
+          pickupOtp: order.pickupOtp ?? null,
+          deliveryOtp: order.deliveryOtp ?? null,
+          rideStarted: order.rideStarted ?? false,
+          riderReachedPickupAt: order.riderReachedPickupAt ?? null,
+          pickupOtpVerifiedAt: order.pickupOtpVerifiedAt ?? null,
+        }
+      : undefined,
     retry: 2,
     retryDelay: queryRetryDelay,
   });
 
-  // If ride status has captain profile but order cache doesn't, seed immediately.
+  // Keep order cache captain fields filled from the faster ride-status payload.
   useEffect(() => {
     if (!liveRideStatus?.rider) return;
-    if (order.rider?.name?.trim()) return;
     seedOrderDetailCache(queryClient, order.orderId, {
       orderId: order.orderId,
-      status: order.status,
+      status: liveRideStatus.appStatus || order.status,
       rider: liveRideStatus.rider,
     });
-  }, [liveRideStatus?.rider, order.orderId, order.rider?.name, order.status, queryClient]);
+  }, [liveRideStatus?.rider, liveRideStatus?.appStatus, order.orderId, order.status, queryClient]);
 
   // Parcel: keep drop OTP / rideStarted in sync with status polls.
   useEffect(() => {
@@ -223,23 +252,27 @@ export function RideAcceptedTrackingScreen({
     queryClient,
   ]);
 
+  const captain = mergeCaptainProfile(order.rider, liveRideStatus?.rider);
+
   // Assigned but profile still missing → force order detail refetch once.
   const captainHydrateAttemptedRef = useRef(false);
   useEffect(() => {
-    if (order.rider?.name?.trim()) return;
+    if (!isPlaceholderCaptainName(captain?.name) && (captain?.photoUrl || captain?.vehicleRegistration)) {
+      return;
+    }
     if (!liveRideStatus?.riderAssigned && !liveRideStatus?.riderId) return;
     if (captainHydrateAttemptedRef.current) return;
     captainHydrateAttemptedRef.current = true;
     void queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
   }, [
+    captain?.name,
+    captain?.photoUrl,
+    captain?.vehicleRegistration,
     liveRideStatus?.riderAssigned,
     liveRideStatus?.riderId,
     order.orderId,
-    order.rider?.name,
     queryClient,
   ]);
-
-  const captain = order.rider ?? liveRideStatus?.rider ?? null;
   useEffect(() => {
     if (!liveRideStatus || liveRideStatus.cancelled) return;
     const app = (liveRideStatus.appStatus ?? "").trim().toUpperCase();
@@ -348,22 +381,18 @@ export function RideAcceptedTrackingScreen({
 
   const routeDestination = rideInProgress ? dropPoint : pickupPoint;
 
-  const riderMarkerImageKey = resolveRideMapMarkerImageKey(rideCatalogId);
   const rideVehicleImage = resolveRideVehicleImage(rideCatalogId);
   const {
     coordinates: routeCoordinates,
     fullCoordinates: fullRouteCoordinates,
     distanceM,
     etaMinutes: routeEtaMinutes,
-    displayRider,
   } = useRiderToPickupLiveRoute(
     riderPos,
     routeDestination,
     rideCatalogId,
     tracking?.rider?.headingDegrees ?? null
   );
-
-  const mapRiderPos = displayRider ?? riderPos;
 
   const displayRouteCoordinates = useMemo(() => {
     if (!routeDestination) return [];
@@ -455,6 +484,32 @@ export function RideAcceptedTrackingScreen({
     }
     return null;
   }, [tracking?.rider?.headingDegrees, riderPos, routeCoordinates, routeDestination]);
+
+  const riderGpsFix = useMemo(() => {
+    if (!riderPos) return undefined;
+    return {
+      lat: riderPos.latitude,
+      lng: riderPos.longitude,
+      headingDeg: riderHeading ?? undefined,
+      speedMps: tracking?.rider?.speedMps ?? undefined,
+    };
+  }, [
+    riderPos?.latitude,
+    riderPos?.longitude,
+    riderHeading,
+    tracking?.rider?.speedMps,
+  ]);
+
+  const smoothedRider = useSmoothedRiderPosition(
+    riderGpsFix,
+    resolveSmoothDurationMs(tracking?.rider?.speedMps)
+  );
+
+  const mapRiderPos = useMemo(() => {
+    if (!smoothedRider) return riderPos;
+    return { latitude: smoothedRider.lat, longitude: smoothedRider.lng };
+  }, [smoothedRider, riderPos]);
+  const mapRiderHeading = smoothedRider?.headingDeg ?? riderHeading;
 
   const captainArrived =
     !rideInProgress &&
@@ -780,10 +835,10 @@ export function RideAcceptedTrackingScreen({
         center={mapCenter}
         routeCoordinates={mapRouteCoordinates}
         riderPosition={mapRiderPos}
-        riderHeading={riderHeading}
+        riderHeading={mapRiderHeading}
+        riderSpeedMps={tracking?.rider?.speedMps ?? null}
         pickupPosition={pickupPoint}
         dropPosition={dropPoint}
-        riderMarkerImageKey={riderMarkerImageKey}
         navigationMode={rideInProgress}
         highlightPickupZone={highlightPickupZone}
         highlightDropZone={highlightDropZone}
@@ -802,12 +857,12 @@ export function RideAcceptedTrackingScreen({
       mapCenter,
       mapRouteCoordinates,
       mapRiderPos,
-      riderHeading,
+      mapRiderHeading,
       pickupPoint,
       dropPoint,
-      riderMarkerImageKey,
       highlightPickupZone,
       highlightDropZone,
+      tracking?.rider?.speedMps,
     ]
   );
 

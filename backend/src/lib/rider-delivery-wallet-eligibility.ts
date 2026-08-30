@@ -1,6 +1,6 @@
 import type { Sql } from "postgres";
 import { getSql } from "../db/client.js";
-import { isRideFarePaymentPending } from "./ride-rider-payout-snapshot.js";
+import { isRideFareAwaitingCustomerPayment, resolvePersonRideCustomerPayable } from "./ride-customer-payable.js";
 
 /** Rider wallet credit is only for completed deliveries — never admin/rider unassign. */
 export async function isRiderEligibleForDeliveryWalletCredit(
@@ -18,6 +18,9 @@ export async function isRiderEligibleForDeliveryWalletCredit(
       c.rider_id,
       c.order_type,
       c.payment_status,
+      c.grand_total,
+      c.checkout_metadata,
+      c.billing_snapshot,
       r.admin_rider_payment_cleared_at,
       EXISTS (
         SELECT 1
@@ -46,6 +49,9 @@ export async function isRiderEligibleForDeliveryWalletCredit(
     rider_id?: number | null;
     order_type?: string | null;
     payment_status?: string | null;
+    grand_total?: unknown;
+    checkout_metadata?: unknown;
+    billing_snapshot?: unknown;
     admin_rider_payment_cleared_at?: string | Date | null;
     has_completed_delivery?: boolean;
     has_cancelled_without_delivery?: boolean;
@@ -60,7 +66,18 @@ export async function isRiderEligibleForDeliveryWalletCredit(
     const adminCleared =
       row.admin_rider_payment_cleared_at != null &&
       String(row.admin_rider_payment_cleared_at).trim().length > 0;
-    if (!adminCleared && isRideFarePaymentPending(row.payment_status)) {
+    const payable = resolvePersonRideCustomerPayable({
+      grandTotal: row.grand_total,
+      checkoutMetadata: row.checkout_metadata,
+      billingSnapshot: row.billing_snapshot,
+    });
+    if (
+      !adminCleared &&
+      isRideFareAwaitingCustomerPayment({
+        paymentStatus: row.payment_status,
+        customerPayable: payable,
+      })
+    ) {
       return { eligible: false, error: "ride_payment_pending" };
     }
   }

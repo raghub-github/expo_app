@@ -37,8 +37,8 @@ const RIDE_LIVE: Record<string, { step: number; title: string; body: string }> =
   /** Same template as food assignment — used when a captain accepts a person-ride. */
   ORDER_RIDER_ASSIGNED: { step: 1, title: "Ride Accepted", body: "Captain on the way" },
   RIDE_CAPTAIN_ON_THE_WAY: { step: 1, title: "Ride Accepted", body: "Captain on the way" },
-  RIDE_RIDER_NEARBY: { step: 2, title: "Rider Nearby", body: "Be ready at pickup" },
-  RIDE_RIDER_ARRIVED: { step: 3, title: "Rider Has Arrived", body: "Meet your rider" },
+  RIDE_RIDER_NEARBY: { step: 2, title: "Captain Nearby", body: "Be ready at pickup" },
+  RIDE_RIDER_ARRIVED: { step: 3, title: "Captain Has Arrived", body: "Meet your captain" },
   RIDE_TRIP_STARTED: { step: 4, title: "Trip Started", body: "Have a safe ride" },
   RIDE_NEAR_DESTINATION: { step: 5, title: "Approaching Destination", body: "Almost there" },
   RIDE_COMPLETED: { step: 6, title: "Ride Completed", body: "Please rate your ride" },
@@ -318,6 +318,11 @@ export async function notifyCustomerRideLifecycle(args: {
       args.pickupOtp?.trim() ||
       (wantsPickupOtp ? await pickupOtpForOrderIdText(args.orderIdText) : null);
 
+    const meta = rideLiveMeta(args.templateCode, args.orderIdText, captainName, pickupOtp);
+    const liveTitle =
+      "liveTitle" in meta && typeof meta.liveTitle === "string" ? meta.liveTitle.trim() : "";
+    const liveBody =
+      "liveBody" in meta && typeof meta.liveBody === "string" ? meta.liveBody.trim() : "";
     await sendNotification({
       templateCode: args.templateCode,
       variables: {
@@ -334,7 +339,10 @@ export async function notifyCustomerRideLifecycle(args: {
       },
       target: { user_id: customerId },
       idempotencyKey: `${args.templateCode}:${args.orderIdText}`,
-      metadata: rideLiveMeta(args.templateCode, args.orderIdText, captainName, pickupOtp),
+      metadata: meta,
+      ...(liveTitle
+        ? { overrides: { title: liveTitle, body: liveBody || undefined } }
+        : {}),
     });
   } catch (err) {
     console.warn(

@@ -29,6 +29,8 @@ import {
   schedulePhaseLabel,
 } from "@/lib/storeScheduleEngine";
 import { triggerStoreScheduleTick } from "@/lib/triggerStoreScheduleTick";
+import { loadMerchantLicenseEvaluation } from "@/lib/syncMerchantLicenseCompliance";
+import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
@@ -520,6 +522,20 @@ export async function GET(
       };
     }
 
+    let licenseStatus: Awaited<ReturnType<typeof loadMerchantLicenseEvaluation>> | null = null;
+    try {
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+      if (supabaseUrl && supabaseServiceKey) {
+        const db = createClient(supabaseUrl, supabaseServiceKey, {
+          auth: { autoRefreshToken: false, persistSession: false },
+        });
+        licenseStatus = await loadMerchantLicenseEvaluation(db, storeId);
+      }
+    } catch (licenseErr) {
+      console.error("[GET store-operations] license evaluation", licenseErr);
+    }
+
     return NextResponse.json({
       success: true,
       operational_status: effectiveOperationalStatus,
@@ -559,6 +575,11 @@ export async function GET(
       schedule_end_prompt_active: scheduleEndPromptActive,
       schedule_end_prompt_expires_at: scheduleEndPromptExpiresAt,
       is_manual_override: av["is_manual_override"] === true,
+      license_blocked: licenseStatus?.blocked ?? false,
+      license_can_manual_open: licenseStatus?.can_manual_open ?? true,
+      license_expired_documents: licenseStatus?.expired ?? [],
+      license_pending_verification: licenseStatus?.pending_verification ?? [],
+      license_expiring_soon: licenseStatus?.expiring_soon ?? [],
     });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/store-operations]", e);

@@ -10,12 +10,15 @@ import {
   ActivityIndicator,
   Keyboard,
   Modal,
+  useWindowDimensions,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import {
   RIDER_FUEL_TYPE_OPTIONS,
+  RIDER_SEATING_CAPACITY_OPTIONS,
   RIDER_VEHICLE_TYPE_OPTIONS,
+  isTwoOrThreeWheeler,
 } from "@/src/lib/rider-vehicle-options";
 import {
   AC_TYPE_OPTIONS,
@@ -44,8 +47,14 @@ import {
   resolveCategoryCodeForVehicleType,
 } from "@/src/lib/rider-category-service-assignments";
 import { buildVehicleDetailsOnboardingFilter } from "@/src/lib/vehicle-details-onboarding-filter";
+import {
+  hasMissingStep1VehicleField,
+  isElectronicVehicleForm,
+} from "@/src/lib/rider-vehicle-form-meta";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
+import { useRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 import { colors } from "@/src/theme";
+import { LORA_BOLD, LORA_REGULAR, LORA_SEMIBOLD, POPPINS_SEMIBOLD } from "@/src/theme/headerFonts";
 
 const TEAL = colors.primary[600];
 const OTHER_VEHICLE_TYPE = "other";
@@ -71,6 +80,7 @@ type VehicleDetailsFormProps = {
   submitting?: boolean;
   errorMessage?: string | null;
   onDismissError?: () => void;
+  onSkip?: () => void;
 };
 
 export function VehicleDetailsForm({
@@ -83,18 +93,23 @@ export function VehicleDetailsForm({
   submitting = false,
   errorMessage,
   onDismissError,
+  onSkip,
 }: VehicleDetailsFormProps) {
   const { t } = useTranslation();
+  const { height: winH } = useWindowDimensions();
+  const systemBottom = useRiderBottomInset();
   const assignmentsQuery = useCategoryServiceAssignments();
   const onboardingTypesQuery = useOnboardingVehicleTypes();
   const storeVehicleChoice = useOnboardingStore((s) => s.data.vehicleChoice);
   const storeVehicleCategoryCode = useOnboardingStore((s) => s.data.vehicleCategoryCode);
   const storeRcNumber = useOnboardingStore((s) => s.data.rcNumber);
   const hydrateOnboarding = useOnboardingStore((s) => s.hydrate);
-  const isCompact = formMeta?.formMode === "cashfree_missing_only";
+  const isCompact = isElectronicVehicleForm(formMeta, initial);
   const missingFields = formMeta?.missingFields ?? [];
   const missingSet = useMemo(() => new Set(missingFields), [missingFields]);
-  const [step, setStep] = useState<1 | 2>(() => formMeta?.initialStep ?? 1);
+  const [step, setStep] = useState<1 | 2>(() =>
+    isCompact ? 2 : (formMeta?.initialStep ?? 1),
+  );
 
   const [vehicleType, setVehicleType] = useState(initial?.vehicleType ?? "bike");
   const [customOtherType, setCustomOtherType] = useState(
@@ -115,6 +130,7 @@ export function VehicleDetailsForm({
     initialServiceSelection(initial?.serviceTypes),
   );
   const [servicePickerOpen, setServicePickerOpen] = useState(false);
+  const [seatingPickerOpen, setSeatingPickerOpen] = useState(false);
   const [isCommercial, setIsCommercial] = useState(initial?.isCommercial ?? false);
   const [ownershipType, setOwnershipType] = useState<string | null>(
     initial?.ownershipType ?? null,
@@ -137,8 +153,8 @@ export function VehicleDetailsForm({
   }, [hydrateOnboarding]);
 
   useEffect(() => {
-    setStep(formMeta?.initialStep ?? 1);
-  }, [formMeta?.initialStep, initial?.id]);
+    setStep(isCompact ? 2 : (formMeta?.initialStep ?? 1));
+  }, [isCompact, formMeta?.initialStep, initial?.id]);
 
   const showStep1Field = (field: RiderVehicleMissingField | "vehicle_type" | "make_model") => {
     if (!isCompact) return true;
@@ -149,23 +165,24 @@ export function VehicleDetailsForm({
   };
 
   const showStep2Field = (field: RiderVehicleMissingField) => {
+    if (
+      field === "service_types" ||
+      field === "ownership_type" ||
+      field === "is_commercial"
+    ) {
+      return true;
+    }
     if (!isCompact) return true;
     return missingSet.has(field);
   };
 
   const showStep1Section = useMemo(() => {
     if (!isCompact) return step === 1;
-    return (
-      step === 1 &&
-      (showStep1Field("vehicle_type") ||
-        showStep1Field("registration_number") ||
-        showStep1Field("fuel_type") ||
-        showStep1Field("make_model"))
-    );
+    return hasMissingStep1VehicleField(missingSet);
   }, [isCompact, step, missingSet]);
 
-  const compactSingleStep = isCompact && formMeta?.step1Complete;
-  const showBackButton = !isCompact || !formMeta?.step1Complete;
+  const compactSingleStep = isCompact;
+  const showBackButton = !isCompact;
 
   const verifiedSummaryLines = useMemo(() => {
     if (!isCompact || !initial) return [];
@@ -265,17 +282,16 @@ export function VehicleDetailsForm({
     [selectedServices],
   );
   const showPersonRideFields = needsPersonRideFields(normalizedServices);
+  const acTypeDisabled = isTwoOrThreeWheeler(vehicleType);
+
+  useEffect(() => {
+    if (acTypeDisabled && acType) setAcType(null);
+  }, [acTypeDisabled, acType]);
 
   const showStep2Section = useMemo(() => {
-    if (!isCompact) return step === 2;
-    if (step !== 2 && !(isCompact && formMeta?.step1Complete)) return false;
-    return (
-      showStep2Field("service_types") ||
-      showStep2Field("ownership_type") ||
-      showStep2Field("is_commercial") ||
-      showPersonRideFields
-    );
-  }, [isCompact, step, formMeta?.step1Complete, missingSet, showPersonRideFields]);
+    if (isCompact) return true;
+    return step === 2;
+  }, [isCompact, step]);
 
   const derivedState = useMemo(
     () => deriveRegistrationStateFromPlate(registrationNumber),
@@ -456,7 +472,7 @@ export function VehicleDetailsForm({
   const handleSave = async () => {
     setLocalError(null);
     if (!validateStep1()) {
-      setStep(1);
+      if (!isCompact) setStep(1);
       return;
     }
     if (normalizedServices.length < 1) {
@@ -477,7 +493,7 @@ export function VehicleDetailsForm({
     const resolvedFuelType = resolveFuelTypeForSubmit();
     if (!hideFuelType && fuelTypeOptions.length > 0 && !resolvedFuelType) {
       setLocalError(t("vehicle.form.fuelRequired", "Select fuel type"));
-      setStep(1);
+      if (!isCompact) setStep(1);
       return;
     }
 
@@ -509,13 +525,21 @@ export function VehicleDetailsForm({
       serviceTypes: normalizedServices,
       isCommercial,
       seatingCapacity: showPersonRideFields ? parsedSeating : null,
-      acType: showPersonRideFields ? acType : null,
+      acType: showPersonRideFields && !acTypeDisabled ? acType : null,
       vehicleCategoryCode: vehicleCategoryCode ?? effectiveVehicleCategoryCode ?? null,
       onboardingVehicleChoice: effectiveVehicleChoice,
     });
   };
 
   const displayError = errorMessage ?? localError;
+
+  const fieldsMaxHeight = Math.max(
+    160,
+    Math.round(winH * 0.92) -
+      systemBottom -
+      (keyboardHeight > 0 ? Math.min(keyboardHeight, Math.round(winH * 0.35)) : 0) -
+      250,
+  );
 
   const plainTextProps = {
     autoCorrect: false,
@@ -550,7 +574,9 @@ export function VehicleDetailsForm({
       <View style={styles.stepHeader}>
         <Text style={styles.stepLabel}>
           {compactSingleStep
-            ? t("vehicle.form.remainingStep", "Complete remaining details")
+            ? showStep1Section
+              ? t("vehicle.form.remainingStep", "Complete remaining details")
+              : t("vehicle.form.step2Only", "Service & ownership")
             : step === 1
               ? t("vehicle.form.step1", "Step 1 of 2 — Vehicle details")
               : t("vehicle.form.step2", "Step 2 of 2 — Service & ownership")}
@@ -568,13 +594,9 @@ export function VehicleDetailsForm({
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
-        automaticallyAdjustKeyboardInsets
         nestedScrollEnabled
-        contentContainerStyle={[
-          styles.scroll,
-          styles.scrollContent,
-          { paddingBottom: keyboardHeight > 0 ? 12 : 4 },
-        ]}
+        style={{ maxHeight: fieldsMaxHeight }}
+        contentContainerStyle={[styles.scroll, styles.scrollContent]}
       >
         {compactSingleStep && verifiedSummaryLines.length > 0 ? (
           <View style={styles.verifiedSummary}>
@@ -915,57 +937,71 @@ export function VehicleDetailsForm({
             ) : null}
 
             {showPersonRideFields ? (
-              <>
-                <Text style={styles.fieldLabel}>
-                  {t("vehicle.form.seatingCapacity", "Seating capacity")}
-                </Text>
-                <View style={styles.inputWrap}>
-                  <Ionicons
-                    name="people-outline"
-                    size={18}
-                    color="#94A3B8"
-                    style={styles.inputIcon}
-                  />
-                  <TextInput
-                    value={seatingCapacity}
-                    onChangeText={setSeatingCapacity}
-                    placeholder={t("vehicle.form.seatingPh", "e.g. 4")}
-                    keyboardType="number-pad"
-                    maxLength={2}
-                    style={styles.textInput}
-                    placeholderTextColor="#94A3B8"
-                  />
+              <View style={styles.row}>
+                <View style={[styles.fieldGroup, styles.half]}>
+                  <Text style={styles.fieldLabel}>
+                    {t("vehicle.form.seatingCapacity", "Seating capacity")}
+                  </Text>
+                  <Pressable
+                    onPress={() => setSeatingPickerOpen(true)}
+                    style={styles.dropdownTrigger}
+                  >
+                    <Ionicons name="people-outline" size={18} color="#94A3B8" />
+                    <Text
+                      style={[
+                        styles.dropdownText,
+                        seatingCapacity.trim()
+                          ? styles.seatingValueText
+                          : styles.dropdownPlaceholder,
+                      ]}
+                    >
+                      {seatingCapacity.trim()
+                        ? seatingCapacity.trim()
+                        : t("vehicle.form.seatingPh", "Select 1–10")}
+                    </Text>
+                    <Ionicons name="chevron-down" size={18} color="#64748B" />
+                  </Pressable>
                 </View>
-
-                <Text style={styles.fieldLabel}>
-                  {t("vehicle.form.acType", "AC type")}
-                </Text>
-                <View style={styles.chipRow}>
-                  {AC_TYPE_OPTIONS.map((opt) => {
-                    const selected = acType === opt.value;
-                    return (
-                      <Pressable
-                        key={opt.value}
-                        onPress={() => setAcType(selected ? null : opt.value)}
-                        style={[styles.fuelChip, selected && styles.fuelChipSelected]}
-                      >
-                        <Text
+                <View style={[styles.fieldGroup, styles.half]}>
+                  <Text style={[styles.fieldLabel, acTypeDisabled && styles.fieldLabelDisabled]}>
+                    {t("vehicle.form.acType", "AC type")}
+                  </Text>
+                  <View style={styles.acChipRow}>
+                    {AC_TYPE_OPTIONS.map((opt) => {
+                      const selected = !acTypeDisabled && acType === opt.value;
+                      return (
+                        <Pressable
+                          key={opt.value}
+                          disabled={acTypeDisabled}
+                          onPress={() => setAcType(selected ? null : opt.value)}
                           style={[
-                            styles.fuelChipText,
-                            selected && styles.fuelChipTextSelected,
+                            styles.fuelChip,
+                            styles.acChipFlex,
+                            selected && styles.fuelChipSelected,
+                            acTypeDisabled && styles.fuelChipDisabled,
                           ]}
                         >
-                          {opt.label}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
+                          <Text
+                            style={[
+                              styles.fuelChipText,
+                              selected && styles.fuelChipTextSelected,
+                              acTypeDisabled && styles.fuelChipTextDisabled,
+                            ]}
+                          >
+                            {opt.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
                 </View>
-              </>
+              </View>
             ) : null}
           </>
         ) : null}
+      </ScrollView>
 
+      <View style={styles.footer}>
         {displayError ? (
           <View style={styles.errorBanner}>
             <Ionicons name="warning-outline" size={16} color="#B91C1C" />
@@ -973,7 +1009,7 @@ export function VehicleDetailsForm({
           </View>
         ) : null}
 
-        {showStep1Section ? (
+        {showStep1Section && !isCompact ? (
           <Pressable
             onPress={handleContinue}
             disabled={!canContinueStep1}
@@ -984,7 +1020,7 @@ export function VehicleDetailsForm({
             </Text>
             <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
           </Pressable>
-        ) : showStep2Section ? (
+        ) : showStep2Section || isCompact ? (
           <View style={styles.stepActions}>
             {showBackButton ? (
             <Pressable
@@ -1024,7 +1060,20 @@ export function VehicleDetailsForm({
             </Pressable>
           </View>
         ) : null}
-      </ScrollView>
+
+        {onSkip ? (
+          <Pressable
+            onPress={onSkip}
+            disabled={submitting}
+            hitSlop={8}
+            style={styles.skipBtn}
+          >
+            <Text style={styles.skipBtnText}>
+              {t("vehicle.sheet.skip", "Skip for now")}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
 
       <Modal
         visible={servicePickerOpen}
@@ -1068,6 +1117,48 @@ export function VehicleDetailsForm({
           </Pressable>
         </Pressable>
       </Modal>
+
+      <Modal
+        visible={seatingPickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSeatingPickerOpen(false)}
+      >
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setSeatingPickerOpen(false)}
+        >
+          <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>
+              {t("vehicle.form.seatingCapacity", "Seating capacity")}
+            </Text>
+            <View style={styles.seatingGrid}>
+              {RIDER_SEATING_CAPACITY_OPTIONS.map((n) => {
+                const selected = seatingCapacity === String(n);
+                return (
+                  <Pressable
+                    key={n}
+                    onPress={() => {
+                      setSeatingCapacity(String(n));
+                      setSeatingPickerOpen(false);
+                    }}
+                    style={[styles.seatingChip, selected && styles.fuelChipSelected]}
+                  >
+                    <Text
+                      style={[
+                        styles.seatingChipText,
+                        selected && styles.fuelChipTextSelected,
+                      ]}
+                    >
+                      {n}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </>
   );
 }
@@ -1084,6 +1175,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 12,
     fontWeight: "700",
+    fontFamily: LORA_BOLD,
     color: "#64748B",
   },
   stepDots: {
@@ -1108,20 +1200,26 @@ const styles = StyleSheet.create({
   sectionLabel: {
     fontSize: 13,
     fontWeight: "700",
+    fontFamily: LORA_BOLD,
     color: "#334155",
     marginTop: 4,
   },
   fieldLabel: {
     fontSize: 13,
     fontWeight: "600",
+    fontFamily: LORA_SEMIBOLD,
     color: "#475569",
     marginTop: 6,
+  },
+  fieldLabelDisabled: {
+    color: "#94A3B8",
   },
   required: {
     color: "#DC2626",
   },
   hintText: {
     fontSize: 12,
+    fontFamily: LORA_REGULAR,
     color: "#64748B",
     marginTop: 4,
   },
@@ -1155,6 +1253,7 @@ const styles = StyleSheet.create({
   typeChipText: {
     fontSize: 13,
     fontWeight: "600",
+    fontFamily: LORA_SEMIBOLD,
     color: TEAL,
   },
   typeChipTextSelected: {
@@ -1168,10 +1267,13 @@ const styles = StyleSheet.create({
   fuelChip: {
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 999,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#E2E8F0",
     backgroundColor: "#F8FAFC",
+    minHeight: 48,
+    justifyContent: "center",
+    alignItems: "center",
   },
   fuelChipSelected: {
     backgroundColor: TEAL,
@@ -1180,6 +1282,7 @@ const styles = StyleSheet.create({
   fuelChipText: {
     fontSize: 13,
     fontWeight: "600",
+    fontFamily: LORA_SEMIBOLD,
     color: "#475569",
   },
   fuelChipTextSelected: {
@@ -1200,6 +1303,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 15,
     fontWeight: "500",
+    fontFamily: LORA_REGULAR,
     color: "#0F172A",
   },
   dropdownPlaceholder: {
@@ -1271,6 +1375,7 @@ const styles = StyleSheet.create({
     color: TEAL,
     fontSize: 15,
     fontWeight: "700",
+    fontFamily: LORA_BOLD,
   },
   saveBtn: {
     flexDirection: "row",
@@ -1306,10 +1411,12 @@ const styles = StyleSheet.create({
   verifiedSummaryTitle: {
     fontSize: 12,
     fontWeight: "700",
+    fontFamily: LORA_BOLD,
     color: "#334155",
   },
   verifiedSummaryLine: {
     fontSize: 12,
+    fontFamily: LORA_REGULAR,
     color: "#475569",
     lineHeight: 18,
   },
@@ -1320,6 +1427,65 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 16,
     fontWeight: "700",
+    fontFamily: LORA_BOLD,
+  },
+  footer: {
+    paddingTop: 8,
+    gap: 8,
+  },
+  skipBtn: {
+    alignItems: "center",
+    paddingVertical: 10,
+  },
+  skipBtnText: {
+    fontSize: 14,
+    fontWeight: "700",
+    fontFamily: LORA_BOLD,
+    color: "#64748B",
+  },
+  fuelChipDisabled: {
+    backgroundColor: "#F1F5F9",
+    borderColor: "#E2E8F0",
+    opacity: 0.55,
+  },
+  fuelChipTextDisabled: {
+    color: "#94A3B8",
+  },
+  acChipRow: {
+    flexDirection: "row",
+    gap: 8,
+    minHeight: 48,
+    alignItems: "stretch",
+  },
+  acChipFlex: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  seatingGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 4,
+  },
+  seatingChip: {
+    width: 52,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#F8FAFC",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  seatingChipText: {
+    fontSize: 16,
+    fontWeight: "600",
+    fontFamily: POPPINS_SEMIBOLD,
+    color: "#475569",
+  },
+  seatingValueText: {
+    fontFamily: POPPINS_SEMIBOLD,
   },
   modalBackdrop: {
     flex: 1,
@@ -1337,6 +1503,7 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 16,
     fontWeight: "700",
+    fontFamily: LORA_BOLD,
     color: "#0F172A",
     marginBottom: 8,
   },

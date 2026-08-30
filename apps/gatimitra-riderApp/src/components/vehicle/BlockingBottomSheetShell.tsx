@@ -5,7 +5,6 @@ import {
   StyleSheet,
   Platform,
   Keyboard,
-  ScrollView,
   useWindowDimensions,
   type ViewStyle,
 } from "react-native";
@@ -66,17 +65,18 @@ export function BlockingBottomSheetShell({
     >
       <View style={styles.root}>
         <View style={styles.backdrop} />
-        <View style={[styles.sheet, { maxHeight: sheetMaxHeight }, sheetStyle]}>
+        <View
+          style={[
+            styles.sheet,
+            {
+              maxHeight: sheetMaxHeight,
+              paddingBottom: Math.max(systemBottom, 12),
+            },
+            sheetStyle,
+          ]}
+        >
           <View style={styles.handle} />
-          <ScrollView
-            bounces={false}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.sheetBody}
-          >
-            {children}
-          </ScrollView>
-          <View style={[styles.bottomSafeFill, { height: systemBottom }]} />
+          <View style={styles.body}>{children}</View>
         </View>
       </View>
     </Modal>
@@ -121,12 +121,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#E2E8F0",
     marginBottom: 10,
   },
-  sheetBody: {
+  body: {
     width: "100%",
-    paddingBottom: 4,
-  },
-  bottomSafeFill: {
-    width: "100%",
-    backgroundColor: "#FFFFFF",
+    flexShrink: 1,
   },
 });

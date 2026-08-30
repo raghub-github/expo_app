@@ -41,6 +41,7 @@ import {
 import { loadMerchantOfferInsights } from "./merchant-offer-insights.service.js";
 import { loadMerchantMarketInsights } from "../../lib/merchant-store-competitors.js";
 import { registerMerchantSubscriptionRoutes } from "./merchant-subscription.routes.js";
+import { registerMerchantLicenseDocumentRoutes } from "./merchant-license-documents.routes.js";
 import { invalidateOfferPricing } from "../pricing/offer-invalidation.js";
 import {
   ONBOARDING_BENEFITS_TASK_KEY,
@@ -5227,6 +5228,23 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           });
           const surfaceOnline = computeSurfaceLiveStatus(effectiveOp, withinHoursComputed) === "OPEN";
 
+          let licenseBlocked = false;
+          try {
+            const { getSupabase } = await import("../../lib/supabase.js");
+            const {
+              loadMerchantLicenseEvaluation,
+              syncMerchantLicenseCompliance,
+            } = await import("../../lib/merchant-license/syncMerchantLicenseCompliance.js");
+            const db = getSupabase();
+            const evaluation = await loadMerchantLicenseEvaluation(db, storeId);
+            licenseBlocked = evaluation.blocked === true;
+            if (licenseBlocked) {
+              void syncMerchantLicenseCompliance(db, storeId).catch(() => undefined);
+            }
+          } catch {
+            /* keep status even if licence eval fails */
+          }
+
           const delistedAtRaw = (row as { delisted_at?: Date | string | null }).delisted_at;
           const delistedAtIso =
             delistedAtRaw == null
@@ -5237,7 +5255,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
 
           return reply.send({
             store_id: storeId,
-            is_open: surfaceOnline && !isDelisted,
+            is_open: surfaceOnline && !isDelisted && !licenseBlocked,
+            license_blocked: licenseBlocked,
             is_delisted: isDelisted,
             delisted_at: delistedAtIso && !Number.isNaN(Date.parse(delistedAtIso)) ? delistedAtIso : null,
             approval_status: approvalStatus || null,
@@ -5450,6 +5469,22 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const { isStoreDelistedRow, storeDelistedHttpBody } = await import("../../lib/store-delist.js");
           if (isStoreDelistedRow(storeRow)) {
             return reply.code(403).send(storeDelistedHttpBody());
+          }
+          try {
+            const { getSupabase } = await import("../../lib/supabase.js");
+            const { loadMerchantLicenseEvaluation } = await import(
+              "../../lib/merchant-license/syncMerchantLicenseCompliance.js"
+            );
+            const evaluation = await loadMerchantLicenseEvaluation(getSupabase(), storeId);
+            if (evaluation.blocked) {
+              return reply.code(403).send({
+                error: "LICENSE_BLOCKED",
+                message:
+                  "You cannot go online until expired documents are uploaded and verified by GatiMitra.",
+              });
+            }
+          } catch (licenseErr) {
+            req.log.warn({ err: licenseErr, storeId }, "license_block_check_failed");
           }
         }
 
@@ -9897,6 +9932,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
       );
 
       registerMerchantSubscriptionRoutes(protectedApp);
+      registerMerchantLicenseDocumentRoutes(protectedApp);
     },
     { prefix: "/merchant-partner" }
   );

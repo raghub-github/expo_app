@@ -1,16 +1,21 @@
-/** Mapbox GL JS — food delivery map (rider-app parity: remaining route + dashed connector, no fake cruise). */
-export function mapboxFoodDeliveryScript(bikeUri: string): string {
-  const uri = bikeUri.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+import {
+  liveRiderDotMarkerHtml,
+  NAV_JOIN_DOT_COLOR,
+  NAV_OFF_ROUTE_CONNECTOR,
+  NAV_ROUTE_BLUE,
+  NAV_ROUTE_CASING,
+  NAV_ROUTE_CASING_WIDTH,
+  NAV_ROUTE_GLOW,
+  NAV_ROUTE_GLOW_WIDTH,
+  NAV_ROUTE_WIDTH,
+} from "@gatimitra/map-tracking-engine";
+
+/** Mapbox GL JS — food delivery map (rider-app parity: remaining route + dashed connector). */
+
+export function mapboxFoodDeliveryScript(_bikeUri: string): string {
+  const riderDotHtml = liveRiderDotMarkerHtml().replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
   return `
-      var riderMarkerUri = '${uri}';
-      window.setRiderMarkerIcon = function(nextUri) {
-        if (!nextUri) return;
-        riderMarkerUri = nextUri;
-        var imgs = document.querySelectorAll('.gm-rider-img');
-        for (var i = 0; i < imgs.length; i++) imgs[i].src = riderMarkerUri;
-      };
-
       var markers = { pickup: null, drop: null, rider: null };
       var pickupZoneReady = false;
       var dropZoneReady = false;
@@ -19,9 +24,9 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
       var riderAnimFrame = null;
       var followRider = true;
       var geofenceCameraActive = false;
-      var ROUTE_BLUE = '#1A56C6';
-      var ROUTE_CONNECTOR = '#64748B';
-      var ROUTE_CASING = '#FFFFFF';
+      var ROUTE_BLUE = '${NAV_ROUTE_BLUE}';
+      var ROUTE_CONNECTOR = '${NAV_OFF_ROUTE_CONNECTOR}';
+      var ROUTE_CASING = '${NAV_ROUTE_CASING}';
 
       var state = {
         pickupLat: null,
@@ -98,41 +103,13 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
           return;
         }
 
-        function applyHeading(h) {
-          if (!markers.rider) return;
-          var img = markers.rider.getElement().querySelector('.gm-rider-img');
-          if (!img || h == null || isNaN(h)) return;
-          if (!window.__gmHeadingAnim) window.__gmHeadingAnim = { frame: null, current: null };
-          var st = window.__gmHeadingAnim;
-          if (st.frame) { cancelAnimationFrame(st.frame); st.frame = null; }
-          var from = st.current == null ? h : st.current;
-          var to = ((h % 360) + 360) % 360;
-          var delta = ((to - from + 540) % 360) - 180;
-          if (Math.abs(delta) < 1) {
-            st.current = to;
-            img.style.transform = 'rotate(' + to + 'deg)';
-            return;
-          }
-          var t0 = performance.now();
-          var dur = Math.min(500, Math.max(180, Math.abs(delta) * 4));
-          function hStep(now) {
-            var t = Math.min(1, (now - t0) / dur);
-            var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-            var ang = from + delta * eased;
-            st.current = ((ang % 360) + 360) % 360;
-            img.style.transform = 'rotate(' + st.current + 'deg)';
-            if (t < 1) st.frame = requestAnimationFrame(hStep);
-            else st.frame = null;
-          }
-          st.frame = requestAnimationFrame(hStep);
-        }
+        function easeOutCubic(t) { return 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3); }
 
         if (!markers.rider) {
           var el = document.createElement('div');
-          el.style.cssText = 'width:44px;height:44px;display:flex;align-items:center;justify-content:center;pointer-events:none;';
-          el.innerHTML = '<img class="gm-rider-img" src="' + riderMarkerUri + '" style="width:40px;height:40px;object-fit:contain;transform-origin:center center;" alt="" />';
+          el.style.cssText = 'pointer-events:none;';
+          el.innerHTML = '${riderDotHtml}';
           markers.rider = new mapboxgl.Marker({ element: el, anchor: 'center' }).setLngLat([lng, lat]).addTo(map);
-          applyHeading(heading);
           return;
         }
 
@@ -140,11 +117,10 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
         var fromLng = start.lng;
         var fromLat = start.lat;
         var jumpM = haversineM(fromLat, fromLng, lat, lng);
-        // Snap on first paint / large teleport; otherwise ease toward new GPS.
-        if (jumpM > 180) {
+        if (jumpM < 0.4 || jumpM < 1.5) return;
+        if (jumpM > 120) {
           if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
           markers.rider.setLngLat([lng, lat]);
-          applyHeading(heading);
           if (followRider && !state.refitCamera && !(typeof window.isGeofenceCameraActive === 'function' && window.isGeofenceCameraActive())) {
             try { map.easeTo({ center: [lng, lat], duration: 450, essential: true }); } catch (e) {}
           }
@@ -153,10 +129,10 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
 
         if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
         var t0 = performance.now();
-        var dur = Math.min(1100, Math.max(350, jumpM * 18));
+        var dur = Math.min(850, Math.max(240, jumpM * 22));
         function step(now) {
           var t = Math.min(1, (now - t0) / dur);
-          var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+          var eased = easeOutCubic(t);
           var latN = fromLat + (lat - fromLat) * eased;
           var lngN = fromLng + (lng - fromLng) * eased;
           if (markers.rider) markers.rider.setLngLat([lngN, latN]);
@@ -164,13 +140,11 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
             riderAnimFrame = requestAnimationFrame(step);
           } else {
             riderAnimFrame = null;
-            applyHeading(heading);
             if (followRider && !state.refitCamera && !(typeof window.isGeofenceCameraActive === 'function' && window.isGeofenceCameraActive())) {
               try { map.easeTo({ center: [lng, lat], duration: 280, essential: true }); } catch (e) {}
             }
           }
         }
-        applyHeading(heading);
         riderAnimFrame = requestAnimationFrame(step);
       }
 
@@ -208,22 +182,34 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
       }
 
       function ensureRouteLayers() {
+        ensureLineLayer('route-remaining', 'route-remaining-glow', {
+          'line-color': '${NAV_ROUTE_GLOW}',
+          'line-width': ${NAV_ROUTE_GLOW_WIDTH},
+          'line-opacity': 0.65,
+          'line-blur': 2
+        });
         ensureLineLayer('route-remaining', 'route-remaining-casing', {
           'line-color': ROUTE_CASING,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 11, 4, 14, 5, 16, 6],
-          'line-opacity': 0.9
+          'line-width': ${NAV_ROUTE_CASING_WIDTH},
+          'line-opacity': 1
         });
         ensureLineLayer('route-remaining', 'route-remaining-line', {
           'line-color': ROUTE_BLUE,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 11, 2.5, 14, 3.5, 16, 4.5],
-          'line-opacity': 0.96
+          'line-width': ${NAV_ROUTE_WIDTH},
+          'line-opacity': 1
         }, { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' });
 
+        ensureLineLayer('route-connector', 'route-connector-casing', {
+          'line-color': '#ffffff',
+          'line-width': 7,
+          'line-opacity': 0.92,
+          'line-dasharray': [2, 2]
+        });
         ensureLineLayer('route-connector', 'route-connector-line', {
           'line-color': ROUTE_CONNECTOR,
-          'line-width': 4,
-          'line-opacity': 0.85,
-          'line-dasharray': [1.5, 1.5]
+          'line-width': 5,
+          'line-opacity': 1,
+          'line-dasharray': [2, 2]
         }, { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' });
 
         ensureLineLayer('route-pre-rider', 'route-pre-rider-line', {
@@ -243,9 +229,10 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
             type: 'circle',
             source: 'route-join',
             paint: {
-              'circle-radius': 5,
-              'circle-color': ROUTE_BLUE,
-              'circle-stroke-width': 2,
+              'circle-radius': 7,
+              'circle-color': '${NAV_JOIN_DOT_COLOR}',
+              'circle-opacity': 0.72,
+              'circle-stroke-width': 2.5,
               'circle-stroke-color': '#ffffff'
             },
             layout: { visibility: 'none' }
@@ -532,21 +519,21 @@ export function mapboxFoodDeliveryScript(bikeUri: string): string {
         state.wasPreRider = isPreRider;
         if (preRiderArc) {
           setLineData('route-pre-rider', preRiderArc, ['route-pre-rider-line']);
-          setLineData('route-remaining', [], ['route-remaining-casing', 'route-remaining-line']);
-          setLineData('route-connector', [], ['route-connector-line']);
+          setLineData('route-remaining', [], ['route-remaining-glow', 'route-remaining-casing', 'route-remaining-line']);
+          setLineData('route-connector', [], ['route-connector-casing', 'route-connector-line']);
           setJoinDot(null, null, false);
         } else if (hideRoute) {
           setLineData('route-pre-rider', [], ['route-pre-rider-line']);
-          setLineData('route-remaining', [], ['route-remaining-casing', 'route-remaining-line']);
-          setLineData('route-connector', [], ['route-connector-line']);
+          setLineData('route-remaining', [], ['route-remaining-glow', 'route-remaining-casing', 'route-remaining-line']);
+          setLineData('route-connector', [], ['route-connector-casing', 'route-connector-line']);
           setJoinDot(null, null, false);
         } else {
           setLineData('route-pre-rider', [], ['route-pre-rider-line']);
           var remaining = data.remainingRoute && data.remainingRoute.length >= 2
             ? data.remainingRoute
             : (data.fullRoute && data.fullRoute.length >= 2 ? data.fullRoute : []);
-          setLineData('route-remaining', remaining, ['route-remaining-casing', 'route-remaining-line']);
-          setLineData('route-connector', data.connectorRoute || [], ['route-connector-line']);
+          setLineData('route-remaining', remaining, ['route-remaining-glow', 'route-remaining-casing', 'route-remaining-line']);
+          setLineData('route-connector', data.connectorRoute || [], ['route-connector-casing', 'route-connector-line']);
           setJoinDot(data.routeJoinLat, data.routeJoinLng, !!(data.routeJoinLat != null && data.connectorRoute && data.connectorRoute.length >= 2));
         }
 

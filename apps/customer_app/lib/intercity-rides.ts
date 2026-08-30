@@ -31,12 +31,10 @@ export function getIntercityRideOptions(tripKm: number | null) {
   return INTERCITY_SERVICE_IDS.map((id) => {
     const option = RIDE_OPTIONS.find((r) => r.id === id);
     if (!option) return null;
-    const estFare = null;
     return {
       id: option.id as ServiceId,
       label: option.name,
       subtitle: option.subtitle ?? "Inter city ride",
-      estFare,
       disabled: !eligible,
     };
   }).filter((row): row is NonNullable<typeof row> => row != null);

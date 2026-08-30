@@ -17,6 +17,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { setStoreBookmark } from "@/services/merchant.service";
+import { useStoreBookmarkMutations, useStoreBookmarks } from "@/hooks/useStoreBookmarks";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -55,10 +56,12 @@ export type RestaurantCardProps = {
   initialSaved?: boolean;
 };
 
-export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCardProps) {
+export function RestaurantCard({ merchant }: RestaurantCardProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const [saved, setSaved] = useState(initialSaved);
+  const { bookmarkSet } = useStoreBookmarks();
+  const { syncBookmark } = useStoreBookmarkMutations();
+  const saved = bookmarkSet.has(merchant.id);
   const [savedLoading, setSavedLoading] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
@@ -78,16 +81,18 @@ export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCar
       e?.stopPropagation?.();
       if (savedLoading) return;
       setSavedLoading(true);
+      const next = !saved;
+      syncBookmark(merchant.id, next);
       try {
-        const res = await setStoreBookmark(merchant.id, !saved);
-        setSaved(res.saved);
+        const res = await setStoreBookmark(merchant.id, next);
+        if (res.saved !== next) syncBookmark(merchant.id, res.saved);
       } catch {
-        // Keep previous state on error
+        syncBookmark(merchant.id, saved);
       } finally {
         setSavedLoading(false);
       }
     },
-    [merchant.id, saved, savedLoading]
+    [merchant.id, saved, savedLoading, syncBookmark]
   );
 
   const hasImage = Boolean(heroUri && !imageError);

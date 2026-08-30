@@ -74,23 +74,28 @@ function TipChipRow({
     <View style={styles.tipRow}>
       {TIP_OPTIONS.map((opt) => {
         const selected = selectedTip === opt.amount;
+        const popular = "popular" in opt && opt.popular;
         return (
-          <TouchableOpacity
-            key={opt.amount}
-            style={[styles.tipChip, selected && styles.tipChipSelected]}
-            onPress={() => onSelect(opt.amount)}
-            activeOpacity={0.85}
-            disabled={disabled}
-          >
-            {"popular" in opt && opt.popular ? (
-              <View style={styles.popularBadge}>
-                <AppText style={styles.popularBadgeText}>★ Most Popular</AppText>
+          <View key={opt.amount} style={[styles.tipChipWrap, popular && styles.tipChipWrapPopular]}>
+            {popular ? (
+              <View style={styles.popularBadge} pointerEvents="none">
+                <Ionicons name="star" size={9} color="#FFFFFF" />
+                <AppText style={styles.popularBadgeText} numberOfLines={1}>
+                  Most Popular
+                </AppText>
               </View>
             ) : null}
-            <AppText style={[styles.tipChipText, selected && styles.tipChipTextSelected]}>
-              {opt.label}
-            </AppText>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tipChip, selected && styles.tipChipSelected]}
+              onPress={() => onSelect(opt.amount)}
+              activeOpacity={0.85}
+              disabled={disabled}
+            >
+              <AppText style={[styles.tipChipText, selected && styles.tipChipTextSelected]}>
+                {opt.label}
+              </AppText>
+            </TouchableOpacity>
+          </View>
         );
       })}
     </View>
@@ -518,6 +523,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     paddingHorizontal: 20,
+    overflow: "visible",
     paddingTop: 8,
     maxHeight: "92%",
     shadowColor: "#000",
@@ -604,9 +610,20 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
     marginBottom: 16,
+    overflow: "visible",
+    zIndex: 2,
+  },
+  tipChipWrap: {
+    flex: 1,
+    alignItems: "center",
+    paddingTop: 16,
+    overflow: "visible",
+  },
+  tipChipWrapPopular: {
+    zIndex: 4,
   },
   tipChip: {
-    flex: 1,
+    width: "100%",
     minHeight: 48,
     borderRadius: 14,
     borderWidth: 2,
@@ -614,8 +631,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#FFFFFF",
-    position: "relative",
-    paddingTop: 8,
+    overflow: "visible",
   },
   tipChipSelected: {
     backgroundColor: GatiMitraColors.primaryMint,
@@ -623,16 +639,21 @@ const styles = StyleSheet.create({
   },
   popularBadge: {
     position: "absolute",
-    top: -10,
+    top: 0,
+    zIndex: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
     backgroundColor: "#111827",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     borderRadius: 8,
   },
   popularBadgeText: {
     fontSize: 9,
     fontWeight: "700",
     color: "#FFFFFF",
+    flexShrink: 0,
   },
   tipChipText: {
     fontSize: 13,

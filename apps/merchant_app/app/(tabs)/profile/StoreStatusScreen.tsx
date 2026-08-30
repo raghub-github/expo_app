@@ -137,6 +137,7 @@ export default function StoreStatusScreen({ reopenPromptFromNotification }: Stor
     reopenAtIso: reopenAtIsoFromContext,
     refresh,
     isDelisted,
+    licenseBlocked,
     needsManualOpenAfterRelist: needsRelistManualOpen,
   } = useStoreStatus();
   const { token } = useAuth();
@@ -165,12 +166,19 @@ export default function StoreStatusScreen({ reopenPromptFromNotification }: Stor
               showStoreDelistedAlert(() => router.push("/(tabs)/profile/contact"));
               return;
             }
+            if (licenseBlocked) {
+              Alert.alert(
+                "Cannot go online",
+                "Upload expired documents and wait for GatiMitra verification. The store stays off until then."
+              );
+              return;
+            }
             toggle().then(() => router.replace("/(tabs)")).catch(() => {});
           },
         },
       ]
     );
-  }, [reopenPromptFromNotification, isOnline, isDelisted, toggle, router]);
+  }, [reopenPromptFromNotification, isOnline, isDelisted, licenseBlocked, toggle, router]);
 
   const fetchWeekly = useCallback(async () => {
     if (!selectedStore?.id || !token) {
@@ -283,6 +291,13 @@ export default function StoreStatusScreen({ reopenPromptFromNotification }: Stor
     if (loading || reopening || isOnline) return;
     if (isDelisted) {
       showStoreDelistedAlert(() => router.push("/(tabs)/profile/contact"));
+      return;
+    }
+    if (licenseBlocked) {
+      Alert.alert(
+        "Cannot go online",
+        "Upload expired documents and wait for GatiMitra verification. The store stays off until then."
+      );
       return;
     }
     setReopening(true);

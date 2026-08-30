@@ -5,6 +5,7 @@
 
 import { create } from "zustand";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { fastGetString, fastSetString, hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 
 const STORAGE_KEY = "gm.favoriteLocations.v1";
@@ -18,34 +19,56 @@ export type FavoriteLocation = {
   savedAt: number;
 };
 
-function favKey(lat: number, lng: number, primary: string): string {
-  const rlat = Math.round(lat * 1000) / 1000;
-  const rlng = Math.round(lng * 1000) / 1000;
-  return `${rlat},${rlng},${(primary ?? "").slice(0, 40).toLowerCase()}`;
+function roundCoord(n: number, places: number): number {
+  const f = 10 ** places;
+  return Math.round(n * f) / f;
 }
 
-export function favoriteLocationKey(
+/** ~11m grid — stable across reverse-geocode label changes for the same pin. */
+function coordKey(lat: number, lng: number): string {
+  return `${roundCoord(lat, 4)},${roundCoord(lng, 4)}`;
+}
+
+function legacyFavKey(lat: number, lng: number, primary: string): string {
+  return `${roundCoord(lat, 3)},${roundCoord(lng, 3)},${(primary ?? "").slice(0, 40).toLowerCase()}`;
+}
+
+function isSameFavorite(
+  item: FavoriteLocation,
   lat: number,
   lng: number,
-  primary: string
-): string {
-  return favKey(lat, lng, primary);
+  primary?: string
+): boolean {
+  if (coordKey(item.latitude, item.longitude) === coordKey(lat, lng)) return true;
+  if (primary == null || primary.length === 0) return false;
+  return legacyFavKey(item.latitude, item.longitude, item.primary) === legacyFavKey(lat, lng, primary);
+}
+
+export function favoriteLocationKey(lat: number, lng: number, primary: string): string {
+  return coordKey(lat, lng);
 }
 
 type FavoriteLocationsState = {
   items: FavoriteLocation[];
   hydrated: boolean;
   hydrate: () => Promise<void>;
-  isFavorite: (lat: number, lng: number, primary: string) => boolean;
+  isFavorite: (lat: number, lng: number, primary?: string) => boolean;
   toggleFavorite: (place: Omit<FavoriteLocation, "savedAt">) => boolean;
-  removeFavorite: (lat: number, lng: number, primary: string) => void;
+  removeFavorite: (lat: number, lng: number, primary?: string) => void;
 };
 
-async function persist(items: FavoriteLocation[]) {
+function persist(items: FavoriteLocation[]) {
+  const payload = JSON.stringify({ items });
+  fastSetString(STORAGE_KEY, payload);
+}
+
+function parseItems(raw: string | null | undefined): FavoriteLocation[] {
+  if (!raw) return [];
   try {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ items }));
+    const parsed = JSON.parse(raw) as { items?: FavoriteLocation[] };
+    return Array.isArray(parsed.items) ? parsed.items.slice(0, MAX_FAVORITES) : [];
   } catch {
-    /* ignore */
+    return [];
   }
 }
 
@@ -56,42 +79,39 @@ export const useFavoriteLocationsStore = create<FavoriteLocationsState>((set, ge
   hydrate: async () => {
     if (get().hydrated) return;
     try {
-      const raw = await AsyncStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as { items?: FavoriteLocation[] };
-        set({
-          items: Array.isArray(parsed.items) ? parsed.items.slice(0, MAX_FAVORITES) : [],
-          hydrated: true,
-        });
-        return;
+      await hydrateFastKvFromAsyncStorage([STORAGE_KEY]);
+      let raw = fastGetString(STORAGE_KEY);
+      if (!raw) {
+        raw = await AsyncStorage.getItem(STORAGE_KEY);
+        if (raw) fastSetString(STORAGE_KEY, raw);
       }
+      set({ items: parseItems(raw), hydrated: true });
+      return;
     } catch {
-      /* ignore */
+      /* fall through */
     }
     set({ hydrated: true });
   },
 
   isFavorite: (lat, lng, primary) => {
-    const key = favKey(lat, lng, primary);
-    return get().items.some((i) => favKey(i.latitude, i.longitude, i.primary) === key);
+    return get().items.some((item) => isSameFavorite(item, lat, lng, primary));
   },
 
   toggleFavorite: (place) => {
-    const key = favKey(place.latitude, place.longitude, place.primary);
     const existing = get().items;
-    const idx = existing.findIndex(
-      (i) => favKey(i.latitude, i.longitude, i.primary) === key
+    const idx = existing.findIndex((item) =>
+      isSameFavorite(item, place.latitude, place.longitude, place.primary)
     );
     if (idx >= 0) {
       const next = existing.filter((_, i) => i !== idx);
       set({ items: next });
-      void persist(next);
+      persist(next);
       return false;
     }
     const item: FavoriteLocation = { ...place, savedAt: Date.now() };
     const next = [item, ...existing].slice(0, MAX_FAVORITES);
     set({ items: next });
-    void persist(next);
+    persist(next);
     useRecentLocationStore.getState().addRecentLocation({
       latitude: place.latitude,
       longitude: place.longitude,
@@ -103,11 +123,8 @@ export const useFavoriteLocationsStore = create<FavoriteLocationsState>((set, ge
   },
 
   removeFavorite: (lat, lng, primary) => {
-    const key = favKey(lat, lng, primary);
-    const next = get().items.filter(
-      (i) => favKey(i.latitude, i.longitude, i.primary) !== key
-    );
+    const next = get().items.filter((item) => !isSameFavorite(item, lat, lng, primary));
     set({ items: next });
-    void persist(next);
+    persist(next);
   },
 }));

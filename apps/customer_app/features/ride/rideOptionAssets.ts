@@ -35,17 +35,13 @@ const BUNDLED_SERVICE_BY_ASSET_KEY: Record<string, ImageSourcePropType> = {
   [CX.ride.auto]: BUNDLED_MAP_MARKER_BY_KEY.auto!,
   [CX.ride.cab]: BUNDLED_MAP_MARKER_BY_KEY.cab!,
   [CX.ride.cabPremium]: BUNDLED_MAP_MARKER_BY_KEY.cab_premium!,
+  [CX.ride.evAuto]: BUNDLED_MAP_MARKER_BY_KEY.auto!,
   [CX.ride.travel]: BUNDLED_MAP_MARKER_BY_KEY.auto!,
 };
 
-/** CMS URL or bundled PNG for All Services / Intercity tiles. */
+/** CMS URL for All Services / Intercity tiles. */
 export function resolveRideServiceIcon(assetKey: string): ImageSourcePropType | null {
-  return appAssetSource(assetKey) ?? BUNDLED_SERVICE_BY_ASSET_KEY[assetKey] ?? null;
-}
-
-/** Bundled-only fallback for AppAssetImage when CMS URL is not ready. */
-export function bundledRideServiceIcon(assetKey: string): ImageSourcePropType | null {
-  return BUNDLED_SERVICE_BY_ASSET_KEY[assetKey] ?? null;
+  return appAssetSource(assetKey);
 }
 
 /** Rider DB vehicle_type → catalog image_key for map marker. */

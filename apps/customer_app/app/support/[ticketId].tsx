@@ -16,7 +16,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AppText } from "@/components/AppText";
 
 import { View, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, Image, StyleSheet, KeyboardAvoidingView, Platform, Pressable, Linking, Alert, Keyboard } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { useQuery } from "@tanstack/react-query";
@@ -39,7 +39,8 @@ import { computeTicketReadWatermark } from "@/lib/customerSupportReadStorage";
 import { getConfig } from "@/config/env";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreFonts } from "@/constants/storeTypography";
-import { supportHeaderPaddingTop } from "@/lib/supportLayout";
+import { SUPPORT_PAGE_BG, supportHeaderPaddingTop } from "@/lib/supportLayout";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 const GREEN = GatiMitraColors.primaryMint;
 const MINE_BUBBLE_BG = "#DCFCE7";
@@ -214,6 +215,17 @@ export default function TicketDetailScreen() {
   useEffect(() => {
     setCustomerSub(customerSub);
   }, [customerSub, setCustomerSub]);
+
+  useFocusEffect(
+    useCallback(() => {
+      useScreenChromeStore.setState({
+        statusBarBackground: SUPPORT_PAGE_BG,
+        statusBarStyle: "dark",
+        hideStatusBarSpacer: false,
+      });
+      return () => useScreenChromeStore.getState().resetStatusBarBackground();
+    }, [])
+  );
 
   const { data, isLoading, error, refetch } = useQuery<TicketDetailResponse>({
     queryKey: ["customer-support-ticket", ticketIdNum],
@@ -582,7 +594,7 @@ export default function TicketDetailScreen() {
   return (
     <>
       <AndroidBackHandler />
-      <StatusBar style="dark" backgroundColor="#fff" />
+      <StatusBar style="dark" backgroundColor={SUPPORT_PAGE_BG} />
       <View style={screenStyle}>
         <View style={[styles.navHeader, { paddingTop: supportHeaderPaddingTop(insets.top) }]}>
           <TouchableOpacity onPress={() => router.back()} style={styles.navSide} hitSlop={12}>
@@ -1122,13 +1134,13 @@ function MessageBubbleRow({
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#F5F5F5" },
+  screen: { flex: 1, backgroundColor: SUPPORT_PAGE_BG },
   navHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
     paddingHorizontal: 12,
-    paddingBottom: 10,
-    backgroundColor: "#fff",
+    paddingBottom: 8,
+    backgroundColor: SUPPORT_PAGE_BG,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#EBEBEB",
   },
@@ -1143,8 +1155,8 @@ const styles = StyleSheet.create({
     paddingRight: 8,
   },
   navBadge: { alignSelf: "flex-start", marginTop: 2 },
-  container: { flex: 1, backgroundColor: "#ECEFF1" },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: 20, backgroundColor: "#F5F5F5" },
+  container: { flex: 1, backgroundColor: SUPPORT_PAGE_BG },
+  centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: 20, backgroundColor: SUPPORT_PAGE_BG },
   errText: { color: GatiMitraColors.textSecondary, marginBottom: 12 },
   retryBtn: {
     backgroundColor: GREEN,

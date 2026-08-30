@@ -7,7 +7,6 @@ import api from "./api";
 import { getConfig } from "@/config/env";
 import { STORAGE_KEYS } from "@/constants";
 import { getItem } from "@/utils/storage";
-import { useAuthStore } from "@/store/authStore";
 import type {
   HearingAccessibility,
   MobilityAccessibility,
@@ -117,7 +116,14 @@ export const profileService = {
   async updateProfile(payload: UpdateProfilePayload): Promise<UserProfile> {
     const token =
       (await getItem(STORAGE_KEYS.AUTH_TOKEN)) ||
-      useAuthStore.getState().session?.accessToken ||
+      (() => {
+        try {
+          const { useAuthStore } = require("@/store/authStore") as typeof import("@/store/authStore");
+          return useAuthStore.getState().session?.accessToken ?? null;
+        } catch {
+          return null;
+        }
+      })() ||
       null;
     if (!token) {
       throw new Error("Not authenticated");

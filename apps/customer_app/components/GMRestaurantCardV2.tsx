@@ -14,7 +14,7 @@ import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
 import { useScrollSafePress } from "@/hooks/useScrollSafePress";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { setStoreBookmark } from "@/services/merchant.service";
-import { useStoreBookmarkMutations } from "@/hooks/useStoreBookmarks";
+import { useStoreBookmarkMutations, useStoreBookmarks } from "@/hooks/useStoreBookmarks";
 import { useMerchantLiveStatus } from "@/hooks/useMerchantLiveStatus";
 import { StoreBannerCarousel, LIST_CARD_CAROUSEL_HOLD_MS, LIST_CARD_CAROUSEL_SLIDE_MS } from "@/components/StoreBannerCarousel";
 import { NearFastDeliveryMeta } from "@/components/NearFastDeliveryMeta";
@@ -59,9 +59,10 @@ function GMRestaurantCardV2Inner({
 }: GMRestaurantCardV2Props) {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { bookmarkSet } = useStoreBookmarks();
   const { syncBookmark } = useStoreBookmarkMutations();
   const { foodLocked } = usePreventServicesAtPin();
-  const [saved, setSaved] = useState(initialSaved);
+  const saved = bookmarkSet.has(merchant.id);
   const [savedLoading, setSavedLoading] = useState(false);
   const [ratingSheetOpen, setRatingSheetOpen] = useState(false);
   /** Zomato-style: tap toggles overall ↔ For you / New. */
@@ -76,10 +77,6 @@ function GMRestaurantCardV2Inner({
     userHasRatedStore && merchant.forYouRating != null && Number.isFinite(Number(merchant.forYouRating))
       ? Number(merchant.forYouRating)
       : null;
-
-  useEffect(() => {
-    setSaved(initialSaved);
-  }, [initialSaved, merchant.id]);
 
   const bannerUri = useMemo(() => resolveMerchantCarouselBannerUri(merchant), [merchant]);
 
@@ -104,13 +101,14 @@ function GMRestaurantCardV2Inner({
     async (e?: any) => {
       e?.stopPropagation?.();
       if (savedLoading) return;
+      const next = !saved;
       setSavedLoading(true);
+      syncBookmark(merchant.id, next);
       try {
-        const res = await setStoreBookmark(merchant.id, !saved);
-        setSaved(res.saved);
-        syncBookmark(merchant.id, res.saved);
+        const res = await setStoreBookmark(merchant.id, next);
+        if (res.saved !== next) syncBookmark(merchant.id, res.saved);
       } catch {
-        // keep state
+        syncBookmark(merchant.id, saved);
       } finally {
         setSavedLoading(false);
       }

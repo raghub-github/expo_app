@@ -34,4 +34,34 @@ export function resolveHeadingAnimDurationMs(deltaDeg: number): number {
   return Math.min(500, Math.max(180, Math.abs(deltaDeg) * 4));
 }
 
+/** Ignore sub-meter GPS duplicates/noise for visual marker updates. */
+export const MARKER_NOISE_MOVE_M = 0.4;
+/** Speed below which the rider is treated as stationary. */
+export const MARKER_STATIONARY_SPEED_MPS = 0.45;
+/** Max drift while stationary before we accept a new rendered position. */
+export const MARKER_STATIONARY_MAX_DRIFT_M = 25;
+
+export function shouldIgnoreMarkerGpsNoise(moveM: number): boolean {
+  return moveM < MARKER_NOISE_MOVE_M;
+}
+
+/** Freeze marker animation when parked — avoids GPS drift jitter on screen. */
+export function shouldFreezeSmoothedMarker(moveM: number, speedMps: number): boolean {
+  if (speedMps < MARKER_STATIONARY_SPEED_MPS && moveM < MARKER_STATIONARY_MAX_DRIFT_M) {
+    return true;
+  }
+  return moveM < 1.5 && speedMps < MARKER_STATIONARY_SPEED_MPS;
+}
+
 export { easeOutCubic };
+
+/**
+ * Speed-aware lerp budget used by Rider + Customer live markers.
+ * Matches the Rider App navigation screen.
+ */
+export function resolveSmoothDurationMs(speedMps?: number | null): number {
+  if (speedMps == null || speedMps < 0.5) return 550;
+  if (speedMps < 3) return 420;
+  if (speedMps < 8) return 320;
+  return 240;
+}

@@ -3,6 +3,7 @@ import { getDb } from "../../db/client.js";
 import { ordersCore, ordersRide } from "../../db/schema.js";
 import { normalizeCustomerOrderStatus } from "../../lib/customer-order-status-resolve.js";
 import { isRideFarePaymentPending } from "../../lib/ride-rider-payout-snapshot.js";
+import { assertRideCustomerPaymentCollectable } from "../../lib/settle-zero-payable-person-ride.js";
 import { computeRideBillForCustomerOrder } from "./ride-bill.service.js";
 
 /**
@@ -108,6 +109,8 @@ export async function selectRidePaymentMethodForRider(
       code: "ALREADY_SETTLED",
     });
   }
+
+  await assertRideCustomerPaymentCollectable(orderRow.id);
 
   const customerPk = orderRow.customerId != null ? Number(orderRow.customerId) : 0;
   if (!Number.isFinite(customerPk) || customerPk <= 0) {

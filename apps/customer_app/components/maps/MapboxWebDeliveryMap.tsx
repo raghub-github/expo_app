@@ -2,23 +2,31 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import type { DeliveryMapPayload } from "@/components/maps/mapbox-web-delivery-html";
+import { NavRiderDotMarker } from "@/components/maps/NavRiderDotMarker";
 import {
   DropHomePin,
   NATIVE_MAP_STYLE,
   NativeMapUnavailable,
   PickupRestaurantPin,
-  ROUTE_BLUE,
-  ROUTE_CASING,
-  ROUTE_CONNECTOR,
-  VehicleMarker,
   circlePolygon,
   fitCameraToPoints,
   latLngsToLine,
   nativeMapUnavailableReason,
   renderNativeMarker,
   useCustomerNativeMapbox,
-  useRiderMarkerSource,
 } from "@/components/maps/native-map-shared";
+import {
+  NAV_JOIN_DOT_COLOR,
+  NAV_OFF_ROUTE_CONNECTOR,
+  NAV_ROUTE_BLUE,
+  NAV_ROUTE_CASING,
+  NAV_ROUTE_CASING_WIDTH,
+  NAV_ROUTE_GLOW,
+  NAV_ROUTE_GLOW_WIDTH,
+  NAV_ROUTE_WIDTH,
+  shouldSkipStationaryCamera,
+  shouldThrottleNavigationCamera,
+} from "@gatimitra/map-tracking-engine";
 
 type Props = {
   center: { latitude: number; longitude: number };
@@ -38,8 +46,8 @@ export function MapboxWebDeliveryMap({
   const Mapbox = useCustomerNativeMapbox();
   const cameraRef = useRef(null);
   const followRiderRef = useRef(true);
+  const lastFollowCameraRef = useRef(null);
   const [mapReady, setMapReady] = useState(false);
-  const bikeSource = useRiderMarkerSource("bike");
   const lastFitKeyRef = useRef("");
 
   const remaining = payload.remainingRoute.length >= 2
@@ -120,12 +128,33 @@ export function MapboxWebDeliveryMap({
     if (!mapReady || !followRiderRef.current) return;
     if (payload.highlightPickupZone || payload.highlightDropZone) return;
     if (payload.riderLat == null || payload.riderLng == null) return;
+    if (shouldSkipStationaryCamera(payload.riderSpeedMps)) return;
+
+    const centerPt = { latitude: payload.riderLat, longitude: payload.riderLng };
+    const bearing = payload.riderHeading ?? 0;
+    if (shouldThrottleNavigationCamera(lastFollowCameraRef.current, centerPt, bearing)) {
+      return;
+    }
+    lastFollowCameraRef.current = {
+      lat: centerPt.latitude,
+      lng: centerPt.longitude,
+      bearing,
+      atMs: Date.now(),
+    };
     cameraRef.current?.setCamera?.({
       centerCoordinate: [payload.riderLng, payload.riderLat],
       animationDuration: 420,
       animationMode: "easeTo",
     });
-  }, [mapReady, payload.riderLat, payload.riderLng]);
+  }, [
+    mapReady,
+    payload.riderLat,
+    payload.riderLng,
+    payload.riderHeading,
+    payload.riderSpeedMps,
+    payload.highlightPickupZone,
+    payload.highlightDropZone,
+  ]);
 
   if (nativeMapUnavailableReason() || !Mapbox) {
     return <NativeMapUnavailable style={style} />;
@@ -194,12 +223,23 @@ export function MapboxWebDeliveryMap({
         {connectorLine ? (
           <Mapbox.ShapeSource id="cx-connector" shape={connectorLine}>
             <Mapbox.LineLayer
+              id="cx-connector-casing"
+              style={{
+                lineColor: "#ffffff",
+                lineWidth: 7,
+                lineOpacity: 0.92,
+                lineDasharray: [2, 2],
+                lineJoin: "round",
+                lineCap: "round",
+              }}
+            />
+            <Mapbox.LineLayer
               id="cx-connector-line"
               style={{
-                lineColor: ROUTE_CONNECTOR,
-                lineWidth: 4,
-                lineOpacity: 0.85,
-                lineDasharray: [1.5, 1.5],
+                lineColor: NAV_OFF_ROUTE_CONNECTOR,
+                lineWidth: 5,
+                lineOpacity: 1,
+                lineDasharray: [2, 2],
                 lineJoin: "round",
                 lineCap: "round",
               }}
@@ -210,11 +250,21 @@ export function MapboxWebDeliveryMap({
         {remainingLine ? (
           <Mapbox.ShapeSource id="cx-remaining" shape={remainingLine}>
             <Mapbox.LineLayer
+              id="cx-remaining-glow"
+              style={{
+                lineColor: NAV_ROUTE_GLOW,
+                lineWidth: NAV_ROUTE_GLOW_WIDTH,
+                lineOpacity: 0.65,
+                lineJoin: "round",
+                lineCap: "round",
+                lineBlur: 2,
+              }}
+            />
+            <Mapbox.LineLayer
               id="cx-remaining-casing"
               style={{
-                lineColor: ROUTE_CASING,
-                lineWidth: 6,
-                lineOpacity: 0.9,
+                lineColor: NAV_ROUTE_CASING,
+                lineWidth: NAV_ROUTE_CASING_WIDTH,
                 lineJoin: "round",
                 lineCap: "round",
               }}
@@ -222,9 +272,8 @@ export function MapboxWebDeliveryMap({
             <Mapbox.LineLayer
               id="cx-remaining-line"
               style={{
-                lineColor: ROUTE_BLUE,
-                lineWidth: 4,
-                lineOpacity: 0.96,
+                lineColor: NAV_ROUTE_BLUE,
+                lineWidth: NAV_ROUTE_WIDTH,
                 lineJoin: "round",
                 lineCap: "round",
               }}
@@ -237,9 +286,10 @@ export function MapboxWebDeliveryMap({
             <Mapbox.CircleLayer
               id="cx-join-dot"
               style={{
-                circleRadius: 5,
-                circleColor: ROUTE_BLUE,
-                circleStrokeWidth: 2,
+                circleRadius: 7,
+                circleColor: NAV_JOIN_DOT_COLOR,
+                circleOpacity: 0.72,
+                circleStrokeWidth: 2.5,
                 circleStrokeColor: "#ffffff",
               }}
             />
@@ -270,7 +320,7 @@ export function MapboxWebDeliveryMap({
               "cx-rider",
               [payload.riderLng!, payload.riderLat!],
               { x: 0.5, y: 0.5 },
-              <VehicleMarker source={bikeSource} headingDeg={payload.riderHeading ?? 0} />
+              <NavRiderDotMarker />
             )
           : null}
       </Mapbox.MapView>

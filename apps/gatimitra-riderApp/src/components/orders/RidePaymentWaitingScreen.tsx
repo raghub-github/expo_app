@@ -16,6 +16,7 @@ import { AppText } from "@/components/AppText";
 import { router, useLocalSearchParams } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -51,7 +52,6 @@ const MINT_DARK = colors.primary[700];
 const BRAND_BTN = "#137243";
 
 const CARD_GAP = 16;
-const PAYMENT_SECTION_GAP = 24;
 const BANNER_ROTATE_MS = 8000;
 
 type SafeBannerSlide = {
@@ -242,6 +242,7 @@ function TimelineRow({ step, isLast }: { step: TimelineStep; isLast?: boolean })
 export function RidePaymentWaitingScreen() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const bottomInset = useRiderBottomInset();
   const params = useLocalSearchParams<{ orderId?: string; displayId?: string }>();
   const orderId = typeof params.orderId === "string" ? params.orderId : "";
   const [lastCheckedAt, setLastCheckedAt] = useState(() => new Date());
@@ -260,6 +261,9 @@ export function RidePaymentWaitingScreen() {
     enabled: orderId.length > 0,
     refetchInterval: (query) => {
       const row = query.state.data;
+      if (!row || isRideFarePaymentSettled(row)) return false;
+      if (row.paymentRequired === false) return false;
+      if (typeof row.customerPayable === "number" && row.customerPayable <= 0.005) return false;
       const cash = isCashRideOrder(row);
       return cash ? false : POLL_MS;
     },
@@ -395,17 +399,21 @@ export function RidePaymentWaitingScreen() {
   );
   const riderReceives = earningBreakdown.totalEarning;
   const customerPays = useMemo(() => {
+    const fromPayable = Number(order?.customerPayable);
+    if (Number.isFinite(fromPayable) && fromPayable >= 0 && order?.customerPayable != null) {
+      return Math.round(fromPayable * 100) / 100;
+    }
     const fromOrder = Number(
-      (order as { totalAmount?: number; grandTotal?: number; fareAmount?: number })?.totalAmount ??
+      (order as { totalAmount?: number; grandTotal?: number })?.totalAmount ??
         (order as { grandTotal?: number })?.grandTotal ??
-        (order as { fareAmount?: number })?.fareAmount ??
         0
     );
-    if (Number.isFinite(fromOrder) && fromOrder > 0) return Math.round(fromOrder);
-    return riderReceives;
-  }, [order, riderReceives]);
+    if (Number.isFinite(fromOrder) && fromOrder >= 0) return Math.round(fromOrder * 100) / 100;
+    return 0;
+  }, [order]);
   const companyKeeps = Math.max(0, customerPays - riderReceives);
   const fareAmount = customerPays;
+  const collectPaymentRequired = customerPays > 0.005 && order?.paymentRequired !== false;
   const completedAt = order?.createdAt ?? null;
 
   const timelineSteps = useMemo<TimelineStep[]>(
@@ -536,6 +544,7 @@ export function RidePaymentWaitingScreen() {
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         <View style={styles.body}>
           <View style={styles.summarySection}>
@@ -619,8 +628,11 @@ export function RidePaymentWaitingScreen() {
             ))}
           </View>
           </View>
+        </View>
+      </ScrollView>
 
-          <View style={styles.paymentSection}>
+      {collectPaymentRequired ? (
+      <View style={[styles.paymentFooter, { paddingBottom: 12 + bottomInset }]}>
             <View style={styles.cashCard}>
               <View style={styles.cashTextCol}>
                 <AppText style={styles.cashTitle} bold>
@@ -697,9 +709,8 @@ export function RidePaymentWaitingScreen() {
                 </View>
               </View>
             </View>
-          </View>
-        </View>
-      </ScrollView>
+      </View>
+      ) : null}
 
       <CustomerCallBottomSheet
         visible={callSheetOpen}
@@ -714,7 +725,7 @@ export function RidePaymentWaitingScreen() {
       />
 
       <RideCashCollectBottomSheet
-        visible={cashSheetOpen}
+        visible={collectPaymentRequired && cashSheetOpen}
         onDismiss={() => setCashSheetOpen(false)}
         amountLabel={formatFare(fareAmount)}
         loading={cashMutation.isPending}
@@ -722,7 +733,7 @@ export function RidePaymentWaitingScreen() {
       />
 
       <RideOnlineQrBottomSheet
-        visible={onlineSheetOpen}
+        visible={collectPaymentRequired && onlineSheetOpen}
         onDismiss={() => setOnlineSheetOpen(false)}
         amountLabel={formatFare(qrInfo?.amount ?? fareAmount)}
         qrImageUrl={qrInfo?.qrImageUrl}
@@ -786,7 +797,7 @@ const styles = StyleSheet.create({
     color: "#6B7280",
   },
   scroll: { flex: 1 },
-  scrollContent: { paddingBottom: 28 },
+  scrollContent: { paddingBottom: 16 },
   backBtn: {
     width: 40,
     height: 40,
@@ -797,7 +808,13 @@ const styles = StyleSheet.create({
   },
   body: { paddingHorizontal: 16, paddingTop: 14 },
   summarySection: { gap: CARD_GAP },
-  paymentSection: { marginTop: PAYMENT_SECTION_GAP, gap: CARD_GAP },
+  paymentFooter: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    backgroundColor: "#F3F4F6",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E5E7EB",
+  },
   fareCard: {
     backgroundColor: "#fff",
     borderRadius: 18,

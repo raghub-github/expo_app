@@ -59,6 +59,10 @@ import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import { useFoodDeliveryRouteProgress } from "@/hooks/useFoodDeliveryRouteProgress";
 import { pollIntervalWithBackoff, queryRetryDelay } from "@/lib/query-poll-backoff";
 import { seedOrderDetailCache } from "@/lib/orderDetailCache";
+import {
+  resolveSmoothDurationMs,
+  useSmoothedRiderPosition,
+} from "@gatimitra/map-tracking-engine";
 
 const HEADER_GREEN = GatiMitraColors.deepMintStart;
 const PAGE_BG = GatiMitraColors.softBackground;
@@ -272,7 +276,6 @@ export function ParcelLiveTrackingScreen({
     connectorRoute,
     routeJoinPoint,
     hideRouteLine,
-    displayRider,
   } = useFoodDeliveryRouteProgress({
     phase: mapPhase,
     rider: riderPos,
@@ -284,6 +287,28 @@ export function ParcelLiveTrackingScreen({
     hasRider,
   });
 
+  const riderGpsFix = useMemo(() => {
+    if (!hasRider || !riderPos) return undefined;
+    return {
+      lat: riderPos.latitude,
+      lng: riderPos.longitude,
+      headingDeg: riderHeading ?? undefined,
+      speedMps: tracking?.rider?.speedMps ?? undefined,
+    };
+  }, [
+    hasRider,
+    riderPos?.latitude,
+    riderPos?.longitude,
+    riderHeading,
+    tracking?.rider?.speedMps,
+  ]);
+
+  const smoothedRider = useSmoothedRiderPosition(
+    riderGpsFix,
+    resolveSmoothDurationMs(tracking?.rider?.speedMps)
+  );
+  const mapRiderHeading = smoothedRider?.headingDeg ?? riderHeading;
+
   const deliveryMapCenter = useMemo(
     () => ({
       latitude: pickupLat || deliveryLat || 24.88,
@@ -293,7 +318,9 @@ export function ParcelLiveTrackingScreen({
   );
 
   const deliveryMapPayload = useMemo<DeliveryMapPayload>(() => {
-    const shownRider = displayRider ?? riderPos;
+    const shownRider = smoothedRider
+      ? { latitude: smoothedRider.lat, longitude: smoothedRider.lng }
+      : riderPos;
     return {
       pickupLat,
       pickupLng,
@@ -301,7 +328,8 @@ export function ParcelLiveTrackingScreen({
       dropLng: deliveryLng,
       riderLat: shownRider?.latitude ?? null,
       riderLng: shownRider?.longitude ?? null,
-      riderHeading,
+      riderHeading: mapRiderHeading,
+      riderSpeedMps: tracking?.rider?.speedMps ?? null,
       fullRoute,
       remainingRoute,
       preRiderArcRoute: preRiderArcRoute ?? undefined,
@@ -323,9 +351,10 @@ export function ParcelLiveTrackingScreen({
     pickupLng,
     deliveryLat,
     deliveryLng,
-    displayRider,
+    smoothedRider,
     riderPos,
-    riderHeading,
+    mapRiderHeading,
+    tracking?.rider?.speedMps,
     fullRoute,
     remainingRoute,
     preRiderArcRoute,

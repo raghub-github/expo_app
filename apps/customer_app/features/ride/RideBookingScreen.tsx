@@ -36,6 +36,8 @@ const TRACKING_PILL_H = 56;
 const TRACKING_PILL_MULTI_HINT_H = 22;
 /** Clear breathing room above tab bar — keep small so it doesn’t look like a blank white row. */
 const TRACKING_FLOAT_GAP = 8;
+/** When the safety card is hidden, lift the floating pay/track pill slightly. */
+const TRACKING_FLOAT_GAP_NO_SAFETY = 18;
 
 type RideRouteParams = {
   tab?: string;
@@ -137,10 +139,12 @@ export function RideBookingScreen() {
   const estimatedNavH = getRideServiceBottomNavHeight(insets.bottom);
   // Prefer measured height so the pill gap isn’t inflated by estimate mismatch (white “duplicate row”).
   const rideNavH = measuredNavH > 0 ? measuredNavH : estimatedNavH;
+  const hideSafetyBanner = showTrackingPill;
+  const trackingFloatGap = hideSafetyBanner ? TRACKING_FLOAT_GAP_NO_SAFETY : TRACKING_FLOAT_GAP;
   const trackingPillStackH = showTrackingPill
     ? TRACKING_PILL_H +
       (trackingRides.length > 1 ? TRACKING_PILL_MULTI_HINT_H : 0) +
-      TRACKING_FLOAT_GAP
+      trackingFloatGap
     : 0;
 
   const bottomStackH = rideNavH + trackingPillStackH;
@@ -150,16 +154,48 @@ export function RideBookingScreen() {
   }, []);
 
   const openIntercityPickup = useCallback(() => {
+    // No route yet — collect pickup/drop first.
+    const params: Record<string, string> = {
+      bookingMode: "intercity",
+      returnTo: "ride",
+    };
+    router.push({
+      pathname: "/home/service/ride-pickup",
+      params,
+    });
+  }, [router]);
+
+  /** Intercity "Change" → vehicle search / ride-book (Finding nearby riders). */
+  const openIntercityRideBook = useCallback(() => {
+    if (!hasIntercityRoute) {
+      openIntercityPickup();
+      return;
+    }
     if (hasDueFare && trackingRide) {
       const target = resolvePersonRideTrackingNavigation(trackingRide);
       router.push({ pathname: target.pathname, params: target.params });
       return;
     }
     router.push({
-      pathname: "/home/service/ride-pickup",
-      params: { bookingMode: "intercity", returnTo: "ride" },
+      pathname: "/home/service/ride-book",
+      params: {
+        pickup: routeParams.pickup ?? "",
+        drop: routeParams.drop ?? "",
+        pickupLabel: routeParams.pickupLabel ?? "",
+        dropLabel: routeParams.dropLabel ?? "",
+        pickupLat: routeParams.pickupLat ?? "",
+        pickupLng: routeParams.pickupLng ?? "",
+        dropLat: routeParams.dropLat ?? "",
+        dropLng: routeParams.dropLng ?? "",
+        stops: routeParams.stops ?? "",
+        bookedForSelf: routeParams.bookedForSelf ?? "true",
+        passengerName: routeParams.passengerName ?? "",
+        passengerPhone: routeParams.passengerPhone ?? "",
+        bookingMode: "intercity",
+        selectedRideId: "cab-economy",
+      },
     });
-  }, [hasDueFare, trackingRide, router]);
+  }, [hasIntercityRoute, hasDueFare, trackingRide, openIntercityPickup, router, routeParams]);
 
   const handleTabChange = useCallback(
     (tab: RideServiceTab) => {
@@ -213,7 +249,7 @@ export function RideBookingScreen() {
   const goToLocation = () => router.push("/location");
   const openDefaultRide = () => goToRideBook("bike");
 
-  const trackingBottom = rideNavH + TRACKING_FLOAT_GAP;
+  const trackingBottom = rideNavH + trackingFloatGap;
   // Root layout already reserves the status-bar strip — only add a small gap below it.
   const headerTopPad = STATUS_BAR_TO_HEADER_GAP;
 
@@ -298,15 +334,23 @@ export function RideBookingScreen() {
           <>
             <RideHomePromoBanner offers={rideFeaturedOffers} onBookNow={openDefaultRide} />
             <AllServicesGrid onSelectService={goToRideBook} servicesDisabled={hasDueFare} />
-            <View style={styles.safetySpacer} />
-            <RideSafetyBanner />
+            {hideSafetyBanner ? null : (
+              <>
+                <View style={styles.safetySpacer} />
+                <RideSafetyBanner />
+              </>
+            )}
           </>
         ) : (
           <IntercityServicesList
             tripKm={intercityTripKm}
+            pickupLat={routeParams.pickupLat}
+            pickupLng={routeParams.pickupLng}
+            dropLat={routeParams.dropLat}
+            dropLng={routeParams.dropLng}
             servicesDisabled={hasDueFare}
             onSelectService={goToRideBook}
-            onChangeRoute={openIntercityPickup}
+            onChangeRoute={openIntercityRideBook}
           />
         )}
       </ScrollView>

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { getOrCreateDeviceId } from "@/lib/auth/device-id-client";
@@ -16,6 +16,36 @@ function parseHashParams(hash: string): Record<string, string> {
     if (key && value) params[key] = value;
   }
   return params;
+}
+
+type BrowserSupabase = ReturnType<typeof createClient>;
+type CodeExchangeResult = Awaited<ReturnType<BrowserSupabase["auth"]["exchangeCodeForSession"]>>;
+
+/** Survives React Strict Mode remount so the same OAuth code is exchanged once. */
+const codeExchanges = new Map<string, Promise<CodeExchangeResult>>();
+
+function exchangeCodeOnce(supabase: BrowserSupabase, code: string): Promise<CodeExchangeResult> {
+  const existing = codeExchanges.get(code);
+  if (existing) return existing;
+  const next = supabase.auth.exchangeCodeForSession(code);
+  codeExchanges.set(code, next);
+  return next;
+}
+
+function isPkceOrFlowStateError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("pkce") ||
+    lower.includes("code verifier") ||
+    lower.includes("flow state")
+  );
+}
+
+function friendlyAuthError(message: string): string {
+  if (isPkceOrFlowStateError(message)) {
+    return "Google sign-in did not complete in this tab. Please try again.";
+  }
+  return message;
 }
 
 async function setCookieAndRedirect(
@@ -115,15 +145,15 @@ function AuthCallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const started = useRef(false);
-  const [fatal, setFatal] = useState("");
 
   useEffect(() => {
     if (started.current) return;
     started.current = true;
 
     const fail = (msg: string) => {
-      setFatal(msg);
-      router.replace(`/auth?error=${encodeURIComponent(msg)}`);
+      // Keep the spinner — painting the raw PKCE/SSR essay here is what merchants
+      // see even when the first exchange already logged them in.
+      router.replace(`/auth?error=${encodeURIComponent(friendlyAuthError(msg))}`);
     };
 
     const run = async () => {
@@ -222,12 +252,23 @@ function AuthCallbackContent() {
 
         const code = searchParams?.get("code");
         if (code) {
-          // Exchange in this browser — the PKCE verifier lives in first-party cookies
-          // written at Google click. Forwarding to /api/auth/callback used to race
-          // detectSessionInUrl + merchant-session and fail the first attempt with
-          // "invalid flow state, no valid flow state found".
-          const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+          const { data, error: exchangeError } = await exchangeCodeOnce(supabase, code);
           if (exchangeError) {
+            const existing = await supabase.auth.getSession();
+            const recovered = existing.data.session;
+            if (recovered?.access_token && recovered.refresh_token) {
+              const result = await setCookieAndRedirect(
+                recovered.access_token,
+                recovered.refresh_token,
+                next,
+                "google",
+              );
+              if (result.ok) {
+                sessionStorage.removeItem("auth_redirect");
+                window.location.replace(safeSameOriginPath(next, window.location.origin));
+                return;
+              }
+            }
             fail(exchangeError.message);
             return;
           }
@@ -293,17 +334,6 @@ function AuthCallbackContent() {
 
     void run();
   }, [router, searchParams]);
-
-  if (fatal) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-3 px-6 bg-[#F4F7F8]">
-        <p className="text-sm text-slate-700 text-center max-w-md">{fatal}</p>
-        <a href="/auth" className="text-sm font-semibold text-teal-700 underline">
-          Go to login
-        </a>
-      </div>
-    );
-  }
 
   return <LoadingSpinner />;
 }

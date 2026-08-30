@@ -1,5 +1,5 @@
 import { haversineKm } from "@/lib/billSummary";
-import { useLocationStore, type LocationSource } from "@/store/locationStore";
+import type { LocationSource } from "@/store/locationStore";
 
 export type CartDeliveryAnchor = {
   latitude: number;
@@ -11,6 +11,7 @@ export type CartDeliveryAnchor = {
 export const CART_DELIVERY_ANCHOR_MAX_KM = 15;
 
 export function readCurrentDeliveryAnchor(): CartDeliveryAnchor | null {
+  const { useLocationStore } = require("@/store/locationStore") as typeof import("@/store/locationStore");
   const { coords, locationSource } = useLocationStore.getState();
   if (!coords) return null;
   return {

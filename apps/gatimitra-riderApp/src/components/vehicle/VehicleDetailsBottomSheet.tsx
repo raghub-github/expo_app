@@ -7,6 +7,8 @@ import { VehicleDetailsForm } from "@/src/components/vehicle/VehicleDetailsForm"
 import { useUpsertRiderVehicle } from "@/src/hooks/useRiderVehicle";
 import { extractApiErrorMessage } from "@/src/services/http";
 import type { RiderVehicleDto, RiderVehicleFormMeta, RiderVehicleOnboardingPrefill } from "@/src/hooks/useRiderVehicle";
+import { isElectronicVehicleForm } from "@/src/lib/rider-vehicle-form-meta";
+import { LORA_BOLD, LORA_REGULAR } from "@/src/theme/headerFonts";
 import { colors } from "@/src/theme";
 
 const TEAL = colors.primary[600];
@@ -19,6 +21,7 @@ type VehicleDetailsBottomSheetProps = {
   onboardingVehicleCategoryCode?: string | null;
   onboardingPrefill?: RiderVehicleOnboardingPrefill | null;
   onCompleted: () => void;
+  onSkip?: () => void;
 };
 
 export function VehicleDetailsBottomSheet({
@@ -29,11 +32,12 @@ export function VehicleDetailsBottomSheet({
   onboardingVehicleCategoryCode,
   onboardingPrefill,
   onCompleted,
+  onSkip,
 }: VehicleDetailsBottomSheetProps) {
   const { t } = useTranslation();
   const upsert = useUpsertRiderVehicle();
   const [apiError, setApiError] = useState<string | null>(null);
-  const isCompact = formMeta?.formMode === "cashfree_missing_only";
+  const isCompact = isElectronicVehicleForm(formMeta, initial);
 
   return (
     <BlockingBottomSheetShell visible={visible}>
@@ -52,11 +56,11 @@ export function VehicleDetailsBottomSheet({
             {isCompact
               ? t(
                   "vehicle.sheet.subtitleCompact",
-                  "Your RC is verified. Confirm the details below to go online.",
+                  "Your RC is verified. Confirm services and ownership to go online.",
                 )
               : t(
                   "vehicle.sheet.subtitle",
-                  "Required before you can go online. This cannot be skipped.",
+                  "Required before you can go online. You can skip for now.",
                 )}
           </Text>
         </View>
@@ -71,6 +75,7 @@ export function VehicleDetailsBottomSheet({
         onDismissError={() => setApiError(null)}
         submitting={upsert.isPending}
         errorMessage={apiError}
+        onSkip={onSkip}
         onSubmit={async (payload) => {
           setApiError(null);
           try {
@@ -125,12 +130,14 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 18,
     fontWeight: "800",
+    fontFamily: LORA_BOLD,
     color: "#0F172A",
   },
   subtitle: {
     marginTop: 4,
     fontSize: 13,
     lineHeight: 18,
+    fontFamily: LORA_REGULAR,
     color: "#64748B",
   },
 });

@@ -18,6 +18,7 @@ export type LocalityInsight = {
   city: string | null;
   state: string | null;
   postal_code: string | null;
+  locality_name?: string | null;
   stores_in_area: number;
   your_orders_90d: number;
   your_area_rank: number | null;
@@ -25,6 +26,7 @@ export type LocalityInsight = {
 };
 
 export type MerchantMarketInsights = {
+  store_id?: string;
   store_name: string;
   store_logo_url: string | null;
   match_scope: MarketMatchScope;

@@ -2,7 +2,6 @@ import { MAPBOX_RIDE_STYLE } from "@/lib/customer-map-assets";
 import {
   escToken,
   escJson,
-  buildTrackingRiderMarkerInnerHtml,
   mapboxEnableGesturesScript,
   mapboxHtmlHead,
   mapboxLabelRestoreScript,
@@ -10,6 +9,7 @@ import {
 import { mapboxRapidoRouteScript } from "@/components/maps/mapbox-rapido-route-script";
 import { mapboxRideNavScript } from "@/components/maps/mapbox-ride-nav-script";
 import { mapboxPickupZoneScript } from "@/components/maps/mapbox-pickup-zone-script";
+import { liveRiderDotMarkerHtml } from "@gatimitra/map-tracking-engine";
 
 type Center = { latitude: number; longitude: number };
 
@@ -79,7 +79,7 @@ export function buildRideTrackingMapHtml(
 
       map.on('load', function() {
         ensureMapLabelsVisible(map);
-        ${mapboxRapidoRouteScript()}
+        ${mapboxRapidoRouteScript({ liveNav: true, showEndpointDots: false })}
         ${mapboxRideNavScript()}
         ${mapboxPickupZoneScript()}
         if (window.patchRideTrackingForNav) window.patchRideTrackingForNav();
@@ -100,31 +100,7 @@ export function buildRideTrackingMapHtml(
           if (riderMarker) { try { riderMarker.remove(); } catch (e) {} riderMarker = null; }
           return;
         }
-        function applyHeading(h) {
-          var img = document.getElementById('rider-img');
-          if (!img || h == null || isNaN(h)) return;
-          if (headingAnimFrame) { cancelAnimationFrame(headingAnimFrame); headingAnimFrame = null; }
-          var from = currentHeading == null ? h : currentHeading;
-          var to = ((h % 360) + 360) % 360;
-          var delta = ((to - from + 540) % 360) - 180;
-          if (Math.abs(delta) < 1) {
-            currentHeading = to;
-            img.style.transform = 'rotate(' + to + 'deg)';
-            return;
-          }
-          var t0 = performance.now();
-          var dur = Math.min(500, Math.max(180, Math.abs(delta) * 4));
-          function hStep(now) {
-            var t = Math.min(1, (now - t0) / dur);
-            var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-            var ang = from + delta * eased;
-            currentHeading = ((ang % 360) + 360) % 360;
-            img.style.transform = 'rotate(' + currentHeading + 'deg)';
-            if (t < 1) headingAnimFrame = requestAnimationFrame(hStep);
-            else headingAnimFrame = null;
-          }
-          headingAnimFrame = requestAnimationFrame(hStep);
-        }
+        function easeOutCubic(t) { return 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3); }
         function haversineM(lat1, lng1, lat2, lng2) {
           var R = 6378137;
           var toRad = function(d) { return d * Math.PI / 180; };
@@ -138,29 +114,27 @@ export function buildRideTrackingMapHtml(
         }
         if (!riderMarker) {
           var el = document.createElement('div');
-          el.className = 'gm-vehicle-marker';
-          el.style.cssText = 'width:44px;height:44px;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:8;position:relative;background:transparent;';
-          el.innerHTML = '${buildTrackingRiderMarkerInnerHtml(uri)}';
+          el.style.cssText = 'pointer-events:none;z-index:8;position:relative;';
+          el.innerHTML = '${liveRiderDotMarkerHtml()}';
           riderMarker = new mapboxgl.Marker({ element: el, anchor: 'center' }).setLngLat([lng, lat]).addTo(map);
-          applyHeading(heading);
           return;
         }
         var start = riderMarker.getLngLat();
         var fromLng = start.lng;
         var fromLat = start.lat;
         var jumpM = haversineM(fromLat, fromLng, lat, lng);
-        if (jumpM > 180) {
+        if (jumpM < 0.4 || jumpM < 1.5) return;
+        if (jumpM > 120) {
           if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
           riderMarker.setLngLat([lng, lat]);
-          applyHeading(heading);
           return;
         }
         if (riderAnimFrame) { cancelAnimationFrame(riderAnimFrame); riderAnimFrame = null; }
         var t0 = performance.now();
-        var dur = Math.min(1100, Math.max(350, jumpM * 18));
+        var dur = Math.min(850, Math.max(240, jumpM * 22));
         function step(now) {
           var t = Math.min(1, (now - t0) / dur);
-          var eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+          var eased = easeOutCubic(t);
           var latN = fromLat + (lat - fromLat) * eased;
           var lngN = fromLng + (lng - fromLng) * eased;
           if (riderMarker) riderMarker.setLngLat([lngN, latN]);
@@ -168,14 +142,12 @@ export function buildRideTrackingMapHtml(
             riderAnimFrame = requestAnimationFrame(step);
           } else {
             riderAnimFrame = null;
-            applyHeading(heading);
             var geofenceLock = typeof window.isGeofenceCameraActive === 'function' && window.isGeofenceCameraActive();
             if (followRider && !geofenceLock && !(window.__gmNavFollowActive)) {
               try { map.easeTo({ center: [lng, lat], duration: 280, essential: true }); } catch (e) {}
             }
           }
         }
-        applyHeading(heading);
         riderAnimFrame = requestAnimationFrame(step);
       }
 

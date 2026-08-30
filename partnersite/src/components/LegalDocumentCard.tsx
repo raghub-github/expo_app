@@ -145,7 +145,12 @@ export function LegalDocumentCard({
         {expiryDate ? <div>Expiry: {formatDisplayDate(expiryDate)}</div> : null}
         {activeRow ? (
           <p className="text-[10px] text-sky-800 font-medium pt-0.5">
-            Active on file · {formatHistoryVerificationLabel(activeRow.verification_status as 'pending')}
+            Active on file ·{' '}
+            {formatHistoryVerificationLabel(
+              isVerified === true
+                ? 'verified'
+                : (activeRow.verification_status as 'pending' | 'verified' | 'rejected' | 'expired')
+            )}
           </p>
         ) : null}
       </div>

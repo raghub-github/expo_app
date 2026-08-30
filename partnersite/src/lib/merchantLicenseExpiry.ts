@@ -313,6 +313,9 @@ export function renewalMetadataPatch(existingMeta?: Record<string, unknown> | nu
 export const LICENSE_ONLINE_BLOCKED_TOAST =
   "Can't go online until your new licence is verified by Gatimitra.";
 
+export const LICENSE_VERIFY_WAITING_MARQUEE =
+  'Awaiting Gatimitra verification — you cannot go online until your licence is verified.';
+
 export const MANUAL_LOCK_LICENSE_BLOCKED_MESSAGE =
   'Manual activation lock cannot be changed while the store is closed due to an expired licence. Upload and verify your licence first.';
 

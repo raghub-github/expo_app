@@ -281,6 +281,10 @@ function AcceptRideSwipeButton({
       onStartShouldSetPanResponder: () => !disabled && !loading,
       onMoveShouldSetPanResponder: (_, gesture) =>
         !disabled && !loading && Math.abs(gesture.dx) > 6,
+      onStartShouldSetPanResponderCapture: () => !disabled && !loading,
+      onMoveShouldSetPanResponderCapture: (_, gesture) =>
+        !disabled && !loading && Math.abs(gesture.dx) > 6,
+      onPanResponderTerminationRequest: () => false,
       onPanResponderMove: (_, gesture) => {
         if (disabled || loading) return;
         const max = Math.max(0, trackWidth.current - ACCEPT_HANDLE_W - ACCEPT_HANDLE_INSET * 2);

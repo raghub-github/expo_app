@@ -191,7 +191,7 @@ export function RideFarePaymentPendingScreen({ order, onBack }: Props) {
 
   const [tollSheetVisible, setTollSheetVisible] = useState(false);
   const tollNoticeSpokenRef = useRef<string | null>(null);
-  const bottomPad = Math.max(resolveTabBarBottomInset(insets.bottom), 6);
+  const bottomPad = Math.max(resolveTabBarBottomInset(insets.bottom), 16) + 8;
   const scrollBottomPad = bottomPad + 96;
   const headerTopPad = resolveTopSafeInset(insets.top) + STATUS_BAR_TO_HEADER_GAP;
 

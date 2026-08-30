@@ -58,6 +58,7 @@ export type DeliveryMapPayload = {
   riderLat: number | null;
   riderLng: number | null;
   riderHeading?: number | null;
+  riderSpeedMps?: number | null;
   /** Full road geometry from routing API. */
   fullRoute?: { latitude: number; longitude: number }[];
   /** Trimmed remaining route on road (rider-app splitRouteProgress). */

@@ -142,19 +142,6 @@ export type SelfieValidationResult =
   | { ok: false; message: string; detectorAvailable: boolean };
 
 function checkFaceObstructions(face: DetectedFace): SelfieValidationResult {
-  const leftEye = face.leftEyeOpenProbability;
-  const rightEye = face.rightEyeOpenProbability;
-
-  const eyesClassified = leftEye !== undefined && rightEye !== undefined;
-  if (eyesClassified && leftEye < 0.2 && rightEye < 0.2) {
-    return {
-      ok: false,
-      detectorAvailable: true,
-      message:
-        "Sunglasses detected. Please remove your sunglasses and capture again.",
-    };
-  }
-
   const hasEyeLandmarks = Boolean(face.leftEyePosition && face.rightEyePosition);
   const hasNose = Boolean(face.noseBasePosition);
   const hasMouthLandmarks = Boolean(
@@ -164,20 +151,22 @@ function checkFaceObstructions(face: DetectedFace): SelfieValidationResult {
       face.rightMouthPosition
   );
 
+  // Sunglasses / goggles typically hide eye landmarks while the face + nose remain.
+  // Do NOT treat closed eyes as sunglasses — blink capture intentionally closes eyes.
+  if (!hasEyeLandmarks && hasNose) {
+    return {
+      ok: false,
+      detectorAvailable: true,
+      message:
+        "Sunglasses or goggles detected. Please remove them and capture again.",
+    };
+  }
+
   if (hasNose && !hasMouthLandmarks) {
     return {
       ok: false,
       detectorAvailable: true,
       message: "Face mask detected. Please remove your mask and capture again.",
-    };
-  }
-
-  if (!hasEyeLandmarks && hasNose && eyesClassified && leftEye < 0.35 && rightEye < 0.35) {
-    return {
-      ok: false,
-      detectorAvailable: true,
-      message:
-        "Your eyes are not clearly visible. Remove sunglasses or mask and try again.",
     };
   }
 

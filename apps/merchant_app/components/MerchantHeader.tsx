@@ -4,8 +4,8 @@
  * 3-line menu only on Flow hub (Earnings, Growth, Offers, Reviews).
  */
 
-import { useEffect, useState, useMemo } from "react";
-import { View, Image, Pressable, StyleSheet, Platform, LayoutAnimation, Modal, ScrollView, Share, Alert, TextInput } from "react-native";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import { View, Image, Pressable, StyleSheet, Platform, LayoutAnimation, Modal, ScrollView, Share, Alert, TextInput, AppState } from "react-native";
 import { AppText as Text } from "@/components/AppText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useSegments, usePathname, useRouter } from "expo-router";
@@ -45,8 +45,18 @@ import {
   MerchantHomeBannerCarousel,
   MerchantScheduleOffBanner,
   MerchantRushHourBanner,
+  MerchantExpiredLicenceBanner,
   type MerchantHomeBannerSlide,
 } from "@/components/MerchantHomeBannerCarousel";
+import { MerchantLicenseUploadSheet } from "@/components/MerchantLicenseUploadSheet";
+import { LicenseUploadedModal, LicenseVerifiedSheet } from "@/components/LicenseNoticeSheets";
+import {
+  fetchLicenseDocumentsStatus,
+  markLicenseVerificationWatch,
+  clearLicenseVerificationWatch,
+  isLicenseVerificationWatched,
+  type LicenseDocumentActionItem,
+} from "@/services/licenseDocumentsApi";
 import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
 import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 import { useNetworkStatus } from "@/context/NetworkStatusContext";
@@ -743,7 +753,7 @@ function StoreStatusCard({
 }
 
 
-type WarningModalType = "store-status" | "switch-store" | "outside-hours" | "delisted";
+type WarningModalType = "store-status" | "switch-store" | "outside-hours" | "delisted" | "license-blocked";
 
 export function MerchantCustomHeader() {
   const insets = useSafeAreaInsets();
@@ -779,8 +789,10 @@ export function MerchantCustomHeader() {
     lastToggledById,
     lastToggledByEmail,
     isDelisted,
+    licenseBlocked,
     activeRush,
     needsManualOpenAfterRelist: needsRelistManualOpenFromCtx,
+    refresh: refreshStoreStatus,
   } = useStoreStatus();
   const needsRelistManualOpen =
     needsRelistManualOpenFromCtx ||
@@ -830,6 +842,18 @@ export function MerchantCustomHeader() {
   const [showCloseTimePicker, setShowCloseTimePicker] = useState(false);
   const [todayHoursLabel, setTodayHoursLabel] = useState<string | null>(null);
   const [operatingHours, setOperatingHours] = useState<OperatingHours | null>(null);
+  const [licenseExpiredDocs, setLicenseExpiredDocs] = useState<LicenseDocumentActionItem[]>([]);
+  const [licensePendingDocs, setLicensePendingDocs] = useState<LicenseDocumentActionItem[]>([]);
+  const [licenseBlockedFromDocs, setLicenseBlockedFromDocs] = useState(false);
+  const [licenseSheetOpen, setLicenseSheetOpen] = useState(false);
+  const [licenseStatusRefreshing, setLicenseStatusRefreshing] = useState(false);
+  const [licenseAwaitingRefresh, setLicenseAwaitingRefresh] = useState(false);
+  const [licenseUploadedModal, setLicenseUploadedModal] = useState(false);
+  const [licenseVerifiedSheet, setLicenseVerifiedSheet] = useState(false);
+  const watchingVerificationRef = useRef(false);
+  const licenseBlockedRef = useRef(licenseBlocked);
+  const verifiedDocLabelRef = useRef<string | null>(null);
+  const verifiedNoticeShownRef = useRef(false);
 
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
@@ -895,11 +919,139 @@ export function MerchantCustomHeader() {
     };
   }, [selectedStore?.id, token, pathname]);
 
+  useEffect(() => {
+    const storeId = selectedStore?.id;
+    if (!storeId) {
+      watchingVerificationRef.current = false;
+      verifiedNoticeShownRef.current = false;
+      setLicenseAwaitingRefresh(false);
+      return;
+    }
+    let cancelled = false;
+    void isLicenseVerificationWatched(storeId).then((watched) => {
+      if (cancelled) return;
+      watchingVerificationRef.current = watched;
+      if (watched) setLicenseAwaitingRefresh(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedStore?.id]);
+
+  const refreshLicenseDocs = useCallback((opts?: { showSpinner?: boolean }) => {
+    if (!selectedStore?.id || !token) return;
+    const storeId = selectedStore.id;
+    if (opts?.showSpinner) setLicenseStatusRefreshing(true);
+    void fetchLicenseDocumentsStatus(storeId, token)
+      .then(async (data) => {
+        const expired = Array.isArray(data.license_expired_documents)
+          ? data.license_expired_documents
+          : [];
+        const pending = Array.isArray(data.license_pending_verification)
+          ? data.license_pending_verification
+          : [];
+        setLicenseExpiredDocs(expired);
+        setLicensePendingDocs(pending);
+        setLicenseBlockedFromDocs(data.license_blocked === true || expired.length > 0 || pending.length > 0);
+        if (pending.length > 0) {
+          watchingVerificationRef.current = true;
+          void markLicenseVerificationWatch(storeId);
+          if (pending[0]?.label) verifiedDocLabelRef.current = pending[0].label;
+        }
+        const verifiedClear = expired.length === 0 && pending.length === 0 && data.license_blocked !== true;
+        const persistedWatch = watchingVerificationRef.current
+          ? true
+          : await isLicenseVerificationWatched(storeId);
+        const watched = watchingVerificationRef.current || persistedWatch;
+        if (verifiedClear && watched && !verifiedNoticeShownRef.current) {
+          verifiedNoticeShownRef.current = true;
+          watchingVerificationRef.current = false;
+          setLicenseAwaitingRefresh(false);
+          setLicenseVerifiedSheet(true);
+          void clearLicenseVerificationWatch(storeId);
+          void refreshStoreStatus();
+        } else {
+          if (watched) watchingVerificationRef.current = true;
+          setLicenseAwaitingRefresh(watched || (expired.length === 0 && pending.length > 0));
+        }
+      })
+      .catch(() => {
+        setLicenseExpiredDocs([]);
+        setLicensePendingDocs([]);
+        setLicenseBlockedFromDocs(false);
+      })
+      .finally(() => {
+        if (opts?.showSpinner) setLicenseStatusRefreshing(false);
+      });
+  }, [selectedStore?.id, token, refreshStoreStatus]);
+
+  useEffect(() => {
+    if (!selectedStore?.id || !token) return;
+    refreshLicenseDocs();
+  }, [isHomeScreen, selectedStore?.id, token, refreshLicenseDocs]);
+
+  useEffect(() => {
+    const watching =
+      licenseAwaitingRefresh ||
+      licensePendingDocs.length > 0 ||
+      licenseExpiredDocs.length > 0 ||
+      licenseBlockedFromDocs ||
+      licenseBlocked;
+    if (!watching || !selectedStore?.id || !token) return;
+    const id = setInterval(() => {
+      refreshLicenseDocs();
+    }, 12_000);
+    return () => clearInterval(id);
+  }, [
+    licenseAwaitingRefresh,
+    licensePendingDocs.length,
+    licenseExpiredDocs.length,
+    licenseBlockedFromDocs,
+    licenseBlocked,
+    selectedStore?.id,
+    token,
+    refreshLicenseDocs,
+  ]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      if (!selectedStore?.id || !token) return;
+      refreshLicenseDocs();
+    });
+    return () => sub.remove();
+  }, [refreshLicenseDocs, selectedStore?.id, token]);
+
+  useEffect(() => {
+    const prev = licenseBlockedRef.current;
+    licenseBlockedRef.current = licenseBlocked;
+    if (prev === true && licenseBlocked === false && watchingVerificationRef.current) {
+      refreshLicenseDocs();
+    }
+  }, [licenseBlocked, refreshLicenseDocs]);
+
+  const licenseRefreshCta =
+    licenseAwaitingRefresh ||
+    (licenseExpiredDocs.length === 0 && licensePendingDocs.length > 0);
+
+  const cannotGoOnline =
+    licenseBlocked ||
+    licenseBlockedFromDocs ||
+    licenseExpiredDocs.length > 0 ||
+    licensePendingDocs.length > 0;
+
   const showStoreStatusWarning = () => {
     if (isDelisted) {
       setWarningModal({
         visible: true,
         type: "delisted",
+      });
+      return;
+    }
+    if (!isOnline && cannotGoOnline) {
+      setWarningModal({
+        visible: true,
+        type: "license-blocked",
       });
       return;
     }
@@ -971,7 +1123,7 @@ export function MerchantCustomHeader() {
   };
 
   const confirmWarningModal = () => {
-    if (warningModal.type === "delisted") {
+    if (warningModal.type === "delisted" || warningModal.type === "license-blocked") {
       closeWarningModal();
       return;
     }
@@ -1016,6 +1168,10 @@ export function MerchantCustomHeader() {
             const code = e != null && typeof e === "object" ? String((e as { code?: string }).code ?? "") : "";
             const msg = e instanceof Error ? e.message : "";
             if (code === "STORE_DELISTED") return;
+            if (code === "LICENSE_BLOCKED") {
+              setWarningModal({ visible: true, type: "license-blocked" });
+              return;
+            }
             if (
               code === "outside_operating_hours" ||
               msg.toLowerCase().includes("outside its scheduled operating hours")
@@ -1261,39 +1417,63 @@ export function MerchantCustomHeader() {
     return fromLabel || toLabel || "";
   };
 
-  const homeBannerSlides: MerchantHomeBannerSlide[] = [
-    {
-      id: "store_status",
-      durationMs: 30_000,
+  const storeStatusSlide: MerchantHomeBannerSlide = {
+    id: "store_status",
+    durationMs: 6_000,
+    element: (
+      <StoreStatusCard
+        onPressCard={() => merchantNavPush("/restaurant-status")}
+        onPressTodayHours={() => {
+          if (!selectedStore) return;
+          merchantNavPush("/(tabs)/profile/hours");
+        }}
+        offlineSubtitle={!isOnline ? closedReasonLine : undefined}
+        autoReopenLabel={autoReopenLabel}
+        scheduleLabel={scheduleLabel}
+        showAutoOpenTag={!isDelisted && !needsRelistManualOpen && !isTempClose && autoOpenFromSchedule}
+        todayHoursLabel={statusTodayHoursLabel}
+        reopenAtIso={!isOnline && !isDelisted && !needsRelistManualOpen ? primaryReopenIso : null}
+        reopenCountdownLabelPrefix={
+          !isOnline && !isDelisted && !needsRelistManualOpen && primaryReopenIso ? "Opens in" : undefined
+        }
+        reopenAtFormatted={
+          !isOnline && !isDelisted && !needsRelistManualOpen ? formatIstDateTimeCompact(primaryReopenIso) : null
+        }
+        lastOpenedLine={isOnline ? lastOpenedLine : null}
+        lastClosedLine={!isOnline && !isDelisted ? lastClosedLine : null}
+      />
+    ),
+  };
+
+  const homeBannerSlides: MerchantHomeBannerSlide[] = [];
+  if (licenseExpiredDocs.length > 0 || licensePendingDocs.length > 0 || licenseAwaitingRefresh) {
+    homeBannerSlides.push({
+      id: "license_expired",
+      durationMs: 6_000,
       element: (
-        <StoreStatusCard
-          onPressCard={() => merchantNavPush("/restaurant-status")}
-          onPressTodayHours={() => {
-            if (!selectedStore) return;
-            merchantNavPush("/(tabs)/profile/hours");
+        <MerchantExpiredLicenceBanner
+          expiredCount={Math.max(1, licenseExpiredDocs.length + licensePendingDocs.length)}
+          primaryLabel={
+            licenseExpiredDocs[0]?.label ?? licensePendingDocs[0]?.label ?? null
+          }
+          cta={licenseRefreshCta ? "refresh" : "upload"}
+          refreshing={licenseStatusRefreshing}
+          onPress={() => {
+            if (licenseRefreshCta) {
+              refreshLicenseDocs({ showSpinner: true });
+              return;
+            }
+            setLicenseSheetOpen(true);
           }}
-          offlineSubtitle={!isOnline ? closedReasonLine : undefined}
-          autoReopenLabel={autoReopenLabel}
-          scheduleLabel={scheduleLabel}
-          showAutoOpenTag={!isDelisted && !needsRelistManualOpen && !isTempClose && autoOpenFromSchedule}
-          todayHoursLabel={statusTodayHoursLabel}
-          reopenAtIso={!isOnline && !isDelisted && !needsRelistManualOpen ? primaryReopenIso : null}
-          reopenCountdownLabelPrefix={
-            !isOnline && !isDelisted && !needsRelistManualOpen && primaryReopenIso ? "Opens in" : undefined
-          }
-          reopenAtFormatted={
-            !isOnline && !isDelisted && !needsRelistManualOpen ? formatIstDateTimeCompact(primaryReopenIso) : null
-          }
-          lastOpenedLine={isOnline ? lastOpenedLine : null}
-          lastClosedLine={!isOnline && !isDelisted ? lastClosedLine : null}
         />
       ),
-    },
-  ];
+    });
+  }
+  homeBannerSlides.push(storeStatusSlide);
   if (!notificationsGranted) {
     homeBannerSlides.push({
       id: "order_notifications_disabled",
-      durationMs: 30_000,
+      durationMs: 6_000,
       element: <OrderNotificationsDisabledBanner visible />,
     });
   }
@@ -1302,7 +1482,7 @@ export function MerchantCustomHeader() {
     if (windowText) {
       homeBannerSlides.push({
         id: "schedule_off_active",
-        durationMs: 30_000,
+        durationMs: 6_000,
         element: (
           <MerchantScheduleOffBanner
             phase="active"
@@ -1320,7 +1500,7 @@ export function MerchantCustomHeader() {
     if (windowText) {
       homeBannerSlides.push({
         id: "schedule_off_upcoming",
-        durationMs: 30_000,
+        durationMs: 6_000,
         element: (
           <MerchantScheduleOffBanner
             phase="upcoming"
@@ -1336,7 +1516,7 @@ export function MerchantCustomHeader() {
   if (activeRush && activeRush.is_active && activeRush.remaining_minutes > 0) {
     homeBannerSlides.push({
       id: "rush_active",
-      durationMs: 30_000,
+      durationMs: 6_000,
       element: (
         <MerchantRushHourBanner
           remainingMinutes={activeRush.remaining_minutes}
@@ -1370,6 +1550,30 @@ export function MerchantCustomHeader() {
         <MerchantHomeBannerCarousel slides={homeBannerSlides} variant="flush" />
       </View>
     ) : null}
+    {selectedStore?.id && token ? (
+      <MerchantLicenseUploadSheet
+        visible={licenseSheetOpen}
+        storeId={selectedStore.id}
+        token={token}
+        onClose={() => setLicenseSheetOpen(false)}
+        onUploaded={() => {
+          watchingVerificationRef.current = true;
+          setLicenseAwaitingRefresh(true);
+          if (selectedStore?.id) void markLicenseVerificationWatch(selectedStore.id);
+          setLicenseUploadedModal(true);
+          refreshLicenseDocs();
+        }}
+      />
+    ) : null}
+    <LicenseUploadedModal
+      visible={licenseUploadedModal}
+      onClose={() => setLicenseUploadedModal(false)}
+    />
+    <LicenseVerifiedSheet
+      visible={licenseVerifiedSheet}
+      docLabel={verifiedDocLabelRef.current}
+      onClose={() => setLicenseVerifiedSheet(false)}
+    />
     {isDelisted ? (
       <StoreDelistedMarquee />
     ) : needsRelistManualOpen ? (
@@ -1382,7 +1586,10 @@ export function MerchantCustomHeader() {
         visible={warningModal.visible}
         transparent
         animationType={
-          warningModal.type === "store-status" && warningModal.goingOffline ? "slide" : "fade"
+          (warningModal.type === "store-status" && warningModal.goingOffline) ||
+          warningModal.type === "license-blocked"
+            ? "slide"
+            : "fade"
         }
         onRequestClose={closeWarningModal}
       >
@@ -1391,7 +1598,9 @@ export function MerchantCustomHeader() {
             styles.warningOverlay,
             warningModal.type === "store-status" && warningModal.goingOffline
               ? styles.warningOverlayBottomSheet
-              : null,
+              : warningModal.type === "license-blocked"
+                ? styles.warningOverlayBottomSheet
+                : null,
           ]}
           onPress={closeWarningModal}
         >
@@ -1401,11 +1610,15 @@ export function MerchantCustomHeader() {
               warningModal.type === "outside-hours" && styles.outsideHoursCard,
               warningModal.type === "store-status" && warningModal.goingOffline
                 ? [styles.warningCardBottomSheet, { paddingBottom: Math.max(insets.bottom, 16) }]
-                : null,
+                : warningModal.type === "license-blocked"
+                  ? [styles.warningCardBottomSheet, { paddingBottom: Math.max(insets.bottom, 16) }]
+                  : null,
             ]}
             onPress={(e) => e.stopPropagation()}
           >
             {warningModal.type === "store-status" && warningModal.goingOffline ? (
+              <View style={styles.bottomSheetHandle} />
+            ) : warningModal.type === "license-blocked" ? (
               <View style={styles.bottomSheetHandle} />
             ) : null}
             {warningModal.type === "delisted" ? (
@@ -1448,6 +1661,52 @@ export function MerchantCustomHeader() {
                     ]}
                   >
                     <Text style={styles.storeOnConfirmText}>Contact support</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : warningModal.type === "license-blocked" ? (
+              <>
+                <View style={styles.storeOnIconWrap}>
+                  <View style={[styles.storeOnIconCircle, styles.outsideHoursIconCircle]}>
+                    <Ionicons name="document-text-outline" size={28} color="#B91C1C" />
+                  </View>
+                </View>
+                <Text style={styles.storeOnTitle}>Cannot go online</Text>
+                <Text style={styles.storeOnBody}>
+                  Expired or pending licences must be uploaded and verified by GatiMitra before you can turn the store on.
+                </Text>
+                <Text style={[styles.storeOnBody, { fontWeight: "700", color: "#991B1B" }]}>
+                  Upload the document, then wait until verification is complete. The toggle stays locked until then.
+                </Text>
+                <View style={styles.warningActions}>
+                  <Pressable
+                    onPress={closeWarningModal}
+                    style={({ pressed }) => [
+                      styles.warningBtn,
+                      styles.warningBtnCancel,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.warningBtnCancelText}>Later</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      closeWarningModal();
+                      if (licenseRefreshCta) {
+                        refreshLicenseDocs({ showSpinner: true });
+                        return;
+                      }
+                      setLicenseSheetOpen(true);
+                    }}
+                    style={({ pressed }) => [
+                      styles.warningBtn,
+                      styles.storeOnConfirmBtn,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.storeOnConfirmText}>
+                      {licenseRefreshCta ? "Refresh Status" : "Upload documents"}
+                    </Text>
                   </Pressable>
                 </View>
               </>

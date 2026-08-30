@@ -8,6 +8,7 @@ import { AppText } from "@/components/AppText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { StoreFonts } from "@/constants/storeTypography";
 
 type StopItem = {
   address?: string;
@@ -22,6 +23,7 @@ export type RideSearchingTripDetailsSheetProps = {
   dropAddress: string;
   stops?: StopItem[];
   totalFare: number;
+  listFare?: number | null;
   tipAmount?: number;
   statusLabel?: string;
   onBack: () => void;
@@ -81,12 +83,15 @@ export function RideSearchingTripDetailsSheet({
   dropAddress,
   stops,
   totalFare,
+  listFare = null,
   tipAmount = 0,
   statusLabel = "Searching for below services...",
   onBack,
   onCancelRide,
 }: RideSearchingTripDetailsSheetProps) {
   const insets = useSafeAreaInsets();
+  const showStrike =
+    listFare != null && Number.isFinite(listFare) && Number.isFinite(totalFare) && listFare > totalFare;
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onBack}>
@@ -102,9 +107,14 @@ export function RideSearchingTripDetailsSheet({
                 <Image source={rideImage} style={styles.serviceImage} resizeMode="contain" />
               ) : null}
               <AppText style={styles.serviceName}>{rideName}</AppText>
-              <AppText style={styles.serviceFare}>
-                ₹{Number.isFinite(totalFare) ? totalFare : "—"}
-              </AppText>
+              <View style={styles.serviceFareCol}>
+                {showStrike ? (
+                  <AppText style={styles.fareStrike}>₹{listFare}</AppText>
+                ) : null}
+                <AppText style={styles.serviceFare}>
+                  ₹{Number.isFinite(totalFare) ? totalFare : "—"}
+                </AppText>
+              </View>
             </View>
 
             <DashedDivider />
@@ -118,9 +128,14 @@ export function RideSearchingTripDetailsSheet({
 
             <View style={styles.fareRow}>
               <AppText style={styles.fareRowLabel}>Total Fare</AppText>
-              <AppText style={styles.fareRowValue}>
-                ₹{Number.isFinite(totalFare) ? totalFare : "—"}
-              </AppText>
+              <View style={styles.fareRowValueCol}>
+                {showStrike ? (
+                  <AppText style={styles.fareStrike}>₹{listFare}</AppText>
+                ) : null}
+                <AppText style={styles.fareRowValue}>
+                  ₹{Number.isFinite(totalFare) ? totalFare : "—"}
+                </AppText>
+              </View>
             </View>
 
             {tipAmount > 0 ? (
@@ -163,7 +178,8 @@ const styles = StyleSheet.create({
   },
   statusLabel: {
     fontSize: 15,
-    fontWeight: "600",
+    fontFamily: StoreFonts.loraBold,
+    fontWeight: "700",
     color: "#111827",
     marginBottom: 14,
   },
@@ -184,13 +200,26 @@ const styles = StyleSheet.create({
     flex: 1,
     marginLeft: 10,
     fontSize: 16,
+    fontFamily: StoreFonts.loraBold,
     fontWeight: "700",
     color: "#111827",
   },
   serviceFare: {
     fontSize: 16,
+    fontFamily: StoreFonts.poppinsBold,
     fontWeight: "700",
     color: "#111827",
+  },
+  serviceFareCol: {
+    alignItems: "flex-end",
+  },
+  fareStrike: {
+    fontSize: 12,
+    fontFamily: StoreFonts.poppinsSemiBold,
+    fontWeight: "600",
+    color: "#9CA3AF",
+    textDecorationLine: "line-through",
+    marginBottom: 2,
   },
   dashedDivider: {
     borderBottomWidth: 1,
@@ -200,6 +229,7 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     fontSize: 16,
+    fontFamily: StoreFonts.loraBold,
     fontWeight: "700",
     color: "#111827",
     marginBottom: 14,
@@ -245,6 +275,8 @@ const styles = StyleSheet.create({
   timelineAddress: {
     flex: 1,
     fontSize: 14,
+    fontFamily: StoreFonts.loraRegular,
+    fontWeight: "400",
     lineHeight: 20,
     color: "#374151",
     paddingBottom: 12,
@@ -259,13 +291,18 @@ const styles = StyleSheet.create({
   },
   fareRowLabel: {
     fontSize: 15,
-    fontWeight: "600",
+    fontFamily: StoreFonts.loraBold,
+    fontWeight: "700",
     color: "#111827",
   },
   fareRowValue: {
     fontSize: 16,
-    fontWeight: "800",
+    fontFamily: StoreFonts.poppinsBold,
+    fontWeight: "700",
     color: "#111827",
+  },
+  fareRowValueCol: {
+    alignItems: "flex-end",
   },
   tipRow: {
     flexDirection: "row",
@@ -275,10 +312,13 @@ const styles = StyleSheet.create({
   },
   tipRowLabel: {
     fontSize: 13,
+    fontFamily: StoreFonts.loraRegular,
+    fontWeight: "400",
     color: "#6B7280",
   },
   tipRowValue: {
     fontSize: 13,
+    fontFamily: StoreFonts.poppinsSemiBold,
     fontWeight: "600",
     color: GatiMitraColors.deepMintStart,
   },
@@ -302,6 +342,7 @@ const styles = StyleSheet.create({
   },
   backBtnText: {
     fontSize: 16,
+    fontFamily: StoreFonts.loraBold,
     fontWeight: "700",
     color: "#FFFFFF",
   },
@@ -316,6 +357,7 @@ const styles = StyleSheet.create({
   },
   cancelBtnText: {
     fontSize: 16,
+    fontFamily: StoreFonts.loraBold,
     fontWeight: "700",
     color: "#991B1B",
   },
