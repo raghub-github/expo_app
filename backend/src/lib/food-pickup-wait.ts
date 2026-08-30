@@ -11,6 +11,7 @@ import {
   type RideRiderPayoutSnapshot,
 } from "./ride-rider-payout-snapshot.js";
 import { computeRidePickupWaitSeconds } from "./ride-pickup-wait.js";
+import { applyMerchantFundedWaitingDebit } from "./merchant-funded-waiting-debit.js";
 
 function round2(n: number): number {
   if (!Number.isFinite(n)) return 0;
@@ -42,6 +43,8 @@ export async function applyFoodPickupWaitingToBilling(
       paymentStatus: ordersCore.paymentStatus,
       riderReachedPickupAt: ordersFood.riderReachedPickupAt,
       pickupWaitSeconds: ordersFood.pickupWaitSeconds,
+      ordersFoodId: ordersFood.id,
+      merchantStoreId: ordersFood.merchantStoreId,
     })
     .from(ordersCore)
     .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
@@ -75,7 +78,7 @@ export async function applyFoodPickupWaitingToBilling(
   let chargePerMin = 0;
   let waitingMax: number | null = null;
   let waitingMaxMinutes: number | null = null;
-  let fundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED" = "COMPANY_100";
+  let fundingMode: "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED" = "COMPANY_100";
   let customerSharePct = 0;
   let companySharePct = 100;
 
@@ -141,13 +144,28 @@ export async function applyFoodPickupWaitingToBilling(
       waiting_charge_gross: split.capped,
       waiting_customer_share: split.customerShare,
       waiting_company_share: split.companyShare,
+      waiting_merchant_share: split.merchantShare,
       waiting_funding_mode: split.fundingMode,
       company_funded_waiting: split.companyShare,
+      merchant_funded_waiting: split.merchantShare,
       pickup_wait_seconds: waitSeconds,
     })}::text::jsonb,
         updated_at = NOW()
     WHERE id = ${orderCorePk}
   `;
+
+  // MERCHANT_100 food waiting: the rider is still paid (riderWaiting above), but the store
+  // bears it — debit the merchant wallet by the merchant share. Idempotent + non-blocking;
+  // the obligation is already recorded in billing_snapshot above for settlement netting if
+  // the immediate debit can't apply (no available balance yet).
+  if (split.merchantShare > 0) {
+    await applyMerchantFundedWaitingDebit({
+      orderCoreId: orderCorePk,
+      ordersFoodId: Number(row.ordersFoodId),
+      merchantStoreId: Number(row.merchantStoreId),
+      amount: split.merchantShare,
+    });
+  }
 
   // Customer bill already captured (the common food path) — never retroactively recollect.
   // Only unpaid orders (e.g. COD food) pick up the customer-funded share in grand_total.

@@ -10,7 +10,9 @@ import type {
 function mapRuleRow(r: Record<string, unknown>): ServicePayoutRuleRow {
   const fundingRaw = String(r.waiting_funding_mode ?? "CUSTOMER_100").toUpperCase();
   const fundingMode =
-    fundingRaw === "COMPANY_100" || fundingRaw === "SHARED" ? fundingRaw : "CUSTOMER_100";
+    fundingRaw === "COMPANY_100" || fundingRaw === "MERCHANT_100" || fundingRaw === "SHARED"
+      ? fundingRaw
+      : "CUSTOMER_100";
   return {
     id: Number(r.id),
     serviceType: String(r.service_type) as RiderPayoutServiceType,

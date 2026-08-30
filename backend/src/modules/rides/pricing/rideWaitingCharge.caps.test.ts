@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeWaitingCharge } from "./rideWaitingCharge.ts";
+import { computeWaitingCharge, normalizeFundingShares } from "./rideWaitingCharge.ts";
 import {
   calcWaitingCharge,
   WAITING_DEFAULT_MAX_MINUTES,
@@ -108,6 +108,60 @@ test("calcWaitingCharge: null caps fall back to the safety ceiling, never unboun
   // 600 min at ₹2/min with no caps → min(45×2, 150) = 90, not 1200.
   assert.equal(calcWaitingCharge(600, 0, 2), 90);
   assert.ok(calcWaitingCharge(600, 0, 50) <= WAITING_DEFAULT_MAX_CHARGE);
+});
+
+// ---- Step 2: MERCHANT funding mode ----
+
+test("MERCHANT_100 → whole capped charge is merchant-funded; customer + company pay nothing", () => {
+  const r = computeWaitingCharge(SEC(45), {
+    freeMinutes: 0,
+    chargePerMin: 2,
+    maxMinutes: 30,
+    maxCharge: 60,
+    fundingMode: "MERCHANT_100",
+  });
+  assert.equal(r.capped, 60);
+  assert.equal(r.merchantShare, 60);
+  assert.equal(r.customerShare, 0);
+  assert.equal(r.companyShare, 0);
+});
+
+test("normalizeFundingShares handles all four modes", () => {
+  assert.deepEqual(normalizeFundingShares("MERCHANT_100", null, null), {
+    mode: "MERCHANT_100",
+    customerPct: 0,
+    companyPct: 0,
+    merchantPct: 100,
+  });
+  assert.deepEqual(normalizeFundingShares("COMPANY_100", null, null), {
+    mode: "COMPANY_100",
+    customerPct: 0,
+    companyPct: 100,
+    merchantPct: 0,
+  });
+  assert.deepEqual(normalizeFundingShares("CUSTOMER_100", null, null), {
+    mode: "CUSTOMER_100",
+    customerPct: 100,
+    companyPct: 0,
+    merchantPct: 0,
+  });
+  const shared = normalizeFundingShares("SHARED", 70, 30);
+  assert.equal(shared.mode, "SHARED");
+  assert.equal(shared.customerPct, 70);
+  assert.equal(shared.companyPct, 30);
+  assert.equal(shared.merchantPct, 0);
+});
+
+test("non-merchant modes keep merchantShare = 0", () => {
+  const company = computeWaitingCharge(SEC(45), {
+    freeMinutes: 0, chargePerMin: 2, maxMinutes: 30, maxCharge: 60, fundingMode: "COMPANY_100",
+  });
+  assert.equal(company.merchantShare, 0);
+  const shared = computeWaitingCharge(SEC(45), {
+    freeMinutes: 0, chargePerMin: 2, maxMinutes: 30, maxCharge: 60,
+    fundingMode: "SHARED", customerSharePct: 50, companySharePct: 50,
+  });
+  assert.equal(shared.merchantShare, 0);
 });
 
 test("rider and customer paths return the same capped waiting for identical inputs (A-3 parity)", () => {

@@ -73,7 +73,7 @@ export async function applyParcelPickupWaitingToBilling(
   let chargePerMin = 0;
   let waitingMax: number | null = null;
   let waitingMaxMinutes: number | null = null;
-  let fundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED" = "CUSTOMER_100";
+  let fundingMode: "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED" = "CUSTOMER_100";
   let customerSharePct = 100;
   let companySharePct = 0;
 

@@ -11,7 +11,7 @@ import {
   WAITING_DEFAULT_MAX_CHARGE,
 } from "@gatimitra/slab-pricing";
 
-export type ComponentFundingMode = "CUSTOMER_100" | "COMPANY_100" | "SHARED";
+export type ComponentFundingMode = "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED";
 
 export type WaitingChargePolicy = {
   freeMinutes: number;
@@ -30,6 +30,8 @@ export type WaitingChargeResult = {
   capped: number;
   customerShare: number;
   companyShare: number;
+  /** Merchant-funded portion (food prep-delay borne by the store). 0 unless MERCHANT_100. */
+  merchantShare: number;
   fundingMode: ComponentFundingMode;
   chargeableMinutes: number;
 };
@@ -49,18 +51,21 @@ export function normalizeFundingShares(
   mode: ComponentFundingMode | null | undefined,
   customerPct: number | null | undefined,
   companyPct: number | null | undefined
-): { mode: ComponentFundingMode; customerPct: number; companyPct: number } {
+): { mode: ComponentFundingMode; customerPct: number; companyPct: number; merchantPct: number } {
   const m = (mode ?? "CUSTOMER_100") as ComponentFundingMode;
-  if (m === "CUSTOMER_100") return { mode: m, customerPct: 100, companyPct: 0 };
-  if (m === "COMPANY_100") return { mode: m, customerPct: 0, companyPct: 100 };
+  if (m === "CUSTOMER_100") return { mode: m, customerPct: 100, companyPct: 0, merchantPct: 0 };
+  if (m === "COMPANY_100") return { mode: m, customerPct: 0, companyPct: 100, merchantPct: 0 };
+  // MERCHANT_100 — food prep-delay borne by the store (Step 2). Never charges the customer.
+  if (m === "MERCHANT_100") return { mode: m, customerPct: 0, companyPct: 0, merchantPct: 100 };
   const c = Math.max(0, Math.min(100, Number(customerPct) || 0));
   const co = Math.max(0, Math.min(100, Number(companyPct) || 0));
-  if (c + co <= 0) return { mode: "SHARED", customerPct: 50, companyPct: 50 };
+  if (c + co <= 0) return { mode: "SHARED", customerPct: 50, companyPct: 50, merchantPct: 0 };
   const sum = c + co;
   return {
     mode: "SHARED",
     customerPct: round2((c / sum) * 100),
     companyPct: round2((co / sum) * 100),
+    merchantPct: 0,
   };
 }
 
@@ -101,13 +106,15 @@ export function computeWaitingCharge(
     policy.companySharePct
   );
   const customerShare = round2((capped * funding.customerPct) / 100);
-  const companyShare = round2(Math.max(0, capped - customerShare));
+  const merchantShare = round2((capped * funding.merchantPct) / 100);
+  const companyShare = round2(Math.max(0, capped - customerShare - merchantShare));
 
   return {
     gross,
     capped,
     customerShare,
     companyShare,
+    merchantShare,
     fundingMode: funding.mode,
     chargeableMinutes,
   };

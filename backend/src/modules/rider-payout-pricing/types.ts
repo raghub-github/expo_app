@@ -60,7 +60,7 @@ export type ServicePayoutRuleRow = {
   waitingMaxCharge: number | null;
   /** Duration cap (billable minutes). Null → engine applies the absolute safety ceiling. */
   waitingMaxMinutes: number | null;
-  waitingFundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED";
+  waitingFundingMode: "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED";
   waitingCustomerSharePct: number;
   waitingCompanySharePct: number;
   priority: number;

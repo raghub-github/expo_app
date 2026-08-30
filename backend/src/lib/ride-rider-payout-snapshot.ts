@@ -599,7 +599,7 @@ export async function applyRidePickupWaitingToBilling(
   });
 
   let waitingMax: number | null = null;
-  let waitingFundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED" = "CUSTOMER_100";
+  let waitingFundingMode: "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED" = "CUSTOMER_100";
   let waitingCustomerSharePct = 100;
   let waitingCompanySharePct = 0;
   try {
