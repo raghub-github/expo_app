@@ -58,6 +58,8 @@ export type ServicePayoutRuleRow = {
   waitingChargePerMin: number | null;
   waitingFreeMinutes: number;
   waitingMaxCharge: number | null;
+  /** Duration cap (billable minutes). Null → engine applies the absolute safety ceiling. */
+  waitingMaxMinutes: number | null;
   waitingFundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED";
   waitingCustomerSharePct: number;
   waitingCompanySharePct: number;

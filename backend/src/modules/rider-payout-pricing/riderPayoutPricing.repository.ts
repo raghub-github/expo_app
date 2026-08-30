@@ -22,6 +22,7 @@ function mapRuleRow(r: Record<string, unknown>): ServicePayoutRuleRow {
     waitingChargePerMin: r.waiting_charge_per_min == null ? null : Number(r.waiting_charge_per_min),
     waitingFreeMinutes: Number(r.waiting_free_minutes ?? 2),
     waitingMaxCharge: r.waiting_max_charge == null ? null : Number(r.waiting_max_charge),
+    waitingMaxMinutes: r.waiting_max_minutes == null ? null : Number(r.waiting_max_minutes),
     waitingFundingMode: fundingMode as ServicePayoutRuleRow["waitingFundingMode"],
     waitingCustomerSharePct: Number(r.waiting_customer_share_pct ?? 100),
     waitingCompanySharePct: Number(r.waiting_company_share_pct ?? 0),

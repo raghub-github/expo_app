@@ -74,6 +74,7 @@ export async function applyFoodPickupWaitingToBilling(
   let freeMinutes = 2;
   let chargePerMin = 0;
   let waitingMax: number | null = null;
+  let waitingMaxMinutes: number | null = null;
   let fundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED" = "COMPANY_100";
   let customerSharePct = 0;
   let companySharePct = 100;
@@ -96,6 +97,7 @@ export async function applyFoodPickupWaitingToBilling(
         freeMinutes = Math.max(0, Math.round(rule.waitingFreeMinutes ?? 2));
         chargePerMin = Math.max(0, Number(rule.waitingChargePerMin ?? 0));
         waitingMax = rule.waitingMaxCharge;
+        waitingMaxMinutes = rule.waitingMaxMinutes;
         fundingMode = rule.waitingFundingMode ?? "COMPANY_100";
         customerSharePct = rule.waitingCustomerSharePct ?? 0;
         companySharePct = rule.waitingCompanySharePct ?? 100;
@@ -111,6 +113,7 @@ export async function applyFoodPickupWaitingToBilling(
     freeMinutes,
     chargePerMin,
     maxCharge: waitingMax,
+    maxMinutes: waitingMaxMinutes,
     fundingMode,
     customerSharePct,
     companySharePct,

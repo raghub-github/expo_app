@@ -14,8 +14,18 @@ export function calculateWaitingCharge(args: {
   waitingMinutes: number;
   chargePerMin: number;
   startAfterMinutes: number;
+  /** Duration cap (billable minutes); null → engine safety ceiling. */
+  maxMinutes?: number | null;
+  /** Amount cap (₹); null → engine safety ceiling. */
+  maxCharge?: number | null;
 }): number {
-  return sharedWaitingCharge(args.waitingMinutes, args.startAfterMinutes, args.chargePerMin);
+  return sharedWaitingCharge(
+    args.waitingMinutes,
+    args.startAfterMinutes,
+    args.chargePerMin,
+    args.maxMinutes,
+    args.maxCharge
+  );
 }
 
 function toRule(row: ServicePayoutRuleRow): ServicePayoutRule {
@@ -68,6 +78,9 @@ export function calculatePercentageRiderPayout(args: {
           waitingMinutes,
           chargePerMin: args.rule.waitingChargePerMin,
           startAfterMinutes: args.rule.waitingFreeMinutes,
+          // A-3 fix: rider-side waiting is now bounded by the same caps as the customer side.
+          maxMinutes: args.rule.waitingMaxMinutes,
+          maxCharge: args.rule.waitingMaxCharge,
         })
       : 0;
 

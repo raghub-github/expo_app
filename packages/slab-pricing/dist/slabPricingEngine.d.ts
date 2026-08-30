@@ -46,7 +46,22 @@ export declare function calcCustomerSlabPrice(input: {
     distanceKm: unknown;
     slabs: CustomerSlab[];
 }): CustomerSlabPrice | null;
-export declare function calcWaitingCharge(waitMin: unknown, freeWaitMin: unknown, waitRate: unknown): number;
+/**
+ * Absolute safety ceilings for waiting charges. These apply ONLY when a rule leaves
+ * the corresponding cap unset (null) — a configured cap always wins. They guarantee a
+ * waiting charge can never grow unbounded even for an un-backfilled or newly-created
+ * rule, which is the root cause of the ₹1,000+ waiting bug (see audit Problem A).
+ * A per-geo/service cap set in the dashboard is expected to be lower than these.
+ */
+export declare const WAITING_DEFAULT_MAX_MINUTES = 45;
+export declare const WAITING_DEFAULT_MAX_CHARGE = 150;
+/**
+ * Waiting charge = chargeable-minutes × rate, bounded by BOTH a duration cap and an
+ * amount cap. Both caps are always applied: a rule's own value when set, else the
+ * absolute safety ceiling above. `maxMinutes`/`maxCharge` are optional so existing
+ * callers stay compatible, but the result is always bounded regardless.
+ */
+export declare function calcWaitingCharge(waitMin: unknown, freeWaitMin: unknown, waitRate: unknown, maxMinutes?: unknown, maxCharge?: unknown): number;
 export declare function calcGmitraMaxAdjustment(input: {
     riderHasGmitraMax: boolean;
     surgeWaitMaxOnly: boolean;
