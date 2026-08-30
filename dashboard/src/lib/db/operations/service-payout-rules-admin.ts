@@ -21,7 +21,13 @@ export type ServicePayoutRuleRow = {
   waitingChargePerMin: number | null;
   waitingFreeMinutes: number;
   waitingMaxCharge: number | null;
-  waitingFundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED";
+  waitingMaxMinutes: number | null;
+  waitingStartMode: "FIXED_GRACE" | "KPT_PLUS_GRACE";
+  waitingKptGraceMinutes: number | null;
+  waitingBulkValueThreshold: number | null;
+  waitingBulkItemThreshold: number | null;
+  waitingBulkExtraGraceMinutes: number | null;
+  waitingFundingMode: "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED";
   waitingCustomerSharePct: number;
   waitingCompanySharePct: number;
   priority: number;
@@ -35,7 +41,7 @@ export type ServicePayoutRuleRow = {
 function mapRule(r: Record<string, unknown>): ServicePayoutRuleRow {
   const fundingRaw = String(r.waiting_funding_mode ?? "CUSTOMER_100").toUpperCase();
   const fundingMode =
-    fundingRaw === "COMPANY_100" || fundingRaw === "SHARED"
+    fundingRaw === "COMPANY_100" || fundingRaw === "MERCHANT_100" || fundingRaw === "SHARED"
       ? (fundingRaw as ServicePayoutRuleRow["waitingFundingMode"])
       : "CUSTOMER_100";
   return {
@@ -49,6 +55,19 @@ function mapRule(r: Record<string, unknown>): ServicePayoutRuleRow {
     waitingChargePerMin: r.waiting_charge_per_min == null ? null : Number(r.waiting_charge_per_min),
     waitingFreeMinutes: Number(r.waiting_free_minutes ?? 2),
     waitingMaxCharge: r.waiting_max_charge == null ? null : Number(r.waiting_max_charge),
+    waitingMaxMinutes: r.waiting_max_minutes == null ? null : Number(r.waiting_max_minutes),
+    waitingStartMode:
+      String(r.waiting_start_mode ?? "FIXED_GRACE").toUpperCase() === "KPT_PLUS_GRACE"
+        ? "KPT_PLUS_GRACE"
+        : "FIXED_GRACE",
+    waitingKptGraceMinutes:
+      r.waiting_kpt_grace_minutes == null ? null : Number(r.waiting_kpt_grace_minutes),
+    waitingBulkValueThreshold:
+      r.waiting_bulk_value_threshold == null ? null : Number(r.waiting_bulk_value_threshold),
+    waitingBulkItemThreshold:
+      r.waiting_bulk_item_threshold == null ? null : Number(r.waiting_bulk_item_threshold),
+    waitingBulkExtraGraceMinutes:
+      r.waiting_bulk_extra_grace_minutes == null ? null : Number(r.waiting_bulk_extra_grace_minutes),
     waitingFundingMode: fundingMode,
     waitingCustomerSharePct: Number(r.waiting_customer_share_pct ?? 100),
     waitingCompanySharePct: Number(r.waiting_company_share_pct ?? 0),
@@ -146,7 +165,13 @@ export type ServicePayoutRuleInput = {
   waitingChargePerMin: number | null;
   waitingFreeMinutes: number;
   waitingMaxCharge?: number | null;
-  waitingFundingMode?: "CUSTOMER_100" | "COMPANY_100" | "SHARED";
+  waitingMaxMinutes?: number | null;
+  waitingStartMode?: "FIXED_GRACE" | "KPT_PLUS_GRACE";
+  waitingKptGraceMinutes?: number | null;
+  waitingBulkValueThreshold?: number | null;
+  waitingBulkItemThreshold?: number | null;
+  waitingBulkExtraGraceMinutes?: number | null;
+  waitingFundingMode?: "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED";
   waitingCustomerSharePct?: number;
   waitingCompanySharePct?: number;
   priority: number;
@@ -155,6 +180,11 @@ export type ServicePayoutRuleInput = {
   effectiveTo: string | null;
 };
 
+/** Normalize a start mode to the DB-accepted set. */
+function normalizeStartMode(raw: unknown): "FIXED_GRACE" | "KPT_PLUS_GRACE" {
+  return String(raw ?? "").toUpperCase() === "KPT_PLUS_GRACE" ? "KPT_PLUS_GRACE" : "FIXED_GRACE";
+}
+
 export async function insertServicePayoutRule(args: ServicePayoutRuleInput): Promise<ServicePayoutRuleRow> {
   const sql = getSql();
   const funding = args.waitingFundingMode ?? "CUSTOMER_100";
@@ -162,7 +192,10 @@ export async function insertServicePayoutRule(args: ServicePayoutRuleInput): Pro
     INSERT INTO service_payout_rules (
       service_type, vehicle_type, geo_level, geo_ref_id, rider_percentage, platform_percentage,
       waiting_charge_per_min, waiting_free_minutes,
-      waiting_max_charge, waiting_funding_mode,
+      waiting_max_charge, waiting_max_minutes,
+      waiting_start_mode, waiting_kpt_grace_minutes,
+      waiting_bulk_value_threshold, waiting_bulk_item_threshold, waiting_bulk_extra_grace_minutes,
+      waiting_funding_mode,
       waiting_customer_share_pct, waiting_company_share_pct,
       priority, is_active, effective_from, effective_to
     ) VALUES (
@@ -170,7 +203,10 @@ export async function insertServicePayoutRule(args: ServicePayoutRuleInput): Pro
       ${args.level}::geo_pricing_level, ${args.refId}::uuid,
       ${args.riderPercentage}, ${args.platformPercentage},
       ${args.waitingChargePerMin}, ${args.waitingFreeMinutes},
-      ${args.waitingMaxCharge ?? null}, ${funding},
+      ${args.waitingMaxCharge ?? null}, ${args.waitingMaxMinutes ?? null},
+      ${normalizeStartMode(args.waitingStartMode)}, ${args.waitingKptGraceMinutes ?? null},
+      ${args.waitingBulkValueThreshold ?? null}, ${args.waitingBulkItemThreshold ?? null}, ${args.waitingBulkExtraGraceMinutes ?? null},
+      ${funding},
       ${args.waitingCustomerSharePct ?? 100}, ${args.waitingCompanySharePct ?? 0},
       ${args.priority}, ${args.isActive}, ${args.effectiveFrom}, ${args.effectiveTo}
     ) RETURNING *
@@ -192,6 +228,12 @@ export async function updateServicePayoutRule(
       waiting_charge_per_min = ${patch.waitingChargePerMin},
       waiting_free_minutes = ${patch.waitingFreeMinutes},
       waiting_max_charge = ${patch.waitingMaxCharge ?? null},
+      waiting_max_minutes = ${patch.waitingMaxMinutes ?? null},
+      waiting_start_mode = ${normalizeStartMode(patch.waitingStartMode)},
+      waiting_kpt_grace_minutes = ${patch.waitingKptGraceMinutes ?? null},
+      waiting_bulk_value_threshold = ${patch.waitingBulkValueThreshold ?? null},
+      waiting_bulk_item_threshold = ${patch.waitingBulkItemThreshold ?? null},
+      waiting_bulk_extra_grace_minutes = ${patch.waitingBulkExtraGraceMinutes ?? null},
       waiting_funding_mode = ${funding},
       waiting_customer_share_pct = ${patch.waitingCustomerSharePct ?? 100},
       waiting_company_share_pct = ${patch.waitingCompanySharePct ?? 0},
