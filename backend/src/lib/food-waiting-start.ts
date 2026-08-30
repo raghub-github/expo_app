@@ -50,3 +50,28 @@ export function resolveFoodWaitingFreeBudgetSeconds(args: {
   // Never below the base grace — even a late-committed order gets the minimum free window.
   return Math.max(baseFreeSec, untilChargeStartSec);
 }
+
+/**
+ * Bulk-order extra grace (Step 5). A large order (by value OR item count) legitimately needs
+ * more prep time, so it gets extra free minutes before waiting is billable. Thresholds +
+ * extra grace are configurable per rule; either threshold triggers (OR). Returns 0 grace
+ * unless the order qualifies AND a positive extra-grace is configured.
+ */
+export function resolveBulkOrderExtraGraceMinutes(args: {
+  orderValue: number | null | undefined;
+  itemCount: number | null | undefined;
+  valueThreshold: number | null | undefined;
+  itemThreshold: number | null | undefined;
+  extraGraceMinutes: number | null | undefined;
+}): { isBulk: boolean; extraGraceMinutes: number } {
+  const extra = Math.max(0, Number(args.extraGraceMinutes) || 0);
+  if (extra <= 0) return { isBulk: false, extraGraceMinutes: 0 };
+  const value = Number(args.orderValue) || 0;
+  const items = Number(args.itemCount) || 0;
+  const byValue =
+    args.valueThreshold != null && Number(args.valueThreshold) > 0 && value >= Number(args.valueThreshold);
+  const byItems =
+    args.itemThreshold != null && Number(args.itemThreshold) > 0 && items >= Number(args.itemThreshold);
+  const isBulk = byValue || byItems;
+  return { isBulk, extraGraceMinutes: isBulk ? extra : 0 };
+}

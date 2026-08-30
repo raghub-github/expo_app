@@ -14,6 +14,7 @@ import { computeRidePickupWaitSeconds } from "./ride-pickup-wait.js";
 import { applyMerchantFundedWaitingDebit } from "./merchant-funded-waiting-debit.js";
 import {
   resolveFoodWaitingFreeBudgetSeconds,
+  resolveBulkOrderExtraGraceMinutes,
   type WaitingStartMode,
 } from "./food-waiting-start.js";
 
@@ -50,6 +51,8 @@ export async function applyFoodPickupWaitingToBilling(
       ordersFoodId: ordersFood.id,
       merchantStoreId: ordersFood.merchantStoreId,
       prepReadyByAt: ordersFood.prepReadyByAt,
+      foodItemsTotalValue: ordersFood.foodItemsTotalValue,
+      foodItemsCount: ordersFood.foodItemsCount,
     })
     .from(ordersCore)
     .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
@@ -85,6 +88,9 @@ export async function applyFoodPickupWaitingToBilling(
   let waitingMaxMinutes: number | null = null;
   let waitingStartMode: WaitingStartMode = "FIXED_GRACE";
   let waitingKptGraceMinutes = 0;
+  let bulkValueThreshold: number | null = null;
+  let bulkItemThreshold: number | null = null;
+  let bulkExtraGraceMinutes: number | null = null;
   let fundingMode: "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED" = "COMPANY_100";
   let customerSharePct = 0;
   let companySharePct = 100;
@@ -110,6 +116,9 @@ export async function applyFoodPickupWaitingToBilling(
         waitingMaxMinutes = rule.waitingMaxMinutes;
         waitingStartMode = rule.waitingStartMode ?? "FIXED_GRACE";
         waitingKptGraceMinutes = Math.max(0, Number(rule.waitingKptGraceMinutes ?? 0));
+        bulkValueThreshold = rule.waitingBulkValueThreshold;
+        bulkItemThreshold = rule.waitingBulkItemThreshold;
+        bulkExtraGraceMinutes = rule.waitingBulkExtraGraceMinutes;
         fundingMode = rule.waitingFundingMode ?? "COMPANY_100";
         customerSharePct = rule.waitingCustomerSharePct ?? 0;
         companySharePct = rule.waitingCompanySharePct ?? 100;
@@ -128,13 +137,24 @@ export async function applyFoodPickupWaitingToBilling(
     ? new Date(row.riderReachedPickupAt).getTime()
     : NaN;
   const originalPrepReadyByMs = row.prepReadyByAt ? new Date(row.prepReadyByAt).getTime() : null;
-  const effectiveFreeSeconds = resolveFoodWaitingFreeBudgetSeconds({
-    startMode: waitingStartMode,
-    freeMinutes,
-    kptGraceMinutes: waitingKptGraceMinutes,
-    arrivalAtMs,
-    originalPrepReadyByMs,
+  // Bulk orders (by value or item count) get extra free grace (Step 5) — a big order needs
+  // more prep, so the rider isn't charged waiting for that legitimate extra time.
+  const bulk = resolveBulkOrderExtraGraceMinutes({
+    orderValue: row.foodItemsTotalValue == null ? null : Number(row.foodItemsTotalValue),
+    itemCount: row.foodItemsCount,
+    valueThreshold: bulkValueThreshold,
+    itemThreshold: bulkItemThreshold,
+    extraGraceMinutes: bulkExtraGraceMinutes,
   });
+  const effectiveFreeSeconds =
+    resolveFoodWaitingFreeBudgetSeconds({
+      startMode: waitingStartMode,
+      freeMinutes,
+      kptGraceMinutes: waitingKptGraceMinutes,
+      arrivalAtMs,
+      originalPrepReadyByMs,
+    }) +
+    bulk.extraGraceMinutes * 60;
   const effectiveFreeMinutes = effectiveFreeSeconds / 60;
 
   const split = computeWaitingCharge(waitSeconds, {
@@ -173,6 +193,8 @@ export async function applyFoodPickupWaitingToBilling(
       waiting_funding_mode: split.fundingMode,
       company_funded_waiting: split.companyShare,
       merchant_funded_waiting: split.merchantShare,
+      waiting_is_bulk: bulk.isBulk,
+      waiting_bulk_extra_grace_minutes: bulk.extraGraceMinutes,
       pickup_wait_seconds: waitSeconds,
     })}::text::jsonb,
         updated_at = NOW()

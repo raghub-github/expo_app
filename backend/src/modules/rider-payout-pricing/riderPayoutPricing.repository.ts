@@ -31,6 +31,12 @@ function mapRuleRow(r: Record<string, unknown>): ServicePayoutRuleRow {
         : "FIXED_GRACE",
     waitingKptGraceMinutes:
       r.waiting_kpt_grace_minutes == null ? null : Number(r.waiting_kpt_grace_minutes),
+    waitingBulkValueThreshold:
+      r.waiting_bulk_value_threshold == null ? null : Number(r.waiting_bulk_value_threshold),
+    waitingBulkItemThreshold:
+      r.waiting_bulk_item_threshold == null ? null : Number(r.waiting_bulk_item_threshold),
+    waitingBulkExtraGraceMinutes:
+      r.waiting_bulk_extra_grace_minutes == null ? null : Number(r.waiting_bulk_extra_grace_minutes),
     waitingFundingMode: fundingMode as ServicePayoutRuleRow["waitingFundingMode"],
     waitingCustomerSharePct: Number(r.waiting_customer_share_pct ?? 100),
     waitingCompanySharePct: Number(r.waiting_company_share_pct ?? 0),

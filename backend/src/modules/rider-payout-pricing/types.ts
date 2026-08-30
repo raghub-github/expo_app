@@ -64,6 +64,10 @@ export type ServicePayoutRuleRow = {
   waitingStartMode: "FIXED_GRACE" | "KPT_PLUS_GRACE";
   /** Extra grace (minutes) after the original KPT commitment (KPT_PLUS_GRACE). */
   waitingKptGraceMinutes: number | null;
+  /** Bulk-order triggers (value ₹ / item count) → extra waiting grace. Null = not a trigger. */
+  waitingBulkValueThreshold: number | null;
+  waitingBulkItemThreshold: number | null;
+  waitingBulkExtraGraceMinutes: number | null;
   waitingFundingMode: "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED";
   waitingCustomerSharePct: number;
   waitingCompanySharePct: number;

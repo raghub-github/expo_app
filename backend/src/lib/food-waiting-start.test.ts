@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   resolveFoodWaitingFreeBudgetSeconds,
   normalizeWaitingStartMode,
+  resolveBulkOrderExtraGraceMinutes,
 } from "./food-waiting-start.ts";
 
 const T0 = 1_700_000_000_000;
@@ -94,4 +95,46 @@ test("anti-manipulation: the anchor is the ORIGINAL commitment, so inflating KPT
   });
   assert.equal(original, afterPadding);
   assert.equal(original, 10 * 60);
+});
+
+// ---- Step 5: bulk-order extra grace ----
+
+test("bulk by VALUE → extra grace", () => {
+  const r = resolveBulkOrderExtraGraceMinutes({
+    orderValue: 1200, itemCount: 3, valueThreshold: 1000, itemThreshold: 15, extraGraceMinutes: 10,
+  });
+  assert.equal(r.isBulk, true);
+  assert.equal(r.extraGraceMinutes, 10);
+});
+
+test("bulk by ITEM COUNT → extra grace", () => {
+  const r = resolveBulkOrderExtraGraceMinutes({
+    orderValue: 400, itemCount: 20, valueThreshold: 1000, itemThreshold: 15, extraGraceMinutes: 8,
+  });
+  assert.equal(r.isBulk, true);
+  assert.equal(r.extraGraceMinutes, 8);
+});
+
+test("not bulk → no extra grace", () => {
+  const r = resolveBulkOrderExtraGraceMinutes({
+    orderValue: 400, itemCount: 3, valueThreshold: 1000, itemThreshold: 15, extraGraceMinutes: 10,
+  });
+  assert.equal(r.isBulk, false);
+  assert.equal(r.extraGraceMinutes, 0);
+});
+
+test("no extra-grace configured → never bulk (feature off)", () => {
+  const r = resolveBulkOrderExtraGraceMinutes({
+    orderValue: 5000, itemCount: 50, valueThreshold: 1000, itemThreshold: 15, extraGraceMinutes: 0,
+  });
+  assert.equal(r.isBulk, false);
+  assert.equal(r.extraGraceMinutes, 0);
+});
+
+test("null thresholds are not triggers (only a configured threshold fires)", () => {
+  const r = resolveBulkOrderExtraGraceMinutes({
+    orderValue: 5000, itemCount: 50, valueThreshold: null, itemThreshold: null, extraGraceMinutes: 10,
+  });
+  assert.equal(r.isBulk, false);
+  assert.equal(r.extraGraceMinutes, 0);
 });
