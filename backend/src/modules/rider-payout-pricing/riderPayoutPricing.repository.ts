@@ -10,7 +10,9 @@ import type {
 function mapRuleRow(r: Record<string, unknown>): ServicePayoutRuleRow {
   const fundingRaw = String(r.waiting_funding_mode ?? "CUSTOMER_100").toUpperCase();
   const fundingMode =
-    fundingRaw === "COMPANY_100" || fundingRaw === "SHARED" ? fundingRaw : "CUSTOMER_100";
+    fundingRaw === "COMPANY_100" || fundingRaw === "MERCHANT_100" || fundingRaw === "SHARED"
+      ? fundingRaw
+      : "CUSTOMER_100";
   return {
     id: Number(r.id),
     serviceType: String(r.service_type) as RiderPayoutServiceType,
@@ -22,6 +24,19 @@ function mapRuleRow(r: Record<string, unknown>): ServicePayoutRuleRow {
     waitingChargePerMin: r.waiting_charge_per_min == null ? null : Number(r.waiting_charge_per_min),
     waitingFreeMinutes: Number(r.waiting_free_minutes ?? 2),
     waitingMaxCharge: r.waiting_max_charge == null ? null : Number(r.waiting_max_charge),
+    waitingMaxMinutes: r.waiting_max_minutes == null ? null : Number(r.waiting_max_minutes),
+    waitingStartMode:
+      String(r.waiting_start_mode ?? "FIXED_GRACE").toUpperCase() === "KPT_PLUS_GRACE"
+        ? "KPT_PLUS_GRACE"
+        : "FIXED_GRACE",
+    waitingKptGraceMinutes:
+      r.waiting_kpt_grace_minutes == null ? null : Number(r.waiting_kpt_grace_minutes),
+    waitingBulkValueThreshold:
+      r.waiting_bulk_value_threshold == null ? null : Number(r.waiting_bulk_value_threshold),
+    waitingBulkItemThreshold:
+      r.waiting_bulk_item_threshold == null ? null : Number(r.waiting_bulk_item_threshold),
+    waitingBulkExtraGraceMinutes:
+      r.waiting_bulk_extra_grace_minutes == null ? null : Number(r.waiting_bulk_extra_grace_minutes),
     waitingFundingMode: fundingMode as ServicePayoutRuleRow["waitingFundingMode"],
     waitingCustomerSharePct: Number(r.waiting_customer_share_pct ?? 100),
     waitingCompanySharePct: Number(r.waiting_company_share_pct ?? 0),

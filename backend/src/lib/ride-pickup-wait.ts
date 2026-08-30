@@ -1,6 +1,10 @@
 import { resolveRidePricingGeoFromPickup } from "../modules/ride-state-config/rideStateConfig.repository.js";
 import { loadEffectiveServicePayoutRule } from "../modules/rider-payout-pricing/riderPayoutPricing.repository.js";
 import { calculateWaitingCharge } from "../modules/rider-payout-pricing/riderPayoutPricing.service.js";
+import {
+  WAITING_DEFAULT_MAX_MINUTES,
+  WAITING_DEFAULT_MAX_CHARGE,
+} from "@gatimitra/slab-pricing";
 import { rideGeoFromCheckoutMetadata } from "./ride-address-display.js";
 
 export const DEFAULT_RIDE_PICKUP_FREE_WAIT_MINUTES = 2;
@@ -91,12 +95,13 @@ export function computeRidePickupWaitSeconds(
   return Math.max(0, Math.floor((endMs - startMs) / 1000));
 }
 
-/** Customer pickup waiting charge (₹) from finalized wait seconds. */
+/** Customer pickup waiting charge (₹) from finalized wait seconds — duration + amount capped. */
 export function computeCustomerPickupWaitingCharge(args: {
   pickupWaitSeconds: number;
   freeMinutes: number;
   chargePerMin: number;
   maxCharge?: number | null;
+  maxMinutes?: number | null;
   fundingMode?: "CUSTOMER_100" | "COMPANY_100" | "SHARED" | null;
   customerSharePct?: number | null;
   companySharePct?: number | null;
@@ -105,12 +110,19 @@ export function computeCustomerPickupWaitingCharge(args: {
   const freeBudgetSec = Math.max(0, Math.round(args.freeMinutes * 60));
   const billableSec = Math.max(0, Math.round(args.pickupWaitSeconds) - freeBudgetSec);
   if (billableSec <= 0 || args.chargePerMin <= 0) return 0;
-  let gross = Math.round(Math.ceil(billableSec / 60) * args.chargePerMin * 10) / 10;
-  const max = args.maxCharge != null ? Number(args.maxCharge) : null;
-  if (max != null && Number.isFinite(max) && max > 0) {
-    gross = Math.min(gross, max);
-  }
-  return gross;
+  // Duration cap: rule value when set, else the absolute safety ceiling (never "no cap").
+  const minutesCap =
+    args.maxMinutes != null && Number(args.maxMinutes) > 0
+      ? Number(args.maxMinutes)
+      : WAITING_DEFAULT_MAX_MINUTES;
+  const chargeableMinutes = Math.min(Math.ceil(billableSec / 60), minutesCap);
+  let gross = Math.round(chargeableMinutes * args.chargePerMin * 10) / 10;
+  // Amount cap: rule value when set, else the absolute safety ceiling (never "no cap").
+  const amountCap =
+    args.maxCharge != null && Number.isFinite(Number(args.maxCharge)) && Number(args.maxCharge) > 0
+      ? Number(args.maxCharge)
+      : WAITING_DEFAULT_MAX_CHARGE;
+  return Math.min(gross, amountCap);
 }
 
 /** Rider pickup waiting earning from payout slabs (ignores surge-wait-max gating). */
@@ -153,6 +165,9 @@ export async function computeRiderPickupWaitingEarning(args: {
       waitingMinutes: waitMinutes,
       chargePerMin,
       startAfterMinutes,
+      // A-3 fix: bound the rider pickup-wait earning by the same rule caps.
+      maxMinutes: rule.waitingMaxMinutes,
+      maxCharge: rule.waitingMaxCharge,
     })
   );
 }

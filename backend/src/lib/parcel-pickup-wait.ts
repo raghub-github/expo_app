@@ -72,7 +72,8 @@ export async function applyParcelPickupWaitingToBilling(
   let freeMinutes = 2;
   let chargePerMin = 0;
   let waitingMax: number | null = null;
-  let fundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED" = "CUSTOMER_100";
+  let waitingMaxMinutes: number | null = null;
+  let fundingMode: "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED" = "CUSTOMER_100";
   let customerSharePct = 100;
   let companySharePct = 0;
 
@@ -95,6 +96,7 @@ export async function applyParcelPickupWaitingToBilling(
         freeMinutes = Math.max(0, Math.round(rule.waitingFreeMinutes ?? 2));
         chargePerMin = Math.max(0, Number(rule.waitingChargePerMin ?? 0));
         waitingMax = rule.waitingMaxCharge;
+        waitingMaxMinutes = rule.waitingMaxMinutes;
         fundingMode = rule.waitingFundingMode ?? "CUSTOMER_100";
         customerSharePct = rule.waitingCustomerSharePct ?? 100;
         companySharePct = rule.waitingCompanySharePct ?? 0;
@@ -110,6 +112,7 @@ export async function applyParcelPickupWaitingToBilling(
     freeMinutes,
     chargePerMin,
     maxCharge: waitingMax,
+    maxMinutes: waitingMaxMinutes,
     fundingMode,
     customerSharePct,
     companySharePct,

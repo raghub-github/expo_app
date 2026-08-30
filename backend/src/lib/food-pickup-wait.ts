@@ -11,6 +11,12 @@ import {
   type RideRiderPayoutSnapshot,
 } from "./ride-rider-payout-snapshot.js";
 import { computeRidePickupWaitSeconds } from "./ride-pickup-wait.js";
+import { applyMerchantFundedWaitingDebit } from "./merchant-funded-waiting-debit.js";
+import {
+  resolveFoodWaitingFreeBudgetSeconds,
+  resolveBulkOrderExtraGraceMinutes,
+  type WaitingStartMode,
+} from "./food-waiting-start.js";
 
 function round2(n: number): number {
   if (!Number.isFinite(n)) return 0;
@@ -42,6 +48,11 @@ export async function applyFoodPickupWaitingToBilling(
       paymentStatus: ordersCore.paymentStatus,
       riderReachedPickupAt: ordersFood.riderReachedPickupAt,
       pickupWaitSeconds: ordersFood.pickupWaitSeconds,
+      ordersFoodId: ordersFood.id,
+      merchantStoreId: ordersFood.merchantStoreId,
+      prepReadyByAt: ordersFood.prepReadyByAt,
+      foodItemsTotalValue: ordersFood.foodItemsTotalValue,
+      foodItemsCount: ordersFood.foodItemsCount,
     })
     .from(ordersCore)
     .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
@@ -74,7 +85,13 @@ export async function applyFoodPickupWaitingToBilling(
   let freeMinutes = 2;
   let chargePerMin = 0;
   let waitingMax: number | null = null;
-  let fundingMode: "CUSTOMER_100" | "COMPANY_100" | "SHARED" = "COMPANY_100";
+  let waitingMaxMinutes: number | null = null;
+  let waitingStartMode: WaitingStartMode = "FIXED_GRACE";
+  let waitingKptGraceMinutes = 0;
+  let bulkValueThreshold: number | null = null;
+  let bulkItemThreshold: number | null = null;
+  let bulkExtraGraceMinutes: number | null = null;
+  let fundingMode: "CUSTOMER_100" | "COMPANY_100" | "MERCHANT_100" | "SHARED" = "COMPANY_100";
   let customerSharePct = 0;
   let companySharePct = 100;
 
@@ -96,6 +113,12 @@ export async function applyFoodPickupWaitingToBilling(
         freeMinutes = Math.max(0, Math.round(rule.waitingFreeMinutes ?? 2));
         chargePerMin = Math.max(0, Number(rule.waitingChargePerMin ?? 0));
         waitingMax = rule.waitingMaxCharge;
+        waitingMaxMinutes = rule.waitingMaxMinutes;
+        waitingStartMode = rule.waitingStartMode ?? "FIXED_GRACE";
+        waitingKptGraceMinutes = Math.max(0, Number(rule.waitingKptGraceMinutes ?? 0));
+        bulkValueThreshold = rule.waitingBulkValueThreshold;
+        bulkItemThreshold = rule.waitingBulkItemThreshold;
+        bulkExtraGraceMinutes = rule.waitingBulkExtraGraceMinutes;
         fundingMode = rule.waitingFundingMode ?? "COMPANY_100";
         customerSharePct = rule.waitingCustomerSharePct ?? 0;
         companySharePct = rule.waitingCompanySharePct ?? 100;
@@ -107,10 +130,38 @@ export async function applyFoodPickupWaitingToBilling(
 
   if (chargePerMin <= 0) return { customerWaiting: 0, riderWaiting: 0 };
 
+  // Start-mode (Step 3): FIXED_GRACE keeps the arrival+grace window; KPT_PLUS_GRACE stretches
+  // the free window until the merchant's ORIGINAL prep_ready_by_at + grace (frozen at accept,
+  // so padding KPT afterwards can't defer waiting). Both feed the same engine as `freeMinutes`.
+  const arrivalAtMs = row.riderReachedPickupAt
+    ? new Date(row.riderReachedPickupAt).getTime()
+    : NaN;
+  const originalPrepReadyByMs = row.prepReadyByAt ? new Date(row.prepReadyByAt).getTime() : null;
+  // Bulk orders (by value or item count) get extra free grace (Step 5) — a big order needs
+  // more prep, so the rider isn't charged waiting for that legitimate extra time.
+  const bulk = resolveBulkOrderExtraGraceMinutes({
+    orderValue: row.foodItemsTotalValue == null ? null : Number(row.foodItemsTotalValue),
+    itemCount: row.foodItemsCount,
+    valueThreshold: bulkValueThreshold,
+    itemThreshold: bulkItemThreshold,
+    extraGraceMinutes: bulkExtraGraceMinutes,
+  });
+  const effectiveFreeSeconds =
+    resolveFoodWaitingFreeBudgetSeconds({
+      startMode: waitingStartMode,
+      freeMinutes,
+      kptGraceMinutes: waitingKptGraceMinutes,
+      arrivalAtMs,
+      originalPrepReadyByMs,
+    }) +
+    bulk.extraGraceMinutes * 60;
+  const effectiveFreeMinutes = effectiveFreeSeconds / 60;
+
   const split = computeWaitingCharge(waitSeconds, {
-    freeMinutes,
+    freeMinutes: effectiveFreeMinutes,
     chargePerMin,
     maxCharge: waitingMax,
+    maxMinutes: waitingMaxMinutes,
     fundingMode,
     customerSharePct,
     companySharePct,
@@ -138,13 +189,30 @@ export async function applyFoodPickupWaitingToBilling(
       waiting_charge_gross: split.capped,
       waiting_customer_share: split.customerShare,
       waiting_company_share: split.companyShare,
+      waiting_merchant_share: split.merchantShare,
       waiting_funding_mode: split.fundingMode,
       company_funded_waiting: split.companyShare,
+      merchant_funded_waiting: split.merchantShare,
+      waiting_is_bulk: bulk.isBulk,
+      waiting_bulk_extra_grace_minutes: bulk.extraGraceMinutes,
       pickup_wait_seconds: waitSeconds,
     })}::text::jsonb,
         updated_at = NOW()
     WHERE id = ${orderCorePk}
   `;
+
+  // MERCHANT_100 food waiting: the rider is still paid (riderWaiting above), but the store
+  // bears it — debit the merchant wallet by the merchant share. Idempotent + non-blocking;
+  // the obligation is already recorded in billing_snapshot above for settlement netting if
+  // the immediate debit can't apply (no available balance yet).
+  if (split.merchantShare > 0) {
+    await applyMerchantFundedWaitingDebit({
+      orderCoreId: orderCorePk,
+      ordersFoodId: Number(row.ordersFoodId),
+      merchantStoreId: Number(row.merchantStoreId),
+      amount: split.merchantShare,
+    });
+  }
 
   // Customer bill already captured (the common food path) — never retroactively recollect.
   // Only unpaid orders (e.g. COD food) pick up the customer-funded share in grand_total.

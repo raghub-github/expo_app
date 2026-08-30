@@ -82,12 +82,33 @@ export function calcCustomerSlabPrice(input) {
         segments,
     };
 }
-export function calcWaitingCharge(waitMin, freeWaitMin, waitRate) {
+/**
+ * Absolute safety ceilings for waiting charges. These apply ONLY when a rule leaves
+ * the corresponding cap unset (null) — a configured cap always wins. They guarantee a
+ * waiting charge can never grow unbounded even for an un-backfilled or newly-created
+ * rule, which is the root cause of the ₹1,000+ waiting bug (see audit Problem A).
+ * A per-geo/service cap set in the dashboard is expected to be lower than these.
+ */
+export const WAITING_DEFAULT_MAX_MINUTES = 45;
+export const WAITING_DEFAULT_MAX_CHARGE = 150;
+function resolveWaitingCap(value, fallback) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+/**
+ * Waiting charge = chargeable-minutes × rate, bounded by BOTH a duration cap and an
+ * amount cap. Both caps are always applied: a rule's own value when set, else the
+ * absolute safety ceiling above. `maxMinutes`/`maxCharge` are optional so existing
+ * callers stay compatible, but the result is always bounded regardless.
+ */
+export function calcWaitingCharge(waitMin, freeWaitMin, waitRate, maxMinutes, maxCharge) {
     const minutes = normalizeKm(waitMin);
     const free = normalizeKm(freeWaitMin);
     const rate = normalizeMoney(waitRate);
-    const chargeableWait = Math.max(0, minutes - free);
-    return round2(chargeableWait * rate);
+    const minutesCap = resolveWaitingCap(maxMinutes, WAITING_DEFAULT_MAX_MINUTES);
+    const amountCap = resolveWaitingCap(maxCharge, WAITING_DEFAULT_MAX_CHARGE);
+    const chargeableWait = Math.min(Math.max(0, minutes - free), minutesCap);
+    return round2(Math.min(chargeableWait * rate, amountCap));
 }
 export function calcGmitraMaxAdjustment(input) {
     const riderMax = input.riderHasGmitraMax === true;
