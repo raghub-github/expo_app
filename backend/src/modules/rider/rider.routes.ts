@@ -729,6 +729,57 @@ export async function riderRoutes(app: FastifyInstance) {
     },
   );
 
+  /**
+   * Rider waiting decision (Step 4). The rider was prompted to continue/cancel while waiting
+   * past the threshold. Recording a decision stops the 10-min re-prompt loop. "cancel" is
+   * recorded here (the app then runs the normal cancel flow); we never auto-cancel a
+   * non-responding rider. Idempotent — the first decision wins.
+   */
+  app.post(
+    "/orders/:orderId/waiting/decision",
+    {
+      schema: {
+        params: z.object({ orderId: z.string().min(1) }),
+        body: z.object({ decision: z.enum(["continue", "cancel"]) }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            decision: z.string(),
+            alreadyDecided: z.string().nullable(),
+          }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { orderId } = req.params as { orderId: string };
+      const { decision } = req.body as { decision: "continue" | "cancel" };
+      const sql = getSql();
+      const rows = await sql<{ core_id: number }[]>`
+        SELECT id AS core_id
+        FROM orders_core
+        WHERE order_id = ${orderId} OR formatted_order_id = ${orderId} OR id::text = ${orderId}
+        LIMIT 1
+      `;
+      const coreId = Number(rows[0]?.core_id);
+      if (!Number.isFinite(coreId) || coreId <= 0) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(404).send({ error: "Order not found" });
+      }
+      const { recordRiderWaitingDecision } = await import(
+        "../../lib/rider-waiting-decision-prompt.js"
+      );
+      const result = await recordRiderWaitingDecision({ orderCoreId: coreId, riderId, decision });
+      return { ok: true as const, decision, alreadyDecided: result.alreadyDecided ?? null };
+    },
+  );
+
   app.post(
     "/payment-methods/bank/check-duplicate",
     {

@@ -23,6 +23,7 @@ import {
   publishEtaUpdated,
 } from "./eta.realtime.js";
 import { processRiderWaitEscalations } from "./eta.rider-wait-escalation.js";
+import { processRiderWaitDecisionPrompt } from "../../lib/rider-waiting-decision-prompt.js";
 import { processRiderFreeWaitPriority } from "./eta.rider-free-wait-priority.js";
 import { getActiveOrdersForStore } from "./restaurantLoad.js";
 import { resolveCanonicalOrderIdText } from "./eta.order-ref.js";
@@ -548,6 +549,14 @@ export async function runLiveEtaForOrder(
       orderCoreId: ctx.orderCoreId,
       orderIdText,
       merchantStoreId: ctx.merchantStoreId,
+      riderId: ctx.riderId,
+      riderWaitMinutes,
+    });
+    // Step 4: rider continue/cancel decision prompt. Re-asks every 10 min for up to 30 min,
+    // then STOPS — never auto-cancels. The processor gates internally on its own threshold.
+    void processRiderWaitDecisionPrompt({
+      orderCoreId: ctx.orderCoreId,
+      orderIdText,
       riderId: ctx.riderId,
       riderWaitMinutes,
     });
