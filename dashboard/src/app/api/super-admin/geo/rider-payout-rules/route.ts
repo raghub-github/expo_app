@@ -12,7 +12,8 @@ export const runtime = "nodejs";
 const levelSchema = z.enum(["state", "region", "district", "division", "post_office", "pincode"]);
 const serviceSchema = z.enum(["food", "parcel", "ride"]);
 const vehicleSchema = z.enum(["2_wheeler", "3_wheeler", "4_wheeler_non_ac", "4_wheeler_ac"]);
-const waitingFundingSchema = z.enum(["CUSTOMER_100", "COMPANY_100", "SHARED"]);
+const waitingFundingSchema = z.enum(["CUSTOMER_100", "COMPANY_100", "MERCHANT_100", "SHARED"]);
+const waitingStartModeSchema = z.enum(["FIXED_GRACE", "KPT_PLUS_GRACE"]);
 
 const ruleBodySchema = z.object({
   level: levelSchema,
@@ -25,6 +26,12 @@ const ruleBodySchema = z.object({
   waitingChargePerMin: z.number().nonnegative().optional().nullable(),
   waitingFreeMinutes: z.number().int().nonnegative().optional(),
   waitingMaxCharge: z.number().nonnegative().optional().nullable(),
+  waitingMaxMinutes: z.number().int().nonnegative().optional().nullable(),
+  waitingStartMode: waitingStartModeSchema.optional(),
+  waitingKptGraceMinutes: z.number().int().nonnegative().optional().nullable(),
+  waitingBulkValueThreshold: z.number().nonnegative().optional().nullable(),
+  waitingBulkItemThreshold: z.number().int().nonnegative().optional().nullable(),
+  waitingBulkExtraGraceMinutes: z.number().int().nonnegative().optional().nullable(),
   waitingFundingMode: waitingFundingSchema.optional(),
   waitingCustomerSharePct: z.number().min(0).max(100).optional(),
   waitingCompanySharePct: z.number().min(0).max(100).optional(),
@@ -106,6 +113,12 @@ export async function POST(req: NextRequest) {
       waitingChargePerMin: parsed.data.waitingChargePerMin ?? null,
       waitingFreeMinutes: parsed.data.waitingFreeMinutes ?? 2,
       waitingMaxCharge: parsed.data.waitingMaxCharge ?? null,
+      waitingMaxMinutes: parsed.data.waitingMaxMinutes ?? null,
+      waitingStartMode: parsed.data.waitingStartMode ?? "FIXED_GRACE",
+      waitingKptGraceMinutes: parsed.data.waitingKptGraceMinutes ?? null,
+      waitingBulkValueThreshold: parsed.data.waitingBulkValueThreshold ?? null,
+      waitingBulkItemThreshold: parsed.data.waitingBulkItemThreshold ?? null,
+      waitingBulkExtraGraceMinutes: parsed.data.waitingBulkExtraGraceMinutes ?? null,
       waitingFundingMode: parsed.data.waitingFundingMode ?? "CUSTOMER_100",
       waitingCustomerSharePct: parsed.data.waitingCustomerSharePct ?? 100,
       waitingCompanySharePct: parsed.data.waitingCompanySharePct ?? 0,

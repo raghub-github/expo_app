@@ -16,7 +16,13 @@ const patchSchema = z.object({
   waitingChargePerMin: z.number().nonnegative().optional().nullable(),
   waitingFreeMinutes: z.number().int().nonnegative().optional(),
   waitingMaxCharge: z.number().nonnegative().optional().nullable(),
-  waitingFundingMode: z.enum(["CUSTOMER_100", "COMPANY_100", "SHARED"]).optional(),
+  waitingMaxMinutes: z.number().int().nonnegative().optional().nullable(),
+  waitingStartMode: z.enum(["FIXED_GRACE", "KPT_PLUS_GRACE"]).optional(),
+  waitingKptGraceMinutes: z.number().int().nonnegative().optional().nullable(),
+  waitingBulkValueThreshold: z.number().nonnegative().optional().nullable(),
+  waitingBulkItemThreshold: z.number().int().nonnegative().optional().nullable(),
+  waitingBulkExtraGraceMinutes: z.number().int().nonnegative().optional().nullable(),
+  waitingFundingMode: z.enum(["CUSTOMER_100", "COMPANY_100", "MERCHANT_100", "SHARED"]).optional(),
   waitingCustomerSharePct: z.number().min(0).max(100).optional(),
   waitingCompanySharePct: z.number().min(0).max(100).optional(),
   priority: z.number().int().nonnegative().optional(),
@@ -58,6 +64,17 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       waitingFreeMinutes: parsed.data.waitingFreeMinutes ?? current.waitingFreeMinutes,
       waitingMaxCharge:
         parsed.data.waitingMaxCharge === undefined ? current.waitingMaxCharge : parsed.data.waitingMaxCharge,
+      waitingMaxMinutes:
+        parsed.data.waitingMaxMinutes === undefined ? current.waitingMaxMinutes : parsed.data.waitingMaxMinutes,
+      waitingStartMode: parsed.data.waitingStartMode ?? current.waitingStartMode,
+      waitingKptGraceMinutes:
+        parsed.data.waitingKptGraceMinutes === undefined ? current.waitingKptGraceMinutes : parsed.data.waitingKptGraceMinutes,
+      waitingBulkValueThreshold:
+        parsed.data.waitingBulkValueThreshold === undefined ? current.waitingBulkValueThreshold : parsed.data.waitingBulkValueThreshold,
+      waitingBulkItemThreshold:
+        parsed.data.waitingBulkItemThreshold === undefined ? current.waitingBulkItemThreshold : parsed.data.waitingBulkItemThreshold,
+      waitingBulkExtraGraceMinutes:
+        parsed.data.waitingBulkExtraGraceMinutes === undefined ? current.waitingBulkExtraGraceMinutes : parsed.data.waitingBulkExtraGraceMinutes,
       waitingFundingMode: parsed.data.waitingFundingMode ?? current.waitingFundingMode,
       waitingCustomerSharePct: parsed.data.waitingCustomerSharePct ?? current.waitingCustomerSharePct,
       waitingCompanySharePct: parsed.data.waitingCompanySharePct ?? current.waitingCompanySharePct,
