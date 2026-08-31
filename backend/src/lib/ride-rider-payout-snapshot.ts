@@ -1,5 +1,5 @@
 import { eq, and, isNull } from "drizzle-orm";
-import { getDb } from "../db/client.js";
+import { getDb, getSql } from "../db/client.js";
 import { ordersCore, ordersRide, riders } from "../db/schema.js";
 import { resolveOrderRiderPayoutBreakdown } from "./resolve-order-rider-payout.js";
 import {
@@ -7,6 +7,7 @@ import {
   resolveRideGrossFareForPayout,
 } from "./rider-fare-basis.js";
 import { buildRiderCalcTraceEntry, appendCalcTrace, type CalcTraceEntry } from "./calc-trace.js";
+import { resolveRiderWaitingEntitlement } from "./rider-waiting-entitlement.js";
 import {
   rideGeoFromCheckoutMetadata,
   rideTripDistanceFromCheckoutMetadata,
@@ -703,6 +704,15 @@ export async function applyRidePickupWaitingToBilling(
     });
   }
 
+  // GatiMitra Max gate: the customer is still charged waiting (customerWaiting above,
+  // synced to the bill below), but a rider without an active Max subscription does not
+  // receive the waiting earning — the company retains it.
+  const waitingEntitlement = await resolveRiderWaitingEntitlement({
+    computedRiderWaiting: riderWaiting,
+    riderId,
+  });
+  riderWaiting = waitingEntitlement.riderWaiting;
+
   const tip = round0(
     Number(row.customerTipAmount) || Number(row.tipAmount) || 0
   );
@@ -738,6 +748,19 @@ export async function applyRidePickupWaitingToBilling(
     };
     await writeRideRiderPayoutSnapshot(orderCorePk, updatedSnapshot, tip);
   }
+
+  // Audit the Max gate: what the rider was entitled to vs. what the company retained.
+  await getSql()`
+    UPDATE orders_core
+    SET billing_snapshot = COALESCE(billing_snapshot, '{}'::jsonb) || ${JSON.stringify({
+      waiting_rider_entitled: waitingEntitlement.riderWaiting,
+      waiting_company_retained: waitingEntitlement.companyRetainedWaiting,
+      waiting_rider_gated_by_max: waitingEntitlement.gatedByMax,
+      waiting_rider_has_max: waitingEntitlement.hasMax,
+    })}::text::jsonb,
+        updated_at = NOW()
+    WHERE id = ${orderCorePk}
+  `;
 
   const [afterSnapRow] = await db
     .select({ billingSnapshot: ordersCore.billingSnapshot })
