@@ -252,6 +252,7 @@ export default function RidePickupScreen() {
   const hydrateRecentLocations = useRecentLocationStore((s) => s.hydrate);
   const recentLocationItems = useRecentLocationStore((s) => s.items);
   const hydrateFavorites = useFavoriteLocationsStore((s) => s.hydrate);
+  const favoriteItems = useFavoriteLocationsStore((s) => s.items);
   const isFavorite = useFavoriteLocationsStore((s) => s.isFavorite);
   const toggleFavorite = useFavoriteLocationsStore((s) => s.toggleFavorite);
   const hasCoords = coords?.latitude != null && coords?.longitude != null;
@@ -1276,6 +1277,13 @@ export default function RidePickupScreen() {
       : activeField === "drop"
         ? dropText.trim()
         : activeStopQuery.trim();
+  const listedSuggestions =
+    activeQuery.length === 0 && favoriteItems.length > 0
+      ? mergeRideSearchResults(
+          recentItemsToEnrichedResults(favoriteItems),
+          activeSuggestions
+        )
+      : activeSuggestions;
   const activeMinChars = isPincodeSearchMode(activeQuery) ? 6 : RIDE_SEARCH_MIN_CHARS;
   const queryReadyForSearch = activeQuery.length >= activeMinChars;
 
@@ -1283,7 +1291,7 @@ export default function RidePickupScreen() {
     !activeLoading && activeSuggestions.length === 0 && queryReadyForSearch;
   const hasStops = stops.length > 0;
   const showSuggestionsSection =
-    activeLoading || activeSuggestions.length > 0 || (activeQuery.length === 0 && !activeLoading);
+    activeLoading || listedSuggestions.length > 0 || (activeQuery.length === 0 && !activeLoading);
   const showStopsInfoPanel = hasStops && !showSuggestionsSection;
   const allStopsFilled = stops.every((s) => s.text.trim());
   const pickupFilled = Boolean(pickupText.trim());
@@ -1543,7 +1551,7 @@ export default function RidePickupScreen() {
             activeLoading ? (
               <LocationSearchSkeleton rows={6} />
             ) : (
-              activeSuggestions.map((loc) =>
+              listedSuggestions.map((loc) =>
                 renderSuggestionRow(
                   loc,
                   activeField === "pickup" ? "pickup" : activeField === "drop" ? "drop" : "stop",

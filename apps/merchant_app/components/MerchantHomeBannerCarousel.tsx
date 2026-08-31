@@ -4,6 +4,7 @@ import {
   FlatList,
   StyleSheet,
   Pressable,
+  ActivityIndicator,
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -18,8 +19,8 @@ export type MerchantHomeBannerSlide = {
   element: React.ReactNode;
 };
 
-const DEFAULT_DURATION_MS = 30_000;
-export const MERCHANT_HOME_BANNER_HEIGHT = 50;
+const DEFAULT_DURATION_MS = 6_000;
+export const MERCHANT_HOME_BANNER_HEIGHT = 64;
 
 type Props = {
   slides: MerchantHomeBannerSlide[];
@@ -62,7 +63,9 @@ export function MerchantHomeBannerCarousel({ slides, variant = "flush" }: Props)
     const next = ((index % current.length) + current.length) % current.length;
     activeIndexRef.current = next;
     setActiveIndex(next);
-    listRef.current.scrollToOffset({ offset: next * width, animated });
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset({ offset: next * width, animated });
+    });
   }, []);
 
   const scheduleAdvance = useCallback(() => {
@@ -82,16 +85,16 @@ export function MerchantHomeBannerCarousel({ slides, variant = "flush" }: Props)
     setActiveIndex(0);
     userDraggingRef.current = false;
     if (containerWidth > 0 && slides.length > 0) {
-      listRef.current?.scrollToOffset({ offset: 0, animated: false });
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToOffset({ offset: 0, animated: false });
+      });
     }
-    scheduleAdvance();
-    return clearTimer;
-  }, [slideKey, containerWidth, slides.length, scheduleAdvance, clearTimer]);
+  }, [slideKey, containerWidth, slides.length]);
 
   useEffect(() => {
     scheduleAdvance();
     return clearTimer;
-  }, [activeIndex, scheduleAdvance, clearTimer]);
+  }, [activeIndex, slideKey, containerWidth, slides.length, scheduleAdvance, clearTimer]);
 
   const onLayout = (e: LayoutChangeEvent) => {
     const w = Math.round(e.nativeEvent.layout.width);
@@ -114,7 +117,7 @@ export function MerchantHomeBannerCarousel({ slides, variant = "flush" }: Props)
   const pager = useMemo(() => {
     if (!multi) return null;
     return (
-      <View style={styles.pagerOverlay} pointerEvents="none">
+      <View style={styles.pagerBelow} pointerEvents="none">
         {slides.map((s, i) => (
           <View key={s.id} style={[styles.dot, i === activeIndex && styles.dotActive]} />
         ))}
@@ -136,6 +139,7 @@ export function MerchantHomeBannerCarousel({ slides, variant = "flush" }: Props)
             horizontal
             pagingEnabled
             nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
             removeClippedSubviews={false}
             showsHorizontalScrollIndicator={false}
             bounces={false}
@@ -174,8 +178,8 @@ export function MerchantHomeBannerCarousel({ slides, variant = "flush" }: Props)
         ) : (
           <View style={styles.slide}>{slides[0]?.element}</View>
         )}
-        {pager}
       </View>
+      {pager}
     </View>
   );
 }
@@ -200,6 +204,57 @@ export function MerchantClosedStoreBanner({
       </Text>
       <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textSecondary} />
     </Pressable>
+  );
+}
+
+export function MerchantExpiredLicenceBanner({
+  expiredCount,
+  primaryLabel,
+  cta = "upload",
+  refreshing = false,
+  onPress,
+}: {
+  expiredCount: number;
+  primaryLabel?: string | null;
+  cta?: "upload" | "refresh";
+  refreshing?: boolean;
+  onPress: () => void;
+}) {
+  const isRefresh = cta === "refresh";
+  const label =
+    primaryLabel ??
+    (expiredCount === 1 ? "1 licence expired" : `${expiredCount} licences expired`);
+
+  return (
+    <View style={[styles.closedBanner, styles.licenceBanner]}>
+      <Ionicons name="document-text-outline" size={22} color="#B91C1C" />
+      <View style={styles.bannerCopy}>
+        <Text style={[styles.bannerEyebrow, { color: "#991B1B" }]}>
+          {isRefresh ? "Verification pending" : "Licence expired"}
+        </Text>
+        <Text style={styles.closedText} numberOfLines={2}>
+          {label}
+        </Text>
+      </View>
+      <View style={styles.uploadCtaCol}>
+        <Pressable
+          style={styles.uploadBtn}
+          onPress={onPress}
+          disabled={refreshing}
+          accessibilityRole="button"
+          accessibilityLabel={isRefresh ? "Refresh licence status" : "Upload licence"}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          {refreshing ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Text style={styles.uploadBtnText} numberOfLines={2}>
+              {isRefresh ? "Refresh Status" : "Upload"}
+            </Text>
+          )}
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -310,33 +365,26 @@ const styles = StyleSheet.create({
     height: MERCHANT_HOME_BANNER_HEIGHT,
     overflow: "hidden",
   },
-  pagerOverlay: {
-    position: "absolute",
-    right: 10,
-    bottom: 5,
+  pagerBelow: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "flex-end",
     gap: 4,
-  },
-  pagerRow: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 5,
-    marginTop: 6,
-    minHeight: 8,
+    paddingTop: 6,
+    paddingRight: 14,
+    paddingBottom: 2,
   },
   dot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: "rgba(255,255,255,0.4)",
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "rgba(15,23,42,0.28)",
   },
   dotActive: {
-    width: 12,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: "#FFFFFF",
+    width: 10,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: GatiMitraMerchant.navy,
   },
   closedBanner: {
     flex: 1,
@@ -347,15 +395,45 @@ const styles = StyleSheet.create({
     marginHorizontal: 0,
     paddingVertical: 6,
     paddingHorizontal: 14,
-    paddingRight: 40,
+    paddingRight: 14,
     borderRadius: 0,
     backgroundColor: "#FEF3C7",
     borderWidth: 0,
     minHeight: MERCHANT_HOME_BANNER_HEIGHT,
   },
+  uploadCtaCol: {
+    alignSelf: "stretch",
+    justifyContent: "flex-start",
+    paddingTop: 10,
+    paddingBottom: 8,
+    marginRight: 8,
+  },
+  uploadBtn: {
+    backgroundColor: GatiMitraMerchant.navy,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    minWidth: 92,
+    minHeight: 34,
+    maxWidth: 110,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  uploadBtnText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    textAlign: "center",
+    lineHeight: 13,
+  },
   rushBanner: {
     backgroundColor: "#FFF7ED",
     borderBottomColor: "#FDBA7455",
+  },
+  licenceBanner: {
+    backgroundColor: "#F5B7BB",
+    borderBottomColor: "#E8A0A5",
   },
   bannerCopy: {
     flex: 1,

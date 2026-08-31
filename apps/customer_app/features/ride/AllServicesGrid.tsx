@@ -8,7 +8,6 @@ import { AppText } from "@/components/AppText";
 import { Ionicons } from "@expo/vector-icons";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
-import { bundledRideServiceIcon } from "@/features/ride/rideOptionAssets";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 
@@ -66,6 +65,23 @@ function ServiceBadgeIcon({ type }: { type: ServiceBadge }) {
   );
 }
 
+/** CMS ride icon — disk/memory cache, no bundled placeholder. */
+export function RideServiceTileIcon({
+  assetKey,
+  iconPx,
+}: {
+  assetKey: string;
+  iconPx: number;
+}) {
+  return (
+    <AppAssetImage
+      assetKey={assetKey}
+      style={{ width: iconPx, height: iconPx }}
+      contentFit="contain"
+    />
+  );
+}
+
 function ServiceTile({
   service,
   onPress,
@@ -85,12 +101,7 @@ function ServiceTile({
     >
       <View style={[styles.iconArea, { width: TILE_W, height: ICON_SIZE }]}>
         <View style={[styles.iconClip, { width: ICON_SIZE, height: ICON_SIZE }]}>
-          <AppAssetImage
-            assetKey={service.assetKey}
-            style={{ width: iconPx, height: iconPx }}
-            contentFit="contain"
-            fallbackSource={bundledRideServiceIcon(service.assetKey)}
-          />
+          <RideServiceTileIcon assetKey={service.assetKey} iconPx={iconPx} />
         </View>
         {service.badge && !disabled ? <ServiceBadgeIcon type={service.badge} /> : null}
         {disabled ? (

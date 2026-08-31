@@ -1,5 +1,5 @@
 /**
- * Shown when no on-duty riders are available near the pickup location.
+ * Curved bottom sheet — no nearby riders, or search timed out with no captain.
  */
 
 import { View, TouchableOpacity, StyleSheet, Modal, Pressable } from "react-native";
@@ -8,10 +8,14 @@ import { AppText } from "@/components/AppText";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { StoreFonts } from "@/constants/storeTypography";
 
 type RideServiceUnavailableSheetProps = {
   visible: boolean;
+  title?: string;
   message?: string;
+  okayLabel?: string;
+  iconName?: keyof typeof Ionicons.glyphMap;
   onOkay: () => void;
 };
 
@@ -20,7 +24,10 @@ const DEFAULT_UNAVAILABLE_MESSAGE =
 
 export function RideServiceUnavailableSheet({
   visible,
+  title,
   message = DEFAULT_UNAVAILABLE_MESSAGE,
+  okayLabel = "Okay",
+  iconName = "location-outline",
   onOkay,
 }: RideServiceUnavailableSheetProps) {
   const insets = useSafeAreaInsets();
@@ -40,12 +47,20 @@ export function RideServiceUnavailableSheet({
         <Pressable style={styles.backdrop} onPress={onOkay} accessibilityRole="button" />
 
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 20) }]}>
+          <View style={styles.handle} />
           <View style={styles.iconWrap}>
-            <Ionicons name="location-outline" size={32} color="#DC2626" />
+            <Ionicons name={iconName} size={32} color="#DC2626" />
           </View>
-          <AppText style={styles.message}>{message}</AppText>
+          {title ? (
+            <AppText style={styles.title} bold>
+              {title}
+            </AppText>
+          ) : null}
+          <AppText style={[styles.message, title ? styles.messageWithTitle : null]}>{message}</AppText>
           <TouchableOpacity style={styles.okayBtn} onPress={onOkay} activeOpacity={0.9}>
-            <AppText style={styles.okayBtnText}>Okay</AppText>
+            <AppText style={styles.okayBtnText} bold>
+              {okayLabel}
+            </AppText>
           </TouchableOpacity>
         </View>
       </View>
@@ -60,19 +75,27 @@ const styles = StyleSheet.create({
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
   },
   sheet: {
     backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
     paddingHorizontal: 24,
-    paddingTop: 28,
+    paddingTop: 10,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.12,
     shadowRadius: 16,
     elevation: 16,
+  },
+  handle: {
+    alignSelf: "center",
+    width: 44,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#D1D5DB",
+    marginBottom: 18,
   },
   iconWrap: {
     width: 64,
@@ -82,16 +105,30 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     alignSelf: "center",
-    marginBottom: 20,
+    marginBottom: 16,
   },
-  message: {
-    fontSize: 17,
+  title: {
+    fontSize: 22,
+    fontFamily: StoreFonts.loraBold,
     fontWeight: "700",
     color: "#111827",
-    lineHeight: 25,
     textAlign: "center",
-    marginBottom: 28,
+    marginBottom: 10,
+    letterSpacing: -0.3,
+  },
+  message: {
+    fontSize: 16,
+    fontFamily: StoreFonts.loraRegular,
+    fontWeight: "400",
+    color: "#374151",
+    lineHeight: 24,
+    textAlign: "center",
+    marginBottom: 24,
     letterSpacing: -0.2,
+  },
+  messageWithTitle: {
+    fontSize: 15,
+    fontWeight: "400",
   },
   okayBtn: {
     backgroundColor: GatiMitraColors.primaryMint,
@@ -101,6 +138,7 @@ const styles = StyleSheet.create({
   },
   okayBtnText: {
     fontSize: 16,
+    fontFamily: StoreFonts.loraBold,
     fontWeight: "700",
     color: "#111827",
   },

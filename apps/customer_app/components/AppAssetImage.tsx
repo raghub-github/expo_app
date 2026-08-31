@@ -31,27 +31,35 @@ export function AppAssetImage({
   const proxyUrl = useAppAssetsStore((s) => s.assets[assetKey]?.proxyUrl ?? null);
   const updatedAt = useAppAssetsStore((s) => s.assets[assetKey]?.updatedAt ?? null);
   const [primaryFailed, setPrimaryFailed] = useState(false);
+  const [useBundled, setUseBundled] = useState(false);
   /** Keep last good URI so asset refresh / signed-URL rotate never blanks the tile. */
   const lastGoodUriRef = useRef<string | null>(null);
 
-  const primaryUri = useMemo(() => {
+  const signedUri = useMemo(() => {
     if (!rawUrl?.trim()) return null;
     return toAbsoluteImageUrl(rawUrl) ?? rawUrl.trim();
   }, [rawUrl]);
 
-  const fallbackUri = useMemo(() => {
+  const proxyUri = useMemo(() => {
     if (!proxyUrl?.trim()) return null;
     return toAbsoluteImageUrl(proxyUrl);
   }, [proxyUrl]);
 
+  // Stable proxy URL hits expo-image disk cache; signed URLs rotate and miss.
+  const cacheUri = fresh ? (signedUri ?? proxyUri) : (proxyUri ?? signedUri);
+  const altUri =
+    signedUri && signedUri !== cacheUri
+      ? signedUri
+      : proxyUri && proxyUri !== cacheUri
+        ? proxyUri
+        : null;
+
   useEffect(() => {
     setPrimaryFailed(false);
-  }, [primaryUri]);
+    setUseBundled(false);
+  }, [cacheUri]);
 
-  const preferredUri =
-    primaryFailed && fallbackUri && fallbackUri !== primaryUri
-      ? fallbackUri
-      : primaryUri;
+  const preferredUri = primaryFailed && altUri ? altUri : cacheUri;
 
   if (preferredUri && !fresh) {
     lastGoodUriRef.current = preferredUri;
@@ -59,9 +67,11 @@ export function AppAssetImage({
 
   const uri = fresh ? preferredUri : preferredUri ?? lastGoodUriRef.current;
 
-  const source: ImageSourcePropType | null = uri
-    ? { uri }
-    : fallbackSource;
+  const source: ImageSourcePropType | null = useBundled
+    ? fallbackSource
+    : uri
+      ? { uri }
+      : fallbackSource;
 
   if (!source) return null;
 
@@ -72,6 +82,8 @@ export function AppAssetImage({
         fresh ? `${assetKey}:${updatedAt ?? ""}:${proxyUrl ?? ""}` : assetKey
       }
       source={source}
+      placeholder={!useBundled && uri && fallbackSource ? fallbackSource : undefined}
+      placeholderContentFit={contentFit}
       style={style}
       contentFit={contentFit}
       cachePolicy={fresh ? "none" : "memory-disk"}
@@ -79,8 +91,12 @@ export function AppAssetImage({
       transition={0}
       accessibilityLabel={accessibilityLabel}
       onError={() => {
-        if (!primaryFailed && fallbackUri && fallbackUri !== primaryUri) {
+        if (!useBundled && !primaryFailed && altUri) {
           setPrimaryFailed(true);
+          return;
+        }
+        if (fallbackSource) {
+          setUseBundled(true);
           return;
         }
         // eslint-disable-next-line no-console

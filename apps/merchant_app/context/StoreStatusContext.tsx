@@ -81,6 +81,7 @@ type StoreStatusContextValue = {
   scheduleEndPromptActive: boolean;
   scheduleEndPromptExpiresAt: string | null;
   isDelisted: boolean;
+  licenseBlocked: boolean;
   needsManualOpenAfterRelist: boolean;
 };
 
@@ -117,6 +118,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
   const [lastToggledByEmail, setLastToggledByEmail] = useState<string | null>(null);
   const [scheduleEndPromptExpiresAt, setScheduleEndPromptExpiresAt] = useState<string | null>(null);
   const [isDelisted, setIsDelisted] = useState(false);
+  const [licenseBlocked, setLicenseBlocked] = useState(false);
   const scheduleEndPromptShownRef = useRef<string | null>(null);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);
 
@@ -179,6 +181,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
     if (!token || !storeId) {
       setIsOnline(false);
       setIsDelisted(false);
+      setLicenseBlocked(false);
       setAutoOpenFromSchedule(true);
       setManualActivationLock(false);
       setManualCloseUntil(null);
@@ -247,7 +250,8 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
 
       const delisted = status.is_delisted === true;
       setIsDelisted(delisted);
-      setIsOnline(delisted ? false : status.is_open);
+      setLicenseBlocked(status.license_blocked === true);
+      setIsOnline(delisted || status.license_blocked === true ? false : status.is_open);
       setAutoOpenFromSchedule(status.auto_open_from_schedule);
       setManualActivationLock(status.block_auto_open);
       setManualCloseUntil(effectiveUntil);
@@ -459,6 +463,13 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
       showStoreDelistedAlert(goToDelistSupport);
       return;
     }
+    if (next && licenseBlocked) {
+      const e = new Error(
+        "You cannot go online until expired documents are uploaded and verified by GatiMitra."
+      ) as Error & { code?: string };
+      e.code = "LICENSE_BLOCKED";
+      throw e;
+    }
     setIsOnline(next);
     try {
       const status = await updateStoreStatus(storeId, next, token, next ? undefined : closeOptions);
@@ -491,6 +502,11 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
         showStoreDelistedAlert(goToDelistSupport);
         throw e;
       }
+      if (code === "LICENSE_BLOCKED") {
+        setLicenseBlocked(true);
+        setIsOnline(false);
+        throw e;
+      }
       let msg = "Something went wrong. Please try again.";
       if (e instanceof Error && e.message?.trim()) {
         const m = e.message.trim();
@@ -502,7 +518,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
       Alert.alert("Could not change status", msg);
       throw e;
     }
-  }, [token, storeId, isOnline, isDelisted, refresh, goToDelistSupport]);
+  }, [token, storeId, isOnline, isDelisted, licenseBlocked, refresh, goToDelistSupport]);
 
   const closeStore = useCallback(
     async (closeOptions: CloseStoreOptions) => {
@@ -624,6 +640,7 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
           scheduleEndPromptExpiresAt != null && new Date(scheduleEndPromptExpiresAt).getTime() > Date.now(),
         scheduleEndPromptExpiresAt,
         isDelisted,
+        licenseBlocked,
         needsManualOpenAfterRelist: needsManualOpenAfterRelist({
           isDelisted,
           isOpen: isOnline,

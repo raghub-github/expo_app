@@ -1,17 +1,26 @@
-/** Google Maps–style navigation route (Mapbox navigation-day base). */
-export const NAV_ROUTE_BLUE = "#1A73E8";
-export const NAV_ALT_ROUTE_BLUE = "#7EB8F5";
-export const NAV_ROUTE_CASING = "#ffffff";
-export const NAV_ROUTE_TRAVELED = "rgba(154, 160, 166, 0.45)";
-/** Dashed line rider → route when off-path (Google Maps style). */
-export const NAV_OFF_ROUTE_CONNECTOR = "#64748B";
-export const NAV_WRONG_WAY_ORANGE = "#EA580C";
-export const NAV_ROUTE_WIDTH = 6;
-export const NAV_ROUTE_GLOW = "rgba(26, 115, 232, 0.22)";
-export const NAV_ROUTE_GLOW_WIDTH = 12;
-export const NAV_ROUTE_CASING_WIDTH = 9;
-export const NAV_ALT_ROUTE_WIDTH = 4.5;
-/** Lower pitch keeps roads/labels visible while still feeling like navigation. */
-export const NAV_FOLLOW_PITCH = 38;
-export const NAV_FOLLOW_ZOOM = 16.2;
-export const NAV_LOOK_AHEAD_M = 60;
+export {
+  NAV_ROUTE_BLUE,
+  NAV_ALT_ROUTE_BLUE,
+  NAV_ROUTE_CASING,
+  NAV_ROUTE_TRAVELED,
+  NAV_OFF_ROUTE_CONNECTOR,
+  NAV_WRONG_WAY_ORANGE,
+  NAV_ROUTE_WIDTH,
+  NAV_ROUTE_GLOW,
+  NAV_ROUTE_GLOW_WIDTH,
+  NAV_ROUTE_CASING_WIDTH,
+  NAV_ALT_ROUTE_WIDTH,
+  NAV_TRAVELED_WIDTH,
+  NAV_CONNECTOR_WIDTH,
+  NAV_CONNECTOR_OPACITY,
+  NAV_JOIN_DOT_COLOR,
+  NAV_FOLLOW_PITCH,
+  NAV_FOLLOW_ZOOM,
+  NAV_LOOK_AHEAD_M,
+  NAV_RIDER_DOT_SIZE,
+  NAV_RIDER_DOT_HALO_SIZE,
+  NAV_RIDER_DOT_FILL,
+  NAV_RIDER_DOT_HALO,
+  NAV_RIDER_DOT_BORDER,
+  liveRiderDotMarkerHtml,
+} from "@gatimitra/map-tracking-engine";

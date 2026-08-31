@@ -484,6 +484,7 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
         <RideCaptainRatingSheet
           visible={ratingSheetVisible}
           captainName={riderName}
+          captainPhotoUri={riderPhotoUri}
           initialRating={sheetInitialRating}
           initialTags={selectedTags}
           initialReviewText={reviewNote}

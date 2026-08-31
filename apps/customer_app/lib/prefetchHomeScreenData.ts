@@ -17,9 +17,22 @@ import { prefetchFoodHomeLayout } from "@/lib/foodHomeLayoutCache";
 import { prefetchUserAppCategories } from "@/lib/userAppCategoryCache";
 import { prefetchFeaturedOfferHeroImages } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMerchantsList } from "@/lib/merchantsListCache";
+import { prefetchCriticalHomeAssetImagesSync } from "@/lib/homeCriticalAssets";
+import { useAppAssetsStore } from "@/store/appAssetsStore";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
+import { useFavoriteLocationsStore } from "@/store/favoriteLocationsStore";
+import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { getGeoServiceAvailability } from "@/services/geoServices.service";
+import { getStoreBookmarks } from "@/services/merchant.service";
+import { STORE_BOOKMARKS_QUERY_KEY } from "@/hooks/useStoreBookmarks";
+import { geoServicesQueryKey } from "@/hooks/useGeoServiceAvailability";
+import {
+  hydrateStoreBookmarksFromStorage,
+  readSyncStoreBookmarks,
+  seedStoreBookmarksQuery,
+  writeCachedStoreBookmarks,
+} from "@/lib/storeBookmarkCache";
 
 const FOOD_HOME_CATEGORY_STORE_TYPE = "FOOD";
 
@@ -32,7 +45,7 @@ async function prefetchGeoServices(queryClient: QueryClient): Promise<void> {
   if (!pincode && !state && (lat == null || lng == null)) return;
 
   await queryClient.prefetchQuery({
-    queryKey: ["geo", "services", pincode, state, lat, lng],
+    queryKey: geoServicesQueryKey({ pincode, state, lat, lng }),
     queryFn: async () => {
       const result = await getGeoServiceAvailability({
         ...(pincode ? { pincode } : {}),
@@ -72,9 +85,26 @@ async function prefetchOfferBannerImages(queryClient: QueryClient): Promise<void
 /** Warm wallet, weather, offers, and promo art before home paints. */
 export async function prefetchHomeScreenData(queryClient: QueryClient): Promise<void> {
   await useLocationStore.getState().hydrate();
+  await Promise.allSettled([
+    hydrateStoreBookmarksFromStorage(),
+    useFavoriteLocationsStore.getState().hydrate(),
+    useRecentLocationStore.getState().hydrate(),
+  ]);
+  seedStoreBookmarksQuery(queryClient);
+  prefetchCriticalHomeAssetImagesSync(useAppAssetsStore.getState().assets);
   const { coords, address } = useLocationStore.getState();
 
   const tasks: Promise<unknown>[] = [
+    queryClient.prefetchQuery({
+      queryKey: STORE_BOOKMARKS_QUERY_KEY,
+      queryFn: async () => {
+        const remote = await getStoreBookmarks();
+        const ids = remote.length > 0 ? remote : (readSyncStoreBookmarks() ?? []);
+        void writeCachedStoreBookmarks(ids);
+        return ids;
+      },
+      staleTime: 60 * 1000,
+    }),
     hydrateWalletBalanceQuery(queryClient).then(() =>
       queryClient.prefetchQuery({
         queryKey: WALLET_BALANCE_QUERY_KEY,

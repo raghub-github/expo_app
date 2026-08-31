@@ -41,6 +41,7 @@ export default function DeliverySettingsScreen() {
     toggleAutoOpenFromSchedule,
     toggleManualActivationLock,
     isDelisted,
+    licenseBlocked,
   } = useStoreStatus();
   const { setLastProfileSlug } = useProfileNav();
   const { settings, update } = useStoreSettings();
@@ -463,6 +464,13 @@ export default function DeliverySettingsScreen() {
               onValueChange={() => {
                 if (!isOnline && isDelisted) {
                   showStoreDelistedAlert(() => router.push("/(tabs)/profile/contact"));
+                  return;
+                }
+                if (!isOnline && licenseBlocked) {
+                  Alert.alert(
+                    "Cannot go online",
+                    "Upload expired documents and wait for GatiMitra verification. The store stays off until then."
+                  );
                   return;
                 }
                 if (isOnline) {

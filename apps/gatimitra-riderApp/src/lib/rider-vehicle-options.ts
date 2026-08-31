@@ -29,6 +29,16 @@ export function fuelTypeLabel(value: string | null | undefined): string {
   return RIDER_FUEL_TYPE_OPTIONS.find((o) => o.value === value)?.label ?? value ?? "—";
 }
 
+const TWO_WHEELER_TYPES = new Set(["bike", "ev_bike", "cycle"]);
+const THREE_WHEELER_TYPES = new Set(["auto", "cng_auto", "ev_auto", "e_rickshaw"]);
+
+export function isTwoOrThreeWheeler(vehicleType: string | null | undefined): boolean {
+  const value = vehicleType?.trim().toLowerCase() ?? "";
+  return TWO_WHEELER_TYPES.has(value) || THREE_WHEELER_TYPES.has(value);
+}
+
+export const RIDER_SEATING_CAPACITY_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
+
 export function formatVehicleSubtitle(
   vehicle: {
     vehicleTypeLabel?: string;

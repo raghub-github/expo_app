@@ -16,12 +16,25 @@ function resolveItemDiet(itemVeg: string | null | undefined): "veg" | "nonveg" |
   return null;
 }
 
+/** Coerce API menuItemId (string | number) — `.trim()` on a number throws / skips lines. */
+export function coerceMenuItemId(raw: unknown): string | null {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  return s.length > 0 ? s : null;
+}
+
+export function orderItemsMissingMenuIds(order: Pick<OrderSummary, "items">): boolean {
+  const items = order.items ?? [];
+  if (items.length === 0) return true;
+  return items.some((i) => coerceMenuItemId(i.menuItemId) == null);
+}
+
 export function orderItemsToCartLines(
   order: Pick<OrderSummary, "items">
 ): CartItem[] {
   const lines: CartItem[] = [];
   for (const item of order.items ?? []) {
-    const menuItemId = item.menuItemId?.trim();
+    const menuItemId = coerceMenuItemId(item.menuItemId);
     if (!menuItemId) continue;
     const diet = resolveItemDiet(item.vegNonVeg);
     lines.push(
@@ -63,4 +76,3 @@ export function resolveOrderItemDiet(
 ): "veg" | "nonveg" | "egg" | null {
   return resolveItemDiet(itemVeg);
 }
-

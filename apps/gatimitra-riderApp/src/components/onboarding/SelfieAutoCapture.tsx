@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { Ionicons } from "@expo/vector-icons";
+import { isExpoGo } from "@/src/lib/is-expo-go";
 import {
   BlinkCaptureTracker,
   isSelfieFaceDetectorAvailable,
@@ -23,8 +24,8 @@ const ACCENT = "#39d353";
 const ACCENT_DARK = "#22a745";
 const RING_SIZE = 200;
 const BLINK_PROBE_INTERVAL_MS = 800;
-/** Metro / Expo Go dev sessions only — production release builds keep blink-only capture. */
-const ALLOW_DEV_MANUAL_CAPTURE = __DEV__;
+/** Manual capture fallback — Expo Go only; never shown in dev-client or production builds. */
+const ALLOW_EXPO_GO_MANUAL_CAPTURE = isExpoGo();
 
 type CaptureStatus =
   | "permission"
@@ -65,10 +66,12 @@ export function SelfieAutoCapture({
   const probingRef = useRef(false);
   const facePresentRef = useRef(false);
   const blinkTrackerRef = useRef(new BlinkCaptureTracker());
+  const eyesUnknownStreakRef = useRef(0);
+  const [eyesObscured, setEyesObscured] = useState(false);
 
   const captureFinal = useCallback(async (devManual = false) => {
     if (capturingRef.current || disabled || uri) return;
-    const devBypass = devManual && ALLOW_DEV_MANUAL_CAPTURE;
+    const devBypass = devManual && ALLOW_EXPO_GO_MANUAL_CAPTURE;
     if (!devBypass && !facePresentRef.current) return;
     capturingRef.current = true;
     setStatus("capturing");
@@ -173,10 +176,22 @@ export function SelfieAutoCapture({
           facePresentRef.current = hasFace;
 
           if (!hasFace) {
+            eyesUnknownStreakRef.current = 0;
+            setEyesObscured(false);
             blinkTrackerRef.current.reset();
             setBlinkPhase("align");
             setStatus("searching");
             return;
+          }
+
+          if (probe === "eyes_unknown") {
+            eyesUnknownStreakRef.current += 1;
+            if (eyesUnknownStreakRef.current >= 3) {
+              setEyesObscured(true);
+            }
+          } else {
+            eyesUnknownStreakRef.current = 0;
+            setEyesObscured(false);
           }
 
           const action = blinkTrackerRef.current.consume(probe);
@@ -213,6 +228,8 @@ export function SelfieAutoCapture({
     facePresentRef.current = false;
     setDetectorUnavailable(false);
     setRejection(null);
+    setEyesObscured(false);
+    eyesUnknownStreakRef.current = 0;
     // CameraView remounts after clear — wait for onCameraReady again.
     setCameraReady(false);
     setStatus(active ? "starting" : "starting");
@@ -225,18 +242,20 @@ export function SelfieAutoCapture({
       : status === "starting"
         ? "Starting camera…"
         : detectorUnavailable
-          ? ALLOW_DEV_MANUAL_CAPTURE
+          ? ALLOW_EXPO_GO_MANUAL_CAPTURE
             ? "Dev mode — tap Capture below to test onboarding"
-            : "Face detection needs rider dev build (not Expo Go)"
-          : status === "waiting_blink"
-            ? "Face detected — blink your eyes to capture"
-            : status === "searching"
-              ? facePresent
-                ? "Hold still — get ready to blink"
-                : "Position your face inside the red circle"
-              : status === "capturing"
-                ? "Capturing…"
-                : "Selfie captured";
+            : "Align your face inside the circle"
+          : eyesObscured
+            ? "Eyes not visible — remove sunglasses or goggles"
+            : status === "waiting_blink"
+              ? "Face detected — blink your eyes to capture"
+              : status === "searching"
+                ? facePresent
+                  ? "Hold still — get ready to blink"
+                  : "Position your face inside the red circle"
+                : status === "capturing"
+                  ? "Capturing…"
+                  : "Selfie captured";
 
   const ringBorderStyle = uri
     ? styles.ringCaptured
@@ -265,21 +284,12 @@ export function SelfieAutoCapture({
         </View>
       ) : null}
 
-      {detectorUnavailable && ALLOW_DEV_MANUAL_CAPTURE ? (
+      {detectorUnavailable && ALLOW_EXPO_GO_MANUAL_CAPTURE ? (
         <View style={styles.detectorBanner}>
           <Ionicons name="information-circle-outline" size={18} color={colors.warning[700]} />
           <Text style={styles.detectorBannerText}>
             Expo Go cannot run live face/blink detection. Use the Capture button below to test the
             rest of onboarding. Production builds require face + blink before continuing.
-          </Text>
-        </View>
-      ) : detectorUnavailable ? (
-        <View style={styles.detectorBanner}>
-          <Ionicons name="information-circle-outline" size={18} color={colors.warning[700]} />
-          <Text style={styles.detectorBannerText}>
-            Live face + blink capture works in the installed rider app build. Expo Go cannot scan
-            faces — run{" "}
-            <Text style={styles.detectorBannerCode}>npx expo run:android</Text> and open that app.
           </Text>
         </View>
       ) : null}
@@ -343,7 +353,7 @@ export function SelfieAutoCapture({
           </View>
         ) : null}
 
-        {ALLOW_DEV_MANUAL_CAPTURE && !uri && permission?.granted && status !== "capturing" ? (
+        {ALLOW_EXPO_GO_MANUAL_CAPTURE && !uri && permission?.granted && status !== "capturing" ? (
           <Pressable
             onPress={() => void captureFinal(true)}
             disabled={disabled || !cameraReady}
@@ -359,23 +369,25 @@ export function SelfieAutoCapture({
         ) : null}
 
         {uri ? (
-          <Pressable
-            onPress={() => {
-              if (disabled) return;
-              onRemove();
-            }}
-            disabled={disabled}
-            style={({ pressed }) => [
-              styles.removeBtn,
-              pressed && styles.removeBtnPressed,
-              disabled && styles.removeBtnDisabled,
-            ]}
-            hitSlop={16}
-            accessibilityRole="button"
-            accessibilityLabel="Remove selfie"
-          >
-            <Ionicons name="close" size={16} color="#374151" />
-          </Pressable>
+          <View style={styles.removeBtnAnchor} pointerEvents="box-none">
+            <Pressable
+              onPress={() => {
+                if (disabled) return;
+                onRemove();
+              }}
+              disabled={disabled}
+              style={({ pressed }) => [
+                styles.removeBtn,
+                pressed && styles.removeBtnPressed,
+                disabled && styles.removeBtnDisabled,
+              ]}
+              hitSlop={16}
+              accessibilityRole="button"
+              accessibilityLabel="Remove selfie"
+            >
+              <Ionicons name="close" size={16} color="#374151" />
+            </Pressable>
+          </View>
         ) : null}
       </View>
 
@@ -391,8 +403,10 @@ export function SelfieAutoCapture({
           accessibilityRole="button"
           accessibilityLabel="Re-capture selfie"
         >
-          <Ionicons name="camera-reverse-outline" size={18} color={ACCENT_DARK} />
-          <Text style={styles.recaptureBtnText}>Re-capture selfie</Text>
+          <View style={styles.recaptureRow}>
+            <Ionicons name="camera-reverse-outline" size={18} color={ACCENT_DARK} />
+            <Text style={styles.recaptureBtnText}>Re-capture selfie</Text>
+          </View>
         </Pressable>
       ) : null}
 
@@ -622,10 +636,13 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#ffffff",
   },
-  removeBtn: {
+  removeBtnAnchor: {
     position: "absolute",
     top: -2,
     right: -2,
+    zIndex: 20,
+  },
+  removeBtn: {
     width: 32,
     height: 32,
     borderRadius: 16,
@@ -634,17 +651,6 @@ const styles = StyleSheet.create({
     borderColor: colors.gray[200],
     alignItems: "center",
     justifyContent: "center",
-    zIndex: 20,
-    elevation: 6,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.18,
-        shadowRadius: 2,
-      },
-      android: {},
-    }),
   },
   removeBtnPressed: {
     opacity: 0.85,
@@ -654,10 +660,7 @@ const styles = StyleSheet.create({
     opacity: 0.45,
   },
   recaptureBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
+    alignSelf: "center",
     paddingHorizontal: 18,
     paddingVertical: 12,
     borderRadius: 14,
@@ -666,6 +669,11 @@ const styles = StyleSheet.create({
     backgroundColor: "#f0fdf4",
     minWidth: 200,
   },
+  recaptureRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   recaptureBtnPressed: {
     opacity: 0.88,
   },
@@ -673,6 +681,7 @@ const styles = StyleSheet.create({
     opacity: 0.45,
   },
   recaptureBtnText: {
+    marginLeft: 8,
     fontSize: 15,
     fontWeight: "700",
     color: ACCENT_DARK,

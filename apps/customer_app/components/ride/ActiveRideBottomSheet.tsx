@@ -68,7 +68,7 @@ function ActiveRideTrackCard({ ride, width }: { ride: OrderSummary; width: numbe
     transform: [{ scale: pulse.value }],
   }));
 
-  const paymentDue =
+  const statusDue =
     !isCashRidePaymentMethod(resolveRidePaymentMethod(ride)) &&
     String(ride.paymentStatus ?? "").trim().toLowerCase() !== "paid" &&
     String(ride.paymentStatus ?? "").trim().toLowerCase() !== "completed" &&
@@ -77,19 +77,22 @@ function ActiveRideTrackCard({ ride, width }: { ride: OrderSummary; width: numbe
   const { data: dueOrderDetail } = useQuery({
     queryKey: ["order", ride.orderId, "due-fare-pill"],
     queryFn: () => orderService.getOrder(ride.orderId),
-    enabled: paymentDue,
+    enabled: statusDue,
     staleTime: 5000,
   });
+
+  const dueFareAmount = dueOrderDetail
+    ? resolveRidePaymentDueAmount(dueOrderDetail)
+    : resolveRidePaymentDueAmount(ride);
+  const paymentDue = statusDue && dueFareAmount > 0.005;
 
   const { title, subtitle } = getActiveRideTrackLabel(
     ride.status,
     ride.paymentStatus,
-    resolveRidePaymentMethod(ride)
+    resolveRidePaymentMethod(ride),
+    dueFareAmount
   );
   const orderRef = ride.formattedOrderId ?? ride.orderId;
-  const dueFareAmount = dueOrderDetail
-    ? resolveRidePaymentDueAmount(dueOrderDetail)
-    : resolveRidePaymentDueAmount(ride);
 
   const rideVehicleImage = resolveRideVehicleImage(ride.rideType);
 

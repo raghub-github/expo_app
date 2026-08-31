@@ -37,6 +37,7 @@ import {
 import { RIDE_RIDER_SEARCH_TIMEOUT_SEC } from "@/features/ride/rideOptions";
 import { RideTipBoostSheet, type TipBoostLoadingAction } from "@/features/ride/RideSearchTimeoutSheet";
 import { RideSearchingTripDetailsSheet } from "@/features/ride/RideSearchingTripDetailsSheet";
+import { RideServiceUnavailableSheet } from "@/features/ride/RideServiceUnavailableSheet";
 import { RideTripShareSheet } from "@/components/ride/RideTripShareSheet";
 import { RideCancelReasonSheet } from "@/features/ride/RideCancelReasonSheet";
 import { RideCancelConfirmSheet } from "@/features/ride/RideCancelConfirmSheet";
@@ -54,9 +55,10 @@ import {
   cancelRideOrder,
   markRideSearchWindowEnded,
   extendRideSearch,
+  type RideOrderStatusResponse,
 } from "@/services/rideBooking.service";
-import { orderService } from "@/services/order.service";
-import { seedOrderDetailCache } from "@/lib/orderDetailCache";
+import { orderService, type OrderDetail } from "@/services/order.service";
+import { mergeIncomingOrderDetail, seedOrderDetailCache } from "@/lib/orderDetailCache";
 import {
   getRideServiceLabel,
   resolveRideCatalogImageKey,
@@ -120,6 +122,13 @@ type TripState = {
   tripKm?: number;
 };
 
+function parseQuotedMoney(raw?: string): number | null {
+  if (raw == null || String(raw).trim() === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n);
+}
+
 function buildTripStateFromParams(params: {
   pickup?: string;
   drop?: string;
@@ -140,6 +149,8 @@ function buildTripStateFromParams(params: {
   const fareKm = parseRideFareDistanceKm(params);
   const pickupFull = String(params.pickup ?? "");
   const dropFull = String(params.drop ?? "");
+  const quoted = parseQuotedMoney(params.quotedGrandTotal);
+  const estimated = parseQuotedMoney(params.estimatedFare);
   return {
     pickupAddress: pickupFull,
     dropAddress: dropFull,
@@ -158,12 +169,7 @@ function buildTripStateFromParams(params: {
     rideTypeId: String(params.selectedRideId ?? ""),
     rideName: String(params.selectedRideName ?? "Ride"),
     rideImageKey: String(params.selectedRideImageKey ?? "bike"),
-    fare:
-      params.quotedGrandTotal != null && Number(params.quotedGrandTotal) > 0
-        ? Number(params.quotedGrandTotal)
-        : params.estimatedFare != null
-          ? Number(params.estimatedFare)
-          : 0,
+    fare: quoted != null ? quoted : estimated ?? 0,
     tripKm: fareKm,
   };
 }
@@ -198,6 +204,7 @@ export default function RideSearchingScreen() {
     selectedRideImageKey?: string;
     estimatedFare?: string;
     quotedGrandTotal?: string;
+    quotedListFare?: string;
     tripKm?: string;
     orderId?: string;
     returnTo?: string;
@@ -216,6 +223,7 @@ export default function RideSearchingScreen() {
     couponCode?: string;
     selectedPlatformOfferId?: string;
     forceNoAutoOffer?: string;
+    viaRouteName?: string;
   }>();
 
   const [tripState, setTripState] = useState(() => buildTripStateFromParams(params));
@@ -244,13 +252,14 @@ export default function RideSearchingScreen() {
     [params.routeDistanceKm, params.tripKm, tripKm]
   );
 
-  /** Fare the customer saw on ride-book (after offers) — must not jump after placement. */
-  const quotedPayableFare = useMemo(() => {
-    const fromQuoted =
-      params.quotedGrandTotal != null ? Number(params.quotedGrandTotal) : 0;
-    if (Number.isFinite(fromQuoted) && fromQuoted > 0) return Math.round(fromQuoted);
-    return 0;
-  }, [params.quotedGrandTotal]);
+  /** Fare the customer saw on ride-book (after offers) — 0 is a valid free-ride quote. */
+  const quotedPayableFare = useMemo(() => parseQuotedMoney(params.quotedGrandTotal), [
+    params.quotedGrandTotal,
+  ]);
+  const quotedListFare = useMemo(
+    () => parseQuotedMoney(params.quotedListFare) ?? parseQuotedMoney(params.estimatedFare),
+    [params.quotedListFare, params.estimatedFare]
+  );
 
   const rideImage = resolveRideImage(rideImageKey);
   const initialTipAmount =
@@ -261,9 +270,11 @@ export default function RideSearchingScreen() {
     if (Number.isFinite(fromParams) && fromParams > 0) return fromParams;
     return Number.isFinite(fare) && fare > 0 ? fare : 0;
   }, [params.estimatedFare, fare]);
-  const bookingFare = quotedPayableFare > 0 ? quotedPayableFare : fare;
+  const bookingFare = quotedPayableFare != null ? quotedPayableFare : fare;
   const totalFare =
     bookingFare + (Number.isFinite(activeTipAmount) ? activeTipAmount : 0);
+  const strikeFare =
+    quotedListFare != null && quotedListFare > bookingFare ? quotedListFare : null;
   const stops = useMemo(() => parseRideStopsParam(params.stops), [params.stops]);
   const stopsForApi = useMemo(() => parseRideStopsForOrder(params.stops), [params.stops]);
   const isResumeMode = Boolean(params.orderId?.trim());
@@ -293,12 +304,17 @@ export default function RideSearchingScreen() {
     return (km != null && km > 0) || (eta != null && Number.isFinite(eta) && eta > 0);
   }, [params.routeDistanceKm, params.tripKm, params.routeEtaMins]);
 
-  const { routeEtaMins: snapshotEtaMins } = useRideRouteSnapshot({
+  const missingViaName = !params.viaRouteName?.trim();
+  const { routeEtaMins: snapshotEtaMins, snapshot: liveRouteSnapshot } = useRideRouteSnapshot({
     pickup: pickupPoint,
     drop: dropPoint,
     stops,
-    enabled: isFocused && !hasNavRouteSnapshot,
+    // Still fetch when Via is missing so NH/SH can fill in after a cached distance-only nav.
+    enabled: isFocused && (!hasNavRouteSnapshot || missingViaName),
   });
+
+  const routeViaLabel =
+    params.viaRouteName?.trim() || liveRouteSnapshot?.viaLabel?.trim() || "Optimized";
 
   const routeEtaMins = useMemo(() => {
     if (params.routeEtaMins != null) {
@@ -325,6 +341,7 @@ export default function RideSearchingScreen() {
   );
   const [timerReady, setTimerReady] = useState(Boolean(cachedSearchTimer) || !isResumeMode);
   const [timeoutSheetVisible, setTimeoutSheetVisible] = useState(false);
+  const [apologySheetVisible, setApologySheetVisible] = useState(false);
   const [tipBoostLoadingAction, setTipBoostLoadingAction] = useState<TipBoostLoadingAction>(null);
   const [tripDetailsVisible, setTripDetailsVisible] = useState(false);
   const [shareSheetVisible, setShareSheetVisible] = useState(false);
@@ -531,8 +548,13 @@ export default function RideSearchingScreen() {
     setPhase("cancelled");
     setTimeoutSheetVisible(false);
     setTripDetailsVisible(false);
+    setShareSheetVisible(false);
+    setApologySheetVisible(true);
+  }, []);
+
+  const dismissSearchTimeoutApology = useCallback(() => {
+    setApologySheetVisible(false);
     dismissAfterSearchTimeout();
-    Alert.alert(SEARCH_TIMEOUT_APOLOGY.title, SEARCH_TIMEOUT_APOLOGY.message, [{ text: "OK" }]);
   }, [dismissAfterSearchTimeout]);
 
   const finalizeRideCancelledLocally = useCallback(
@@ -607,7 +629,7 @@ export default function RideSearchingScreen() {
   );
 
   const tryOpenLiveRideTracking = useCallback(
-    async (assignedOrderId: string) => {
+    (assignedOrderId: string, knownStatus?: RideOrderStatusResponse | null) => {
       if (navigatedToLiveRef.current || cancelledRef.current) return;
       navigatedToLiveRef.current = true;
       rememberActivePersonRide(assignedOrderId);
@@ -624,27 +646,38 @@ export default function RideSearchingScreen() {
       void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
       clearRideSearchTimer(assignedOrderId);
 
-      // Hydrate captain profile BEFORE tracking screen paints — do not wait for map/WS/GPS.
-      try {
-        const [detail, rideStatus] = await Promise.all([
-          queryClient.fetchQuery({
-            queryKey: ["order", assignedOrderId],
-            queryFn: () => orderService.getOrder(assignedOrderId),
-          }),
-          getRideOrderStatus(assignedOrderId).catch(() => null),
-        ]);
-        if (rideStatus?.rider && !detail?.rider) {
+      const seedFromStatus = (rideStatus: RideOrderStatusResponse | null | undefined) => {
+        if (!rideStatus) return;
+        queryClient.setQueryData(["rideOrderStatus", assignedOrderId], rideStatus);
+        if (rideStatus.rider) {
           seedOrderDetailCache(queryClient, assignedOrderId, {
             orderId: assignedOrderId,
-            status: detail?.status ?? "RIDER_ASSIGNED",
+            status: rideStatus.appStatus ?? "RIDER_ASSIGNED",
             rider: rideStatus.rider,
           });
         }
-      } catch {
-        // Still open tracking; RideAcceptedTrackingScreen will refetch.
-      }
+      };
 
+      seedFromStatus(knownStatus);
       openLiveRideTracking(assignedOrderId);
+
+      void Promise.all([
+        queryClient
+          .fetchQuery({
+            queryKey: ["order", assignedOrderId],
+            queryFn: async () => {
+              const detail = await orderService.getOrder(assignedOrderId);
+              return mergeIncomingOrderDetail(
+                queryClient.getQueryData<OrderDetail>(["order", assignedOrderId]),
+                detail
+              );
+            },
+          })
+          .catch(() => null),
+        getRideOrderStatus(assignedOrderId).catch(() => null),
+      ]).then(([, rideStatus]) => {
+        seedFromStatus(rideStatus);
+      });
     },
     [openLiveRideTracking, queryClient, rideImageKey, rideTypeId]
   );
@@ -676,7 +709,7 @@ export default function RideSearchingScreen() {
         return;
       }
       if (isRideCaptainAssigned(status)) {
-        tryOpenLiveRideTracking(status.orderId);
+        tryOpenLiveRideTracking(status.orderId, status);
         return;
       }
       const retryCount = status.dispatchRetryCount ?? 0;
@@ -781,15 +814,18 @@ export default function RideSearchingScreen() {
           0,
           Number(status.customerTipAmount ?? order.tipAmount ?? 0)
         );
-        const orderGrandTotal = Math.max(0, Number(order.totalAmount ?? 0) - tipAmount);
+        const quotedFromParams = parseQuotedMoney(params.quotedGrandTotal);
+        const rawOrderTotal = order.totalAmount;
         const baseFare =
-          orderGrandTotal > 0
-            ? orderGrandTotal
-            : status.estimatedFare != null &&
-                Number.isFinite(status.estimatedFare) &&
-                status.estimatedFare > 0
-              ? status.estimatedFare
-              : 0;
+          quotedFromParams != null
+            ? quotedFromParams
+            : rawOrderTotal != null && Number.isFinite(Number(rawOrderTotal))
+              ? Math.max(0, Number(rawOrderTotal) - tipAmount)
+              : status.estimatedFare != null &&
+                  Number.isFinite(status.estimatedFare) &&
+                  status.estimatedFare > 0
+                ? status.estimatedFare
+                : 0;
         const imageKey = resolveRideCatalogImageKey(order.rideType);
 
         const quotedKm = resolveRideFareDistanceKm({
@@ -837,7 +873,7 @@ export default function RideSearchingScreen() {
         }
 
         if (isRideCaptainAssigned(status)) {
-          tryOpenLiveRideTracking(status.orderId);
+          tryOpenLiveRideTracking(status.orderId, status);
           return;
         }
 
@@ -1002,8 +1038,9 @@ export default function RideSearchingScreen() {
         void queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
         // Keep the quoted payable shown on ride-book; server totalAmount can differ
         // (slab fare vs billing/offer preview) and must not change the UI mid-search.
+        // quotedPayableFare === 0 is a valid free-ride quote — do not replace it.
         if (
-          quotedPayableFare <= 0 &&
+          quotedPayableFare == null &&
           result.totalAmount != null &&
           Number.isFinite(result.totalAmount) &&
           result.totalAmount > 0
@@ -1060,6 +1097,7 @@ export default function RideSearchingScreen() {
     tripKm,
     fareTripKm,
     params.pickupPincode,
+    quotedPayableFare,
   ]);
 
   useEffect(() => {
@@ -1109,7 +1147,7 @@ export default function RideSearchingScreen() {
       setDispatchDeclinedCount(status.dispatchDeclinedCount ?? 0);
 
       if (isRideCaptainAssigned(status)) {
-        tryOpenLiveRideTracking(status.orderId);
+        tryOpenLiveRideTracking(status.orderId, status);
         return;
       }
 
@@ -1286,6 +1324,10 @@ export default function RideSearchingScreen() {
       setShareSheetVisible(false);
       return;
     }
+    if (apologySheetVisible) {
+      dismissSearchTimeoutApology();
+      return;
+    }
     if (timeoutSheetVisible) {
       setTimeoutSheetVisible(false);
       return;
@@ -1303,8 +1345,10 @@ export default function RideSearchingScreen() {
     cancelFlowStep,
     tripDetailsVisible,
     shareSheetVisible,
+    apologySheetVisible,
     timeoutSheetVisible,
     closeCancelFlow,
+    dismissSearchTimeoutApology,
     openedFromRideHome,
     isResumeMode,
     router,
@@ -1319,8 +1363,6 @@ export default function RideSearchingScreen() {
     });
     return () => sub.remove();
   }, [handleBack]);
-
-  const handleCancelRide = openCancelFlow;
 
   return (
     <View style={styles.container}>
@@ -1364,6 +1406,7 @@ export default function RideSearchingScreen() {
                 : undefined
             }
             fare={totalFare}
+            listFare={strikeFare}
             rideImage={rideImage}
             rideName={rideName}
             pickupLabel={pickupLabel}
@@ -1376,13 +1419,13 @@ export default function RideSearchingScreen() {
             dispatchDeclinedCount={dispatchDeclinedCount}
             showFastestTag={showFastestTag}
             placementError={placementError}
+            routeViaLabel={routeViaLabel}
             bottomInset={insets.bottom}
             onTripDetails={() => setTripDetailsVisible(true)}
             onShareTrip={() => setShareSheetVisible(true)}
             shareTripEnabled={Boolean(orderId)}
             onRetry={returnToRideBook}
-            onCancelRide={handleCancelRide}
-            showCancel={phase === "searching" || phase === "tip_boost"}
+            showCancel={false}
           />
         ) : null}
       </View>
@@ -1399,6 +1442,15 @@ export default function RideSearchingScreen() {
         onCancelOrder={handleTipBoostCancel}
       />
 
+      <RideServiceUnavailableSheet
+        visible={apologySheetVisible}
+        title={SEARCH_TIMEOUT_APOLOGY.title}
+        message={SEARCH_TIMEOUT_APOLOGY.message}
+        okayLabel="OK"
+        iconName="sad-outline"
+        onOkay={dismissSearchTimeoutApology}
+      />
+
       <RideTripShareSheet
         visible={shareSheetVisible}
         orderId={orderId ?? ""}
@@ -1413,6 +1465,7 @@ export default function RideSearchingScreen() {
         dropAddress={dropLabel || dropAddress || "—"}
         stops={stops.map((_, index) => ({ label: `Stop ${index + 1}` }))}
         totalFare={totalFare}
+        listFare={strikeFare}
         tipAmount={activeTipAmount}
         onBack={() => setTripDetailsVisible(false)}
         onCancelRide={openCancelFlow}

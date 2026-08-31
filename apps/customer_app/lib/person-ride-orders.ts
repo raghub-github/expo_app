@@ -19,6 +19,16 @@ import { isPersonRideOrderSummary } from "@/lib/person-ride-order-kind";
 
 export { isPersonRideOrderSummary };
 
+/** Completed person-ride with no captain rating yet — allow rating from history. */
+export function isRideCaptainRatingPending(order: {
+  status?: string | null;
+  deliveryRating?: number | null;
+}): boolean {
+  if (normalizeCustomerOrderStatus(order.status) !== "DELIVERED") return false;
+  const rating = Number(order.deliveryRating);
+  return !(Number.isFinite(rating) && rating >= 1);
+}
+
 export function isActivePersonRideOrder(order: OrderSummary): boolean {
   if (!isPersonRideOrderSummary(order)) return false;
   if (isDismissedRideOrder(order.orderId) || isDismissedRideOrder(order.formattedOrderId)) {
@@ -122,7 +132,8 @@ export function resolvePersonRideTrackingNavigation(order: OrderSummary): Person
 export function getActiveRideTrackLabel(
   status: string,
   paymentStatus?: string | null,
-  paymentMethod?: string | null
+  paymentMethod?: string | null,
+  dueAmount?: number
 ): { title: string; subtitle: string } {
   const s = normalizeCustomerOrderStatus(status);
   if (s === "DELIVERED") {
@@ -130,7 +141,8 @@ export function getActiveRideTrackLabel(
       return { title: "Ride completed", subtitle: "Tap to rate your captain" };
     }
     const pending = String(paymentStatus ?? "").trim().toLowerCase();
-    if (pending !== "paid" && pending !== "completed") {
+    const owesFare = dueAmount == null || dueAmount > 0.005;
+    if (pending !== "paid" && pending !== "completed" && owesFare) {
       return {
         title: "Payment pending",
         subtitle: "Tap to pay your ride fare",

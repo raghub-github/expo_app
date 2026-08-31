@@ -4,6 +4,7 @@ import { assertStoreAccess } from '@/lib/auth/assert-store-access';
 import {
   listLicenceHistoryForStore,
   listLicenceHistoryGrouped,
+  reconcileActiveHistoryWithVerifiedDocs,
   type MerchantLicenceHistoryRow,
 } from '@/lib/merchantLicenceHistory';
 import { DOCUMENT_FORMAL_NAMES, type MerchantDocumentPrefix } from '@/lib/merchantLicenseExpiry';
@@ -47,6 +48,11 @@ export async function GET(req: NextRequest) {
   }
 
   const db = getDb();
+  await reconcileActiveHistoryWithVerifiedDocs(
+    db,
+    access.storeIdNum,
+    licenceType && licenceType.trim() ? (licenceType.trim() as MerchantDocumentPrefix) : undefined
+  );
 
   if (licenceType && licenceType.trim()) {
     const rows = await listLicenceHistoryForStore(

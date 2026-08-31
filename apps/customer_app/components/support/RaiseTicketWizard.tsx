@@ -12,7 +12,7 @@ import {
   Alert,
   Pressable,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
@@ -26,7 +26,8 @@ import {
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreFonts } from "@/constants/storeTypography";
 import { formatDisplayOrderIdHash, helpServiceTypeFromOrder } from "@/lib/formatDisplayOrderId";
-import { supportHeaderPaddingTop } from "@/lib/supportLayout";
+import { SUPPORT_PAGE_BG, supportHeaderPaddingTop } from "@/lib/supportLayout";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 export type RaiseTicketWizardStep = "pick_order" | "concerns" | "details";
 
@@ -93,6 +94,17 @@ export function RaiseTicketWizard({
   const router = useRouter();
   const queryClient = useQueryClient();
   const insets = useSafeAreaInsets();
+
+  useFocusEffect(
+    useCallback(() => {
+      useScreenChromeStore.setState({
+        statusBarBackground: SUPPORT_PAGE_BG,
+        statusBarStyle: "dark",
+        hideStatusBarSpacer: false,
+      });
+      return () => useScreenChromeStore.getState().resetStatusBarBackground();
+    }, [])
+  );
 
   const [step, setStep] = useState<RaiseTicketWizardStep>(initialStep);
   const [pickedOrder, setPickedOrder] = useState<RecentOrder | null>(null);
@@ -501,7 +513,7 @@ export function RaiseTicketWizard({
 
   return (
     <>
-      <StatusBar style="dark" backgroundColor="#fff" />
+      <StatusBar style="dark" backgroundColor={SUPPORT_PAGE_BG} />
       <View style={[styles.page, { paddingTop: supportHeaderPaddingTop(insets.top) }]}>
         {renderBody()}
       </View>
@@ -512,7 +524,7 @@ export function RaiseTicketWizard({
 const styles = StyleSheet.create({
   page: {
     flex: 1,
-    backgroundColor: "#fff",
+    backgroundColor: SUPPORT_PAGE_BG,
   },
   body: { flex: 1 },
   bodyContent: { paddingHorizontal: 16, paddingTop: 4 },

@@ -2,7 +2,6 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Dialog } from '@headlessui/react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -29,6 +28,11 @@ import {
   type LicenseDocumentActionItem,
   type MerchantDocumentPrefix,
 } from '@/lib/merchantLicenseExpiry';
+import {
+  labelsFromPendingDocs,
+  markLicenseVerifyMarquee,
+  notifyLicenseReviewModalOpen,
+} from '@/lib/licenseVerifyMarquee';
 import { istTodayKey } from '@/lib/merchant-wallet-resolve';
 import { DocumentUrlPreview } from '@/components/DocumentUrlPreview';
 
@@ -206,6 +210,8 @@ function FilePicker({
 export function LicenseExpiredModal({
   storeId,
   open,
+  expired,
+  pendingVerification,
   initialStepPrefix,
   onClose,
   onUploaded,
@@ -228,8 +234,15 @@ export function LicenseExpiredModal({
 
   const requestClose = useCallback(() => {
     if (uploading) return;
+    const fetchedPending = actionItems.filter((d) => d.status === 'pending_verification');
+    const fetchedExpired = actionItems.filter((d) => d.status === 'expired');
+    const pending = actionItems.length > 0 ? fetchedPending : pendingVerification ?? [];
+    const expiredNow = actionItems.length > 0 ? fetchedExpired : expired ?? [];
+    if (storeId && pending.length > 0 && expiredNow.length === 0) {
+      markLicenseVerifyMarquee(storeId, labelsFromPendingDocs(pending));
+    }
     onClose();
-  }, [uploading, onClose]);
+  }, [uploading, onClose, actionItems, pendingVerification, expired, storeId]);
 
   const fetchStatus = useCallback(async (): Promise<{
     action_items: LicenseDocumentActionItem[];
@@ -299,6 +312,11 @@ export function LicenseExpiredModal({
   );
 
   useEffect(() => {
+    notifyLicenseReviewModalOpen(open);
+    return () => notifyLicenseReviewModalOpen(false);
+  }, [open]);
+
+  useEffect(() => {
     if (!open) {
       setMode('list');
       setSelected(null);
@@ -326,7 +344,7 @@ export function LicenseExpiredModal({
     fd.append('docType', prefix);
     fd.append('file', file);
     fd.append('side', side);
-    if (extras.issueDate) fd.append('issue_date', extras.issueDate);
+    if (prefix !== 'fssai' && extras.issueDate) fd.append('issue_date', extras.issueDate);
     if (extras.expiryDate) fd.append('expiry_date', extras.expiryDate);
     if (extras.documentNumber.trim()) fd.append('document_number', extras.documentNumber.trim());
 
@@ -348,7 +366,7 @@ export function LicenseExpiredModal({
     const spec = selected.upload_spec;
     const extras = {
       documentNumber: form.documentNumber,
-      issueDate: form.issueDate,
+      issueDate: selected.prefix === 'fssai' ? '' : form.issueDate,
       expiryDate: form.expiryDate,
     };
 
@@ -388,11 +406,11 @@ export function LicenseExpiredModal({
       const fresh = await fetchStatus();
       setMode('list');
       setSelected(null);
+      await onUploaded();
 
       const stillExpired =
         fresh?.action_items.some((d) => d.status === 'expired') ?? false;
       if (!stillExpired && !fresh?.license_blocked) {
-        await onUploaded();
         onClose();
       }
     } catch {
@@ -424,20 +442,23 @@ export function LicenseExpiredModal({
   const pastHistoryRows = historyForSelected.filter((h) => !h.is_active);
 
   return createPortal(
-    <Dialog open={open} onClose={() => {}} className="relative z-[200]">
-      <div className="fixed inset-0 bg-black/55 backdrop-blur-[1px] pointer-events-none" aria-hidden="true" />
-      <div className="fixed inset-0 flex items-center justify-center p-4 sm:p-6 pointer-events-none">
-        <Dialog.Panel className="pointer-events-auto w-full max-w-3xl max-h-[min(92vh,800px)] flex flex-col rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+    <div className="relative z-[1100]" role="dialog" aria-modal="true">
+      <div
+        className="fixed inset-y-0 right-0 left-0 md:left-[var(--mx-partner-sidebar-w,14rem)] bg-black/55 backdrop-blur-[1px] pointer-events-none"
+        aria-hidden="true"
+      />
+      <div className="fixed inset-y-0 right-0 left-0 md:left-[var(--mx-partner-sidebar-w,14rem)] flex items-center justify-center p-4 sm:p-6 pointer-events-none">
+        <div className="pointer-events-auto w-full max-w-3xl max-h-[min(92vh,800px)] flex flex-col rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
           <div className="bg-gradient-to-r from-amber-50 via-orange-50 to-red-50 border-b border-amber-100 px-6 py-5 flex gap-4 shrink-0">
             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-amber-100">
               <AlertTriangle className="h-6 w-6 text-amber-700" />
             </div>
             <div className="min-w-0 flex-1">
-              <Dialog.Title className="text-xl font-bold text-gray-900">
+              <h2 className="text-xl font-bold text-gray-900">
                 {mode === 'upload' && selected
                   ? `Upload — ${DOCUMENT_FORMAL_NAMES[selected.prefix]}`
                   : listTitle}
-              </Dialog.Title>
+              </h2>
               <p className="text-sm text-amber-950/85 mt-1.5 leading-relaxed">
                 {mode === 'upload'
                   ? 'Enter licence details and upload clear photos or PDFs. Previous versions are kept in history.'
@@ -546,41 +567,59 @@ export function LicenseExpiredModal({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-800 mb-1.5">
-                      {DOCUMENT_FORMAL_NAMES[selected.prefix]} number
-                    </label>
-                    <input
-                      type="text"
-                      className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm"
-                      value={form.documentNumber}
-                      onChange={(e) => setForm((f) => ({ ...f, documentNumber: e.target.value }))}
-                      disabled={uploading}
-                    />
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className={selected.prefix === 'fssai' ? 'sm:col-span-2' : undefined}>
+                      <label className="block text-xs font-semibold text-gray-800 mb-1.5">
+                        {DOCUMENT_FORMAL_NAMES[selected.prefix]} number
+                      </label>
+                      <input
+                        type="text"
+                        className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm"
+                        value={form.documentNumber}
+                        onChange={(e) => setForm((f) => ({ ...f, documentNumber: e.target.value }))}
+                        disabled={uploading}
+                      />
+                    </div>
+                    {selected.prefix !== 'fssai' ? (
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-800 mb-1.5">Issue date</label>
+                        <input
+                          type="date"
+                          className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm"
+                          value={form.issueDate}
+                          onChange={(e) => setForm((f) => ({ ...f, issueDate: e.target.value }))}
+                          disabled={uploading}
+                        />
+                      </div>
+                    ) : null}
                   </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-800 mb-1.5">Issue date</label>
-                    <input
-                      type="date"
-                      className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm"
-                      value={form.issueDate}
-                      onChange={(e) => setForm((f) => ({ ...f, issueDate: e.target.value }))}
-                      disabled={uploading}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-800 mb-1.5 flex items-center gap-1">
-                      <Calendar className="h-3.5 w-3.5" />
-                      New expiry date
-                    </label>
-                    <input
-                      type="date"
-                      className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm"
-                      value={form.expiryDate}
-                      onChange={(e) => setForm((f) => ({ ...f, expiryDate: e.target.value }))}
-                      disabled={uploading}
-                    />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-800 mb-1.5">
+                        Current expiry
+                      </label>
+                      <input
+                        type="text"
+                        readOnly
+                        tabIndex={-1}
+                        className="w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2.5 text-sm text-gray-700 cursor-not-allowed"
+                        value={formatLicenseExpiryDisplay(selected.expiry_date)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-800 mb-1.5 flex items-center gap-1">
+                        <Calendar className="h-3.5 w-3.5" />
+                        New expiry date
+                      </label>
+                      <input
+                        type="date"
+                        className="w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm"
+                        value={form.expiryDate}
+                        onChange={(e) => setForm((f) => ({ ...f, expiryDate: e.target.value }))}
+                        disabled={uploading}
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -692,9 +731,9 @@ export function LicenseExpiredModal({
               </button>
             ) : null}
           </div>
-        </Dialog.Panel>
+        </div>
       </div>
-    </Dialog>,
+    </div>,
     document.body
   );
 }

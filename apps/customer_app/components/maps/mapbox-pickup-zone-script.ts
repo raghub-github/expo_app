@@ -147,13 +147,13 @@ export function mapboxPickupZoneScript(): string {
           id: 'ride-drop-zone-fill',
           type: 'fill',
           source: 'ride-drop-zone',
-          paint: { 'fill-color': '#1A73E8', 'fill-opacity': 0.16 }
+          paint: { 'fill-color': '#14b8a6', 'fill-opacity': 0.14 }
         });
         map.addLayer({
           id: 'ride-drop-zone-stroke',
           type: 'line',
           source: 'ride-drop-zone',
-          paint: { 'line-color': '#1A73E8', 'line-opacity': 0.45, 'line-width': 2 }
+          paint: { 'line-color': '#14b8a6', 'line-opacity': 0.35, 'line-width': 1.5 }
         });
         dropZoneReady = true;
       }

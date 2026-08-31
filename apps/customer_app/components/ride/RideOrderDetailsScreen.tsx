@@ -2,25 +2,29 @@
  * Rapido-style completed / cancelled ride details with invoice breakdown + email.
  */
 
-import { useMemo, useState, useRef, useEffect } from "react";
+import { useMemo, useState, useRef, useEffect, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, ScrollView, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicator } from "react-native";
+import { View, ScrollView, TouchableOpacity, Pressable, StyleSheet, Image, Alert, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { OrderDetail } from "@/services/order.service";
 import { orderService } from "@/services/order.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
+import { isRideCaptainRatingPending } from "@/lib/person-ride-orders";
 import { useProfile } from "@/hooks/useProfile";
 import {
   RideInvoiceEmailGateSheet,
   type RideInvoiceEmailGateMode,
 } from "@/components/ride/RideInvoiceEmailGateSheet";
+import { RideCaptainRatingSheet } from "@/components/ride/RideCaptainRatingSheet";
+import type { RideCaptainRatingSubmitPayload } from "@/components/ride/RideCaptainRatingSheet";
 import { rideFareBillFromBillingSnapshot } from "@/lib/ride-fare-bill-display";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import {
   buildRideSummaryInvoice,
   formatRideFare,
@@ -39,6 +43,7 @@ type Props = {
   order: OrderDetail;
   onBack: () => void;
   onOpenSupport: () => void;
+  openRatingOnMount?: boolean;
 };
 
 function RouteStop({
@@ -93,15 +98,23 @@ function FareTotalWithDiscount({
   );
 }
 
-export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) {
+export function RideOrderDetailsScreen({
+  order,
+  onBack,
+  onOpenSupport,
+  openRatingOnMount = false,
+}: Props) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { data: profile } = useProfile();
   const [addressExpanded, setAddressExpanded] = useState(true);
-  const [fareExpanded, setFareExpanded] = useState(true);
   const [emailGateVisible, setEmailGateVisible] = useState(false);
   const [emailGateMode, setEmailGateMode] = useState<RideInvoiceEmailGateMode | null>(null);
   const [invoiceSentToast, setInvoiceSentToast] = useState<string | null>(null);
+  const [ratingSheetVisible, setRatingSheetVisible] = useState(false);
+  const [ratingSubmitting, setRatingSubmitting] = useState(false);
+  const [localRatedStars, setLocalRatedStars] = useState<number | null>(null);
   const invoiceSentToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -119,6 +132,22 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
   const displayOrderId = order.formattedOrderId ?? order.orderId;
   const pickupAddress = order.merchantAddress?.trim() || "Pickup location";
   const dropAddress = order.deliveryAddress?.trim() || "Drop location";
+  const captainName = order.rider?.name?.trim() || "Captain";
+  const captainPhotoUri = toAbsoluteImageUrl(order.rider?.photoUrl);
+  const canRateCaptain = isRideCaptainRatingPending(order);
+  const ratedStars =
+    order.deliveryRating != null && Number(order.deliveryRating) >= 1
+      ? Math.round(Number(order.deliveryRating))
+      : null;
+
+  useEffect(() => {
+    setLocalRatedStars(ratedStars);
+  }, [ratedStars, order.orderId]);
+
+  useEffect(() => {
+    if (!openRatingOnMount || !canRateCaptain || localRatedStars != null) return;
+    setRatingSheetVisible(true);
+  }, [openRatingOnMount, canRateCaptain, localRatedStars, order.orderId]);
 
   const invoice = useMemo(() => {
     const summary = buildRideSummaryInvoice(order);
@@ -126,6 +155,7 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
       lines: summary.lines,
       totalFare: summary.totalFare,
       isEstimate: summary.isEstimate,
+      totalBeforeDiscount: summary.totalBeforeDiscount,
     };
   }, [order]);
 
@@ -148,18 +178,7 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
     return Math.max(0, Math.round((invoice.totalFare - tipAmount) * 100) / 100);
   }, [invoice.totalFare, tipAmount]);
 
-  const discountTotal = useMemo(
-    () =>
-      invoice.lines
-        .filter((line) => line.isDiscount)
-        .reduce((sum, line) => sum + line.amount, 0),
-    [invoice.lines]
-  );
-
-  const totalBeforeDiscount = useMemo(() => {
-    if (discountTotal <= 0.005) return null;
-    return Math.round((invoice.totalFare + discountTotal) * 100) / 100;
-  }, [invoice.totalFare, discountTotal]);
+  const totalBeforeDiscount = invoice.totalBeforeDiscount;
   const tripStats = formatRideTripStats(
     resolveRideOrderTripDistanceKm(order),
     order.rideDurationMinutes
@@ -241,6 +260,31 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
     router.push("/profile/verify-email");
   };
 
+  const handleCaptainRatingSubmit = useCallback(
+    async (payload: RideCaptainRatingSubmitPayload) => {
+      setRatingSubmitting(true);
+      try {
+        await orderService.submitStoreRating(order.orderId, {
+          deliveryRating: payload.deliveryRating,
+          riderReviewTags: payload.riderReviewTags,
+          riderReviewText: payload.riderReviewText,
+        });
+        setLocalRatedStars(payload.deliveryRating);
+        setRatingSheetVisible(false);
+        await queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
+        await queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      } catch (e) {
+        const msg =
+          (e as { response?: { data?: { message?: string } } })?.response?.data?.message ??
+          "Could not submit rating. Please try again.";
+        Alert.alert("Rating failed", msg);
+      } finally {
+        setRatingSubmitting(false);
+      }
+    },
+    [order.orderId, queryClient]
+  );
+
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
@@ -270,6 +314,23 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
                 />
                 {invoice.isEstimate ? <AppText style={styles.estTag}> (.est)</AppText> : null}
               </View>
+              {isCompleted && localRatedStars == null ? (
+                <Pressable
+                  onPress={() => setRatingSheetVisible(true)}
+                  hitSlop={12}
+                  style={styles.rateCaptainLink}
+                >
+                  <Ionicons name="star-outline" size={16} color={GREEN} />
+                  <AppText style={styles.rateCaptainLinkText}>Rate captain</AppText>
+                </Pressable>
+              ) : isCompleted && localRatedStars != null ? (
+                <View style={styles.rateCaptainLink}>
+                  <Ionicons name="star" size={14} color="#F59E0B" />
+                  <AppText style={styles.ratedCaptainLinkText}>
+                    You rated {captainName} {localRatedStars} ★
+                  </AppText>
+                </View>
+              ) : null}
             </View>
             <View style={styles.summaryRight}>
               {vehicleImage ? (
@@ -336,11 +397,7 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
             <AppText style={styles.invoiceHeaderText}>INVOICE</AppText>
           </View>
 
-          <TouchableOpacity
-            style={styles.fareHeaderRow}
-            onPress={() => setFareExpanded((v) => !v)}
-            activeOpacity={0.85}
-          >
+          <View style={styles.fareHeaderRow}>
             <AppText style={styles.fareHeaderLabel}>Total Fare</AppText>
             <View style={styles.fareHeaderRight}>
               <FareTotalWithDiscount
@@ -348,12 +405,10 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
                 totalBeforeDiscount={totalBeforeDiscount}
                 size="md"
               />
-              <Ionicons name={fareExpanded ? "chevron-up" : "chevron-down"} size={16} color="#6B7280" />
             </View>
-          </TouchableOpacity>
+          </View>
 
-          {fareExpanded ? (
-            <View style={styles.fareBreakdown}>
+          <View style={styles.fareBreakdown}>
               {invoice.lines.map((line) => (
                 <View key={`${line.label}-${line.amount}`} style={styles.fareLine}>
                   <AppText style={[styles.fareLineLabel, line.isDiscount && styles.fareLineDiscountLabel]}>
@@ -383,8 +438,7 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
                   </View>
                 </View>
               ) : null}
-            </View>
-          ) : null}
+          </View>
 
           <View style={styles.invoiceDivider} />
 
@@ -414,6 +468,17 @@ export function RideOrderDetailsScreen({ order, onBack, onOpenSupport }: Props) 
           </View>
         ) : null}
       </ScrollView>
+
+      <RideCaptainRatingSheet
+        visible={ratingSheetVisible}
+        captainName={captainName}
+        captainPhotoUri={captainPhotoUri}
+        submitting={ratingSubmitting}
+        onClose={() => setRatingSheetVisible(false)}
+        onSubmit={(payload) => {
+          void handleCaptainRatingSubmit(payload);
+        }}
+      />
 
       <RideInvoiceEmailGateSheet
         visible={emailGateVisible}
@@ -474,6 +539,26 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     borderWidth: 1,
     borderColor: "#E5E7EB",
+  },
+  rateCaptainLink: {
+    marginTop: 10,
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    alignSelf: "flex-start",
+    paddingVertical: 6,
+    paddingRight: 12,
+  },
+  rateCaptainLinkText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: GREEN,
+  },
+  ratedCaptainLinkText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#6B7280",
   },
   summaryTop: {
     flexDirection: "row",

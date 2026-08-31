@@ -483,29 +483,52 @@ function readLimitationFlags(row: typeof riderVehicles.$inferSelect): Record<str
   return {};
 }
 
+function isElectronicRcDocumentUrl(url: string | null | undefined): boolean {
+  const value = String(url || "").toLowerCase();
+  return (
+    value.includes("electronic_verified") ||
+    value.includes("cashfree") ||
+    value.includes("digilocker")
+  );
+}
+
 export function isCashfreeRcVehicleRow(
   row: typeof riderVehicles.$inferSelect | null | undefined,
 ): boolean {
   if (!row) return false;
   const flags = readLimitationFlags(row);
-  if (flags.source === "cashfree_vehicle_rc") return true;
+  if (flags.source === "cashfree_vehicle_rc" || flags.vehicleVerificationOnly === true) {
+    return true;
+  }
   const payload = row.cashfreeRcPayload;
+  if (typeof payload === "string" && payload.trim().length > 2) return true;
   if (payload && typeof payload === "object" && !Array.isArray(payload)) {
     return Object.keys(payload as Record<string, unknown>).length > 0;
   }
+  if (isElectronicRcDocumentUrl(row.rcDocumentUrl)) return true;
+  // Cashfree RC upsert sets verified=true and fills make/model; the manual form never does.
+  if (row.verified === true && Boolean(row.make || row.model)) return true;
   return false;
 }
 
+export type ComputeRiderVehicleFormMetaOptions = {
+  electronicRc?: boolean;
+  hasRegistration?: boolean;
+  hasVehicleType?: boolean;
+};
+
 export function computeRiderVehicleMissingFields(
   row: typeof riderVehicles.$inferSelect | null | undefined,
+  opts?: ComputeRiderVehicleFormMetaOptions,
 ): RiderVehicleMissingField[] {
+  const electronic = Boolean(opts?.electronicRc || isCashfreeRcVehicleRow(row));
+
   if (!row) {
-    return [
-      "vehicle_type",
-      "registration_number",
-      "service_types",
-      "ownership_type",
-    ];
+    const missing: RiderVehicleMissingField[] = [];
+    if (!opts?.hasVehicleType) missing.push("vehicle_type");
+    if (!opts?.hasRegistration) missing.push("registration_number");
+    missing.push("service_types", "ownership_type", "is_commercial");
+    return missing;
   }
 
   const missing: RiderVehicleMissingField[] = [];
@@ -521,6 +544,13 @@ export function computeRiderVehicleMissingFields(
 
   if (!row.fuelType) missing.push("fuel_type");
 
+  if (electronic) {
+    if (vehicleType !== "other" && !row.make?.trim()) missing.push("make");
+    if (!row.model?.trim()) missing.push("model");
+    if (!row.color?.trim()) missing.push("color");
+    if (row.year == null) missing.push("year");
+  }
+
   const rawServices = row.serviceTypes;
   const serviceTypes = Array.isArray(rawServices)
     ? rawServices.filter((s): s is string => typeof s === "string")
@@ -532,20 +562,28 @@ export function computeRiderVehicleMissingFields(
     missing.push("ownership_type");
   }
 
+  if (electronic) {
+    missing.push("is_commercial");
+  }
+
   return missing;
 }
 
 export function computeRiderVehicleFormMeta(
   row: typeof riderVehicles.$inferSelect | null | undefined,
+  opts?: ComputeRiderVehicleFormMetaOptions,
 ): RiderVehicleFormMeta {
-  const missingFields = computeRiderVehicleMissingFields(row);
+  const electronic = Boolean(opts?.electronicRc || isCashfreeRcVehicleRow(row));
+  const missingFields = computeRiderVehicleMissingFields(row, {
+    ...opts,
+    electronicRc: electronic,
+  });
   const step1Missing = missingFields.filter((field) => STEP1_MISSING_FIELDS.has(field));
   const step2Missing = missingFields.filter((field) => !STEP1_MISSING_FIELDS.has(field));
   const step1Complete = step1Missing.length === 0;
   const step2Complete = step2Missing.length === 0;
-  const cashfree = isCashfreeRcVehicleRow(row);
 
-  if (!cashfree) {
+  if (!electronic) {
     return {
       formMode: "full",
       prefillSource: row ? "manual" : null,
@@ -626,6 +664,7 @@ async function readOnboardingVehicleSelectionForApp(riderId: number): Promise<{
   onboardingVehicleChoice: string | null;
   onboardingVehicleCategoryCode: string | null;
   onboardingPrefill: RiderVehicleOnboardingPrefill | null;
+  rcElectronicallyVerified: boolean;
 }> {
   const { readRiderOnboardingVehicleSelection } = await import(
     "./rider-onboarding-progress.js"
@@ -645,6 +684,7 @@ async function readOnboardingVehicleSelectionForApp(riderId: number): Promise<{
       onboardingVehicleChoice: choice,
       onboardingVehicleCategoryCode: categoryCode,
       onboardingPrefill: null,
+      rcElectronicallyVerified: selection.rcElectronicallyVerified,
     };
   }
 
@@ -684,6 +724,7 @@ async function readOnboardingVehicleSelectionForApp(riderId: number): Promise<{
       suggestedAcType: suggestAcTypeForCategory(categoryCode),
       suggestedIsCommercial: suggestIsCommercialForCategory(categoryCode),
     },
+    rcElectronicallyVerified: selection.rcElectronicallyVerified,
   };
 }
 
@@ -697,14 +738,26 @@ export async function getRiderVehicleStatusForApp(
 
   const row = await getActiveRiderVehicleRow(riderId);
 
+  const { rcElectronicallyVerified, ...onboardingPublic } = onboardingSelection;
+  const formMetaOpts = {
+    electronicRc: rcElectronicallyVerified || isCashfreeRcVehicleRow(row),
+    hasRegistration: Boolean(
+      (row?.registrationNumber && normalizeRegistrationNumber(row.registrationNumber).length >= 4) ||
+        onboardingSelection.onboardingPrefill?.registrationNumber,
+    ),
+    hasVehicleType: Boolean(
+      row?.vehicleType || onboardingSelection.onboardingPrefill?.resolvedVehicleType,
+    ),
+  };
+
   if (!row) {
 
     return {
       hasVehicle: false,
       isComplete: false,
       vehicle: null,
-      formMeta: computeRiderVehicleFormMeta(null),
-      ...onboardingSelection,
+      formMeta: computeRiderVehicleFormMeta(null, formMetaOpts),
+      ...onboardingPublic,
     };
 
   }
@@ -719,9 +772,9 @@ export async function getRiderVehicleStatusForApp(
 
     vehicle,
 
-    formMeta: computeRiderVehicleFormMeta(row),
+    formMeta: computeRiderVehicleFormMeta(row, formMetaOpts),
 
-    ...onboardingSelection,
+    ...onboardingPublic,
 
   };
 

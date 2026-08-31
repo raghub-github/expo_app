@@ -168,6 +168,16 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
     }
   }
 
+  if (
+    typeof moduleName === "string" &&
+    (moduleName.includes("mxappicon.png") || moduleName.endsWith("/mxappicon"))
+  ) {
+    return {
+      filePath: path.resolve(projectRoot, "assets/images/rideraap.png"),
+      type: "sourceFile",
+    };
+  }
+
   if (platform !== "web" && moduleName === "ws") {
     return {
       filePath: path.resolve(projectRoot, "metro-ws-shim.js"),

@@ -14,6 +14,7 @@ import {
   resolveRidePickupWaitingChargePerMin,
   type RidePickupWaitFields,
 } from "@/lib/ride-pickup-wait";
+import { resolvePersonRideCustomerPayable } from "@/lib/ride-customer-payable";
 
 const RIDE_IMAGE_KEY: Record<string, string> = {
   bike: "bike",
@@ -329,7 +330,8 @@ export function parseRideDeliveredBill(
 
   const distanceKm = resolveRideOrderTripDistanceKm(order);
   const componentTotal = rideFare + waitingCharge + surgeCharge + additionalCharges + tip;
-  const total = Math.max(componentTotal, serverTotal);
+  const hasSnapFinal = snap.final_amount != null && snap.final_amount !== "";
+  const total = hasSnapFinal ? billNum(snap.final_amount) : Math.max(componentTotal, serverTotal);
 
   return {
     rideFare,
@@ -389,11 +391,19 @@ export function resolveRidePaymentDueAmount(
     | "riderReachedPickupAt"
   >
 ): number {
+  const quoted = resolvePersonRideCustomerPayable({
+    totalAmount: order.totalAmount,
+    checkoutMetadata: order.checkoutMetadata,
+    billingSnapshot: "billingSnapshot" in order ? order.billingSnapshot : undefined,
+  });
   if ("billingSnapshot" in order && order.billingSnapshot != null) {
-    return buildRidePaymentFareBreakdown(order as OrderDetail).total;
+    const breakdownTotal = buildRidePaymentFareBreakdown(order as OrderDetail).total;
+    const hasFinal =
+      order.billingSnapshot.final_amount != null && order.billingSnapshot.final_amount !== "";
+    if (hasFinal) return breakdownTotal;
+    return quoted;
   }
-  const total = Number(order.totalAmount ?? 0);
-  return Number.isFinite(total) && total > 0 ? Math.round(total) : 0;
+  return quoted;
 }
 
 function rideBillingFeeLines(snap: Record<string, unknown>): RidePaymentFareLine[] {
@@ -455,6 +465,105 @@ export type RideSummaryInvoiceLine = {
   isDiscount?: boolean;
 };
 
+function rideOfferDiscountLabel(
+  snap: Record<string, unknown>,
+  meta: Record<string, unknown>
+): string {
+  const coupon = [
+    snap.ride_fare_coupon_code,
+    snap.coupon_code,
+    meta.couponCode,
+    meta.rideCouponCode,
+  ]
+    .map((v) => (typeof v === "string" ? v.trim() : ""))
+    .find((v) => v.length > 0);
+  return coupon || "Offer applied";
+}
+
+function billMetaNum(meta: Record<string, unknown>, key: string): number {
+  const n = Number(meta[key]);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function bookingQuotedPayable(meta: Record<string, unknown>): number | null {
+  if (meta.quotedGrandTotal == null || meta.quotedGrandTotal === "") return null;
+  const n = Number(meta.quotedGrandTotal);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n * 100) / 100;
+}
+
+function originalRideFareFromSnap(snap: Record<string, unknown>): number {
+  return Math.max(
+    billNum(snap.ride_fare),
+    billNum(snap.fare_amount),
+    billNum(snap.item_total),
+    billNum(snap.original_fare),
+    billNum(snap.original_amount)
+  );
+}
+
+function bookingOriginalFare(snap: Record<string, unknown>, meta: Record<string, unknown>): number {
+  return Math.max(
+    originalRideFareFromSnap(snap),
+    billMetaNum(meta, "estimatedFare"),
+    billMetaNum(meta, "quotedListFare")
+  );
+}
+
+function withInvoiceOfferDiscount(
+  snap: Record<string, unknown>,
+  meta: Record<string, unknown>,
+  lines: RideSummaryInvoiceLine[],
+  totalFare: number
+): { lines: RideSummaryInvoiceLine[]; totalFare: number; totalBeforeDiscount: number | null } {
+  const quotedPayable = bookingQuotedPayable(meta);
+  const displayTotal = quotedPayable != null ? quotedPayable : totalFare;
+  const next = [...lines];
+  const chargesSum = next.filter((l) => !l.isDiscount).reduce((s, l) => s + l.amount, 0);
+  const original = Math.max(bookingOriginalFare(snap, meta), chargesSum);
+  const rideChargeIdx = next.findIndex((l) => {
+    const lower = l.label.toLowerCase();
+    return lower.includes("ride charge") || lower.includes("ride fare");
+  });
+  if (original > 0.005 && rideChargeIdx >= 0 && next[rideChargeIdx]!.amount <= 0.005) {
+    next[rideChargeIdx] = { ...next[rideChargeIdx]!, amount: original };
+  } else if (original > 0.005 && rideChargeIdx < 0) {
+    next.unshift({ label: "Ride Charge", amount: original });
+  }
+
+  const existingDiscount = next.filter((l) => l.isDiscount).reduce((s, l) => s + l.amount, 0);
+  if (existingDiscount <= 0.005 && original > displayTotal + 0.005) {
+    next.push({
+      label: rideOfferDiscountLabel(snap, meta),
+      amount: Math.round((original - displayTotal) * 100) / 100,
+      isDiscount: true,
+    });
+  }
+
+  const useful = next.some((l) => l.amount > 0.005);
+  if (!useful && original > 0.005) {
+    const synthesized: RideSummaryInvoiceLine[] = [{ label: "Ride Charge", amount: original }];
+    if (original > displayTotal + 0.005) {
+      synthesized.push({
+        label: rideOfferDiscountLabel(snap, meta),
+        amount: Math.round((original - displayTotal) * 100) / 100,
+        isDiscount: true,
+      });
+    }
+    return {
+      lines: synthesized,
+      totalFare: displayTotal,
+      totalBeforeDiscount: original > displayTotal + 0.005 ? original : null,
+    };
+  }
+
+  const discountTotal = next.filter((l) => l.isDiscount).reduce((s, l) => s + l.amount, 0);
+  const totalBeforeDiscount =
+    discountTotal > 0.005 ? Math.round((displayTotal + discountTotal) * 100) / 100 : original > displayTotal + 0.005 ? original : null;
+
+  return { lines: next, totalFare: displayTotal, totalBeforeDiscount };
+}
+
 /** Completed-ride invoice / summary lines — same breakdown as ride checkout bill. */
 export function buildRideSummaryInvoice(
   order: Pick<
@@ -473,11 +582,21 @@ export function buildRideSummaryInvoice(
     | "estimatedPickupWaitingCharge"
     | "riderReachedPickupAt"
   >
-): { lines: RideSummaryInvoiceLine[]; totalFare: number; isEstimate: boolean } {
+): {
+  lines: RideSummaryInvoiceLine[];
+  totalFare: number;
+  isEstimate: boolean;
+  totalBeforeDiscount: number | null;
+} {
   const snap =
     order.billingSnapshot != null && typeof order.billingSnapshot === "object"
       ? (order.billingSnapshot as Record<string, unknown>)
       : {};
+  const meta =
+    order.checkoutMetadata != null && typeof order.checkoutMetadata === "object"
+      ? (order.checkoutMetadata as Record<string, unknown>)
+      : {};
+  const quotedPayable = bookingQuotedPayable(meta);
 
   const fareBill = rideFareBillFromBillingSnapshot({
     billingSnapshot: snap,
@@ -487,14 +606,16 @@ export function buildRideSummaryInvoice(
 
   const paymentCompleted =
     String(order.paymentStatus ?? "").toLowerCase() === "completed" ||
-    (typeof snap.ride_fare_paid_at === "string" && snap.ride_fare_paid_at.trim().length > 0);
+    String(order.paymentStatus ?? "").toLowerCase() === "paid" ||
+    (typeof snap.ride_fare_paid_at === "string" && snap.ride_fare_paid_at.trim().length > 0) ||
+    snap.ride_fare_paid_by === "offer" ||
+    (quotedPayable != null && quotedPayable <= 0.005);
 
   if (fareBill) {
     const { lines, totalFare } = buildRideInvoiceLinesFromFareBill(fareBill);
-
+    const invoice = withInvoiceOfferDiscount(snap, meta, lines, totalFare);
     return {
-      lines,
-      totalFare,
+      ...invoice,
       isEstimate: !paymentCompleted,
     };
   }
@@ -584,9 +705,9 @@ export function buildRideSummaryInvoice(
     lines.push({ label: row.label, amount: row.amount, isDiscount: true });
   }
 
+  const invoice = withInvoiceOfferDiscount(snap, meta, lines, breakdown.total);
   return {
-    lines,
-    totalFare: breakdown.total,
+    ...invoice,
     isEstimate: !paymentCompleted,
   };
 }
@@ -648,8 +769,11 @@ export function buildRidePaymentFareBreakdown(
   const additionalCharges =
     billingFeesTotal > 0.005 ? billingFeesTotal : snapBill.additionalCharges;
   const componentTotal = rideFare + waitingCharge + surgeCharge + additionalCharges + tip;
+  const hasSnapFinal = snap.final_amount != null && snap.final_amount !== "";
   const snapFinal = billNum(snap.final_amount);
-  const total = Math.max(componentTotal, snapBill.total, snapFinal);
+  const total = hasSnapFinal
+    ? snapFinal
+    : Math.max(componentTotal, snapBill.total);
 
   const lines: RidePaymentFareLine[] = [{ label: "Ride fare", amount: rideFare }];
   if (waitingCharge > 0) {

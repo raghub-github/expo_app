@@ -32,14 +32,15 @@ import { RideHistoryRow } from "@/components/ride/RideHistoryRow";
 import { RideActiveHistoryRow } from "@/components/ride/RideActiveHistoryRow";
 import { isPersonRideOrderSummary } from "@/lib/person-ride-orders";
 import { getRideDropTitle } from "@/lib/ride-order-display";
-import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
+import { useReorderStoreEligibility } from "@/hooks/useReorderStoreEligibility";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { useLocationStore } from "@/store/locationStore";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
-import { populateCartFromOrder, resolveOrderItemDiet } from "@/lib/reorderFromOrder";
+import { populateCartFromOrder, orderItemsMissingMenuIds, resolveOrderItemDiet } from "@/lib/reorderFromOrder";
+import { ReorderUnavailableBottomSheet } from "@/components/orders/ReorderUnavailableBottomSheet";
 import {
   getMyOrdersCachedAt,
   readSyncMyOrders,
@@ -318,20 +319,14 @@ function HistoryOrderCard({
   const hasRating = order.storeRatingSubmitted === true && order.storeRating != null;
   const price = orderListPriceDisplay(order);
 
-  const hasDeliveryAnchor = deliveryAddressId != null || dropCoords != null;
-  const { data: storeQuote } = useStoreDeliveryQuote({
-    storeId: storeId ?? "",
-    addressId: deliveryAddressId,
-    drop:
-      deliveryAddressId == null && dropCoords
-        ? { lat: dropCoords.latitude, lng: dropCoords.longitude }
-        : null,
-    // Only check serviceability for delivered orders — never for cancelled.
-    enabled: delivered && !!storeId && hasDeliveryAnchor,
+  const { canReorder, reason: reorderReason } = useReorderStoreEligibility({
+    storeId,
+    delivered,
+    deliveryAddressId,
+    dropCoords,
   });
-
-  const canReorder = delivered && storeQuote?.serviceable === true;
-  const showOutOfDeliveryZone = delivered && storeQuote?.serviceable === false;
+  const showOutOfDeliveryZone = reorderReason === "out_of_zone";
+  const showStoreClosed = reorderReason === "store_closed";
   const restaurantName = order.merchantPublicName ?? order.merchantName ?? "";
   const merchantArea = getCompactAddressLine(order.merchantAddress);
   const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
@@ -531,6 +526,10 @@ function HistoryOrderCard({
               <View style={styles.outOfZoneBtn}>
                 <AppText style={styles.outOfZoneText}>Out of delivery zone</AppText>
               </View>
+            ) : showStoreClosed ? (
+              <View style={styles.outOfZoneBtn}>
+                <AppText style={styles.outOfZoneText}>Store closed</AppText>
+              </View>
             ) : null}
           </View>
         </>
@@ -551,11 +550,19 @@ export default function OrdersScreen() {
   const [search, setSearch] = useState("");
   const [openMenuOrderId, setOpenMenuOrderId] = useState<string | null>(null);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<string>>(new Set());
+  const [reorderSheet, setReorderSheet] = useState<{
+    title: string;
+    message: string;
+    order: OrderSummary | null;
+  } | null>(null);
   // Only poll while this tab is actually on screen. `freezeOnBlur` halts renders but
   // NOT the query's refetch timer, so without this gate the 5s active-orders poll keeps
   // hitting the network (and waking the JS thread) while the user sits on Home/Food.
   const [isScreenFocused, setIsScreenFocused] = useState(true);
   const lastOrdersFocusRefetchRef = useRef(0);
+  /** Blocks double-tap `router.push` stacking multiple `/orders/[id]` (or store) layers. */
+  const navLockRef = useRef(false);
+  const reorderInFlightRef = useRef(false);
 
   const coords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
@@ -593,6 +600,8 @@ export default function OrdersScreen() {
   useFocusEffect(
     useCallback(() => {
       setIsScreenFocused(true);
+      navLockRef.current = false;
+      reorderInFlightRef.current = false;
       seedMyOrdersQueryIfCached(queryClient);
       const now = Date.now();
       if (now - lastOrdersFocusRefetchRef.current > 15_000) {
@@ -734,13 +743,18 @@ export default function OrdersScreen() {
 
   const navigateToStore = (order: OrderSummary) => {
     const storeId = order.merchantPublicStoreId ?? order.merchantStoreId?.toString();
-    if (storeId) router.push(`/home/merchant/${storeId}`);
+    if (!storeId) return;
+    if (navLockRef.current) return;
+    navLockRef.current = true;
+    router.push(`/home/merchant/${storeId}`);
   };
 
   const openOrderDetails = (
     orderId: string,
     opts?: { rate?: boolean; history?: boolean }
   ) => {
+    if (navLockRef.current) return;
+    navLockRef.current = true;
     void queryClient.prefetchQuery({
       queryKey: ["order", orderId],
       queryFn: () => orderService.getOrder(orderId),
@@ -752,27 +766,44 @@ export default function OrdersScreen() {
     router.push({ pathname: "/orders/[id]", params });
   };
 
+  const closeReorderSheet = useCallback(() => setReorderSheet(null), []);
+
   const handleReorder = useCallback(
     async (order: OrderSummary) => {
-      let orderData = order;
-      const needsDetail = (order.items ?? []).some((i) => !i.menuItemId?.trim());
-      if (needsDetail) {
-        try {
-          orderData = await orderService.getOrder(order.orderId);
-        } catch {
-          Alert.alert("Reorder failed", "Could not load order items. Please try again.");
+      if (reorderInFlightRef.current || navLockRef.current) return;
+      reorderInFlightRef.current = true;
+      try {
+        // List payloads often have display items without menuItemId (orders_core.items JSON).
+        // Always load detail when ids are missing/empty so reorder can rebuild the cart.
+        let orderData = order;
+        if (orderItemsMissingMenuIds(order)) {
+          try {
+            orderData = await orderService.getOrder(order.orderId);
+          } catch {
+            setReorderSheet({
+              title: "Reorder failed",
+              message: "Could not load order items. Please try again.",
+              order,
+            });
+            return;
+          }
+        }
+        const ok = populateCartFromOrder(orderData);
+        if (!ok) {
+          setReorderSheet({
+            title: "Unable to reorder",
+            message:
+              "Items from this order are unavailable. Try viewing the menu instead.",
+            order,
+          });
           return;
         }
+        if (navLockRef.current) return;
+        navLockRef.current = true;
+        router.push("/checkout");
+      } finally {
+        reorderInFlightRef.current = false;
       }
-      const ok = populateCartFromOrder(orderData);
-      if (!ok) {
-        Alert.alert(
-          "Unable to reorder",
-          "Items from this order are unavailable. Try viewing the menu instead."
-        );
-        return;
-      }
-      router.push("/checkout");
     },
     [router]
   );
@@ -791,6 +822,9 @@ export default function OrdersScreen() {
               <RideHistoryRow
                 order={order}
                 onPress={() => openOrderDetails(order.orderId, { history: true })}
+                onRateCaptain={() =>
+                  openOrderDetails(order.orderId, { rate: true, history: true })
+                }
               />
             </View>
           ))}
@@ -970,6 +1004,23 @@ export default function OrdersScreen() {
           </View>
         </GestureDetector>
       )}
+
+      <ReorderUnavailableBottomSheet
+        visible={reorderSheet != null}
+        title={reorderSheet?.title}
+        message={reorderSheet?.message}
+        onClose={closeReorderSheet}
+        onViewMenu={
+          reorderSheet?.order &&
+          (reorderSheet.order.merchantPublicStoreId || reorderSheet.order.merchantStoreId)
+            ? () => {
+                const order = reorderSheet.order!;
+                closeReorderSheet();
+                navigateToStore(order);
+              }
+            : null
+        }
+      />
     </View>
   );
 }

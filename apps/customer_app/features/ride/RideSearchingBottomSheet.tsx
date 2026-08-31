@@ -13,6 +13,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { formatRideDistanceKm } from "@/lib/ride-route-snapshot";
+import { StoreFonts } from "@/constants/storeTypography";
 
 type Props = {
   phase: "placing" | "searching" | "tip_boost" | "error";
@@ -20,6 +21,8 @@ type Props = {
   subtitle: string;
   elapsedLabel?: string;
   fare: number;
+  /** List fare before offer — shown struck when higher than `fare`. */
+  listFare?: number | null;
   rideImage: ImageSourcePropType | null;
   rideName: string;
   pickupLabel: string;
@@ -69,6 +72,40 @@ function formatEtaRange(tripKm?: number, routeEtaMins?: number | null): string {
 
 const STRIPE_COUNT = 36;
 const STRIPE_WIDTH = 7;
+const ROAD_DASH_H = 5;
+const ROAD_DASH_GAP = 6;
+const ROAD_DASH_CYCLE = ROAD_DASH_H + ROAD_DASH_GAP;
+
+function MovingRoadIcon() {
+  const dashOffset = useSharedValue(0);
+
+  useEffect(() => {
+    dashOffset.value = 0;
+    dashOffset.value = withRepeat(
+      withTiming(ROAD_DASH_CYCLE, { duration: 520, easing: Easing.linear }),
+      -1,
+      false
+    );
+  }, [dashOffset]);
+
+  const dashAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: dashOffset.value }],
+  }));
+
+  return (
+    <View style={styles.searchIconBox}>
+      <View style={styles.roadSurface}>
+        <View style={styles.roadLaneEdge} />
+        <Animated.View style={[styles.roadDashCol, dashAnimStyle]}>
+          {Array.from({ length: 10 }).map((_, index) => (
+            <View key={index} style={styles.roadDash} />
+          ))}
+        </Animated.View>
+        <View style={styles.roadLaneEdge} />
+      </View>
+    </View>
+  );
+}
 
 function AnimatedStripes() {
   const stripeOffset = useSharedValue(0);
@@ -154,6 +191,7 @@ export function RideSearchingBottomSheet({
   subtitle,
   elapsedLabel,
   fare,
+  listFare = null,
   rideImage,
   rideName,
   pickupLabel,
@@ -183,6 +221,8 @@ export function RideSearchingBottomSheet({
   const totalKm =
     rideKm != null && pickupKm > 0 ? Math.round((rideKm + pickupKm) * 10) / 10 : rideKm;
   const mitraSathiPool = activeMitraSathiCount ?? nearbyRidersCount;
+  const showStrike =
+    listFare != null && Number.isFinite(listFare) && Number.isFinite(fare) && listFare > fare;
 
   return (
     <View style={[styles.sheet, { paddingBottom: Math.max(8, bottomInset) }]}>
@@ -197,9 +237,13 @@ export function RideSearchingBottomSheet({
       >
         <View style={styles.headerRow}>
           <View style={styles.searchIconOuter}>
-            <View style={styles.searchIconBox}>
-              <Ionicons name="search" size={20} color="#059669" />
-            </View>
+            {isError ? (
+              <View style={[styles.searchIconBox, styles.searchIconBoxError]}>
+                <Ionicons name="alert-circle" size={22} color="#DC2626" />
+              </View>
+            ) : (
+              <MovingRoadIcon />
+            )}
           </View>
 
           <View style={styles.headerTextCol}>
@@ -243,7 +287,12 @@ export function RideSearchingBottomSheet({
                     </View>
                   ) : null}
                 </View>
-                <AppText style={styles.fareAmount}>₹{Number.isFinite(fare) ? fare : "—"}</AppText>
+                {showStrike ? (
+                  <AppText style={styles.fareStrike}>₹{listFare}</AppText>
+                ) : null}
+                <AppText style={styles.fareAmount}>
+                  ₹{Number.isFinite(fare) ? fare : "—"}
+                </AppText>
                 <View style={styles.inclusiveTag}>
                   <AppText style={styles.inclusiveText}>Inclusive of all charges</AppText>
                 </View>
@@ -403,14 +452,48 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   searchIconBox: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     backgroundColor: "#ECFDF5",
     borderWidth: 1,
     borderColor: "#A7F3D0",
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
+  },
+  searchIconBoxError: {
+    backgroundColor: "#FEF2F2",
+    borderColor: "#FECACA",
+  },
+  roadSurface: {
+    width: 16,
+    height: 26,
+    borderRadius: 4,
+    backgroundColor: "#065F46",
+    overflow: "hidden",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: 2,
+  },
+  roadLaneEdge: {
+    width: 1.5,
+    height: "100%",
+    backgroundColor: "rgba(167, 243, 208, 0.55)",
+  },
+  roadDashCol: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: -ROAD_DASH_CYCLE,
+    alignItems: "center",
+  },
+  roadDash: {
+    width: 3,
+    height: ROAD_DASH_H,
+    borderRadius: 1,
+    backgroundColor: "#ECFDF5",
+    marginBottom: ROAD_DASH_GAP,
   },
   headerTextCol: {
     flex: 1,
@@ -419,14 +502,16 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 17,
-    fontWeight: "800",
+    fontFamily: StoreFonts.loraBold,
+    fontWeight: "700",
     color: "#0F172A",
     lineHeight: 22,
     marginBottom: 3,
   },
   subtitle: {
     fontSize: 12,
-    fontWeight: "500",
+    fontFamily: StoreFonts.loraRegular,
+    fontWeight: "400",
     color: "#64748B",
     lineHeight: 17,
   },
@@ -441,6 +526,7 @@ const styles = StyleSheet.create({
   },
   elapsedText: {
     fontSize: 11,
+    fontFamily: StoreFonts.poppinsBold,
     fontWeight: "700",
     color: "#047857",
   },
@@ -450,7 +536,8 @@ const styles = StyleSheet.create({
   },
   dispatchLabel: {
     fontSize: 15,
-    fontWeight: "800",
+    fontFamily: StoreFonts.loraBold,
+    fontWeight: "700",
     color: "#0B1F44",
     lineHeight: 20,
     letterSpacing: -0.2,
@@ -523,7 +610,8 @@ const styles = StyleSheet.create({
   },
   rideName: {
     fontSize: 15,
-    fontWeight: "800",
+    fontFamily: StoreFonts.loraBold,
+    fontWeight: "700",
     color: "#0F172A",
   },
   fastestTag: {
@@ -534,14 +622,24 @@ const styles = StyleSheet.create({
   },
   fastestText: {
     fontSize: 9,
-    fontWeight: "800",
+    fontFamily: StoreFonts.poppinsBold,
+    fontWeight: "700",
     color: "#059669",
   },
   fareAmount: {
     fontSize: 26,
-    fontWeight: "800",
+    fontFamily: StoreFonts.poppinsBold,
+    fontWeight: "700",
     color: "#0F172A",
     marginBottom: 4,
+  },
+  fareStrike: {
+    fontSize: 13,
+    fontFamily: StoreFonts.poppinsSemiBold,
+    fontWeight: "600",
+    color: "#9CA3AF",
+    textDecorationLine: "line-through",
+    marginBottom: 2,
   },
   inclusiveTag: {
     alignSelf: "flex-start",
@@ -552,7 +650,8 @@ const styles = StyleSheet.create({
   },
   inclusiveText: {
     fontSize: 10,
-    fontWeight: "600",
+    fontFamily: StoreFonts.loraRegular,
+    fontWeight: "400",
     color: "#2563EB",
   },
   summaryMeta: {
@@ -568,19 +667,23 @@ const styles = StyleSheet.create({
   },
   metaKey: {
     fontSize: 10,
+    fontFamily: StoreFonts.loraRegular,
+    fontWeight: "400",
     color: "#94A3B8",
     flex: 1,
   },
   metaVal: {
     fontSize: 11,
-    fontWeight: "700",
+    fontFamily: StoreFonts.poppinsSemiBold,
+    fontWeight: "600",
     color: "#334155",
   },
   metaValGreen: {
     color: "#059669",
   },
   metaValBold: {
-    fontWeight: "800",
+    fontFamily: StoreFonts.poppinsBold,
+    fontWeight: "700",
     color: "#0F172A",
   },
   metaDivider: {
@@ -626,11 +729,13 @@ const styles = StyleSheet.create({
   },
   routeStopLabel: {
     fontSize: 10,
+    fontFamily: StoreFonts.poppinsSemiBold,
     fontWeight: "600",
     color: "#94A3B8",
   },
   routeStopAddr: {
     fontSize: 11,
+    fontFamily: StoreFonts.loraBold,
     fontWeight: "700",
     color: "#0F172A",
     lineHeight: 15,
@@ -641,7 +746,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 8,
   },
   routeMetricCol: {
-    width: 72,
+    width: 84,
     alignItems: "center",
     justifyContent: "flex-start",
     gap: 4,
@@ -649,13 +754,15 @@ const styles = StyleSheet.create({
   },
   routeMetricLabel: {
     fontSize: 9,
+    fontFamily: StoreFonts.loraRegular,
+    fontWeight: "400",
     color: "#94A3B8",
-    fontWeight: "600",
     textAlign: "center",
   },
   routeMetricValue: {
     fontSize: 12,
-    fontWeight: "800",
+    fontFamily: StoreFonts.poppinsBold,
+    fontWeight: "700",
     color: "#0F172A",
     textAlign: "center",
     lineHeight: 15,
@@ -694,6 +801,7 @@ const styles = StyleSheet.create({
   },
   actionBtnText: {
     fontSize: 13,
+    fontFamily: StoreFonts.loraBold,
     fontWeight: "700",
     color: "#111827",
   },
@@ -722,11 +830,14 @@ const styles = StyleSheet.create({
   },
   cancelTitle: {
     fontSize: 15,
-    fontWeight: "800",
+    fontFamily: StoreFonts.loraBold,
+    fontWeight: "700",
     color: "#DC2626",
   },
   cancelSub: {
     fontSize: 11,
+    fontFamily: StoreFonts.loraRegular,
+    fontWeight: "400",
     color: "#94A3B8",
     marginTop: 2,
   },
@@ -739,6 +850,7 @@ const styles = StyleSheet.create({
   },
   retryBtnText: {
     fontSize: 15,
+    fontFamily: StoreFonts.loraBold,
     fontWeight: "700",
     color: "#111827",
   },

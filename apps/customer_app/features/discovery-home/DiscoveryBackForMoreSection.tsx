@@ -79,7 +79,8 @@ function BackForMoreCard({
     const next = !saved;
     syncBookmark(store.id, next);
     try {
-      await setStoreBookmark(store.id, next);
+      const res = await setStoreBookmark(store.id, next);
+      if (res.saved !== next) syncBookmark(store.id, res.saved);
     } catch {
       syncBookmark(store.id, saved);
     }

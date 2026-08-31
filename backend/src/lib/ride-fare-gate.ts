@@ -2,7 +2,8 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import { ordersCore, ordersRide } from "../db/schema.js";
 import { normalizeCustomerOrderStatus } from "./customer-order-status-resolve.js";
-import { isRideFarePaymentPending } from "./ride-rider-payout-snapshot.js";
+import { isRideFareAwaitingCustomerPayment, resolvePersonRideCustomerPayable } from "./ride-customer-payable.js";
+import { reconcileAndSettlePersonRideCustomerPayable } from "./settle-zero-payable-person-ride.js";
 
 function isCashRidePaymentMethod(method?: string | null): boolean {
   const m = String(method ?? "").trim().toLowerCase();
@@ -15,12 +16,23 @@ export function isCustomerRideFareDue(input: {
   currentStatus?: string | null;
   paymentStatus?: string | null;
   paymentMethod?: string | null;
+  grandTotal?: unknown;
+  checkoutMetadata?: unknown;
+  billingSnapshot?: unknown;
 }): boolean {
   if (String(input.orderType ?? "").trim() !== "person_ride") return false;
   const appStatus = normalizeCustomerOrderStatus(input.currentStatus, input.status);
   if (appStatus !== "DELIVERED") return false;
   if (isCashRidePaymentMethod(input.paymentMethod)) return false;
-  return isRideFarePaymentPending(input.paymentStatus);
+  const customerPayable = resolvePersonRideCustomerPayable({
+    grandTotal: input.grandTotal,
+    checkoutMetadata: input.checkoutMetadata,
+    billingSnapshot: input.billingSnapshot,
+  });
+  return isRideFareAwaitingCustomerPayment({
+    paymentStatus: input.paymentStatus,
+    customerPayable,
+  });
 }
 
 export async function findCustomerOutstandingRideFare(customerPk: number): Promise<{
@@ -40,6 +52,8 @@ export async function findCustomerOutstandingRideFare(customerPk: number): Promi
       paymentStatus: ordersCore.paymentStatus,
       paymentMethod: ordersCore.paymentMethod,
       grandTotal: ordersCore.grandTotal,
+      checkoutMetadata: ordersCore.checkoutMetadata,
+      billingSnapshot: ordersCore.billingSnapshot,
       cancelledAt: ordersRide.cancelledAt,
     })
     .from(ordersCore)
@@ -56,13 +70,20 @@ export async function findCustomerOutstandingRideFare(customerPk: number): Promi
     .limit(1);
 
   if (!row?.id || !row.orderId) return null;
+
+  const settled = await reconcileAndSettlePersonRideCustomerPayable(row.id);
+  if (!settled.paymentRequired) return null;
+
   if (
     !isCustomerRideFareDue({
       orderType: "person_ride",
       status: row.status,
       currentStatus: row.currentStatus,
-      paymentStatus: row.paymentStatus,
+      paymentStatus: settled.paymentStatus,
       paymentMethod: row.paymentMethod,
+      grandTotal: settled.customerPayable,
+      checkoutMetadata: row.checkoutMetadata,
+      billingSnapshot: row.billingSnapshot,
     })
   ) {
     return null;
@@ -72,6 +93,6 @@ export async function findCustomerOutstandingRideFare(customerPk: number): Promi
     orderCoreId: row.id,
     orderId: row.orderId.trim(),
     formattedOrderId: row.formattedOrderId?.trim() || null,
-    grandTotal: Math.max(0, Number(row.grandTotal ?? 0)),
+    grandTotal: settled.customerPayable,
   };
 }

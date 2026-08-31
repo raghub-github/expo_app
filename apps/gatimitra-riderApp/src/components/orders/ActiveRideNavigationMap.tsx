@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useImperativeHandle, fo
 import { View, StyleSheet } from "react-native";
 import { getMapboxModule } from "@/src/services/maps/mapbox";
 import { NavArrivedAtStoreMarker } from "@/src/components/orders/NavArrivedAtStoreMarker";
-import { NavigateRideRiderMarker } from "@/src/components/orders/NavigateRideRiderMarker";
+import { NavRiderDotMarker } from "@/src/components/orders/NavRiderDotMarker";
 import { NavStoreGreenPinMarker } from "@/src/components/orders/NavStoreGreenPinMarker";
 import {
   resolveRoadRouteCoordinates,
@@ -58,16 +58,20 @@ import {
   NAV_ROUTE_GLOW_WIDTH,
   NAV_ROUTE_TRAVELED,
   NAV_ROUTE_WIDTH,
+  NAV_TRAVELED_WIDTH,
+  NAV_CONNECTOR_WIDTH,
+  NAV_CONNECTOR_OPACITY,
 } from "@/src/lib/navigation-map-style";
-
-const TRAVELED_WIDTH = 5;
-const CONNECTOR_WIDTH = 2.5;
-const CONNECTOR_OPACITY = 0.55;
 
 const PICKUP_ANCHOR = { x: 0.5, y: 1 } as const;
 const RIDER_ANCHOR = { x: 0.5, y: 0.5 } as const;
 
-type RiderLocation = { lat: number; lng: number; headingDeg?: number };
+type RiderLocation = {
+  lat: number;
+  lng: number;
+  headingDeg?: number;
+  speedMps?: number;
+};
 type PickupLocation = { lat: number; lng: number; address?: string };
 
 export type MapEdgeInsets = {
@@ -278,6 +282,11 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
           return;
         }
 
+        const speed = riderLocation?.speedMps;
+        if (!opts?.force && speed != null && speed < 0.4) {
+          return;
+        }
+
         const bearing = normalizeBearing(
           navigationBearingDeg(riderLocation, routeLineCoordinates)
         );
@@ -312,7 +321,7 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
               paddingLeft: edge.left,
               paddingRight: edge.right,
             },
-            animationDuration: animate ? 320 : 0,
+            animationDuration: animate ? 420 : 0,
             animationMode: animate ? "easeTo" : "none",
           });
         } catch {
@@ -471,8 +480,18 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
 
     useEffect(() => {
       if (!mapReady || !navigationFollowMode || !riderCoord || !showRemaining) return;
+      const speed = riderLocation?.speedMps;
+      if (speed != null && speed < 0.4) return;
       followNavigationCamera();
-    }, [mapReady, navigationFollowMode, showRemaining, riderFollowKey, followNavigationCamera, riderCoord]);
+    }, [
+      mapReady,
+      navigationFollowMode,
+      showRemaining,
+      riderFollowKey,
+      followNavigationCamera,
+      riderCoord,
+      riderLocation?.speedMps,
+    ]);
 
     const maneuverArrowsGeoJson = useMemo(
       () => buildManeuverArrowCollection(routeLineCoordinates),
@@ -630,7 +649,7 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
                 id="nav-route-traveled-line"
                 style={{
                   lineColor: NAV_ROUTE_TRAVELED,
-                  lineWidth: TRAVELED_WIDTH,
+                  lineWidth: NAV_TRAVELED_WIDTH,
                   lineCap: "round",
                   lineJoin: "round",
                 }}
@@ -743,8 +762,8 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
                 id="nav-pickup-connector-line"
                 style={{
                   lineColor: NAV_ROUTE_BLUE,
-                  lineWidth: CONNECTOR_WIDTH,
-                  lineOpacity: CONNECTOR_OPACITY,
+                  lineWidth: NAV_CONNECTOR_WIDTH,
+                  lineOpacity: NAV_CONNECTOR_OPACITY,
                   lineCap: "round",
                   lineJoin: "round",
                   lineDasharray: [1.5, 1.5],
@@ -791,12 +810,12 @@ export const ActiveRideNavigationMap = forwardRef<ActiveRideNavigationMapHandle,
                   : null
             )}
 
-          {riderLocation && !hideRouteLine
+          {riderLocation
             ? renderMarker(
-                "nav-rider-bike",
+                "nav-rider-dot",
                 [riderLocation.lng, riderLocation.lat],
                 RIDER_ANCHOR,
-                <NavigateRideRiderMarker headingDeg={riderLocation.headingDeg} />
+                <NavRiderDotMarker />
               )
             : null}
         </Mapbox.MapView>

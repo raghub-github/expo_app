@@ -120,6 +120,10 @@ export function SlideToReachPickup({
         onStartShouldSetPanResponder: () => !disabled && !loading && !completed,
         onMoveShouldSetPanResponder: (_, g) =>
           !disabled && !loading && !completed && Math.abs(g.dx) > 4,
+        onStartShouldSetPanResponderCapture: () => !disabled && !loading && !completed,
+        onMoveShouldSetPanResponderCapture: (_, g) =>
+          !disabled && !loading && !completed && Math.abs(g.dx) > 4,
+        onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: () => {
           isDragging.value = true;
         },

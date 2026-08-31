@@ -184,8 +184,20 @@ function RootLayoutNav() {
             <Stack.Screen name="ticket-chat/[id]" />
             <Stack.Screen name="team-leader" />
             <Stack.Screen name="your-subscription" />
-            <Stack.Screen name="active-ride/[id]" />
-            <Stack.Screen name="active-food/[id]" />
+            <Stack.Screen
+              name="active-ride/[id]"
+              options={{
+                gestureEnabled: false,
+                fullScreenGestureEnabled: false,
+              }}
+            />
+            <Stack.Screen
+              name="active-food/[id]"
+              options={{
+                gestureEnabled: false,
+                fullScreenGestureEnabled: false,
+              }}
+            />
             <Stack.Screen
               name="food-delivery-success"
               options={{

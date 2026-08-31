@@ -101,10 +101,8 @@ export function MerchantMarketInsightsPanel({ storeId }: { storeId: number | nul
   const { selectedStore } = useSelectedStore();
   const [matchScope, setMatchScope] = useState<MarketMatchScope>("city");
   const [insights, setInsights] = useState<MerchantMarketInsights | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(storeId != null);
   const [error, setError] = useState<string | null>(null);
-
-  const publicStoreId = selectedStore?.store_id ?? "";
 
   const load = useCallback(async () => {
     if (storeId == null || !token) return;
@@ -125,6 +123,11 @@ export function MerchantMarketInsightsPanel({ storeId }: { storeId: number | nul
     void load();
   }, [load]);
 
+  const publicStoreId =
+    (insights?.store_id && String(insights.store_id).trim()) ||
+    selectedStore?.store_id ||
+    "";
+
   const leaderboard = useMemo(() => {
     if (!insights) return [];
     return buildCompetitorLeaderboard({
@@ -137,6 +140,22 @@ export function MerchantMarketInsightsPanel({ storeId }: { storeId: number | nul
   }, [insights, publicStoreId, storeId, selectedStore?.store_name]);
 
   const hasPeers = leaderboard.some((r) => !r.is_own);
+  const locality = insights?.locality;
+  const yourRank = locality?.your_area_rank ?? null;
+
+  const emptyHint = (() => {
+    if (matchScope === "locality") {
+      return locality?.postal_code
+        ? "No other stores share your locality yet."
+        : "Add a valid postal code on the store profile to match locality peers.";
+    }
+    if (locality?.city) {
+      return locality.stores_in_area <= 1
+        ? "No other stores in your city yet."
+        : "No competitors matched yet. Affinity builds as customers order from multiple stores.";
+    }
+    return "Set the store city on the profile to match peers.";
+  })();
 
   if (storeId == null) return null;
 
@@ -151,19 +170,28 @@ export function MerchantMarketInsightsPanel({ storeId }: { storeId: number | nul
         <MatchScopeToggle scope={matchScope} onChange={setMatchScope} />
       </View>
 
-      {loading ? (
+      {insights && yourRank != null ? (
+        <View style={styles.rankRow}>
+          <Ionicons name="trophy" size={16} color="#F59E0B" />
+          <Text style={styles.rankLine}>
+            Rank <Text style={styles.rankNum}>{yourRank}</Text>
+            {locality && locality.stores_in_area > 0 ? (
+              <Text style={styles.rankOf}> of {locality.stores_in_area}</Text>
+            ) : null}{" "}
+            in {matchScope === "locality" ? "your locality" : "your city"}
+          </Text>
+        </View>
+      ) : null}
+
+      {loading && !insights ? (
         <ActivityIndicator style={styles.loader} color={GatiMitraMerchant.primary} />
-      ) : error ? (
+      ) : error && !insights ? (
         <View style={styles.emptyWrap}>
           <Text style={styles.errorText}>{error}</Text>
         </View>
       ) : !hasPeers ? (
         <View style={styles.emptyWrap}>
-          <Text style={styles.emptyHint}>
-            {matchScope === "locality"
-              ? "No competitors in your pincode yet."
-              : "No competitors in your city yet."}
-          </Text>
+          <Text style={styles.emptyHint}>{emptyHint}</Text>
         </View>
       ) : (
         <View style={styles.list}>
@@ -194,6 +222,16 @@ const styles = StyleSheet.create({
   },
   headerLeft: { flexDirection: "row", alignItems: "center", gap: 6 },
   title: { fontSize: 14, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
+  rankRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingTop: 12,
+    paddingBottom: 4,
+  },
+  rankLine: { flex: 1, fontSize: 13, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
+  rankNum: { fontWeight: "800", color: "#6D28D9" },
+  rankOf: { fontWeight: "500", color: GatiMitraMerchant.textSecondary },
   scopeRow: {
     flexDirection: "row",
     borderRadius: 8,

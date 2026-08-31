@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { assertStoreAccess } from "@/lib/auth/assert-store-access";
+import { countPendingNewOrders } from "@/lib/count-pending-new-orders";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,18 +40,16 @@ export async function GET(req: NextRequest) {
     const db = getDb();
     const storeIdNum = gate.storeIdNum;
 
-    const [itemsRes, catsRes, pendingRes, storeRes] = await Promise.all([
+    const [itemsRes, catsRes, pendingOrders, storeRes] = await Promise.all([
       db
         .from("merchant_menu_items")
         .select("id, category_id, is_active, approval_status, out_of_stock_manual, out_of_stock_until")
         .eq("store_id", storeIdNum),
       db.from("merchant_menu_categories").select("id, category_name").eq("store_id", storeIdNum),
-      db
-        .from("orders_core")
-        .select("id, status")
-        .eq("merchant_store_id", storeIdNum)
-        .eq("status", "assigned")
-        .limit(200),
+      countPendingNewOrders(db, storeIdNum).catch((err) => {
+        console.error("[store-overview] pending orders:", err);
+        return 0;
+      }),
       db.from("merchant_stores").select("approval_status").eq("id", storeIdNum).maybeSingle(),
     ]);
 
@@ -78,8 +77,6 @@ export async function GET(req: NextRequest) {
         : pendingReview > 0
           ? `${approvedCount}/${totalProducts} approved`
           : "All approved";
-
-    const pendingOrders = pendingRes.data?.length ?? 0;
 
     const categories = catsRes.data ?? [];
     const countByCat = new Map<number, number>();

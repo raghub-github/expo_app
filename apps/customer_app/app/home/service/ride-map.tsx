@@ -19,10 +19,10 @@ import {
   useRideMapPickerStore,
   type RideMapPickerField,
 } from "@/store/rideMapPickerStore";
+import { parseMapCoordParam } from "@/lib/map-coordinates";
 
 const DEFAULT_LAT = 20.5937;
 const DEFAULT_LNG = 78.9629;
-const GEOCODE_DEBOUNCE_MS = 350;
 const FAB_SHEET_GAP = 12;
 /** Until onLayout runs, keep FABs above a typical sheet height. */
 const DEFAULT_SHEET_HEIGHT = 300;
@@ -51,10 +51,12 @@ export default function RideMapPickerScreen() {
 
   const field = (params.field === "pickup" || params.field === "stop" ? params.field : "drop") as RideMapPickerField;
   const stopIndex = params.stopIndex != null ? Number(params.stopIndex) : undefined;
-  const initialLat = params.latitude != null ? parseFloat(params.latitude) : DEFAULT_LAT;
-  const initialLng = params.longitude != null ? parseFloat(params.longitude) : DEFAULT_LNG;
+  const initialLat = parseMapCoordParam(params.latitude, DEFAULT_LAT);
+  const initialLng = parseMapCoordParam(params.longitude, DEFAULT_LNG);
 
   const [centerCoord, setCenterCoord] = useState({ latitude: initialLat, longitude: initialLng });
+  const centerCoordRef = useRef({ latitude: initialLat, longitude: initialLng });
+  centerCoordRef.current = centerCoord;
   const [address, setAddress] = useState({
     primary: params.primary ?? "Selected location",
     fullAddress: params.fullAddress ?? "",
@@ -62,6 +64,8 @@ export default function RideMapPickerScreen() {
   const [geocoding, setGeocoding] = useState(false);
   const [locating, setLocating] = useState(false);
   const [sheetHeight, setSheetHeight] = useState(DEFAULT_SHEET_HEIGHT);
+  const lastGeocodedRef = useRef({ latitude: initialLat, longitude: initialLng });
+  const sheetHeightRef = useRef(DEFAULT_SHEET_HEIGHT);
 
   const fabBottom = sheetHeight + FAB_SHEET_GAP;
 
@@ -73,39 +77,44 @@ export default function RideMapPickerScreen() {
   };
 
   const updateAddressFromCoords = useCallback(async (latitude: number, longitude: number) => {
+    lastGeocodedRef.current = { latitude, longitude };
     setGeocoding(true);
     try {
       const result = await reverseGeocode(longitude, latitude);
-      setAddress(result);
+        const primary = result.primary;
+        const fullAddress = result.fullAddress || primary;
+        setAddress((prev) =>
+          prev.primary === primary && prev.fullAddress === fullAddress
+            ? prev
+            : { primary, fullAddress }
+        );
     } catch {
-      setAddress({
-        primary: "Selected location",
-        fullAddress: `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`,
-      });
+      const fullAddress = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+      setAddress((prev) =>
+        prev.primary === "Selected location" && prev.fullAddress === fullAddress
+          ? prev
+          : { primary: "Selected location", fullAddress }
+      );
     } finally {
       setGeocoding(false);
     }
   }, []);
 
-  const scheduleGeocode = useCallback(
-    (latitude: number, longitude: number) => {
-      if (geocodeTimeoutRef.current) clearTimeout(geocodeTimeoutRef.current);
-      geocodeTimeoutRef.current = setTimeout(() => {
-        geocodeTimeoutRef.current = null;
-        updateAddressFromCoords(latitude, longitude);
-      }, GEOCODE_DEBOUNCE_MS);
-    },
-    [updateAddressFromCoords]
-  );
-
   useEffect(() => {
+    const hasLabel = Boolean(params.primary?.trim());
+    if (hasLabel) return;
     updateAddressFromCoords(initialLat, initialLng);
-  }, [initialLat, initialLng, updateAddressFromCoords]);
+  }, [initialLat, initialLng, params.primary, updateAddressFromCoords]);
 
   const handleRegionChangeComplete = useCallback(
     (region: { latitude: number; longitude: number }) => {
       const { latitude, longitude } = region;
+      centerCoordRef.current = { latitude, longitude };
       setCenterCoord({ latitude, longitude });
+      const last = lastGeocodedRef.current;
+      const dLat = (latitude - last.latitude) * 111_320;
+      const dLng = (longitude - last.longitude) * 111_320 * Math.cos((latitude * Math.PI) / 180);
+      if (Math.hypot(dLat, dLng) < 14) return;
       if (geocodeTimeoutRef.current) {
         clearTimeout(geocodeTimeoutRef.current);
         geocodeTimeoutRef.current = null;
@@ -117,10 +126,9 @@ export default function RideMapPickerScreen() {
 
   const handleRegionChange = useCallback(
     (region: { latitude: number; longitude: number }) => {
-      setCenterCoord({ latitude: region.latitude, longitude: region.longitude });
-      scheduleGeocode(region.latitude, region.longitude);
+      centerCoordRef.current = { latitude: region.latitude, longitude: region.longitude };
     },
-    [scheduleGeocode]
+    []
   );
 
   const handleMyLocation = useCallback(async () => {
@@ -147,16 +155,17 @@ export default function RideMapPickerScreen() {
 
   const handleConfirm = useCallback(() => {
     const displayPrimary = resolvePlaceDisplayName(address);
+    const { latitude, longitude } = centerCoordRef.current;
     setPendingResult({
       field,
       stopIndex: field === "stop" ? stopIndex : undefined,
       primary: displayPrimary,
       fullAddress: address.fullAddress || displayPrimary,
-      latitude: centerCoord.latitude,
-      longitude: centerCoord.longitude,
+      latitude,
+      longitude,
     });
     router.back();
-  }, [field, stopIndex, address, centerCoord, setPendingResult, router]);
+  }, [field, stopIndex, address, setPendingResult, router]);
 
   return (
     <View style={styles.container}>
@@ -202,7 +211,9 @@ export default function RideMapPickerScreen() {
         style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
         onLayout={(e) => {
           const h = e.nativeEvent.layout.height;
-          if (h > 0) setSheetHeight(h);
+          if (h <= 0 || Math.abs(h - sheetHeightRef.current) < 8) return;
+          sheetHeightRef.current = h;
+          setSheetHeight(h);
         }}
       >
         <View style={styles.sheetHeader}>
@@ -215,29 +226,24 @@ export default function RideMapPickerScreen() {
         <View style={styles.addressBox}>
           <View style={styles.addressDot} />
           <View style={styles.addressTextCol}>
+            <AppText style={styles.addressPrimary} numberOfLines={1}>
+              {resolvePlaceDisplayName(address)}
+            </AppText>
+            <AppText style={styles.addressFull} numberOfLines={2}>
+              {address.fullAddress}
+            </AppText>
             {geocoding ? (
-              <View style={styles.geocodeRow}>
+              <View style={styles.geocodeOverlay} pointerEvents="none">
                 <ActivityIndicator size="small" color={GatiMitraColors.primaryMint} />
-                <AppText style={styles.geocodingText}>Updating address…</AppText>
               </View>
-            ) : (
-              <>
-                <AppText style={styles.addressPrimary} numberOfLines={1}>
-                  {resolvePlaceDisplayName(address)}
-                </AppText>
-                <AppText style={styles.addressFull} numberOfLines={2}>
-                  {address.fullAddress}
-                </AppText>
-              </>
-            )}
+            ) : null}
           </View>
         </View>
 
         <TouchableOpacity
-          style={styles.confirmBtn}
+          style={[styles.confirmBtn, geocoding && styles.confirmBtnBusy]}
           onPress={handleConfirm}
           activeOpacity={0.9}
-          disabled={geocoding}
         >
           <AppText style={styles.confirmBtnText}>{selectButtonLabel(field)}</AppText>
         </TouchableOpacity>
@@ -330,6 +336,7 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 16,
     backgroundColor: "#FAFAFA",
+    minHeight: 72,
   },
   addressDot: {
     width: 10,
@@ -341,15 +348,16 @@ const styles = StyleSheet.create({
   },
   addressTextCol: {
     flex: 1,
+    minHeight: 44,
+    justifyContent: "center",
+    paddingRight: 28,
   },
-  geocodeRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  geocodingText: {
-    fontSize: 14,
-    color: "#6B7280",
+  geocodeOverlay: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    bottom: 0,
+    justifyContent: "center",
   },
   addressPrimary: {
     fontSize: 16,
@@ -367,6 +375,9 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     borderRadius: 28,
     alignItems: "center",
+  },
+  confirmBtnBusy: {
+    opacity: 0.9,
   },
   confirmBtnText: {
     fontSize: 16,

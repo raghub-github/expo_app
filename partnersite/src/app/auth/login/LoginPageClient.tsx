@@ -112,7 +112,9 @@ function LoginPageContent() {
     if (message === 'authentication_failed') {
       return 'Authentication failed. Please try signing in again.';
     }
-    if (message.toLowerCase().includes('flow state')) {
+    if (message.toLowerCase().includes('flow state') ||
+        message.toLowerCase().includes('pkce') ||
+        message.toLowerCase().includes('code verifier')) {
       return 'Google sign-in did not complete. Please try again.';
     }
     if (message.toLowerCase().includes('no merchant account found')) {

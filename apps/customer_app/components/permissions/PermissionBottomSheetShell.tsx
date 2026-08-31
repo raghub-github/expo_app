@@ -4,6 +4,7 @@ import {
   Modal,
   StyleSheet,
   Platform,
+  Pressable,
   useWindowDimensions,
   type ViewStyle,
 } from "react-native";
@@ -53,6 +54,8 @@ type PermissionBottomSheetShellProps = {
   children: React.ReactNode;
   maxHeightRatio?: number;
   sheetStyle?: ViewStyle;
+  /** When set, tapping the dimmed backdrop dismisses the sheet. */
+  onClose?: () => void;
 };
 
 /** Bottom sheet shell for permission prompts — Rider-style wave header. */
@@ -61,6 +64,7 @@ export function PermissionBottomSheetShell({
   children,
   maxHeightRatio = 0.82,
   sheetStyle,
+  onClose,
 }: PermissionBottomSheetShellProps) {
   const insets = useSafeAreaInsets();
   const dark = useMerchantUiDark();
@@ -77,9 +81,19 @@ export function PermissionBottomSheetShell({
       animationType="slide"
       statusBarTranslucent
       presentationStyle="overFullScreen"
+      onRequestClose={onClose}
     >
       <View style={styles.root}>
-        <View style={styles.backdrop} />
+        {onClose ? (
+          <Pressable
+            style={styles.backdrop}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss"
+          />
+        ) : (
+          <View style={styles.backdrop} />
+        )}
         <View style={[styles.anchor, { maxHeight: maxH }]}>
           <View style={styles.sheetOuter} pointerEvents="box-none">
             <WaveTopEdge

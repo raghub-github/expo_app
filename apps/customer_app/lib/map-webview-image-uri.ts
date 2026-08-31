@@ -71,7 +71,11 @@ export async function resolveMapImageDataUri(
   }
 
   const { Image } = await import("react-native");
-  const resolved = Image.resolveAssetSource(imageModule).uri;
-  if (!resolved?.trim()) return null;
-  return resolveRemoteUriForWebView(resolved);
+  try {
+    const resolved = Image.resolveAssetSource(imageModule)?.uri;
+    if (!resolved?.trim()) return null;
+    return resolveRemoteUriForWebView(resolved);
+  } catch {
+    return null;
+  }
 }

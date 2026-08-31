@@ -290,6 +290,7 @@ export async function readRiderOnboardingVehicleSelection(riderId: number): Prom
   vehicleCategoryCode: string | null;
   registrationNumber: string | null;
   rcDocumentUrl: string | null;
+  rcElectronicallyVerified: boolean;
 }> {
   const db = getDb();
   const docs = await db
@@ -297,14 +298,30 @@ export async function readRiderOnboardingVehicleSelection(riderId: number): Prom
       docType: riderDocuments.docType,
       metadata: riderDocuments.metadata,
       fileUrl: riderDocuments.fileUrl,
+      verified: riderDocuments.verified,
+      verificationMethod: riderDocuments.verificationMethod,
+      verificationStatus: riderDocuments.verificationStatus,
     })
     .from(riderDocuments)
     .where(eq(riderDocuments.riderId, riderId));
+  const rcDoc = docs.find((d) => d.docType === "rc");
+  const rcUrl = String(rcDoc?.fileUrl || "").toLowerCase();
+  const rcMethod = String(rcDoc?.verificationMethod || "").toUpperCase();
+  const rcStatus = String(rcDoc?.verificationStatus || "").toLowerCase();
+  const rcElectronicallyVerified =
+    rcMethod === "APP_VERIFIED" ||
+    rcMethod.startsWith("CASHFREE_") ||
+    rcMethod === "RAZORPAY_BANK" ||
+    rcStatus === "auto_verified" ||
+    rcUrl.includes("electronic_verified") ||
+    rcUrl.includes("cashfree") ||
+    rcUrl.includes("digilocker");
   return {
     vehicleChoice: readVehicleChoice(docs),
     vehicleCategoryCode: readVehicleCategoryCode(docs),
     registrationNumber: readRcNumber(docs),
     rcDocumentUrl: readRcDocumentUrl(docs),
+    rcElectronicallyVerified,
   };
 }
 

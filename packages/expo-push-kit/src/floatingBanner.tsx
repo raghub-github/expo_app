@@ -43,9 +43,15 @@ const queue: InAppBannerItem[] = [];
 let current: InAppBannerItem | null = null;
 const listeners = new Set<Listener>();
 let seq = 0;
-/** Recently shown notification_ids — stops Expo+FCM double delivery from stacking banners. */
+/** Recently shown keys — stops Expo+FCM twins and inbox-poll replays. */
 const recentlyShownBannerIds = new Map<string, number>();
-const BANNER_DEDUPE_MS = 15_000;
+const TWIN_PUSH_DEDUPE_MS = 15_000;
+const ORDER_EVENT_DEDUPE_MS = 6 * 60 * 60 * 1000;
+
+const PICKUP_ARRIVAL_FAMILY = new Set([
+  "CUSTOMER_PICKUP_OTP_ARRIVED",
+  "RIDE_RIDER_NEARBY",
+]);
 
 function emit(): void {
   listeners.forEach((fn) => {
@@ -60,6 +66,94 @@ function emit(): void {
 function nextId(): string {
   seq += 1;
   return `banner-${Date.now()}-${seq}`;
+}
+
+function pruneBannerDedupe(now: number): void {
+  for (const [k, at] of recentlyShownBannerIds) {
+    const windowMs = k.startsWith("t:") ? TWIN_PUSH_DEDUPE_MS : ORDER_EVENT_DEDUPE_MS;
+    if (now - at > windowMs) recentlyShownBannerIds.delete(k);
+  }
+}
+
+function orderIdFromData(data: Record<string, unknown> | undefined | null): string {
+  if (!data) return "";
+  const direct = typeof data.orderId === "string" ? data.orderId.trim() : "";
+  if (direct) return direct;
+  const deep =
+    (typeof data.deepLink === "string" && data.deepLink) ||
+    (typeof data.deep_link === "string" && data.deep_link) ||
+    (typeof data.screen === "string" && data.screen) ||
+    "";
+  const match = deep.match(/\/orders\/([^/?#]+)/i);
+  return match?.[1]?.trim() ?? "";
+}
+
+function templateFromData(
+  data: Record<string, unknown> | undefined | null,
+  fallback?: string | null
+): string {
+  if (!data) return (fallback ?? "").trim().toUpperCase();
+  const gmType = typeof data.gmType === "string" ? data.gmType : "";
+  const template =
+    (typeof data.template_code === "string" && data.template_code) ||
+    (typeof data.templateCode === "string" && data.templateCode) ||
+    gmType ||
+    fallback ||
+    "";
+  return template.trim().toUpperCase();
+}
+
+function bannerDedupeKeys(args: {
+  id?: string | null;
+  title: string;
+  body?: string | null;
+  templateCode?: string | null;
+  data?: Record<string, unknown>;
+}): string[] {
+  const keys: string[] = [];
+  const id = args.id?.trim();
+  if (id) keys.push(`id:${id}`);
+  const orderId = orderIdFromData(args.data);
+  const template = templateFromData(args.data, args.templateCode);
+  if (orderId && template) {
+    keys.push(`evt:${orderId}:${template}`);
+    if (PICKUP_ARRIVAL_FAMILY.has(template)) {
+      keys.push(`pickup-arrived:${orderId}`);
+    }
+  }
+  keys.push(
+    `t:${args.title.trim().toLowerCase()}|${String(args.body ?? "").trim().toLowerCase().slice(0, 80)}`
+  );
+  return keys;
+}
+
+function itemMatchesKey(item: InAppBannerItem, key: string): boolean {
+  if (item.id === key) return true;
+  return bannerDedupeKeys({
+    id: item.id,
+    title: item.title,
+    body: item.body,
+    templateCode: item.templateCode,
+    data: item.data,
+  }).includes(key);
+}
+
+function isBannerKeyActive(key: string, now: number): boolean {
+  if (current && itemMatchesKey(current, key)) return true;
+  if (queue.some((item) => itemMatchesKey(item, key))) return true;
+  const at = recentlyShownBannerIds.get(key);
+  if (at == null) return false;
+  const windowMs = key.startsWith("t:") ? TWIN_PUSH_DEDUPE_MS : ORDER_EVENT_DEDUPE_MS;
+  return now - at < windowMs;
+}
+
+/** Returns false when this event was already shown for this ride/order. */
+function claimBannerDedupe(keys: string[]): boolean {
+  const now = Date.now();
+  pruneBannerDedupe(now);
+  if (keys.some((k) => isBannerKeyActive(k, now))) return false;
+  for (const k of keys) recentlyShownBannerIds.set(k, now);
+  return true;
 }
 
 /** Order-page / admin CX sends belong in the OS shade, not the in-app pill. */
@@ -89,6 +183,14 @@ export function enqueueInAppBanner(item: Omit<InAppBannerItem, "id"> & { id?: st
   const title = item.title?.trim();
   if (!title) return;
   if (isSystemShadeOnlyPush(item.data)) return;
+  const keys = bannerDedupeKeys({
+    id: item.id,
+    title,
+    body: item.body,
+    templateCode: item.templateCode,
+    data: item.data,
+  });
+  if (!claimBannerDedupe(keys)) return;
   queue.push({
     id: item.id ?? nextId(),
     title,
@@ -110,11 +212,13 @@ export function enqueueInAppBannerFromPush(payload: PushNotificationOpenPayload)
   if (isSystemShadeOnlyPush(data)) return;
 
   const title =
+    (typeof data.liveTitle === "string" && data.liveTitle.trim()) ||
     (typeof data.gmTitle === "string" && data.gmTitle.trim()) ||
     (typeof data.title === "string" && data.title.trim()) ||
     payload.title?.trim() ||
     "";
   const body =
+    (typeof data.liveBody === "string" && data.liveBody.trim()) ||
     (typeof data.gmMessage === "string" && data.gmMessage.trim()) ||
     (typeof data.body === "string" && data.body.trim()) ||
     payload.body?.trim() ||
@@ -134,24 +238,9 @@ export function enqueueInAppBannerFromPush(payload: PushNotificationOpenPayload)
 
   const titleText = title || body || "Update";
   const bodyText = title ? body : null;
-  // Same push can arrive via Expo + FCM on one device — only show one banner.
-  // Prefer notification_id; fall back to title+body fingerprint for twin payloads.
-  const dedupeKey =
-    notificationId ||
-    `t:${titleText.trim().toLowerCase()}|${String(bodyText ?? "").trim().toLowerCase().slice(0, 80)}`;
-  {
-    if (current?.id === dedupeKey) return;
-    if (queue.some((item) => item.id === dedupeKey)) return;
-    const now = Date.now();
-    for (const [k, at] of recentlyShownBannerIds) {
-      if (now - at > BANNER_DEDUPE_MS) recentlyShownBannerIds.delete(k);
-    }
-    if (recentlyShownBannerIds.has(dedupeKey)) return;
-    recentlyShownBannerIds.set(dedupeKey, now);
-  }
 
   enqueueInAppBanner({
-    id: dedupeKey,
+    id: notificationId ?? undefined,
     title: titleText,
     body: bodyText,
     deepLink,
@@ -205,7 +294,7 @@ type HostProps = {
 export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }: HostProps) {
   const insets = useSafeAreaInsets();
   const [item, setItem] = useState<InAppBannerItem | null>(current);
-  const translateY = useSharedValue(-52);
+  const translateY = useSharedValue(-72);
   const opacity = useSharedValue(0);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -225,7 +314,7 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
       hideTimerRef.current = null;
     }
     if (!item) {
-      translateY.value = -52;
+      translateY.value = -72;
       opacity.value = 0;
       return;
     }
@@ -234,7 +323,7 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
     opacity.value = withTiming(1, { duration: 180 });
 
     hideTimerRef.current = setTimeout(() => {
-      translateY.value = withTiming(-52, { duration: EXIT_MS });
+      translateY.value = withTiming(-72, { duration: EXIT_MS });
       opacity.value = withTiming(0, { duration: EXIT_MS }, (finished) => {
         if (finished) runOnJS(finishDismiss)();
       });
@@ -252,7 +341,8 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
 
   if (!item) return null;
 
-  const message = item.body?.trim() ? `${item.title} · ${item.body}` : item.title;
+  const body = item.body?.trim() || "";
+  const a11y = body ? `${item.title}. ${body}` : item.title;
 
   return (
     <Animated.View
@@ -268,12 +358,21 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
         onPress={() => onPressBanner?.(item)}
         style={styles.pill}
         accessibilityRole="button"
-        accessibilityLabel={message}
+        accessibilityLabel={a11y}
       >
-        <View style={styles.dot} />
-        <Text style={styles.text} numberOfLines={1}>
-          {message}
-        </Text>
+        <View style={styles.dotCol}>
+          <View style={styles.dot} />
+        </View>
+        <View style={styles.copy}>
+          <Text style={styles.title} numberOfLines={1}>
+            {item.title}
+          </Text>
+          {body ? (
+            <Text style={styles.body} numberOfLines={2}>
+              {body}
+            </Text>
+          ) : null}
+        </View>
         <View style={styles.progressTrack} pointerEvents="none">
           <View
             style={[
@@ -290,63 +389,77 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
 const styles = StyleSheet.create({
   host: {
     position: "absolute",
-    left: 20,
-    right: 20,
+    left: 16,
+    right: 16,
     zIndex: 1000,
     elevation: 1000,
     alignItems: "center",
   },
   pill: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "#fff",
-    borderRadius: 999,
-    paddingVertical: 7,
+    alignItems: "flex-start",
+    gap: 10,
+    backgroundColor: "#F0FDFA",
+    borderRadius: 20,
+    paddingVertical: 11,
     paddingHorizontal: 14,
-    paddingBottom: 9,
-    borderWidth: StyleSheet.hairlineWidth,
+    paddingBottom: 13,
+    borderWidth: 1,
     borderColor: "#99F6E4",
     maxWidth: "100%",
-    minHeight: 34,
+    minHeight: 48,
+    width: "100%",
     overflow: "hidden",
     ...Platform.select({
       ios: {
         shadowColor: "#0f766e",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 6,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.12,
+        shadowRadius: 10,
       },
-      android: { elevation: 3 },
+      android: { elevation: 5 },
       default: {},
     }),
   },
+  dotCol: {
+    paddingTop: 5,
+  },
   dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     backgroundColor: "#0D9488",
   },
-  text: {
-    flexShrink: 1,
+  copy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  title: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#0F172A",
+    lineHeight: 18,
+  },
+  body: {
     fontSize: 12,
-    fontWeight: "700",
-    color: "#111827",
+    fontWeight: "500",
+    color: "#334155",
     lineHeight: 16,
   },
   progressTrack: {
     position: "absolute",
     left: 14,
     right: 14,
-    bottom: 4,
+    bottom: 5,
     height: 2,
     borderRadius: 999,
-    backgroundColor: "#E5E7EB",
+    backgroundColor: "#CCFBF1",
     overflow: "hidden",
   },
   progressFill: {
     height: 2,
     borderRadius: 999,
-    backgroundColor: "#0F172A",
+    backgroundColor: "#0D9488",
   },
 });
