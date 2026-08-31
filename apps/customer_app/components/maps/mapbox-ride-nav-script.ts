@@ -19,10 +19,10 @@ export function mapboxRideNavScript(): string {
       var navTurnSeverity = 0;
       var navCameraBoot = 0;
 
-      var NAV_BLUE = '#1A73E8';
-      var NAV_BLUE_GLOW = '#4285F4';
-      var NAV_TRAVELED = '#A8C7FA';
-      var NAV_CASING = '#FFFFFF';
+      var NAV_BLUE = '#14b8a6';
+      var NAV_BLUE_GLOW = 'rgba(20, 184, 166, 0.22)';
+      var NAV_TRAVELED = 'rgba(154, 160, 166, 0.45)';
+      var NAV_CASING = '#ffffff';
       var NAV_CAMERA_MIN_MS = 160;
       var NAV_LOOKAHEAD_M = 88;
       var NAV_TURN_LOOKAHEAD_M = 52;
@@ -382,30 +382,30 @@ export function mapboxRideNavScript(): string {
       function ensureNavRouteLayers() {
         ensureNavLineLayer('nav-traveled', 'nav-traveled-casing', {
           'line-color': NAV_CASING,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 12, 11, 15, 15, 17, 17],
+          'line-width': 8,
           'line-opacity': 0.88
         });
         ensureNavLineLayer('nav-traveled', 'nav-traveled-line', {
           'line-color': NAV_TRAVELED,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 12, 7, 15, 9.5, 17, 11],
+          'line-width': 5,
           'line-opacity': 0.95
         });
+        ensureNavLineLayer('nav-remaining', 'nav-remaining-glow', {
+          'line-color': NAV_BLUE_GLOW,
+          'line-width': 12,
+          'line-opacity': 0.65,
+          'line-blur': 2
+        }, { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' });
         ensureNavLineLayer('nav-remaining', 'nav-remaining-casing', {
           'line-color': NAV_CASING,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 12, 14, 15, 18, 17, 20],
+          'line-width': 9,
           'line-opacity': 1
         });
         ensureNavLineLayer('nav-remaining', 'nav-remaining-line', {
           'line-color': NAV_BLUE,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 12, 8, 15, 11, 17, 13],
+          'line-width': 6,
           'line-opacity': 1
         });
-        ensureNavLineLayer('nav-remaining', 'nav-remaining-glow', {
-          'line-color': NAV_BLUE_GLOW,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 12, 12, 15, 15, 17, 17],
-          'line-opacity': 0.22,
-          'line-blur': 0.8
-        }, { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' });
       }
 
       function setNavLineData(sourceId, coords, layerIds) {

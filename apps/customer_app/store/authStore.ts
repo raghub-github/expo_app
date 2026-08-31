@@ -3,16 +3,22 @@
  * Hydrate on app start to support auto-login.
  *
  * Every session transition is a customer-isolation boundary: login, logout,
- * account switch, and session revoke all run clearCustomerScopedState so no
+ * account switch, and session revoke all run customer-scoped teardown so no
  * cart, order, address, or cached response survives into another account.
  */
 
 import { create } from "zustand";
 import type { Session } from "@gatimitra/contracts";
 import { authService } from "@/services/auth.service";
-import { clearCustomerScopedState } from "@/lib/clearCustomerScopedState";
 import { getActiveCustomerScopeId, setActiveCustomerScopeId } from "@/lib/customerScope";
 import { runCustomerPushUnregister } from "@/lib/customerPushUnregister";
+
+async function scopedClear(customerId: string | null): Promise<void> {
+  // Lazy — a static import pulled cart/location stores before authStore
+  // finished initializing (boot crash loop).
+  const mod = require("@/lib/clearCustomerScopedState") as typeof import("@/lib/clearCustomerScopedState");
+  await mod.clearCustomerScopedState(customerId);
+}
 
 type AuthState = {
   hydrated: boolean;
@@ -35,7 +41,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   setSession: async (s) => {
     if (!s) {
       await authService.clearSession();
-      await clearCustomerScopedState(null);
+      await scopedClear(null);
       set({ session: null });
       return;
     }
@@ -53,7 +59,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     await authService.persistSession(s);
     if (crossesAccountBoundary) {
-      await clearCustomerScopedState(incomingCustomerId);
+      await scopedClear(incomingCustomerId);
     } else {
       setActiveCustomerScopeId(incomingCustomerId);
     }
@@ -65,19 +71,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const stored = await authService.getStoredSession();
       if (!stored) {
-        await clearCustomerScopedState(null);
+        await scopedClear(null);
         set({ session: null, hydrated: true });
         return;
       }
 
       const customerId = customerIdOf(stored);
       if (!customerId) {
-        await clearCustomerScopedState(null);
+        await scopedClear(null);
         set({ session: null, hydrated: true });
         return;
       }
       if (customerId !== getActiveCustomerScopeId()) {
-        await clearCustomerScopedState(customerId);
+        await scopedClear(customerId);
       } else {
         setActiveCustomerScopeId(customerId);
       }
@@ -94,12 +100,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ session: stored, hydrated: true });
       void authService.validateStoredSession(stored).then((validated) => {
         if (validated) return;
-        void clearCustomerScopedState(null);
+        void scopedClear(null);
         set({ session: null });
       });
     } catch (e) {
       console.warn("[AuthStore] hydrate failed:", e);
-      await clearCustomerScopedState(null);
+      await scopedClear(null);
       set({ session: null, hydrated: true });
     }
   },
@@ -108,7 +114,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const accessToken = get().session?.accessToken ?? null;
     await runCustomerPushUnregister(accessToken);
     await authService.clearSession();
-    await clearCustomerScopedState(null);
+    await scopedClear(null);
     set({ session: null });
   },
 
@@ -121,7 +127,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     await runCustomerPushUnregister(accessToken);
     await authService.clearSession();
-    await clearCustomerScopedState(null);
+    await scopedClear(null);
     set({ session: null });
   },
 }));

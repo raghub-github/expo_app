@@ -59,3 +59,23 @@ export function easeOutCubic(t: number): number {
 export function headingDeltaDeg(a: number, b: number): number {
   return Math.abs(((a - b + 540) % 360) - 180);
 }
+
+/** Offset a point along a bearing by meters (camera look-ahead). */
+export function offsetPoint(from: LatLng, bearingDeg: number, meters: number): LatLng {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const toDeg = (r: number) => (r * 180) / Math.PI;
+  const br = toRad(bearingDeg);
+  const lat1 = toRad(from.latitude);
+  const lng1 = toRad(from.longitude);
+  const angDist = meters / EARTH_R_M;
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angDist) + Math.cos(lat1) * Math.sin(angDist) * Math.cos(br)
+  );
+  const lng2 =
+    lng1 +
+    Math.atan2(
+      Math.sin(br) * Math.sin(angDist) * Math.cos(lat1),
+      Math.cos(angDist) - Math.sin(lat1) * Math.sin(lat2)
+    );
+  return { latitude: toDeg(lat2), longitude: toDeg(lng2) };
+}

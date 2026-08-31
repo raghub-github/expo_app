@@ -3,6 +3,7 @@ import { getDb } from "../../db/client.js";
 import { ordersCore, ordersRide } from "../../db/schema.js";
 import { normalizeCustomerOrderStatus } from "../../lib/customer-order-status-resolve.js";
 import { isRideFarePaymentPending } from "../../lib/ride-rider-payout-snapshot.js";
+import { assertRideCustomerPaymentCollectable } from "../../lib/settle-zero-payable-person-ride.js";
 import { insertRideCustomerPaymentSnapshot } from "../../lib/persist-ride-customer-payment-snapshot.js";
 import { computeRideBillForCustomerOrder } from "./ride-bill.service.js";
 import { rideBillingToSettlementComponents } from "./settlement/billingToComponents.js";
@@ -144,6 +145,8 @@ export async function confirmRideCashCollectionForRider(
     throw Object.assign(new Error("Ride fare is already paid"), { statusCode: 409 });
   }
 
+  const settledPayable = await assertRideCustomerPaymentCollectable(orderRow.id);
+
   const billRes = await computeRideBillForCustomerOrder(db, {
     customerPk,
     orderRef: input.orderRef,
@@ -155,9 +158,9 @@ export async function confirmRideCashCollectionForRider(
     });
   }
 
-  const customerBill = Math.round(billRes.billing.final_amount * 100) / 100;
+  const customerBill = Math.round(Math.min(billRes.billing.final_amount, settledPayable) * 100) / 100;
   if (!(customerBill > 0)) {
-    throw Object.assign(new Error("Invalid ride fare amount"), { statusCode: 400 });
+    throw Object.assign(new Error("Ride fare is already paid"), { statusCode: 409 });
   }
 
   const orderIdText = orderRow.orderId?.trim() || String(orderRow.id);

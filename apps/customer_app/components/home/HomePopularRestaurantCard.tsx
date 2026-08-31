@@ -10,6 +10,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { setStoreBookmark } from "@/services/merchant.service";
+import { useStoreBookmarkMutations, useStoreBookmarks } from "@/hooks/useStoreBookmarks";
 import { StoreBannerCarousel } from "@/components/StoreBannerCarousel";
 import {
   resolveMerchantBannerUri,
@@ -27,7 +28,9 @@ type Props = {
 
 function HomePopularRestaurantCardInner({ merchant, weatherDelayMinutes = 0 }: Props) {
   const router = useRouter();
-  const [saved, setSaved] = useState(false);
+  const { bookmarkSet } = useStoreBookmarks();
+  const { syncBookmark } = useStoreBookmarkMutations();
+  const saved = bookmarkSet.has(merchant.id);
   const [savedLoading, setSavedLoading] = useState(false);
 
   const bannerUri = resolveMerchantBannerUri(merchant);
@@ -49,15 +52,16 @@ function HomePopularRestaurantCardInner({ merchant, weatherDelayMinutes = 0 }: P
     if (savedLoading) return;
     setSavedLoading(true);
     const next = !saved;
-    setSaved(next);
+    syncBookmark(merchant.id, next);
     try {
-      await setStoreBookmark(merchant.id, next);
+      const res = await setStoreBookmark(merchant.id, next);
+      if (res.saved !== next) syncBookmark(merchant.id, res.saved);
     } catch {
-      setSaved(!next);
+      syncBookmark(merchant.id, saved);
     } finally {
       setSavedLoading(false);
     }
-  }, [merchant.id, saved, savedLoading]);
+  }, [merchant.id, saved, savedLoading, syncBookmark]);
 
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.92}>

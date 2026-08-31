@@ -5,6 +5,7 @@
 
 import { getConfig } from "@/config/env";
 import { getRoute, type LatLng as ApiLatLng } from "@/services/distance.service";
+import { extractViaRouteLabel } from "@/lib/ride-via-route-label";
 
 export type LatLng = { latitude: number; longitude: number };
 
@@ -28,6 +29,8 @@ export type CalculatedRoute = {
   etaMinutes: number;
   source: "mapbox" | "osrm" | "backend";
   vehicleId: string;
+  /** NH/SH (or main road) the path uses. */
+  viaLabel?: string | null;
 };
 
 /** Single canonical profile for fare, ETA, and ride distance (pickup → drop). */
@@ -144,7 +147,30 @@ function coordsFromEncodedPolyline(encoded?: string | null): LatLng[] {
   }
 }
 
-type RawRoute = { distance?: number; duration?: number; geometry?: string };
+type RawStep = {
+  name?: string;
+  ref?: string;
+  destinations?: string;
+  distance?: number;
+  intersections?: Array<{ ref?: string }>;
+};
+type RawLeg = { steps?: RawStep[] };
+type RawRoute = {
+  distance?: number;
+  duration?: number;
+  geometry?: string;
+  legs?: RawLeg[];
+};
+
+function stepsFromRoute(route: RawRoute | null | undefined): RawStep[] {
+  const out: RawStep[] = [];
+  for (const leg of route?.legs ?? []) {
+    for (const step of leg.steps ?? []) {
+      out.push(step);
+    }
+  }
+  return out;
+}
 
 function vehicleEtaMinutes(durationSeconds: number, config: VehicleRouteConfig): number {
   const scaled = Math.max(60, durationSeconds * config.durationScale);
@@ -200,6 +226,7 @@ function rawRouteToCalculated(
     etaMinutes: vehicleEtaMinutes(route.duration, config),
     source,
     vehicleId,
+    viaLabel: extractViaRouteLabel(stepsFromRoute(route)),
   };
 }
 
@@ -236,7 +263,7 @@ async function fetchMapboxPolyline(
     const url =
       `https://api.mapbox.com/directions/v5/mapbox/${mapboxProfile}/${coords}` +
       `?access_token=${encodeURIComponent(mapboxAccessToken)}` +
-      `&alternatives=true&overview=full&geometries=polyline&steps=false&language=en`;
+      `&alternatives=true&overview=full&geometries=polyline&steps=true&language=en`;
 
     try {
       const res = await fetch(url);
@@ -265,7 +292,7 @@ async function fetchOsrmPolyline(
   if (points.length < 2) return null;
   const coords = points.map((p) => `${p.longitude},${p.latitude}`).join(";");
   const url =
-    `${OSRM_DRIVING}/${coords}?overview=full&geometries=polyline&alternatives=true`;
+    `${OSRM_DRIVING}/${coords}?overview=full&geometries=polyline&alternatives=true&steps=true`;
 
   try {
     const res = await fetch(url);

@@ -30,6 +30,8 @@ import { useAuthStore } from "@/store/authStore";
 import { useCartStore } from "@/store/cartStore";
 import { useLanguageStore } from "@/store/languageStore";
 import { useLocationStore, getDeviceLocationReadiness, coordsMovedSignificantly } from "@/store/locationStore";
+import { useRecentLocationStore } from "@/store/recentLocationStore";
+import { useFavoriteLocationsStore } from "@/store/favoriteLocationsStore";
 import { debouncedInvalidateFoodHomeListingQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import { reconcileActiveLocationFromGps } from "@/lib/reconcileActiveLocationFromGps";
 import { runExclusiveActiveLocationReconcile } from "@/lib/activeLocationReconcileGate";
@@ -208,6 +210,8 @@ export default function RootLayout() {
   const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
   const promptLocationPermissionIfNeeded = useLocationStore((s) => s.promptLocationPermissionIfNeeded);
   const hydrateLocation = useLocationStore((s) => s.hydrate);
+  const hydrateRecentLocations = useRecentLocationStore((s) => s.hydrate);
+  const hydrateFavoriteLocations = useFavoriteLocationsStore((s) => s.hydrate);
 
   // Wait for fonts too — otherwise Login/AppText flash system → Lora/Poppins.
   const criticalReady = hydrated && cartHydrated && fontsLoaded;
@@ -223,7 +227,7 @@ export default function RootLayout() {
     setSplashExited(true);
     void SplashScreen.hideAsync().catch(() => {});
     // Non-critical: warm ride-map marker after the first frame is interactive.
-    void resolveMapImageDataUri(resolveNearbyRiderMarkerImage("bike"));
+    void resolveMapImageDataUri(resolveNearbyRiderMarkerImage("bike")).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -231,7 +235,9 @@ export default function RootLayout() {
     hydrateCart();
     hydrateLanguage();
     void hydrateLocation();
-  }, [hydrateAuth, hydrateCart, hydrateLanguage, hydrateLocation]);
+    void hydrateRecentLocations();
+    void hydrateFavoriteLocations();
+  }, [hydrateAuth, hydrateCart, hydrateLanguage, hydrateLocation, hydrateRecentLocations, hydrateFavoriteLocations]);
 
   useEffect(() => {
     if (!criticalReady || !session) {
@@ -297,7 +303,8 @@ export default function RootLayout() {
             await applyActiveLocationFromBackend(queryClient);
           }
           return "done";
-        }        const before = useLocationStore.getState().coords;
+        }
+        const before = useLocationStore.getState().coords;
         let reconciled = null as Awaited<ReturnType<typeof reconcileActiveLocationFromGps>>;
         if (useAuthStore.getState().session) {
           // Backend is SoT: keep saved address within retention, else Current Location.

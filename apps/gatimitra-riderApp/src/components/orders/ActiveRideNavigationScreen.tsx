@@ -101,7 +101,7 @@ import {
 import { captureDeliveryProofPhoto } from "@/src/lib/capture-delivery-proof-photo";
 import { buildOrderDeliveryProofKey, uploadToR2 } from "@/src/services/storage/cloudflareR2";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { useSmoothedRiderPosition } from "@/src/hooks/useSmoothedRiderPosition";
+import { resolveSmoothDurationMs, useSmoothedRiderPosition } from "@/src/hooks/useSmoothedRiderPosition";
 import { extractApiErrorMessage, isOrderFetchNotFoundError } from "@/src/services/http";
 import {
   isRiderOrderCancelled,
@@ -177,6 +177,42 @@ function coalesceHaversineM(aLat: number, aLng: number, bLat: number, bLng: numb
 function coalesceHeadingDeltaDeg(a: number, b: number): number {
   const d = Math.abs(((a - b + 540) % 360) - 180);
   return d;
+}
+
+type RouteProgressSlice = {
+  traveled: LatLng[];
+  remaining: LatLng[];
+  remainingDistanceM: number;
+  frontWheel: LatLng | undefined;
+  routeJoinPoint: LatLng | undefined;
+};
+
+function buildRouteProgressSlice(
+  route: NavigationRoute | null | undefined,
+  navRider: { lat: number; lng: number } | undefined,
+  headingDeg?: number
+): RouteProgressSlice {
+  if (!route?.coordinates?.length || !navRider) {
+    return {
+      traveled: [],
+      remaining: route?.coordinates ?? [],
+      remainingDistanceM: (route?.distanceKm ?? 0) * 1000,
+      frontWheel: undefined,
+      routeJoinPoint: undefined,
+    };
+  }
+  const split = splitRouteProgress(route.coordinates, {
+    latitude: navRider.lat,
+    longitude: navRider.lng,
+    headingDeg,
+  });
+  return {
+    traveled: split.traveled,
+    remaining: split.remaining,
+    remainingDistanceM: split.remainingDistanceM,
+    frontWheel: split.frontWheel,
+    routeJoinPoint: split.routeJoinPoint,
+  };
 }
 
 export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
@@ -395,13 +431,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     if (liveFix) stickyFixRef.current = liveFix;
   }, [liveFix]);
   const riderFix = liveFix ?? stickyFixRef.current;
-  const smoothDurationMs = useMemo(() => {
-    const speed = riderFix?.speedMps;
-    if (speed == null || speed < 0.5) return 550;
-    if (speed < 3) return 420;
-    if (speed < 8) return 320;
-    return 240;
-  }, [riderFix?.speedMps]);
+  const smoothDurationMs = resolveSmoothDurationMs(riderFix?.speedMps);
 
   const smoothedRider = useSmoothedRiderPosition(
     riderFix
@@ -419,14 +449,14 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     ? { lat: smoothedRider.lat, lng: smoothedRider.lng, headingDeg: smoothedRider.headingDeg }
     : undefined;
 
-  const { byMilestone: milestoneGeo } = useMilestoneGeoFence(
-    orderId,
-    riderLocation ? { lat: riderLocation.lat, lng: riderLocation.lng } : undefined
-  );
-
   const riderForRoute = riderFix
     ? { lat: riderFix.lat, lng: riderFix.lng }
     : undefined;
+
+  const { byMilestone: milestoneGeo } = useMilestoneGeoFence(
+    orderId,
+    riderForRoute ? { lat: riderForRoute.lat, lng: riderForRoute.lng } : undefined
+  );
 
   const pickup = order?.pickup;
   const delivery = order?.delivery;
@@ -792,7 +822,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [route?.coordinates, riderLocation?.lat, riderLocation?.lng, riderLocation?.headingDeg]);
 
   useEffect(() => {
-    const navRider = riderForRoute ?? riderLocation;
+    const navRider = riderForRoute;
     if (!navRider || !navDestination || !route?.coordinates?.length) return;
 
     const deviation = analyzeRiderOnRoute(route.coordinates, {
@@ -838,33 +868,23 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     orderId,
   ]);
 
-  const routeProgress = useMemo(() => {
-    const navRider = riderLocation ?? riderForRoute;
-    if (!route?.coordinates?.length || !navRider) {
-      return {
-        traveled: [] as LatLng[],
-        remaining: route?.coordinates ?? [],
-        remainingDistanceM: (route?.distanceKm ?? 0) * 1000,
-        frontWheel: undefined as LatLng | undefined,
-        routeJoinPoint: undefined as LatLng | undefined,
-      };
-    }
-    const split = splitRouteProgress(route.coordinates, {
-      latitude: navRider.lat,
-      longitude: navRider.lng,
-      headingDeg: riderLocation?.headingDeg,
-    });
-    return {
-      traveled: split.traveled,
-      remaining: split.remaining,
-      remainingDistanceM: split.remainingDistanceM,
-      frontWheel: split.frontWheel,
-      routeJoinPoint: split.routeJoinPoint,
-    };
-  }, [route?.coordinates, route?.distanceKm, riderForRoute, riderLocation]);
+  const routeProgressMetrics = useMemo(
+    () => buildRouteProgressSlice(route, riderForRoute, riderFix?.headingDeg),
+    [route, riderForRoute, riderFix?.headingDeg]
+  );
+
+  const mapRouteProgress = useMemo(
+    () =>
+      buildRouteProgressSlice(
+        route,
+        riderLocation ?? riderForRoute,
+        riderLocation?.headingDeg
+      ),
+    [route, riderLocation, riderForRoute]
+  );
 
   const riderRouteConnectorGeoJson = useMemo(() => {
-    const join = routeProgress.routeJoinPoint;
+    const join = mapRouteProgress.routeJoinPoint;
     const pos = riderLocation ?? riderForRoute;
     if (!join || !pos) return null;
     return buildRiderRouteConnectorGeoJson(
@@ -872,7 +892,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       join
     );
   }, [
-    routeProgress.routeJoinPoint,
+    mapRouteProgress.routeJoinPoint,
     riderLocation?.lat,
     riderLocation?.lng,
     riderForRoute?.lat,
@@ -880,19 +900,19 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   ]);
 
   const liveEtaMinutes = useMemo(
-    () => etaMinutesFromMeters(routeProgress.remainingDistanceM),
-    [routeProgress.remainingDistanceM]
+    () => etaMinutesFromMeters(routeProgressMetrics.remainingDistanceM),
+    [routeProgressMetrics.remainingDistanceM]
   );
 
   const liveDistanceKm = useMemo(
-    () => Math.max(0.1, routeProgress.remainingDistanceM / 1000),
-    [routeProgress.remainingDistanceM]
+    () => Math.max(0.1, routeProgressMetrics.remainingDistanceM / 1000),
+    [routeProgressMetrics.remainingDistanceM]
   );
 
   const metersToPickup = useMemo(() => {
-    if (!riderLocation || !navDestination) return null;
-    return Math.round(routeProgress.remainingDistanceM);
-  }, [riderLocation, navDestination, routeProgress.remainingDistanceM]);
+    if (!riderForRoute || !navDestination) return null;
+    return Math.round(routeProgressMetrics.remainingDistanceM);
+  }, [riderForRoute, navDestination, routeProgressMetrics.remainingDistanceM]);
 
   const mapRiderLocation = useMemo(() => {
     const raw = riderLocation
@@ -912,10 +932,15 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         longitude: raw.lng,
         headingDeg: raw.headingDeg,
       });
-      return { lat: display.latitude, lng: display.longitude, headingDeg: raw.headingDeg };
+      return {
+        lat: display.latitude,
+        lng: display.longitude,
+        headingDeg: raw.headingDeg,
+        speedMps: riderFix?.speedMps,
+      };
     }
-    return raw;
-  }, [riderLocation, riderForRoute, riderFix?.headingDeg, route?.coordinates]);
+    return { ...raw, speedMps: riderFix?.speedMps };
+  }, [riderLocation, riderForRoute, riderFix?.headingDeg, riderFix?.speedMps, route?.coordinates]);
 
   const navigationFollowMode =
     !!mapRiderLocation && (route?.coordinates?.length ?? 0) >= 2;
@@ -2196,11 +2221,11 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           foodRestaurantName={
             isFoodOrder && navDestination.mapLabel === "Pickup" ? restaurantDisplayName : undefined
           }
-          remainingCoordinates={routeProgress.remaining}
+          remainingCoordinates={mapRouteProgress.remaining}
           fullRouteCoordinates={route?.coordinates ?? []}
           alternativeRoutes={route?.alternatives}
           offRouteConnectorGeoJson={riderRouteConnectorGeoJson}
-          routeJoinPoint={routeProgress.routeJoinPoint ?? null}
+          routeJoinPoint={mapRouteProgress.routeJoinPoint ?? null}
           routeDeviationWrongWay={routeDeviation?.wrongWay ?? false}
           traveledCoordinates={[]}
           previousPickup={previousPickup}

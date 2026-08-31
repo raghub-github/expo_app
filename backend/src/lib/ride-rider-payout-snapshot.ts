@@ -15,6 +15,11 @@ import {
   resolveRidePickupWaitingChargePerMin,
 } from "./ride-pickup-wait.js";
 import { restoreCustomerDeliveryFieldsInSnapshot } from "./customer-delivery-fee.js";
+import {
+  isRideFareAwaitingCustomerPayment,
+  resolvePersonRideCustomerPayable,
+  roundRideCustomerPayable,
+} from "./ride-customer-payable.js";
 
 export type RideRiderPayoutSnapshot = {
   baseEarning: number;
@@ -84,6 +89,7 @@ export function isRideFarePaymentSettled(paymentStatus: string | null | undefine
 export function isRideRiderWalletCreditBlocked(input: {
   paymentStatus?: string | null;
   adminRiderPaymentClearedAt?: Date | string | null;
+  customerPayable?: unknown;
 }): boolean {
   if (
     input.adminRiderPaymentClearedAt != null &&
@@ -91,7 +97,10 @@ export function isRideRiderWalletCreditBlocked(input: {
   ) {
     return false;
   }
-  return isRideFarePaymentPending(input.paymentStatus);
+  return isRideFareAwaitingCustomerPayment({
+    paymentStatus: input.paymentStatus,
+    customerPayable: input.customerPayable,
+  });
 }
 
 type RideEarningDisplaySummary = {
@@ -99,6 +108,8 @@ type RideEarningDisplaySummary = {
   status?: string;
   paymentStatus?: string | null;
   adminRiderPaymentClearedAt?: string | null;
+  customerPayable?: number;
+  paymentRequired?: boolean;
   baseEarning?: number;
   totalEarning?: number;
   estimatedEarning?: number;
@@ -124,6 +135,7 @@ export function maskRideEarningsIfWalletCreditPending<T extends RideEarningDispl
     !isRideRiderWalletCreditBlocked({
       paymentStatus: summary.paymentStatus,
       adminRiderPaymentClearedAt: summary.adminRiderPaymentClearedAt,
+      customerPayable: summary.customerPayable,
     })
   ) {
     return { ...summary, walletCreditPending: false };
@@ -661,9 +673,6 @@ export async function applyRidePickupWaitingToBilling(
   const tip = round0(
     Number(row.customerTipAmount) || Number(row.tipAmount) || 0
   );
-  const rideFare = round0(
-    Number(row.estimatedFare) || Number(row.fareAmount) || 0
-  );
 
   let snapshot = resolveRideRiderPayoutForDisplay({
     billingSnapshot: row.billingSnapshot,
@@ -709,6 +718,19 @@ export async function applyRidePickupWaitingToBilling(
         ? (row.billingSnapshot as Record<string, unknown>)
         : {};
 
+  const checkoutMeta =
+    row.checkoutMetadata != null && typeof row.checkoutMetadata === "object"
+      ? (row.checkoutMetadata as Record<string, unknown>)
+      : {};
+  const snapOfferId = Number(
+    mergedSnap.ride_fare_platform_offer_id ?? checkoutMeta.selectedPlatformOfferId
+  );
+  const snapCoupon =
+    (typeof mergedSnap.ride_fare_coupon_code === "string"
+      ? mergedSnap.ride_fare_coupon_code.trim()
+      : "") ||
+    (typeof checkoutMeta.couponCode === "string" ? checkoutMeta.couponCode.trim() : "");
+
   const { syncRideCustomerBillingSnapshot } = await import(
     "../modules/rides/ride-bill.service.js"
   );
@@ -716,6 +738,9 @@ export async function applyRidePickupWaitingToBilling(
     pickupWaitingCharge: customerWaiting,
     pickupWaitSeconds: waitSeconds,
     skipIfPaid: true,
+    couponCode: snapCoupon || null,
+    platformOfferId:
+      Number.isFinite(snapOfferId) && snapOfferId > 0 ? snapOfferId : null,
   });
 
   // Persist waiting funding split for settlement (company-funded waiting is a subsidy).
@@ -737,22 +762,40 @@ export async function applyRidePickupWaitingToBilling(
     `;
   }
 
-  if (!synced.ok) {
-    const tip = round0(Number(row.customerTipAmount) || Number(row.tipAmount) || 0);
-    const rideFare = round0(Number(row.estimatedFare) || Number(row.fareAmount) || 0);
-    const newGrandTotal = round0(rideFare + customerWaiting + tip);
+  const [afterBillRow] = await db
+    .select({
+      grandTotal: ordersCore.grandTotal,
+      billingSnapshot: ordersCore.billingSnapshot,
+    })
+    .from(ordersCore)
+    .where(eq(ordersCore.id, orderCorePk))
+    .limit(1);
+  const afterSnap =
+    afterBillRow?.billingSnapshot != null && typeof afterBillRow.billingSnapshot === "object"
+      ? (afterBillRow.billingSnapshot as Record<string, unknown>)
+      : mergedSnap;
+  const customerPayable = resolvePersonRideCustomerPayable({
+    grandTotal: afterBillRow?.grandTotal ?? row.grandTotal,
+    checkoutMetadata: checkoutMeta,
+    billingSnapshot: {
+      ...afterSnap,
+      waiting_charge: customerWaiting,
+      pickup_waiting_charge: customerWaiting,
+    },
+    waitingCharge: customerWaiting,
+  });
+
+  if (!synced.ok || Math.abs(roundRideCustomerPayable(afterBillRow?.grandTotal) - customerPayable) > 0.005) {
     await db
       .update(ordersCore)
       .set({
-        grandTotal: String(newGrandTotal),
+        grandTotal: String(customerPayable),
         billingSnapshot: {
-          ...mergedSnap,
-          ride_fare: rideFare,
-          fare_amount: rideFare,
+          ...afterSnap,
           waiting_charge: customerWaiting,
           pickup_waiting_charge: customerWaiting,
           tip_amount: tip,
-          final_amount: newGrandTotal,
+          final_amount: customerPayable,
           pickup_wait_seconds: waitSeconds,
         },
         updatedAt: new Date(),
@@ -787,6 +830,7 @@ export async function ensureRidePickupWaitingBillingReconciled(
       fareAmount: ordersCore.fareAmount,
       tipAmount: ordersCore.tipAmount,
       billingSnapshot: ordersCore.billingSnapshot,
+      checkoutMetadata: ordersCore.checkoutMetadata,
       estimatedFare: ordersRide.estimatedFare,
       customerTipAmount: ordersRide.customerTipAmount,
       pickupWaitSeconds: ordersRide.pickupWaitSeconds,
@@ -808,12 +852,15 @@ export async function ensureRidePickupWaitingBillingReconciled(
   const snapWaiting = round0(
     Number(snap.waiting_charge ?? snap.pickup_waiting_charge ?? snap.waiting_fee) || 0
   );
-  const rideFare = round0(Number(row.estimatedFare) || Number(row.fareAmount) || 0);
-  const tip = round0(Number(row.customerTipAmount) || Number(row.tipAmount) || 0);
-  const currentTotal = round0(Number(row.grandTotal) || 0);
-  const expectedTotal = round0(rideFare + snapWaiting + tip);
+  const expectedPayable = resolvePersonRideCustomerPayable({
+    grandTotal: row.grandTotal,
+    checkoutMetadata: row.checkoutMetadata,
+    billingSnapshot: snap,
+    waitingCharge: snapWaiting,
+  });
+  const currentTotal = roundRideCustomerPayable(row.grandTotal);
 
-  if (snapWaiting <= 0 || currentTotal < expectedTotal) {
+  if (snapWaiting <= 0 || Math.abs(currentTotal - expectedPayable) > 0.05) {
     await applyRidePickupWaitingToBilling(orderCorePk, riderId);
   }
 }

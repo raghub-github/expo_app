@@ -6,6 +6,9 @@
  * In-session remote selections ("order for someone else") survive resume:
  * if reconcile returns switched_far but sessionSelectionKind === "remote",
  * we re-bind the saved address instead of wiping the checkout pin.
+ *
+ * Critical path uses a FAST fix so the home reconcile gate opens quickly and
+ * service tiles can filter. Accurate GPS refine runs in the background.
  */
 
 import type { QueryClient } from "@tanstack/react-query";
@@ -24,6 +27,10 @@ import {
 } from "@/lib/invalidateFoodHomeLocationQueries";
 import { applyActiveLocationFromBackend } from "@/lib/applyActiveLocationFromBackend";
 import { promptCartIfLocationBrokeServiceability } from "@/lib/promptCartIfLocationBrokeServiceability";
+import { metresBetween, shouldReplaceFix } from "@/lib/locationFixSelection";
+
+/** Background accurate refine: skip POST if GPS moved less than this vs the fast pin. */
+const ACCURATE_REFINE_MIN_MOVE_M = 40;
 
 async function applyCurrentGpsPin(gps: { latitude: number; longitude: number }): Promise<void> {
   // Coord-first (section 10): paint the coordinate immediately, then resolve the address
@@ -88,6 +95,156 @@ async function restoreRemoteSelection(
   }
 }
 
+async function applyReconcileResult(
+  result: ReconcileActiveLocationResult,
+  gps: { latitude: number; longitude: number },
+  queryClient: QueryClient | undefined,
+  options?: { allowRemoteSessionPreserve?: boolean }
+): Promise<ReconcileActiveLocationResult> {
+  const prior = useLocationStore.getState();
+  const priorKind = prior.sessionSelectionKind;
+  const priorBoundId = prior.sessionBoundAddressId;
+
+  // Resume / in-session: keep intentional remote Saved Address (order for someone else).
+  if (
+    options?.allowRemoteSessionPreserve &&
+    result.reason === "switched_far" &&
+    priorKind === "remote" &&
+    priorBoundId != null
+  ) {
+    const restored = await restoreRemoteSelection(priorBoundId, queryClient);
+    if (restored) {
+      return {
+        ...result,
+        addressId: priorBoundId,
+        source: "selected",
+        switchedToCurrent: false,
+        reason: "kept_nearby",
+      };
+    }
+  }
+
+  if (result.source === "selected" && result.savedAddress) {
+    const a = result.savedAddress;
+    const kind =
+      result.distanceM != null && result.distanceM > result.retentionRadiusM
+        ? "remote"
+        : "nearby";
+    useLocationStore.getState().setAddressAndCoords(
+      {
+        primary: a.label ?? "Address",
+        secondary: a.fullAddress.slice(0, 80),
+        fullAddress: a.fullAddress,
+        city: a.city,
+        state: a.state,
+        pincode: a.pincode,
+      },
+      { latitude: a.latitude, longitude: a.longitude },
+      { source: "selected", selectionKind: kind, boundAddressId: a.id }
+    );
+  } else {
+    await applyCurrentGpsPin(gps);
+  }
+
+  if (queryClient) {
+    await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+    await queryClient.invalidateQueries({ queryKey: ["addresses"] });
+    if (result.switchedToCurrent) {
+      debouncedInvalidateFoodHomeListingQueries(queryClient);
+    } else if (result.source === "selected") {
+      void invalidateFoodHomeLocationQueries(queryClient);
+    }
+    if (result.switchedToCurrent || result.source === "selected") {
+      void promptCartIfLocationBrokeServiceability(queryClient);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Accurate GPS in the background after the fast reconcile opened the gate.
+ * Re-POSTs only when the accurate fix meaningfully differs from the fast pin.
+ */
+function scheduleAccurateReconcileRefine(
+  fastGps: { latitude: number; longitude: number },
+  queryClient: QueryClient | undefined,
+  options?: { allowRemoteSessionPreserve?: boolean }
+): void {
+  void (async () => {
+    try {
+      const fix = await getBestEffortPosition({});
+      const next = {
+        latitude: fix.latitude,
+        longitude: fix.longitude,
+        accuracy: fix.accuracy ?? null,
+        timestampMs: Date.now(),
+      };
+      const store = useLocationStore.getState();
+      // User picked a saved/remote pin while we were refining — do not override.
+      if (store.locationSource === "selected") return;
+
+      const current = store.coords
+        ? {
+            latitude: store.coords.latitude,
+            longitude: store.coords.longitude,
+            accuracy: store.coordsAccuracy,
+            timestampMs: store.coordsUpdatedAt ?? Date.now(),
+          }
+        : {
+            latitude: fastGps.latitude,
+            longitude: fastGps.longitude,
+            accuracy: null as number | null,
+            timestampMs: Date.now(),
+          };
+
+      const movedFromFast =
+        metresBetween(fastGps.latitude, fastGps.longitude, next.latitude, next.longitude) >=
+        ACCURATE_REFINE_MIN_MOVE_M;
+      if (!movedFromFast && !shouldReplaceFix(current, next)) {
+        if (__DEV__) {
+          console.log("[active-location] accurate_refine_skip", {
+            path: "reconcileActiveLocationFromGps",
+            reason: "no_meaningful_change",
+          });
+        }
+        return;
+      }
+
+      const addressLabel =
+        store.address?.fullAddress ?? store.address?.primary ?? null;
+      const result = await addressService.reconcileActiveLocation({
+        latitude: next.latitude,
+        longitude: next.longitude,
+        address: addressLabel,
+        capturedAtMs: next.timestampMs,
+      });
+
+      if (__DEV__) {
+        console.log("[active-location] accurate_refine_response", {
+          path: "reconcileActiveLocationFromGps",
+          addressId: result.addressId,
+          source: result.source,
+          reason: result.reason,
+          distanceM: result.distanceM,
+        });
+      }
+
+      // Bail if user selected a pin during the network round-trip.
+      if (useLocationStore.getState().locationSource === "selected") return;
+
+      await applyReconcileResult(result, { latitude: next.latitude, longitude: next.longitude }, queryClient, options);
+    } catch (err) {
+      if (__DEV__) {
+        console.warn("[active-location] accurate_refine_failed", {
+          path: "reconcileActiveLocationFromGps",
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  })();
+}
+
 export async function reconcileActiveLocationFromGps(
   queryClient?: QueryClient,
   options?: { allowRemoteSessionPreserve?: boolean }
@@ -107,45 +264,37 @@ export async function reconcileActiveLocationFromGps(
     return null;
   }
 
-  // Instant paint: if nothing is shown yet (no cache / no backend pin — e.g. a signed-in
-  // first launch), grab a FAST fix and display it immediately while the accurate fix below
-  // resolves. Fire-and-forget; the accurate reconcile decision still owns serviceability.
-  if (
-    useLocationStore.getState().coords == null &&
-    useLocationStore.getState().locationSource !== "selected"
-  ) {
-    void getFastPosition({})
-      .then((f) => {
-        const s = useLocationStore.getState();
-        if (s.coords == null && s.locationSource !== "selected") {
-          void applyCurrentGpsPin({ latitude: f.latitude, longitude: f.longitude });
-        }
-      })
-      .catch(() => {});
-  }
-
   let gps: { latitude: number; longitude: number };
-  // Device time of the fix (§30): lets the backend reject an out-of-order/stale fix
-  // overwriting a newer one. Only set for a genuinely fresh fix — a cached fallback
-  // has no reliable capture time, so we omit it (backend falls back to last-write-wins).
+  // Device time of the fix (§30): only for a genuinely fresh device fix.
   let capturedAtMs: number | undefined;
-  try {
-    const fix = await getBestEffortPosition({});
-    gps = { latitude: fix.latitude, longitude: fix.longitude };
-    capturedAtMs = Date.now();
-  } catch {
-    const fallback = useLocationStore.getState().coords;
-    if (!fallback) {
-      await applyActiveLocationFromBackend(queryClient);
-      return null;
+  let usedCachedStoreCoords = false;
+
+  const existing = useLocationStore.getState().coords;
+  if (existing && useLocationStore.getState().locationSource !== "selected") {
+    // Instant: last-known / hydrate already painted — reconcile against it first.
+    gps = { latitude: existing.latitude, longitude: existing.longitude };
+    usedCachedStoreCoords = true;
+  } else {
+    try {
+      const fix = await getFastPosition({});
+      gps = { latitude: fix.latitude, longitude: fix.longitude };
+      capturedAtMs = Date.now();
+      // Paint immediately so geo/services canQuery before the POST returns.
+      if (useLocationStore.getState().locationSource !== "selected") {
+        void applyCurrentGpsPin(gps);
+      }
+    } catch {
+      const fallback = useLocationStore.getState().coords;
+      if (!fallback) {
+        await applyActiveLocationFromBackend(queryClient);
+        return null;
+      }
+      gps = fallback;
+      usedCachedStoreCoords = true;
     }
-    gps = fallback;
   }
 
   const prior = useLocationStore.getState();
-  const priorKind = prior.sessionSelectionKind;
-  const priorBoundId = prior.sessionBoundAddressId;
-
   const addressLabel =
     prior.address?.fullAddress ?? prior.address?.primary ?? null;
 
@@ -155,8 +304,10 @@ export async function reconcileActiveLocationFromGps(
       gpsLatitude: gps.latitude,
       gpsLongitude: gps.longitude,
       localLocationSource: prior.locationSource,
-      sessionSelectionKind: priorKind,
-      sessionBoundAddressId: priorBoundId,
+      sessionSelectionKind: prior.sessionSelectionKind,
+      sessionBoundAddressId: prior.sessionBoundAddressId,
+      usedCachedStoreCoords,
+      phase: "fast",
     });
   }
 
@@ -182,64 +333,16 @@ export async function reconcileActiveLocationFromGps(
         savedLng: result.savedAddress?.longitude ?? null,
         gpsLatitude: gps.latitude,
         gpsLongitude: gps.longitude,
+        phase: "fast",
       });
     }
 
-    // Resume / in-session: keep intentional remote Saved Address (order for someone else).
-    if (
-      options?.allowRemoteSessionPreserve &&
-      result.reason === "switched_far" &&
-      priorKind === "remote" &&
-      priorBoundId != null
-    ) {
-      const restored = await restoreRemoteSelection(priorBoundId, queryClient);
-      if (restored) {
-        return {
-          ...result,
-          addressId: priorBoundId,
-          source: "selected",
-          switchedToCurrent: false,
-          reason: "kept_nearby",
-        };
-      }
-    }
+    const applied = await applyReconcileResult(result, gps, queryClient, options);
 
-    if (result.source === "selected" && result.savedAddress) {
-      const a = result.savedAddress;
-      const kind =
-        result.distanceM != null && result.distanceM > result.retentionRadiusM
-          ? "remote"
-          : "nearby";
-      useLocationStore.getState().setAddressAndCoords(
-        {
-          primary: a.label ?? "Address",
-          secondary: a.fullAddress.slice(0, 80),
-          fullAddress: a.fullAddress,
-          city: a.city,
-          state: a.state,
-          pincode: a.pincode,
-        },
-        { latitude: a.latitude, longitude: a.longitude },
-        { source: "selected", selectionKind: kind, boundAddressId: a.id }
-      );
-    } else {
-      await applyCurrentGpsPin(gps);
-    }
+    // Accurate GPS refine after gate can open — do not await.
+    scheduleAccurateReconcileRefine(gps, queryClient, options);
 
-    if (queryClient) {
-      await queryClient.invalidateQueries({ queryKey: ["active-location"] });
-      await queryClient.invalidateQueries({ queryKey: ["addresses"] });
-      if (result.switchedToCurrent) {
-        debouncedInvalidateFoodHomeListingQueries(queryClient);
-      } else if (result.source === "selected") {
-        void invalidateFoodHomeLocationQueries(queryClient);
-      }
-      if (result.switchedToCurrent || result.source === "selected") {
-        void promptCartIfLocationBrokeServiceability(queryClient);
-      }
-    }
-
-    return result;
+    return applied;
   } catch (err) {
     if (__DEV__) {
       console.warn("[active-location] reconcile_failed", {
@@ -248,6 +351,8 @@ export async function reconcileActiveLocationFromGps(
       });
     }
     await applyActiveLocationFromBackend(queryClient);
+    // Still try accurate refine so we recover if backend apply left a weak pin.
+    scheduleAccurateReconcileRefine(gps, queryClient, options);
     return null;
   }
 }

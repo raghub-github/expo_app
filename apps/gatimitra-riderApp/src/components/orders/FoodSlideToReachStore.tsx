@@ -114,6 +114,10 @@ export function FoodSlideToReachStore({
         onStartShouldSetPanResponder: () => !actionDisabled && !completed,
         onMoveShouldSetPanResponder: (_, g) =>
           !actionDisabled && !completed && Math.abs(g.dx) > 4,
+        onStartShouldSetPanResponderCapture: () => !actionDisabled && !completed,
+        onMoveShouldSetPanResponderCapture: (_, g) =>
+          !actionDisabled && !completed && Math.abs(g.dx) > 4,
+        onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: () => {
           isDragging.value = true;
         },

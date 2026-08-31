@@ -1129,6 +1129,7 @@ export default function RideBookScreen() {
       if (params.passengerName) navParams.passengerName = String(params.passengerName);
       if (params.passengerPhone) navParams.passengerPhone = String(params.passengerPhone);
       navParams.estimatedFare = String(slabFare);
+      navParams.quotedListFare = String(payableFare);
       navParams.quotedGrandTotal = String(displayPayable);
       if (offerPreview.offerId != null && offerPreview.discount >= 1) {
         navParams.selectedPlatformOfferId = String(offerPreview.offerId);

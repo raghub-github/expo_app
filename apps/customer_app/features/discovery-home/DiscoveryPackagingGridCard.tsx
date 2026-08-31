@@ -78,7 +78,8 @@ function DiscoveryPackagingGridCardInner({
     const next = !saved;
     syncBookmark(merchant.id, next);
     try {
-      await setStoreBookmark(merchant.id, next);
+      const res = await setStoreBookmark(merchant.id, next);
+      if (res.saved !== next) syncBookmark(merchant.id, res.saved);
     } catch {
       syncBookmark(merchant.id, saved);
     }

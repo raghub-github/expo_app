@@ -1,19 +1,24 @@
+import { useEffect, useMemo, useState } from "react";
 import { View, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
 import { AppText } from "@/components/AppText";
 
-import { AppAssetImage } from "@/components/AppAssetImage";
-import { bundledRideServiceIcon } from "@/features/ride/rideOptionAssets";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { ALL_SERVICES, type ServiceId } from "./AllServicesGrid";
+import { ALL_SERVICES, RideServiceTileIcon, type ServiceId } from "./AllServicesGrid";
 import {
   getIntercityRideOptions,
   INTERCITY_MIN_DISTANCE_KM,
   isIntercityRouteKm,
 } from "@/lib/intercity-rides";
+import { getRideFareQuoteBatch } from "@/services/rideQuote.service";
+import { resolveRideQuotePayableAmount } from "@/lib/ride-quote-display";
 
 type Props = {
   tripKm: number | null;
+  pickupLat?: string | null;
+  pickupLng?: string | null;
+  dropLat?: string | null;
+  dropLng?: string | null;
   servicesDisabled?: boolean;
   onSelectService: (id: ServiceId) => void;
   onChangeRoute: () => void;
@@ -21,13 +26,70 @@ type Props = {
 
 export function IntercityServicesList({
   tripKm,
+  pickupLat,
+  pickupLng,
+  dropLat,
+  dropLng,
   servicesDisabled = false,
   onSelectService,
   onChangeRoute,
 }: Props) {
   const routeReady = tripKm != null && tripKm > 0;
   const intercityEligible = isIntercityRouteKm(tripKm);
-  const options = getIntercityRideOptions(tripKm);
+  const baseOptions = useMemo(() => getIntercityRideOptions(tripKm), [tripKm]);
+
+  const [fareById, setFareById] = useState<Record<string, number>>({});
+  const [faresLoading, setFaresLoading] = useState(false);
+
+  const plat = Number(pickupLat);
+  const plng = Number(pickupLng);
+  const dlat = Number(dropLat);
+  const dlng = Number(dropLng);
+  const coordsReady =
+    intercityEligible &&
+    tripKm != null &&
+    [plat, plng, dlat, dlng].every(Number.isFinite);
+
+  useEffect(() => {
+    if (!coordsReady || tripKm == null) {
+      setFareById({});
+      setFaresLoading(false);
+      return;
+    }
+
+    const catalogCodes = baseOptions.map((o) => o.id);
+    if (catalogCodes.length === 0) return;
+
+    const abort = new AbortController();
+    setFaresLoading(true);
+    setFareById({});
+
+    void (async () => {
+      const result = await getRideFareQuoteBatch({
+        pickupLat: plat,
+        pickupLng: plng,
+        dropLat: dlat,
+        dropLng: dlng,
+        tripKm,
+        catalogCodes,
+        signal: abort.signal,
+      });
+      if (abort.signal.aborted) return;
+      if (!result.ok) {
+        setFaresLoading(false);
+        return;
+      }
+      const next: Record<string, number> = {};
+      for (const [code, quote] of Object.entries(result.quotes)) {
+        const payable = resolveRideQuotePayableAmount(quote);
+        if (payable > 0) next[code] = payable;
+      }
+      setFareById(next);
+      setFaresLoading(false);
+    })();
+
+    return () => abort.abort();
+  }, [coordsReady, tripKm, plat, plng, dlat, dlng, baseOptions]);
 
   if (!routeReady) {
     return (
@@ -61,9 +123,13 @@ export function IntercityServicesList({
       </View>
 
       <View style={styles.list}>
-        {options.map((row) => {
+        {baseOptions.map((row) => {
           const service = ALL_SERVICES.find((s) => s.id === row.id);
           const disabled = servicesDisabled || row.disabled;
+          const estFare = fareById[row.id] ?? null;
+          const showSpinner = intercityEligible && !disabled && faresLoading && estFare == null;
+          const showFare = estFare != null && estFare > 0;
+
           return (
             <TouchableOpacity
               key={row.id}
@@ -77,12 +143,7 @@ export function IntercityServicesList({
             >
               <View style={styles.iconWrap}>
                 {service ? (
-                  <AppAssetImage
-                    assetKey={service.assetKey}
-                    style={styles.icon}
-                    contentFit="contain"
-                    fallbackSource={bundledRideServiceIcon(service.assetKey)}
-                  />
+                  <RideServiceTileIcon assetKey={service.assetKey} iconPx={48} />
                 ) : null}
               </View>
               <View style={styles.info}>
@@ -92,16 +153,18 @@ export function IntercityServicesList({
                 </AppText>
               </View>
               <View style={styles.fareCol}>
-                {row.estFare != null && row.estFare > 0 ? (
-                  <AppText style={[styles.fare, disabled && styles.labelDisabled]}>₹{row.estFare}</AppText>
-                ) : (
+                {showFare ? (
+                  <AppText style={[styles.fare, disabled && styles.labelDisabled]}>₹{estFare}</AppText>
+                ) : showSpinner ? (
                   <ActivityIndicator size="small" color={GatiMitraColors.primaryMint} />
+                ) : disabled ? (
+                  <AppText style={styles.soonBadge}>—</AppText>
+                ) : (
+                  <AppText style={styles.soonBadge}>—</AppText>
                 )}
                 {!disabled ? (
                   <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
-                ) : (
-                  <AppText style={styles.soonBadge}>N/A</AppText>
-                )}
+                ) : null}
               </View>
             </TouchableOpacity>
           );
@@ -125,83 +188,98 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: "800",
     color: "#111827",
-    letterSpacing: -0.3,
+    marginBottom: 4,
   },
   subtitle: {
-    marginTop: 4,
     fontSize: 13,
+    fontWeight: "500",
     color: GatiMitraColors.textSecondary,
     lineHeight: 18,
   },
   changeRouteBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: "#ECFDF5",
+    paddingTop: 4,
+    paddingHorizontal: 4,
   },
   changeRouteText: {
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: "700",
-    color: GatiMitraColors.deepMintStart,
+    color: GatiMitraColors.primaryMint,
   },
   list: { gap: 10 },
   row: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: GatiMitraColors.cardBg,
+    backgroundColor: "#fff",
     borderRadius: 16,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: GatiMitraColors.border,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
     gap: 12,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
   },
-  rowDisabled: { opacity: 0.55 },
+  rowDisabled: {
+    opacity: 0.55,
+  },
   iconWrap: {
     width: 56,
     height: 56,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#F3F4F6",
   },
-  icon: { width: 52, height: 52 },
   info: { flex: 1, minWidth: 0 },
-  label: { fontSize: 16, fontWeight: "800", color: GatiMitraColors.textPrimary },
-  labelDisabled: { color: GatiMitraColors.textSecondary },
-  rowSub: { marginTop: 2, fontSize: 12, color: GatiMitraColors.textSecondary },
-  fareCol: { alignItems: "flex-end", gap: 4 },
+  label: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+    marginBottom: 2,
+  },
+  labelDisabled: {
+    color: GatiMitraColors.textSecondary,
+  },
+  rowSub: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: GatiMitraColors.textSecondary,
+  },
+  fareCol: { alignItems: "flex-end", gap: 4, minWidth: 56 },
   fare: { fontSize: 16, fontWeight: "800", color: GatiMitraColors.textPrimary },
   soonBadge: {
-    fontSize: 10,
+    fontSize: 13,
     fontWeight: "700",
     color: GatiMitraColors.textSecondary,
-    backgroundColor: "#F3F4F6",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
   },
   emptyWrap: {
     alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 48,
-    gap: 10,
+    paddingVertical: 36,
     paddingHorizontal: 24,
+    gap: 8,
   },
   emptyTitle: {
     fontSize: 18,
     fontWeight: "800",
     color: GatiMitraColors.textPrimary,
+    marginTop: 8,
   },
   emptySub: {
-    fontSize: 13,
+    fontSize: 14,
+    fontWeight: "500",
     color: GatiMitraColors.textSecondary,
     textAlign: "center",
-    lineHeight: 18,
+    lineHeight: 20,
+    marginBottom: 8,
   },
   routeBtn: {
     marginTop: 8,
     backgroundColor: GatiMitraColors.primaryMint,
-    paddingHorizontal: 20,
+    paddingHorizontal: 22,
     paddingVertical: 12,
-    borderRadius: 12,
+    borderRadius: 14,
   },
-  routeBtnText: { color: "#fff", fontWeight: "800", fontSize: 14 },
+  routeBtnText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#fff",
+  },
 });

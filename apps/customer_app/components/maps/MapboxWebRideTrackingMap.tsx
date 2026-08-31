@@ -10,28 +10,41 @@ import React, {
 import { StyleSheet, View } from "react-native";
 import type { CustomerMapRef, MapEdgePadding } from "@/lib/customer-map-handle";
 import type { LatLng } from "@/services/directions.service";
+import { NavRiderDotMarker } from "@/components/maps/NavRiderDotMarker";
 import {
   DropHomePin,
   NATIVE_MAP_STYLE,
   NativeMapUnavailable,
   PickupRestaurantPin,
-  ROUTE_BLUE,
-  ROUTE_CASING,
-  VehicleMarker,
   circlePolygon,
   fitCameraToPoints,
   latLngsToLine,
   nativeMapUnavailableReason,
   renderNativeMarker,
   useCustomerNativeMapbox,
-  useRiderMarkerSource,
 } from "@/components/maps/native-map-shared";
+import {
+  NAV_FOLLOW_PITCH,
+  NAV_FOLLOW_ZOOM,
+  NAV_LOOK_AHEAD_M,
+  NAV_ROUTE_BLUE,
+  NAV_ROUTE_CASING,
+  NAV_ROUTE_CASING_WIDTH,
+  NAV_ROUTE_GLOW,
+  NAV_ROUTE_GLOW_WIDTH,
+  NAV_ROUTE_WIDTH,
+  normalizeBearing,
+  offsetPoint,
+  shouldSkipStationaryCamera,
+  shouldThrottleNavigationCamera,
+} from "@gatimitra/map-tracking-engine";
 
 type Props = {
   center: LatLng;
   routeCoordinates: LatLng[];
   riderPosition: LatLng | null;
   riderHeading?: number | null;
+  riderSpeedMps?: number | null;
   pickupPosition?: LatLng | null;
   dropPosition?: LatLng | null;
   riderMarkerImageKey?: string;
@@ -52,9 +65,9 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
       routeCoordinates,
       riderPosition,
       riderHeading,
+      riderSpeedMps = null,
       pickupPosition,
       dropPosition = null,
-      riderMarkerImageKey = "bike",
       navigationMode = false,
       highlightPickupZone = false,
       highlightDropZone = false,
@@ -72,12 +85,12 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
     const readyRef = useRef(false);
     const followRef = useRef(true);
     const geofenceCameraRef = useRef(false);
+    const lastFollowCameraRef = useRef(null);
     const pendingFitRef = useRef<{
       coords: LatLng[];
       options: { edgePadding: MapEdgePadding; maxZoom?: number };
     } | null>(null);
     const [mapReady, setMapReady] = useState(false);
-    const markerSource = useRiderMarkerSource(riderMarkerImageKey);
     const initialCenterRef = useRef(center);
 
     const routeLine = latLngsToLine(routeCoordinates);
@@ -97,6 +110,47 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
         fitCameraToPoints(cameraRef.current, pts, options.edgePadding, 650, options.maxZoom ?? 15);
       },
       [navigationMode]
+    );
+
+    const followRiderCamera = useCallback(
+      (opts?: { force?: boolean }) => {
+        if (!mapReady || !riderPosition || geofenceCameraRef.current) return;
+        if (!followRef.current && !opts?.force) return;
+        if (!opts?.force && shouldSkipStationaryCamera(riderSpeedMps)) return;
+
+        const bearing = normalizeBearing(riderHeading ?? 0);
+        const centerPt = navigationMode
+          ? offsetPoint(riderPosition, bearing, NAV_LOOK_AHEAD_M)
+          : riderPosition;
+
+        if (
+          !opts?.force &&
+          shouldThrottleNavigationCamera(lastFollowCameraRef.current, centerPt, bearing)
+        ) {
+          return;
+        }
+
+        lastFollowCameraRef.current = {
+          lat: centerPt.latitude,
+          lng: centerPt.longitude,
+          bearing,
+          atMs: Date.now(),
+        };
+
+        cameraRef.current?.setCamera?.({
+          centerCoordinate: [centerPt.longitude, centerPt.latitude],
+          ...(navigationMode
+            ? {
+                zoomLevel: NAV_FOLLOW_ZOOM,
+                pitch: NAV_FOLLOW_PITCH,
+                heading: bearing,
+              }
+            : {}),
+          animationDuration: 420,
+          animationMode: "easeTo",
+        });
+      },
+      [mapReady, riderPosition, riderHeading, riderSpeedMps, navigationMode]
     );
 
     useImperativeHandle(
@@ -140,44 +194,15 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
         },
         recenterOnRider: () => {
           followRef.current = true;
-          if (geofenceCameraRef.current || !riderPosition) return;
-          cameraRef.current?.setCamera?.({
-            centerCoordinate: [riderPosition.longitude, riderPosition.latitude],
-            animationDuration: 450,
-            animationMode: "easeTo",
-          });
+          followRiderCamera({ force: true });
         },
       }),
-      [applyFit, riderPosition]
+      [applyFit, followRiderCamera]
     );
 
     useEffect(() => {
-      if (!mapReady || !navigationMode || !riderPosition) return;
-      cameraRef.current?.setCamera?.({
-        centerCoordinate: [riderPosition.longitude, riderPosition.latitude],
-        zoomLevel: 16,
-        pitch: 48,
-        heading: riderHeading ?? 0,
-        animationDuration: 380,
-        animationMode: "easeTo",
-      });
-    }, [
-      mapReady,
-      navigationMode,
-      riderPosition?.latitude,
-      riderPosition?.longitude,
-      riderHeading,
-    ]);
-
-    useEffect(() => {
-      if (!mapReady || navigationMode || geofenceCameraRef.current) return;
-      if (!followRef.current || !riderPosition) return;
-      cameraRef.current?.setCamera?.({
-        centerCoordinate: [riderPosition.longitude, riderPosition.latitude],
-        animationDuration: 420,
-        animationMode: "easeTo",
-      });
-    }, [mapReady, navigationMode, riderPosition?.latitude, riderPosition?.longitude]);
+      followRiderCamera();
+    }, [followRiderCamera]);
 
     if (nativeMapUnavailableReason() || !Mapbox) {
       return <NativeMapUnavailable style={style} />;
@@ -237,12 +262,33 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
           {routeLine ? (
             <Mapbox.ShapeSource id="ride-track-route" shape={routeLine}>
               <Mapbox.LineLayer
+                id="ride-track-route-glow"
+                style={{
+                  lineColor: NAV_ROUTE_GLOW,
+                  lineWidth: NAV_ROUTE_GLOW_WIDTH,
+                  lineOpacity: 0.65,
+                  lineJoin: "round",
+                  lineCap: "round",
+                  lineBlur: 2,
+                }}
+              />
+              <Mapbox.LineLayer
                 id="ride-track-route-casing"
-                style={{ lineColor: ROUTE_CASING, lineWidth: 7, lineJoin: "round", lineCap: "round" }}
+                style={{
+                  lineColor: NAV_ROUTE_CASING,
+                  lineWidth: NAV_ROUTE_CASING_WIDTH,
+                  lineJoin: "round",
+                  lineCap: "round",
+                }}
               />
               <Mapbox.LineLayer
                 id="ride-track-route-line"
-                style={{ lineColor: ROUTE_BLUE, lineWidth: 4.5, lineOpacity: 0.96, lineJoin: "round", lineCap: "round" }}
+                style={{
+                  lineColor: NAV_ROUTE_BLUE,
+                  lineWidth: NAV_ROUTE_WIDTH,
+                  lineJoin: "round",
+                  lineCap: "round",
+                }}
               />
             </Mapbox.ShapeSource>
           ) : null}
@@ -270,7 +316,7 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
                 "ride-captain",
                 [riderPosition.longitude, riderPosition.latitude],
                 { x: 0.5, y: 0.5 },
-                <VehicleMarker source={markerSource} headingDeg={riderHeading ?? 0} size={44} />
+                <NavRiderDotMarker />
               )
             : null}
         </Mapbox.MapView>

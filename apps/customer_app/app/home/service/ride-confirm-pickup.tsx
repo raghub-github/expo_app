@@ -26,9 +26,20 @@ import {
   rideRouteParamsFromSnapshot,
 } from "@/services/rideRoute.service";
 import { parseRideFareDistanceKm, rideFareDistanceNavParams } from "@/lib/ride-fare-distance";
+import { parseMapCoordParam } from "@/lib/map-coordinates";
 
-const GEOCODE_DEBOUNCE_MS = 350;
 const MAP_ZOOM_DELTA = 0.006;
+const GEOCODE_MOVE_METERS = 14;
+
+function metersBetween(
+  a: { latitude: number; longitude: number },
+  b: { latitude: number; longitude: number }
+): number {
+  const dLat = (a.latitude - b.latitude) * 111_320;
+  const dLng =
+    (a.longitude - b.longitude) * 111_320 * Math.cos((a.latitude * Math.PI) / 180);
+  return Math.hypot(dLat, dLng);
+}
 
 type AddressState = {
   primary: string;
@@ -70,7 +81,6 @@ export default function RideConfirmPickupScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<CustomerMapRef>(null);
-  const geocodeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const params = useLocalSearchParams<{
     pickup?: string;
@@ -90,22 +100,25 @@ export default function RideConfirmPickupScreen() {
     passengerPhone?: string;
     estimatedFare?: string;
     quotedGrandTotal?: string;
+    quotedListFare?: string;
     tripKm?: string;
     routeDistanceKm?: string;
     routeEtaMins?: string;
     customerTipAmount?: string;
     pickupPincode?: string;
     pickupState?: string;
+    couponCode?: string;
     selectedPlatformOfferId?: string;
     forceNoAutoOffer?: string;
+    viaRouteName?: string;
   }>();
 
-  const initialLat = params.pickupLat != null ? Number(params.pickupLat) : 24.7969;
-  const initialLng = params.pickupLng != null ? Number(params.pickupLng) : 84.9914;
+  const initialLat = parseMapCoordParam(params.pickupLat, 24.7969);
+  const initialLng = parseMapCoordParam(params.pickupLng, 84.9914);
   const setLastRidePickup = useRecentLocationStore((s) => s.setLastRidePickup);
   const addRecentLocation = useRecentLocationStore((s) => s.addRecentLocation);
 
-  const [centerCoord, setCenterCoord] = useState({
+  const centerCoordRef = useRef({
     latitude: initialLat,
     longitude: initialLng,
   });
@@ -113,14 +126,15 @@ export default function RideConfirmPickupScreen() {
     primary: params.pickupLabel?.trim() || params.pickup?.trim() || "Pickup point",
     fullAddress: params.pickup?.trim() || "",
   });
-  const centerCoordRef = useRef(centerCoord);
   const addressRef = useRef(address);
-  centerCoordRef.current = centerCoord;
   addressRef.current = address;
   const [geocoding, setGeocoding] = useState(false);
   const [locating, setLocating] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [selectedSnapId, setSelectedSnapId] = useState<string | null>(null);
+  const selectedSnapIdRef = useRef<string | null>(null);
+  const lastGeocodedRef = useRef({ latitude: initialLat, longitude: initialLng });
+  selectedSnapIdRef.current = selectedSnapId;
 
   const snapPoints = useMemo(
     () => buildNearbyPickupSnaps(initialLat, initialLng),
@@ -148,45 +162,37 @@ export default function RideConfirmPickupScreen() {
     [snapPoints, selectedSnapId]
   );
 
-  const updateAddressFromCoords = useCallback(async (latitude: number, longitude: number) => {
-    setGeocoding(true);
-    try {
-      const result = await reverseGeocode(longitude, latitude);
-      setAddress({
-        primary: resolvePlaceDisplayName(result),
-        fullAddress: result.fullAddress || resolvePlaceDisplayName(result),
-      });
-    } catch {
-      setAddress({
-        primary: "Pickup point",
-        fullAddress: `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`,
-      });
-    } finally {
-      setGeocoding(false);
-    }
-  }, []);
-
-  const scheduleGeocode = useCallback(
-    (latitude: number, longitude: number) => {
-      if (geocodeTimeoutRef.current) clearTimeout(geocodeTimeoutRef.current);
-      geocodeTimeoutRef.current = setTimeout(() => {
-        geocodeTimeoutRef.current = null;
-        updateAddressFromCoords(latitude, longitude);
-      }, GEOCODE_DEBOUNCE_MS);
-    },
-    [updateAddressFromCoords]
-  );
-
-  useEffect(() => {
-    updateAddressFromCoords(initialLat, initialLng);
-  }, [initialLat, initialLng, updateAddressFromCoords]);
-
-  useEffect(
-    () => () => {
-      if (geocodeTimeoutRef.current) clearTimeout(geocodeTimeoutRef.current);
+  const updateAddressFromCoords = useCallback(
+    async (latitude: number, longitude: number, quiet = false) => {
+      lastGeocodedRef.current = { latitude, longitude };
+      if (!quiet) setGeocoding(true);
+      try {
+        const result = await reverseGeocode(longitude, latitude);
+        const primary = resolvePlaceDisplayName(result);
+        const fullAddress = result.fullAddress || primary;
+        setAddress((prev) =>
+          prev.primary === primary && prev.fullAddress === fullAddress
+            ? prev
+            : { primary, fullAddress }
+        );
+      } catch {
+        const fullAddress = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+        setAddress((prev) =>
+          prev.primary === "Pickup point" && prev.fullAddress === fullAddress
+            ? prev
+            : { primary: "Pickup point", fullAddress }
+        );
+      } finally {
+        if (!quiet) setGeocoding(false);
+      }
     },
     []
   );
+
+  useEffect(() => {
+    const hasLabel = Boolean(params.pickupLabel?.trim() || params.pickup?.trim());
+    updateAddressFromCoords(initialLat, initialLng, hasLabel);
+  }, [initialLat, initialLng, params.pickup, params.pickupLabel, updateAddressFromCoords]);
 
   const animateToCoord = useCallback((latitude: number, longitude: number) => {
     mapRef.current?.animateToRegion?.({
@@ -199,21 +205,18 @@ export default function RideConfirmPickupScreen() {
 
   const handleRegionChange = useCallback(
     (region: { latitude: number; longitude: number }) => {
-      setCenterCoord({ latitude: region.latitude, longitude: region.longitude });
-      setSelectedSnapId(null);
-      scheduleGeocode(region.latitude, region.longitude);
+      centerCoordRef.current = { latitude: region.latitude, longitude: region.longitude };
     },
-    [scheduleGeocode]
+    []
   );
 
   const handleRegionChangeComplete = useCallback(
     (region: { latitude: number; longitude: number }) => {
       const { latitude, longitude } = region;
-      setCenterCoord({ latitude, longitude });
-      setSelectedSnapId(null);
-      if (geocodeTimeoutRef.current) {
-        clearTimeout(geocodeTimeoutRef.current);
-        geocodeTimeoutRef.current = null;
+      centerCoordRef.current = { latitude, longitude };
+      if (selectedSnapIdRef.current) setSelectedSnapId(null);
+      if (metersBetween(lastGeocodedRef.current, { latitude, longitude }) < GEOCODE_MOVE_METERS) {
+        return;
       }
       updateAddressFromCoords(latitude, longitude);
     },
@@ -223,7 +226,7 @@ export default function RideConfirmPickupScreen() {
   const handleSelectSnap = useCallback(
     (point: PickupSnapPoint) => {
       setSelectedSnapId(point.id);
-      setCenterCoord({ latitude: point.latitude, longitude: point.longitude });
+      centerCoordRef.current = { latitude: point.latitude, longitude: point.longitude };
       animateToCoord(point.latitude, point.longitude);
       updateAddressFromCoords(point.latitude, point.longitude);
     },
@@ -247,7 +250,7 @@ export default function RideConfirmPickupScreen() {
         accuracy: Location.Accuracy.Balanced,
       });
       const { latitude, longitude } = pos.coords;
-      setCenterCoord({ latitude, longitude });
+      centerCoordRef.current = { latitude, longitude };
       setSelectedSnapId(null);
       animateToCoord(latitude, longitude);
       await updateAddressFromCoords(latitude, longitude);
@@ -257,7 +260,7 @@ export default function RideConfirmPickupScreen() {
   }, [animateToCoord, updateAddressFromCoords]);
 
   const handleConfirmPickup = useCallback(async () => {
-    if (geocoding || confirming) return;
+    if (confirming) return;
 
     const { latitude, longitude } = centerCoordRef.current;
     const { primary, fullAddress } = addressRef.current;
@@ -312,6 +315,9 @@ export default function RideConfirmPickupScreen() {
               ? {
                   routeDurationSeconds: String(snapshot.routeDurationSeconds),
                   routeEtaMins: String(snapshot.routeEtaMinutes),
+                  ...(snapshot.viaLabel?.trim()
+                    ? { viaRouteName: snapshot.viaLabel.trim() }
+                    : {}),
                 }
               : {}),
           };
@@ -339,8 +345,20 @@ export default function RideConfirmPickupScreen() {
       if (params.dropLat) navParams.dropLat = String(params.dropLat);
       if (params.dropLng) navParams.dropLng = String(params.dropLng);
       if (params.stops) navParams.stops = String(params.stops);
-      if (params.estimatedFare) navParams.estimatedFare = String(params.estimatedFare);
-      if (params.quotedGrandTotal) navParams.quotedGrandTotal = String(params.quotedGrandTotal);
+      if (params.estimatedFare != null && String(params.estimatedFare).trim() !== "") {
+        navParams.estimatedFare = String(params.estimatedFare);
+      }
+      if (params.quotedListFare != null && String(params.quotedListFare).trim() !== "") {
+        navParams.quotedListFare = String(params.quotedListFare);
+      }
+      if (params.quotedGrandTotal != null && String(params.quotedGrandTotal).trim() !== "") {
+        navParams.quotedGrandTotal = String(params.quotedGrandTotal);
+      }
+      if (params.viaRouteName != null && String(params.viaRouteName).trim() !== "") {
+        navParams.viaRouteName = String(params.viaRouteName);
+      } else if (routeParams.viaRouteName) {
+        navParams.viaRouteName = routeParams.viaRouteName;
+      }
       if (params.customerTipAmount) navParams.customerTipAmount = String(params.customerTipAmount);
       if (params.pickupPincode) navParams.pickupPincode = String(params.pickupPincode);
       if (params.pickupState) navParams.pickupState = String(params.pickupState);
@@ -357,7 +375,6 @@ export default function RideConfirmPickupScreen() {
       setConfirming(false);
     }
   }, [
-    geocoding,
     confirming,
     setLastRidePickup,
     addRecentLocation,
@@ -366,7 +383,7 @@ export default function RideConfirmPickupScreen() {
   ]);
 
   const sheetBottom = Math.max(insets.bottom, 16);
-  const fabBottom = sheetBottom + 200;
+  const fabBottom = 16;
 
   return (
     <View style={styles.container}>
@@ -419,28 +436,24 @@ export default function RideConfirmPickupScreen() {
         </View>
 
         <View style={styles.addressCard}>
+          <AppText style={styles.addressPrimary} numberOfLines={1}>
+            {formatPrimaryLabel(address.primary)}
+          </AppText>
+          <AppText style={styles.addressFull} numberOfLines={2}>
+            {address.fullAddress || "—"}
+          </AppText>
           {geocoding ? (
-            <View style={styles.geocodeRow}>
+            <View style={styles.geocodeOverlay} pointerEvents="none">
               <ActivityIndicator size="small" color={GatiMitraColors.primaryMint} />
-              <AppText style={styles.geocodingText}>Updating address…</AppText>
             </View>
-          ) : (
-            <>
-              <AppText style={styles.addressPrimary} numberOfLines={2}>
-                {formatPrimaryLabel(address.primary)}
-              </AppText>
-              <AppText style={styles.addressFull} numberOfLines={3}>
-                {address.fullAddress || "—"}
-              </AppText>
-            </>
-          )}
+          ) : null}
         </View>
 
         <TouchableOpacity
-          style={[styles.confirmBtn, (geocoding || confirming) && styles.confirmBtnDisabled]}
+          style={[styles.confirmBtn, confirming && styles.confirmBtnDisabled]}
           onPress={handleConfirmPickup}
           activeOpacity={0.9}
-          disabled={geocoding || confirming}
+          disabled={confirming}
         >
           {confirming ? (
             <ActivityIndicator size="small" color="#FFFFFF" />
@@ -592,20 +605,21 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: GatiMitraColors.primaryMint,
     borderRadius: 12,
-    padding: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    paddingRight: 40,
     marginBottom: 16,
     backgroundColor: "#FFFFFF",
-    minHeight: 72,
+    height: 78,
     justifyContent: "center",
+    overflow: "hidden",
   },
-  geocodeRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  geocodingText: {
-    fontSize: 14,
-    color: "#6B7280",
+  geocodeOverlay: {
+    position: "absolute",
+    right: 12,
+    top: 0,
+    bottom: 0,
+    justifyContent: "center",
   },
   addressPrimary: {
     fontSize: 15,

@@ -216,6 +216,17 @@ export function pickVerifiedEmailAvatarUrl(
 const prefetchedAvatarUris = new Set<string>();
 
 export function prefetchEmailAvatar(profile: Pick<UserProfile, "email" | "is_email_verified" | "profile_image_url">) {
+  const custom = profile.profile_image_url?.trim();
+  if (custom && isCustomProfileUploadUrl(custom)) {
+    // Lazy absolute URL so home avatar hits disk cache without waiting on network.
+    void import("@/utils/mediaUrl").then(({ toAbsoluteImageUrl }) => {
+      const uri = toAbsoluteImageUrl(custom);
+      if (!uri || prefetchedAvatarUris.has(uri)) return;
+      prefetchedAvatarUris.add(uri);
+      void Image.prefetch(uri, { cachePolicy: "memory-disk" });
+    });
+  }
+
   if (!profile.is_email_verified || !profile.email?.trim()) return;
   const uri = pickVerifiedEmailAvatarUrl(profile.email, profile.profile_image_url);
   if (!uri || prefetchedAvatarUris.has(uri)) return;

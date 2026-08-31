@@ -18,6 +18,8 @@ export type RideRouteSnapshot = {
   routePolyline: LatLng[];
   routeSource: "mapbox" | "osrm" | "backend";
   computedAt: number;
+  /** NH/SH (or main road) for the Via chip. */
+  viaLabel?: string | null;
 };
 
 function roundCoord(value: number): string {

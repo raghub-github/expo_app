@@ -6,7 +6,7 @@
  * When parcel is inactive and grocery is active, Grocery shifts to slot 3.
  */
 
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo } from "react";
 import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -16,6 +16,8 @@ import { AppText } from "@/components/AppText";
 import type { CustomerAccountBlocksMap } from "@/services/customerServiceBlocks.service";
 import { FrozenServiceIconCircle } from "@/components/FrozenServiceIconCircle";
 import type { CustomerHomeServiceId } from "@/lib/customerHomeServiceMeta";
+import { prefetchCriticalHomeAssetImagesSync } from "@/lib/homeCriticalAssets";
+import { useAppAssetsStore } from "@/store/appAssetsStore";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -231,6 +233,11 @@ export function HomeServicesRow({
   accountBlocks,
   onAccountBlockedPress,
 }: Props) {
+  const assets = useAppAssetsStore((s) => s.assets);
+  useLayoutEffect(() => {
+    prefetchCriticalHomeAssetImagesSync(assets);
+  }, [assets]);
+
   const services = useMemo(
     () =>
       orderHomeServices({

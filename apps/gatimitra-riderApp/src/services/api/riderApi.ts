@@ -87,6 +87,8 @@ const OrderSummarySchema = z.object({
   customerFeedbackSubmitted: z.boolean().optional(),
   paymentMethod: z.string().nullable().optional(),
   paymentStatus: z.string().nullable().optional(),
+  customerPayable: z.number().optional(),
+  paymentRequired: z.boolean().optional(),
   adminRiderPaymentClearedAt: z.string().nullable().optional(),
   walletCreditPending: z.boolean().optional(),
   customerRating: z.number().nullable().optional(),

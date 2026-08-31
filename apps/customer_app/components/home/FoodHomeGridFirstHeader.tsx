@@ -117,6 +117,23 @@ export function FoodHomeGridFirstHeader({
     if (!isCustomProfileUploadUrl(profileImageUrl) || !profileImageUrl) return null;
     return toAbsoluteImageUrl(profileImageUrl);
   }, [profileImageUrl]);
+  const [avatarReady, setAvatarReady] = useState(false);
+
+  useEffect(() => {
+    setAvatarReady(false);
+    if (!avatarUri) return;
+    let cancelled = false;
+    void Image.prefetch(avatarUri, { cachePolicy: "memory-disk" })
+      .then(() => {
+        if (!cancelled) setAvatarReady(true);
+      })
+      .catch(() => {
+        /* onLoad / onError on Image still handle paint */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [avatarUri]);
 
   useEffect(() => {
     if (searchPlaceholders.length <= 1) return;
@@ -213,11 +230,23 @@ export function FoodHomeGridFirstHeader({
             onPress={() => router.push("/profile")}
             accessibilityLabel="Profile"
           >
+            <AppText
+              style={[styles.avatarInitials, avatarReady && avatarUri ? styles.avatarInitialsHidden : null]}
+            >
+              {initials}
+            </AppText>
             {avatarUri ? (
-              <Image source={{ uri: avatarUri }} style={styles.avatarImg} contentFit="cover" />
-            ) : (
-              <AppText style={styles.avatarInitials}>{initials}</AppText>
-            )}
+              <Image
+                source={{ uri: avatarUri }}
+                style={[styles.avatarImg, !avatarReady && styles.avatarImgPending]}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                recyclingKey={avatarUri}
+                transition={0}
+                onLoad={() => setAvatarReady(true)}
+                onError={() => setAvatarReady(false)}
+              />
+            ) : null}
           </TouchableOpacity>
         </View>
       </View>
@@ -373,13 +402,18 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   avatarImg: {
-    width: "100%",
-    height: "100%",
+    ...StyleSheet.absoluteFillObject,
+  },
+  avatarImgPending: {
+    opacity: 0,
   },
   avatarInitials: {
     fontSize: 12,
     fontWeight: "800",
     color: GatiMitraColors.primaryMint,
+  },
+  avatarInitialsHidden: {
+    opacity: 0,
   },
   searchRow: {
     flexDirection: "row",

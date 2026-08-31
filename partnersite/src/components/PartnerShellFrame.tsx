@@ -21,6 +21,7 @@ import { MXSidebarWhite } from './MXSidebarWhite'
 import { MXPartnerTopBar } from './MXPartnerTopBar'
 import { ParentBlockedBanner } from './ParentBlockedBanner'
 import { ServiceRestrictedNotice } from './ServiceRestrictedNotice'
+import { LicenseVerificationWaitingMarquee } from './LicenseVerificationWaitingMarquee'
 
 /**
  * Persistent partner chrome: mounted once by /partners/layout.tsx and kept alive across
@@ -182,6 +183,7 @@ export function PartnerShellFrame({ children }: { children: React.ReactNode }) {
               }`}
             >
               <ParentBlockedBanner />
+              <LicenseVerificationWaitingMarquee storeId={restaurantId} />
               <ServiceRestrictedNotice storeId={restaurantId} />
               <div
                 ref={mainScrollRef}

@@ -21,9 +21,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { customerSupportService, type TicketListItem } from "@/services/customerSupport.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreFonts } from "@/constants/storeTypography";
-import { supportHeaderPaddingTop } from "@/lib/supportLayout";
+import { SUPPORT_PAGE_BG, supportHeaderPaddingTop } from "@/lib/supportLayout";
 import { SupportNewTicketHost } from "@/components/support/SupportNewTicketHost";
 import { useAuthStore } from "@/store/authStore";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { useCustomerTicketsListRealtime } from "@/hooks/useCustomerTicketsListRealtime";
 import { useCustomerSupportReadStore } from "@/store/customerSupportReadStore";
 import {
@@ -105,6 +106,12 @@ export default function SupportListScreen() {
   useFocusEffect(
     useCallback(() => {
       void hydrateReadMap();
+      useScreenChromeStore.setState({
+        statusBarBackground: SUPPORT_PAGE_BG,
+        statusBarStyle: "dark",
+        hideStatusBarSpacer: false,
+      });
+      return () => useScreenChromeStore.getState().resetStatusBarBackground();
     }, [hydrateReadMap])
   );
 
@@ -206,7 +213,7 @@ export default function SupportListScreen() {
 
   return (
     <>
-      <StatusBar style="dark" backgroundColor="#fff" />
+      <StatusBar style="dark" backgroundColor={SUPPORT_PAGE_BG} />
       <View style={styles.container}>
         <View style={[styles.header, { paddingTop: supportHeaderPaddingTop(insets.top) }]}>
           <TouchableOpacity onPress={() => router.back()} style={styles.headerSide} hitSlop={12}>
@@ -266,14 +273,14 @@ export default function SupportListScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#fff" },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#fff" },
+  container: { flex: 1, backgroundColor: SUPPORT_PAGE_BG },
+  centered: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: SUPPORT_PAGE_BG },
   header: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
-    paddingBottom: 10,
-    backgroundColor: "#fff",
+    paddingBottom: 8,
+    backgroundColor: SUPPORT_PAGE_BG,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E5E7EB",
   },

@@ -1,7 +1,7 @@
 import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { resolveTopSafeInset, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { resolveTopSafeInset } from "@/constants/layout";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { CustomerWeatherContext } from "@/services/weather.service";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
@@ -19,6 +19,7 @@ const WEATHER_BORDER = "rgba(0, 0, 0, 0.035)";
 const ICON_BORDER = "rgba(0, 0, 0, 0.04)";
 const GREEN = GatiMitraColors.splashMint;
 const GREEN_TEXT = "#15803D";
+const PAGE_BG = GatiMitraColors.softBackground;
 
 const WEATHER_SHADOW = {
   shadowColor: "#0f172a",
@@ -127,8 +128,7 @@ export function HomeLocationHeader({
   const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
   // Root spacer usually owns safe-top; if immersive left it off, pad here so we never overlap.
   const safeTop = resolveTopSafeInset(insets.top);
-  const topPad =
-    (hideStatusBarSpacer ? safeTop : 0) + STATUS_BAR_TO_HEADER_GAP;
+  const topPad = hideStatusBarSpacer ? safeTop : 0;
   const showBadge = notificationBadgeCount != null && notificationBadgeCount > 0;
 
   return (
@@ -265,18 +265,18 @@ export function HomeScreenHeader({
 const styles = StyleSheet.create({
   wrap: {
     width: "100%",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: PAGE_BG,
   },
   headerBlock: {
     width: "100%",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: PAGE_BG,
     paddingHorizontal: PAD,
-    paddingBottom: 8,
+    paddingBottom: 4,
     zIndex: 10,
   },
   weatherShell: {
     width: "100%",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: PAGE_BG,
   },
   weatherWrap: {
     width: "100%",

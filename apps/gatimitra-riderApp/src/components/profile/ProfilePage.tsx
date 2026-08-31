@@ -32,6 +32,8 @@ import { RiderRatingBadge } from "@/src/components/profile/RiderRatingBadge";
 import { formatRiderRatingDisplay } from "@/src/lib/format-rider-rating";
 import { toAbsoluteImageUrl } from "@/src/utils/mediaUrl";
 import { fetchRiderReferralConfig } from "@/src/services/referral.service";
+import { ProfileSelfieUpdateSheet } from "@/src/components/profile/ProfileSelfieUpdateSheet";
+import { ProfileAvatarCameraBadge } from "@/src/components/profile/ProfileAvatarCameraBadge";
 
 const PAGE_BG = "#F4F6F8";
 const PAD = 16;
@@ -72,6 +74,7 @@ export function ProfilePage() {
   const [avatarError, setAvatarError] = useState(false);
   const openLogoutSheet = useLogoutSheetStore((s) => s.open);
   const [languageSheetVisible, setLanguageSheetVisible] = useState(false);
+  const [selfieSheetOpen, setSelfieSheetOpen] = useState(false);
 
   const riderName =
     riderStatus?.name?.trim() ||
@@ -168,8 +171,8 @@ export function ProfilePage() {
             ) : null}
 
             <View style={styles.heroContent}>
-              <Pressable onPress={openProfile} style={styles.avatarBox}>
-                <View style={styles.avatarCircle}>
+              <View style={styles.avatarBox}>
+                <Pressable onPress={openProfile} style={styles.avatarCircle}>
                   {showAvatar && avatarUri ? (
                     <Image
                       source={{ uri: avatarUri }}
@@ -179,11 +182,17 @@ export function ProfilePage() {
                   ) : (
                     <Text style={styles.avatarLetters}>{avatarInitials}</Text>
                   )}
-                </View>
-                <View style={styles.camBtn}>
-                  <Ionicons name="camera" size={12} color="#0F766E" />
-                </View>
-              </Pressable>
+                </Pressable>
+                <ProfileAvatarCameraBadge
+                  avatarSize={76}
+                  size={26}
+                  onPress={() => setSelfieSheetOpen(true)}
+                  accessibilityLabel={t(
+                    "profile.selfieUpdate.openCamera",
+                    "Update profile photo"
+                  )}
+                />
+              </View>
 
               <View style={styles.heroText}>
                 <Text style={styles.hello} numberOfLines={1}>
@@ -248,6 +257,12 @@ export function ProfilePage() {
       <LanguageSelectionSheet
         visible={languageSheetVisible}
         onClose={() => setLanguageSheetVisible(false)}
+      />
+
+      <ProfileSelfieUpdateSheet
+        visible={selfieSheetOpen}
+        onClose={() => setSelfieSheetOpen(false)}
+        onSaved={() => setAvatarError(false)}
       />
 
     </View>
@@ -323,7 +338,11 @@ const styles = StyleSheet.create({
   },
   avatarBox: {
     position: "relative",
-    marginRight: 14,
+    // Extra room so the camera badge can sit slightly outside the photo circle
+    // without being clipped by the hero card overflow.
+    width: 84,
+    height: 82,
+    marginRight: 10,
   },
   avatarCircle: {
     width: 76,
@@ -344,19 +363,6 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: "800",
     color: "#FFF",
-  },
-  camBtn: {
-    position: "absolute",
-    right: 0,
-    bottom: 0,
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: "#FFF",
-    borderWidth: 2,
-    borderColor: "#14B8A6",
-    alignItems: "center",
-    justifyContent: "center",
   },
   heroText: {
     flex: 1,

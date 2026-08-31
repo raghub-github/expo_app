@@ -117,6 +117,11 @@ import {
   maskOrderContactPhone,
   resolveRiderCustomerContactFields,
 } from "../../lib/order-alternate-contact.js";
+import {
+  isRideFareAwaitingCustomerPayment,
+  resolvePersonRideCustomerPayable,
+} from "../../lib/ride-customer-payable.js";
+import { reconcileAndSettlePersonRideCustomerPayable } from "../../lib/settle-zero-payable-person-ride.js";
 
 export const RIDER_ACCEPT_WINDOW_SEC = 60;
 export {
@@ -244,6 +249,10 @@ export type RiderOrderSummary = {
   paymentMethod?: string | null;
   /** orders_core.payment_status — paid, pending, etc. */
   paymentStatus?: string | null;
+  /** Customer amount due after discounts (₹). Not rider earning. */
+  customerPayable?: number;
+  /** True only when customer still owes a collectible fare. */
+  paymentRequired?: boolean;
   /** Admin released rider while customer fare still due. */
   adminRiderPaymentClearedAt?: string | null;
   /** Delivered ride: customer fare unpaid — earnings not yet in wallet/ledger. */
@@ -512,6 +521,15 @@ function mapRideRow(row: RideRow, ledgerTotal?: number | null): RiderOrderSummar
   const bookingTripKm = resolveRideStoredTripKm(row);
   const canonicalId = row.orderId?.trim() || row.formattedOrderId?.trim() || "";
   const payment = resolveOrderPaymentFields(row);
+  const customerPayable = resolvePersonRideCustomerPayable({
+    grandTotal: row.grandTotal,
+    checkoutMetadata: row.checkoutMetadata,
+    billingSnapshot: row.billingSnapshot,
+  });
+  const paymentRequired = isRideFareAwaitingCustomerPayment({
+    paymentStatus: payment.paymentStatus,
+    customerPayable,
+  });
   const customer = resolveRideCustomer(row);
   const mapped: RiderOrderSummary = {
     id: canonicalId,
@@ -554,6 +572,8 @@ function mapRideRow(row: RideRow, ledgerTotal?: number | null): RiderOrderSummar
     dropAddressGeocoded: row.dropAddressGeocoded?.trim() || undefined,
     paymentMethod: payment.paymentMethod,
     paymentStatus: payment.paymentStatus,
+    customerPayable,
+    paymentRequired,
     adminRiderPaymentClearedAt: row.adminRiderPaymentClearedAt
       ? row.adminRiderPaymentClearedAt instanceof Date
         ? row.adminRiderPaymentClearedAt.toISOString()
@@ -1410,6 +1430,7 @@ export async function getRidePaymentHoldsForRider(
       grandTotal: ordersCore.grandTotal,
       riderEarning: ordersCore.riderEarning,
       billingSnapshot: ordersCore.billingSnapshot,
+      checkoutMetadata: ordersCore.checkoutMetadata,
       customerTipAmount: ordersRide.customerTipAmount,
       actualDeliveryTime: ordersCore.actualDeliveryTime,
       updatedAt: ordersCore.updatedAt,
@@ -1429,7 +1450,18 @@ export async function getRidePaymentHoldsForRider(
     .limit(5);
 
   return rows
-    .filter((row) => row.orderId?.trim() && isRideFarePaymentPending(row.paymentStatus))
+    .filter((row) => {
+      if (!row.orderId?.trim()) return false;
+      const payable = resolvePersonRideCustomerPayable({
+        grandTotal: row.grandTotal,
+        checkoutMetadata: row.checkoutMetadata,
+        billingSnapshot: row.billingSnapshot,
+      });
+      return isRideFareAwaitingCustomerPayment({
+        paymentStatus: row.paymentStatus,
+        customerPayable: payable,
+      });
+    })
     .map((row) => {
       const snap = readRideRiderPayoutSnapshot(row.billingSnapshot);
       const tip = Math.max(0, Number(row.customerTipAmount) || 0);
@@ -3599,19 +3631,22 @@ export async function getRideOrderForRider(
     throw Object.assign(new Error("Ride order not found"), { statusCode: 404 });
   }
 
-  if (
-    row.status === "delivered" &&
-    isRideFarePaymentPending(row.paymentStatus) &&
-    row.pickupWaitSeconds != null &&
-    Number(row.pickupWaitSeconds) > 0
-  ) {
-    await ensureRidePickupWaitingBillingReconciled(row.coreId, riderId);
+  if (row.status === "delivered") {
+    if (
+      isRideFarePaymentPending(row.paymentStatus) &&
+      row.pickupWaitSeconds != null &&
+      Number(row.pickupWaitSeconds) > 0
+    ) {
+      await ensureRidePickupWaitingBillingReconciled(row.coreId, riderId);
+    }
+    await reconcileAndSettlePersonRideCustomerPayable(row.coreId);
     const [refreshed] = await db
       .select({
         billingSnapshot: ordersCore.billingSnapshot,
         acceptPayoutSnapshot: ordersRide.acceptPayoutSnapshot,
         grandTotal: ordersCore.grandTotal,
         riderEarning: ordersCore.riderEarning,
+        paymentStatus: ordersCore.paymentStatus,
       })
       .from(ordersCore)
       .innerJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
@@ -3622,6 +3657,7 @@ export async function getRideOrderForRider(
       row.acceptPayoutSnapshot = refreshed.acceptPayoutSnapshot;
       row.grandTotal = refreshed.grandTotal;
       row.riderEarning = refreshed.riderEarning;
+      row.paymentStatus = refreshed.paymentStatus;
     }
   }
 
@@ -4152,11 +4188,7 @@ export async function markReachedPickupForRider(
   });
 
   noteRiderOrderLocationMilestone(riderId, orderRef, "reached_store", gps);
-  void notifyCustomerRideLifecycle({
-    orderIdText: orderRef.trim(),
-    templateCode: "RIDE_RIDER_NEARBY",
-    riderId,
-  });
+  // One unique pickup-arrival notify: OTP/captain-arrived. Do not also send RIDE_RIDER_NEARBY.
   void import("../../lib/otp-radius-notify.js")
     .then(({ notifyCustomerPickupOtpOnRadius }) =>
       notifyCustomerPickupOtpOnRadius({
@@ -6173,6 +6205,65 @@ export async function verifyDeliveryOtpForRider(
   });
 }
 
+async function finalizePersonRideAfterComplete(
+  orderCorePk: number,
+  riderId: number,
+  orderIdText: string
+): Promise<void> {
+  try {
+    await applyRidePickupWaitingToBilling(orderCorePk, riderId);
+  } catch (err) {
+    console.warn("[completePersonRideForRider] waiting billing update failed:", err);
+  }
+  try {
+    await persistRideRiderAcceptPayoutSnapshot(orderCorePk, riderId);
+  } catch {
+    /* payout snapshot is best-effort */
+  }
+  try {
+    await reconcileAndSettlePersonRideCustomerPayable(orderCorePk);
+  } catch (err) {
+    console.warn("[completePersonRideForRider] customer payable settle failed:", err);
+  }
+  try {
+    const db = getDb();
+    const [payRow] = await db
+      .select({
+        paymentStatus: ordersCore.paymentStatus,
+        grandTotal: ordersCore.grandTotal,
+        checkoutMetadata: ordersCore.checkoutMetadata,
+        billingSnapshot: ordersCore.billingSnapshot,
+      })
+      .from(ordersCore)
+      .where(eq(ordersCore.id, orderCorePk))
+      .limit(1);
+    const payable = resolvePersonRideCustomerPayable({
+      grandTotal: payRow?.grandTotal,
+      checkoutMetadata: payRow?.checkoutMetadata,
+      billingSnapshot: payRow?.billingSnapshot,
+    });
+    if (
+      isRideFareAwaitingCustomerPayment({
+        paymentStatus: payRow?.paymentStatus,
+        customerPayable: payable,
+      })
+    ) {
+      return;
+    }
+    const { creditRiderOrderEarningOnDelivered } = await import(
+      "../../lib/credit-rider-order-on-delivered.js"
+    );
+    await creditRiderOrderEarningOnDelivered({
+      ordersCoreId: orderCorePk,
+      riderId,
+      orderType: "person_ride",
+      orderIdText,
+    });
+  } catch (err) {
+    console.warn("[completePersonRideForRider] rider wallet credit skipped:", err);
+  }
+}
+
 export async function completePersonRideForRider(
   riderId: number,
   orderRef: string,
@@ -6314,29 +6405,8 @@ export async function completePersonRideForRider(
   });
 
   if (savedCorePk > 0) {
-    void applyRidePickupWaitingToBilling(savedCorePk, riderId).catch((err) => {
-      console.warn("[completePersonRideForRider] waiting billing update failed:", err);
-    });
-    void persistRideRiderAcceptPayoutSnapshot(savedCorePk, riderId).catch(() => {});
-    void import("../../lib/credit-rider-order-on-delivered.js")
-      .then(async ({ creditRiderOrderEarningOnDelivered }) => {
-        const db = getDb();
-        const [payRow] = await db
-          .select({ paymentStatus: ordersCore.paymentStatus })
-          .from(ordersCore)
-          .where(eq(ordersCore.id, savedCorePk))
-          .limit(1);
-        if (isRideFarePaymentPending(payRow?.paymentStatus)) return;
-        return creditRiderOrderEarningOnDelivered({
-          ordersCoreId: savedCorePk,
-          riderId,
-          orderType: "person_ride",
-          orderIdText: savedOrderIdText,
-        });
-      })
-      .catch((err) => {
-        console.warn("[completePersonRideForRider] rider wallet credit skipped:", err);
-      });
+    await finalizePersonRideAfterComplete(savedCorePk, riderId, savedOrderIdText);
+    return getRideOrderForRider(riderId, savedOrderIdText);
   }
 
   const withDistances = await attachRiderOrderDistanceBreakdown(riderId, savedCorePk, updated);
@@ -6487,29 +6557,10 @@ async function verifyPersonRideDropOtpForRider(
   });
 
   if (savedCorePk > 0) {
-    void applyRidePickupWaitingToBilling(savedCorePk, riderId).catch((err) => {
-      console.warn("[verifyPersonRideDropOtpForRider] waiting billing update failed:", err);
-    });
-    void persistRideRiderAcceptPayoutSnapshot(savedCorePk, riderId).catch(() => {});
-    void import("../../lib/credit-rider-order-on-delivered.js")
-      .then(async ({ creditRiderOrderEarningOnDelivered }) => {
-        const db = getDb();
-        const [payRow] = await db
-          .select({ paymentStatus: ordersCore.paymentStatus })
-          .from(ordersCore)
-          .where(eq(ordersCore.id, savedCorePk))
-          .limit(1);
-        if (isRideFarePaymentPending(payRow?.paymentStatus)) return;
-        return creditRiderOrderEarningOnDelivered({
-          ordersCoreId: savedCorePk,
-          riderId,
-          orderType: "person_ride",
-          orderIdText: savedOrderIdText,
-        });
-      })
-      .catch((err) => {
-        console.warn("[verifyPersonRideDropOtpForRider] rider wallet credit skipped:", err);
-      });
+    await finalizePersonRideAfterComplete(savedCorePk, riderId, savedOrderIdText);
+    const refreshed = await getRideOrderForRider(riderId, savedOrderIdText);
+    noteRiderOrderLocationMilestone(riderId, refreshed.id, "delivered");
+    return refreshed;
   }
 
   noteRiderOrderLocationMilestone(riderId, updated.id, "delivered");

@@ -4,6 +4,12 @@ import {
   ROUTE_LINE_COLOR,
   ROUTE_PICKUP_COLOR,
 } from "@/lib/customer-map-assets";
+import {
+  NAV_ROUTE_CASING_WIDTH,
+  NAV_ROUTE_GLOW,
+  NAV_ROUTE_GLOW_WIDTH,
+  NAV_ROUTE_WIDTH,
+} from "@gatimitra/map-tracking-engine";
 
 type RapidoRouteStyle = {
   lineColor?: string;
@@ -12,6 +18,8 @@ type RapidoRouteStyle = {
   showEndpointDots?: boolean;
   /** Thicker stroke for ride-book (Rapido-style). */
   thickStroke?: boolean;
+  /** Rider-app live-nav mint route (glow + casing + line). */
+  liveNav?: boolean;
 };
 
 /** Mapbox GL JS — Rapido-style route layers + endpoint dots. */
@@ -19,13 +27,33 @@ export function mapboxRapidoRouteScript(style?: RapidoRouteStyle): string {
   const lineColor = style?.lineColor ?? ROUTE_LINE_COLOR;
   const casingColor = style?.casingColor ?? ROUTE_CASING_COLOR;
   const showEndpointDots = style?.showEndpointDots !== false;
+  const liveNav = style?.liveNav === true;
   const thick = style?.thickStroke === true;
-  const casingWidth = thick
-    ? "['interpolate', ['linear'], ['zoom'], 5, 4, 8, 5, 11, 6, 14, 7, 16, 8]"
-    : "['interpolate', ['linear'], ['zoom'], 11, 7, 14, 10, 16, 12, 18, 14]";
-  const lineWidth = thick
-    ? "['interpolate', ['linear'], ['zoom'], 5, 2.5, 8, 3, 11, 3.5, 14, 4.5, 16, 5]"
-    : "['interpolate', ['linear'], ['zoom'], 11, 4.5, 14, 6.5, 16, 8, 18, 9.5]";
+  const casingWidth = liveNav
+    ? String(NAV_ROUTE_CASING_WIDTH)
+    : thick
+      ? "['interpolate', ['linear'], ['zoom'], 5, 4, 8, 5, 11, 6, 14, 7, 16, 8]"
+      : "['interpolate', ['linear'], ['zoom'], 11, 7, 14, 10, 16, 12, 18, 14]";
+  const lineWidth = liveNav
+    ? String(NAV_ROUTE_WIDTH)
+    : thick
+      ? "['interpolate', ['linear'], ['zoom'], 5, 2.5, 8, 3, 11, 3.5, 14, 4.5, 16, 5]"
+      : "['interpolate', ['linear'], ['zoom'], 11, 4.5, 14, 6.5, 16, 8, 18, 9.5]";
+  const glowLayer = liveNav
+    ? `
+        map.addLayer({
+          id: 'route-glow',
+          type: 'line',
+          source: 'route',
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: {
+            'line-color': '${NAV_ROUTE_GLOW}',
+            'line-width': ${NAV_ROUTE_GLOW_WIDTH},
+            'line-opacity': 0.65,
+            'line-blur': 2
+          }
+        });`
+    : "";
   return `
       var endpointMarkers = [];
 
@@ -48,6 +76,7 @@ export function mapboxRapidoRouteScript(style?: RapidoRouteStyle): string {
           type: 'geojson',
           data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } }
         });
+        ${glowLayer}
         map.addLayer({
           id: 'route-casing',
           type: 'line',

@@ -1,6 +1,10 @@
 import type { OrderSummary } from "@/services/order.service";
 import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
 import { isPersonRideOrderSummary } from "@/lib/person-ride-order-kind";
+import {
+  isRideCustomerPaymentRequired,
+  resolvePersonRideCustomerPayable,
+} from "@/lib/ride-customer-payable";
 
 export function isCashRidePaymentMethod(method?: string | null): boolean {
   const m = String(method ?? "").trim().toLowerCase();
@@ -27,11 +31,23 @@ function isRideFareMarkedPaidInSnapshot(snap?: Record<string, unknown> | null): 
 
 export function isRideFarePaymentPending(
   paymentStatus?: string | null,
-  extras?: { billingSnapshot?: Record<string, unknown> | null }
+  extras?: {
+    billingSnapshot?: Record<string, unknown> | null;
+    checkoutMetadata?: Record<string, unknown> | null;
+    totalAmount?: number | null;
+  }
 ): boolean {
   const ps = String(paymentStatus ?? "").trim().toLowerCase();
   if (ps === "paid" || ps === "completed") return false;
   if (isRideFareMarkedPaidInSnapshot(extras?.billingSnapshot)) return false;
+  if (extras?.totalAmount != null || extras?.checkoutMetadata != null || extras?.billingSnapshot != null) {
+    const payable = resolvePersonRideCustomerPayable({
+      totalAmount: extras?.totalAmount,
+      checkoutMetadata: extras?.checkoutMetadata,
+      billingSnapshot: extras?.billingSnapshot,
+    });
+    return isRideCustomerPaymentRequired(payable);
+  }
   return true;
 }
 
@@ -41,10 +57,13 @@ export function shouldShowRideCashPayScreen(order: {
   paymentMethod?: string | null;
   checkoutMetadata?: Record<string, unknown> | null;
   billingSnapshot?: Record<string, unknown> | null;
+  totalAmount?: number | null;
 }): boolean {
   if (!isCashRidePaymentMethod(resolveRidePaymentMethod(order))) return false;
   return isRideFarePaymentPending(order.paymentStatus, {
     billingSnapshot: order.billingSnapshot,
+    checkoutMetadata: order.checkoutMetadata,
+    totalAmount: order.totalAmount,
   });
 }
 
@@ -54,10 +73,13 @@ export function shouldShowRideFarePaymentPendingScreen(order: {
   paymentMethod?: string | null;
   checkoutMetadata?: Record<string, unknown> | null;
   billingSnapshot?: Record<string, unknown> | null;
+  totalAmount?: number | null;
 }): boolean {
   if (isCashRidePaymentMethod(resolveRidePaymentMethod(order))) return false;
   return isRideFarePaymentPending(order.paymentStatus, {
     billingSnapshot: order.billingSnapshot,
+    checkoutMetadata: order.checkoutMetadata,
+    totalAmount: order.totalAmount,
   });
 }
 
@@ -81,5 +103,5 @@ export function isRideFareAlreadyPaidError(error: unknown): boolean {
   };
   const status = err.status ?? err.response?.status;
   const message = String(err.message ?? err.response?.data?.message ?? "").toLowerCase();
-  return status === 409 && message.includes("already paid");
+  return status === 409 && (message.includes("already paid") || message.includes("already settled"));
 }

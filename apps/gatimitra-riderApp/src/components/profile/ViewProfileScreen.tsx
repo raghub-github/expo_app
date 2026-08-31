@@ -21,6 +21,8 @@ import { SUPPORTED_LANGUAGES } from "@/src/stores/languageStore";
 import { toAbsoluteImageUrl } from "@/src/utils/mediaUrl";
 import { colors } from "@/src/theme";
 import { fetchRiderReferralConfig } from "@/src/services/referral.service";
+import { ProfileSelfieUpdateSheet } from "@/src/components/profile/ProfileSelfieUpdateSheet";
+import { ProfileAvatarCameraBadge } from "@/src/components/profile/ProfileAvatarCameraBadge";
 
 const TEAL = colors.primary[600];
 const TEAL_LIGHT = colors.primary[50];
@@ -92,6 +94,7 @@ export function ViewProfileScreen() {
   const { data: riderStatus } = useRiderStatus(riderId);
   const [avatarError, setAvatarError] = useState(false);
   const [showReferralUi, setShowReferralUi] = useState(false);
+  const [selfieSheetOpen, setSelfieSheetOpen] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -180,16 +183,27 @@ export function ViewProfileScreen() {
           }
         >
           <View style={styles.heroCard}>
-            <View style={styles.avatarCircle}>
-              {showAvatar && avatarUri ? (
-                <Image
-                  source={{ uri: avatarUri }}
-                  style={styles.avatarImg}
-                  onError={() => setAvatarError(true)}
-                />
-              ) : (
-                <Text style={styles.avatarLetters}>{initialsFromName(displayProfile.name)}</Text>
-              )}
+            <View style={styles.avatarBox}>
+              <View style={styles.avatarCircle}>
+                {showAvatar && avatarUri ? (
+                  <Image
+                    source={{ uri: avatarUri }}
+                    style={styles.avatarImg}
+                    onError={() => setAvatarError(true)}
+                  />
+                ) : (
+                  <Text style={styles.avatarLetters}>{initialsFromName(displayProfile.name)}</Text>
+                )}
+              </View>
+              <ProfileAvatarCameraBadge
+                avatarSize={88}
+                size={28}
+                onPress={() => setSelfieSheetOpen(true)}
+                accessibilityLabel={t(
+                  "profile.selfieUpdate.openCamera",
+                  "Update profile photo"
+                )}
+              />
             </View>
             <Text style={styles.heroName}>{displayProfile.name?.trim() || "—"}</Text>
             <Text style={styles.heroId}>{displayProfile.riderDisplayId}</Text>
@@ -294,6 +308,15 @@ export function ViewProfileScreen() {
           </Text>
         </ScrollView>
       )}
+
+      <ProfileSelfieUpdateSheet
+        visible={selfieSheetOpen}
+        onClose={() => setSelfieSheetOpen(false)}
+        onSaved={() => {
+          setAvatarError(false);
+          void refetch();
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -380,6 +403,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderWidth: 1,
     borderColor: "#E2E8F0",
+  },
+  avatarBox: {
+    position: "relative",
+    width: 96,
+    height: 94,
+    marginBottom: 4,
   },
   avatarCircle: {
     width: 88,

@@ -59,6 +59,7 @@ import {
   type LicenseDocumentStatus,
   type MerchantDocumentPrefix,
 } from '@/lib/merchantLicenseExpiry';
+import { clearLicenseVerifyMarquee } from '@/lib/licenseVerifyMarquee';
 import { RadarLiveIndicator } from '@/components/RadarLiveIndicator';
 import {
   PartnerWaitingOrderSync,
@@ -1001,19 +1002,25 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     return () => document.removeEventListener('mousedown', onDoc);
   }, [profileDropdownOpen]);
 
-  const applyLicenseFieldsFromStoreOps = useCallback((data: Record<string, unknown>) => {
-    const blocked = data.license_blocked === true;
-    const expired = Array.isArray(data.license_expired_documents)
-      ? (data.license_expired_documents as LicenseDocumentStatus[])
-      : [];
-    const pending = Array.isArray(data.license_pending_verification)
-      ? (data.license_pending_verification as LicenseDocumentStatus[])
-      : [];
-    setLicenseBlocked(blocked);
-    setLicenseExpiredDocs(expired);
-    setLicensePendingDocs(pending);
-    // Modal opens only when user tries to go online or uploads from profile — not on every poll.
-  }, []);
+  const applyLicenseFieldsFromStoreOps = useCallback(
+    (data: Record<string, unknown>, forStoreId?: string) => {
+      const blocked = data.license_blocked === true;
+      const expired = Array.isArray(data.license_expired_documents)
+        ? (data.license_expired_documents as LicenseDocumentStatus[])
+        : [];
+      const pending = Array.isArray(data.license_pending_verification)
+        ? (data.license_pending_verification as LicenseDocumentStatus[])
+        : [];
+      setLicenseBlocked(blocked);
+      setLicenseExpiredDocs(expired);
+      setLicensePendingDocs(pending);
+      if (forStoreId && pending.length === 0) {
+        clearLicenseVerifyMarquee(forStoreId);
+      }
+      // Modal opens only when user tries to go online or uploads from profile — not on every poll.
+    },
+    []
+  );
 
   const refreshStoreOperations = useCallback(async () => {
     if (!resolvedStoreId) return;
@@ -1024,7 +1031,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         staleTime: 15_000,
       });
       if (data && typeof data.operational_status === 'string') {
-        applyLicenseFieldsFromStoreOps(data as unknown as Record<string, unknown>);
+        applyLicenseFieldsFromStoreOps(data as unknown as Record<string, unknown>, resolvedStoreId);
         const withinH =
           typeof data.within_operating_hours === 'boolean' ? data.within_operating_hours : null;
         const todayClosed =
@@ -1126,7 +1133,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           setStoreOpen(row.open);
           setAutoOpenFromSchedule(row.autoOpen);
           setManualLock(row.manualLock);
-          applyLicenseFieldsFromStoreOps(data as unknown as Record<string, unknown>);
+          applyLicenseFieldsFromStoreOps(data as unknown as Record<string, unknown>, storeId);
         }
         return true;
       }

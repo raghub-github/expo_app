@@ -67,18 +67,34 @@ export function rideFareBillFromBillingSnapshot(input: {
   const snap = input.billingSnapshot ?? {};
   const rideFare = Math.max(
     0,
-    num(snap.ride_fare) || num(snap.fare_amount) || num(snap.item_total)
+    num(snap.ride_fare),
+    num(snap.fare_amount),
+    num(snap.item_total),
+    num(snap.original_fare)
   );
-  const finalAmount =
-    num(snap.final_amount) || (input.totalAmount != null ? num(input.totalAmount) : 0);
-  if (rideFare <= 0 && finalAmount <= 0) return null;
+  const hasExplicitFinal = snap.final_amount != null && snap.final_amount !== "";
+  const snapshotFinal = hasExplicitFinal ? num(snap.final_amount) : null;
+  const fallbackTotal = input.totalAmount != null ? num(input.totalAmount) : 0;
+  const finalAmount = snapshotFinal ?? fallbackTotal;
 
   const tipAmount = Math.max(0, num(snap.tip_amount) || num(input.tipAmount));
-  const discounts = resolveSnapshotDiscountRows(snap);
-  const discountTotal =
+  let discounts = resolveSnapshotDiscountRows(snap);
+  let discountTotal =
     discounts.length > 0
       ? Math.round(discounts.reduce((sum, row) => sum + row.amount, 0) * 100) / 100
       : num(snap.discount_total);
+
+  if (rideFare <= 0 && finalAmount <= 0 && discountTotal <= 0) return null;
+
+  if (discounts.length === 0 && rideFare > 0.005 && finalAmount + 0.005 < rideFare) {
+    const inferred = Math.round((rideFare - finalAmount) * 100) / 100;
+    if (inferred > 0.005) {
+      const coupon =
+        typeof snap.ride_fare_coupon_code === "string" ? snap.ride_fare_coupon_code.trim() : "";
+      discounts = [{ label: coupon || "Offer applied", amount: inferred }];
+      discountTotal = inferred;
+    }
+  }
   const platformFee = num(snap.platform_fee);
   const convenienceFee = num(snap.convenience_fee);
   const taxTotal = num(snap.tax_total);
@@ -156,7 +172,7 @@ export function rideFareBillFromBillingSnapshot(input: {
   const draftBill: RideFareBillApiResponse = {
     ok: true,
     rideFare,
-    finalAmount: finalAmount > 0 ? finalAmount : rideFare + tipAmount,
+    finalAmount,
     discountTotal,
     platformFee,
     convenienceFee,
@@ -168,11 +184,9 @@ export function rideFareBillFromBillingSnapshot(input: {
   };
 
   const payableTotal = computeRideFarePayableTotal(draftBill);
-  const paidAt =
-    typeof snap.ride_fare_paid_at === "string" && snap.ride_fare_paid_at.trim().length > 0;
   const reconciledFinal =
-    paidAt && finalAmount > 0 && Math.abs(finalAmount - payableTotal) <= 0.02
-      ? finalAmount
+    hasExplicitFinal && snapshotFinal != null && snapshotFinal <= payableTotal + 0.02
+      ? snapshotFinal
       : payableTotal;
 
   return {
@@ -360,7 +374,8 @@ export function buildRideFareBillSummaryLines(
   const fromParts = computeRideFarePayableTotal(bill, extras);
   const fromFinal =
     bill.finalAmount > 0.005 ? Math.round(bill.finalAmount * 100) / 100 : 0;
-  const payableTotal = Math.max(fromParts, fromFinal);
+  const payableTotal =
+    bill.discountTotal > 0.005 ? fromParts : Math.max(fromParts, fromFinal);
 
   push("Total fare", payableTotal, { emphasis: true });
 
@@ -480,7 +495,8 @@ export function buildRideCheckoutCompactBill(
   const fromParts = computeRideFarePayableTotal(bill, extras);
   const fromFinal =
     bill.finalAmount > 0.005 ? Math.round(bill.finalAmount * 100) / 100 : 0;
-  const payableTotal = Math.max(fromParts, fromFinal);
+  const payableTotal =
+    bill.discountTotal > 0.005 ? fromParts : Math.max(fromParts, fromFinal);
 
   return {
     rideFare,

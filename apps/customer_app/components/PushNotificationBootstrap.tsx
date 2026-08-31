@@ -322,23 +322,30 @@ function PushNotificationBootstrapInner() {
           if (!id || seenIds.has(id)) continue;
           seenIds.add(id);
           if (item.clicked_at) continue;
-          const title = (item.title ?? "").trim();
+          const meta = item.metadata ?? {};
+          const title =
+            (typeof meta.liveTitle === "string" && meta.liveTitle.trim()) ||
+            (item.title ?? "").trim();
           if (!title) continue;
           const templateCode = item.template_code ?? "";
           if (isSystemShadeOnlyPush({
             template_code: templateCode,
             gmType: templateCode,
             admin_cx: templateCode.toUpperCase().startsWith("ADMIN_CX_"),
+            ...meta,
           })) {
             continue;
           }
           enqueueInAppBanner({
             id,
             title,
-            body: item.body,
+            body:
+              (typeof meta.liveBody === "string" && meta.liveBody.trim()) ||
+              item.body,
             deepLink: item.deep_link,
             templateCode: item.template_code,
             data: {
+              ...meta,
               notification_id: id,
               gmType: item.template_code ?? "",
               gmTitle: item.title ?? "",

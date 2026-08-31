@@ -20,6 +20,18 @@ import {
   useCustomerNativeMapbox,
 } from "@/components/maps/native-map-shared";
 
+const FALLBACK_REGION: MapRegion = {
+  latitude: 20.5937,
+  longitude: 78.9629,
+  latitudeDelta: 0.01,
+  longitudeDelta: 0.01,
+};
+
+function safeMapRegion(region: MapRegion): MapRegion {
+  if (isValidMapCoordinate(region.latitude, region.longitude)) return region;
+  return FALLBACK_REGION;
+}
+
 export type MapRegion = {
   latitude: number;
   longitude: number;
@@ -63,23 +75,27 @@ export const MapboxWebPannableMap = forwardRef<CustomerMapRef, Props>(function M
   const cameraRef = useRef(null);
   const readyRef = useRef(false);
   const [mapReady, setMapReady] = useState(false);
-  const lastChangeRef = useRef<{ lat: number; lng: number } | null>(null);
+  const lastPostedRef = useRef<{ lat: number; lng: number } | null>(null);
+  const ignoreUntilMsRef = useRef(0);
+  const origin = safeMapRegion(initialRegion);
   const originRef = useRef({
-    latitude: initialRegion.latitude,
-    longitude: initialRegion.longitude,
-    zoom: latitudeDeltaToZoom(initialRegion.latitudeDelta ?? 0.01),
+    latitude: origin.latitude,
+    longitude: origin.longitude,
+    zoom: latitudeDeltaToZoom(origin.latitudeDelta ?? 0.01),
   });
 
   const postRegion = useCallback(
     (phase: "change" | "complete", lat: number, lng: number) => {
       if (!readyRef.current) return;
       if (!isValidMapCoordinate(lat, lng)) return;
-      if (phase === "change" && lastChangeRef.current) {
-        const dLat = Math.abs(lat - lastChangeRef.current.lat);
-        const dLng = Math.abs(lng - lastChangeRef.current.lng);
-        if (dLat < 1e-6 && dLng < 1e-6) return;
+      if (Date.now() < ignoreUntilMsRef.current) return;
+      if (lastPostedRef.current) {
+        const dLat = Math.abs(lat - lastPostedRef.current.lat);
+        const dLng = Math.abs(lng - lastPostedRef.current.lng);
+        // ~11m — ignore camera jitter / map-resize idles that aren't a real pan.
+        if (dLat < 1e-4 && dLng < 1e-4) return;
       }
-      if (phase === "change") lastChangeRef.current = { lat, lng };
+      lastPostedRef.current = { lat, lng };
       const region: MapRegion = { latitude: lat, longitude: lng };
       if (phase === "complete") onRegionChangeComplete?.(region);
       else onRegionChange?.(region);
@@ -104,9 +120,12 @@ export const MapboxWebPannableMap = forwardRef<CustomerMapRef, Props>(function M
       },
       animateToRegion: (region: MapRegion) => {
         if (!readyRef.current) return;
-        const zoom = latitudeDeltaToZoom(region.latitudeDelta ?? 0.01);
+        const next = safeMapRegion(region);
+        ignoreUntilMsRef.current = Date.now() + 420;
+        lastPostedRef.current = { lat: next.latitude, lng: next.longitude };
+        const zoom = latitudeDeltaToZoom(next.latitudeDelta ?? 0.01);
         cameraRef.current?.setCamera?.({
-          centerCoordinate: [region.longitude, region.latitude],
+          centerCoordinate: [next.longitude, next.latitude],
           zoomLevel: zoom,
           animationDuration: 320,
           animationMode: "flyTo",
@@ -120,6 +139,8 @@ export const MapboxWebPannableMap = forwardRef<CustomerMapRef, Props>(function M
     circleRadiusMeters && circleRadiusMeters > 0
       ? circlePolygon(originRef.current.longitude, originRef.current.latitude, circleRadiusMeters)
       : null;
+
+  const validSnaps = snapPoints.filter((p) => isValidMapCoordinate(p.latitude, p.longitude));
 
   if (nativeMapUnavailableReason() || !Mapbox) {
     return <NativeMapUnavailable style={style} />;
@@ -142,9 +163,12 @@ export const MapboxWebPannableMap = forwardRef<CustomerMapRef, Props>(function M
         surfaceView={false}
         onDidFinishLoadingMap={() => {
           readyRef.current = true;
+          lastPostedRef.current = {
+            lat: originRef.current.latitude,
+            lng: originRef.current.longitude,
+          };
           setMapReady(true);
           onMapReady?.();
-          postRegion("complete", originRef.current.latitude, originRef.current.longitude);
         }}
         onCameraChanged={(e) => {
           const coords = e?.properties?.center;
@@ -179,7 +203,7 @@ export const MapboxWebPannableMap = forwardRef<CustomerMapRef, Props>(function M
           </Mapbox.ShapeSource>
         ) : null}
         {mapReady
-          ? snapPoints.map((p) =>
+          ? validSnaps.map((p) =>
               renderNativeMarker(
                 Mapbox,
                 `snap-${p.id}`,

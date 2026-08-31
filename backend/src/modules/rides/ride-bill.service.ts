@@ -38,6 +38,47 @@ function chargesIncludeWaiting(charges: AppliedLine[]): boolean {
   return charges.some((row) => String(row.label ?? "").toLowerCase().includes("waiting"));
 }
 
+function asPositiveInt(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+}
+
+function trimmedText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const t = value.trim();
+  return t.length > 0 ? t : null;
+}
+
+/** Coupon + platform offer persisted at booking — keep them on finalization recompute. */
+function resolvePersistedRideOffer(input: {
+  prevSnap: Record<string, unknown>;
+  meta: Record<string, unknown>;
+  couponCode?: string | null;
+  platformOfferId?: number | null;
+  forceNoAutoOffer?: boolean;
+}): { couponCode: string | null; platformOfferId: number | null; forceNoAutoOffer: boolean } {
+  const couponCode =
+    input.couponCode?.trim() ||
+    trimmedText(input.prevSnap.ride_fare_coupon_code) ||
+    trimmedText(input.meta.couponCode) ||
+    trimmedText(input.meta.ride_fare_coupon_code) ||
+    null;
+  const platformOfferId =
+    input.forceNoAutoOffer === true && input.platformOfferId == null
+      ? null
+      : input.platformOfferId ??
+        asPositiveInt(input.prevSnap.ride_fare_platform_offer_id) ??
+        asPositiveInt(input.meta.selectedPlatformOfferId);
+  const forceNoAutoOffer =
+    input.forceNoAutoOffer === true ||
+    (platformOfferId == null &&
+      !couponCode &&
+      input.platformOfferId == null &&
+      (input.prevSnap.ride_fare_force_no_auto_offer === true ||
+        input.meta.forceNoAutoOffer === true));
+  return { couponCode, platformOfferId, forceNoAutoOffer };
+}
+
 function resolveRideBaseFare(order: {
   fareAmount: string | null;
   itemTotal: string | null;
@@ -223,25 +264,13 @@ export async function syncRideCustomerBillingSnapshot(
     billNum(row.customerTipAmount) || billNum(row.tipAmount) || billNum(prevSnap.tip_amount)
   );
 
-  const couponCode =
-    opts?.couponCode?.trim() ||
-    (typeof prevSnap.ride_fare_coupon_code === "string"
-      ? prevSnap.ride_fare_coupon_code.trim()
-      : null) ||
-    null;
-  const platformOfferId =
-    opts?.forceNoAutoOffer === true && opts?.platformOfferId == null
-      ? null
-      : opts?.platformOfferId ??
-        (typeof prevSnap.ride_fare_platform_offer_id === "number"
-          ? prevSnap.ride_fare_platform_offer_id
-          : null);
-  const forceNoAutoOffer =
-    opts?.forceNoAutoOffer === true ||
-    (platformOfferId == null &&
-      !couponCode &&
-      opts?.platformOfferId == null &&
-      prevSnap.ride_fare_force_no_auto_offer === true);
+  const { couponCode, platformOfferId, forceNoAutoOffer } = resolvePersistedRideOffer({
+    prevSnap,
+    meta,
+    couponCode: opts?.couponCode,
+    platformOfferId: opts?.platformOfferId,
+    forceNoAutoOffer: opts?.forceNoAutoOffer,
+  });
 
   const billRes = await computeBillForRide(db, {
     customerId: customerPk,
@@ -457,26 +486,13 @@ export async function computeRideBillForCustomerOrder(
     orderRow.billingSnapshot != null && typeof orderRow.billingSnapshot === "object"
       ? (orderRow.billingSnapshot as Record<string, unknown>)
       : {};
-  const couponCode =
-    input.couponCode?.trim() ||
-    (typeof prevSnap.ride_fare_coupon_code === "string"
-      ? prevSnap.ride_fare_coupon_code.trim()
-      : null) ||
-    null;
-  const snapshotOfferId = Number(prevSnap.ride_fare_platform_offer_id);
-  const metaOfferId = Number(meta.selectedPlatformOfferId);
-  const platformOfferId =
-    input.forceNoAutoOffer === true && input.platformOfferId == null
-      ? null
-      : input.platformOfferId ??
-        (Number.isFinite(snapshotOfferId) && snapshotOfferId > 0 ? snapshotOfferId : null) ??
-        (Number.isFinite(metaOfferId) && metaOfferId > 0 ? metaOfferId : null);
-  const forceNoAutoOffer =
-    input.forceNoAutoOffer === true ||
-    (platformOfferId == null &&
-      !couponCode &&
-      input.platformOfferId == null &&
-      (prevSnap.ride_fare_force_no_auto_offer === true || meta.forceNoAutoOffer === true));
+  const { couponCode, platformOfferId, forceNoAutoOffer } = resolvePersistedRideOffer({
+    prevSnap,
+    meta,
+    couponCode: input.couponCode,
+    platformOfferId: input.platformOfferId,
+    forceNoAutoOffer: input.forceNoAutoOffer,
+  });
 
   const billRes = await computeBillForRide(db, {
     customerId: input.customerPk,

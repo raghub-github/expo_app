@@ -25,7 +25,6 @@ import {
   type DeviceLocationReadiness,
 } from "@gatimitra/expo-location-kit";
 import { reverseGeocode, type ReverseGeocodeResult } from "@/services/location.service";
-import { isSmsBlockingLocationPrompts } from "@/store/smsPermissionStore";
 import {
   loadLastKnownLocation,
   saveLastKnownLocation,
@@ -34,6 +33,18 @@ import {
   type PersistedDeviceLocation,
 } from "@/lib/lastKnownLocationCache";
 import { shouldReplaceFix } from "@/lib/locationFixSelection";
+
+function isSmsBlockingLocationPrompts(): boolean {
+  try {
+    // Lazy — locationStore must not import smsPermissionStore at module load
+    // (that cycle pulled authStore before it finished initializing).
+    return (
+      require("@/store/smsPermissionStore") as typeof import("@/store/smsPermissionStore")
+    ).isSmsBlockingLocationPrompts();
+  } catch {
+    return false;
+  }
+}
 
 export {
   LOCATION_SIGNIFICANT_MOVE_METERS,
@@ -202,11 +213,60 @@ function commitDeviceFix(fix: DeviceFix, opts: { refining: boolean }): void {
 /** In-flight progressive fetch — a second caller subscribes instead of starting another (section 15). */
 let deviceFetchInFlight: Promise<boolean> | null = null;
 
+/** Accuracy good enough to skip a blocking accurate GPS pass (metres). */
+const ACCEPTABLE_ACCURACY_M = 100;
+
+/**
+ * True when we already have a usable "current" pin from hydrate / fast fix /
+ * recent reconcile — home should not wait on another getBestEffortPosition.
+ */
+function hasFreshUsableCurrentCoords(): boolean {
+  const s = useLocationStore.getState();
+  if (s.locationSource === "selected") return false;
+  if (!s.coords) return false;
+  if (s.locationFreshness !== "FRESH" && s.locationFreshness !== "RECENT") return false;
+  if (s.coordsAccuracy != null && s.coordsAccuracy > ACCEPTABLE_ACCURACY_M) return false;
+  return true;
+}
+
+/** Phase-2 accurate refine — never awaited by progressiveDeviceFetch callers. */
+function scheduleAccurateDeviceRefine(seq: number, t0: number): void {
+  useLocationStore.setState({ refining: true });
+  void (async () => {
+    try {
+      const best = await getBestEffortPosition({ log: logLocation });
+      if (seq !== locationFetchSeq) return;
+      logMetric("accurate_location_fix_ms", Date.now() - t0);
+      const next: DeviceFix = {
+        latitude: best.latitude,
+        longitude: best.longitude,
+        accuracy: best.accuracy,
+        timestampMs: Date.now(),
+        source: "accurate",
+      };
+      if (useLocationStore.getState().locationSource === "selected") {
+        useLocationStore.setState({ refining: false });
+        return;
+      }
+      if (shouldReplaceFix(currentDeviceFix(), next)) {
+        commitDeviceFix(next, { refining: false });
+      } else {
+        useLocationStore.setState({ refining: false });
+      }
+    } catch {
+      useLocationStore.setState({ refining: false });
+    }
+  })();
+}
+
 /**
  * Progressive device fetch (sections 4–5): FAST first fix → commit + async geocode →
  * ACCURATE refine in the background → replace only when materially better and not an
  * outlier. Returns true when any usable fix was committed. Deduplicated: concurrent
  * callers share the one in-flight run rather than each starting a fresh GPS session.
+ *
+ * Accurate GPS is never awaited here — callers (home fill, permission grant) unblock
+ * as soon as a fast/cached pin is available.
  */
 function progressiveDeviceFetch(): Promise<boolean> {
   if (deviceFetchInFlight) return deviceFetchInFlight;
@@ -219,6 +279,22 @@ function progressiveDeviceFetch(): Promise<boolean> {
 async function runProgressiveDeviceFetch(): Promise<boolean> {
   const seq = ++locationFetchSeq;
   const t0 = Date.now();
+
+  // Already have a fresh pin from hydrate / reconcile — optional refine only.
+  if (hasFreshUsableCurrentCoords()) {
+    if (__DEV__) {
+      // eslint-disable-next-line no-console
+      console.log("[location] progressive_skip_fresh_current", {
+        freshness: useLocationStore.getState().locationFreshness,
+        accuracy: useLocationStore.getState().coordsAccuracy,
+      });
+    }
+    scheduleAccurateDeviceRefine(seq, t0);
+    useLocationStore.setState({ loading: false });
+    logMetric("total_location_ready_ms", Date.now() - t0);
+    return true;
+  }
+
   let committedAny = false;
 
   // Phase 1 — fast, usable fix (OS last-known → quick balanced).
@@ -244,30 +320,13 @@ async function runProgressiveDeviceFetch(): Promise<boolean> {
     // no fast fix — the accurate pass below may still succeed
   }
 
-  // Phase 2 — accurate refine (background; never blocks the first paint).
-  useLocationStore.setState({ refining: true });
-  try {
-    const best = await getBestEffortPosition({ log: logLocation });
-    if (seq !== locationFetchSeq) return committedAny;
-    logMetric("accurate_location_fix_ms", Date.now() - t0);
-    const next: DeviceFix = {
-      latitude: best.latitude,
-      longitude: best.longitude,
-      accuracy: best.accuracy,
-      timestampMs: Date.now(),
-      source: "accurate",
-    };
-    if (shouldReplaceFix(currentDeviceFix(), next)) {
-      commitDeviceFix(next, { refining: false });
-    } else {
-      useLocationStore.setState({ refining: false });
-    }
-    committedAny = true;
-  } catch {
-    useLocationStore.setState({ refining: false });
-  }
+  // Phase 2 — accurate refine in background (does not block return).
+  scheduleAccurateDeviceRefine(seq, t0);
 
-  if (committedAny) logMetric("total_location_ready_ms", Date.now() - t0);
+  if (committedAny) {
+    useLocationStore.setState({ loading: false });
+    logMetric("total_location_ready_ms", Date.now() - t0);
+  }
   return committedAny;
 }
 

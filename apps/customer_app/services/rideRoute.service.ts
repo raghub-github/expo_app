@@ -38,6 +38,7 @@ export function calculatedRouteToSnapshot(
     routePolyline: route.coordinates,
     routeSource: route.source,
     computedAt: Date.now(),
+    viaLabel: route.viaLabel?.trim() ?? "",
   };
 }
 
@@ -60,7 +61,7 @@ export async function fetchAndStoreRideRoute(
   });
 
   const { routeKey: cachedKey, snapshot: cached } = useRideRouteStore.getState();
-  if (!args.force && cached && cachedKey === routeKey) {
+  if (!args.force && cached && cachedKey === routeKey && cached.viaLabel !== undefined) {
     logRideRouteDebug("cache_hit", {
       routeKey,
       routeDistanceKm: cached.routeDistanceKm,
@@ -111,12 +112,15 @@ export async function fetchAndStoreRideRoute(
 export function rideRouteParamsFromSnapshot(
   snapshot: RideRouteSnapshot
 ): Record<string, string> {
-  return {
+  const params: Record<string, string> = {
     tripKm: String(snapshot.routeDistanceKm),
     routeDistanceKm: String(snapshot.routeDistanceKm),
     routeDurationSeconds: String(snapshot.routeDurationSeconds),
     routeEtaMins: String(snapshot.routeEtaMinutes),
   };
+  const via = snapshot.viaLabel?.trim();
+  if (via) params.viaRouteName = via;
+  return params;
 }
 
 export function parseRideRouteStops(stopsJson?: string): RideRouteStop[] {

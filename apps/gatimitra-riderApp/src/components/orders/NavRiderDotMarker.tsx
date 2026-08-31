@@ -1,7 +1,14 @@
 import React from "react";
 import { View, StyleSheet, Platform } from "react-native";
+import {
+  NAV_RIDER_DOT_BORDER,
+  NAV_RIDER_DOT_FILL,
+  NAV_RIDER_DOT_HALO,
+  NAV_RIDER_DOT_HALO_SIZE,
+  NAV_RIDER_DOT_SIZE,
+} from "@gatimitra/map-tracking-engine";
 
-/** Google Maps–style rider position dot on navigation map. */
+/** GatiMitra mint-green live-location dot on navigation maps. */
 export function NavRiderDotMarker() {
   return (
     <View style={styles.wrap} collapsable={false}>
@@ -11,32 +18,32 @@ export function NavRiderDotMarker() {
   );
 }
 
-export const NAV_RIDER_DOT_SIZE = 18;
+export { NAV_RIDER_DOT_SIZE };
 
 const styles = StyleSheet.create({
   wrap: {
-    width: 22,
-    height: 22,
+    width: NAV_RIDER_DOT_HALO_SIZE,
+    height: NAV_RIDER_DOT_HALO_SIZE,
     alignItems: "center",
     justifyContent: "center",
   },
   halo: {
     position: "absolute",
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: "rgba(26, 115, 232, 0.22)",
+    width: NAV_RIDER_DOT_HALO_SIZE,
+    height: NAV_RIDER_DOT_HALO_SIZE,
+    borderRadius: NAV_RIDER_DOT_HALO_SIZE / 2,
+    backgroundColor: NAV_RIDER_DOT_HALO,
   },
   dot: {
     width: NAV_RIDER_DOT_SIZE,
     height: NAV_RIDER_DOT_SIZE,
     borderRadius: NAV_RIDER_DOT_SIZE / 2,
-    backgroundColor: "#1A73E8",
+    backgroundColor: NAV_RIDER_DOT_FILL,
     borderWidth: 3,
-    borderColor: "#ffffff",
+    borderColor: NAV_RIDER_DOT_BORDER,
     ...Platform.select({
       ios: {
-        shadowColor: "#1A73E8",
+        shadowColor: NAV_RIDER_DOT_FILL,
         shadowOffset: { width: 0, height: 1 },
         shadowOpacity: 0.35,
         shadowRadius: 3,

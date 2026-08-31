@@ -14,19 +14,30 @@ import {
 import { getConfig } from "@/config/env";
 import { resolveNearbyRiderMarkerImage } from "@/features/ride/rideOptionAssets";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
+import { isValidMapCoordinate } from "@/lib/map-coordinates";
+import {
+  NAV_OFF_ROUTE_CONNECTOR,
+  NAV_ROUTE_BLUE,
+  NAV_ROUTE_CASING,
+} from "@gatimitra/map-tracking-engine";
 
 export const NATIVE_MAP_STYLE = MAPBOX_RIDE_STYLE;
-export const ROUTE_BLUE = "#1A56C6";
-export const ROUTE_CASING = "#FFFFFF";
-export const ROUTE_CONNECTOR = "#64748B";
+/** Live tracking route stroke — same mint as Rider App. Booking maps use ROUTE_BOOK_BLUE. */
+export const ROUTE_BLUE = NAV_ROUTE_BLUE;
+export const ROUTE_CASING = NAV_ROUTE_CASING;
+export const ROUTE_CONNECTOR = NAV_OFF_ROUTE_CONNECTOR;
 export const ROUTE_BOOK_BLUE = "#2563EB";
 
 export type NativeLatLng = { latitude: number; longitude: number };
 
 export function useCustomerNativeMapbox(): any | null {
   return useMemo(() => {
-    initializeCustomerMapbox();
-    return getCustomerMapboxModule();
+    try {
+      initializeCustomerMapbox();
+      return getCustomerMapboxModule();
+    } catch {
+      return null;
+    }
   }, []);
 }
 
@@ -57,17 +68,22 @@ export function useRiderMarkerSource(imageKey = "bike"): ImageSourcePropType | n
 
 export function latLngsToLine(coords: NativeLatLng[] | undefined | null) {
   if (!coords || coords.length < 2) return null;
+  const points = coords.filter((c) => isValidMapCoordinate(c.latitude, c.longitude));
+  if (points.length < 2) return null;
   return {
     type: "Feature" as const,
     properties: {},
     geometry: {
       type: "LineString" as const,
-      coordinates: coords.map((c) => [c.longitude, c.latitude] as [number, number]),
+      coordinates: points.map((c) => [c.longitude, c.latitude] as [number, number]),
     },
   };
 }
 
 export function circlePolygon(lng: number, lat: number, radiusM: number, steps = 64) {
+  if (!isValidMapCoordinate(lat, lng) || !Number.isFinite(radiusM) || radiusM <= 0) {
+    return null;
+  }
   const coords: [number, number][] = [];
   const dist = radiusM / 6378137;
   for (let i = 0; i <= steps; i++) {
@@ -109,20 +125,24 @@ export function fitCameraToPoints(
   maxZoom = 16
 ) {
   if (!camera || points.length === 0) return;
-  if (points.length === 1) {
+  const valid = points.filter(
+    ([lng, lat]) => Number.isFinite(lng) && Number.isFinite(lat) && isValidMapCoordinate(lat, lng)
+  );
+  if (valid.length === 0) return;
+  if (valid.length === 1) {
     camera.setCamera?.({
-      centerCoordinate: points[0],
+      centerCoordinate: valid[0],
       zoomLevel: Math.min(15.4, maxZoom),
       animationDuration: duration,
       animationMode: "easeTo",
     });
     return;
   }
-  let minLng = points[0]![0];
-  let minLat = points[0]![1];
+  let minLng = valid[0]![0];
+  let minLat = valid[0]![1];
   let maxLng = minLng;
   let maxLat = minLat;
-  for (const [lng, lat] of points) {
+  for (const [lng, lat] of valid) {
     minLng = Math.min(minLng, lng);
     minLat = Math.min(minLat, lat);
     maxLng = Math.max(maxLng, lng);
@@ -150,6 +170,9 @@ export function renderNativeMarker(
   anchor: { x: number; y: number },
   children: ReactNode
 ) {
+  const lng = coordinate[0];
+  const lat = coordinate[1];
+  if (!isValidMapCoordinate(lat, lng)) return null;
   const MarkerView = Mapbox.MarkerView;
   if (MarkerView) {
     return (

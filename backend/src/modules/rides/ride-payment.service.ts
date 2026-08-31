@@ -9,6 +9,7 @@ import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
 import { normalizeCustomerOrderStatus } from "../../lib/customer-order-status-resolve.js";
 import { verifyRazorpaySignature, verifyRazorpayPaymentDetails } from "../../services/payment/razorpayService.js";
 import { isRideFarePaymentPending } from "../../lib/ride-rider-payout-snapshot.js";
+import { assertRideCustomerPaymentCollectable } from "../../lib/settle-zero-payable-person-ride.js";
 import { computeRideBillForCustomerOrder } from "./ride-bill.service.js";
 import { insertRideCustomerPaymentSnapshot } from "../../lib/persist-ride-customer-payment-snapshot.js";
 import { postOnlineRideSettlement } from "./settlement/rideSettlement.engine.js";
@@ -74,6 +75,8 @@ export async function confirmRideFarePaymentForCustomer(input: {
     throw Object.assign(new Error("Ride fare is already paid"), { statusCode: 409 });
   }
 
+  const settledPayable = await assertRideCustomerPaymentCollectable(orderRow.id);
+
   const billRes = await computeRideBillForCustomerOrder(db, {
     customerPk,
     orderRef: input.orderRef,
@@ -87,9 +90,9 @@ export async function confirmRideFarePaymentForCustomer(input: {
     });
   }
 
-  const fareDue = roundInr(billRes.billing.final_amount);
+  const fareDue = roundInr(Math.min(billRes.billing.final_amount, settledPayable) || settledPayable);
   if (fareDue <= 0) {
-    throw Object.assign(new Error("Invalid ride fare amount"), { statusCode: 400 });
+    throw Object.assign(new Error("Ride fare is already paid"), { statusCode: 409 });
   }
 
   const offerDiscount = roundInr(billRes.billing.discount_total);

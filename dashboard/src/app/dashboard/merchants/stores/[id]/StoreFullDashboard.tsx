@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useStore } from "@/hooks/useStore";
 import {
@@ -43,6 +43,8 @@ import {
 import { PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS } from "@/components/merchant/partner-dashboard-card-styles";
 import { useLocalStoreStatusEngineStore } from "@/lib/localStoreStatusEngineStore";
 import { isStoreDelisted } from "@/lib/merchants/store-delist";
+import { LicenseExpiredModal } from "@/components/LicenseExpiredModal";
+import type { MerchantDocumentPrefix } from "@/lib/merchantLicenseExpiry";
 
 function MiniSparkline({ values, className = "" }: { values: readonly number[]; className?: string }) {
   const gid = React.useId().replace(/:/g, "");
@@ -143,6 +145,13 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [modalStatus, setModalStatus] = useState<{ status: string; reason?: string }>({ status: "", reason: "" });
   const [hasMounted, setHasMounted] = useState(false);
+  const [licenseModalOpen, setLicenseModalOpen] = useState(false);
+  const [licenseModalInitialPrefix, setLicenseModalInitialPrefix] =
+    useState<MerchantDocumentPrefix | null>(null);
+  const licenseModalAutoOpenedRef = useRef(false);
+
+  const licenseBlocked =
+    (operationsQuery.data as { license_blocked?: boolean } | undefined)?.license_blocked === true;
 
   const [deliveredToday, setDeliveredToday] = useState(0);
   const [revenueToday, setRevenueToday] = useState(0);
@@ -224,6 +233,28 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
       manualCloseReason: d.close_reason ?? null,
     });
   }, [opsReady, operationsQuery.data]);
+
+  useEffect(() => {
+    licenseModalAutoOpenedRef.current = false;
+  }, [storeId]);
+
+  useEffect(() => {
+    if (!storeId || !licenseBlocked || licenseModalAutoOpenedRef.current) return;
+    licenseModalAutoOpenedRef.current = true;
+    setLicenseModalOpen(true);
+  }, [storeId, licenseBlocked]);
+
+  const onStoreToggleWithLicense = useCallback(
+    (opts?: { isDelisted?: boolean }) => {
+      if (!statusCard.isStoreOpen && licenseBlocked) {
+        setLicenseModalInitialPrefix(null);
+        setLicenseModalOpen(true);
+        return;
+      }
+      handleStoreToggle(opts);
+    },
+    [statusCard.isStoreOpen, licenseBlocked, handleStoreToggle]
+  );
 
   // Sync wallet from shared React Query cache
   useEffect(() => {
@@ -398,6 +429,19 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
         handleCancelClosePopup={handleCancelClosePopup}
       />
 
+      <LicenseExpiredModal
+        storeId={storeId}
+        open={licenseModalOpen}
+        initialStepPrefix={licenseModalInitialPrefix}
+        onClose={() => {
+          setLicenseModalOpen(false);
+          setLicenseModalInitialPrefix(null);
+        }}
+        onUploaded={async () => {
+          await storeOps.refreshOperations();
+        }}
+      />
+
       <div className="flex flex-1 flex-col min-h-0 w-full overflow-hidden bg-[#f8fafc]">
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain px-4 sm:px-6 lg:px-8 pt-5 pb-4">
           <div className="max-w-[1600px] mx-auto space-y-5">
@@ -432,11 +476,12 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                   lastToggledAt={statusCard.lastToggledAt}
                   storeIdLabel={storeFromHook?.store_id ?? null}
                   manualActivationLock={statusCard.manualActivationLock}
+                  licenseBlockedForOps={licenseBlocked}
                   showScheduledOffStartsCountdown={statusCard.showScheduledOffStartsCountdown}
                   scheduledOffStartsInMs={statusCard.scheduledOffStartsInMs}
                   isDelisted={statusCard.isDelisted}
                   canToggleStore={canOperateStore}
-                  onStoreToggle={() => handleStoreToggle({ isDelisted })}
+                  onStoreToggle={() => onStoreToggleWithLicense({ isDelisted })}
                   onManualLockChange={(enabled) => {
                     statusCard.setManualActivationLock(enabled);
                     void saveManualActivationLock(enabled);

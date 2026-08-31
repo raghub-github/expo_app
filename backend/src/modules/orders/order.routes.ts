@@ -695,9 +695,11 @@ export async function orderRoutes(app: FastifyInstance) {
             pickupAddressRaw: ordersCore.pickupAddressRaw,
             dropAddressRaw: ordersCore.dropAddressRaw,
             grandTotal: ordersCore.grandTotal,
+            fareAmount: ordersCore.fareAmount,
             paymentStatus: ordersCore.paymentStatus,
             paymentMethod: ordersCore.paymentMethod,
             checkoutMetadata: ordersCore.checkoutMetadata,
+            billingSnapshot: ordersCore.billingSnapshot,
             items: ordersCore.items,
             createdAt: ordersCore.createdAt,
             placedAt: ordersCore.placedAt,
@@ -794,9 +796,15 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
-      const ordersNeedingCoreItems = pageRows.filter(
-        (r) => !(Array.isArray(r.items) && r.items.length > 0) && r.orderId,
-      );
+      const ordersNeedingCoreItems = pageRows.filter((r) => {
+        if (!r.orderId) return false;
+        if (!(Array.isArray(r.items) && r.items.length > 0)) return true;
+        // Display JSON often omits menuItemId — still load core rows so reorder works.
+        return (r.items as Array<{ menuItemId?: string | number | null }>).some((i) => {
+          const id = i?.menuItemId;
+          return id == null || String(id).trim() === "";
+        });
+      });
       const orderIdTextsForItems = ordersNeedingCoreItems
         .map((r) => r.orderId!.trim())
         .filter(Boolean);
@@ -898,7 +906,7 @@ export async function orderRoutes(app: FastifyInstance) {
           if (Array.isArray(row.items) && row.items.length > 0) {
             const parsed = row.items as Array<{
               name?: string;
-              menuItemId?: string;
+              menuItemId?: string | number;
               quantity?: number;
               price?: number;
               vegNonVeg?: string;
@@ -914,11 +922,16 @@ export async function orderRoutes(app: FastifyInstance) {
                   ...(i.variantName?.trim() ? [i.variantName.trim()] : []),
                   ...addonParts,
                 ];
+                const menuIdRaw = i.menuItemId;
+                const menuItemId =
+                  menuIdRaw == null || String(menuIdRaw).trim() === ""
+                    ? null
+                    : String(menuIdRaw).trim();
                 return {
-                  name: i.name ?? i.menuItemId ?? "",
+                  name: i.name ?? menuItemId ?? "",
                   quantity: i.quantity ?? 1,
                   price: i.price ?? 0,
-                  menuItemId: i.menuItemId?.trim() || null,
+                  menuItemId,
                   vegNonVeg: null as string | null,
                   variantName: i.variantName?.trim() || null,
                   customization: customizationParts.length > 0 ? customizationParts.join(" · ") : null,
@@ -931,23 +944,30 @@ export async function orderRoutes(app: FastifyInstance) {
             vegNonveg?: string | null;
             itemSnapshot?: Record<string, unknown> | null;
           }> = [];
-          if (items.length === 0 && row.orderId) {
+          const needsCoreEnrich =
+            items.length === 0 || items.some((i) => !i.menuItemId?.trim());
+          if (needsCoreEnrich && row.orderId) {
             const orderIdKey = row.orderId.trim();
             const coreItems = coreItemsByOrderId.get(orderIdKey) ?? [];
-            items = (
-              await buildCustomerOrderDetailItems({
-                orderIdText: row.orderId,
-                coreItems,
-                itemsJsonFallback: row.items,
-                pendingCartLines: pendingCartByOrderId.get(orderIdKey),
-                addonsByItemId: addonsByCoreItemId,
-              })
-            ).filter((i) => i.name.trim().length > 0);
-            itemVegInputs = coreItems.map((i) => ({
-              menuItemId: i.menuItemId,
-              vegNonveg: i.vegNonveg,
-              itemSnapshot: (i.itemSnapshot as Record<string, unknown> | null | undefined) ?? null,
-            }));
+            if (coreItems.length > 0 || items.length === 0) {
+              const built = (
+                await buildCustomerOrderDetailItems({
+                  orderIdText: row.orderId,
+                  coreItems,
+                  itemsJsonFallback: row.items,
+                  pendingCartLines: pendingCartByOrderId.get(orderIdKey),
+                  addonsByItemId: addonsByCoreItemId,
+                })
+              ).filter((i) => i.name.trim().length > 0);
+              if (built.length > 0) {
+                items = built;
+                itemVegInputs = coreItems.map((i) => ({
+                  menuItemId: i.menuItemId,
+                  vegNonveg: i.vegNonveg,
+                  itemSnapshot: (i.itemSnapshot as Record<string, unknown> | null | undefined) ?? null,
+                }));
+              }
+            }
           }
           if (items.length > 0) {
             const vegResolved = await resolveOrderItemsVegNonVeg(
@@ -1010,6 +1030,12 @@ export async function orderRoutes(app: FastifyInstance) {
             checkoutMetadata:
               row.checkoutMetadata != null && typeof row.checkoutMetadata === "object"
                 ? (row.checkoutMetadata as Record<string, unknown>)
+                : null,
+            billingSnapshot:
+              row.orderType === "person_ride" &&
+              row.billingSnapshot != null &&
+              typeof row.billingSnapshot === "object"
+                ? (row.billingSnapshot as Record<string, unknown>)
                 : null,
             items: items.length > 0 ? items : undefined,
             storeRatingSubmitted: resolveStoreStarFromRatingRow(customerRating) != null,
@@ -1844,17 +1870,17 @@ export async function orderRoutes(app: FastifyInstance) {
               coreRow.id,
               Number(coreRow.riderId)
             );
-          } else {
-            const { syncRideCustomerBillingSnapshot } = await import(
-              "../rides/ride-bill.service.js"
-            );
-            await syncRideCustomerBillingSnapshot(db, coreRow.id, { skipIfPaid: true });
           }
+          const { reconcileAndSettlePersonRideCustomerPayable } = await import(
+            "../../lib/settle-zero-payable-person-ride.js"
+          );
+          await reconcileAndSettlePersonRideCustomerPayable(coreRow.id);
 
           const [refreshedCore] = await db
             .select({
               grandTotal: ordersCore.grandTotal,
               billingSnapshot: ordersCore.billingSnapshot,
+              paymentStatus: ordersCore.paymentStatus,
             })
             .from(ordersCore)
             .where(eq(ordersCore.id, coreRow.id))
@@ -1862,6 +1888,7 @@ export async function orderRoutes(app: FastifyInstance) {
           if (refreshedCore) {
             coreRow.grandTotal = refreshedCore.grandTotal;
             coreRow.billingSnapshot = refreshedCore.billingSnapshot;
+            coreRow.paymentStatus = refreshedCore.paymentStatus;
           }
         }
       }

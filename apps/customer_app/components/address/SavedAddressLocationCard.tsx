@@ -2,7 +2,9 @@
  * Saved address card — shared between Select Location and Saved Addresses screens.
  */
 
-import { View, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
+import { useState } from "react";
+import { View, TouchableOpacity, StyleSheet, ActivityIndicator, Modal, Pressable } from "react-native";
+import { Image } from "expo-image";
 import { AppText } from "@/components/AppText";
 import { Ionicons } from "@expo/vector-icons";
 import type { Address } from "@/services/address.service";
@@ -12,6 +14,7 @@ import {
   formatDistanceMeters,
   formatPhoneLine,
 } from "@/lib/addressGeo";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 const BRAND = "#14B8A6";
 const TITLE_DARK = "#111827";
@@ -68,6 +71,9 @@ export function SavedAddressLocationCard({
 }: SavedAddressLocationCardProps) {
   const phoneLine = formatPhoneLine(address.contactMobile);
   const icon = savedAddressIcon(address);
+  const [doorPreviewOpen, setDoorPreviewOpen] = useState(false);
+  const doorRaw = address.deliveryDoorImageUrl?.trim() || null;
+  const doorImageUri = doorRaw ? (toAbsoluteImageUrl(doorRaw) ?? doorRaw) : null;
 
   const liveDistM =
     liveCoords?.latitude != null &&
@@ -113,7 +119,7 @@ export function SavedAddressLocationCard({
   );
 
   return (
-    <View style={styles.savedCard}>
+    <View style={[styles.savedCard, doorImageUri ? styles.savedCardWithThumb : null]}>
       <View style={styles.savedCardTop}>
         <View style={styles.savedCardLeftCol}>
           <Ionicons name={icon.name} size={24} color={icon.color} />
@@ -130,7 +136,7 @@ export function SavedAddressLocationCard({
             body
           )}
           {!hideActions ? (
-            <View style={styles.savedActionsRow}>
+            <View style={[styles.savedActionsRow, doorImageUri ? styles.savedActionsRowWithThumb : null]}>
               {loading ? (
                 <ActivityIndicator size="small" color={BRAND} style={{ marginRight: 4 }} />
               ) : null}
@@ -168,6 +174,49 @@ export function SavedAddressLocationCard({
           ) : null}
         </View>
       </View>
+      {doorImageUri ? (
+        <TouchableOpacity
+          style={styles.doorThumbBtn}
+          onPress={() => setDoorPreviewOpen(true)}
+          activeOpacity={0.88}
+          accessibilityRole="imagebutton"
+          accessibilityLabel="View address photo"
+        >
+          <Image
+            source={{ uri: doorImageUri }}
+            style={styles.doorThumb}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            transition={0}
+          />
+        </TouchableOpacity>
+      ) : null}
+      <Modal
+        visible={doorPreviewOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDoorPreviewOpen(false)}
+      >
+        <View style={styles.doorPreviewRoot}>
+          <Pressable style={styles.doorPreviewBackdrop} onPress={() => setDoorPreviewOpen(false)} />
+          <View style={styles.doorPreviewSheet} pointerEvents="box-none">
+            <TouchableOpacity
+              style={styles.doorPreviewClose}
+              onPress={() => setDoorPreviewOpen(false)}
+              hitSlop={12}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="close" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
+            <Image
+              source={{ uri: doorImageUri ?? undefined }}
+              style={styles.doorPreviewImage}
+              contentFit="contain"
+              cachePolicy="memory-disk"
+            />
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -182,6 +231,13 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     borderWidth: 1,
     borderColor: BORDER,
+    overflow: "visible",
+  },
+  savedCardWithThumb: {
+    position: "relative",
+  },
+  savedActionsRowWithThumb: {
+    paddingRight: 60,
   },
   savedCardTop: {
     flexDirection: "row",
@@ -292,5 +348,51 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "700",
     letterSpacing: 0.5,
+  },
+  doorThumbBtn: {
+    position: "absolute",
+    right: 14,
+    bottom: 12,
+    width: 52,
+    height: 52,
+    borderRadius: 10,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: "#F3F4F6",
+  },
+  doorThumb: {
+    width: 52,
+    height: 52,
+  },
+  doorPreviewRoot: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.92)",
+    justifyContent: "center",
+  },
+  doorPreviewBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  doorPreviewSheet: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 56,
+  },
+  doorPreviewClose: {
+    position: "absolute",
+    top: 48,
+    right: 20,
+    zIndex: 2,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  doorPreviewImage: {
+    width: "100%",
+    height: "100%",
   },
 });

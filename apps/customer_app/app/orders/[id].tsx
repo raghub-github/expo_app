@@ -2,7 +2,7 @@
  * Order Details – live tracking, post-delivery success (default), or history bill view (`view=history`).
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Image, Alert, InteractionManager, Linking } from "react-native";
@@ -14,7 +14,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Clipboard from "expo-clipboard";
 import { MapboxWebDeliveryMap } from "@/components/maps/MapboxWebDeliveryMap";
 import type { DeliveryMapPayload } from "@/components/maps/mapbox-web-delivery-html";
-import { orderService } from "@/services/order.service";
+import { orderService, type OrderDetail } from "@/services/order.service";
 import { merchantService } from "@/services/merchant.service";
 import { etaService } from "@/services/eta.service";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
@@ -38,7 +38,7 @@ import { DietIndicator } from "@/components/store/DietIndicator";
 import { parseOrderBillFromSnapshot } from "@/lib/orderBillBreakdown";
 import { OrderRefundCard } from "@/components/OrderRefundCard";
 import { CustomerEtaTimeline } from "@/components/orders/CustomerEtaTimeline";
-import { getOrderDetailInitialData } from "@/lib/orderDetailCache";
+import { getOrderDetailInitialData, mergeIncomingOrderDetail, seedOrderDetailCache } from "@/lib/orderDetailCache";
 import { resolveOrderTrackingMapSnapshots } from "@/lib/orderTrackingMapSnapshots";
 import { resolveOrderItemDiet } from "@/lib/reorderFromOrder";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
@@ -155,6 +155,7 @@ function LiveTrackingBackGuard({ fallback }: { fallback: typeof FOOD_HOME_FALLBA
 export default function OrderDetailsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const navLockRef = useRef(false);
   const handleBack = useCallback(() => {
     safeRouterBack(router);
   }, [router]);
@@ -195,7 +196,13 @@ export default function OrderDetailsScreen() {
 
   const { data: order, isLoading } = useQuery({
     queryKey: ["order", orderId],
-    queryFn: () => orderService.getOrder(orderId),
+    queryFn: async () => {
+      const detail = await orderService.getOrder(orderId);
+      return mergeIncomingOrderDetail(
+        queryClient.getQueryData<OrderDetail>(["order", orderId]),
+        detail
+      );
+    },
     enabled: !!orderId,
     initialData: () => getOrderDetailInitialData(queryClient, orderId),
     staleTime: 5_000,
@@ -239,6 +246,14 @@ export default function OrderDetailsScreen() {
       .then((rideStatus) => {
         if (cancelled) return;
         if (isRideCaptainAssigned(rideStatus)) {
+          queryClient.setQueryData(["rideOrderStatus", order.orderId], rideStatus);
+          if (rideStatus.rider) {
+            seedOrderDetailCache(queryClient, order.orderId, {
+              orderId: order.orderId,
+              status: rideStatus.appStatus || order.status,
+              rider: rideStatus.rider,
+            });
+          }
           void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
           return;
         }
@@ -263,6 +278,30 @@ export default function OrderDetailsScreen() {
       cancelled = true;
     };
   }, [order, router, openedFromRideHome, orderId, queryClient]);
+
+  useEffect(() => {
+    if (!order || !isPersonRideOrder(order) || !isInProgress) return;
+    if (isPersonRideSearchingStatus(order, order.status) && !order.rider) return;
+
+    let cancelled = false;
+    void getRideOrderStatus(order.orderId)
+      .then((rideStatus) => {
+        if (cancelled) return;
+        queryClient.setQueryData(["rideOrderStatus", order.orderId], rideStatus);
+        if (rideStatus.rider) {
+          seedOrderDetailCache(queryClient, order.orderId, {
+            orderId: order.orderId,
+            status: rideStatus.appStatus || order.status,
+            rider: rideStatus.rider,
+          });
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isInProgress, order, queryClient]);
 
   useEffect(() => {
     if (!isInProgress) {
@@ -523,6 +562,8 @@ export default function OrderDetailsScreen() {
   });
 
   const handleOpenHelp = () => {
+    if (navLockRef.current) return;
+    navLockRef.current = true;
     const isDeliveredFood =
       !!order && !isPersonRideOrder(order) && (order.status ?? "").trim().toUpperCase() === "DELIVERED";
     if (isDeliveredFood) {
@@ -541,6 +582,19 @@ export default function OrderDetailsScreen() {
         ...(isDeliveredFood ? { chat: "1" } : {}),
       },
     });
+    // Unlock if navigation fails to blur (rare); focus return also clears via remount.
+    setTimeout(() => {
+      navLockRef.current = false;
+    }, 1200);
+  };
+
+  const openMerchantStore = (storeId: string | null | undefined) => {
+    if (!storeId || navLockRef.current) return;
+    navLockRef.current = true;
+    router.push(`/home/merchant/${storeId}`);
+    setTimeout(() => {
+      navLockRef.current = false;
+    }, 1200);
   };
 
   const handleCopyOrderId = async () => {
@@ -724,6 +778,7 @@ export default function OrderDetailsScreen() {
           order={order}
           onBack={handleRideTrackingBack}
           onOpenSupport={handleOpenHelp}
+          openRatingOnMount={rate === "1" || rate === "true"}
         />
       </>
     );
@@ -746,7 +801,7 @@ export default function OrderDetailsScreen() {
           onBack={handleLiveTrackingBack}
           onOpenHelp={handleOpenHelp}
           onOpenMerchant={() => {
-            if (storeId) router.push(`/home/merchant/${storeId}`);
+            openMerchantStore(storeId);
           }}
           onOrderCancelled={() => {
             void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
@@ -771,7 +826,7 @@ export default function OrderDetailsScreen() {
           onBack={handleBack}
           onOpenHelp={handleOpenHelp}
           onOpenMerchant={() => {
-            if (storeId) router.push(`/home/merchant/${storeId}`);
+            openMerchantStore(storeId);
           }}
         />
       </>
@@ -943,8 +998,7 @@ export default function OrderDetailsScreen() {
                 <TouchableOpacity
                   style={styles.callBtn}
                   onPress={() => {
-                    const storeId = order.merchantPublicStoreId;
-                    if (storeId) router.push(`/home/merchant/${storeId}`);
+                    openMerchantStore(order.merchantPublicStoreId);
                   }}
                   activeOpacity={0.85}
                 >

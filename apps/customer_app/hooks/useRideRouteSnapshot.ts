@@ -66,7 +66,8 @@ export function useRideRouteSnapshot({ pickup, drop, stops = [], enabled = true 
       return;
     }
 
-    if (snapshot) {
+    const viaResolved = snapshot != null && typeof snapshot.viaLabel === "string";
+    if (viaResolved) {
       setLoading(false);
       return;
     }

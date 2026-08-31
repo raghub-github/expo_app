@@ -1,6 +1,7 @@
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { getGeoServiceAvailability } from "@/services/geoServices.service";
 import { pollIntervalWithBackoff } from "@/lib/query-poll-backoff";
+import { merchantsGeoBucket } from "@/lib/merchantsListCache";
 
 export type GeoEnabledServices = {
   food: boolean;
@@ -21,6 +22,22 @@ const ALL_DISABLED: GeoEnabledServices = {
   parcels: false,
 };
 
+/** Stable React Query key — pincode-first; coords bucketed ~110m like merchants. */
+export function geoServicesQueryKey(args: {
+  pincode?: string | null;
+  state?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+}): readonly unknown[] {
+  const pincode = args.pincode?.trim() || null;
+  const state = args.state?.trim() || null;
+  const lat = args.lat != null && Number.isFinite(args.lat) ? args.lat : null;
+  const lng = args.lng != null && Number.isFinite(args.lng) ? args.lng : null;
+  const geoBucket =
+    lat != null && lng != null ? merchantsGeoBucket(lat, lng) : null;
+  return ["geo", "services", pincode, state, geoBucket] as const;
+}
+
 export function useGeoServiceAvailability(args: {
   pincode?: string | null;
   state?: string | null;
@@ -35,7 +52,7 @@ export function useGeoServiceAvailability(args: {
   const canQuery = !!(pincode || state || (lat != null && lng != null));
 
   const query = useQuery({
-    queryKey: ["geo", "services", pincode, state, lat, lng],
+    queryKey: geoServicesQueryKey({ pincode, state, lat, lng }),
     queryFn: async () => {
       const result = await getGeoServiceAvailability({
         ...(pincode ? { pincode } : {}),
