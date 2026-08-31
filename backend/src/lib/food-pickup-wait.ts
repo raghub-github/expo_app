@@ -12,6 +12,7 @@ import {
 } from "./ride-rider-payout-snapshot.js";
 import { computeRidePickupWaitSeconds } from "./ride-pickup-wait.js";
 import { applyMerchantFundedWaitingDebit } from "./merchant-funded-waiting-debit.js";
+import { resolveRiderWaitingEntitlement } from "./rider-waiting-entitlement.js";
 import {
   resolveFoodWaitingFreeBudgetSeconds,
   resolveBulkOrderExtraGraceMinutes,
@@ -34,7 +35,8 @@ function round2(n: number): number {
  * recorded in billing_snapshot for settlement/subsidy accounting either way.
  */
 export async function applyFoodPickupWaitingToBilling(
-  orderCorePk: number
+  orderCorePk: number,
+  riderId?: number | null
 ): Promise<{ customerWaiting: number; riderWaiting: number } | null> {
   const db = getDb();
   const [row] = await db
@@ -168,7 +170,15 @@ export async function applyFoodPickupWaitingToBilling(
   });
 
   const customerWaiting = split.customerShare;
-  const riderWaiting = split.capped;
+  // GatiMitra Max gate: the customer/merchant are still charged (shares below are
+  // unchanged), but a rider without an active Max subscription does not receive the
+  // waiting earning — the company retains it.
+  const waitingEntitlement = await resolveRiderWaitingEntitlement({
+    computedRiderWaiting: split.capped,
+    riderId,
+    orderCorePk,
+  });
+  const riderWaiting = waitingEntitlement.riderWaiting;
   const tip = round2(Number(row.tipAmount) || 0);
 
   const snapshot = readRideRiderPayoutSnapshot(row.billingSnapshot);
@@ -196,6 +206,10 @@ export async function applyFoodPickupWaitingToBilling(
       waiting_is_bulk: bulk.isBulk,
       waiting_bulk_extra_grace_minutes: bulk.extraGraceMinutes,
       pickup_wait_seconds: waitSeconds,
+      waiting_rider_entitled: waitingEntitlement.riderWaiting,
+      waiting_company_retained: waitingEntitlement.companyRetainedWaiting,
+      waiting_rider_gated_by_max: waitingEntitlement.gatedByMax,
+      waiting_rider_has_max: waitingEntitlement.hasMax,
     })}::text::jsonb,
         updated_at = NOW()
     WHERE id = ${orderCorePk}

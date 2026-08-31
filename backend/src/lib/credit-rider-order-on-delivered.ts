@@ -2,6 +2,7 @@ import { getSql } from "../db/client.js";
 import { isRiderEligibleForDeliveryWalletCredit } from "./rider-delivery-wallet-eligibility.js";
 import { resolveOrderRiderPayoutAmount } from "./resolve-order-rider-payout.js";
 import type { OrderRiderPayoutService } from "./resolve-order-rider-payout.js";
+import { riderHasActiveGmitraMax } from "../modules/rider-payout-pricing/riderPayoutPricing.repository.js";
 import { rideTripDistanceFromCheckoutMetadata, rideGeoFromCheckoutMetadata } from "./ride-address-display.js";
 import { readRideRiderPayoutSnapshot } from "./ride-rider-payout-snapshot.js";
 // Rider payout basis (gross, offer-independent) — shared so the accept-snapshot and
@@ -359,8 +360,17 @@ export async function creditRiderOrderEarningOnDelivered(
       const waitSec = Number(
         row.pickup_wait_seconds ?? row.food_pickup_wait_seconds ?? row.parcel_pickup_wait_seconds
       );
-      const waitingMinutes =
+      const waitingMinutesRaw =
         Number.isFinite(waitSec) && waitSec > 0 ? Math.max(0, Math.round(waitSec / 60)) : 0;
+      // GatiMitra Max gate: the customer/merchant are still charged waiting, but a rider
+      // without an active Max subscription does not receive it — zero the waiting minutes
+      // so the settlement payout excludes waiting (parcel + food/ride snapshot-less fallback).
+      const waitingMinutes =
+        waitingMinutesRaw > 0 && riderId != null && riderId > 0
+          ? (await riderHasActiveGmitraMax(riderId))
+            ? waitingMinutesRaw
+            : 0
+          : waitingMinutesRaw;
       const rideGeo =
         payoutService === "ride" ? rideGeoFromCheckoutMetadata(row.checkout_metadata) : {};
       // Rider Fare Engine base is always the GROSS (pre-discount) service value so a

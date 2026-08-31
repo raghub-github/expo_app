@@ -7,6 +7,7 @@ import { loadEffectiveServicePayoutRule } from "../modules/rider-payout-pricing/
 import { computeWaitingCharge } from "../modules/rides/pricing/rideWaitingCharge.js";
 import { resolveOrderLegVehicleType } from "./resolve-rider-legs-for-order.js";
 import { computeRidePickupWaitSeconds } from "./ride-pickup-wait.js";
+import { resolveRiderWaitingEntitlement } from "./rider-waiting-entitlement.js";
 
 function round2(n: number): number {
   if (!Number.isFinite(n)) return 0;
@@ -24,7 +25,8 @@ function round2(n: number): number {
  * credit-rider-order-on-delivered.ts, which reads this same pickup_wait_seconds column.
  */
 export async function applyParcelPickupWaitingToBilling(
-  orderCorePk: number
+  orderCorePk: number,
+  riderId?: number | null
 ): Promise<{ customerWaiting: number } | null> {
   const db = getDb();
   const [row] = await db
@@ -119,6 +121,15 @@ export async function applyParcelPickupWaitingToBilling(
   });
 
   const customerWaiting = split.customerShare;
+  // GatiMitra Max gate (audit): the rider's waiting credit is applied at settlement
+  // (credit-rider-order-on-delivered.ts) — a non-Max rider receives ₹0 and the company
+  // retains it. Record the entitlement here so billing_snapshot explains the outcome; the
+  // customer/company shares above are unchanged.
+  const waitingEntitlement = await resolveRiderWaitingEntitlement({
+    computedRiderWaiting: split.capped,
+    riderId,
+    orderCorePk,
+  });
 
   const sql = getSql();
   await sql`
@@ -131,6 +142,10 @@ export async function applyParcelPickupWaitingToBilling(
       waiting_funding_mode: split.fundingMode,
       company_funded_waiting: split.companyShare,
       pickup_wait_seconds: waitSeconds,
+      waiting_rider_entitled: waitingEntitlement.riderWaiting,
+      waiting_company_retained: waitingEntitlement.companyRetainedWaiting,
+      waiting_rider_gated_by_max: waitingEntitlement.gatedByMax,
+      waiting_rider_has_max: waitingEntitlement.hasMax,
     })}::text::jsonb,
         updated_at = NOW()
     WHERE id = ${orderCorePk}

@@ -4465,7 +4465,7 @@ async function markParcelPickedUpForRider(
 
   if (newlyPicked && orderCorePk) {
     try {
-      await applyParcelPickupWaitingToBilling(orderCorePk);
+      await applyParcelPickupWaitingToBilling(orderCorePk, riderId);
     } catch (err) {
       console.warn("[markParcelPickedUpForRider] waiting billing update failed:", err);
     }
@@ -5370,7 +5370,7 @@ export async function markFoodPickupWithoutVerificationForRider(
   });
 
   try {
-    await applyFoodPickupWaitingToBilling(orderCorePk);
+    await applyFoodPickupWaitingToBilling(orderCorePk, riderId);
   } catch (err) {
     console.warn("[markFoodPickupWithoutVerificationForRider] waiting billing update failed:", err);
   }
@@ -5464,7 +5464,7 @@ async function verifyFoodPickupOtpForRider(
   });
 
   try {
-    await applyFoodPickupWaitingToBilling(orderCorePk);
+    await applyFoodPickupWaitingToBilling(orderCorePk, riderId);
   } catch (err) {
     console.warn("[verifyFoodPickupOtpForRider] waiting billing update failed:", err);
   }
@@ -5564,7 +5564,7 @@ export async function verifyFoodPickupBarcodeForRider(
   });
 
   try {
-    await applyFoodPickupWaitingToBilling(orderCorePk);
+    await applyFoodPickupWaitingToBilling(orderCorePk, riderId);
   } catch (err) {
     console.warn("[verifyFoodPickupBarcodeForRider] waiting billing update failed:", err);
   }
