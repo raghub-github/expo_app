@@ -4,6 +4,13 @@ import { resolveOrderRiderPayoutAmount } from "./resolve-order-rider-payout.js";
 import type { OrderRiderPayoutService } from "./resolve-order-rider-payout.js";
 import { rideTripDistanceFromCheckoutMetadata, rideGeoFromCheckoutMetadata } from "./ride-address-display.js";
 import { readRideRiderPayoutSnapshot } from "./ride-rider-payout-snapshot.js";
+// Rider payout basis (gross, offer-independent) — shared so the accept-snapshot and
+// the delivery-time settlement resolve it identically. Re-exported for existing importers.
+import {
+  resolveRiderDeliveryFeeFromCore,
+  resolveRideGrossFareForPayout,
+} from "./rider-fare-basis.js";
+export { resolveRiderDeliveryFeeFromCore, resolveRideGrossFareForPayout };
 import { readDynamicRiderIncentiveFromSnapshot } from "./dynamic-pricing.js";
 import {
   defaultPrePickupFunding,
@@ -30,67 +37,6 @@ export type CreditRiderOrderEarningInput = {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
-}
-
-function parseBillingAmount(snapshot: unknown, keys: string[]): number {
-  if (snapshot == null || typeof snapshot !== "object") return 0;
-  const obj = snapshot as Record<string, unknown>;
-  for (const key of keys) {
-    const n = Number(obj[key]);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  return 0;
-}
-
-/** Rider payout is delivery fee — never order grand total. */
-export function resolveRiderDeliveryFeeFromCore(row: {
-  riderEarning: unknown;
-  fareAmount: unknown;
-  billingSnapshot?: unknown;
-}): number {
-  const direct = Number(row.riderEarning);
-  if (Number.isFinite(direct) && direct > 0) return round2(direct);
-
-  // Prefer the GROSS/standard delivery fare so rider payout is never reduced by a
-  // customer subsidy (free delivery / coupon / membership). Fall back to the net
-  // customer-facing fee only for pre-migration orders without a gross field.
-  const fromGross = parseBillingAmount(row.billingSnapshot, [
-    "delivery_fee_gross",
-    "deliveryFeeGross",
-    "delivery_fee_original",
-    "deliveryFeeOriginal",
-  ]);
-  if (fromGross > 0) return round2(fromGross);
-
-  const fromBilling = parseBillingAmount(row.billingSnapshot, [
-    "delivery_fee",
-    "final_delivery_fee",
-    "deliveryFee",
-    "finalDeliveryFee",
-  ]);
-  const snap =
-    row.billingSnapshot != null && typeof row.billingSnapshot === "object"
-      ? (row.billingSnapshot as Record<string, unknown>)
-      : null;
-  const payoutHint =
-    snap?.rider_payout_snapshot != null && typeof snap.rider_payout_snapshot === "object"
-      ? Number((snap.rider_payout_snapshot as Record<string, unknown>).totalEarning)
-      : NaN;
-  if (
-    fromBilling > 0 &&
-    !(
-      Number.isFinite(payoutHint) &&
-      payoutHint > 0 &&
-      Math.abs(fromBilling - payoutHint) <= 0.51
-    )
-  ) {
-    return round2(fromBilling);
-  }
-
-  const fare = Number(row.fareAmount);
-  if (Number.isFinite(fare) && fare > 0) return round2(fare);
-
-  return 0;
 }
 
 function deliveryRef(coreId: number): string {
@@ -417,13 +363,18 @@ export async function creditRiderOrderEarningOnDelivered(
         Number.isFinite(waitSec) && waitSec > 0 ? Math.max(0, Math.round(waitSec / 60)) : 0;
       const rideGeo =
         payoutService === "ride" ? rideGeoFromCheckoutMetadata(row.checkout_metadata) : {};
-      // Ride: fare comes from the ride fare columns. Food/parcel: the Rider Fare
-      // Engine base is the GROSS/standard delivery fare (pre-subsidy) so free
-      // delivery / coupons / membership never zero the rider payout — never the
-      // net customer-charged fare_amount.
+      // Rider Fare Engine base is always the GROSS (pre-discount) service value so a
+      // customer offer / free ride / coupon / membership never reduces rider payout.
+      // Ride: gross metered fare (estimated_fare), never the discounted final_fare.
+      // Food/parcel: gross delivery fee (delivery_fee_gross), never the net fee.
       const customerFare =
         payoutService === "ride"
-          ? Number(row.final_fare ?? row.estimated_fare ?? row.fare_amount ?? 0)
+          ? resolveRideGrossFareForPayout({
+              estimatedFare: row.estimated_fare,
+              finalFare: row.final_fare,
+              fareAmount: row.fare_amount,
+              billingSnapshot: row.billing_snapshot,
+            })
           : resolveRiderDeliveryFeeFromCore({
               riderEarning: null,
               fareAmount: row.fare_amount,
