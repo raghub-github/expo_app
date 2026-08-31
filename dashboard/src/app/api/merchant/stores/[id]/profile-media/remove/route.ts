@@ -15,6 +15,7 @@ import {
 import { getR2MerchantObjectPrefix } from "@/lib/merchant/r2-store-asset-paths";
 import { isSuperAdmin, hasAccessPoint } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { assertMerchantStoreMutation } from "@/lib/permissions/merchant-access";
 
 export const runtime = "nodejs";
 
@@ -100,6 +101,12 @@ export async function POST(
     const access = await assertStoreAccess(request, storeId);
     if (!access.ok) {
       return NextResponse.json({ success: false, error: access.error }, { status: access.status });
+    }
+    const mutation = await assertMerchantStoreMutation(access.user.id, access.user.email ?? "", [
+      "can_update_store_details",
+    ]);
+    if (!mutation.ok) {
+      return NextResponse.json({ success: false, error: mutation.error }, { status: mutation.status });
     }
 
     const body = await request.json().catch(() => ({}));

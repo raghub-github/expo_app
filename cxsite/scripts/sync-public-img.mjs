@@ -11,7 +11,7 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const srcDir = path.join(root, 'img')
 const destDir = path.join(root, 'public', 'img')
 
-const FILES = ['dnscreen.png', 'ride.png', 'bikeride-phone.png', 'fav.png', 'logo.png', 'onlylogo.png']
+const FILES = ['dnscreen.png', 'ride.png', 'bikeride-phone.png', 'fav.png', 'logo.png', 'onlylogo.png', 'grocery-hero.jpg']
 
 fs.mkdirSync(destDir, { recursive: true })
 

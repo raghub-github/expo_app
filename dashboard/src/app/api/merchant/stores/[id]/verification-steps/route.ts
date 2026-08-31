@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { assertMerchantStoreMutation } from "@/lib/permissions/merchant-access";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getMerchantStoreById, updateMerchantStore } from "@/lib/db/operations/merchant-stores";
@@ -154,6 +155,12 @@ export async function POST(
         { success: false, error: access.error },
         { status: access.status }
       );
+    }
+    const mutation = await assertMerchantStoreMutation(access.user.id, access.user.email, [
+      "can_approve_store",
+    ]);
+    if (!mutation.ok) {
+      return NextResponse.json({ success: false, error: mutation.error }, { status: mutation.status });
     }
     const body = await readJsonBody(request);
     const step = typeof body.step === "number" ? Math.floor(body.step) : undefined;
@@ -406,6 +413,12 @@ export async function DELETE(
         { success: false, error: access.error },
         { status: access.status }
       );
+    }
+    const mutation = await assertMerchantStoreMutation(access.user.id, access.user.email, [
+      "can_reject_store",
+    ]);
+    if (!mutation.ok) {
+      return NextResponse.json({ success: false, error: mutation.error }, { status: mutation.status });
     }
     const body = await readJsonBody(request);
     const step = typeof body.step === "number" ? Math.floor(body.step) : undefined;

@@ -1,3 +1,6 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Montserrat:wght@400;500;600;700;800;900&display=swap");
+@import url("https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -17,6 +20,8 @@ body::-webkit-scrollbar {
 }
 
 :root {
+  --font-inter: Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-montserrat: Montserrat, ui-sans-serif, system-ui, sans-serif;
   --mint: #16c2a5;
   --mint-light: #e8fffb;
   --purple: #4b2ad4;
@@ -97,6 +102,15 @@ img {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
   }
 }
 

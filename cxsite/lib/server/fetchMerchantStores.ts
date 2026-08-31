@@ -15,6 +15,7 @@ const BBOX_DEGREE_APPROX = 0.1
 const STORE_SELECT = `
   id,
   store_id,
+  public_slug,
   parent_id,
   store_name,
   store_display_name,
@@ -42,6 +43,7 @@ const STORE_SELECT = `
 export type WebRestaurantRow = {
   id: number
   store_id: string
+  public_slug: string | null
   restaurant_id: string
   restaurant_name: string
   name: string
@@ -102,6 +104,7 @@ function mapStoreToRestaurant(
   return {
     id: Number(row.id),
     store_id: String(row.store_id ?? ''),
+    public_slug: row.public_slug != null ? String(row.public_slug) : null,
     restaurant_id: String(row.store_id ?? ''),
     restaurant_name: name,
     name,
@@ -145,6 +148,41 @@ function getDb() {
   return getSupabaseServiceRole() ?? supabase
 }
 
+/** RPC omits store_type/public_slug — batch-fill when filtering grocery etc. */
+export async function enrichStoreListMeta(rows: WebRestaurantRow[]): Promise<WebRestaurantRow[]> {
+  if (!rows.length) return rows
+  const needsEnrich = rows.some((r) => !r.store_type || !r.public_slug)
+  if (!needsEnrich) return rows
+
+  const ids = rows.map((r) => r.id)
+  const { data, error } = await getDb()
+    .from('merchant_stores')
+    .select('id, store_type, public_slug')
+    .in('id', ids)
+
+  if (error || !data?.length) return rows
+
+  const meta = new Map(
+    data.map((row) => [
+      Number(row.id),
+      {
+        store_type: row.store_type != null ? String(row.store_type) : null,
+        public_slug: row.public_slug != null ? String(row.public_slug) : null,
+      },
+    ])
+  )
+
+  return rows.map((r) => {
+    const m = meta.get(r.id)
+    if (!m) return r
+    return {
+      ...r,
+      store_type: r.store_type ?? m.store_type,
+      public_slug: r.public_slug ?? m.public_slug,
+    }
+  })
+}
+
 /** Same RPC as customer app backend — haversine nearby stores. */
 async function fetchNearbyViaRpc(
   userLat: number,
@@ -166,9 +204,8 @@ async function fetchNearbyViaRpc(
   }
 
   const rows = (data ?? []) as Array<Record<string, unknown>>
-  return attachStoreRatingsToRows(
-    rows.map((row) => mapStoreToRestaurant(row, row.distance_km as number | null))
-  )
+  const mapped = rows.map((row) => mapStoreToRestaurant(row, row.distance_km as number | null))
+  return attachStoreRatingsToRows(mapped)
 }
 
 async function fetchNearbyViaBbox(
@@ -195,17 +232,16 @@ async function fetchNearbyViaBbox(
   if (error) throw error
 
   const filtered = filterStoreRowsByUserGeo(data ?? [], userLat, userLon, radiusKm)
-  return attachStoreRatingsToRows(
-    filtered.map((row: Record<string, unknown>) => {
-      const lat = Number(row.latitude)
-      const lon = Number(row.longitude)
-      const distance_km =
-        Number.isFinite(lat) && Number.isFinite(lon)
-          ? Math.round(haversineKm(userLat, userLon, lat, lon) * 10) / 10
-          : null
-      return mapStoreToRestaurant(row, distance_km)
-    })
-  )
+  const mapped = filtered.map((row: Record<string, unknown>) => {
+    const lat = Number(row.latitude)
+    const lon = Number(row.longitude)
+    const distance_km =
+      Number.isFinite(lat) && Number.isFinite(lon)
+        ? Math.round(haversineKm(userLat, userLon, lat, lon) * 10) / 10
+        : null
+    return mapStoreToRestaurant(row, distance_km)
+  })
+  return attachStoreRatingsToRows(mapped)
 }
 
 export async function fetchPanIndiaStores(): Promise<WebRestaurantRow[]> {
@@ -219,9 +255,8 @@ export async function fetchPanIndiaStores(): Promise<WebRestaurantRow[]> {
     .limit(PAN_INDIA_CAP)
 
   if (error) throw error
-  return attachStoreRatingsToRows(
-    (data ?? []).map((row: Record<string, unknown>) => mapStoreToRestaurant(row, null))
-  )
+  const mapped = (data ?? []).map((row: Record<string, unknown>) => mapStoreToRestaurant(row, null))
+  return attachStoreRatingsToRows(mapped)
 }
 
 export async function fetchGeoFilteredStores(

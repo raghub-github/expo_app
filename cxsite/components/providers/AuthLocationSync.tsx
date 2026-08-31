@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { Suspense, useEffect, useRef } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
 import { useAppSelector } from '@/lib/hooks'
 import { useLocationContext } from '@/components/providers/LocationProvider'
@@ -18,7 +18,7 @@ function buildDisplayName(
   return parts.join(', ')
 }
 
-export default function AuthLocationSync() {
+function AuthLocationSyncInner() {
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const { user, isAuthenticated } = useAppSelector((state) => state.auth)
@@ -74,4 +74,12 @@ export default function AuthLocationSync() {
   }, [hydrated, isAuthenticated, user, location.displayName, location.locationCommittedByUser, setLocation, pathname, searchParams])
 
   return null
+}
+
+export default function AuthLocationSync() {
+  return (
+    <Suspense fallback={null}>
+      <AuthLocationSyncInner />
+    </Suspense>
+  )
 }

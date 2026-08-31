@@ -26,6 +26,7 @@ import { StoreCuisineManagerSection } from "./StoreCuisineManagerSection";
 import { ProfileLegalDocumentCard } from "./ProfileLegalDocumentCard";
 import { PROFILE_LEGAL_DOC_CONFIG } from "./profileLegalDocConfig";
 import { BankAccountsSection } from "./BankAccountsSection";
+import { coerceGalleryImageList } from "@/lib/merchant/store-profile-media";
 
 function formatArray(arr: string[] | undefined | null): string {
   if (!arr || arr.length === 0) return "—";
@@ -166,7 +167,8 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
     (displayStore as StoreProfile & { parent_merchant_id?: string | null }).parent_merchant_id ??
     null;
   const todayHours = formatOperatingHoursToday(operatingHours);
-  const gallery = (editData?.gallery_images ?? displayStore.gallery_images ?? []) as string[];
+  const gallery = coerceGalleryImageList(editData?.gallery_images ?? displayStore.gallery_images);
+  const bannerUrl = String(editData?.banner_url ?? displayStore.banner_url ?? "").trim();
   const bannerVideoUrl = (editData?.banner_video_url ?? displayStore.banner_video_url) as
     | string
     | null
@@ -657,9 +659,9 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                         </>
                       ) : null}
                     </div>
-                    {(editData?.banner_url ?? displayStore.banner_url) ? (
+                    {bannerUrl ? (
                       <img
-                        src={(editData?.banner_url ?? displayStore.banner_url) as string}
+                        src={bannerUrl}
                         alt="Banner"
                         className="mt-2 rounded-lg w-full h-40 object-cover"
                       />

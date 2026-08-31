@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { assertMerchantStoreMutation } from "@/lib/permissions/merchant-access";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { patchMenuItemStockToggle } from "@/lib/merchant-menu-out-of-stock-server";
@@ -30,6 +31,10 @@ export async function PATCH(
       (await isSuperAdmin(user.id, user.email)) ||
       (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
     if (!allowed) return NextResponse.json({ success: false, error: "Merchant dashboard access required" }, { status: 403 });
+    const mutation = await assertMerchantStoreMutation(user.id, user.email, ["can_update_menu"]);
+    if (!mutation.ok) {
+      return NextResponse.json({ success: false, error: mutation.error }, { status: mutation.status });
+    }
 
     const areaManagerId = await resolveMerchantListAreaManagerId({
       supabaseAuthId: user.id,

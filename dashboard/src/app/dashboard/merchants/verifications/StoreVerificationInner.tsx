@@ -748,8 +748,8 @@ const DOC_TYPE_LABELS: Record<(typeof DOC_TYPES)[number], string> = {
 };
 
 const FINAL_APPROVE_REMARK_PRESETS = [
-  "All required verification steps have been successfully completed. Your merchant account has been approved and activated. You are now ready to start receiving orders and serving customers on GatiMitra.",
-  "Your onboarding has been successfully verified and approved. Your merchant account is now active on GatiMitra. You can log in to your dashboard and start accepting orders. We wish you great success with GatiMitra.",
+  "GatiMitra congratulates you on the successful onboarding of your store on our platform.\nThank you for choosing GatiMitra as your partner. We appreciate your trust and support.\nYour store and menu details will be updated on the platform within 24 hours. Once the details are updated and your store is live, you will be able to start receiving customer orders through GatiMitra.",
+  "We are happy to inform you that your store has been successfully onboarded on the GatiMitra platform.\nThank you for choosing GatiMitra as your business partner. We truly appreciate your trust and support.\nYour store and menu details will be updated on the platform within 24 hours. Once your store is live, you will be able to start receiving customer orders through GatiMitra.",
 ] as const;
 
 /** Single source for step 4 list, verify gating, and PATCH /documents number fields. */
@@ -4983,6 +4983,8 @@ export function StoreVerificationInner({
                 (vdBody.store as VerificationDataStore)?.current_onboarding_step ?? null,
               latitude: (vdBody.store as VerificationDataStore)?.latitude ?? null,
               longitude: (vdBody.store as VerificationDataStore)?.longitude ?? null,
+              banner_url: (vdBody.store as VerificationDataStore)?.banner_url ?? null,
+              gallery_images: (vdBody.store as VerificationDataStore)?.gallery_images ?? null,
             }
           : null,
       });
@@ -6784,7 +6786,7 @@ export function StoreVerificationInner({
                           key={preset}
                           type="button"
                           onClick={() => setRejectReason(preset)}
-                          className={`w-full cursor-pointer rounded-lg border px-3 py-2.5 text-left text-sm leading-snug transition-colors ${
+                          className={`w-full cursor-pointer rounded-lg border px-3 py-2.5 text-left text-sm leading-snug whitespace-pre-line transition-colors ${
                             selected
                               ? "border-emerald-500 bg-emerald-50 text-emerald-900 ring-1 ring-emerald-500"
                               : "border-gray-200 bg-gray-50 text-gray-700 hover:border-emerald-300 hover:bg-emerald-50/60"

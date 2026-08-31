@@ -3,6 +3,10 @@ import { supabase } from '@/lib/supabase'
 import { getSupabaseServiceRole } from '@/lib/supabaseServiceRole'
 import { resolveImageUrlList, toAbsoluteImageUrl } from '@/lib/mediaUrl'
 import { getStoreRatingSummary, getStoreWrittenReviews } from '@/lib/server/fetchStoreRatings'
+import { lookupMerchantStoreRow } from '@/lib/server/lookupMerchantStoreRow'
+import { ensureStorePublicSlug } from '@/lib/server/ensureStorePublicSlug'
+import { sanitizePublicStorePayload } from '@/lib/server/sanitizePublicStoreResponse'
+import { isStorePubliclyVisible } from '@/lib/server/resolveMerchantStore'
 
 function mergeGallerySources(row: Record<string, unknown>): string[] {
   const raw: unknown[] = []
@@ -34,6 +38,7 @@ function mapStoreToRestaurant(row: Record<string, unknown>) {
   return {
     id: row.id,
     store_id: row.store_id,
+    public_slug: row.public_slug ?? null,
     restaurant_id: row.store_id,
     restaurant_name: storeName,
     name: storeName,
@@ -215,7 +220,7 @@ function applyTodaySlotToLegacyTimes(
   }
 }
 async function enrichMediaFromRegistry(
-  storeClient: ReturnType<typeof getSupabaseServiceRole> | typeof supabase,
+  storeClient: NonNullable<ReturnType<typeof getSupabaseServiceRole>>,
   storeIdNum: number,
   payload: ReturnType<typeof mapStoreToRestaurant>
 ) {
@@ -271,24 +276,25 @@ export async function GET(
     }
 
     const idParam = String(storeId).trim()
-    const numericId = /^\d+$/.test(idParam) ? parseInt(idParam, 10) : null
 
-    /** Prefer service role so RLS on merchant_stores does not hide gallery_images etc. from anon. */
     const storeClient = getSupabaseServiceRole() ?? supabase
-
-    let data: Record<string, unknown> | null = null
-    const byStoreId = await storeClient.from('merchant_stores').select('*').eq('store_id', idParam).maybeSingle()
-    if (byStoreId.data) {
-      data = byStoreId.data as Record<string, unknown>
-    } else if (numericId != null) {
-      const byId = await storeClient.from('merchant_stores').select('*').eq('id', numericId).maybeSingle()
-      if (byId.data) data = byId.data as Record<string, unknown>
+    if (!storeClient) {
+      return NextResponse.json({ error: 'Service unavailable' }, { status: 503 })
     }
 
-    if (byStoreId.error) log('Supabase store by store_id error:', byStoreId.error.message)
+    let data = await lookupMerchantStoreRow(idParam)
 
     if (!data) {
-      log('No store found for store_id:', storeId)
+      log('No store found for identifier:', storeId)
+      return NextResponse.json({ error: 'Restaurant not found' }, { status: 404 })
+    }
+
+    if (!data.public_slug) {
+      const slug = await ensureStorePublicSlug(data as Parameters<typeof ensureStorePublicSlug>[0])
+      if (slug) data = { ...data, public_slug: slug }
+    }
+
+    if (!isStorePubliclyVisible(data as Parameters<typeof isStorePubliclyVisible>[0])) {
       return NextResponse.json({ error: 'Restaurant not found' }, { status: 404 })
     }
 
@@ -335,8 +341,8 @@ export async function GET(
       ;(payload as Record<string, unknown>).written_reviews = []
     }
 
-    log('Returning store:', data.store_id, data.store_name ?? data.store_display_name)
-    const res = NextResponse.json(payload)
+    log('Returning store:', data.public_slug, data.store_name ?? data.store_display_name)
+    const res = NextResponse.json(sanitizePublicStorePayload(payload as Record<string, unknown>))
     res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
     return res
   } catch (err) {

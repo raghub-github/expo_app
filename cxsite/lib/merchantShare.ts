@@ -1,10 +1,9 @@
 /**
- * Merchant share helpers — keep path in sync with merchant/customer apps:
- * `{base}/home/merchant/{storePublicId}`
- * (see `apps/merchant_app` storeWebBaseUrl share + `apps/customer_app/lib/merchantShare.ts`)
+ * Merchant share helpers — public restaurant URLs use SEO slugs:
+ * `{base}/restaurant/{public_slug}`
  */
 
-const DEFAULT_STORE_WEB_BASE = 'https://www.gatimitra.com'
+const DEFAULT_STORE_WEB_BASE = 'https://gatimitra.com'
 
 function getShareOrigin(origin?: string | null): string {
   if (origin && /^https?:\/\//i.test(origin)) {
@@ -25,18 +24,16 @@ function getShareOrigin(origin?: string | null): string {
 }
 
 /**
- * Canonical shareable store deep link (HTTPS).
- * Opens store page on web; same path the customer app resolves for merchant.
+ * Canonical shareable store URL (HTTPS) using the public SEO slug.
  */
 export function buildMerchantDeepLink(
-  storePublicId: string,
+  publicSlug: string,
   origin?: string | null
 ): string {
-  const id = String(storePublicId ?? '').trim()
+  const slug = String(publicSlug ?? '').trim()
   const base = getShareOrigin(origin)
-  if (!id) return base
-  // Do not URI-encode plain public ids (GMMC1025) — matches merchant/customer share.
-  return `${base}/home/merchant/${id}`
+  if (!slug) return base
+  return `${base}/restaurant/${encodeURIComponent(slug)}`
 }
 
 /** @deprecated Prefer buildMerchantDeepLink — same HTTPS merchant path. */
@@ -60,7 +57,7 @@ function pickCuisineHook(cuisines?: string[] | null): string | null {
 
 /**
  * Short Zomato-style share line + HTTPS deep link.
- * e.g. "Hey, check out Hot Chappathis on GatiMitra. Order now!\nhttps://www.gatimitra.com/home/merchant/GMMC1025"
+ * e.g. "Hey, check out Hot Chappathis on GatiMitra. Order now!\nhttps://gatimitra.com/restaurant/hot-chappathis-thirupur"
  */
 export function buildMerchantShareMessage(
   storeName: string,

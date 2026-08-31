@@ -10,18 +10,21 @@ const PAN_INDIA_DEFAULTS: GeoEnabledServices = {
   food: true,
   ride: true,
   parcels: false,
+  grocery: true,
 }
 
 const DEFAULT_WHILE_LOADING: GeoEnabledServices = {
   food: true,
   ride: true,
   parcels: false,
+  grocery: false,
 }
 
 const ALL_DISABLED: GeoEnabledServices = {
   food: false,
   ride: false,
   parcels: false,
+  grocery: false,
 }
 
 type GeoApiResponse = {
@@ -106,6 +109,7 @@ export function useGeoServiceAvailability() {
       food: data.food,
       ride: data.ride,
       parcels: data.parcel,
+      grocery: false,
     }
   }, [panIndiaMode, canQuery, loading, data, error])
 

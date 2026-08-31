@@ -45,6 +45,8 @@ import { useCart } from '@/lib/hooks/useCart'
 import { useCartAnimation, triggerCartAnimation } from '@/components/cart/CartAnimation'
 import CustomizeModal from '@/components/cart/CustomizeModal'
 import RestaurantSwitchModal from '@/components/cart/RestaurantSwitchModal'
+import GroceryStoreMenuSection from '@/components/grocery/GroceryStoreMenuSection'
+import type { GroceryProduct } from '@/components/grocery/GroceryProductCard'
 import { useRestaurantMenuRealtime } from '@/lib/hooks/useRestaurantMenuRealtime'
 import { useRestaurantStoreStatusRealtime } from '@/lib/hooks/useRestaurantStoreStatusRealtime'
 // Define MenuItem and Restaurant interfaces as before
@@ -193,9 +195,12 @@ const FLOATING_PROMO_SLIDES: Array<
 function RestaurantPage({
   restaurantId,
   entryFrom,
+  groceryMenu = false,
 }: {
   restaurantId: string
   entryFrom?: string
+  /** Grocery store: same header/tabs as restaurants; product grid in menu tab. */
+  groceryMenu?: boolean
 }) {
   // Create Supabase client (move inside component)
   const supabase = createClient(
@@ -208,6 +213,8 @@ function RestaurantPage({
   // Used for store-scoped Supabase realtime filters.
   const [storeNumericId, setStoreNumericId] = useState<number | null>(null)
   const [menuItems, setMenuItems] = useState<MenuItem[]>([])
+  const [groceryProducts, setGroceryProducts] = useState<GroceryProduct[]>([])
+  const [groceryLoadError, setGroceryLoadError] = useState<string | null>(null)
   const [, setOffers] = useState<any[]>([])
   const [loadingRestaurant, setLoadingRestaurant] = useState(true)
   const [loadingMenu, setLoadingMenu] = useState(true)
@@ -304,7 +311,7 @@ function RestaurantPage({
   }, [restaurantId]);
 
   // Realtime: subscribe to live menu table changes → silent refresh without page reload.
-  useRestaurantMenuRealtime(restaurantId, storeNumericId, silentRefreshMenu);
+  useRestaurantMenuRealtime(groceryMenu ? null : restaurantId, groceryMenu ? null : storeNumericId, silentRefreshMenu);
 
   /**
    * Keep store hours / open status fresh while the page stays open.
@@ -404,7 +411,34 @@ function RestaurantPage({
         setLoadingRestaurant(false);
       });
 
-    // Menu: fetch from merchant_menu_items for this store only (by store_id or id)
+    // Menu or grocery products for this store
+    if (groceryMenu) {
+      const qs = new URLSearchParams()
+      qs.set('store', restaurantId)
+      qs.set('limit', '120')
+      fetch(`/api/grocery/products?${qs.toString()}`, { signal: menuAc.signal, cache: 'no-store' })
+        .then((res) => res.json())
+        .then((data: { products?: GroceryProduct[] }) => {
+          setGroceryProducts(data?.products ?? [])
+          setGroceryLoadError(null)
+          setLoadingMenu(false)
+        })
+        .catch((err: unknown) => {
+          if (err instanceof DOMException && err.name === 'AbortError') {
+            if (menuTimedOut) {
+              setGroceryLoadError('Products are taking longer than usual. Pull to refresh or tap retry.')
+            }
+            setGroceryProducts([])
+          } else {
+            setGroceryLoadError('Could not load products. Please try again.')
+            setGroceryProducts([])
+          }
+          setLoadingMenu(false)
+        })
+        .finally(() => {
+          window.clearTimeout(menuTimeoutId)
+        })
+    } else {
     fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}/menu`, { signal: menuAc.signal, cache: 'no-store' })
       .then((res) => res.json().then((data: { items?: Array<{ id: string; item_name: string; description?: string | null; image_url?: string | null; category?: string | null; category_item?: string; price: number; offer_price?: number | null; in_stock?: boolean }> }) => ({ ok: res.ok, data })))
       .then(({ ok, data }) => {
@@ -441,6 +475,7 @@ function RestaurantPage({
       .finally(() => {
         window.clearTimeout(menuTimeoutId);
       });
+    }
 
     const now = new Date().toISOString();
     void Promise.resolve(
@@ -465,10 +500,35 @@ function RestaurantPage({
       menuAc.abort();
       window.clearTimeout(menuTimeoutId);
     };
-  }, [restaurantId]);
+  }, [restaurantId, groceryMenu]);
 
   // Sidebar: All + unique category names + VEG/NON_VEG
   const categories = ['All', ...Array.from(new Set([...menuItems.map(i => i.category), ...menuItems.map(i => i.category_item)].filter(Boolean)))]
+
+  const groceryCategories = useMemo(
+    () => [
+      'All',
+      ...Array.from(
+        new Set(groceryProducts.map((p) => p.category).filter(Boolean) as string[])
+      ),
+    ],
+    [groceryProducts]
+  )
+
+  const browseCategories = groceryMenu ? groceryCategories : categories
+
+  const filteredGroceryProducts = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    return groceryProducts.filter((p) => {
+      const categoryMatch = selectedCategory === 'All' || p.category === selectedCategory
+      const searchMatch =
+        !q ||
+        p.name.toLowerCase().includes(q) ||
+        (p.subtitle?.toLowerCase().includes(q) ?? false) ||
+        (p.category?.toLowerCase().includes(q) ?? false)
+      return categoryMatch && searchMatch
+    })
+  }, [groceryProducts, selectedCategory, searchQuery])
 
   // Filtered menu items
   const filteredMenuItems = menuItems.filter(item => {
@@ -940,11 +1000,12 @@ function RestaurantPage({
   })()
 
   const shareStore = async () => {
-    // Public store id (e.g. GMMC1025) — same id customer app /home/merchant/[id] expects.
-    const storePublicId =
-      String(restaurant.restaurant_id || restaurantId || '').trim() || restaurantId
-    // HTTPS deep link: {origin}/home/merchant/{id} (merchant app share format).
-    const deepLink = buildMerchantDeepLink(storePublicId)
+    const publicSlug = String(
+      (restaurant as { public_slug?: string }).public_slug ||
+        restaurantId ||
+        ''
+    ).trim()
+    const deepLink = buildMerchantDeepLink(publicSlug)
     const title = restaurant.restaurant_name || 'GatiMitra'
     const message = buildMerchantShareMessage(title, deepLink, {
       cuisines: cuisineChips,
@@ -1441,15 +1502,18 @@ function RestaurantPage({
         <div
           className={`min-w-0 [overflow-anchor:none] ${
             activeTab === 'menu'
-              ? 'flex flex-col lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:gap-10 lg:items-start'
+              ? groceryMenu
+                ? 'flex flex-col'
+                : 'flex flex-col lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:gap-10 lg:items-start'
               : 'flex flex-col gap-4'
           }`}
         >
-          {activeTab === 'menu' && (
+          {activeTab === 'menu' && !groceryMenu && (
             <aside
               ref={sidebarRef}
               className="order-1 lg:order-none shrink-0 flex flex-col space-y-6 lg:sticky lg:top-0 lg:z-50 lg:self-start lg:w-full lg:bg-bg lg:pb-6 lg:pt-4 lg:pr-2 [overflow-anchor:none]"
             >
+              {!groceryMenu ? (
               <div className="shrink-0">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-light mb-2.5">Diet</p>
                 <button
@@ -1476,13 +1540,14 @@ function RestaurantPage({
                   </span>
                 </button>
               </div>
+              ) : null}
               <div className="flex flex-col min-h-0">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-light mb-2.5 shrink-0">Browse</p>
                 <nav
                   ref={sidebarNavRef}
                   className="flex flex-row lg:flex-col gap-1 overflow-x-auto pb-1 lg:pb-2 -mx-1 px-1 lg:mx-0 lg:px-0 no-scrollbar lg:overflow-x-hidden"
                 >
-                  {categories.map((cat) => (
+                  {browseCategories.map((cat) => (
                     <button
                       key={cat}
                       type="button"
@@ -1523,9 +1588,25 @@ function RestaurantPage({
                           <span className="h-2 w-2 rounded-full bg-mint animate-pulse" />
                           <span className="h-2 w-2 rounded-full bg-purple animate-pulse [animation-delay:150ms]" />
                           <span className="h-2 w-2 rounded-full bg-pink animate-pulse [animation-delay:300ms]" />
-                          <span className="ml-2 font-medium">Loading menu…</span>
+                          <span className="ml-2 font-medium">{groceryMenu ? 'Loading products…' : 'Loading menu…'}</span>
                         </span>
                       </div>
+                    ) : groceryMenu ? (
+                      <GroceryStoreMenuSection
+                        loading={false}
+                        error={groceryLoadError}
+                        filteredProducts={filteredGroceryProducts}
+                        totalCount={groceryProducts.length}
+                        categories={browseCategories}
+                        searchQuery={searchQuery}
+                        selectedCategory={selectedCategory}
+                        onSearchChange={handleMenuSearchChange}
+                        onClearSearch={clearMenuSearch}
+                        onSelectCategory={setSelectedCategory}
+                        menuSelectionsHeaderRef={menuSelectionsHeaderRef}
+                        menuColumnRef={menuColumnRef}
+                        searchListMinHeightRef={searchListMinHeightRef}
+                      />
                     ) : menuLoadError ? (
                       <div className="py-20 text-center px-4">
                         <p className="text-text-light text-sm max-w-sm mx-auto mb-4">{menuLoadError}</p>

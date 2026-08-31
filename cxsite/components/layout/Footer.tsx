@@ -201,7 +201,7 @@ export default function Footer() {
           <GatiMitraLogo alt="GatiMitra" className="h-9 w-auto object-contain" />
         </div>
         <div className="text-[#a0a0c0] text-[12px] font-medium text-center leading-relaxed">
-          <div>© {new Date().getFullYear()} GatiMitra On Demand Services Private Limited</div>
+          <div suppressHydrationWarning>© {new Date().getFullYear()} GatiMitra On Demand Services Private Limited</div>
           <div>All rights reserved • {GATIMITRA_TAGLINE}</div>
         </div>
         <div className="flex flex-wrap justify-center gap-x-4 gap-y-2">

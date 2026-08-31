@@ -219,7 +219,7 @@ export async function buildCategoryUiConfig(storeIdNum: number, storeType: strin
     store_type: storeType,
     cuisine_field: {
       visible: cuisineEnabled,
-      required_for_root: cuisineEnabled,
+      required_for_root: false,
       inherit_on_subcategory: true,
     },
     allow_create_custom_cuisine:
@@ -332,14 +332,9 @@ export async function validateCategoryCreate(opts: {
     }
     if (cuisineEnabled) {
       const cid = p.cuisine_id != null ? Number(p.cuisine_id) : opts.cuisine_id ?? null;
-      if (cid == null) {
-        throw new CategoryRuleError(
-          "cuisine_required",
-          "Parent category must have a cuisine before adding subcategories",
-          400
-        );
+      if (cid != null) {
+        await assertCuisineLinkedToStore({ storeIdNum: opts.storeIdNum, cuisineId: cid });
       }
-      await assertCuisineLinkedToStore({ storeIdNum: opts.storeIdNum, cuisineId: cid });
       return { cuisine_id: cid };
     }
     return { cuisine_id: null };
@@ -347,14 +342,9 @@ export async function validateCategoryCreate(opts: {
 
   if (cuisineEnabled) {
     const cid = opts.cuisine_id ?? null;
-    if (cid == null) {
-      throw new CategoryRuleError(
-        "cuisine_required",
-        "cuisine_id is required when cuisine list is enabled for this store type",
-        400
-      );
+    if (cid != null) {
+      await assertCuisineLinkedToStore({ storeIdNum: opts.storeIdNum, cuisineId: cid });
     }
-    await assertCuisineLinkedToStore({ storeIdNum: opts.storeIdNum, cuisineId: cid });
     return { cuisine_id: cid };
   }
 
@@ -400,14 +390,6 @@ export async function validateCategoryUpdate(opts: {
   const oldC = row.cuisine_id != null ? Number(row.cuisine_id) : null;
   const newC = nextCuisine;
   if (oldC === newC) return;
-
-  if (cuisineEnabled && row.parent_category_id == null && newC === null) {
-    throw new CategoryRuleError(
-      "cuisine_required",
-      "cuisine_id cannot be removed when cuisine list is enabled for this store type",
-      400
-    );
-  }
 
   if (row.parent_category_id != null) {
     throw new CategoryRuleError("cuisine_not_allowed", "Use parent category to change cuisine for subcategories", 400);

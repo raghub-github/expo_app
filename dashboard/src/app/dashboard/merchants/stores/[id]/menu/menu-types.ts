@@ -80,7 +80,7 @@ export interface Addon {
   addon_id: string;
   customization_id: number;
   addon_name: string;
-  addon_price: number;
+  addon_price: number | null;
   addon_image_url?: string;
   addon_size_value?: number | null;
   addon_size_unit?: string | null;
@@ -107,7 +107,7 @@ export interface Variant {
   menu_item_id: number;
   variant_name: string;
   variant_type?: string;
-  variant_price: number;
+  variant_price: number | null;
   /** Optional portion size or range (e.g. 500 or 1500-1700). */
   variant_size_value?: string | number | null;
   variant_size_unit?: string | null;

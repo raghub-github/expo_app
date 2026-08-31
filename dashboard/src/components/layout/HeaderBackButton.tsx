@@ -7,7 +7,7 @@ import { useAppPathname } from "@/hooks/useAppSearchParams";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import {
   cleanDashboardHref,
-  isDashboardNavAlreadyAtTarget,
+  isDashboardNavExactlyAtTarget,
   shouldShowDashboardNavOverlay,
 } from "@/lib/navigation/dashboard-nav-transition";
 
@@ -26,9 +26,9 @@ const ICON_CLASS =
 const LABELED_CLASS =
   "inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md py-0.5 pr-2 text-gray-900 transition hover:bg-gray-100";
 
-function livePath(): string {
+function liveHref(): string {
   if (typeof window === "undefined") return "";
-  return cleanDashboardHref(window.location.pathname);
+  return `${window.location.pathname}${window.location.search}`;
 }
 
 /**
@@ -45,19 +45,19 @@ export function HeaderBackButton({
 }: Props) {
   const pathname = useAppPathname();
   const currentRoute = useCurrentRoute();
-  const target = cleanDashboardHref(href);
+  const target = href;
 
   const onBack = useCallback(
     (e: MouseEvent<HTMLAnchorElement>) => {
       if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      const current = livePath() || cleanDashboardHref(pathname);
-      if (isDashboardNavAlreadyAtTarget(current, target)) {
+      const current = liveHref() || pathname;
+      if (isDashboardNavExactlyAtTarget(current, target)) {
         e.preventDefault();
         return;
       }
       // Overlay-off routes (Super Admin hub ↔ inner pages): skip startNavigation so
       // the layout does not re-render and swallow this click.
-      if (shouldShowDashboardNavOverlay(current, target)) {
+      if (shouldShowDashboardNavOverlay(cleanDashboardHref(pathname), cleanDashboardHref(target))) {
         window.setTimeout(() => {
           currentRoute?.startNavigation(target);
         }, 0);

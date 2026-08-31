@@ -1,12 +1,8 @@
-// Authenticated chrome (AuthProvider + HierarchicalSidebar + Header) lives in
-// root `ControlAppShell` for `/dashboard/*`. Auth also covers `/order/*` so
-// cross-navigation does not remount bootstrap; order pages omit the left rail.
+import DashboardAppProviders from "@/providers/DashboardAppProviders";
+import "bootstrap-icons/font/bootstrap-icons.css";
+import { geistMono, geistSans } from "@/lib/fonts/app-fonts";
+import { ticketsNumFont, ticketsTextFont } from "@/lib/fonts/tickets-fonts";
 
-// Every page under /dashboard/* requires an authenticated session and calls
-// Supabase server-side (`getRequiredSupabaseEnv()` throws when env is unset).
-// Static prerender during `next build` has neither cookies nor the env at
-// the right time — declare the whole segment dynamic so Next skips the SSG
-// pass for these routes. Individual pages still control their own caching.
 export const dynamic = "force-dynamic";
 
 export default function DashboardLayout({
@@ -14,5 +10,11 @@ export default function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  return children;
+  return (
+    <div
+      className={`${geistSans.variable} ${geistMono.variable} ${ticketsTextFont.variable} ${ticketsNumFont.variable}`}
+    >
+      <DashboardAppProviders>{children}</DashboardAppProviders>
+    </div>
+  );
 }

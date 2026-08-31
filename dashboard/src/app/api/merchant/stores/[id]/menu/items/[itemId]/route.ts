@@ -300,6 +300,9 @@ export async function PUT(
     }
     const access = await assertStoreAccess(storeId);
     if (!access.ok) return NextResponse.json({ success: false, error: access.error }, { status: access.status });
+    if (!access.access.can_update_menu) {
+      return NextResponse.json({ success: false, error: "Menu update permission required" }, { status: 403 });
+    }
 
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const sql = getSql();
@@ -452,6 +455,9 @@ export async function DELETE(
     }
     const access = await assertStoreAccess(storeId);
     if (!access.ok) return NextResponse.json({ success: false, error: access.error }, { status: access.status });
+    if (!access.access.can_update_menu) {
+      return NextResponse.json({ success: false, error: "Menu update permission required" }, { status: 403 });
+    }
     const sql = getSql();
     const [item] = await sql`
       SELECT id, item_name, item_image_url

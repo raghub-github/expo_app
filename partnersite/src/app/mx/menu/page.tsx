@@ -58,7 +58,7 @@ interface MenuItem {
   expiry_date?: string | null;
   item_size_value?: number | string | null;
   item_size_unit?: string | null;
-  preparation_time_minutes?: number;
+  preparation_time_minutes?: number | null;
   packaging_charges?: number | null;
   serves?: number;
   allergens?: string[];
@@ -127,7 +127,7 @@ interface Addon {
   addon_id: string;
   customization_id: number;
   addon_name: string;
-  addon_price: number;
+  addon_price: number | null;
   addon_image_url?: string;
   in_stock?: boolean;
   display_order?: number;
@@ -139,7 +139,7 @@ interface Variant {
   menu_item_id: number;
   variant_name: string;
   variant_type?: string;
-  variant_price: number;
+  variant_price: number | null;
   price_difference?: number;
   in_stock?: boolean;
   available_quantity?: number;
@@ -660,8 +660,8 @@ function ItemForm(props: ItemFormProps) {
     customization_title: '',
     customization_type: 'Checkbox',
     is_required: false,
-    min_selection: 0,
-    max_selection: 1,
+    min_selection: 0 as number | '',
+    max_selection: 1 as number | '',
     display_order: 0
   });
   const [editingCustomizationIndex, setEditingCustomizationIndex] = useState<number | null>(null);
@@ -706,9 +706,15 @@ function ItemForm(props: ItemFormProps) {
     }
 
     const updatedCustomizations = [...customizations];
+    const minSelection =
+      newCustomization.min_selection === '' ? 0 : Number(newCustomization.min_selection);
+    const maxSelection =
+      newCustomization.max_selection === '' ? 1 : Number(newCustomization.max_selection);
     if (editingCustomizationIndex !== null) {
       updatedCustomizations[editingCustomizationIndex] = {
         ...newCustomization,
+        min_selection: Number.isFinite(minSelection) ? minSelection : 0,
+        max_selection: Number.isFinite(maxSelection) ? maxSelection : 1,
         customization_id: (customizations[editingCustomizationIndex]?.customization_id ?? ''),
         menu_item_id: (customizations[editingCustomizationIndex]?.menu_item_id ?? 0),
         addons: updatedCustomizations[editingCustomizationIndex]?.addons || []
@@ -717,6 +723,8 @@ function ItemForm(props: ItemFormProps) {
     } else {
       updatedCustomizations.push({
         ...newCustomization,
+        min_selection: Number.isFinite(minSelection) ? minSelection : 0,
+        max_selection: Number.isFinite(maxSelection) ? maxSelection : 1,
         customization_id: '',
         menu_item_id: 0,
         addons: []
@@ -759,7 +767,7 @@ function ItemForm(props: ItemFormProps) {
     const cust = updatedCustomizations[customizationIndex];
     const newAddon = {
       addon_name: `Addon ${(cust.addons?.length || 0) + 1}`,
-      addon_price: 0,
+      addon_price: null,
       display_order: cust.addons?.length || 0
     };
     
@@ -1345,7 +1353,7 @@ function ItemForm(props: ItemFormProps) {
               </div>
               <div>
                 <label className="text-xs font-medium text-gray-600">Prep / ETA (min)</label>
-                <input type="number" min="0" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.preparation_time_minutes ?? 15} onChange={e => !readOnly && setFormData({ ...formData, preparation_time_minutes: Number(e.target.value) || 15 })} />
+                <input type="number" min="0" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.preparation_time_minutes ?? ''} onChange={e => !readOnly && setFormData({ ...formData, preparation_time_minutes: e.target.value === '' ? null : Number(e.target.value) })} />
                 {storeDefaults?.avg_preparation_time_minutes != null && (
                   <p className="text-[10px] text-gray-500 mt-0.5">Store default: {storeDefaults.avg_preparation_time_minutes} min</p>
                 )}
@@ -1683,8 +1691,8 @@ function ItemForm(props: ItemFormProps) {
                 <div>
                   <label className="text-xs text-gray-600">Min / Max</label>
                   <div className="flex gap-1">
-                    <input type="number" min="0" className="w-12 px-2 py-1.5 border border-gray-200 rounded text-sm" value={newCustomization.min_selection} onChange={e => setNewCustomization({...newCustomization, min_selection: Number(e.target.value)})} />
-                    <input type="number" min="1" className="w-12 px-2 py-1.5 border border-gray-200 rounded text-sm" value={newCustomization.max_selection} onChange={e => setNewCustomization({...newCustomization, max_selection: Number(e.target.value)})} />
+                    <input type="number" min="0" className="w-12 px-2 py-1.5 border border-gray-200 rounded text-sm" value={newCustomization.min_selection === '' ? '' : newCustomization.min_selection} onChange={e => setNewCustomization({...newCustomization, min_selection: e.target.value === '' ? '' : Number(e.target.value)})} />
+                    <input type="number" min="1" className="w-12 px-2 py-1.5 border border-gray-200 rounded text-sm" value={newCustomization.max_selection === '' ? '' : newCustomization.max_selection} onChange={e => setNewCustomization({...newCustomization, max_selection: e.target.value === '' ? '' : Number(e.target.value)})} />
                   </div>
                 </div>
                 <div className="col-span-2 sm:col-span-4 flex items-center gap-3">
@@ -1732,7 +1740,7 @@ function ItemForm(props: ItemFormProps) {
                               <>
                                 <input type="text" className="flex-1 min-w-0 px-2 py-1 border border-gray-200 rounded text-xs" value={addon.addon_name} onChange={e => handleUpdateAddon(custIndex, addonIndex, 'addon_name', e.target.value)} placeholder="Add-on name (e.g. Extra cheese)" />
                                 <span className="text-gray-500 text-xs">₹</span>
-                                <input type="number" min="0" step="0.01" className="w-14 px-2 py-1 border border-gray-200 rounded text-xs" value={addon.addon_price} onChange={e => handleUpdateAddon(custIndex, addonIndex, 'addon_price', Number(e.target.value))} placeholder="0" />
+                                <input type="number" min="0" step="0.01" className="w-14 px-2 py-1 border border-gray-200 rounded text-xs" value={addon.addon_price ?? ''} onChange={e => handleUpdateAddon(custIndex, addonIndex, 'addon_price', e.target.value === '' ? null : Number(e.target.value))} placeholder="0" />
                                 <button type="button" onClick={() => handleDeleteAddon(custIndex, addonIndex)} className="text-xs font-medium text-red-600 hover:bg-red-50 px-1.5 py-0.5 rounded">Remove</button>
                               </>
                             )}
@@ -1771,7 +1779,7 @@ function ItemForm(props: ItemFormProps) {
                       </div>
                       <div className="min-w-[100px]">
                         <label className="text-xs text-gray-600 block mb-0.5">Variant price (₹) *</label>
-                        <input type="number" min="0" step="0.01" className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm" value={typeof v.variant_price === 'number' ? v.variant_price : ''} onChange={e => { const vars = [...(formData.variants || [])]; vars[idx] = { ...vars[idx], variant_price: Number(e.target.value) || 0 }; setFormData({ ...formData, variants: vars }); }} placeholder="0" />
+                        <input type="number" min="0" step="0.01" className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm" value={v.variant_price ?? ''} onChange={e => { const vars = [...(formData.variants || [])]; vars[idx] = { ...vars[idx], variant_price: e.target.value === '' ? null : Number(e.target.value) }; setFormData({ ...formData, variants: vars }); }} placeholder="0" />
                       </div>
                       <button type="button" onClick={() => { const vars = (formData.variants || []).filter((_: Variant, i: number) => i !== idx); setFormData({ ...formData, variants: vars, has_variants: vars.length > 0 }); }} className="p-1.5 text-red-600 hover:bg-red-50 rounded self-end" aria-label="Remove variant"><Trash2 size={14} /></button>
                     </>
@@ -1783,7 +1791,7 @@ function ItemForm(props: ItemFormProps) {
                 type="button"
                 disabled={(formData.customizations?.length || 0) + (formData.variants?.length || 0) >= CUSTOMIZATION_VARIANT_LIMIT}
                 onClick={() => {
-                  const vars = [...(formData.variants || []), { variant_name: '', variant_type: '', variant_price: 0, menu_item_id: 0 }];
+                  const vars = [...(formData.variants || []), { variant_name: '', variant_type: '', variant_price: null, menu_item_id: 0 }];
                   setFormData({ ...formData, variants: vars, has_variants: true });
                 }}
                 className="mt-2 px-3 py-1.5 bg-orange-500 text-white rounded text-sm font-medium hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1881,6 +1889,32 @@ function MenuContent() {
     [store]
   );
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const liveMenuItems = useMemo(
+    () => menuItems.filter((item) => !item.is_deleted),
+    [menuItems]
+  );
+  const categoryItemCounts = useMemo(() => {
+    const direct = new Map<number, number>();
+    for (const item of liveMenuItems) {
+      const cid = item.category_id;
+      if (cid == null) continue;
+      direct.set(Number(cid), (direct.get(Number(cid)) ?? 0) + 1);
+    }
+    const counts = new Map<number, number>();
+    for (const cat of categories) {
+      const own = direct.get(cat.id) ?? 0;
+      if (!cat.parent_category_id) {
+        let childSum = 0;
+        for (const child of categories) {
+          if (child.parent_category_id === cat.id) childSum += direct.get(child.id) ?? 0;
+        }
+        counts.set(cat.id, own + childSum);
+      } else {
+        counts.set(cat.id, own);
+      }
+    }
+    return counts;
+  }, [categories, liveMenuItems]);
   const [storeOffers, setStoreOffers] = useState<Offer[]>([]);
   const [combos, setCombos] = useState<MenuCombo[]>([]);
   const [comboDetailsById, setComboDetailsById] = useState<Record<number, { components: Array<{ menu_item_id: number }> }>>({});
@@ -2444,7 +2478,7 @@ function MenuContent() {
           store_type: typeof data.store_type === "string" ? data.store_type : seedType ?? null,
           cuisine_field: {
             visible: Boolean(data?.cuisine_field?.visible),
-            required_for_root: Boolean(data?.cuisine_field?.required_for_root),
+            required_for_root: false,
             inherit_on_subcategory: data?.cuisine_field?.inherit_on_subcategory !== false,
           },
           item_form: {
@@ -3413,7 +3447,7 @@ function MenuContent() {
           menu_item_id: v.menu_item_id,
           variant_name: v.variant_name,
           variant_type: v.variant_type,
-          variant_price: v.variant_price,
+          variant_price: v.variant_price ?? 0,
           price_difference: v.price_difference,
           in_stock: v.in_stock,
           available_quantity: v.available_quantity,
@@ -4612,18 +4646,25 @@ function MenuContent() {
                       onClick={() =>
                         setSelectedCategoryId((prev) => (prev === category.id ? null : category.id))
                       }
-                      className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap max-w-[160px] truncate ${
+                      className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap max-w-[200px] ${
                         selectedCategoryId === category.id ? 'bg-orange-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                       }`}
                       title={
                         categoryPillMode === 'sub-category' && category.parent_category_id
-                          ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ''} / ${category.category_name}`
-                          : category.category_name
+                          ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ''} / ${category.category_name} (${categoryItemCounts.get(category.id) ?? 0})`
+                          : `${category.category_name} (${categoryItemCounts.get(category.id) ?? 0})`
                       }
                     >
-                      {categoryPillMode === 'sub-category' && category.parent_category_id
-                        ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ''} / ${category.category_name}`
-                        : category.category_name}
+                      <span className="inline-flex items-center gap-1">
+                        <span className="truncate max-w-[140px]">
+                          {categoryPillMode === 'sub-category' && category.parent_category_id
+                            ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ''} / ${category.category_name}`
+                            : category.category_name}
+                        </span>
+                        <span className="tabular-nums shrink-0 opacity-90">
+                          ({categoryItemCounts.get(category.id) ?? 0})
+                        </span>
+                      </span>
                     </button>
                   ))}
                 </div>

@@ -5,6 +5,7 @@ declare global {
   interface Window {
     __gatiRedirectingToLogin?: boolean;
     __gatiAuthFetchGuardInstalled?: boolean;
+    __gatiNativeFetch?: typeof fetch;
   }
 }
 
@@ -163,6 +164,39 @@ function resolveFetchUrl(input: RequestInfo | URL): string {
   return String(input);
 }
 
+function headerValue(input: RequestInfo | URL, init: RequestInit | undefined, name: string): string | null {
+  const fromInit = init?.headers;
+  if (fromInit) {
+    try {
+      const value = new Headers(fromInit).get(name);
+      if (value != null) return value;
+    } catch {
+      /* ignore invalid HeadersInit */
+    }
+  }
+  if (typeof Request !== "undefined" && input instanceof Request) {
+    return input.headers.get(name);
+  }
+  return null;
+}
+
+/** Next App Router RSC / prefetch / server-action requests — never inspect these. */
+function isNextRouterFetch(input: RequestInfo | URL, init?: RequestInit): boolean {
+  if (headerValue(input, init, "RSC") === "1") return true;
+  if (headerValue(input, init, "Next-Router-Prefetch")) return true;
+  if (headerValue(input, init, "Next-Router-Segment-Prefetch")) return true;
+  if (headerValue(input, init, "Next-Router-State-Tree")) return true;
+  if (headerValue(input, init, "Next-Action")) return true;
+  const url = resolveFetchUrl(input);
+  try {
+    const parsed = url.startsWith("http") ? new URL(url) : new URL(url, window.location.origin);
+    if (parsed.searchParams.has("_rsc")) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
 function shouldGuardApiUrl(url: string): boolean {
   try {
     const path = url.startsWith("http") ? new URL(url).pathname : url.split("?")[0] || "";
@@ -178,82 +212,103 @@ function shouldGuardApiUrl(url: string): boolean {
  * Patch `window.fetch` once so any dashboard `/api/*` 401/auth failure
  * logs the user out instead of leaving pages to render "Not authenticated" banners.
  * Install from the authenticated shell only.
+ *
+ * Next.js App Router navigations (RSC) must call native fetch unchanged —
+ * wrapping them in an async function makes "Failed to fetch" (dev server
+ * restart / OOM / compile) surface as a console TypeError overlay.
  */
 export function installDashboardAuthFetchGuard(): void {
   if (typeof window === "undefined") return;
-  if (window.__gatiAuthFetchGuardInstalled) return;
+
+  const nativeFetch = window.__gatiNativeFetch ?? window.fetch.bind(window);
+  window.__gatiNativeFetch = nativeFetch;
   window.__gatiAuthFetchGuardInstalled = true;
 
-  const nativeFetch = window.fetch.bind(window);
-  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const response = await nativeFetch(input, init);
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    if (isNextRouterFetch(input, init) || !shouldGuardApiUrl(resolveFetchUrl(input))) {
+      return nativeFetch(input, init);
+    }
+    return inspectApiAuthFetch(nativeFetch, input, init);
+  };
+}
 
-    try {
-      if (window.__gatiRedirectingToLogin) return response;
-      const path = window.location.pathname || "";
-      if (path === "/login" || path.startsWith("/login/")) return response;
+async function inspectApiAuthFetch(
+  nativeFetch: typeof fetch,
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<Response> {
+  let response: Response;
+  try {
+    response = await nativeFetch(input, init);
+  } catch (err) {
+    // Network / abort — never treat as session death. Re-throw for the caller.
+    throw err;
+  }
 
-      const url = resolveFetchUrl(input);
-      if (!shouldGuardApiUrl(url)) return response;
+  try {
+    if (window.__gatiRedirectingToLogin) return response;
+    const path = window.location.pathname || "";
+    if (path === "/login" || path.startsWith("/login/")) return response;
 
-      // Auth session probes: only hard-logout on explicit dead-session codes.
-      const pathname = url.startsWith("http") ? new URL(url).pathname : url.split("?")[0] || "";
-      const isAuthProbe =
-        pathname === "/api/auth/session" ||
-        pathname === "/api/auth/session-status" ||
-        pathname === "/api/auth/bootstrap";
+    const url = resolveFetchUrl(input);
 
-      if (response.status !== 401 && response.status !== 403) return response;
+    // Auth session probes: only hard-logout on explicit dead-session codes.
+    const pathname = url.startsWith("http") ? new URL(url).pathname : url.split("?")[0] || "";
+    const isAuthProbe =
+      pathname === "/api/auth/session" ||
+      pathname === "/api/auth/session-status" ||
+      pathname === "/api/auth/bootstrap";
 
-      const contentType = response.headers.get("content-type") ?? "";
-      let payload: unknown = null;
-      if (contentType.includes("application/json")) {
-        try {
-          payload = await response.clone().json();
-        } catch {
-          payload = null;
-        }
+    if (response.status !== 401 && response.status !== 403) return response;
+
+    const contentType = response.headers.get("content-type") ?? "";
+    let payload: unknown = null;
+    if (contentType.includes("application/json")) {
+      try {
+        payload = await response.clone().json();
+      } catch {
+        payload = null;
       }
+    }
 
-      const code =
-        payload && typeof payload === "object"
-          ? String((payload as { code?: unknown }).code ?? "").toUpperCase()
-          : "";
-      // Never hard-logout on transient/abort/permission-denied codes.
-      // (499/503 already returned above — status here is only 401|403.)
-      if (
-        code === "SERVICE_UNAVAILABLE" ||
-        code === "REQUEST_ABORTED" ||
-        code === "FORBIDDEN" ||
-        code === "SESSION_REQUIRED" ||
-        code === "UNAUTHENTICATED" ||
-        !code
-      ) {
-        return response;
-      }
+    const code =
+      payload && typeof payload === "object"
+        ? String((payload as { code?: unknown }).code ?? "").toUpperCase()
+        : "";
+    // Never hard-logout on transient/abort/permission-denied codes.
+    // (499/503 already returned above — status here is only 401|403.)
+    if (
+      code === "SERVICE_UNAVAILABLE" ||
+      code === "REQUEST_ABORTED" ||
+      code === "FORBIDDEN" ||
+      code === "SESSION_REQUIRED" ||
+      code === "UNAUTHENTICATED" ||
+      !code
+    ) {
+      return response;
+    }
 
-      // Bare 403 without a dead-session code is usually RBAC, not auth death.
-      if (response.status === 403 && !isHardSessionDeathCode(code)) {
-        return response;
-      }
+    // Bare 403 without a dead-session code is usually RBAC, not auth death.
+    if (response.status === 403 && !isHardSessionDeathCode(code)) {
+      return response;
+    }
 
-      if (isAuthProbe) {
-        // SESSION_REQUIRED on bootstrap/session probes is often a transient race right
-        // after set-cookie or during parallel ticket-detail loads — never hard-logout for it.
-        if (isHardSessionDeathCode(code)) {
-          redirectToLoginOnSessionExpired({ reason: code });
-        }
-        return response;
-      }
-
-      // Only hard-logout on explicit dead-session codes — bare 401 may be abort/transient.
+    if (isAuthProbe) {
+      // SESSION_REQUIRED on bootstrap/session probes is often a transient race right
+      // after set-cookie or during parallel ticket-detail loads — never hard-logout for it.
       if (isHardSessionDeathCode(code)) {
         redirectToLoginOnSessionExpired({ reason: code });
       }
-    } catch {
-      // Never break the original caller.
+      return response;
     }
 
-    return response;
-  };
+    // Only hard-logout on explicit dead-session codes — bare 401 may be abort/transient.
+    if (isHardSessionDeathCode(code)) {
+      redirectToLoginOnSessionExpired({ reason: code });
+    }
+  } catch {
+    // Never break the original caller.
+  }
+
+  return response;
 }

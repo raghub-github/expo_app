@@ -227,7 +227,7 @@ const RestaurantListPage = ({
             {sortedRestaurants.map((restaurant) => (
               <Link
                 key={restaurant.id}
-                href={restaurantDetailHref(restaurant.id, 'order')}
+                href={restaurantDetailHref({ public_slug: (restaurant as { public_slug?: string }).public_slug, id: restaurant.id }, 'order')}
                 className="group block no-underline h-full"
               >
                 <div className="h-full bg-white rounded-2xl overflow-hidden shadow-md hover:shadow-lg transition-all duration-300 flex flex-col hover:-translate-y-2 border border-gray-200 hover:border-[#16c2a5]">
