@@ -6,6 +6,7 @@ import {
   resolveRiderDeliveryFeeFromCore,
   resolveRideGrossFareForPayout,
 } from "./rider-fare-basis.js";
+import { buildRiderCalcTraceEntry, appendCalcTrace, type CalcTraceEntry } from "./calc-trace.js";
 import {
   rideGeoFromCheckoutMetadata,
   rideTripDistanceFromCheckoutMetadata,
@@ -35,6 +36,8 @@ export type RideRiderPayoutSnapshot = {
   pickupDistanceKm?: number;
   tripDistanceKm?: number;
   totalDistanceKm?: number;
+  /** calc_trace: geo node + rule that produced this payout (audit). */
+  calcTrace?: CalcTraceEntry | null;
   snapshottedAt: string;
 };
 
@@ -166,6 +169,7 @@ export type RideRiderPayoutSummaryInput = {
   pickupDistanceKm?: number | null;
   tripDistanceKm?: number | null;
   totalDistanceKm?: number | null;
+  calcTrace?: CalcTraceEntry | null;
 };
 
 export function buildRideRiderPayoutSnapshotFromSummary(
@@ -201,6 +205,7 @@ export function buildRideRiderPayoutSnapshotFromSummary(
     pickupDistanceKm,
     tripDistanceKm,
     totalDistanceKm,
+    calcTrace: summary.calcTrace ?? null,
     snapshottedAt: new Date().toISOString(),
   };
 }
@@ -231,6 +236,10 @@ function parseStandalonePayoutSnapshot(raw: unknown): RideRiderPayoutSnapshot | 
     pickupDistanceKm: roundRideTripDistanceKm(Number(obj.pickupDistanceKm)),
     tripDistanceKm: roundRideTripDistanceKm(Number(obj.tripDistanceKm)),
     totalDistanceKm: roundRideTripDistanceKm(Number(obj.totalDistanceKm)),
+    calcTrace:
+      obj.calcTrace != null && typeof obj.calcTrace === "object"
+        ? (obj.calcTrace as CalcTraceEntry)
+        : null,
     snapshottedAt: String(obj.snapshottedAt ?? ""),
   };
 }
@@ -335,12 +344,16 @@ export async function writeRideRiderPayoutSnapshot(
     riderPayout
   );
 
+  // Stamp calc_trace.rider_payout (freeze-once) so the order self-documents which
+  // geo node + rule + gross basis produced this payout.
+  const snapWithTrace = appendCalcTrace(snapWithCustomerFee, snapshot.calcTrace ?? null);
+
   await db
     .update(ordersCore)
     .set({
       riderEarning: String(riderPayout),
       billingSnapshot: {
-        ...snapWithCustomerFee,
+        ...snapWithTrace,
         rider_payout_snapshot: snapshot,
         ...ledgerExtra,
       },
@@ -480,6 +493,7 @@ export async function persistRideRiderAcceptPayoutSnapshot(
       pickupKm != null && tripKm != null
         ? Math.round((pickupKm + tripKm) * 10) / 10
         : tripKm ?? pickupKm,
+    calcTrace: buildRiderCalcTraceEntry("ride", payout.trace),
   });
 }
 
@@ -577,6 +591,7 @@ export async function persistFoodRiderAcceptPayoutSnapshot(
       pickupKm != null && tripKm != null
         ? Math.round((pickupKm + tripKm) * 10) / 10
         : tripKm ?? pickupKm,
+    calcTrace: buildRiderCalcTraceEntry("food", payout.trace),
   });
 }
 

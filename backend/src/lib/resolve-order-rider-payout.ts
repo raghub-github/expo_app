@@ -4,6 +4,7 @@ import { pickMostSpecificGeoAnchor, resolveRidePricingGeoFromPickup } from "../m
 import { resolveRiderPayoutQuote } from "../modules/rider-payout-pricing/resolveRiderPayoutQuote.js";
 import type { GeoHierarchyLevel, RideVehiclePricingType } from "../modules/rider-payout-pricing/types.js";
 import { haversineDistanceMeters } from "./order-assignment-engine.js";
+import type { RiderPayoutTrace } from "./calc-trace.js";
 
 export type OrderRiderPayoutService = "food" | "parcel" | "ride";
 
@@ -13,6 +14,8 @@ export type OrderRiderPayoutBreakdown = {
   waitingAmount: number;
   surgeTotal: number;
   appliedSurges: { name: string; amount: number }[];
+  /** calc_trace inputs: the geo node + rule that produced this payout. */
+  trace: RiderPayoutTrace | null;
 };
 
 function parseCoord(value: unknown): number {
@@ -132,6 +135,15 @@ export async function resolveOrderRiderPayoutBreakdown(args: {
     waitingAmount: Math.round(quote.quote.waitingAmount ?? 0),
     surgeTotal: Math.round(quote.quote.surgeTotal ?? 0),
     appliedSurges,
+    trace: {
+      level,
+      refId,
+      ruleId: quote.quote.ruleId ?? null,
+      rulePriority: quote.quote.rulePriority ?? null,
+      riderPercentage: quote.quote.riderPercentage ?? null,
+      grossBasis: args.customerFare,
+      vehicleType: vehicleType ?? null,
+    },
   };
 }
 
