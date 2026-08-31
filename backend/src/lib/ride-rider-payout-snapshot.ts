@@ -3,6 +3,10 @@ import { getDb } from "../db/client.js";
 import { ordersCore, ordersRide, riders } from "../db/schema.js";
 import { resolveOrderRiderPayoutBreakdown } from "./resolve-order-rider-payout.js";
 import {
+  resolveRiderDeliveryFeeFromCore,
+  resolveRideGrossFareForPayout,
+} from "./rider-fare-basis.js";
+import {
   rideGeoFromCheckoutMetadata,
   rideTripDistanceFromCheckoutMetadata,
   roundRideTripDistanceKm,
@@ -433,7 +437,14 @@ export async function persistRideRiderAcceptPayoutSnapshot(
       ? Math.max(0, Math.round((haversineDistanceMeters(riderLat, riderLng, pickupLat, pickupLng) / 1000) * 10) / 10)
       : undefined;
 
-  const customerFare = Number(row.finalFare ?? row.estimatedFare ?? row.fareAmount ?? 0);
+  // Gross (pre-discount) metered fare — never the discounted final_fare, so an
+  // offer / free ride never shrinks the frozen rider payout.
+  const customerFare = resolveRideGrossFareForPayout({
+    estimatedFare: row.estimatedFare,
+    finalFare: row.finalFare,
+    fareAmount: row.fareAmount,
+    billingSnapshot: row.billingSnapshot,
+  });
   if (!Number.isFinite(customerFare) || customerFare <= 0) return null;
 
   const payout = await resolveOrderRiderPayoutBreakdown({
@@ -525,7 +536,14 @@ export async function persistFoodRiderAcceptPayoutSnapshot(
         )
       : undefined;
 
-  const customerFare = Number(row.fareAmount ?? 0);
+  // Gross/standard delivery fee (delivery_fee_gross) — never the net customer fee
+  // after a free-delivery / membership subsidy, so the frozen food payout is
+  // offer-independent and matches the delivery-time settlement resolver.
+  const customerFare = resolveRiderDeliveryFeeFromCore({
+    riderEarning: null,
+    fareAmount: row.fareAmount,
+    billingSnapshot: row.billingSnapshot,
+  });
   if (!Number.isFinite(customerFare) || customerFare <= 0) return null;
 
   const payout = await resolveOrderRiderPayoutBreakdown({
