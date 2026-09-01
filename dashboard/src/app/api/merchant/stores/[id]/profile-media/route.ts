@@ -20,6 +20,7 @@ import {
   profileMediaR2KeyFromUrl,
 } from "@/lib/merchant/store-profile-media";
 import { buildStoreOnboardingMediaR2Key, buildStoreProfileMediaR2Key, getR2MerchantObjectPrefix } from "@/lib/merchant/r2-store-asset-paths";
+import { assertMerchantStoreMutation } from "@/lib/permissions/merchant-access";
 import { isSuperAdmin, hasAccessPoint } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 
@@ -91,6 +92,12 @@ export async function POST(
     const access = await assertStoreAccess(request, storeId);
     if (!access.ok) {
       return NextResponse.json({ success: false, error: access.error }, { status: access.status });
+    }
+    const mutation = await assertMerchantStoreMutation(access.user.id, access.user.email ?? "", [
+      "can_update_store_details",
+    ]);
+    if (!mutation.ok) {
+      return NextResponse.json({ success: false, error: mutation.error }, { status: mutation.status });
     }
     const formData = await request.formData();
     const file = formData.get("file") as File | null;

@@ -20,6 +20,8 @@ export interface MerchantStore {
   logo_url?: string;
   banner_url?: string;
   gallery_images?: string[];
+  /** Customer-facing SEO slug for gatimitra.com/restaurant/{slug}. */
+  public_slug?: string | null;
   cuisine_types?: string[];
   food_categories?: string[];
   avg_preparation_time_minutes?: number;

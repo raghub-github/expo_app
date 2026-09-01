@@ -12,6 +12,8 @@ import {
   type MenuOosRow,
 } from '@/lib/menuEffectiveStock'
 
+import { lookupMerchantStoreRow } from '@/lib/server/lookupMerchantStoreRow'
+
 const DEBUG = process.env.NODE_ENV !== 'production' || process.env.DEBUG === '1'
 
 /** Server-side DB: service role bypasses RLS on merchant_menu_items (anon often returns 0 rows). */
@@ -40,34 +42,16 @@ export async function GET(
     }
 
     const idParam = String(storeId).trim()
-    const numericId = /^\d+$/.test(idParam) ? parseInt(idParam, 10) : null
 
     const db = getMenuDb()
 
-    // Resolve store: by store_id (text) first, then by id if param is numeric
-    let store: { id: number } | null = null
-    const byStoreId = await db
-      .from('merchant_stores')
-      .select('id')
-      .eq('store_id', idParam)
-      .maybeSingle()
-    if (byStoreId.data) {
-      store = byStoreId.data as { id: number }
-    } else if (numericId != null) {
-      const byId = await db
-        .from('merchant_stores')
-        .select('id')
-        .eq('id', numericId)
-        .maybeSingle()
-      if (byId.data) store = byId.data as { id: number }
-    }
-
-    if (!store) {
+    const storeRow = await lookupMerchantStoreRow(idParam)
+    if (!storeRow) {
       if (DEBUG) console.log('[menu] Store not found for storeId:', idParam)
       return NextResponse.json({ error: 'Store not found', items: [], categories: [] }, { status: 404 })
     }
 
-    const storeIdNum = store.id
+    const storeIdNum = storeRow.id as number
 
     // Fetch menu: merchant_menu_items.store_id = merchant_stores.id (bigint).
     // Use service role (SUPABASE_SERVICE_ROLE_KEY) so RLS does not return empty for anon.

@@ -75,6 +75,16 @@ export function useMerchantDashboardAccess() {
     [isSuperAdmin, hasAdminMerchantAccess, accessPoints, isViewOnly]
   );
 
+  const canVerifyOnboarding = useMemo(
+    () =>
+      !isViewOnly &&
+      (isSuperAdmin ||
+        hasAdminMerchantAccess ||
+        merchantHasAction(accessPoints, "MERCHANT_ONBOARDING", "APPROVE") ||
+        merchantHasAction(accessPoints, "MERCHANT_ONBOARDING", "REJECT")),
+    [isSuperAdmin, hasAdminMerchantAccess, accessPoints, isViewOnly]
+  );
+
   const canOperateStore = useMemo(
     () =>
       !isViewOnly &&
@@ -154,6 +164,7 @@ export function useMerchantDashboardAccess() {
     isViewOnly,
     canMutate,
     canOnboard,
+    canVerifyOnboarding,
     canOperateStore,
     canManageStore,
     canManageBank,

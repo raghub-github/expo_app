@@ -229,6 +229,7 @@ export default function CategoriesSection({
         if (!Number.isFinite(avgRating) || avgRating < 3.5 || avgRating > 5) return null
         return {
           id,
+          public_slug: r?.public_slug ? String(r.public_slug) : null,
           name,
           image: image || '/img/placeholder.png',
           deliveryTime: deliveryTime || '25-35 mins',
@@ -238,6 +239,7 @@ export default function CategoriesSection({
       })
       .filter(Boolean) as Array<{
       id: string
+      public_slug: string | null
       name: string
       image: string
       deliveryTime: string
@@ -273,6 +275,7 @@ export default function CategoriesSection({
         if (!id || !name) return null
         return {
           id,
+          public_slug: r?.public_slug ? String(r.public_slug) : null,
           name,
           image: image || '/img/placeholder.png',
           cuisines,
@@ -285,6 +288,7 @@ export default function CategoriesSection({
       .filter(Boolean)
       .slice(0, 4) as Array<{
       id: string
+      public_slug: string | null
       name: string
       image: string
       cuisines: string
@@ -1103,7 +1107,14 @@ export default function CategoriesSection({
                       const restaurant = restaurantList.find(r => r.restaurant_id === item.restaurant_id || r.id === item.restaurant_id);
                       const restaurantName = restaurant ? (restaurant.restaurant_name || restaurant.name) : 'Unknown Restaurant';
                       const restaurantPageUrl = restaurant
-                        ? restaurantDetailHref(String(restaurant.restaurant_id || restaurant.id), 'order')
+                        ? restaurantDetailHref(
+                            {
+                              public_slug: (restaurant as { public_slug?: string }).public_slug,
+                              store_id: restaurant.restaurant_id,
+                              id: restaurant.id,
+                            },
+                            'order'
+                          )
                         : '#'
                       return (
                         <div
@@ -1462,7 +1473,14 @@ export default function CategoriesSection({
               {topStores.map((store) => (
                 <Link
                   key={store.id}
-                  href={restaurantDetailHref(store.id, 'order')}
+                  href={restaurantDetailHref(
+                    {
+                      public_slug: store.public_slug,
+                      store_id: store.id,
+                      id: store.id,
+                    },
+                    'order'
+                  )}
                   className={`group shrink-0 w-[122px] sm:w-[136px] text-center no-underline transition-opacity ${
                     store.isClosed ? 'opacity-55' : 'opacity-100'
                   }`}
@@ -1497,7 +1515,14 @@ export default function CategoriesSection({
               {locationStores.map((store) => (
                 <Link
                   key={`location-store-${store.id}`}
-                  href={restaurantDetailHref(store.id, 'order')}
+                  href={restaurantDetailHref(
+                    {
+                      public_slug: store.public_slug,
+                      store_id: store.id,
+                      id: store.id,
+                    },
+                    'order'
+                  )}
                   className={`group block overflow-hidden rounded-2xl bg-white border border-gray-100 shadow-sm hover:shadow-md transition-all no-underline ${
                     store.isClosed ? 'opacity-65' : ''
                   }`}

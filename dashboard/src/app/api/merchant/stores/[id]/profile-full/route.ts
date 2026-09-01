@@ -17,6 +17,7 @@ import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getStoreBankAccounts } from "@/lib/db/operations/merchant-store-bank-accounts";
 import { getSql } from "@/lib/db/client";
 import { normalizeMerchantDocumentUrls } from "@/lib/attachments/resolve-attachment-proxy-url";
+import { resolveStoreProfileMediaForDisplay } from "@/lib/merchant/resolve-store-profile-media";
 
 export const runtime = "nodejs";
 
@@ -77,6 +78,13 @@ export async function GET(
     const parent = (store as { parent?: { parent_merchant_id?: string | null; parent_name?: string | null } }).parent ??
       null;
 
+    const profileMedia = await resolveStoreProfileMediaForDisplay({
+      id: store.id,
+      parent_id: store.parent_id ?? null,
+      banner_url: store.banner_url ?? null,
+      gallery_images: store.gallery_images ?? null,
+    });
+
     const storePayload = {
       id: store.id,
       store_id: store.store_id,
@@ -94,9 +102,10 @@ export async function GET(
       country: store.country ?? null,
       latitude: store.latitude ?? null,
       longitude: store.longitude ?? null,
-      logo_url: null,      banner_url: store.banner_url ?? null,
+      logo_url: null,
+      banner_url: profileMedia.banner_url,
       banner_video_url: store.banner_video_url ?? null,
-      gallery_images: store.gallery_images ?? null,
+      gallery_images: profileMedia.gallery_images,
       cuisine_types: store.cuisine_types ?? null,
       food_categories: null,
       avg_preparation_time_minutes: store.avg_preparation_time_minutes ?? null,

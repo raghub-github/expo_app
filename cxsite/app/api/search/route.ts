@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { DEFAULT_SERVICE_RADIUS_KM, filterStoreRowsByUserGeo } from '@/lib/server/merchantStoreGeo'
 import { toAbsoluteImageUrl } from '@/lib/mediaUrl'
+import { sanitizePublicSearchRestaurant } from '@/lib/server/sanitizePublicStoreResponse'
 
 const MAX_ITEMS = 20
 const MAX_RESTAURANTS = 10
@@ -92,7 +93,7 @@ export async function GET(request: NextRequest) {
         .limit(50),
       supabase
         .from('merchant_stores')
-        .select('store_id, store_name, store_display_name, banner_url, full_address')
+        .select('store_id, public_slug, store_name, store_display_name, banner_url, full_address')
         .eq('is_active', true)
         .eq('status', 'ACTIVE')
         .eq('approval_status', 'APPROVED')
@@ -115,6 +116,7 @@ export async function GET(request: NextRequest) {
     }>
     const stores = (storesRes.data || []) as Array<{
       store_id: string
+      public_slug?: string | null
       store_name?: string
       store_display_name?: string | null
       banner_url?: string | null
@@ -146,16 +148,17 @@ export async function GET(request: NextRequest) {
       .map((r) => {
         const name = r.store_display_name || r.store_name || ''
         const score = scoreText(name, q) || scoreText(r.full_address, q) || 40
-        return {
+        return sanitizePublicSearchRestaurant({
           type: 'restaurant' as const,
           id: r.store_id,
           restaurant_id: r.store_id,
+          public_slug: r.public_slug ?? null,
           restaurant_name: name,
           name,
           image_url: toAbsoluteImageUrl(r.banner_url ?? null) ?? undefined,
           address: r.full_address,
           score,
-        }
+        })
       })
       .filter((r) => r.score > 0)
       .sort((a, b) => b.score - a.score)

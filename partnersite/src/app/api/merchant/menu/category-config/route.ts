@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
       store_type: storeType || null,
       cuisine_field: {
         visible: cuisineEnabled,
-        required_for_root: cuisineEnabled,
+        required_for_root: false,
         inherit_on_subcategory: true,
       },
       allow_create_custom_cuisine: cuisineEnabled,

@@ -221,7 +221,7 @@ export function scheduleToPatchPayload(
     const prefix = day.day;
     const isOpen = day.isOpen && !day.isOutletClosed;
     payload[`${prefix}_open`] = isOpen;
-    if (day.is24Hours || force24Hours) {
+    if (force24Hours || computeIs24FromSlots(day.slots)) {
       payload[`${prefix}_slot1_start`] = "00:00";
       payload[`${prefix}_slot1_end`] = "23:59";
       payload[`${prefix}_slot2_start`] = null;
@@ -239,4 +239,15 @@ export function scheduleToPatchPayload(
 
 export function slotHasTimingData(slot?: TimeSlot | null): boolean {
   return !!(slot?.openingTime?.trim() && slot?.closingTime?.trim());
+}
+
+/**
+ * A day is 24-hour ONLY when it has exactly one slot spanning the whole day.
+ * Derived from slots so editing 00:00–23:59 (or adding a 2nd slot) does not stay
+ * sticky — otherwise PATCH rewrites 00:00–23:59 and evening-slot UI stays locked.
+ */
+export function computeIs24FromSlots(slots: TimeSlot[]): boolean {
+  if (slots.length !== 1) return false;
+  const s = slots[0];
+  return s?.openingTime === "00:00" && (s?.closingTime === "23:59" || s?.closingTime === "00:00");
 }

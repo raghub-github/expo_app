@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { useAppSelector } from '@/lib/hooks'
 import AuthModal from '@/components/auth/AuthModal'
 import UserProfileModal from '@/components/auth/UserProfileModal'
@@ -47,6 +47,15 @@ const LANDING_BUSINESS_ITEMS: LandingNavItem[] = [
   { href: '/corporates', label: 'For Corporates', icon: 'fa-building', openInNewTab: true },
 ]
 
+function queryFromLocation(): URLSearchParams {
+  if (typeof window === 'undefined') return new URLSearchParams()
+  try {
+    return new URLSearchParams(window.location.search)
+  } catch {
+    return new URLSearchParams()
+  }
+}
+
 const LANDING_GET_APP: LandingNavItem = {
   href: '#',
   label: 'Get App',
@@ -62,7 +71,6 @@ const LANDING_MOBILE_LINKS: LandingNavItem[] = [
 export default function Header() {
     const pathname = usePathname()
     const router = useRouter()
-    const searchParams = useSearchParams()
     const isAboutPage = pathname === '/about'
     const isCorporatesPage = pathname === '/corporates'
     const isAroundYouPage =
@@ -198,7 +206,7 @@ export default function Header() {
       const nextPath = getMagicpinPathAfterLocationSelect(pathname ?? '', displayName, item)
       if (nextPath) {
         const merged = mergeLocationQuery(
-          new URLSearchParams(searchParams?.toString() ?? ''),
+          queryFromLocation(),
           new URLSearchParams(
             (() => {
               const p = new URLSearchParams()
@@ -810,10 +818,14 @@ export default function Header() {
                                           item.type === 'dish'
                                             ? `/order?restaurant=${item.restaurant_id}`
                                             : restaurantDetailHref(
-                                                String(item.restaurant_id),
+                                                {
+                                                  public_slug: item.public_slug,
+                                                  store_id: item.restaurant_id,
+                                                  id: item.restaurant_id,
+                                                },
                                                 'search',
                                                 mergeLocationQuery(
-                                                  new URLSearchParams(searchParams?.toString() ?? ''),
+                                                  queryFromLocation(),
                                                   buildLocationQueryFromState(locationState)
                                                 )
                                               )
@@ -1022,10 +1034,14 @@ export default function Header() {
                                       item.type === 'dish'
                                         ? `/order?restaurant=${item.restaurant_id}`
                                         : restaurantDetailHref(
-                                            String(item.restaurant_id),
+                                            {
+                                              public_slug: item.public_slug,
+                                              store_id: item.restaurant_id,
+                                              id: item.restaurant_id,
+                                            },
                                             'search',
                                             mergeLocationQuery(
-                                              new URLSearchParams(searchParams?.toString() ?? ''),
+                                              queryFromLocation(),
                                               buildLocationQueryFromState(locationState)
                                             )
                                           )

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { assertStoreAccess } from '@/lib/auth/assert-store-access';
 import { normalizeMerchantStoreMediaUrl } from '@/lib/r2';
 import { client as sql } from '@/lib/drizzle';
+import { ensureStorePublicSlug } from '@/lib/ensureStorePublicSlug';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -76,7 +77,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
     }
 
-    return NextResponse.json(normalizeStoreRecordRow(row as Record<string, unknown>));
+    const slug = await ensureStorePublicSlug(row as Parameters<typeof ensureStorePublicSlug>[0]);
+    const withSlug =
+      slug && !(row as { public_slug?: string }).public_slug
+        ? { ...row, public_slug: slug }
+        : row;
+
+    return NextResponse.json(normalizeStoreRecordRow(withSlug as Record<string, unknown>));
   } catch (e) {
     console.error('[store-record]', e);
     return NextResponse.json({ error: 'Store lookup failed' }, { status: 500 });

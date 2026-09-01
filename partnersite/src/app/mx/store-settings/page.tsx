@@ -1019,12 +1019,12 @@ function StoreSettingsContent() {
     return packagingChargeAmount.trim() !== initialPackagingChargeRef.current.trim()
   }, [packagingChargeAmount])
 
-  /** Customer-facing store page on gatimitra.com (public `store_id`, e.g. GMMC1025). */
+  /** Customer-facing store page on gatimitra.com (public_slug). */
   const gatimitraCustomerStoreUrl = useMemo(() => {
-    const slug = (store?.store_id ?? storeId ?? '').trim()
+    const slug = String(store?.public_slug ?? '').trim()
     if (!slug) return null
     return buildGatimitraCustomerStoreUrl(slug)
-  }, [store?.store_id, storeId])
+  }, [store?.public_slug])
 
   const filteredPlanHistory = useMemo(
     () =>
@@ -3508,7 +3508,7 @@ function StoreSettingsContent() {
   }
 
   const handleViewStore = () => {
-    const slug = (store?.store_id ?? storeId ?? '').trim()
+    const slug = String(store?.public_slug ?? '').trim()
     if (!slug) return
     window.open(buildGatimitraCustomerStoreUrl(slug), '_blank', 'noopener,noreferrer')
   }

@@ -20,6 +20,7 @@ interface OrderHeaderProps {
   showBackButton?: boolean
   onFilterClick?: () => void
   showFilterButton?: boolean
+  searchPlaceholder?: string
 }
 
 export default function OrderHeader({
@@ -27,6 +28,7 @@ export default function OrderHeader({
   showBackButton = true,
   onFilterClick,
   showFilterButton = false,
+  searchPlaceholder = 'Search restaurants, cuisines, dishes...',
 }: OrderHeaderProps) {
   const router = useRouter()
   const pathname = usePathname()
@@ -102,7 +104,7 @@ export default function OrderHeader({
                   <i className="fas fa-search ml-3 mr-2 text-[11px] text-gray-400"></i>
                   <input
                     type="text"
-                    placeholder="Search restaurants, cuisines, dishes..."
+                    placeholder={searchPlaceholder}
                     className="h-full w-full rounded-r-full bg-transparent pr-3 text-sm text-gray-700 placeholder:text-gray-400 focus:outline-none"
                   />
                 </div>
@@ -163,7 +165,7 @@ export default function OrderHeader({
             {/* Mobile Search */}
             <div className="lg:hidden relative mt-1.5 mb-2">
               <Search
-                placeholder="Search restaurants..."
+                placeholder={searchPlaceholder}
                 className="w-full rounded-full border border-[#e9ecef] text-[11px] bg-white transition-all focus-within:border-[#16c2a5]"
                 inputClassName="px-4 py-2.5 text-sm placeholder:text-gray-400"
               />

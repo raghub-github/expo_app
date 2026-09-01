@@ -13,6 +13,7 @@ import { getDb, getSql } from "@/lib/db/client";
 import { dashboardAccessPoints } from "@/lib/db/schema";
 import { apiErrorResponse } from "@/lib/api-errors";
 import { and, eq } from "drizzle-orm";
+import { resolveAllowedActions } from "@/lib/permissions/access-point-defaults";
 
 export const runtime = "nodejs";
 
@@ -133,7 +134,7 @@ export async function GET(request: NextRequest) {
           dashboardType: ap.dashboardType,
           accessPointGroup: ap.accessPointGroup,
           accessPointName: ap.accessPointName,
-          allowedActions: ap.allowedActions,
+          allowedActions: resolveAllowedActions(ap.accessPointGroup, ap.allowedActions),
           isActive: ap.isActive,
         })),
       },

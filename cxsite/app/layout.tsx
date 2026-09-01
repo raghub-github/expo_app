@@ -1,6 +1,4 @@
 import type { Metadata } from "next";
-import { Suspense } from "react";
-import { Inter, Montserrat } from "next/font/google";
 import "./globals.css";
 import ReduxProvider from "@/components/providers/ReduxProvider";
 import { CartAnimationProvider } from "@/components/cart/CartAnimation";
@@ -12,20 +10,6 @@ import OrganizationJsonLd from "@/components/legal/OrganizationJsonLd";
 import { AppAssetsProvider } from "@/components/providers/AppAssetsProvider";
 import ImageProtection from "@/components/common/ImageProtection";
 import { GATIMITRA_SUBTAGLINE, GATIMITRA_TAGLINE } from "@/lib/brandTagline";
-
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-inter",
-  display: "swap",
-  weight: ["300", "400", "500", "600", "700", "800", "900"],
-});
-
-const montserrat = Montserrat({
-  subsets: ["latin"],
-  variable: "--font-montserrat",
-  display: "swap",
-  weight: ["400", "500", "600", "700", "800", "900"],
-});
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://gatimitra.com"),
@@ -77,21 +61,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} ${montserrat.variable}`}>
-      <head>
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
-        <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <html lang="en" suppressHydrationWarning>
+      <body suppressHydrationWarning>
         <OrganizationJsonLd />
-      </head>
-      <body>
         <ImageProtection />
         <ReduxProvider>
           <AppAssetsProvider>
             <LocationProvider>
-              <Suspense fallback={null}>
-                <AuthLocationSync />
-                <OrderLocationFromUrlSync />
-              </Suspense>
+              <AuthLocationSync />
+              <OrderLocationFromUrlSync />
               <LocationVisitGate />
               <CartAnimationProvider>
                 {children}
@@ -103,4 +81,3 @@ export default function RootLayout({
     </html>
   );
 }
-

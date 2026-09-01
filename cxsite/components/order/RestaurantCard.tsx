@@ -118,7 +118,7 @@ export default function RestaurantCard({ restaurant, onClick }: RestaurantCardPr
       {cardContent}
     </div>
   ) : (
-    <Link href={restaurantDetailHref(String(restaurant.id), 'order')} className="no-underline">
+    <Link href={restaurantDetailHref({ public_slug: (restaurant as { public_slug?: string }).public_slug, store_id: String((restaurant as { store_id?: string }).store_id ?? restaurant.id), id: restaurant.id }, 'order')} className="no-underline">
       {cardContent}
     </Link>
   )

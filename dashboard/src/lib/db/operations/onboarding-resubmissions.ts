@@ -771,6 +771,44 @@ export async function applyPendingStepResubmissions(params: {
   return pending.length;
 }
 
+/**
+ * Promote pending rows for specific field keys only (e.g. banner_url / gallery_images)
+ * without applying the rest of the verification step.
+ */
+export async function applyPendingFieldResubmissions(params: {
+  storeId: number;
+  fieldKeys: string[];
+  appliedBySystemUserId?: number | null;
+}): Promise<number> {
+  const keys = [...new Set(params.fieldKeys.map((k) => k.trim()).filter(Boolean))];
+  if (keys.length === 0) return 0;
+  const pending = (await listPendingOnboardingResubmissions(params.storeId)).filter((p) =>
+    keys.includes(p.field_key)
+  );
+  for (const row of pending) {
+    if (DOC_FIELD_KEYS.has(row.field_key)) {
+      await applyDocumentResubmission(
+        params.storeId,
+        row.field_key,
+        row.payload,
+        row.proxy_url
+      );
+    } else {
+      await applyStoreFieldResubmission(
+        params.storeId,
+        row.field_key,
+        row.payload,
+        row.proxy_url
+      );
+    }
+  }
+  await markApplied(
+    pending.map((p) => p.id),
+    params.appliedBySystemUserId ?? null
+  );
+  return pending.length;
+}
+
 export type ResubmissionItemInput = {
   verificationStep: number;
   fieldKey: string;

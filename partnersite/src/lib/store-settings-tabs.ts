@@ -32,7 +32,8 @@ export function buildStoreSettingsBreadcrumbs(
 }
 
 /** Public customer store page (main site, not partner subdomain). */
-export function buildGatimitraCustomerStoreUrl(storeId: string): string {
-  const slug = storeId.trim()
-  return `https://gatimitra.com/restaurant/${encodeURIComponent(slug)}?from=around-you&location=India`
+export function buildGatimitraCustomerStoreUrl(publicSlug: string): string {
+  const slug = publicSlug.trim()
+  if (!slug) return ''
+  return `https://gatimitra.com/restaurant/${encodeURIComponent(slug)}`
 }

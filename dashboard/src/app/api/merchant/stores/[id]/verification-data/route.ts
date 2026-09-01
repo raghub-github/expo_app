@@ -15,6 +15,8 @@ import { getSql } from "@/lib/db/client";
 import { mapRowToMenuMediaFile, type MenuMediaFile } from "@/lib/merchant-menu-media";
 import { normalizeMerchantDocumentUrls } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { listPendingOnboardingResubmissions } from "@/lib/db/operations/onboarding-resubmissions";
+import { resolveStoreProfileMediaForDisplay } from "@/lib/merchant/resolve-store-profile-media";
+import { coerceGalleryImageList } from "@/lib/merchant/store-profile-media";
 
 export const runtime = "nodejs";
 
@@ -36,6 +38,16 @@ export async function GET(
     if (!access.ok) return access.response;
     const user = { id: access.user.id, email: access.user.email ?? "" };
     const store = access.store;
+
+    const liveBannerUrl = typeof store.banner_url === "string" ? store.banner_url.trim() : "";
+    const liveGalleryUrls = coerceGalleryImageList(store.gallery_images);
+
+    const profileMedia = await resolveStoreProfileMediaForDisplay({
+      id: store.id,
+      parent_id: (store as { parent_id?: number | null }).parent_id ?? null,
+      banner_url: store.banner_url ?? null,
+      gallery_images: store.gallery_images ?? null,
+    });
 
     const storePayload = {
       id: store.id,
@@ -59,8 +71,8 @@ export async function GET(
       latitude: store.latitude ?? null,
       longitude: store.longitude ?? null,
       logo_url: null,
-      banner_url: store.banner_url ?? null,
-      gallery_images: store.gallery_images ?? null,
+      banner_url: profileMedia.banner_url,
+      gallery_images: profileMedia.gallery_images,
       cuisine_types: store.cuisine_types ?? null,
       food_categories: (store as { food_categories?: string[] | null }).food_categories ?? null,
       avg_preparation_time_minutes: store.avg_preparation_time_minutes ?? null,
@@ -347,25 +359,71 @@ export async function GET(
       pendingResubmissions = await listPendingOnboardingResubmissions(storeId);
       // Do NOT overwrite live store/documents URLs — admin UI shows Old (live) + New (pending) side by side.
       // Mark flags only so existing badges still work.
-      if (documents && pendingResubmissions.length > 0) {
-        const docs = { ...documents } as Record<string, unknown>;
+      if (pendingResubmissions.length > 0) {
+        const docs = documents ? ({ ...documents } as Record<string, unknown>) : null;
         for (const p of pendingResubmissions) {
-          if (p.field_key === "fssai") docs.fssai_pending_resubmission = true;
-          else if (p.field_key === "pan") docs.pan_pending_resubmission = true;
-          else if (p.field_key === "gst") docs.gst_pending_resubmission = true;
-          else if (p.field_key === "aadhaar") docs.aadhaar_pending_resubmission = true;
-          else if (p.field_key === "bank_proof") docs.bank_proof_pending_resubmission = true;
+          if (docs) {
+            if (p.field_key === "fssai") docs.fssai_pending_resubmission = true;
+            else if (p.field_key === "pan") docs.pan_pending_resubmission = true;
+            else if (p.field_key === "gst") docs.gst_pending_resubmission = true;
+            else if (p.field_key === "aadhaar") docs.aadhaar_pending_resubmission = true;
+            else if (p.field_key === "bank_proof") docs.bank_proof_pending_resubmission = true;
+          }
           if (p.field_key === "banner_url") {
             (
               storePayload as { banner_pending_resubmission?: boolean }
             ).banner_pending_resubmission = true;
           }
+          if (p.field_key === "gallery_images") {
+            (
+              storePayload as { gallery_pending_resubmission?: boolean }
+            ).gallery_pending_resubmission = true;
+          }
         }
-        documents = docs;
+        if (docs) documents = docs;
       }
     } catch (e) {
       console.warn("[verification-data] pending resubmissions:", e);
     }
+
+    let bannerMediaUnverified = false;
+    let galleryMediaUnverified = false;
+    try {
+      const sql = getSql();
+      const profileMediaRows = await sql`
+        SELECT media_scope, verification_status
+        FROM merchant_store_media_files
+        WHERE store_id = ${storeId}
+          AND is_active = true
+          AND deleted_at IS NULL
+          AND media_scope IN ('BANNER', 'GALLERY')
+      `;
+      const rows = Array.isArray(profileMediaRows)
+        ? profileMediaRows
+        : profileMediaRows
+          ? [profileMediaRows]
+          : [];
+      for (const row of rows as Array<Record<string, unknown>>) {
+        const scope = String(row.media_scope ?? "").toUpperCase();
+        const st = String(row.verification_status ?? "PENDING").toUpperCase();
+        if (st === "VERIFIED") continue;
+        if (scope === "BANNER") bannerMediaUnverified = true;
+        if (scope === "GALLERY") galleryMediaUnverified = true;
+      }
+    } catch (e) {
+      console.warn("[verification-data] banner/gallery media status:", e);
+    }
+
+    const pendingBanner = !!(storePayload as { banner_pending_resubmission?: boolean })
+      .banner_pending_resubmission;
+    const pendingGallery = !!(storePayload as { gallery_pending_resubmission?: boolean })
+      .gallery_pending_resubmission;
+    (storePayload as { banner_needs_approval?: boolean }).banner_needs_approval =
+      !!profileMedia.banner_url &&
+      (pendingBanner || !liveBannerUrl || bannerMediaUnverified);
+    (storePayload as { gallery_needs_approval?: boolean }).gallery_needs_approval =
+      coerceGalleryImageList(profileMedia.gallery_images).length > 0 &&
+      (pendingGallery || liveGalleryUrls.length === 0 || galleryMediaUnverified);
 
     const canRevealLegal = await canRevealStoreLegalDocs({
       supabaseAuthId: user.id,

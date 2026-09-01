@@ -1,11 +1,11 @@
 /**
  * Merchant-specific permission checker.
  *
- * Reads `merchant_management_access` (can_* columns) and `dashboard_access_points`
- * to determine what a specific agent can do within the MERCHANT dashboard.
+ * Source of truth for agents is `dashboard_access_points` (what Super Admin
+ * toggles on User Details). `merchant_management_access` is a legacy can_*
+ * table and is OR'd in — it must not override a granted access point.
  *
  * SUPER_ADMIN and ADMIN bypass all checks.
- * Normal agents are restricted by their merchant_management_access row.
  *
  * Every mutation route in the merchant dashboard MUST call one of these functions
  * before performing the action. All denied attempts are logged to action_audit_log.
@@ -16,8 +16,12 @@ import { getUserAccessPoints, getUserPermissions, isSuperAdmin } from "./engine"
 import { getSystemUserByEmail, getSystemUserByAuthId } from "../auth/user-mapping";
 import { logAction, type ActionLogData } from "../audit/logger";
 import {
+  hasMerchantAdminAccess,
   isMerchantViewOnlyAccess,
   merchantCanMutate,
+  merchantHasAccessGroup,
+  merchantHasAction,
+  type MerchantAccessPointLike,
 } from "@/lib/merchants/merchant-dashboard-access";
 
 export interface MerchantAccess {
@@ -103,6 +107,81 @@ const DEFAULT_ACCESS: Omit<MerchantAccess, "systemUserId" | "agentEmail" | "agen
   can_request_wallet_adjustment: false,
   can_approve_wallet_adjustment: false,
 };
+
+/**
+ * Map User Details access points onto can_* flags.
+ * Matches `useMerchantDashboardAccess` so the menu form and POST /menu/items agree.
+ */
+export function overlayMerchantAccessPoints(
+  access: MerchantAccess,
+  accessPoints: MerchantAccessPointLike[] | null | undefined
+): MerchantAccess {
+  const ap = accessPoints ?? [];
+  const adminPanel = hasMerchantAdminAccess({ accessPoints: ap });
+  const storeMgmt =
+    adminPanel || merchantHasAccessGroup(ap, "MERCHANT_STORE_MANAGEMENT");
+  const menuMgmt =
+    storeMgmt || merchantHasAccessGroup(ap, "MERCHANT_MENU_MANAGEMENT");
+  const onboard =
+    adminPanel || merchantHasAccessGroup(ap, "MERCHANT_ONBOARDING");
+  const ops =
+    adminPanel ||
+    merchantHasAccessGroup(ap, "MERCHANT_OPERATIONS") ||
+    merchantHasAccessGroup(ap, "MERCHANT_STATUS_MANAGEMENT");
+  const timing =
+    storeMgmt ||
+    ops ||
+    merchantHasAccessGroup(ap, "MERCHANT_TIMING_MANAGEMENT");
+  const wallet =
+    adminPanel ||
+    merchantHasAction(ap, "MERCHANT_WALLET", "UPDATE") ||
+    merchantHasAccessGroup(ap, "MERCHANT_WALLET_REQUESTS");
+  const offers =
+    storeMgmt || merchantHasAccessGroup(ap, "MERCHANT_OFFER_MANAGEMENT");
+  const bank =
+    storeMgmt || merchantHasAccessGroup(ap, "MERCHANT_BANK_MANAGEMENT");
+
+  return {
+    ...access,
+    can_view_menu: access.can_view_menu || menuMgmt,
+    can_update_menu: access.can_update_menu || menuMgmt,
+    can_update_pricing: access.can_update_pricing || menuMgmt,
+    can_update_customizations: access.can_update_customizations || menuMgmt,
+    can_update_offers: access.can_update_offers || offers,
+    can_update_store_details: access.can_update_store_details || storeMgmt,
+    can_update_store_timing: access.can_update_store_timing || timing,
+    can_update_store_availability: access.can_update_store_availability || ops,
+    can_delist_store: access.can_delist_store || ops,
+    can_relist_store: access.can_relist_store || ops,
+    can_block_store: access.can_block_store || ops,
+    can_unblock_store: access.can_unblock_store || ops,
+    can_update_onboarding: access.can_update_onboarding || onboard,
+    can_approve_documents:
+      access.can_approve_documents ||
+      adminPanel ||
+      merchantHasAction(ap, "MERCHANT_ONBOARDING", "APPROVE"),
+    can_reject_documents:
+      access.can_reject_documents ||
+      adminPanel ||
+      merchantHasAction(ap, "MERCHANT_ONBOARDING", "REJECT"),
+    can_approve_store:
+      access.can_approve_store ||
+      adminPanel ||
+      merchantHasAction(ap, "MERCHANT_ONBOARDING", "APPROVE"),
+    can_reject_store:
+      access.can_reject_store ||
+      adminPanel ||
+      merchantHasAction(ap, "MERCHANT_ONBOARDING", "REJECT"),
+    can_update_bank_details: access.can_update_bank_details || bank,
+    can_request_wallet_adjustment: access.can_request_wallet_adjustment || wallet,
+    can_view_financial: access.can_view_financial || wallet || storeMgmt,
+    can_approve_payout: access.can_approve_payout || wallet,
+    can_adjust_commission: access.can_adjust_commission || wallet,
+    can_view_all_merchants: access.can_view_all_merchants || adminPanel || storeMgmt,
+    can_view_documents: access.can_view_documents || storeMgmt || onboard,
+    can_manage_store_orders: access.can_manage_store_orders || ops || storeMgmt,
+  };
+}
 
 /**
  * Get full merchant access permissions for an agent.
@@ -245,13 +324,58 @@ export async function getMerchantAccess(
     };
   }
 
-  return access;
+  return overlayMerchantAccessPoints(access, accessPoints);
+}
+
+export async function requireMerchantAccessFlag(
+  supabaseAuthId: string,
+  email: string,
+  permission: keyof Omit<
+    MerchantAccess,
+    | "systemUserId"
+    | "agentEmail"
+    | "agentName"
+    | "agentRole"
+    | "isSuperAdmin"
+    | "isAdmin"
+    | "payout_approval_limit"
+  >
+): Promise<{ ok: true; access: MerchantAccess } | { ok: false; status: number; error: string }> {
+  const access = await getMerchantAccess(supabaseAuthId, email);
+  if (!access) {
+    return { ok: false, status: 403, error: "Merchant dashboard access required" };
+  }
+  if (!access[permission]) {
+    return { ok: false, status: 403, error: `Permission denied: ${permission}` };
+  }
+  return { ok: true, access };
 }
 
 /**
- * Assert a specific permission. Returns the access object on success, throws on failure.
- * Automatically logs denied attempts to the audit log.
+ * After store-route auth: merchant-dashboard users must have one of `flags`.
+ * Area managers (no merchant access row) are already gated by store assignment.
  */
+export async function assertMerchantStoreMutation(
+  supabaseAuthId: string,
+  email: string,
+  flags: Array<
+    keyof Omit<
+      MerchantAccess,
+      | "systemUserId"
+      | "agentEmail"
+      | "agentName"
+      | "agentRole"
+      | "isSuperAdmin"
+      | "isAdmin"
+      | "payout_approval_limit"
+    >
+  >
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const access = await getMerchantAccess(supabaseAuthId, email);
+  if (!access) return { ok: true };
+  if (flags.some((f) => Boolean(access[f]))) return { ok: true };
+  return { ok: false, status: 403, error: "You do not have permission for this action" };
+}
 export async function requireMerchantPermission(
   supabaseAuthId: string,
   email: string,

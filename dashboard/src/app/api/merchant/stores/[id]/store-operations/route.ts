@@ -5,6 +5,7 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getUserPermissions, hasDashboardAccess, hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { assertMerchantStoreMutation } from "@/lib/permissions/merchant-access";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getMerchantStoreById, updateMerchantStore } from "@/lib/db/operations/merchant-stores";
@@ -612,6 +613,12 @@ export async function POST(
       (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
     if (!allowed) {
       return NextResponse.json({ success: false, error: "Merchant dashboard access required" }, { status: 403 });
+    }
+    const mutation = await assertMerchantStoreMutation(user.id, user.email, [
+      "can_update_store_availability",
+    ]);
+    if (!mutation.ok) {
+      return NextResponse.json({ success: false, error: mutation.error }, { status: mutation.status });
     }
     const areaManagerId = await resolveMerchantListAreaManagerId({
       supabaseAuthId: user.id,

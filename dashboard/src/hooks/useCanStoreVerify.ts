@@ -4,9 +4,9 @@ import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 
 /** True when the user may run store onboarding verify / reject actions. */
 export function useCanStoreVerify() {
-  const { canOnboard, loading } = useMerchantDashboardAccess();
+  const { canVerifyOnboarding, loading } = useMerchantDashboardAccess();
   return {
-    canStoreVerify: canOnboard,
+    canStoreVerify: canVerifyOnboarding,
     loading,
   };
 }
