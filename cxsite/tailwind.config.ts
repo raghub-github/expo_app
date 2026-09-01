@@ -23,7 +23,7 @@ const config: Config = {
         "nav-bg": "rgba(255, 255, 255, 0.95)",
       },
       fontFamily: {
-        inter: ['Inter', 'sans-serif'],
+        inter: ['var(--font-inter)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         poppins: ['Poppins', 'sans-serif'],
         roboto: ['Roboto', 'sans-serif'],
       },

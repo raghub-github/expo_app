@@ -62,6 +62,7 @@ interface RestaurantCard {
   isVerified?: boolean
   operational_status?: string | null
   store_id?: string
+  public_slug?: string | null
   /** Numeric merchant_stores.id — preferred for /api/restaurants/[id] (operating hours FK). */
   merchantStorePk?: string
 }
@@ -289,7 +290,28 @@ const MainArea404State = () => {
   )
 }
 
-const RestaurantListPage = () => {
+export type StoreListVariant = 'restaurant' | 'grocery'
+
+const VARIANT_CONFIG: Record<
+  StoreListVariant,
+  { title: string; subtitle: string; emptyTitle: string; linkFrom: string }
+> = {
+  restaurant: {
+    title: 'Restaurants',
+    subtitle: 'Discover top restaurants near you',
+    emptyTitle: 'No restaurants found',
+    linkFrom: 'restaurants',
+  },
+  grocery: {
+    title: 'Grocery Stores',
+    subtitle: 'Daily essentials from trusted local stores',
+    emptyTitle: 'No grocery stores found',
+    linkFrom: 'grocery',
+  },
+}
+
+const RestaurantListPage = ({ variant = 'restaurant' }: { variant?: StoreListVariant }) => {
+  const config = VARIANT_CONFIG[variant]
   const router = useRouter()
   const searchParams = useSearchParams()
   const categoryParam = searchParams.get('category')
@@ -368,10 +390,16 @@ const RestaurantListPage = () => {
   React.useEffect(() => {
     setLoading(true);
     setError(null);
+    const storeTypeParam = variant === 'grocery' ? 'store_type=GROCERY' : ''
     const geo = effectiveGeoQs ? `&${effectiveGeoQs}` : ''
-    let url = effectiveGeoQs ? `/api/restaurants?${effectiveGeoQs}` : '/api/restaurants'
+    const typePrefix = storeTypeParam ? `${storeTypeParam}&` : ''
+    let url = effectiveGeoQs
+      ? `/api/restaurants?${typePrefix}${effectiveGeoQs}`
+      : storeTypeParam
+        ? `/api/restaurants?${storeTypeParam}`
+        : '/api/restaurants'
     if (selectedCategory) {
-      url = `/api/restaurants/by-category?category=${encodeURIComponent(selectedCategory)}${geo}`
+      url = `/api/restaurants/by-category?category=${encodeURIComponent(selectedCategory)}${geo}${storeTypeParam ? `&${storeTypeParam}` : ''}`
     }
     fetch(url)
       .then(res => {
@@ -384,7 +412,8 @@ const RestaurantListPage = () => {
           const list = Array.isArray(data) ? data : [];
           setRestaurants(
             list.map((r: any) => ({
-              id: (r.restaurant_id ?? r.store_id ?? '').toString(),
+              id: String(r.public_slug ?? r.restaurant_id ?? r.store_id ?? r.id ?? ''),
+              public_slug: r.public_slug ?? null,
               store_id: String(r.store_id ?? r.restaurant_id ?? ''),
               merchantStorePk:
                 r.id != null && String(r.id).trim() !== '' ? String(r.id) : undefined,
@@ -419,7 +448,7 @@ const RestaurantListPage = () => {
         setRestaurants([]);
       })
       .finally(() => setLoading(false));
-  }, [selectedCategory, effectiveGeoQs]);
+  }, [selectedCategory, effectiveGeoQs, variant]);
 
   // Live OPEN/CLOSED from merchant_stores (hours edits + schedule tick).
   useEffect(() => {
@@ -545,7 +574,7 @@ const RestaurantListPage = () => {
         <div className="flex-1 box-border">
         <div className="mb-2">
           <h1 className="mb-0.5 text-[1.75rem] leading-tight font-black text-[#0f172a]">
-            {selectedCategory ? selectedCategory : 'All Restaurants'}
+            {selectedCategory ? selectedCategory : `All ${config.title}`}
           </h1>
           <p className="text-xs leading-[1.3] font-medium text-slate-500">
             <i className="fas fa-store text-emerald-500 mr-1"></i>
@@ -676,8 +705,12 @@ const RestaurantListPage = () => {
                 <Link
                   key={restaurant.id}
                   href={restaurantDetailHref(
-                    String(restaurant.store_id || restaurant.id),
-                    'restaurants',
+                    {
+                      public_slug: restaurant.public_slug,
+                      store_id: restaurant.store_id,
+                      id: restaurant.id,
+                    },
+                    config.linkFrom,
                     locationCarryQuery
                   )}
                   className="group block no-underline h-full"

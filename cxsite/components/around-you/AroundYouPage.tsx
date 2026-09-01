@@ -214,6 +214,7 @@ function buildAroundYouQueryString(
 type StoreCard = {
   id: string
   storeId: string
+  publicSlug: string
   /** Numeric merchant_stores.id for opening-hours API. */
   merchantStorePk: string | null
   name: string
@@ -241,6 +242,7 @@ function mapApiToCard(r: Record<string, unknown>): StoreCard {
   return {
     id: String(r.id ?? sid),
     storeId: String(sid),
+    publicSlug: String(r.public_slug ?? '').trim(),
     merchantStorePk: pk,
     name: String(r.restaurant_name ?? r.name ?? 'Store'),
     cuisines,
@@ -1000,7 +1002,7 @@ export default function AroundYouPage() {
               <Link
                 key={store.id}
                 href={restaurantDetailHref(
-                  String(store.storeId),
+                  { public_slug: store.publicSlug, store_id: store.storeId },
                   'around-you',
                   buildLocationQueryFromState(locationState)
                 )}

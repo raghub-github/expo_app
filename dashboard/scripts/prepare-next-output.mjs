@@ -51,6 +51,9 @@ function forceRemoveTrace() {
 }
 
 function removeNextDir() {
+  if (repoOnOneDrive()) {
+    removeDirBestEffort(localNextOutputDir());
+  }
   if (!fs.existsSync(nextDir)) return;
 
   if (isJunction(nextDir)) {
@@ -184,4 +187,4 @@ export async function prepareNextBuildOutput() {
   }
 }
 
-export { forceRemoveLock, lockPath, nextDir, root, repoOnOneDrive, localNextOutputDir };
+export { forceRemoveLock, lockPath, nextDir, root, repoOnOneDrive, localNextOutputDir, ensureNextOutputJunction };

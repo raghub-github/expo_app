@@ -23,6 +23,7 @@ import { getRedisClient } from "@/lib/redis";
 import { getDb } from "@/lib/db/client";
 import { dashboardAccessPoints } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
+import { resolveAllowedActions } from "@/lib/permissions/access-point-defaults";
 import {
   bootstrapMemoryCache,
   getBootstrapMemoryTtlMs,
@@ -197,7 +198,7 @@ export async function GET(request: NextRequest) {
         dashboardType: ap.dashboardType,
         accessPointGroup: ap.accessPointGroup,
         accessPointName: ap.accessPointName,
-        allowedActions: (ap.allowedActions as string[]) ?? [],
+        allowedActions: resolveAllowedActions(ap.accessPointGroup, ap.allowedActions),
         isActive: ap.isActive === true,
       }));
     }

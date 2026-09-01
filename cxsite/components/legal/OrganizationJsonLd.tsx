@@ -74,8 +74,7 @@ export default function OrganizationJsonLd() {
   return (
     <script
       type="application/ld+json"
-      // The injected JSON is static; React's dangerouslySetInnerHTML is the
-      // expected pattern for JSON-LD in App Router.
+      suppressHydrationWarning
       dangerouslySetInnerHTML={{ __html: JSON.stringify(data) }}
     />
   );

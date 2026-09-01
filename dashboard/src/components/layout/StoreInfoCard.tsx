@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { CheckCircle, Clock, X, XCircle, Loader2, ExternalLink, ChevronRight } from "lucide-react";
+import { toast } from "sonner";
 import { useStoreVerificationSheet } from "@/context/StoreVerificationSheetContext";
 import { useCanStoreVerify } from "@/hooks/useCanStoreVerify";
 import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
@@ -56,6 +57,12 @@ interface StoreInfoCardProps {
 }
 
 // ----- Step details modal: render verified content per step (from verification-data) -----
+type PendingResubmissionRow = {
+  field_key: string;
+  payload?: Record<string, unknown>;
+  proxy_url?: string | null;
+};
+
 type VerificationData = {
   store: Record<string, unknown>;
   documents: Record<string, unknown> | null;
@@ -63,7 +70,32 @@ type VerificationData = {
   onboardingPayments: Record<string, unknown>[];
   agreementAcceptance: Record<string, unknown> | null;
   menuMediaFiles: MenuMediaFile[];
+  pendingResubmissions?: PendingResubmissionRow[];
 };
+
+function pendingBannerUrl(pending: PendingResubmissionRow[] | undefined): string | null {
+  const row = pending?.find((p) => p.field_key === "banner_url");
+  if (!row) return null;
+  const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
+  const url =
+    (typeof payload.banner_url === "string" && payload.banner_url.trim()) ||
+    (typeof payload.proxy_url === "string" && payload.proxy_url.trim()) ||
+    (typeof row.proxy_url === "string" && row.proxy_url.trim()) ||
+    "";
+  return url || null;
+}
+
+function pendingGalleryUrls(pending: PendingResubmissionRow[] | undefined): string[] {
+  const row = pending?.find((p) => p.field_key === "gallery_images");
+  if (!row) return [];
+  const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
+  const arr = Array.isArray(payload.gallery_images)
+    ? payload.gallery_images
+    : Array.isArray(payload.urls)
+      ? payload.urls
+      : [];
+  return arr.map(String).map((s) => s.trim()).filter(Boolean);
+}
 
 function formatTime(v: unknown): string {
   if (v == null) return "—";
@@ -105,7 +137,154 @@ function OperatingHoursBlock({ oh }: { oh: Record<string, unknown> | null }) {
   );
 }
 
-function StepDetailContent({ stepNum, data }: { stepNum: number; data: VerificationData }) {
+function ProfileMediaStatusBadge({ approved }: { approved: boolean }) {
+  if (approved) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-800">
+        <CheckCircle className="h-3 w-3" />
+        Approved
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+      Pending approval
+    </span>
+  );
+}
+
+function Step1BannerGalleryBlock({
+  storeId,
+  store,
+  pending,
+  canApprove,
+  onApproved,
+}: {
+  storeId: number;
+  store: Record<string, unknown>;
+  pending?: PendingResubmissionRow[];
+  canApprove: boolean;
+  onApproved: () => void;
+}) {
+  const liveBanner = typeof store.banner_url === "string" ? store.banner_url : null;
+  const liveGallery = Array.isArray(store.gallery_images)
+    ? (store.gallery_images as string[]).filter(Boolean)
+    : [];
+  const newBanner = pendingBannerUrl(pending);
+  const newGallery = pendingGalleryUrls(pending);
+  const bannerUrl = newBanner || liveBanner;
+  const gallery = newGallery.length > 0 ? newGallery : liveGallery;
+  const bannerNeeds = !!store.banner_needs_approval || !!newBanner;
+  const galleryNeeds = !!store.gallery_needs_approval || newGallery.length > 0;
+  const [busy, setBusy] = useState<"banner" | "gallery" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const approve = async (kind: "banner" | "gallery") => {
+    setBusy(kind);
+    setError(null);
+    try {
+      const res = await fetch(`/api/merchant/stores/${storeId}/profile-media/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kinds: [kind] }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
+      if (!res.ok || !data?.success) {
+        setError(typeof data?.error === "string" ? data.error : "Could not approve image.");
+        return;
+      }
+      toast.success(kind === "banner" ? "Banner approved" : "Gallery approved");
+      onApproved();
+    } catch {
+      setError("Could not approve image.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (!bannerUrl && gallery.length === 0) return null;
+
+  return (
+    <div className="mt-3 space-y-3 border-t border-gray-100 pt-3">
+      <p className="text-[10px] font-semibold uppercase text-gray-500">Banner & gallery</p>
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      {bannerUrl && (
+        <div>
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[10px] font-medium text-gray-500">Banner</p>
+            <div className="flex items-center gap-2">
+              <ProfileMediaStatusBadge approved={!bannerNeeds} />
+              {bannerNeeds && canApprove && (
+                <button
+                  type="button"
+                  disabled={busy != null}
+                  onClick={() => void approve("banner")}
+                  className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+                >
+                  {busy === "banner" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                  Approve
+                </button>
+              )}
+            </div>
+          </div>
+          <img
+            src={bannerUrl}
+            alt="Store banner"
+            className="max-h-32 w-full max-w-sm rounded-lg border border-gray-200 object-cover"
+          />
+        </div>
+      )}
+      {gallery.length > 0 && (
+        <div>
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[10px] font-medium text-gray-500">Gallery</p>
+            <div className="flex items-center gap-2">
+              <ProfileMediaStatusBadge approved={!galleryNeeds} />
+              {galleryNeeds && canApprove && (
+                <button
+                  type="button"
+                  disabled={busy != null}
+                  onClick={() => void approve("gallery")}
+                  className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+                >
+                  {busy === "gallery" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                  Approve
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {gallery.slice(0, 6).map((url, i) => (
+              <img
+                key={`${i}-${url.slice(0, 48)}`}
+                src={url}
+                alt=""
+                className="h-16 w-16 rounded border border-gray-200 object-cover"
+              />
+            ))}
+            {gallery.length > 6 && (
+              <span className="text-[10px] text-gray-500">+{gallery.length - 6} more</span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StepDetailContent({
+  stepNum,
+  data,
+  storeId,
+  canApprove,
+  onProfileMediaApproved,
+}: {
+  stepNum: number;
+  data: VerificationData;
+  storeId: number;
+  canApprove: boolean;
+  onProfileMediaApproved: () => void;
+}) {
   const { store, documents, operatingHours, onboardingPayments, agreementAcceptance, menuMediaFiles } = data;
   const row = (label: string, value: React.ReactNode) => (
     <div key={label} className="flex gap-2 py-0.5 text-xs">
@@ -115,8 +294,6 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
   );
 
   if (stepNum === 1) {
-    const bannerUrl = store.banner_url as string | null | undefined;
-    const gallery = (store.gallery_images as string[] | null | undefined) ?? [];
     return (
       <div className="space-y-2">
         <p className="text-[10px] font-semibold uppercase text-gray-500">Restaurant information</p>
@@ -124,13 +301,13 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
         {row("Display name", store.store_display_name as string)}
         {row("Description", store.store_description as string)}
         {row("Store type", store.store_type as string)}
-        {(bannerUrl || gallery.length > 0) && (
-          <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">
-            <p className="text-[10px] font-semibold uppercase text-gray-500">Banner & gallery</p>
-            {bannerUrl && <div><p className="mb-0.5 text-[10px] font-medium text-gray-500">Banner</p><img src={bannerUrl} alt="Store banner" className="max-h-32 w-full max-w-sm rounded-lg border border-gray-200 object-cover" /></div>}
-            {gallery.length > 0 && <div><p className="mb-0.5 text-[10px] font-medium text-gray-500">Gallery</p><div className="flex flex-wrap gap-2">{gallery.slice(0, 6).map((url, i) => <img key={i} src={url} alt="" className="h-16 w-16 rounded border border-gray-200 object-cover" />)}{gallery.length > 6 && <span className="text-[10px] text-gray-500">+{gallery.length - 6} more</span>}</div></div>}
-          </div>
-        )}
+        <Step1BannerGalleryBlock
+          storeId={storeId}
+          store={store}
+          pending={data.pendingResubmissions}
+          canApprove={canApprove}
+          onApproved={onProfileMediaApproved}
+        />
       </div>
     );
   }
@@ -361,12 +538,12 @@ export function StoreInfoCard({ store, className = "", compact = false }: StoreI
       .finally(() => setLoading(false));
   }, [store.storeId]);
 
-  const openStepDetails = useCallback((stepNum: number) => {
-    setViewDetailsStep(stepNum);
-    setDetailsError(null);
-    if (verificationData) return;
-    setDetailsLoading(true);
-    fetch(`/api/merchant/stores/${store.storeId}/verification-data`)
+  const fetchVerificationData = useCallback((opts?: { silent?: boolean }) => {
+    if (!opts?.silent) {
+      setDetailsLoading(true);
+      setDetailsError(null);
+    }
+    return fetch(`/api/merchant/stores/${store.storeId}/verification-data`)
       .then((r) => r.json())
       .then((data) => {
         if (data?.success && data?.store) {
@@ -377,12 +554,27 @@ export function StoreInfoCard({ store, className = "", compact = false }: StoreI
             onboardingPayments: data.onboardingPayments ?? [],
             agreementAcceptance: data.agreementAcceptance ?? null,
             menuMediaFiles: data.menuMediaFiles ?? [],
+            pendingResubmissions: data.pendingResubmissions ?? [],
           });
-        } else setDetailsError("Could not load step details.");
+          setDetailsError(null);
+        } else if (!opts?.silent) {
+          setDetailsError("Could not load step details.");
+        }
       })
-      .catch(() => setDetailsError("Failed to load step details."))
-      .finally(() => setDetailsLoading(false));
-  }, [store.storeId, verificationData]);
+      .catch(() => {
+        if (!opts?.silent) setDetailsError("Failed to load step details.");
+      })
+      .finally(() => {
+        if (!opts?.silent) setDetailsLoading(false);
+      });
+  }, [store.storeId]);
+
+  const openStepDetails = useCallback((stepNum: number) => {
+    setViewDetailsStep(stepNum);
+    setDetailsError(null);
+    if (verificationData) return;
+    void fetchVerificationData();
+  }, [store.storeId, verificationData, fetchVerificationData]);
 
   const verifiedSteps = steps
     ? (Object.entries(steps) as [string, StepVerification][])
@@ -750,7 +942,15 @@ export function StoreInfoCard({ store, className = "", compact = false }: StoreI
               <div className="overflow-y-auto px-4 py-4 min-h-0">
                 {detailsLoading && <div className="flex items-center justify-center py-8"><Loader2 className="h-8 w-8 animate-spin text-gray-400" /></div>}
                 {detailsError && <p className="text-sm text-red-600">{detailsError}</p>}
-                {!detailsLoading && !detailsError && verificationData && <StepDetailContent stepNum={viewDetailsStep} data={verificationData} />}
+                {!detailsLoading && !detailsError && verificationData && (
+                  <StepDetailContent
+                    stepNum={viewDetailsStep}
+                    data={verificationData}
+                    storeId={store.storeId}
+                    canApprove={canActOnApproval}
+                    onProfileMediaApproved={() => void fetchVerificationData({ silent: true })}
+                  />
+                )}
               </div>
             </div>
           </div>,

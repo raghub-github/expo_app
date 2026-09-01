@@ -33,6 +33,10 @@ import { rememberDashboardIdentity, peekDashboardIdentity } from "../auth/auth-i
 import { dashboardAccess, dashboardAccessPoints, type DashboardType, type AccessPointGroup, type ActionType } from "../db/schema";
 import { getDashboardTypeFromPath, isOpenDashboardPath } from "./path-mapping";
 import { supabaseAdmin } from "../supabase/server";
+import {
+  relatedDashboardTypes,
+  resolveAllowedActions,
+} from "./access-point-defaults";
 
 // Type definitions - these should match your database schema
 export type AccessModule = 
@@ -365,6 +369,43 @@ export async function getUserPermissions(
   }
 }
 
+const MODULE_DASHBOARD_TYPES: Record<AccessModule, DashboardType[]> = {
+  ORDERS: ["ORDER_FOOD", "ORDER_PARCEL", "ORDER_PERSON_RIDE"],
+  TICKETS: ["TICKET"],
+  RIDERS: ["RIDER"],
+  MERCHANTS: ["MERCHANT"],
+  CUSTOMERS: ["CUSTOMER"],
+  PAYMENTS: ["PAYMENT"],
+  REFUNDS: ["ORDER_FOOD", "ORDER_PARCEL", "ORDER_PERSON_RIDE"],
+  PAYOUTS: ["PAYMENT"],
+  OFFERS: ["OFFER"],
+  ADVERTISEMENTS: ["OFFER"],
+  ANALYTICS: ["ANALYTICS"],
+  AUDIT: ["SYSTEM"],
+  SETTINGS: ["SYSTEM"],
+  USERS: ["SYSTEM"],
+};
+
+async function dashboardAccessSatisfiesModuleAction(
+  systemUserId: number,
+  module: AccessModule,
+  action: PermissionAction
+): Promise<boolean> {
+  const dashboards = MODULE_DASHBOARD_TYPES[module];
+  if (!dashboards?.length) return false;
+  const want = String(action).trim().toUpperCase();
+  for (const dashboardType of dashboards) {
+    if (!(await hasDashboardAccess(systemUserId, dashboardType))) continue;
+    if (want === "VIEW") return true;
+    const points = await getUserAccessPoints(systemUserId, dashboardType);
+    for (const point of points) {
+      const actions = (point.allowedActions ?? []).map((a) => String(a).toUpperCase());
+      if (actions.includes(want)) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Check if user has a specific permission
  */
@@ -388,15 +429,17 @@ export async function checkPermission(
       return true;
     }
     
-    // 3. Check if permission exists
+    // 3. Legacy role_permissions (currently stubbed empty).
     const hasPermission = userPerms.permissions.some(
       (perm) =>
         perm.module === module &&
         perm.action === action &&
         (!resourceType || perm.resourceType === resourceType)
     );
-    
-    return hasPermission;
+    if (hasPermission) return true;
+
+    // 4. User Details access points are the live source of truth.
+    return dashboardAccessSatisfiesModuleAction(userPerms.systemUserId, module, action);
   } catch (error) {
     console.error("Error checking permission:", error);
     return false; // Fail closed - deny access on error
@@ -584,13 +627,14 @@ export async function hasDashboardAccess(
 ): Promise<boolean> {
   try {
     const db = getDb();
+    const types = relatedDashboardTypes(dashboardType) as DashboardType[];
     const result = await db
-      .select()
+      .select({ id: dashboardAccess.id })
       .from(dashboardAccess)
       .where(
         and(
           eq(dashboardAccess.systemUserId, systemUserId),
-          eq(dashboardAccess.dashboardType, dashboardType),
+          inArray(dashboardAccess.dashboardType, types),
           eq(dashboardAccess.isActive, true)
         )
       )
@@ -613,13 +657,14 @@ export async function getUserAccessPoints(
   const db = getDb();
   
   try {
+    const types = relatedDashboardTypes(dashboardType) as DashboardType[];
     const result = await db
       .select()
       .from(dashboardAccessPoints)
       .where(
         and(
           eq(dashboardAccessPoints.systemUserId, systemUserId),
-          eq(dashboardAccessPoints.dashboardType, dashboardType),
+          inArray(dashboardAccessPoints.dashboardType, types),
           eq(dashboardAccessPoints.isActive, true)
         )
       );
@@ -631,9 +676,10 @@ export async function getUserAccessPoints(
       accessPointGroup: row.accessPointGroup,
       accessPointName: row.accessPointName,
       accessPointDescription: row.accessPointDescription || undefined,
-      allowedActions: (row.allowedActions as string[]) || [],
+      allowedActions: resolveAllowedActions(row.accessPointGroup, row.allowedActions),
       context: (row.context as Record<string, any>) || undefined,
-      isActive: row.isActive === true,    }));
+      isActive: row.isActive === true,
+    }));
   } catch (error) {
     console.error("Error fetching access points:", error);
     return [];
@@ -650,13 +696,14 @@ export async function hasAccessPoint(
 ): Promise<boolean> {
   try {
     const db = getDb();
+    const types = relatedDashboardTypes(dashboardType) as DashboardType[];
     const result = await db
-      .select()
+      .select({ id: dashboardAccessPoints.id })
       .from(dashboardAccessPoints)
       .where(
         and(
           eq(dashboardAccessPoints.systemUserId, systemUserId),
-          eq(dashboardAccessPoints.dashboardType, dashboardType),
+          inArray(dashboardAccessPoints.dashboardType, types),
           eq(dashboardAccessPoints.accessPointGroup, accessPointGroup),
           eq(dashboardAccessPoints.isActive, true)
         )
@@ -681,13 +728,17 @@ export async function hasAccessPointAction(
 ): Promise<boolean> {
   try {
     const db = getDb();
+    const types = relatedDashboardTypes(dashboardType) as DashboardType[];
     const result = await db
-      .select({ allowedActions: dashboardAccessPoints.allowedActions })
+      .select({
+        allowedActions: dashboardAccessPoints.allowedActions,
+        accessPointGroup: dashboardAccessPoints.accessPointGroup,
+      })
       .from(dashboardAccessPoints)
       .where(
         and(
           eq(dashboardAccessPoints.systemUserId, systemUserId),
-          eq(dashboardAccessPoints.dashboardType, dashboardType),
+          inArray(dashboardAccessPoints.dashboardType, types),
           eq(dashboardAccessPoints.accessPointGroup, accessPointGroup),
           eq(dashboardAccessPoints.isActive, true)
         )
@@ -695,17 +746,9 @@ export async function hasAccessPointAction(
       .limit(1);
     const row = result[0];
     if (!row) return false;
-    const actions = (row?.allowedActions as string[] | null) ?? [];
+    const actions = resolveAllowedActions(accessPointGroup, row.allowedActions);
     const want = String(actionType).trim().toUpperCase();
-    // Legacy / incomplete rows: active TICKET_AGENT_STATUS_TOGGLE with no actions ⇒ UPDATE.
-    if (
-      actions.length === 0 &&
-      String(accessPointGroup).trim().toUpperCase() === "TICKET_AGENT_STATUS_TOGGLE" &&
-      want === "UPDATE"
-    ) {
-      return true;
-    }
-    return actions.some((a) => String(a).trim().toUpperCase() === want);
+    return actions.includes(want);
   } catch (error) {
     return false;
   }
@@ -733,8 +776,8 @@ export async function canPerformAction(
     
     // Check if any access point allows this action
     for (const accessPoint of accessPoints) {
-      const allowedActions = accessPoint.allowedActions || [];
-      if (allowedActions.includes(actionType)) {
+      const allowedActions = (accessPoint.allowedActions || []).map((a) => String(a).toUpperCase());
+      if (allowedActions.includes(String(actionType).toUpperCase())) {
         // If resourceType is specified, check context
         if (resourceType && accessPoint.context) {
           // For ticket categories, check context

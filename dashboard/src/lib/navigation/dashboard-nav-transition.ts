@@ -2,17 +2,38 @@ export function cleanDashboardHref(href: string): string {
   return href.split("?")[0].split("#")[0];
 }
 
+/** Full location key (path + query) for same-route navigations (e.g. verification ?step=). */
+export function dashboardLocationKey(href: string): string {
+  const raw = (href || "").trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(raw, "https://local.invalid");
+    const path = u.pathname.replace(/\/$/, "") || "/";
+    const params = new URLSearchParams(u.search);
+    const entries = [...params.entries()].sort(([a], [b]) => a.localeCompare(b));
+    const qs = new URLSearchParams(entries).toString();
+    return qs ? `${path}?${qs}` : path;
+  } catch {
+    return cleanDashboardHref(raw);
+  }
+}
+
+/** True only when the user is already on the module root (not a nested sub-route). */
+export function isDashboardNavAlreadyAtTarget(fromPath: string, toHref: string): boolean {
+  return cleanDashboardHref(fromPath) === cleanDashboardHref(toHref);
+}
+
+/** True when pathname and query string both match (ignores hash). */
+export function isDashboardNavExactlyAtTarget(fromHref: string, toHref: string): boolean {
+  return dashboardLocationKey(fromHref) === dashboardLocationKey(toHref);
+}
+
 /** Top-level dashboard module prefix, e.g. `/dashboard/riders`. */
 export function getDashboardModuleKey(path: string): string {
   const clean = cleanDashboardHref(path);
   if (clean === "/dashboard") return "/dashboard";
   const match = clean.match(/^(\/dashboard\/[^/]+)/);
   return match ? match[1] : clean;
-}
-
-/** True only when the user is already on the module root (not a nested sub-route). */
-export function isDashboardNavAlreadyAtTarget(fromPath: string, toHref: string): boolean {
-  return cleanDashboardHref(fromPath) === cleanDashboardHref(toHref);
 }
 
 export function isCrossModuleNavigation(fromPath: string, toHref: string): boolean {
@@ -84,6 +105,13 @@ export function shouldShowDashboardNavOverlay(fromPath: string, toHref: string):
   if (
     cleanPath.startsWith("/dashboard/super-admin") &&
     cleanTarget.startsWith("/dashboard/super-admin")
+  ) {
+    return false;
+  }
+  // Merchant verification step back uses query-only changes on one pathname.
+  if (
+    cleanPath.startsWith("/dashboard/merchants/verifications") &&
+    cleanTarget.startsWith("/dashboard/merchants/verifications")
   ) {
     return false;
   }

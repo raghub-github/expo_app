@@ -2,6 +2,8 @@
  * Banner/gallery URLs on merchant_stores: proxy paths, raw R2 keys, or legacy signed URLs.
  */
 
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
+
 export function coerceGalleryImageList(val: unknown): string[] {
   if (val == null) return [];
   if (Array.isArray(val)) {
@@ -100,4 +102,22 @@ const MAX_GALLERY_IMAGES = 5;
 
 export function maxGalleryImages(): number {
   return MAX_GALLERY_IMAGES;
+}
+
+/** Normalize banner/gallery for API responses so verification UI can load proxy URLs. */
+export function normalizeStoreProfileMediaForApi(
+  bannerUrl: string | null | undefined,
+  galleryImages: unknown
+): { banner_url: string | null; gallery_images: string[] | null } {
+  const banner =
+    typeof bannerUrl === "string" && bannerUrl.trim()
+      ? resolveAttachmentProxyUrl(bannerUrl.trim()) || bannerUrl.trim()
+      : null;
+  const gallery = coerceGalleryImageList(galleryImages)
+    .map((url) => resolveAttachmentProxyUrl(url) || url)
+    .filter(Boolean);
+  return {
+    banner_url: banner,
+    gallery_images: gallery.length > 0 ? gallery : null,
+  };
 }

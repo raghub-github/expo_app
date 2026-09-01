@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { assertMerchantStoreMutation } from "@/lib/permissions/merchant-access";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getMerchantStoreById, delistMerchantStore, relistMerchantStore, type DelistType } from "@/lib/db/operations/merchant-stores";
@@ -50,6 +51,13 @@ export async function POST(
         { success: false, error: "Merchant dashboard access required" },
         { status: 403 }
       );
+    }
+    const mutation = await assertMerchantStoreMutation(user.id, user.email, [
+      "can_delist_store",
+      "can_relist_store",
+    ]);
+    if (!mutation.ok) {
+      return NextResponse.json({ success: false, error: mutation.error }, { status: mutation.status });
     }
 
     const areaManagerId = await resolveMerchantListAreaManagerId({

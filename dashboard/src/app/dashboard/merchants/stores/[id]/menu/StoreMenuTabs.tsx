@@ -20,11 +20,6 @@ function StoreMenuTabsInner({
     { key: "addons", label: "Addon Library", icon: <Layers size={18} /> },
     { key: "combos", label: "Combos", icon: <Package size={18} /> },
   ];
-  const menuItemsChild = React.isValidElement(children[0])
-    ? React.cloneElement(children[0] as React.ReactElement<{ onSwitchToAddonLibrary?: () => void }>, {
-        onSwitchToAddonLibrary: () => setTab("addons"),
-      })
-    : children[0];
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -54,7 +49,7 @@ function StoreMenuTabsInner({
       </div>
       <div className="flex-1 min-h-0 overflow-hidden">
         <div className={tab === "items" ? "h-full min-h-0" : "hidden"}>
-          {menuItemsChild}
+          {children[0]}
         </div>
         {tab === "addons" && children[1]}
         {tab === "combos" && children[2]}

@@ -1,14 +1,20 @@
+import DashboardAppProviders from "@/providers/DashboardAppProviders";
+import "bootstrap-icons/font/bootstrap-icons.css";
+import { geistMono, geistSans } from "@/lib/fonts/app-fonts";
+import { ticketsNumFont, ticketsTextFont } from "@/lib/fonts/tickets-fonts";
+
 export const dynamic = "force-dynamic";
 
-/**
- * Standalone order detail segment — logo header + no dashboard left sidebar.
- * Auth/bootstrap lives in ControlAppShell for both `/dashboard/*` and `/order/*`
- * so cross-navigation does not remount AuthProvider.
- */
 export default function OrderLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return children;
+  return (
+    <div
+      className={`${geistSans.variable} ${geistMono.variable} ${ticketsTextFont.variable} ${ticketsNumFont.variable}`}
+    >
+      <DashboardAppProviders>{children}</DashboardAppProviders>
+    </div>
+  );
 }

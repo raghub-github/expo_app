@@ -248,7 +248,7 @@ function normalizeItem(
   };
 }
 
-export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }: { storeId: string; onSwitchToAddonLibrary?: () => void }) {
+export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
   const { toast } = useToast();
   const queryClient = getQueryClient();
   const router = useRouter();
@@ -737,7 +737,7 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
         setCategoryUiConfig({
           cuisine_field: {
             visible: Boolean(cfg.cuisine_field?.visible),
-            required_for_root: Boolean(cfg.cuisine_field?.required_for_root),
+            required_for_root: false,
             inherit_on_subcategory: Boolean(cfg.cuisine_field?.inherit_on_subcategory ?? true),
           },
           allow_create_custom_cuisine: Boolean(cfg.allow_create_custom_cuisine),
@@ -865,6 +865,37 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
     [categories]
   );
   const categoriesForPills = categoryPillMode === "category" ? rootCategories : subCategories;
+  const liveMenuItems = useMemo(
+    () => menuItems.filter((item) => !item.is_deleted),
+    [menuItems]
+  );
+  const categoryItemCounts = useMemo(() => {
+    const direct = new Map<number, number>();
+    for (const item of liveMenuItems) {
+      const cid = item.category_id;
+      if (cid == null) continue;
+      direct.set(cid, (direct.get(cid) ?? 0) + 1);
+    }
+    const counts = new Map<number, number>();
+    for (const cat of categories) {
+      const own = direct.get(cat.id) ?? 0;
+      if (!cat.parent_category_id) {
+        let childSum = 0;
+        for (const child of categories) {
+          if (child.parent_category_id === cat.id) childSum += direct.get(child.id) ?? 0;
+        }
+        counts.set(cat.id, own + childSum);
+      } else {
+        counts.set(cat.id, own);
+      }
+    }
+    return counts;
+  }, [categories, liveMenuItems]);
+  const allCategoriesItemCount = liveMenuItems.length;
+  const allSubcategoryItemCount = useMemo(() => {
+    const subIds = new Set(subCategories.map((c) => c.id));
+    return liveMenuItems.filter((item) => item.category_id != null && subIds.has(item.category_id)).length;
+  }, [liveMenuItems, subCategories]);
   const childrenByParentId = useMemo(() => {
     const map = new Map<number, MenuCategory[]>();
     for (const c of categories) {
@@ -1572,7 +1603,7 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
         const payload = {
           variant_name: v.variant_name,
           variant_type: v.variant_type ?? null,
-          variant_price: v.variant_price,
+          variant_price: v.variant_price ?? 0,
           variant_size_value: normalizeVariantSizeValue(v.variant_size_value),
           variant_size_unit: v.variant_size_unit ?? null,
           is_default: v.is_default ?? false,
@@ -1829,7 +1860,7 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
         const payload = {
           variant_name: v.variant_name,
           variant_type: v.variant_type ?? null,
-          variant_price: v.variant_price,
+          variant_price: v.variant_price ?? 0,
           variant_size_value: normalizeVariantSizeValue(v.variant_size_value),
           variant_size_unit: v.variant_size_unit ?? null,
           is_default: v.is_default ?? false,
@@ -2503,7 +2534,9 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                 selectedCategoryId === null ? menuCategoryChipActive : menuCategoryChipIdle
               }`}
             >
-              {categoryPillMode === "category" ? "All Categories" : "All Sub-Categories"}
+              {categoryPillMode === "category"
+                ? `All Categories (${allCategoriesItemCount})`
+                : `All Sub-Categories (${allSubcategoryItemCount})`}
             </button>
             <div className="flex-1 min-w-0 flex items-center gap-0.5 overflow-hidden">
               {categoriesForPills.length > 0 && (
@@ -2526,18 +2559,25 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                       key={category.id}
                       type="button"
                       onClick={() => setSelectedCategoryId(category.id)}
-                      className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap max-w-[160px] truncate ${
+                      className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap max-w-[200px] ${
                         selectedCategoryId === category.id ? menuCategoryChipActive : menuCategoryChipIdle
                       }`}
                       title={
                         categoryPillMode === "sub-category" && category.parent_category_id
-                          ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ""} / ${category.category_name}`
-                          : category.category_name
+                          ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ""} / ${category.category_name} (${categoryItemCounts.get(category.id) ?? 0})`
+                          : `${category.category_name} (${categoryItemCounts.get(category.id) ?? 0})`
                       }
                     >
-                      {categoryPillMode === "sub-category" && category.parent_category_id
-                        ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ""} / ${category.category_name}`
-                        : category.category_name}
+                      <span className="inline-flex items-center gap-1">
+                        <span className="truncate max-w-[140px]">
+                          {categoryPillMode === "sub-category" && category.parent_category_id
+                            ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ""} / ${category.category_name}`
+                            : category.category_name}
+                        </span>
+                        <span className="tabular-nums shrink-0 opacity-90">
+                          ({categoryItemCounts.get(category.id) ?? 0})
+                        </span>
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -3798,7 +3838,6 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                 categories={categories}
                 currentItemId={editingId != null ? String(editingId) : ""}
                 storeId={storeId}
-                onSwitchToAddonLibrary={onSwitchToAddonLibrary}
               />
             </div>
           </div>,
@@ -3994,22 +4033,15 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                       const p = parentCategories.find((x) => x.id === parentCategoryIdInForm);
                       const hasCuisine = p != null && p.cuisine_id != null && !Number.isNaN(Number(p.cuisine_id));
                       return !hasCuisine ? (
-                        <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">
-                          This parent category has no cuisine set. Add or edit the parent to assign a cuisine before
-                          adding subcategories.
+                        <div className="rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-sm text-gray-700">
+                          This parent category has no cuisine set. The subcategory can still be created; it will inherit
+                          cuisine later if you add one on the parent.
                         </div>
                       ) : null;
                     })()}
                   {showCuisinePicker && (
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Cuisine{categoryUiConfig?.cuisine_field.required_for_root ? " *" : ""}
-                      </label>
-                      <p className="text-[11px] text-gray-500 mb-2">
-                        Choose one cuisine for this category from the cuisines linked to your store. Add or remove store
-                        cuisines on the store profile — use <span className="italic">Edit cuisine list</span> below when
-                        it applies.
-                      </p>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Cuisine</label>
                       <select
                         value={
                           categoryForm.cuisine_id != null && !Number.isNaN(Number(categoryForm.cuisine_id))
@@ -4031,11 +4063,7 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 focus:border-orange-400 focus:ring-1 focus:ring-orange-100 bg-white"
                         aria-label="Cuisine"
                       >
-                        <option value="">
-                          {categoryUiConfig?.cuisine_field.required_for_root
-                            ? "Select cuisine..."
-                            : "None (optional)"}
-                        </option>
+                        <option value="">Select Cuisine</option>
                         {cuisineOptions.map((c) => (
                           <option key={`cuisine-${c.id}`} value={String(c.id)}>
                             {c.name}
@@ -4048,21 +4076,8 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                             </option>
                           )}
                       </select>
-                      {categoryUiConfig?.cuisine_field.required_for_root && cuisineOptions.length === 0 && (
-                        <div className="mt-2 mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-950">
-                          No cuisines linked to this store yet. Open{" "}
-                          <Link
-                            href={`/dashboard/merchants/stores/${storeId}/profile`}
-                            className="font-semibold underline"
-                          >
-                            Store profile → Edit cuisine list
-                          </Link>{" "}
-                          to add cuisines from the master list first.
-                        </div>
-                      )}
                       {cuisineChipLabel != null && (
                         <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <span className="text-[10px] text-gray-500">Selected for this category:</span>
                           <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 border border-orange-200 px-2 py-0.5 text-xs text-gray-900">
                             {cuisineChipLabel}
                             <button
@@ -4082,41 +4097,11 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                           </span>
                         </div>
                       )}
-                      {!categoryUiConfig?.cuisine_field.required_for_root &&
-                        categoryForm.cuisine_id == null &&
-                        cuisineOptions.length > 0 && (
-                          <p className="mt-2 text-[11px] text-gray-600">
-                            Optional — leave empty if not needed, or{" "}
-                            <Link
-                              href={`/dashboard/merchants/stores/${storeId}/profile`}
-                              className="font-semibold text-orange-600 hover:text-orange-700 underline"
-                            >
-                              edit cuisine list
-                            </Link>{" "}
-                            to change which cuisines are available for this store.
-                          </p>
-                        )}
-                      {!categoryUiConfig?.cuisine_field.required_for_root &&
-                        categoryForm.cuisine_id == null &&
-                        cuisineOptions.length === 0 && (
-                          <p className="mt-2 text-[11px] text-gray-600">
-                            <Link
-                              href={`/dashboard/merchants/stores/${storeId}/profile`}
-                              className="font-semibold text-orange-600 hover:text-orange-700 underline"
-                            >
-                              Edit cuisine list
-                            </Link>{" "}
-                            on the store profile to link cuisines from the master list first.
-                          </p>
-                        )}
-                      <p className="mt-2 text-xs text-gray-500">
-                        Subcategories inherit cuisine from their parent; only top-level categories pick a cuisine here.
-                      </p>
                     </div>
                   )}
                   {categoryModalMode === "edit" && (
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Parent category (optional)</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Parent category</label>
                       <select
                         value={parentCategoryIdInForm ?? ""}
                         onChange={(e) => setParentCategoryIdInForm(e.target.value === "" ? null : Number(e.target.value))}
@@ -4234,7 +4219,7 @@ export function StoreMenuClient({ storeId: storeIdProp, onSwitchToAddonLibrary }
                     )}
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Description (optional)</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
                     <textarea
                       rows={2}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-orange-400 focus:ring-1 focus:ring-orange-100"

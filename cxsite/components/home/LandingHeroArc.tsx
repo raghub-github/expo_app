@@ -13,9 +13,11 @@ import {
 import { useRouter } from 'next/navigation'
 import { useAppSelector } from '@/lib/hooks'
 import { useGeoServiceAvailability } from '@/lib/hooks/useGeoServiceAvailability'
+import { useGroceryAvailability } from '@/lib/hooks/useGroceryAvailability'
 import {
   firstEnabledLandingArcIndex,
   isLandingArcItemEnabled,
+  landingArcDisplayOrder,
   type GeoEnabledServices,
 } from '@/lib/landingServiceAvailability'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
@@ -56,9 +58,10 @@ export const LANDING_HERO_ARC_ITEMS: LandingArcItem[] = [
     href: '/ecommerce',
   },
   {
-    title: 'Deals',
+    title: 'Grocery',
     assetKey: CX.home.serviceVoucher,
-    href: '#',
+    href: '/grocery',
+    service: 'food',
   },
   {
     title: 'Near me',
@@ -114,12 +117,12 @@ export const LANDING_HERO_ARC_COPY: LandingHeroArcCopy[] = [
     ],
   },
   {
-    line1: 'Exclusive',
-    line2: 'Deals',
+    line1: 'Grocery',
+    line2: 'Delivery',
     paragraphs: [
-      'At GatiMitra, we bring you curated offers that pair real value with quality you can trust — from dining and rides to everyday essentials.',
-      'Made for those who love smart savings without compromise — GatiMitra delivers more than discounts, it delivers rewards that fit your lifestyle.',
-      'Step into a simpler way to save every time you order, ride, or shop with us.',
+      'At GatiMitra, we bring daily essentials to your doorstep — fresh produce, pantry staples, and household needs from trusted local grocery stores.',
+      'Built for those who value convenience, quality, and speed — GatiMitra delivers more than groceries, it delivers everyday peace of mind.',
+      'Step into a smarter, faster way to stock your home.',
     ],
   },
   {
@@ -146,8 +149,8 @@ type Ctx = {
 }
 
 function comingSoonMessageForItem(item: LandingArcItem): string {
-  if (item.title === 'Deals') {
-    return "We're working on exciting deals & vouchers. This feature will be live very soon on GatiMitra."
+  if (item.title === 'Grocery') {
+    return 'Grocery delivery is not available in your area yet. We are onboarding local stores — check back soon!'
   }
   if (item.title === 'Shop') {
     return 'E-Commerce is coming soon on GatiMitra. Stay tuned for curated shopping.'
@@ -178,7 +181,13 @@ function persistLandingHeroArcIndex(index: number) {
 export function LandingHeroArcProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const { user, isAuthenticated, currentService } = useAppSelector((s) => s.auth)
-  const { enabledServices, resolved: geoResolved } = useGeoServiceAvailability()
+  const { enabledServices: geoServices, resolved: geoResolved } = useGeoServiceAvailability()
+  const { groceryEnabled, resolved: groceryResolved } = useGroceryAvailability()
+  const enabledServices = useMemo(
+    () => ({ ...geoServices, grocery: groceryEnabled }),
+    [geoServices, groceryEnabled]
+  )
+  const geoResolvedAll = geoResolved && groceryResolved
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [showComingSoon, setShowComingSoon] = useState(false)
   const [comingSoonText, setComingSoonText] = useState('')
@@ -199,6 +208,7 @@ export function LandingHeroArcProvider({ children }: { children: React.ReactNode
 
   const pathToService: Record<string, ServiceCategory> = {
     '/order': 'food',
+    '/grocery': 'food',
     '/ride': 'person',
     '/courier': 'parcel',
     '/parcel': 'parcel',
@@ -218,14 +228,14 @@ export function LandingHeroArcProvider({ children }: { children: React.ReactNode
   )
 
   useEffect(() => {
-    if (!geoResolved) return
+    if (!geoResolvedAll) return
     const item = LANDING_HERO_ARC_ITEMS[selectedIndex]
     if (item && isLandingArcItemEnabled(item, enabledServices)) return
     const next = firstEnabledLandingArcIndex(LANDING_HERO_ARC_ITEMS, enabledServices)
     if (next === selectedIndex) return
     setSelectedIndex(next)
     persistLandingHeroArcIndex(next)
-  }, [geoResolved, enabledServices, selectedIndex])
+  }, [geoResolvedAll, enabledServices, selectedIndex])
 
   useLayoutEffect(() => {
     try {
@@ -299,11 +309,11 @@ export function LandingHeroArcProvider({ children }: { children: React.ReactNode
       isItemEnabled,
       isSelectedEnabled,
       enabledServices,
-      geoResolved,
+      geoResolved: geoResolvedAll,
     }),
     [
       explore,
-      geoResolved,
+      geoResolvedAll,
       enabledServices,
       isItemEnabled,
       isSelectedEnabled,
@@ -429,10 +439,15 @@ function initialArcRadiusForSSR(): number {
 }
 
 export function LandingHeroGreenContent() {
-  const { selectedIndex, setSelectedIndex, isItemEnabled } = useLandingHeroArc()
+  const { selectedIndex, setSelectedIndex, isItemEnabled, enabledServices } = useLandingHeroArc()
   const containerRef = useRef<HTMLDivElement>(null)
   const [radius, setRadius] = useState(initialArcRadiusForSSR)
   const item = LANDING_HERO_ARC_ITEMS[selectedIndex] ?? LANDING_HERO_ARC_ITEMS[0]
+
+  const displayOrder = useMemo(
+    () => landingArcDisplayOrder(LANDING_HERO_ARC_ITEMS, enabledServices),
+    [enabledServices]
+  )
 
   useLayoutEffect(() => {
     const el = containerRef.current
@@ -512,10 +527,11 @@ export function LandingHeroGreenContent() {
               ))}
             </svg>
 
-            {LANDING_HERO_ARC_ITEMS.map((arcItem, i) => {
+            {displayOrder.map((itemIndex, i) => {
+              const arcItem = LANDING_HERO_ARC_ITEMS[itemIndex]
               const { x, y } = positions[i]
-              const active = i === selectedIndex
-              const enabled = isItemEnabled(i)
+              const active = itemIndex === selectedIndex
+              const enabled = isItemEnabled(itemIndex)
               return (
                 <div
                   key={arcItem.title}
@@ -529,7 +545,7 @@ export function LandingHeroGreenContent() {
                   ) : null}
                   <button
                     type="button"
-                    onClick={() => enabled && setSelectedIndex(i)}
+                    onClick={() => enabled && setSelectedIndex(itemIndex)}
                     title={enabled ? arcItem.title : `${arcItem.title} — Coming soon`}
                     disabled={!enabled}
                     className={`relative flex h-[46px] w-[46px] items-center justify-center overflow-visible rounded-full bg-white shadow-[0_6px_20px_rgba(0,0,0,0.12)] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C] sm:h-[52px] sm:w-[52px] md:h-[56px] md:w-[56px] ${

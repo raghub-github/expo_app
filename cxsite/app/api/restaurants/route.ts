@@ -4,10 +4,13 @@ import {
   DEFAULT_SERVICE_RADIUS_KM,
 } from '@/lib/server/merchantStoreGeo'
 import {
+  enrichStoreListMeta,
   fetchGeoFilteredStores,
   fetchPanIndiaStores,
   type WebRestaurantRow,
 } from '@/lib/server/fetchMerchantStores'
+import { attachPublicSlugsToListRows } from '@/lib/server/attachPublicSlugsToListRows'
+import { sanitizePublicStoreListRow } from '@/lib/server/sanitizePublicStoreResponse'
 
 const MAX_RADIUS_KM = 50
 
@@ -27,6 +30,11 @@ function applyStoreTypeFilter(
   return rows.filter((r) => r.store_type === storeTypeFilter.value)
 }
 
+async function withPublicSlugs(rows: WebRestaurantRow[]): Promise<WebRestaurantRow[]> {
+  const enriched = await enrichStoreListMeta(rows)
+  return attachPublicSlugsToListRows(enriched)
+}
+
 /**
  * GET /api/restaurants
  * - No lat/lon (or pan-India browse): all approved active stores (cap 500).
@@ -37,7 +45,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const storeTypeFilter = parseStoreTypeQueryParam(searchParams.get('store_type'))
     const latParam = searchParams.get('lat')
-    const lonParam = searchParams.get('lon')
+    const lonParam = searchParams.get('lon') ?? searchParams.get('lng')
     const radiusKm = Math.min(
       MAX_RADIUS_KM,
       Math.max(
@@ -58,18 +66,20 @@ export async function GET(request: NextRequest) {
       userLon <= 180
 
     if (hasValidCoords) {
-      const mapped = applyStoreTypeFilter(
-        await fetchGeoFilteredStores(userLat, userLon, radiusKm),
-        storeTypeFilter
-      )
+      let rows = await fetchGeoFilteredStores(userLat, userLon, radiusKm)
+      rows = await withPublicSlugs(rows)
+      const mapped = applyStoreTypeFilter(rows, storeTypeFilter)
       log('Geo filter at', userLat, userLon, '→', mapped.length, 'stores')
-      return NextResponse.json(mapped)
+      return NextResponse.json(mapped.map((r) => sanitizePublicStoreListRow(r as unknown as Record<string, unknown>)))
     }
 
     log('Pan-India: approved active stores')
-    const mapped = applyStoreTypeFilter(await fetchPanIndiaStores(), storeTypeFilter)
+    const mapped = applyStoreTypeFilter(
+      await withPublicSlugs(await fetchPanIndiaStores()),
+      storeTypeFilter
+    )
     log('Returning', mapped.length, 'restaurants (pan-India)')
-    return NextResponse.json(mapped)
+    return NextResponse.json(mapped.map((r) => sanitizePublicStoreListRow(r as unknown as Record<string, unknown>)))
   } catch (err) {
     log('Unhandled error:', err)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

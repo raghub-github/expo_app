@@ -13,6 +13,7 @@ import {
 } from "./engine";
 import type { DashboardType, ActionType } from "../db/schema";
 import { getSystemUserByAuthId, getSystemUserByEmail } from "../auth/user-mapping";
+import { equivalentActionsForGroup } from "./access-point-defaults";
 
 async function getSystemUserIdFromAuth(
   supabaseAuthId: string,
@@ -60,17 +61,29 @@ export async function canPerformActionByAuth(
 
     // Check if any access point allows this action
     for (const accessPoint of accessPoints) {
-      const allowedActions = accessPoint.allowedActions || [];
+      const allowedActions = (accessPoint.allowedActions || []).map((a) =>
+        String(a).trim().toUpperCase()
+      );
       
       // If context specifies access_point_group, check it matches
       if (context?.access_point_group) {
-        if (accessPoint.accessPointGroup !== context.access_point_group) {
-          continue; // Access point group doesn't match
+        if (
+          String(accessPoint.accessPointGroup).toUpperCase() !==
+          String(context.access_point_group).toUpperCase()
+        ) {
+          continue;
         }
       }
+
+      const wanted = equivalentActionsForGroup(
+        dashboardType,
+        accessPoint.accessPointGroup,
+        actionType
+      );
+      const actionAllowed = wanted.some((a) => allowedActions.includes(a));
       
       // Check if action is allowed
-      if (allowedActions.includes(actionType)) {
+      if (actionAllowed) {
         // If context is provided, check it matches
         if (context && accessPoint.context) {
           // For tickets, check category and type

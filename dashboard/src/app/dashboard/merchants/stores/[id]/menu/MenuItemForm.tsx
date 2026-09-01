@@ -44,7 +44,8 @@ export interface ItemFormData {
   has_variants: boolean;
   is_popular: boolean;
   is_recommended: boolean;
-  preparation_time_minutes: number;
+  /** `null` while the input is empty so backspace can clear every digit, including 0. */
+  preparation_time_minutes: number | null;
   /** When true, item uses a per-item packaging fee (see packaging_charges). */
   packaging_enabled: boolean;
   packaging_charges: string;
@@ -94,7 +95,6 @@ interface ItemFormProps {
   categories: MenuCategory[];
   currentItemId?: string;
   storeId?: string;
-  onSwitchToAddonLibrary?: () => void;
   imageUploadAllowed?: boolean;
   imageLimitReached?: boolean;
   imageUsed?: number;
@@ -126,10 +126,21 @@ const defaultNewCustomization = {
   customization_title: "",
   customization_type: "Checkbox" as const,
   is_required: false,
-  min_selection: 0,
-  max_selection: 1,
+  min_selection: 0 as number | "",
+  max_selection: 1 as number | "",
   display_order: 0,
 };
+
+function parseNumberInputAllowEmpty(raw: string): number | null {
+  if (raw.trim() === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function numberInputValue(n: number | null | undefined | ""): number | "" {
+  if (n === null || n === undefined || n === "") return "";
+  return n;
+}
 
 export function MenuItemForm({
   isEdit = false,
@@ -148,7 +159,6 @@ export function MenuItemForm({
   categories,
   currentItemId,
   storeId,
-  onSwitchToAddonLibrary,
   imageUploadAllowed = true,
   imageLimitReached = false,
   imageUsed = 0,
@@ -497,10 +507,16 @@ export function MenuItemForm({
   const handleAddCustomization = () => {
     if (!newCustomization.customization_title.trim()) return;
     if (totalOptionsCount >= CUSTOMIZATION_VARIANT_LIMIT) return;
+    const minSelection =
+      newCustomization.min_selection === "" ? 0 : Number(newCustomization.min_selection);
+    const maxSelection =
+      newCustomization.max_selection === "" ? 1 : Number(newCustomization.max_selection);
     const updated = [...customizations];
     if (editingCustomizationIndex !== null) {
       updated[editingCustomizationIndex] = {
         ...newCustomization,
+        min_selection: Number.isFinite(minSelection) ? minSelection : 0,
+        max_selection: Number.isFinite(maxSelection) ? maxSelection : 1,
         customization_id: customizations[editingCustomizationIndex]?.customization_id ?? "",
         menu_item_id: customizations[editingCustomizationIndex]?.menu_item_id ?? 0,
         addons: updated[editingCustomizationIndex]?.addons || [],
@@ -509,6 +525,8 @@ export function MenuItemForm({
     } else {
       updated.push({
         ...newCustomization,
+        min_selection: Number.isFinite(minSelection) ? minSelection : 0,
+        max_selection: Number.isFinite(maxSelection) ? maxSelection : 1,
         customization_id: "",
         menu_item_id: 0,
         addons: [],
@@ -544,7 +562,7 @@ export function MenuItemForm({
       addon_id: "",
       customization_id: cust.id ?? 0,
       addon_name: `Addon ${addons.length + 1}`,
-      addon_price: 0,
+      addon_price: null,
       display_order: addons.length,
     });
     updated[custIndex] = { ...cust, addons };
@@ -1164,9 +1182,12 @@ export function MenuItemForm({
                   type="number"
                   min={0}
                   className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
-                  value={formData.preparation_time_minutes ?? 15}
+                  value={numberInputValue(formData.preparation_time_minutes)}
                   onChange={(e) =>
-                    setFormData({ ...formData, preparation_time_minutes: Number(e.target.value) || 15 })
+                    setFormData({
+                      ...formData,
+                      preparation_time_minutes: parseNumberInputAllowEmpty(e.target.value),
+                    })
                   }
                 />
                 {storeDefaults?.avg_preparation_time_minutes != null && (
@@ -1611,18 +1632,24 @@ export function MenuItemForm({
                       type="number"
                       min={0}
                       className="w-12 px-2 py-1.5 border border-gray-200 rounded text-sm"
-                      value={newCustomization.min_selection}
+                      value={numberInputValue(newCustomization.min_selection)}
                       onChange={(e) =>
-                        setNewCustomization({ ...newCustomization, min_selection: Number(e.target.value) })
+                        setNewCustomization({
+                          ...newCustomization,
+                          min_selection: e.target.value === "" ? "" : Number(e.target.value),
+                        })
                       }
                     />
                     <input
                       type="number"
                       min={1}
                       className="w-12 px-2 py-1.5 border border-gray-200 rounded text-sm"
-                      value={newCustomization.max_selection}
+                      value={numberInputValue(newCustomization.max_selection)}
                       onChange={(e) =>
-                        setNewCustomization({ ...newCustomization, max_selection: Number(e.target.value) })
+                        setNewCustomization({
+                          ...newCustomization,
+                          max_selection: e.target.value === "" ? "" : Number(e.target.value),
+                        })
                       }
                     />
                   </div>
@@ -1834,13 +1861,13 @@ export function MenuItemForm({
                                 min={0}
                                 step={0.01}
                                 className="w-14 px-2 py-1 border border-gray-200 rounded text-xs"
-                                value={addon.addon_price}
+                                value={numberInputValue(addon.addon_price)}
                                 onChange={(e) =>
                                   handleUpdateAddon(
                                     custIndex,
                                     addonIndex,
                                     "addon_price",
-                                    Number(e.target.value)
+                                    parseNumberInputAllowEmpty(e.target.value)
                                   )
                                 }
                                 placeholder="0"
@@ -1947,10 +1974,13 @@ export function MenuItemForm({
                       min={0}
                       step={0.01}
                       className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm"
-                      value={typeof v.variant_price === "number" ? v.variant_price : ""}
+                      value={numberInputValue(v.variant_price)}
                       onChange={(e) => {
                         const vars = [...(formData.variants || [])];
-                        vars[idx] = { ...vars[idx], variant_price: Number(e.target.value) || 0 };
+                        vars[idx] = {
+                          ...vars[idx],
+                          variant_price: parseNumberInputAllowEmpty(e.target.value),
+                        };
                         setFormData((prev) => ({
                           ...prev,
                           variants: vars,
@@ -2023,7 +2053,7 @@ export function MenuItemForm({
                       variant_id: "",
                       variant_name: "",
                       variant_type: "",
-                      variant_price: 0,
+                      variant_price: null,
                       menu_item_id: 0,
                     } as Variant,
                   ];
@@ -2037,7 +2067,7 @@ export function MenuItemForm({
 
             {storeId && currentItemId && (
               <div className="mt-4 pt-4 border-t border-gray-200">
-                <h3 className="text-xs font-semibold text-gray-700 mb-2">Linked addon groups</h3>
+                <h3 className="text-xs font-semibold text-gray-700 mb-2">Linked addon groups (optional)</h3>
                 <p className="text-xs text-gray-500 mb-2">Reusable addon groups from Addon Library. Link or unlink below.</p>
                 {linkedAddonGroups.length > 0 && (
                   <ul className="space-y-1.5 mb-2">
@@ -2078,13 +2108,6 @@ export function MenuItemForm({
                   >
                     Add existing group
                   </button>
-                  {onSwitchToAddonLibrary ? (
-                    <button type="button" onClick={onSwitchToAddonLibrary} className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 border border-gray-200 rounded hover:bg-gray-200">
-                      Create new group (Addon Library)
-                    </button>
-                  ) : (
-                    <span className="text-xs text-gray-500 self-center">Go to Addon Library tab to create a new group.</span>
-                  )}
                 </div>
                 {showLinkAddonPicker && (
                   <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 p-4" onClick={() => setShowLinkAddonPicker(false)}>
@@ -2135,7 +2158,7 @@ export function MenuItemForm({
                             </button>
                           ))}
                         {allGroupsForPicker.filter((g) => !linkedAddonGroups.some((l) => l.modifier_group_id === g.id)).length === 0 && (
-                          <p className="text-sm text-gray-500 py-4 text-center">No other groups to link. Create one in Addon Library tab.</p>
+                          <p className="text-sm text-gray-500 py-4 text-center">No other groups to link.</p>
                         )}
                       </div>
                       <div className="p-3 border-t">

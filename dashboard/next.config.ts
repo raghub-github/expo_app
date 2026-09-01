@@ -111,19 +111,22 @@ const nextConfig: NextConfig = {
   webpack: (config, { dev, isServer }) => {
     const onOneDrive = process.platform === "win32" && __dirname.includes("OneDrive");
     if (dev) {
-      // Filesystem pack cache races on Windows (ENOENT rename pack_→pack) when
-      // Fast Refresh + concurrent /login compiles collide → corrupted
-      // `__webpack_modules__[moduleId] is not a function` on _not-found/login.
-      // Memory cache with a single generation stays under the 8GB NODE_OPTIONS heap.
-      config.cache = {
-        type: "memory",
-        maxGenerations: 1,
-      };
+      // OneDrive + concurrent /login + _not-found compiles corrupt memory packs.
+      // Disable cache entirely on synced Windows paths; memory cache elsewhere.
+      config.cache = onOneDrive
+        ? false
+        : {
+            type: "memory",
+            maxGenerations: 1,
+          };
       config.optimization = {
         ...config.optimization,
         innerGraph: false,
         usedExports: false,
       };
+      if (onOneDrive) {
+        config.parallelism = 1;
+      }
     } else if (onOneDrive) {
       // Prod on OneDrive: filesystem packs race sync + reference missing compiled config;
       // causes ENOENT on .next/server/pages-manifest.json after a "successful" compile.

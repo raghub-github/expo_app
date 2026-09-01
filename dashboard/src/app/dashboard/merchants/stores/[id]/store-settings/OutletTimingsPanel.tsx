@@ -25,6 +25,7 @@ import {
   mapDbToSchedule,
   scheduleToPatchPayload,
   slotHasTimingData,
+  computeIs24FromSlots,
 } from "./outlet-timings-model";
 
 type Props = {
@@ -258,13 +259,17 @@ export function OutletTimingsPanel({
     setIsSaving(true);
     try {
       const saved = await saveCompleteTimings(newSchedule, false, false, newClosedDay);
-      if (saved) await fetchTimings();
-      else toast.error("Failed to save toggle state");
+      if (saved) {
+        await fetchTimings();
+        toast.success(
+          `${day.charAt(0).toUpperCase() + day.slice(1)} ${newIsOpen ? "opened" : "closed"}`
+        );
+      } else {
+        toast.error("Failed to save toggle state");
+      }
     } finally {
       setIsSaving(false);
     }
-
-    toast.success(`${day.charAt(0).toUpperCase() + day.slice(1)} ${newIsOpen ? "opened" : "closed"}`);
   };
 
   const addTimeSlot = (day: DayType, slotPosition: 0 | 1) => {
@@ -291,6 +296,7 @@ export function OutletTimingsPanel({
         return {
           ...d,
           slots: newSlots,
+          is24Hours: computeIs24FromSlots(newSlots),
           duration: `${hours}.${minutes.toString().padStart(2, "0")} hrs`,
           operationalHours: hours,
           operationalMinutes: minutes,
@@ -318,6 +324,7 @@ export function OutletTimingsPanel({
         return {
           ...d,
           slots: newSlots,
+          is24Hours: computeIs24FromSlots(newSlots),
           duration: `${hours}.${minutes.toString().padStart(2, "0")} hrs`,
           operationalHours: hours,
           operationalMinutes: minutes,
@@ -344,6 +351,7 @@ export function OutletTimingsPanel({
         return {
           ...d,
           slots: newSlots,
+          is24Hours: computeIs24FromSlots(newSlots),
           duration: `${hours}.${minutes.toString().padStart(2, "0")} hrs`,
           operationalHours: hours,
           operationalMinutes: minutes,
@@ -383,6 +391,7 @@ export function OutletTimingsPanel({
         return {
           ...d,
           slots: newSlots,
+          is24Hours: computeIs24FromSlots(newSlots),
           duration: `${hours}.${minutes.toString().padStart(2, "0")} hrs`,
           operationalHours: hours,
           operationalMinutes: minutes,
@@ -704,7 +713,10 @@ export function OutletTimingsPanel({
                 const slotActionRemove =
                   "inline-flex items-center rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 hover:bg-rose-100";
                 const canEditSlots =
-                  !readOnly && !isClosed && !daySchedule.is24Hours && daySchedule.isOpen;
+                  !readOnly &&
+                  !isClosed &&
+                  !computeIs24FromSlots(daySchedule.slots) &&
+                  daySchedule.isOpen;
 
                 return (
                   <div

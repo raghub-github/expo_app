@@ -16,7 +16,8 @@ interface SearchResultItem {
   id?: number
   item_name?: string
   category?: string
-  restaurant_id?: number
+  restaurant_id?: number | string
+  public_slug?: string | null
   score?: number
 }
 
@@ -195,8 +196,15 @@ export default function LocationSearchBar() {
                 <Link
                   key={item.id ?? idx}
                   href={
-                    item.restaurant_id
-                      ? restaurantDetailHref(String(item.restaurant_id), 'search')
+                    item.restaurant_id || item.public_slug
+                      ? restaurantDetailHref(
+                          {
+                            public_slug: item.public_slug,
+                            store_id: item.restaurant_id,
+                            id: item.id,
+                          },
+                          'search'
+                        )
                       : '/order'
                   }
                   onClick={() => setSearchDropdownOpen(false)}
