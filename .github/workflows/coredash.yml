@@ -1,0 +1,141 @@
+name: coredash-deploy
+
+# Builds + ships Coredash — the internal financial dashboard (treasury.gatimitra.com).
+# Triggered on:
+#   - push to main touching Coredash/**, this workflow, or the deploy script
+#   - manual run (workflow_dispatch)
+#
+# Selective: only rolls the coredash container. It does NOT touch nginx.
+#   • The treasury.gatimitra.com server block in infra/nginx/nginx.conf resolves
+#     the container at request time (Docker DNS), so a coredash redeploy is
+#     picked up automatically — no nginx reload needed here.
+#   • Applying nginx.conf changes (the treasury server block itself) is owned by
+#     the cxsite (nginx-owner) workflow, which fires on infra/nginx/nginx.conf
+#     changes and reloads nginx behind an `nginx -t` guard.
+#
+# Required repo secrets (same set the other site workflows use):
+#   VPS_HOST, VPS_USER, VPS_SSH_KEY
+#   NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY
+#
+# GHCR auth uses the auto-provisioned GITHUB_TOKEN.
+#
+# PREREQUISITES on the VPS (one-time, out of band):
+#   1. DNS: treasury.gatimitra.com A-record → VPS IP. (Already done.)
+#   2. TLS: add treasury.gatimitra.com as a SAN on the gatimitra.com cert on the
+#      next reissue (keep gatimitra.com + rider.gatimitra.com + treasury...):
+#        certbot certonly --webroot -w /var/www/certbot \
+#          -d gatimitra.com -d www.gatimitra.com \
+#          -d rider.gatimitra.com -d treasury.gatimitra.com
+#      Until then treasury serves with the apex cert (name-mismatch warning);
+#      nginx -t still passes so nothing else is affected.
+#   3. Runtime env: /opt/gatimitra/Coredash/.env.local holds the server secrets
+#      (DATABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ...). This workflow SEEDS a
+#      placeholder from Coredash/.env.example on first deploy if the file is
+#      missing; paste the real values into it, then re-run this workflow. The
+#      file is gitignored — never in the image; `git reset --hard` leaves it alone.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Coredash/**"
+      - ".github/workflows/coredash.yml"
+      - "infra/scripts/deploy-service.sh"
+  workflow_dispatch:
+
+concurrency:
+  group: coredash-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+
+      # Refuse to build with an empty client-side secret (would ship `undefined`
+      # into the bundle + break the middleware Supabase auth). Coredash bakes
+      # NEXT_PUBLIC_* at docker build time.
+      - name: Validate NEXT_PUBLIC_* secrets
+        run: |
+          set -e
+          missing=""
+          for var in NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_SUPABASE_ANON_KEY ; do
+            val="${!var}"
+            if [ -z "$val" ]; then missing="$missing $var"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing GitHub Action secrets:$missing"
+            exit 1
+          fi
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push image
+        uses: docker/build-push-action@v5
+        with:
+          context: Coredash
+          file: Coredash/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/gm-coredash:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/gm-coredash:latest
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_APP_URL=https://treasury.gatimitra.com
+          cache-from: type=gha,scope=coredash
+          cache-to: type=gha,mode=max,scope=coredash
+
+      - name: Zero-downtime deploy on VPS (with retry)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 12
+          max_attempts: 6
+          retry_wait_seconds: 45
+          retry_on: error
+          command: |
+            cat <<'EOF' > /tmp/_ssh_coredash.sh
+            set -e
+            cd /opt/gatimitra
+            git fetch --depth 1 origin main
+            git reset --hard origin/main
+            chmod +x infra/scripts/deploy-service.sh
+            # Seed a placeholder runtime env on first deploy so the container can
+            # boot; the operator pastes the real DATABASE_URL / SERVICE_ROLE_KEY
+            # into it and re-runs. Never overwrite an existing (real) .env.local.
+            if [ ! -f Coredash/.env.local ]; then
+              cp Coredash/.env.example Coredash/.env.local
+              echo "Seeded Coredash/.env.local from .env.example — paste real secrets + re-run."
+            fi
+            # Pull the freshly pushed :latest image, bring the container up on the
+            # app network (so `coredash` is resolvable by nginx's request-time
+            # resolver), then health-check the container's root path (which
+            # 303-redirects to the public /login page — no DB needed).
+            infra/scripts/deploy-service.sh coredash http://localhost:3004/ 90
+            EOF
+            mkdir -p ~/.ssh
+            chmod 700 ~/.ssh
+            echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+            ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+            ssh -o ConnectTimeout=30 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 \
+                -i ~/.ssh/id_ed25519 \
+                ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+                'bash -s' < /tmp/_ssh_coredash.sh
