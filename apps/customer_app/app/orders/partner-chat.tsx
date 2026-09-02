@@ -36,7 +36,7 @@ const TEXT = GatiMitraColors.textPrimaryNew;
 const MUTED = GatiMitraColors.textSecondary;
 const BANNER_BG = "#FFF7ED";
 const BANNER_TEXT = "#92400E";
-const POLL_MS = 3500;
+const POLL_MS = 8_000;
 
 function paramOne(value: string | string[] | undefined): string {
   if (value == null) return "";
@@ -98,6 +98,7 @@ export default function OrderPartnerChatScreen() {
     queryFn: () => orderPartnerChatService.listMessages(orderId),
     enabled: Boolean(orderId),
     refetchInterval: POLL_MS,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
     staleTime: 0,
   });

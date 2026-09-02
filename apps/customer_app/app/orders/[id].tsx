@@ -70,6 +70,7 @@ import {
   shouldShowRideCashPayScreen,
 } from "@/lib/ride-fare-gate";
 import { FoodLiveTrackingScreen } from "@/components/orders/FoodLiveTrackingScreen";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { ParcelLiveTrackingScreen } from "@/components/orders/ParcelLiveTrackingScreen";
 import { FoodOrderDeliveredScreen } from "@/components/orders/FoodOrderDeliveredScreen";
 import { InvoiceDownloadingToast } from "@/components/orders/InvoiceDownloadingToast";
@@ -228,6 +229,9 @@ export default function OrderDetailsScreen() {
       ) {
         return false;
       }
+      if (data && !isPersonRideOrder(data) && !isParcelOrder(data)) {
+        return 20_000;
+      }
       return 5_000;
     },
     retry: 2,
@@ -236,6 +240,12 @@ export default function OrderDetailsScreen() {
 
   const orderStatus = normalizeCustomerOrderStatus(order?.status);
   const isInProgress = !!order && !isTerminalOrderStatus(orderStatus);
+  const isRideOrderEarly = !!order && isPersonRideOrder(order);
+  const isParcelOrderEarly =
+    !!order && (isParcelOrder(order) || openedFromParcelHome);
+  /** FoodLiveTrackingScreen runs its own live ETA hook — avoid doubling 5s timers. */
+  const needsParentLiveEta =
+    isInProgress && !!orderId && (isRideOrderEarly || isParcelOrderEarly);
 
   useEffect(() => {
     if (!order || !isPersonRideOrder(order)) return;
@@ -333,7 +343,7 @@ export default function OrderDetailsScreen() {
     // Always fetch once on enter so ETA/distance are not empty while WS warms up.
     refetchOnMount: "always",
     // WebSocket is primary; HTTP poll only while the socket is down.
-    refetchInterval: isInProgress && !liveLocationWsConnected ? 2_000 : false,
+    refetchInterval: isInProgress && !liveLocationWsConnected ? 5_000 : false,
     staleTime: liveLocationWsConnected ? 30_000 : 0,
   });
 
@@ -549,7 +559,7 @@ export default function OrderDetailsScreen() {
   const liveEta = useLiveTrackingEtaMinutes({
     eta: etaData,
     orderId,
-    enabled: isInProgress,
+    enabled: needsParentLiveEta,
   });
   const liveEtaMins = liveEta.minutes ?? resolveLiveEtaMinutes(etaData);
   const merchantDelayed = isMerchantEtaDelayed(etaData);
@@ -790,26 +800,28 @@ export default function OrderDetailsScreen() {
       <>
         <AndroidBackHandler fallback={liveTrackingHomeFallback} preferFallback />
         <LiveTrackingBackGuard fallback={liveTrackingHomeFallback} />
-        <FoodLiveTrackingScreen
-          order={order}
-          tracking={tracking}
-          eta={etaData}
-          etaMinutes={liveEtaMins}
-          merchantDelayed={merchantDelayed}
-          etaUpdated={etaUpdated}
-          etaContextLabel={etaContextLabel}
-          onBack={handleLiveTrackingBack}
-          onOpenHelp={handleOpenHelp}
-          onOpenMerchant={() => {
-            openMerchantStore(storeId);
-          }}
-          onOrderCancelled={() => {
-            void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
-            void import("@/lib/refreshCustomerWallet").then(({ refreshCustomerWallet }) =>
-              refreshCustomerWallet(queryClient)
-            );
-          }}
-        />
+        <AppErrorBoundary source="food-live-tracking" resetKey={order.orderId}>
+          <FoodLiveTrackingScreen
+            order={order}
+            tracking={tracking}
+            eta={etaData}
+            etaMinutes={liveEtaMins}
+            merchantDelayed={merchantDelayed}
+            etaUpdated={etaUpdated}
+            etaContextLabel={etaContextLabel}
+            onBack={handleLiveTrackingBack}
+            onOpenHelp={handleOpenHelp}
+            onOpenMerchant={() => {
+              openMerchantStore(storeId);
+            }}
+            onOrderCancelled={() => {
+              void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+              void import("@/lib/refreshCustomerWallet").then(({ refreshCustomerWallet }) =>
+                refreshCustomerWallet(queryClient)
+              );
+            }}
+          />
+        </AppErrorBoundary>
       </>
     );
   }
@@ -958,6 +970,12 @@ export default function OrderDetailsScreen() {
                   <AppText style={styles.feedbackReviewLabel}>Restaurant: </AppText>
                   {order.storeReviewText}
                 </AppText>
+              ) : null}
+              {order.storeMerchantReplyText ? (
+                <View style={styles.storeReplyBlock}>
+                  <AppText style={styles.storeReplyTitle}>Store response</AppText>
+                  <AppText style={styles.storeReplyText}>{order.storeMerchantReplyText}</AppText>
+                </View>
               ) : null}
               {order.riderReviewText && !isSelfPickupOrder(order) ? (
                 <AppText style={styles.feedbackReviewText}>
@@ -1553,6 +1571,25 @@ const styles = StyleSheet.create({
   feedbackReviewLabel: {
     fontWeight: "600",
     color: MUTED,
+  },
+  storeReplyBlock: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+  },
+  storeReplyTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: GREEN,
+    marginBottom: 4,
+  },
+  storeReplyText: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: TEXT,
   },
   restaurantRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   restaurantLogo: {

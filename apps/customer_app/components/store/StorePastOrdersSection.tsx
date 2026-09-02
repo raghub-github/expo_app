@@ -4,7 +4,8 @@ import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
-import { StoreText } from "./StoreText";
+import { StoreFonts } from "@/constants/storeTypography";
+import { AppText } from "@/components/AppText";
 import type { ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { StorePastOrderRow, type PastOrderItem } from "./StorePastOrderRow";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
@@ -71,23 +72,25 @@ export function StorePastOrdersSection({
 
   return (
     <View style={styles.section}>
-      <TouchableOpacity style={styles.header} onPress={() => setExpanded((v) => !v)} activeOpacity={0.8}>
+      <TouchableOpacity
+        style={styles.header}
+        onPress={() => setExpanded((v) => !v)}
+        activeOpacity={0.75}
+      >
         <View style={styles.headerText}>
-          <StoreText style={styles.title} bold>
-            Your Orders and Collections
-          </StoreText>
-          <StoreText style={styles.sub}>Past customisations are pre-selected</StoreText>
+          <AppText style={styles.title}>Your Orders and Collections</AppText>
+          <AppText style={styles.sub}>Past customisations are pre-selected</AppText>
         </View>
         <Ionicons
           name={expanded ? "chevron-up" : "chevron-down"}
-          size={18}
-          color={StoreTheme.textPrimary}
+          size={16}
+          color={StoreTheme.textSecondary}
         />
       </TouchableOpacity>
 
       {expanded ? (
         <View style={styles.list}>
-          {visible.map((po) => (
+          {visible.map((po, index) => (
             <StorePastOrderRow
               key={po.menuItem.id}
               item={po}
@@ -98,15 +101,20 @@ export function StorePastOrdersSection({
               onItemPress={onItemPress}
               isStoreClosed={isStoreClosed}
               itemOffer={resolveOffer(po.menuItem)}
+              showDivider={index < visible.length - 1}
             />
           ))}
           {!showAll && hiddenCount > 0 ? (
-            <TouchableOpacity style={styles.seeMore} onPress={() => setShowAll(true)} activeOpacity={0.8}>
+            <TouchableOpacity
+              style={styles.seeMore}
+              onPress={() => setShowAll(true)}
+              activeOpacity={0.75}
+            >
               <StackedThumbnails items={hiddenItems} />
-              <StoreText style={styles.seeMoreText} bold>
+              <AppText style={styles.seeMoreText}>
                 See {hiddenCount} more item{hiddenCount > 1 ? "s" : ""}
-              </StoreText>
-              <Ionicons name="chevron-down" size={16} color={StoreTheme.accentMintDark} />
+              </AppText>
+              <Ionicons name="chevron-down" size={14} color={StoreTheme.accentMintDark} />
             </TouchableOpacity>
           ) : null}
         </View>
@@ -117,34 +125,41 @@ export function StorePastOrdersSection({
 
 const styles = StyleSheet.create({
   section: {
+    width: "100%",
+    alignSelf: "stretch",
     backgroundColor: StoreTheme.background,
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 4,
-    borderBottomWidth: 8,
-    borderBottomColor: "#F3F4F6",
+    borderBottomWidth: 1,
+    borderBottomColor: "#F0F0F0",
   },
   header: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
     paddingVertical: 12,
+    paddingBottom: 10,
   },
   headerText: {
     flex: 1,
     paddingRight: 12,
   },
   title: {
+    fontFamily: StoreFonts.poppinsBold,
     fontSize: 17,
     color: StoreTheme.textPrimary,
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
+    lineHeight: 22,
   },
   sub: {
     fontSize: 12,
     color: StoreTheme.textSecondary,
     marginTop: 4,
+    lineHeight: 16,
   },
   list: {
+    width: "100%",
     paddingBottom: 4,
   },
   seeMore: {
@@ -152,27 +167,32 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    paddingVertical: 16,
+    paddingVertical: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: StoreTheme.border,
+    marginTop: 2,
   },
   seeMoreText: {
-    fontSize: 14,
+    fontFamily: StoreFonts.poppinsSemiBold,
+    fontSize: 13,
     color: StoreTheme.accentMintDark,
+    letterSpacing: -0.1,
   },
   thumbStack: {
     flexDirection: "row",
     alignItems: "center",
   },
   thumbWrap: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     overflow: "hidden",
     borderWidth: 2,
     borderColor: "#fff",
     backgroundColor: "#F3F4F6",
   },
   thumbOverlap: {
-    marginLeft: -10,
+    marginLeft: -8,
   },
   thumbImage: {
     width: "100%",

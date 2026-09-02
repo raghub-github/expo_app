@@ -82,6 +82,15 @@ export function RejectStoreCloseSheet({
     return Number.isNaN(endOfTodayIST.getTime()) ? null : endOfTodayIST.toISOString();
   }, [operatingHours]);
 
+  const skipOrDismiss = () => {
+    if (busy) return;
+    if (onAfterClose) {
+      void onAfterClose();
+      return;
+    }
+    onClose();
+  };
+
   const confirm = async () => {
     if (!closeReason) {
       Alert.alert("Select reason", "Please select a reason for closing your store.");
@@ -111,8 +120,8 @@ export function RejectStoreCloseSheet({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={() => !busy && onClose()}>
-      <Pressable style={styles.backdrop} onPress={() => !busy && onClose()}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={skipOrDismiss}>
+      <Pressable style={styles.backdrop} onPress={skipOrDismiss}>
         <Pressable
           style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
           onPress={(e) => e.stopPropagation()}
@@ -125,7 +134,7 @@ export function RejectStoreCloseSheet({
                 You rejected an order because the store is not operational today. Mark the store closed until end of today&apos;s hours.
               </Text>
             </View>
-            <Pressable onPress={onClose} disabled={busy} hitSlop={8}>
+            <Pressable onPress={skipOrDismiss} disabled={busy} hitSlop={8}>
               <Ionicons name="close" size={22} color={GatiMitraMerchant.textPrimary} />
             </Pressable>
           </View>
@@ -161,7 +170,7 @@ export function RejectStoreCloseSheet({
           </ScrollView>
 
           <View style={styles.footer}>
-            <Pressable onPress={onClose} disabled={busy} style={styles.skipBtn}>
+            <Pressable onPress={skipOrDismiss} disabled={busy} style={styles.skipBtn}>
               <Text style={styles.skipBtnText}>Skip</Text>
             </Pressable>
             <Pressable onPress={() => void confirm()} disabled={busy} style={styles.confirmBtn}>

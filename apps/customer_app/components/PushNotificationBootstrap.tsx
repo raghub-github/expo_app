@@ -39,6 +39,7 @@ import { buildPrepDelayMessage } from "@/lib/order-eta-display";
 import { getConfig } from "@/config/env";
 import { colors } from "@/theme";
 import { applyLiveProgressFromPush } from "@/components/LiveOrderProgressNotification";
+import { liveProgressHandlerResult } from "@/lib/customerLiveOrderNotificationNative";
 import { playCustomerNotificationSound } from "@/lib/playCustomerNotificationSound";
 import { isRideServicePush } from "@/lib/isRideServicePush";
 import {
@@ -67,7 +68,7 @@ const CUSTOMER_PUSH_CHANNELS = [
 ] as const;
 
 /** Campaign inbox has no realtime channel — poll while foregrounded. */
-const CAMPAIGN_INBOX_POLL_MS = 18_000;
+const CAMPAIGN_INBOX_POLL_MS = 120_000;
 
 export function PushNotificationBootstrap() {
   return <PushNotificationBootstrapInner />;
@@ -218,13 +219,20 @@ function PushNotificationBootstrapInner() {
         const Notifications = await import("expo-notifications");
         if (cancelled) return;
         Notifications.setNotificationHandler({
-          handleNotification: async () => ({
-            shouldShowAlert: true,
-            shouldPlaySound: false,
-            shouldSetBadge: true,
-            shouldShowBanner: true,
-            shouldShowList: true,
-          }),
+          handleNotification: async (notification) => {
+            const data = (notification.request.content.data ?? {}) as Record<string, unknown>;
+            if (liveProgressHandlerResult(data).suppress) {
+              await applyLiveProgressFromPush(data);
+            }
+            const result = liveProgressHandlerResult(data);
+            return {
+              shouldShowAlert: result.shouldShowAlert,
+              shouldPlaySound: false,
+              shouldSetBadge: result.shouldSetBadge,
+              shouldShowBanner: result.shouldShowBanner,
+              shouldShowList: result.shouldShowList,
+            };
+          },
         });
       } catch {
         /* ignore */

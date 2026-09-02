@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import type { DeliveryMapPayload } from "@/components/maps/mapbox-web-delivery-html";
 import { NavRiderDotMarker } from "@/components/maps/NavRiderDotMarker";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import {
   DropHomePin,
   NATIVE_MAP_STYLE,
@@ -36,7 +37,18 @@ type Props = {
   style?: object;
 };
 
-export function MapboxWebDeliveryMap({
+export function MapboxWebDeliveryMap(props: Props) {
+  return (
+    <AppErrorBoundary
+      source="mapbox-delivery"
+      fallback={() => <NativeMapUnavailable style={props.style} />}
+    >
+      <MapboxWebDeliveryMapInner {...props} />
+    </AppErrorBoundary>
+  );
+}
+
+function MapboxWebDeliveryMapInner({
   center,
   payload,
   refitNonce = 0,
@@ -175,8 +187,12 @@ export function MapboxWebDeliveryMap({
         rotateEnabled
         surfaceView={false}
         onDidFinishLoadingMap={() => {
-          setMapReady(true);
-          onReady?.();
+          try {
+            setMapReady(true);
+            onReady?.();
+          } catch {
+            /* map ready callback must never crash the screen */
+          }
         }}
         onCameraChanged={(e) => {
           if (e?.gestures?.isGestureActive) followRiderRef.current = false;

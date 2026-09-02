@@ -17,7 +17,7 @@ import {
   useCheckoutSubscriptionPlan,
   useCurrentSubscription,
 } from "@/hooks/useCustomerSubscription";
-import { formatPlanPriceLine, formatSubscriptionExpiryLabel } from "@/services/subscription.service";
+import { formatPlanPriceLine, formatSubscriptionExpiryLabel, formatSubscriptionExpiryCountdown } from "@/services/subscription.service";
 import { resolveSubscriptionExpiryIso } from "@/lib/subscriptionExpiry";
 import { safeRouterBack, PROFILE_TAB_FALLBACK } from "@/lib/safeRouterBack";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -95,6 +95,14 @@ export default function SubscriptionScreen() {
     const iso = resolveSubscriptionExpiryIso(current?.subscription ?? null);
     return formatSubscriptionExpiryLabel(iso);
   }, [current?.subscription]);
+  const expiryCountdown = useMemo(() => {
+    if (!isActive) return null;
+    const iso =
+      resolveSubscriptionExpiryIso(current?.subscription ?? null) ??
+      current?.subscription?.expiresAt ??
+      null;
+    return formatSubscriptionExpiryCountdown(iso);
+  }, [isActive, current?.subscription]);
   const billingCycle = current?.subscription?.billingCycle?.trim();
 
   const handleBack = useCallback(() => {
@@ -158,6 +166,12 @@ export default function SubscriptionScreen() {
                   "Save on delivery and unlock member-only offers across GatiMitra."}
             </AppText>
 
+            {isActive && expiryCountdown ? (
+              <View style={[styles.metaChip, styles.metaChipCountdown]}>
+                <Ionicons name="time-outline" size={14} color={GOLD_DARK} />
+                <AppText style={styles.metaChipText}>{expiryCountdown}</AppText>
+              </View>
+            ) : null}
             {isActive && expiresAt ? (
               <View style={styles.metaChip}>
                 <Ionicons name="calendar-outline" size={14} color={GOLD_DARK} />
@@ -331,6 +345,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.75)",
+  },
+  metaChipCountdown: {
+    marginTop: 8,
+    backgroundColor: "#FFFBEB",
   },
   metaChipText: {
     fontSize: 12,

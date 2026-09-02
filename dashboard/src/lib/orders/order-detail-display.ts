@@ -2,6 +2,9 @@
  * Display helpers for dashboard order detail sidebar / customer card.
  */
 
+export const TAKEAWAY_RIDER_ASSIGN_BLOCKED_MESSAGE =
+  "Sorry, but we can't carry riders for takeaway orders.";
+
 export function isSelfPickupDelivery(deliveryType: string | null | undefined): boolean {
   const dt = String(deliveryType ?? "")
     .toLowerCase()
@@ -17,6 +20,33 @@ export function isSelfPickupDelivery(deliveryType: string | null | undefined): b
     dt.includes("pick_up") ||
     dt.includes("takeaway")
   );
+}
+
+/** True when checkout / billing says customer collects at store (no rider dispatch). */
+export function isSelfPickupFulfillmentOrder(
+  deliveryType: string | null | undefined,
+  billingSnapshot?: unknown,
+  checkoutMetadata?: unknown
+): boolean {
+  if (isSelfPickupDelivery(deliveryType)) return true;
+
+  const billing =
+    billingSnapshot && typeof billingSnapshot === "object"
+      ? (billingSnapshot as Record<string, unknown>)
+      : null;
+  const billed = String(billing?.deliveryType ?? billing?.delivery_type ?? "")
+    .trim()
+    .toLowerCase();
+  if (billed === "self_pickup" || billing?.isSelfPickup === true) return true;
+
+  const checkout =
+    checkoutMetadata && typeof checkoutMetadata === "object"
+      ? (checkoutMetadata as Record<string, unknown>)
+      : null;
+  const meta = String(checkout?.deliveryType ?? checkout?.delivery_type ?? "")
+    .trim()
+    .toLowerCase();
+  return meta === "self_pickup" || meta === "takeaway";
 }
 
 /** Dashboard label: Self-Pick-Up vs Delivery */

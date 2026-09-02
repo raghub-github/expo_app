@@ -63,6 +63,8 @@ export function useMerchantOrdersRealtime(options: {
           foodId,
           Number.isFinite(merchantStoreId as number) ? (merchantStoreId as number) : null
         );
+        // Single-row patch is enough — skip a full multi-store list refetch.
+        if (onFoodRowChangeRef.current) return;
       }
       scheduleRefetch();
     },

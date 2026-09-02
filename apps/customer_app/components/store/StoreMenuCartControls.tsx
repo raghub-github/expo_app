@@ -16,12 +16,16 @@ import { cartQtyDebug } from "@/lib/cartQtyDebug";
 import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
 import { useCartChromeStore } from "@/store/cartChromeStore";
 import { useCartStore } from "@/store/cartStore";
+import { StoreTheme } from "@/constants/storeTheme";
 
 /**
  * Cart chrome — forest green outline ADD (white pill) + matching stepper.
  * Matches reference: white shell, green border, "+ Add".
  */
 const ADD_GREEN = "#137243";
+/** Past-order / reorder rows — GatiMitra mint, "ADD +" caps layout. */
+const ADD_REORDER = StoreTheme.accentMintDark;
+const QTY_FILL_REORDER = StoreTheme.accentMintSoft;
 /** Soft mint fill once qty > 0 — reads “in cart” without fighting the green outline. */
 const QTY_FILL = "#E8F5EE";
 
@@ -65,6 +69,8 @@ type InstantCartControlProps = {
   disabled?: boolean;
   /** Compact mint “+” square + slim stepper for masonry cards. */
   size?: "default" | "compact";
+  /** Green (menu default) vs pink (past-order / reorder rows). */
+  accent?: "default" | "zomato";
   /**
    * When false (customisable dishes), skip local optimistic qty — ADD opens a sheet
    * and does not write cart until confirm. Prevents a stuck stepper on sheet cancel.
@@ -95,6 +101,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
   quantity,
   disabled = false,
   size = "default",
+  accent = "default",
   allowOptimisticAdd = true,
   onAdd,
   onIncrement,
@@ -102,6 +109,9 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
   accessibilityLabel,
 }: InstantCartControlProps) {
   const compact = size === "compact";
+  const zomato = accent === "zomato";
+  const accentColor = zomato ? ADD_REORDER : ADD_GREEN;
+  const qtyFill = zomato ? QTY_FILL_REORDER : QTY_FILL;
   const [optimisticQty, setOptimisticQty] = useState<number | null>(null);
   const displayQty = optimisticQty ?? quantity;
   const showingAdd = displayQty === 0;
@@ -600,6 +610,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
           style={[
             styles.qtyWrap,
             compact && styles.qtyWrapCompact,
+            { backgroundColor: qtyFill, borderColor: accentColor },
             disabled && styles.qtyWrapDisabled,
           ]}
           collapsable={false}
@@ -613,6 +624,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
               style={[
                 styles.qtyGlyph,
                 compact && styles.qtyGlyphCompact,
+                { color: accentColor },
                 disabled && styles.qtyGlyphDisabled,
               ]}
             >
@@ -622,6 +634,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
               style={[
                 styles.qtyText,
                 compact && styles.qtyTextCompact,
+                { color: accentColor },
                 disabled && styles.qtyTextDisabled,
               ]}
             >
@@ -631,6 +644,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
               style={[
                 styles.qtyGlyph,
                 compact && styles.qtyGlyphCompact,
+                { color: accentColor },
                 disabled && styles.qtyGlyphDisabled,
               ]}
             >
@@ -653,6 +667,8 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
           style={[
             styles.addBtn,
             compact && styles.addBtnCompact,
+            zomato && styles.addBtnZomato,
+            zomato && { borderColor: accentColor },
             disabled ? styles.addBtnDisabled : null,
             compact && disabled && styles.addBtnCompactDisabled,
           ]}
@@ -669,11 +685,18 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
               {compact ? "—" : "Closed"}
             </AppText>
           ) : compact ? (
-            <AppText style={styles.addPlusGlyphCompact}>+</AppText>
+            <AppText style={[styles.addPlusGlyphCompact, { color: accentColor }]}>+</AppText>
+          ) : zomato ? (
+            <View style={styles.addLabelRow}>
+              <AppText style={[styles.addBtnText, styles.addBtnTextZomato, { color: accentColor }]}>
+                ADD
+              </AppText>
+              <AppText style={[styles.addPlusGlyph, { color: accentColor }]}>+</AppText>
+            </View>
           ) : (
             <View style={styles.addLabelRow}>
-              <AppText style={styles.addPlusGlyph}>+</AppText>
-              <AppText style={styles.addBtnText}>Add</AppText>
+              <AppText style={[styles.addPlusGlyph, { color: accentColor }]}>+</AppText>
+              <AppText style={[styles.addBtnText, { color: accentColor }]}>Add</AppText>
             </View>
           )}
         </View>
@@ -846,6 +869,17 @@ const styles = StyleSheet.create({
     borderColor: "#D1D5DB",
     shadowOpacity: 0,
     elevation: 0,
+  },
+  addBtnZomato: {
+    borderWidth: 1,
+    borderRadius: 8,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  addBtnTextZomato: {
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: 0.4,
   },
   addBtnCompact: {
     width: MENU_COMPACT_CONTROL_HEIGHT,

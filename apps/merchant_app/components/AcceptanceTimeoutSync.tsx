@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, View } from "react-native";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useOrdersContext } from "@/context/OrdersContext";
+import { isAppForeground } from "@/lib/appForeground";
 import { syncAcceptanceTimeout } from "@/services/ordersApi";
 import { GatiMitraMerchant } from "@/constants/theme";
 
@@ -45,6 +46,8 @@ export default function AcceptanceTimeoutSync() {
         lastSyncAtRef.current = Date.now();
         if (cancelled > 0) {
           await refetch();
+        }
+        if (cancelled > 0) {
           const msg =
             cancelled === 1
               ? "1 order was auto-cancelled (acceptance window expired)"
@@ -64,7 +67,8 @@ export default function AcceptanceTimeoutSync() {
 
   useEffect(() => {
     void runSync({ force: true });
-  }, [runSync]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount / store switch only
+  }, [token, storeId]);
 
   const hasPendingCreated = orders.some(
     (o) => o.status === "created" && !o.id.startsWith("core-")
@@ -73,8 +77,9 @@ export default function AcceptanceTimeoutSync() {
   useEffect(() => {
     if (!hasPendingCreated) return undefined;
     const id = setInterval(() => {
-      void runSync({ force: true });
-    }, 15_000);
+      if (!isAppForeground()) return;
+      void runSync();
+    }, 60_000);
     return () => clearInterval(id);
   }, [hasPendingCreated, runSync]);
 

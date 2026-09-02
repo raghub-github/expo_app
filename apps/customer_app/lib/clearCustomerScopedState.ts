@@ -65,10 +65,9 @@ async function clearLocationSessionState(): Promise<void> {
 /**
  * Disk caches holding customer-specific payloads.
  *
- * Backends differ per key and are NOT interchangeable — CART/SHOP_CART/
- * PROFILE_OFFLINE are written through SecureStore (@/utils/storage) while the
- * rest live in AsyncStorage. Clearing one through the other silently no-ops and
- * leaves the previous customer's data on disk.
+ * Cart / shop cart / profile offline use @/utils/storage (AsyncStorage). Auth
+ * token stays in SecureStore. removeItem clears both AsyncStorage and any
+ * legacy SecureStore copy for migrated keys.
  */
 async function clearPersistedCustomerCaches(): Promise<void> {
   clearCachedMyOrders();

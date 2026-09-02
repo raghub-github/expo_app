@@ -22,6 +22,8 @@ import {
   type SubscriptionDeliveryPricingContext,
 } from "./subscriptionDeliveryPricing.js";
 import type { BillingResult } from "../billing/types.js";
+import { isSubscriptionOptInTruthy } from "../../lib/customer-subscription-refund-allocation.js";
+import { reconcileActiveSubscriptionsForRefundedOrders } from "./customer-subscription-refund.service.js";
 
 export type CustomerBillingCycle = "weekly" | "monthly" | "yearly";
 
@@ -316,6 +318,11 @@ export async function listCustomerSubscriptionPlans(activeOnly = false) {
 
 export async function getActiveCustomerSubscription(customerId: number) {
   const sql = getSql();
+  try {
+    await reconcileActiveSubscriptionsForRefundedOrders(customerId, sql);
+  } catch (err) {
+    console.error("[customer-subscription] reconcile refunded-order subscriptions failed:", err);
+  }
   try {
     const rows = await sql`
       SELECT
@@ -628,6 +635,7 @@ async function upsertCustomerSubscription(args: {
   amountPaid: number;
   razorpayOrderId?: string | null;
   razorpayPaymentId?: string | null;
+  sourceOrderId?: string | null;
 }) {
   const now = new Date();
   const expiresAt = addBillingPeriod(now, args.billingCycle);
@@ -644,13 +652,14 @@ async function upsertCustomerSubscription(args: {
     INSERT INTO customer_subscriptions (
       customer_id, plan_id, price_id, billing_cycle,
       starts_at, expires_at, status, amount_paid,
-      razorpay_order_id, razorpay_payment_id
+      razorpay_order_id, razorpay_payment_id, source_order_id
     ) VALUES (
       ${args.customerId}, ${args.planId}, ${args.priceId},
       ${args.billingCycle}::public.subscription_billing_cycle,
       ${now.toISOString()}, ${expiresAt.toISOString()},
       'active', ${args.amountPaid},
-      ${args.razorpayOrderId ?? null}, ${args.razorpayPaymentId ?? null}
+      ${args.razorpayOrderId ?? null}, ${args.razorpayPaymentId ?? null},
+      ${args.sourceOrderId ?? null}
     )
     RETURNING id
   `;
@@ -670,6 +679,7 @@ export async function activateCustomerSubscriptionFromCheckout(args: {
   billingCycle: CustomerBillingCycle;
   razorpayOrderId?: string | null;
   razorpayPaymentId?: string | null;
+  sourceOrderId?: string | null;
 }) {
   const sql = getSql();
   const plan = await loadCustomerPlanRow(sql, args.planId);
@@ -691,6 +701,7 @@ export async function activateCustomerSubscriptionFromCheckout(args: {
     amountPaid: price.total,
     razorpayOrderId: args.razorpayOrderId ?? null,
     razorpayPaymentId: args.razorpayPaymentId ?? null,
+    sourceOrderId: args.sourceOrderId ?? null,
   });
 
   return { ok: true as const, subscriptionId: subId };
@@ -814,9 +825,10 @@ export async function maybeActivateSubscriptionFromOrderMetadata(args: {
   checkoutMetadata: Record<string, unknown> | null | undefined;
   razorpayOrderId?: string | null;
   razorpayPaymentId?: string | null;
+  sourceOrderId?: string | null;
 }) {
   const meta = args.checkoutMetadata;
-  if (!meta || meta.subscriptionOptIn !== true) return { activated: false as const };
+  if (!meta || !isSubscriptionOptInTruthy(meta)) return { activated: false as const };
 
   const planId = Number(meta.subscriptionPlanId);
   const billingCycle = String(meta.subscriptionBillingCycle ?? "") as CustomerBillingCycle;
@@ -831,6 +843,7 @@ export async function maybeActivateSubscriptionFromOrderMetadata(args: {
     billingCycle,
     razorpayOrderId: args.razorpayOrderId ?? null,
     razorpayPaymentId: args.razorpayPaymentId ?? null,
+    sourceOrderId: args.sourceOrderId ?? null,
   });
 
   return { activated: result.ok, subscriptionId: result.ok ? result.subscriptionId : undefined };

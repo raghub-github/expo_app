@@ -90,9 +90,9 @@ export function installGlobalErrorHandlers(): void {
     const previous = errorUtils.getGlobalHandler();
     errorUtils.setGlobalHandler((error, isFatal) => {
       reportHandledError("uncaught", error, { fatal: Boolean(isFatal) });
-      // Keep RN's own handler in dev so the red box still appears; in release we
-      // swallow non-fatal errors rather than letting them tear the process down.
-      if (__DEV__ || isFatal) previous?.(error, isFatal);
+      // Dev: keep the red box. Release: never hand back to RN — its default
+      // fatal path exits the process ("app closed by itself").
+      if (__DEV__) previous?.(error, isFatal);
     });
   }
 

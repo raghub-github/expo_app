@@ -3,44 +3,41 @@
  * browser `supabase` singleton (localStorage) can authorize Realtime postgres_changes.
  * Server auth uses httpOnly cookies; without this bridge, `supabase.auth.getSession()`
  * in the client is often empty and ticket room sync stays on polling.
+ *
+ * Cookie-first read only — never calls getUser()/getSession() (those can refresh and
+ * race with parallel requests → "Invalid Refresh Token: Already Used").
  */
 import { NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
+import { cookies } from "next/headers";
+import {
+  isCookieAccessTokenUsable,
+  readCookieAccessSession,
+} from "@/lib/auth/read-cookie-access-session";
 
 export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    const supabase = await createServerSupabaseClient();
+    const cookieStore = await cookies();
+    const cookieSession = readCookieAccessSession({
+      get: (name) => cookieStore.get(name),
+      getAll: () => cookieStore.getAll(),
+    });
 
-    const { data: userData, error: userError } = await supabase.auth.getUser();
-    if (userError || !userData.user) {
-      if (userError && isInvalidRefreshToken(userError)) {
-        await signOutIfSessionDead(supabase, userError);
-      }
+    if (!cookieSession || !isCookieAccessTokenUsable(cookieSession)) {
       return NextResponse.json({ success: false, code: "NO_SESSION" }, { status: 401 });
     }
 
-    const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
-
-    if (sessionError && isInvalidRefreshToken(sessionError)) {
-      await signOutIfSessionDead(supabase, sessionError);
-      return NextResponse.json({ success: false, code: "NO_SESSION" }, { status: 401 });
-    }
-
-    if (sessionError || !session?.access_token || !session?.refresh_token) {
+    const refreshToken = cookieSession.refreshToken?.trim() ?? "";
+    if (!refreshToken) {
       return NextResponse.json({ success: false, code: "NO_SESSION" }, { status: 401 });
     }
 
     return NextResponse.json(
       {
         success: true,
-        access_token: session.access_token,
-        refresh_token: session.refresh_token,
+        access_token: cookieSession.accessToken,
+        refresh_token: refreshToken,
       },
       {
         headers: {

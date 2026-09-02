@@ -136,7 +136,8 @@ module.exports = {
       [
         "expo-notifications",
         {
-          icon: "./assets/images/splash-logo.png",
+          // White "GatiMitra" wordmark — status bar / shade small icon (merchant uses "GM").
+          icon: "./assets/notification-icon.png",
           color: "#14b8a6",
           defaultChannel: "customer_default",
           sounds: ["./assets/sounds/cx_notification.mp3"],
@@ -164,6 +165,7 @@ module.exports = {
           position: "relative",
         },
       ],
+      "expo-video",
       // Razorpay Native SDK (Standard Checkout — UPI, cards, wallets, netbanking).
       // react-native-razorpay uses the classic React Native autolinking mechanism —
       // no dedicated Expo config plugin required. Expo SDK 54 already ships with

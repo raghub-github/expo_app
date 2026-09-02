@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "node ./scripts/dev-with-memory.mjs",
-    "dev:turbopack": "next dev -p 3001",
+    "dev:turbopack": "node ./scripts/dev-with-memory.mjs --turbopack",
     "dev:webpack": "node ./scripts/dev-with-memory.mjs",
     "clean": "node ./scripts/clean-next.mjs",
     "dev:clean": "npm run clean && node ./scripts/dev-with-memory.mjs --clean-cache",
@@ -62,7 +62,7 @@
     "zustand": "^5.0.13"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
+    "@tailwindcss/postcss": "^4.3.3",
     "@tanstack/react-query-devtools": "^5.90.12",
     "@types/crypto-js": "^4.2.2",
     "@types/mapbox-gl": "^3.3.0",
@@ -73,7 +73,7 @@
     "@types/react-window": "^1.8.8",
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
-    "tailwindcss": "^4",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^5"
   }

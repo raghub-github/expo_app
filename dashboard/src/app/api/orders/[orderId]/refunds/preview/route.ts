@@ -68,7 +68,9 @@ export async function POST(
           : "PARTIAL_REFUND";
 
     const gross =
-      refundType === "refund_without_cancellation" && Number.isFinite(refundAmount) && refundAmount > 0
+      (refundType === "refund_without_cancellation" || refundType === "refund_full_ctc") &&
+      Number.isFinite(refundAmount) &&
+      refundAmount > 0
         ? refundAmount
         : orderCtx.grandTotal;
 

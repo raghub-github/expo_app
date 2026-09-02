@@ -6,11 +6,12 @@
  * When parcel is inactive and grocery is active, Grocery shifts to slot 3.
  */
 
-import { useLayoutEffect, useMemo } from "react";
+import { useLayoutEffect, useMemo, useEffect, useRef, useState, useCallback } from "react";
 import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { AppAssetImage } from "@/components/AppAssetImage";
+import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { CX } from "@/lib/appAssetKeys";
 import { AppText } from "@/components/AppText";
 import type { CustomerAccountBlocksMap } from "@/services/customerServiceBlocks.service";
@@ -25,6 +26,61 @@ const GAP = 8;
 const COLS = 2;
 const CARD_W = Math.floor((SCREEN_W - PAD * 2 - GAP * (COLS - 1)) / COLS);
 const DEFAULT_CARD_H = 118;
+/** Only show image skeleton if load takes longer than this (avoids flash on cache hit). */
+const SERVICE_IMAGE_SKELETON_DELAY_MS = 220;
+
+function ServiceCardImage({
+  assetKey,
+  imageSize,
+  iconWrap,
+}: {
+  assetKey: string;
+  imageSize: number;
+  iconWrap: number;
+}) {
+  const assetUrl = useAppAssetsStore((s) => s.assets[assetKey]?.url ?? s.assets[assetKey]?.proxyUrl ?? null);
+  const imageReadyRef = useRef(false);
+  const [showSkeleton, setShowSkeleton] = useState(false);
+  const [imageVisible, setImageVisible] = useState(false);
+
+  useEffect(() => {
+    imageReadyRef.current = false;
+    setShowSkeleton(false);
+    setImageVisible(false);
+    const timer = setTimeout(() => {
+      if (!imageReadyRef.current) setShowSkeleton(true);
+    }, SERVICE_IMAGE_SKELETON_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [assetKey, assetUrl]);
+
+  const handleImageLoad = useCallback(() => {
+    imageReadyRef.current = true;
+    setShowSkeleton(false);
+    setImageVisible(true);
+  }, []);
+
+  return (
+    <View style={[styles.imageWrap, { width: iconWrap, height: iconWrap }]}>
+      {showSkeleton ? (
+        <GMSkeleton
+          style={[
+            styles.imageSkeleton,
+            { width: imageSize, height: imageSize, borderRadius: Math.round(imageSize * 0.22) },
+          ]}
+        />
+      ) : null}
+      <AppAssetImage
+        assetKey={assetKey}
+        style={[
+          { width: imageSize, height: imageSize },
+          !imageVisible && styles.imageLoadingHidden,
+        ]}
+        contentFit="contain"
+        onLoad={handleImageLoad}
+      />
+    </View>
+  );
+}
 
 type ServiceItem = {
   id: CustomerHomeServiceId;
@@ -208,13 +264,7 @@ function ServiceTile({
       </View>
 
       {/* Images stay at full opacity — parent opacity < 1 blanks expo-image on Android. */}
-      <View style={[styles.imageWrap, { width: iconWrap, height: iconWrap }]}>
-        <AppAssetImage
-          assetKey={item.assetKey}
-          style={{ width: imageSize, height: imageSize }}
-          contentFit="contain"
-        />
-      </View>
+      <ServiceCardImage assetKey={item.assetKey} imageSize={imageSize} iconWrap={iconWrap} />
 
       {!enabled && !isAccountBlocked ? <View style={styles.disabledWash} pointerEvents="none" /> : null}
       {isAccountBlocked ? (
@@ -356,5 +406,11 @@ const styles = StyleSheet.create({
     bottom: 5,
     alignItems: "center",
     justifyContent: "center",
+  },
+  imageSkeleton: {
+    position: "absolute",
+  },
+  imageLoadingHidden: {
+    opacity: 0,
   },
 });

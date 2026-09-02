@@ -1031,13 +1031,41 @@ export default function OrderRightSidebar({
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      try {
-        const res = await fetch("/api/orders/cx-notification-templates", {
+      const fetchTemplates = () =>
+        fetch("/api/orders/cx-notification-templates", {
           credentials: "include",
+          cache: "no-store",
         });
+
+      try {
+        let res = await fetchTemplates();
+        if (cancelled) return;
+        if (res.status === 401) {
+          const synced = await syncServerSessionCookies();
+          if (synced && !cancelled) {
+            res = await fetchTemplates();
+          }
+        }
+        for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
+          if (res.status !== 503 && res.status !== 429 && res.status !== 499) break;
+          await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+          if (cancelled) return;
+          res = await fetchTemplates();
+        }
         if (cancelled) return;
         if (!res.ok) {
-          console.error("Failed to load Cx templates", res.status, await res.text());
+          const text = await res.text();
+          let code = "";
+          try {
+            code = String(JSON.parse(text)?.code ?? "");
+          } catch {
+            /* ignore */
+          }
+          if (res.status === 503 || code === "SERVICE_UNAVAILABLE") {
+            return;
+          }
+          // eslint-disable-next-line no-console
+          console.error("Failed to load Cx templates", res.status, text);
           return;
         }
         const json = (await res.json()) as { items?: unknown; success?: boolean };
@@ -1060,7 +1088,10 @@ export default function OrderRightSidebar({
           )
         );
       } catch (err) {
-        if (!cancelled) console.error("Error loading Cx templates", err);
+        if (!cancelled && !isBenignSidebarFetchError(err)) {
+          // eslint-disable-next-line no-console
+          console.error("Error loading Cx templates", err);
+        }
       }
     })();
     return () => {
@@ -1908,16 +1939,14 @@ export default function OrderRightSidebar({
               )}
             </dd>
           </div>
-          <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0">Acceptance Source:</dt>
-            <dd className="min-w-0 text-right font-medium text-slate-700">
-              {order.acceptanceSource ? (
+          {order.acceptanceSource ? (
+            <div className="flex items-center justify-between gap-2">
+              <dt className="shrink-0">Acceptance Source:</dt>
+              <dd className="min-w-0 text-right font-medium text-slate-700">
                 <OrderMixedText>{order.acceptanceSource}</OrderMixedText>
-              ) : (
-                "—"
-              )}
-            </dd>
-          </div>
+              </dd>
+            </div>
+          ) : null}
           <div className="flex items-center justify-between gap-2">
             <dt className="shrink-0">Order ID:</dt>
             <dd className="min-w-0 truncate font-medium text-slate-700 text-right orders-num">
@@ -1980,30 +2009,29 @@ export default function OrderRightSidebar({
         </dl>
       </section>
 
-      {/* Create refund CTA - opens Items / Refund modal */}
+      {/* Refund / view-items CTA — opens Items / Refund modal */}
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
         <button
           type="button"
-          disabled={refundActionsDisabled}
-          title={
+          className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-[13px] font-medium text-white shadow-sm transition cursor-pointer ${
             refundActionsDisabled
-              ? "Order is already cancelled and fully refunded — no further refund or cancellation is possible."
-              : undefined
-          }
-          className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-[13px] font-medium text-white shadow-sm transition ${
-            refundActionsDisabled
-              ? "cursor-not-allowed bg-slate-300"
-              : "cursor-pointer bg-emerald-500 hover:bg-emerald-600"
+              ? "bg-[#1B2B4B] hover:bg-[#152238]"
+              : "bg-emerald-500 hover:bg-emerald-600"
           }`}
-          onPointerEnter={() => {
-            if (!refundActionsDisabled) onPrefetchOrderItems?.();
-          }}
-          onClick={() => {
-            if (!refundActionsDisabled) openItemsModal();
-          }}
+          onPointerEnter={() => onPrefetchOrderItems?.()}
+          onClick={openItemsModal}
         >
-          <i className="bi bi-arrow-counterclockwise" />
-          Create refund
+          {refundActionsDisabled ? (
+            <>
+              <i className="bi bi-eye" />
+              View Item
+            </>
+          ) : (
+            <>
+              <i className="bi bi-arrow-counterclockwise" />
+              Create refund
+            </>
+          )}
         </button>
         {refundActionsDisabled && (
           <p className="mt-2 text-center text-[11px] leading-snug text-slate-500">

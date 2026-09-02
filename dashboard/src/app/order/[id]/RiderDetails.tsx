@@ -14,6 +14,7 @@ import { formatTipInr, hasRiderFeedback } from "@/lib/orders/order-customer-feed
 import {
   formatDurationSecondsLabel,
   isSelfPickupDelivery,
+  TAKEAWAY_RIDER_ASSIGN_BLOCKED_MESSAGE,
 } from "@/lib/orders/order-detail-display";
 import { useLiveElapsedSeconds } from "@/hooks/useLiveElapsedSeconds";
 import { Check, ChevronDown, Copy, Star } from "lucide-react";
@@ -35,9 +36,63 @@ import { useToast } from "@/context/ToastContext";
 import { riderDeliveryMilestoneLabel } from "@/lib/riders/rider-order-status-display";
 import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 
+/** Matches dispatch wave offer window — agent can retry manual assign after this. */
+const MANUAL_ASSIGN_COOLDOWN_SEC = 120;
+
+function manualAssignCooldownStorageKey(orderId: number): string {
+  return `gm_manual_assign_cd_${orderId}`;
+}
+
+function readStoredManualAssignCooldown(orderId: number | null | undefined): number | null {
+  if (orderId == null) return null;
+  try {
+    const until = Number(sessionStorage.getItem(manualAssignCooldownStorageKey(orderId)));
+    if (!Number.isFinite(until) || until <= Date.now()) {
+      sessionStorage.removeItem(manualAssignCooldownStorageKey(orderId));
+      return null;
+    }
+    return until;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredManualAssignCooldown(orderId: number | null | undefined, until: number): void {
+  if (orderId == null) return;
+  try {
+    sessionStorage.setItem(manualAssignCooldownStorageKey(orderId), String(until));
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+function clearStoredManualAssignCooldown(orderId: number | null | undefined): void {
+  if (orderId == null) return;
+  try {
+    sessionStorage.removeItem(manualAssignCooldownStorageKey(orderId));
+  } catch {
+    /* ignore */
+  }
+}
+
+function formatManualAssignCountdown(secondsLeft: number): string {
+  const s = Math.max(0, Math.ceil(secondsLeft));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${String(r).padStart(2, "0")}`;
+}
+
 function riderManagementToastMessage(error: string | undefined, fallback: string): string {
   if (!error) return fallback;
   const normalized = error.toLowerCase().replace(/_/g, " ");
+  if (
+    normalized.includes("can't carry riders for takeaway") ||
+    normalized.includes("takeaway_no_rider") ||
+    normalized.includes("self pickup") ||
+    normalized.includes("self_pickup")
+  ) {
+    return TAKEAWAY_RIDER_ASSIGN_BLOCKED_MESSAGE;
+  }
   if (
     normalized.includes("no active rider on this locality") ||
     normalized.includes("no active riders in locality") ||
@@ -650,6 +705,10 @@ export default function RiderDetails({
   const [sheetLoading, setSheetLoading] = useState(false);
   const [sheetSubmitting, setSheetSubmitting] = useState(false);
   const [cancelForceSubmitting, setCancelForceSubmitting] = useState(false);
+  const [manualAssignCooldownUntil, setManualAssignCooldownUntil] = useState<number | null>(
+    () => readStoredManualAssignCooldown(order.orderId)
+  );
+  const [manualAssignTick, setManualAssignTick] = useState(0);
   const { toast } = useToast();
 
   const attributeRejectionOptions = riderAttribute
@@ -694,6 +753,10 @@ export default function RiderDetails({
   const trackingUrl = hasAssignedRider && order.trackingUrl?.trim() ? order.trackingUrl.trim() : "";
   const isPickupOrderType = isSelfPickupDelivery(order.deliveryType);
   const showPickupHelpMessage = isPickupOrderType && !hasAssignedRider;
+  const blockTakeawayRiderAssign = isPickupOrderType;
+  const showTakeawayRiderAssignToast = () => {
+    toast(TAKEAWAY_RIDER_ASSIGN_BLOCKED_MESSAGE, "error");
+  };
   const deliveryOtp = order.deliveryOtp?.trim() || "—";
   const tipLabel = formatTipInr(tipAmount ?? null);
   const showRiderRating = hasRiderFeedback(customerFeedback);
@@ -754,8 +817,65 @@ export default function RiderDetails({
   // Always show when no rider / order open — never hide during dispatch or force pending.
   const showManualAssign =
     !hasAssignedRider && !isTerminalOrder && order.orderId != null;
+
+  const armManualAssignCooldown = () => {
+    const until = Date.now() + MANUAL_ASSIGN_COOLDOWN_SEC * 1000;
+    setManualAssignCooldownUntil(until);
+    writeStoredManualAssignCooldown(order.orderId, until);
+  };
+
+  const clearManualAssignCooldown = () => {
+    setManualAssignCooldownUntil(null);
+    clearStoredManualAssignCooldown(order.orderId);
+  };
+
+  useEffect(() => {
+    if (!order.orderId || hasAssignedRider) return;
+    const stored = readStoredManualAssignCooldown(order.orderId);
+    if (stored != null) setManualAssignCooldownUntil(stored);
+  }, [order.orderId, hasAssignedRider]);
+
+  useEffect(() => {
+    if (!manualAssignCooldownUntil || manualAssignCooldownUntil <= Date.now()) return;
+    const t = window.setInterval(() => setManualAssignTick((n) => n + 1), 1000);
+    return () => window.clearInterval(t);
+  }, [manualAssignCooldownUntil]);
+
+  const manualAssignSecondsLeft =
+    manualAssignCooldownUntil != null
+      ? Math.max(0, Math.ceil((manualAssignCooldownUntil - Date.now()) / 1000))
+      : 0;
+  const manualAssignCooldownActive =
+    manualAssignSecondsLeft > 0 && !hasAssignedRider;
+
+  useEffect(() => {
+    if (hasAssignedRider) clearManualAssignCooldown();
+  }, [hasAssignedRider]);
+
+  useEffect(() => {
+    if (!dispatchSessionActive || hasAssignedRider) return;
+    setManualAssignCooldownUntil((prev) => {
+      if (prev != null && prev > Date.now()) return prev;
+      const until = Date.now() + MANUAL_ASSIGN_COOLDOWN_SEC * 1000;
+      writeStoredManualAssignCooldown(order.orderId, until);
+      return until;
+    });
+  }, [dispatchSessionActive, hasAssignedRider, order.orderId]);
+
+  useEffect(() => {
+    if (manualAssignCooldownUntil != null && manualAssignCooldownUntil <= Date.now()) {
+      clearManualAssignCooldown();
+    }
+  }, [manualAssignTick, manualAssignCooldownUntil]);
+
+  useEffect(() => {
+    if (manualAssignCooldownActive) setAssignMethodMenuOpen(false);
+  }, [manualAssignCooldownActive]);
+
   const manualAssignDisabled =
     assignSubmitting || forceAssignment?.status === "pending";
+  const assignSelectorDisabled =
+    manualAssignDisabled || manualAssignCooldownActive;
 
   const showRiderCancellation = order.orderId != null;
   const riderCancellationDisabled =
@@ -785,8 +905,17 @@ export default function RiderDetails({
     }
 
     if (selectedAction === "FORCE_ASSIGN") {
+      if (blockTakeawayRiderAssign) {
+        showTakeawayRiderAssignToast();
+        return;
+      }
       setCancelAction(selectedAction);
       await openRiderSheet("force");
+      return;
+    }
+
+    if (selectedAction === "CANCEL_ASSIGN" && blockTakeawayRiderAssign) {
+      showTakeawayRiderAssignToast();
       return;
     }
 
@@ -892,6 +1021,10 @@ export default function RiderDetails({
   };
 
   const openRiderSheet = async (mode: RiderSelectionMode) => {
+    if (blockTakeawayRiderAssign) {
+      showTakeawayRiderAssignToast();
+      return;
+    }
     setSheetMode(mode);
     setSheetOpen(true);
     await loadEligibleRiders();
@@ -900,6 +1033,10 @@ export default function RiderDetails({
   /** Previous Assign-rider-manually flow: start auto/manual dispatch (no rider picker sheet). */
   const runManualAssignRider = async () => {
     if (!order.orderId || assignSubmitting) return;
+    if (blockTakeawayRiderAssign) {
+      showTakeawayRiderAssignToast();
+      return;
+    }
     setAssignSubmitting(true);
     try {
       const res = await fetch(`/api/orders/${order.orderId}/rider-management`, {
@@ -925,6 +1062,7 @@ export default function RiderDetails({
       }
       toast("Rider assignment started.", "success");
       setAssignmentMethod("MANUAL");
+      armManualAssignCooldown();
       onRiderManagementComplete?.({
         action: "assign_rider",
         routedToEmail: json.routedToEmail ?? null,
@@ -938,6 +1076,11 @@ export default function RiderDetails({
 
   const applyAssignmentMethod = async (method: Exclude<AssignmentMethodOption, "">) => {
     if (assignSubmitting || forceAssignment?.status === "pending") return;
+    if (blockTakeawayRiderAssign) {
+      showTakeawayRiderAssignToast();
+      return;
+    }
+    if (method === "MANUAL" && manualAssignCooldownActive) return;
     setAssignmentMethod(method);
     setAssignMethodMenuOpen(false);
     if (method === "FORCE") {
@@ -947,10 +1090,6 @@ export default function RiderDetails({
       } finally {
         setAssignSubmitting(false);
       }
-      return;
-    }
-    if (dispatchSessionActive) {
-      toast("Rider offer already in progress.", "error");
       return;
     }
     await runManualAssignRider();
@@ -991,6 +1130,10 @@ export default function RiderDetails({
     meta?: { radiusKm: number }
   ) => {
     if (!order.orderId || sheetSubmitting) return;
+    if (blockTakeawayRiderAssign) {
+      showTakeawayRiderAssignToast();
+      return;
+    }
     setSheetSubmitting(true);
     const radiusKm =
       meta?.radiusKm != null && Number.isFinite(meta.radiusKm)
@@ -1364,17 +1507,17 @@ export default function RiderDetails({
           </div>
 
           {forceAssignment?.status === "pending" ? (
-            <div className="shrink-0 rounded-md border border-violet-200 bg-violet-50 p-2.5 mb-2">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-[11px] font-semibold text-violet-900">
+            <div className="shrink-0 rounded-md border border-violet-200 bg-violet-50 px-2 py-1.5 mb-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] font-semibold text-violet-900 leading-tight">
                     Force Assignment in Progress
                   </p>
-                  <p className="text-[10px] text-violet-800 mt-0.5">
+                  <p className="text-[9px] text-violet-800 mt-0.5 leading-snug">
                     Waiting for the selected rider to accept. Current rider remains assigned until
                     then.
                   </p>
-                  <div className="mt-1.5 grid grid-cols-1 sm:grid-cols-3 gap-1 text-[10px] text-violet-900">
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[9px] text-violet-900">
                     <span>
                       Selected:{" "}
                       <strong>
@@ -1384,18 +1527,17 @@ export default function RiderDetails({
                     <span>
                       Offer: <strong>Pending</strong>
                     </span>
-                    <span>
-                      Expires in: <strong>{forceSecondsLeft}s</strong>
-                    </span>
                   </div>
                 </div>
                 <button
                   type="button"
                   disabled={cancelForceSubmitting}
                   onClick={() => void cancelForceAssignment()}
-                  className="h-8 shrink-0 rounded px-3 text-[11px] font-semibold border border-violet-300 bg-white text-violet-800 hover:bg-violet-100 disabled:opacity-50"
+                  className="h-7 shrink-0 rounded px-2.5 text-[10px] font-semibold bg-red-600 text-white border border-red-700 hover:bg-red-700 disabled:opacity-50 whitespace-nowrap"
                 >
-                  {cancelForceSubmitting ? "Cancelling…" : "Cancel Force Assignment"}
+                  {cancelForceSubmitting
+                    ? "Cancelling…"
+                    : `Cancel Force Assignment (${formatManualAssignCountdown(forceSecondsLeft)})`}
                 </button>
               </div>
             </div>
@@ -1496,9 +1638,12 @@ export default function RiderDetails({
                   {(() => {
                     const method = assignmentMethod || "MANUAL";
                     const isForce = method === "FORCE";
-                    const btnBg = isForce
-                      ? "bg-violet-600 hover:bg-violet-700"
-                      : "bg-emerald-600 hover:bg-emerald-700";
+                    const manualWaiting = manualAssignCooldownActive;
+                    const btnBg = assignSelectorDisabled && !assignSubmitting
+                      ? "bg-slate-500"
+                      : isForce
+                        ? "bg-violet-600 hover:bg-violet-700"
+                        : "bg-emerald-600 hover:bg-emerald-700";
                     const divider = "border-l border-white/40";
                     return (
                       <div
@@ -1508,16 +1653,18 @@ export default function RiderDetails({
                       >
                         <button
                           type="button"
-                          disabled={manualAssignDisabled}
+                          disabled={assignSelectorDisabled}
                           onClick={() => void applyAssignmentMethod(method)}
-                          className="flex flex-1 items-center justify-center gap-1.5 px-2.5 text-[10px] font-bold text-white cursor-pointer disabled:cursor-not-allowed disabled:opacity-70"
+                          className="flex flex-1 items-center justify-center gap-1.5 px-2.5 text-[10px] font-bold text-white cursor-pointer disabled:cursor-not-allowed disabled:opacity-90"
                           aria-label={
                             isForce ? "Force Assignment" : "Assign rider manually"
                           }
                           title={
-                            forceAssignment?.status === "pending"
-                              ? "Force Assignment in progress"
-                              : undefined
+                            manualWaiting
+                              ? `Retry available in ${formatManualAssignCountdown(manualAssignSecondsLeft)}`
+                              : forceAssignment?.status === "pending"
+                                ? "Force Assignment in progress"
+                                : undefined
                           }
                         >
                           {assignSubmitting ? (
@@ -1528,14 +1675,16 @@ export default function RiderDetails({
                           <span className="whitespace-nowrap">
                             {assignSubmitting
                               ? "Offer sending...."
-                              : isForce
-                                ? "Force Assignment"
-                                : "Assign rider manually"}
+                              : manualWaiting
+                                ? `Assign rider manually (${formatManualAssignCountdown(manualAssignSecondsLeft)})`
+                                : isForce
+                                  ? "Force Assignment"
+                                  : "Assign rider manually"}
                           </span>
                         </button>
                         <button
                           type="button"
-                          disabled={manualAssignDisabled}
+                          disabled={assignSelectorDisabled}
                           onClick={() => setAssignMethodMenuOpen((v) => !v)}
                           className={`flex h-full w-8 shrink-0 items-center justify-center ${divider} text-white cursor-pointer disabled:cursor-not-allowed disabled:opacity-70`}
                           aria-haspopup="listbox"
@@ -1559,7 +1708,7 @@ export default function RiderDetails({
                       <button
                         type="button"
                         role="option"
-                        disabled={manualAssignDisabled}
+                        disabled={assignSelectorDisabled}
                         onClick={() => {
                           setAssignmentMethod("MANUAL");
                           setAssignMethodMenuOpen(false);
@@ -1571,7 +1720,7 @@ export default function RiderDetails({
                       <button
                         type="button"
                         role="option"
-                        disabled={manualAssignDisabled}
+                        disabled={assignSelectorDisabled}
                         onClick={() => {
                           setAssignmentMethod("FORCE");
                           setAssignMethodMenuOpen(false);

@@ -128,6 +128,7 @@ export function useSmoothedRiderPosition(
     toRef.current = { lat: fix.lat, lng: fix.lng, headingDeg: heading };
     startMsRef.current = Date.now();
     durationRef.current = Math.min(timing.durationMs, durationMs);
+    let lastUiMs = 0;
     trackDebug("marker_animation_started", {
       durationMs: durationRef.current,
     });
@@ -153,8 +154,13 @@ export function useSmoothedRiderPosition(
         headingDeg: lerpAngle(from.headingDeg, to.headingDeg, ease),
       };
 
-      setSmoothed(next);
       fromRef.current = next;
+      // Cap React setState to ~12fps — 60fps marker lerp was janking the whole tracking tree.
+      const now = Date.now();
+      if (t >= 1 || now - lastUiMs >= 80) {
+        lastUiMs = now;
+        setSmoothed(next);
+      }
 
       if (t < 1) {
         rafRef.current = requestAnimationFrame(tick);

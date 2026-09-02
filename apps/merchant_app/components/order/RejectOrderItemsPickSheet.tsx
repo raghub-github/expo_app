@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 import type { LineItem } from "@/hooks/useOrders";
 import type { RejectPickItem } from "@/lib/rejectOrderPickItems";
+import { resolveLineItemMenuPk } from "@/lib/resolveLineItemMenuPk";
 
 type Row = {
   key: string;
@@ -22,7 +23,7 @@ function buildRows(items: LineItem[]): Row[] {
   for (const it of items) {
     const name = String(it.name ?? "Item").trim() || "Item";
     const quantity = Math.max(1, Number(it.qty) || 1);
-    const id = it.menuItemId;
+    const id = resolveLineItemMenuPk(it);
     if (id != null && Number.isFinite(Number(id))) {
       const menuItemId = Number(id);
       if (seenIds.has(menuItemId)) continue;
@@ -176,7 +177,9 @@ export function RejectOrderItemsPickSheet({
                 pickableRows.length > 0 && selectedIds.size === 0 && styles.continueBtnDisabled,
               ]}
             >
-              <Text style={styles.continueBtnText}>Continue</Text>
+              <Text style={styles.continueBtnText}>
+                {pickableRows.length === 0 ? "Cancel order" : "Continue"}
+              </Text>
             </Pressable>
           </View>
         </Pressable>

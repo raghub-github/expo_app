@@ -16,6 +16,8 @@ import {
   resolveWithdrawalRequestDisplayDescription,
   resolveLedgerCategoryLabel,
   LEDGER_CATEGORY_LABELS,
+  isManualWalletAdjustmentLedgerEntry,
+  resolveManualWalletAdjustmentDisplayDescription,
   computeSettlementFromLedgerEntries,
   mapSettlementToClient,
   type MerchantLedgerVisibilityEntry,
@@ -285,8 +287,14 @@ function resolveLedgerCancellationActor(meta: Record<string, unknown> | null) {
 /** Merchant-facing ledger description (policy-aware for cancellations). */
 export function resolveLedgerDisplayDescription(entry: LedgerEntry): string {
   const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
+  const rawDesc = entry.description?.trim() ?? "";
+
+  if (isManualWalletAdjustmentLedgerEntry(entry)) {
+    return resolveManualWalletAdjustmentDisplayDescription(rawDesc);
+  }
+
   const formattedOrderId = resolveLedgerFormattedOrderId(entry, meta);
-  const desc = replaceOrderHashWithFormattedId(entry.description?.trim() ?? "", formattedOrderId);
+  const desc = replaceOrderHashWithFormattedId(rawDesc, formattedOrderId);
 
   if (entry.category === "FAILED_WITHDRAWAL_REVERSAL") {
     return resolveWithdrawalReversalDisplayDescription(desc, meta);

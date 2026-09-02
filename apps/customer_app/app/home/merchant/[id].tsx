@@ -473,6 +473,12 @@ export default function MerchantDetailScreen() {
   const { bookmarkMenuItemIdSet } = useMenuItemBookmarks(merchantId);
   const { syncMenuItemBookmark } = useMenuItemBookmarkMutations();
 
+  const menuSeedOnceRef = useRef(false);
+  if (merchantId && !menuSeedOnceRef.current) {
+    menuSeedOnceRef.current = true;
+    seedMerchantMenuQueryIfCached(queryClient, merchantId);
+  }
+
   useLayoutEffect(() => {
     if (!merchantId) return;
     seedMerchantMenuQueryIfCached(queryClient, merchantId);
@@ -501,7 +507,10 @@ export default function MerchantDetailScreen() {
   const { data: merchant, isPending, isFetching, isError, refetch } = useQuery({
     queryKey: MERCHANT_DETAIL_QUERY_KEY(merchantId),
     queryFn: () => fetchMerchantByIdWithCache(merchantId),
-    enabled: !!merchantId && !readSyncMerchantMenu(merchantId)?.menu?.length,
+    enabled:
+      !!merchantId &&
+      !(readSyncMerchantMenu(merchantId)?.menu?.length ?? 0) &&
+      !(queryClient.getQueryData<MerchantDetail>(MERCHANT_DETAIL_QUERY_KEY(merchantId))?.menu?.length ?? 0),
     staleTime: MERCHANT_DETAIL_STALE_MS,
     gcTime: MERCHANT_DETAIL_GC_MS,
     refetchOnMount: false,
@@ -514,7 +523,9 @@ export default function MerchantDetailScreen() {
   });
 
   const hasCachedMenu = (merchant?.menu?.length ?? 0) > 0;
-  const menuPending = !hasCachedMenu && (isPending || isFetching);
+  const persistedMenuLen = readSyncMerchantMenu(merchantId)?.menu?.length ?? 0;
+  const menuPending =
+    !hasCachedMenu && (isPending || isFetching || persistedMenuLen > 0);
 
   // Warm revisit: treat list as laid out immediately so shutter can hide without waiting onLayout.
   const [listLaidOut, setListLaidOut] = useState(() => hasCachedMenu);

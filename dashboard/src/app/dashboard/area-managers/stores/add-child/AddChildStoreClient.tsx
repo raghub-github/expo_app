@@ -5,7 +5,8 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Menu, X, Loader2 } from "lucide-react";
+import { ArrowLeft, Menu, X, Loader2, Check } from "lucide-react";
+import { toast } from "sonner";
 import Step3MenuUpload, { MenuUploadMode } from "@/components/onboarding/Step3MenuUpload";
 import { toAttachmentProxyUrl } from "@/lib/r2-proxy-url";
 import Step4Documents, { Step4Patch, Step4SectionKey } from "@/components/onboarding/Step4Documents";
@@ -19,6 +20,7 @@ import Step5StoreSetup, {
   normalizeStoreHours,
 } from "@/components/onboarding/Step5StoreSetup";
 import PreviewPage from "@/components/onboarding/preview";
+import MerchantOnboardingPaymentPanel from "@/components/onboarding/MerchantOnboardingPaymentPanel";
 import {
   asRecord,
   flattenPanVerifiedData,
@@ -108,6 +110,7 @@ export function AddChildStoreClient() {
 
   const [parentDisplayName, setParentDisplayName] = useState(() => searchParams.get("parentName") ?? "");
   const [parentDisplayPid, setParentDisplayPid] = useState(() => searchParams.get("parentLabel") ?? searchParams.get("parentPid") ?? "");
+  const [resolvedParentId, setResolvedParentId] = useState<number | null>(parentId);
   const amPhoneFromUrl = searchParams.get("amPhone") ?? "";
   const amEmailFromUrl = searchParams.get("amEmail") ?? "";
 
@@ -204,6 +207,7 @@ export function AddChildStoreClient() {
   const [amContact, setAmContact] = useState<{ id?: string; name?: string; phone?: string; email?: string } | null>(null);
   const [paymentStepAutoAdvanced, setPaymentStepAutoAdvanced] = useState(false);
   const [showPaymentRefreshPrompt, setShowPaymentRefreshPrompt] = useState(false);
+  const [onboardingPaymentCaptured, setOnboardingPaymentCaptured] = useState(false);
   const [agreementStepAutoAdvanced, setAgreementStepAutoAdvanced] = useState(false);
   const [showAgreementRefreshPrompt, setShowAgreementRefreshPrompt] = useState(false);
   const [signStepAutoAdvanced, setSignStepAutoAdvanced] = useState(false);
@@ -251,6 +255,7 @@ export function AddChildStoreClient() {
   const [menuRemoveLoading, setMenuRemoveLoading] = useState(false);
 
   const legalBusinessName = storeDisplayName;
+  const partnerLinkParentId = resolvedParentId ?? parentId;
   const currentStoreId = createdStoreId;
   const parentName = parentDisplayName;
   const parentPid = parentDisplayPid;
@@ -298,6 +303,9 @@ export function AddChildStoreClient() {
         }
         if (typeof json?.parent_name === "string" && json.parent_name) setParentDisplayName(json.parent_name);
         if (typeof json?.parent_merchant_id === "string" && json.parent_merchant_id) setParentDisplayPid(json.parent_merchant_id);
+        if (typeof json?.parent_id === "number" && Number.isFinite(json.parent_id)) {
+          setResolvedParentId(json.parent_id);
+        }
         const progress = json?.progress;
         if (progress && typeof progress.current_step === "number") {
           // Active step from DB; if that step is already marked complete, auto-push forward.
@@ -309,6 +317,11 @@ export function AddChildStoreClient() {
             activeStep += 1;
           }
           setStepState(activeStep);
+        }
+        if (progress) {
+          const paymentFromApi = Boolean((progress as { payment_captured?: boolean }).payment_captured);
+          const step7 = (progress.form_data as { step7?: { paymentCaptured?: boolean } } | undefined)?.step7;
+          setOnboardingPaymentCaptured(paymentFromApi || Boolean(step7?.paymentCaptured));
         }
         if (progress?.form_data?.step_store?.storePublicId) {
           setCreatedStoreId(String(progress.form_data.step_store.storePublicId));
@@ -417,7 +430,7 @@ export function AddChildStoreClient() {
               delivery_radius_km:
                 typeof s5.delivery_radius_km === "number"
                   ? (s5.delivery_radius_km as number)
-                  : prev?.delivery_radius_km ?? 5,
+                  : prev?.delivery_radius_km ?? 8,
               is_pure_veg:
                 typeof s5.is_pure_veg === "boolean" ? (s5.is_pure_veg as boolean) : prev?.is_pure_veg ?? false,
               accepts_online_payment:
@@ -1013,12 +1026,12 @@ export function AddChildStoreClient() {
 
   // Lightweight refresh of current_step from AM backend so steps 7–9
   // reflect Partner Site progress without reloading the whole page.
-  const refreshStepFromServer = useCallback(async () => {
-    if (!storeInternalId || parentId == null || !Number.isFinite(storeInternalId)) return;
-    setRefreshingStepStatus(true);
+  const refreshStepFromServer = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!storeInternalId || !Number.isFinite(storeInternalId)) return;
+    if (!opts?.silent) setRefreshingStepStatus(true);
     try {
       const query = new URLSearchParams({ storeInternalId: String(storeInternalId) });
-      query.set("parentId", String(parentId));
+      if (parentId != null && Number.isFinite(parentId)) query.set("parentId", String(parentId));
       const loadProgress = () =>
         fetch(`/api/area-manager/child-store-progress?${query.toString()}`, {
           credentials: "include",
@@ -1033,11 +1046,18 @@ export function AddChildStoreClient() {
       const progress = json?.progress;
       if (progress && typeof progress.current_step === "number") {
         const activeStep = Math.min(Math.max(progress.current_step, 1), 10);
-        if (step === 7 && activeStep > 7 && !paymentStepAutoAdvanced) {
+        const paymentCaptured =
+          Boolean((progress as { payment_captured?: boolean }).payment_captured) ||
+          Boolean(
+            (progress.form_data as { step7?: { paymentCaptured?: boolean } } | undefined)?.step7
+              ?.paymentCaptured
+          );
+        setOnboardingPaymentCaptured(paymentCaptured);
+        if (step === 7 && paymentCaptured && !paymentStepAutoAdvanced) {
           setPaymentStepAutoAdvanced(true);
           setShowPaymentRefreshPrompt(true);
         }
-        if (step === 8 && activeStep > 8 && !agreementStepAutoAdvanced) {
+        if ((step === 7 || step === 8) && activeStep >= 9 && !agreementStepAutoAdvanced) {
           setAgreementStepAutoAdvanced(true);
           setShowAgreementRefreshPrompt(true);
         }
@@ -1045,10 +1065,13 @@ export function AddChildStoreClient() {
           setSignStepAutoAdvanced(true);
           setShowSignRefreshPrompt(true);
         }
-        setStepState(activeStep);
+        // Only advance UI step when agreement (or later) is recorded — not on payment alone.
+        if (activeStep >= 9 || activeStep < step) {
+          setStepState(activeStep);
+        }
       }
     } finally {
-      setRefreshingStepStatus(false);
+      if (!opts?.silent) setRefreshingStepStatus(false);
     }
   }, [
     storeInternalId,
@@ -1059,29 +1082,28 @@ export function AddChildStoreClient() {
     signStepAutoAdvanced,
   ]);
 
-  // When user is on Step 7/8/9, auto-poll backend for updated step so Partner Site
-  // completion is reflected without manual refresh. When step advances, we show
-  // a non-blocking prompt suggesting a page refresh.
+  // Auto-poll after payment (step 7) and on steps 8–9 for Partner Site agreement/sign.
   useEffect(() => {
-    if (
-      (step !== 7 && step !== 8 && step !== 9) ||
-      !storeInternalId ||
-      parentId == null ||
-      !Number.isFinite(storeInternalId)
-    ) {
+    if (!storeInternalId || !Number.isFinite(storeInternalId)) {
+      return;
+    }
+    const shouldPoll =
+      step === 8 ||
+      step === 9 ||
+      (step === 7 && onboardingPaymentCaptured);
+    if (!shouldPoll) {
       return;
     }
     let cancelled = false;
-    let intervalId: ReturnType<typeof setInterval> | null = null;
-    intervalId = setInterval(() => {
+    const intervalId = setInterval(() => {
       if (cancelled) return;
-      void refreshStepFromServer();
-    }, 7000);
+      void refreshStepFromServer({ silent: true });
+    }, 15000);
     return () => {
       cancelled = true;
-      if (intervalId) clearInterval(intervalId);
+      clearInterval(intervalId);
     };
-  }, [step, storeInternalId, parentId, refreshStepFromServer]);
+  }, [step, storeInternalId, onboardingPaymentCaptured, refreshStepFromServer]);
 
   // Step 3 image previews
   useEffect(() => {
@@ -1627,7 +1649,7 @@ export function AddChildStoreClient() {
     }
   };
 
-  const nextStep = async () => {
+  const nextStep = async (options?: { step4UploadOnly?: boolean; step4Finish?: boolean }) => {
     if (step === 1) {
       const form = document.querySelector("form");
       if (form) form.requestSubmit();
@@ -1811,7 +1833,7 @@ export function AddChildStoreClient() {
     if (step === 4) {
       // Step 4: documents + bank details
       if (step4Section === "AADHAAR" && aadhaarDigilockerInFlight) {
-        setErr(
+        toast.error(
           "DigiLocker verification is in progress. Complete consent in the DigiLocker tab — skip is locked until it finishes or fails.",
         );
         return;
@@ -1885,8 +1907,8 @@ export function AddChildStoreClient() {
         const firstFormatError =
           fmtPan || fmtAadhaar || fmtGst || fmtFssai || fmtDrug || "";
         if (firstFormatError) {
-          setErr(
-            "One or more document numbers have invalid format. Please fix the highlighted fields before continuing."
+          toast.error(
+            "One or more document numbers have invalid format. Please fix the highlighted fields before continuing.",
           );
           setActionLoading(false);
           return;
@@ -2170,10 +2192,12 @@ export function AddChildStoreClient() {
         const sectionOrder: Step4SectionKey[] =
           step4SectionOrder.length > 0 ? step4SectionOrder : ["PAN"];
         const idx = sectionOrder.indexOf(step4Section);
-        const isLeavingBank = idx === sectionOrder.length - 1 || idx === -1;
+        const isLeavingBank =
+          options?.step4Finish || idx === sectionOrder.length - 1 || idx === -1;
         const progressStepNumber = isLeavingBank ? 5 : 4;
-        const nextSection =
-          !isLeavingBank && idx >= 0 && idx < sectionOrder.length - 1
+        const nextSection = options?.step4UploadOnly
+          ? step4Section
+          : !isLeavingBank && idx >= 0 && idx < sectionOrder.length - 1
             ? sectionOrder[idx + 1]
             : step4Section;
 
@@ -2186,6 +2210,10 @@ export function AddChildStoreClient() {
           },
         });
 
+        if (options?.step4UploadOnly) {
+          return;
+        }
+
         // Stay on Step 4 and move to next document section; only go to Step 5 when leaving Bank
         if (!isLeavingBank && idx >= 0 && idx < sectionOrder.length - 1) {
           setStep4Section(sectionOrder[idx + 1]);
@@ -2197,10 +2225,10 @@ export function AddChildStoreClient() {
           setStep(5);
         }
       } catch (e) {
-        setErr(
+        toast.error(
           e instanceof Error
             ? e.message
-            : "Failed to save documents. Please try again."
+            : "Failed to save documents. Please try again.",
         );
       } finally {
         setActionLoading(false);
@@ -2358,12 +2386,15 @@ export function AddChildStoreClient() {
               <button type="button" onClick={() => setShowMobileMenu(false)} className="p-2 rounded-lg hover:bg-slate-100"><X className="w-6 h-6" /></button>
             </div>
             <div className="p-4 space-y-3 overflow-y-auto">
-              {currentStoreId && (
-                <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4">
-                  <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Store ID</p>
-                  <p className="text-sm font-mono font-semibold text-indigo-700 mt-0.5">{currentStoreId}</p>
-                </div>
-              )}
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 space-y-1">
+                <p className="text-sm font-bold text-slate-800">Register New Store</p>
+                {currentStoreId && (
+                  <>
+                    <p className="text-xs font-medium text-slate-500">Store ID</p>
+                    <p className="text-sm font-mono font-semibold text-indigo-700">{currentStoreId}</p>
+                  </>
+                )}
+              </div>
               <Link href="/dashboard/area-managers/stores" className="block rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">← All Stores</Link>
             </div>
           </div>
@@ -2375,20 +2406,21 @@ export function AddChildStoreClient() {
         <div className="flex-1 grid grid-cols-[56px_1fr] lg:grid-cols-[220px_1fr] w-full min-w-0 max-w-full overflow-hidden">
           {/* Left: step strip (mobile) | compact sidebar 220px (desktop) */}
           <aside className="flex flex-col min-h-0 min-w-0 w-full max-w-full border-r border-slate-200 bg-white/95 shadow-[2px_0_12px_rgba(0,0,0,0.04)] overflow-hidden border-l-4 border-l-indigo-500">
-            <div className="hidden sm:block flex-none py-3 pl-4 pr-2.5 border-b border-slate-200/80 min-w-0 bg-slate-50/50">
-              <div className="flex items-baseline gap-2 whitespace-nowrap min-w-0">
-                <h2 className="text-xs font-bold text-slate-800 uppercase tracking-wider shrink-0">New Store</h2>
-                {currentStoreId && (
-                  <span className="text-xs text-slate-500 font-mono font-semibold text-indigo-600 truncate">{currentStoreId}</span>
-                )}
-              </div>
+            <div className="hidden sm:block flex-none border-b border-slate-200 pb-2 mb-1 px-2.5 sm:px-3 pt-2 space-y-1 min-w-0 bg-slate-50/50">
+              <h2 className="text-sm font-bold text-slate-800 truncate">Register New Store</h2>
+              {currentStoreId && (
+                <p className="text-[11px] sm:text-xs text-slate-600 truncate">
+                  <span className="font-medium text-slate-500">Store ID</span>
+                  <span className="ml-1 font-mono font-semibold text-indigo-700">{currentStoreId}</span>
+                </p>
+              )}
             </div>
             <nav className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden space-y-2.5 sm:space-y-3 p-1.5 sm:p-3 hide-scrollbar flex flex-col items-center sm:items-stretch bg-white/80">
               {STEP_LABELS.map((label, i) => {
                 const stepNum = i + 1;
                 const isCurrent = stepNum === step;
                 const isDone = stepNum < step;
-                const isPaymentCompleted = step >= 8;
+                const isPaymentCompleted = onboardingPaymentCaptured;
                 const isAgreementAccepted = step >= 9;
                 const showPaymentCompletedTag = stepNum === 7 && isPaymentCompleted;
                 const showAgreementAcceptedTag = stepNum === 8 && isAgreementAccepted;
@@ -2403,10 +2435,30 @@ export function AddChildStoreClient() {
                     aria-current={isCurrent ? "step" : undefined}
                     title={label}
                   >
-                    <span className={`w-9 h-9 sm:w-7 sm:h-7 rounded-full sm:rounded-md flex items-center justify-center text-xs font-bold shrink-0 ${isCurrent ? "bg-white/25" : isDone ? "bg-emerald-500/20 text-emerald-700" : "bg-slate-200"}`}>
-                      {stepNum}
+                    <span className="relative shrink-0">
+                      <span
+                        className={`w-9 h-9 sm:w-7 sm:h-7 rounded-full sm:rounded-md flex items-center justify-center text-xs font-bold ${
+                          isCurrent
+                            ? "bg-white/25 text-white"
+                            : isDone
+                              ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                              : "bg-slate-200 text-slate-700"
+                        }`}
+                      >
+                        {stepNum}
+                      </span>
+                      {(isDone || isCurrent) && (
+                        <span
+                          className={`sm:hidden absolute -bottom-0.5 -right-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border border-white ${
+                            isDone ? "bg-emerald-500" : "bg-amber-400"
+                          }`}
+                          aria-hidden
+                        >
+                          <Check className="h-2 w-2 text-white" strokeWidth={4} />
+                        </span>
+                      )}
                     </span>
-                    <span className="hidden sm:flex flex-col text-xs font-medium min-w-0">
+                    <span className="hidden sm:flex flex-1 flex-col text-xs font-medium min-w-0">
                       <span className="truncate">{label}</span>
                       {showPaymentCompletedTag && (
                         <span className="mt-0.5 inline-flex items-center rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
@@ -2419,6 +2471,16 @@ export function AddChildStoreClient() {
                         </span>
                       )}
                     </span>
+                    {(isDone || isCurrent) && (
+                      <span
+                        className={`hidden sm:inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full ml-auto ${
+                          isDone ? "bg-emerald-500" : "bg-amber-400"
+                        }`}
+                        aria-hidden
+                      >
+                        <Check className="h-2.5 w-2.5 text-white" strokeWidth={3} />
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -2432,11 +2494,19 @@ export function AddChildStoreClient() {
           {/* Right: main form content */}
           <main
             ref={mainScrollRef}
-            className="min-w-0 w-full max-w-full flex flex-col min-h-0 overflow-hidden overflow-x-hidden bg-transparent"
+            className={`min-w-0 w-full max-w-full flex flex-col min-h-0 overflow-hidden overflow-x-hidden ${
+              step === 4 ? "bg-white" : "bg-transparent"
+            }`}
           >
             <div
-              className={`flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden ${
-                step === 2 ? "px-0 pt-3" : "px-3 sm:px-4 md:px-6 pt-2 sm:pt-4 md:pt-5"
+              className={`flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-y-contain ${
+                step === 7 || step === 8 || step === 9 ? "flex flex-col" : ""
+              } ${
+                step === 2
+                  ? "px-0 pt-3"
+                  : step === 4
+                    ? "px-0 pt-0"
+                    : "px-3 sm:px-4 md:px-6 pt-2 sm:pt-4 md:pt-5"
               }`}
             >
               {!parentId && (
@@ -3240,42 +3310,31 @@ export function AddChildStoreClient() {
                   onRequiredValidChange={setStep4RequiredValid}
                   onDigilockerInFlightChange={setAadhaarDigilockerInFlight}
                   onVisibleSectionsChange={setStep4SectionOrder}
-                  onPrevious={() => {
-                    const sectionOrder: Step4SectionKey[] =
-                      step4SectionOrder.length > 0 ? step4SectionOrder : ["PAN"];
-                    const idx = sectionOrder.indexOf(step4Section);
-                    if (idx > 0) {
-                      setStep4Section(sectionOrder[idx - 1]);
-                      return;
-                    }
-                    void prevStep();
-                  }}
-                  onContinue={() => {
+                  onWizardBack={() => void prevStep()}
+                  onUploadSection={async () => {
                     if (saveContinueClickLockRef.current || actionLoading) return;
                     saveContinueClickLockRef.current = true;
-                    void nextStep().finally(() => {
+                    try {
+                      await nextStep({ step4UploadOnly: true });
+                    } finally {
                       saveContinueClickLockRef.current = false;
-                    });
+                    }
+                  }}
+                  onFinishDocuments={async () => {
+                    if (saveContinueClickLockRef.current || actionLoading) return;
+                    saveContinueClickLockRef.current = true;
+                    try {
+                      await nextStep({ step4Finish: true });
+                    } finally {
+                      saveContinueClickLockRef.current = false;
+                    }
                   }}
                   actionLoading={actionLoading}
-                  continueDisabled={
-                    mediaUploading ||
-                    (step4Section === "AADHAAR" && aadhaarDigilockerInFlight) ||
-                    (step4Section !== "AADHAAR" && !step4RequiredValid)
+                  uploadDisabled={
+                    mediaUploading || aadhaarDigilockerInFlight || !step4RequiredValid
                   }
-                  continueLabel={
-                    step4Section === "AADHAAR" && aadhaarDigilockerInFlight
-                      ? "Waiting for DigiLocker…"
-                      : step4Section === "AADHAAR" && !aadhaarDocMandatory
-                      ? "Skip / Save & Continue"
-                      : step4Section === "GST" &&
-                        !gstDocMandatory &&
-                        step4RequiredValid &&
-                        (!step4Patch?.gst_number || !step4Patch.gst_number.trim()) &&
-                        !step4Patch?.gst_is_verified
-                      ? "Skip / Save & Continue"
-                      : "Save & Continue"
-                  }
+                  uploadLoading={actionLoading}
+                  finishDocumentsDisabled={mediaUploading}
                 />
               )}
 
@@ -3489,22 +3548,23 @@ export function AddChildStoreClient() {
 
               {/* Step 7: Commission plan & payment status (child store pays on Partner Site) */}
               {step === 7 && (
-                <div className="w-full flex justify-center py-8 sm:py-12">
-                  <div className="w-full max-w-3xl bg-white/95 rounded-2xl border border-slate-200/80 shadow-sm">
-                    <div className="px-4 sm:px-6 pt-4 pb-3 border-b border-slate-100 flex items-center justify-between gap-3">
+                <div className="w-full min-h-full flex flex-col justify-center py-3 sm:py-5">
+                  <div className="w-full bg-white/95 rounded-2xl border border-slate-200/80 shadow-sm">
+                    <div className="px-4 sm:px-6 pt-4 pb-3 border-b border-slate-100 flex items-center justify-between gap-3 verification-typo">
                       <div>
                         <h2 className="text-base sm:text-lg font-semibold text-slate-900 flex items-center gap-2">
-                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-indigo-600 text-white text-xs font-medium">
+                          <span className="verification-num inline-flex items-center justify-center w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-medium">
                             7
                           </span>
                           Commission plan & payment
                         </h2>
                         <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
-                          The store owner must complete the onboarding payment on the Partner Site. Once the payment is successful, this step will be automatically marked as completed.
+                          Store owner can pay on Partner Site, or you can pay here on their behalf. After payment,
+                          the agreement step unlocks only once the merchant signs on Partner Site.
                         </p>
                       </div>
                     </div>
-                    <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
+                    <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4 verification-typo">
                       <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:p-4">
                         <p className="text-xs sm:text-sm text-slate-700">
                           Share the onboarding link with the store owner and ask them to complete the{" "}
@@ -3517,12 +3577,12 @@ export function AddChildStoreClient() {
                             </p>
                             <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                               <code className="flex-1 block text-[11px] sm:text-xs text-slate-800 bg-white rounded-lg border border-slate-200 px-2 py-1 overflow-x-auto">
-                                {`https://partner.gatimitra.com/auth/register-store?parent_id=${parentId}&store_id=${createdStoreId}`}
+                                {`https://partner.gatimitra.com/auth/register-store?parent_id=${partnerLinkParentId}&store_id=${createdStoreId}`}
                               </code>
                               <button
                                 type="button"
                                 onClick={() => {
-                                  const url = `https://partner.gatimitra.com/auth/register-store?parent_id=${parentId}&store_id=${createdStoreId}`;
+                                  const url = `https://partner.gatimitra.com/auth/register-store?parent_id=${partnerLinkParentId}&store_id=${createdStoreId}`;
                                   if (navigator.share) {
                                     const text = [
                                       "Hi 👋",
@@ -3585,12 +3645,20 @@ export function AddChildStoreClient() {
                               </button>
                             </div>
                             <p className="text-[11px] sm:text-xs text-slate-500 mt-1.5">
-                              Copy and share this link with the store owner. After the payment is completed, return here and click{" "}
-                              <span className="font-semibold">Save & Continue</span> to proceed.
+                              Copy and share this link with the store owner. After payment, this step advances automatically — use Refresh step status if needed.
                             </p>
                           </div>
                         )}
                       </div>
+                      {storeInternalId ? (
+                        <MerchantOnboardingPaymentPanel
+                          storeInternalId={storeInternalId}
+                          storePublicId={createdStoreId}
+                          onPaymentCaptured={() => {
+                            void refreshStepFromServer({ silent: true });
+                          }}
+                        />
+                      ) : null}
                       <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3 sm:p-4 flex items-start gap-2">
                         <div className="mt-0.5">
                           <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3631,8 +3699,8 @@ export function AddChildStoreClient() {
 
               {/* Step 8: Agreement / Step 9: Review & submit with payment + agreement summary */}
               {step === 8 && (
-                <div className="w-full flex justify-center py-8 sm:py-12">
-                  <div className="w-full max-w-3xl bg-white/95 rounded-2xl border border-indigo-100 shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
+                <div className="w-full min-h-full flex flex-col justify-center py-3 sm:py-5">
+                  <div className="w-full max-w-3xl mx-auto bg-white/95 rounded-2xl border border-indigo-100 shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
                     <div className="border-b border-indigo-50 bg-gradient-to-r from-indigo-50/80 via-slate-50 to-emerald-50/70 px-4 sm:px-5 py-3 flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
                         <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center text-sm font-semibold">
@@ -3665,12 +3733,12 @@ export function AddChildStoreClient() {
                           </div>
                           <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                             <code className="flex-1 block text-[11px] sm:text-xs text-slate-900 bg-white rounded-lg border border-indigo-200 px-2 py-1 overflow-x-auto">
-                              {`https://partner.gatimitra.com/auth/register-store?parent_id=${parentId}&store_id=${createdStoreId}`}
+                              {`https://partner.gatimitra.com/auth/register-store?parent_id=${partnerLinkParentId}&store_id=${createdStoreId}`}
                             </code>
                             <button
                               type="button"
                               onClick={() => {
-                                const url = `https://partner.gatimitra.com/auth/register-store?parent_id=${parentId}&store_id=${createdStoreId}`;
+                                const url = `https://partner.gatimitra.com/auth/register-store?parent_id=${partnerLinkParentId}&store_id=${createdStoreId}`;
                                 const text = [
                                   "Hi 👋",
                                   "",
@@ -3738,8 +3806,8 @@ export function AddChildStoreClient() {
               )}
 
               {step === 9 && (
-                <div className="w-full flex justify-center py-8 sm:py-12">
-                  <div className="w-full max-w-5xl bg-white/95 rounded-2xl border border-indigo-100 shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
+                <div className="w-full min-h-full flex flex-col justify-center py-3 sm:py-5">
+                  <div className="w-full max-w-5xl mx-auto bg-white/95 rounded-2xl border border-indigo-100 shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
                     <div className="border-b border-indigo-50 bg-gradient-to-r from-indigo-50/80 via-slate-50 to-emerald-50/70 px-4 sm:px-6 py-3.5 flex items-center justify-between gap-3">
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center text-sm font-semibold">
@@ -4224,26 +4292,17 @@ export function AddChildStoreClient() {
             </div>
             <div className="px-4 py-3 text-xs sm:text-sm text-slate-700 space-y-2">
               <p>The onboarding payment has been completed.</p>
-              <p>You can now move to the next step.</p>
+              <p>
+                The merchant must still accept and sign the agreement on the Partner Site before Step 8 unlocks.
+              </p>
             </div>
             <div className="px-4 py-3 border-t border-slate-100 flex items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setShowPaymentRefreshPrompt(false)}
-                className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs sm:text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
-              >
-                Close
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowPaymentRefreshPrompt(false);
-                  // When payment is confirmed (step 7), always land on step 8
-                  setStep(8);
-                }}
                 className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs sm:text-sm font-medium hover:bg-emerald-700 cursor-pointer"
               >
-                Move to next step
+                OK
               </button>
             </div>
           </div>

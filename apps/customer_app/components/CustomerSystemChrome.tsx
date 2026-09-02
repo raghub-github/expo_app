@@ -1,11 +1,12 @@
 import { useEffect } from "react";
 import { AppState, Platform, StatusBar, type AppStateStatus } from "react-native";
 import { applyAndroidNavigationChrome } from "@/lib/androidEdgeToEdgeChrome";
+import { CUSTOMER_SYSTEM_NAV_MINT } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 /**
- * Android system *navigation* bar only.
- * Edge-to-edge builds ignore position/background APIs — visibility + icon style only.
+ * Android system navigation bar: mint background + light icons.
+ * Gesture nav (bottom inset 0) gets no in-app filler — see AndroidSystemNavigationFill.
  */
 
 function assertStatusBarVisible() {
@@ -24,13 +25,19 @@ export function CustomerSystemChrome() {
 
     if (Platform.OS !== "android" || bootstrapActive) return;
 
-    void applyAndroidNavigationChrome({ buttonStyle: "light" }).catch(() => {});
+    void applyAndroidNavigationChrome({
+      buttonStyle: "light",
+      backgroundColor: CUSTOMER_SYSTEM_NAV_MINT,
+    }).catch(() => {});
 
     const onAppState = (state: AppStateStatus) => {
       if (state !== "active") return;
       assertStatusBarVisible();
       if (useScreenChromeStore.getState().bootstrapActive) return;
-      void applyAndroidNavigationChrome({ buttonStyle: "light" }).catch(() => {});
+      void applyAndroidNavigationChrome({
+        buttonStyle: "light",
+        backgroundColor: CUSTOMER_SYSTEM_NAV_MINT,
+      }).catch(() => {});
     };
 
     const sub = AppState.addEventListener("change", onAppState);

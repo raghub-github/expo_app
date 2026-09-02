@@ -53,6 +53,7 @@ import {
 import { resolveOrderDetailsDistanceKm } from "@/lib/orders/order-distance-display";
 import { isHardPageReload } from "@/lib/navigation/is-hard-page-reload";
 import { formatDeliveredByLabel } from "@/lib/orders/order-detail-display";
+import { OrderNotFoundState } from "@/components/orders/OrderNotFoundState";
 import {
   prefetchRiderActivityLog,
   seedRiderActivityLogCache,
@@ -61,6 +62,7 @@ import {
   type RiderActivityLogCacheEntry,
 } from "@/lib/riderActivityLogCache";
 import { prefetchCancellationCatalogClient } from "@/lib/orders/cancellation-catalog-client-cache";
+import { isRefundSettled } from "@/lib/orders/refund-status";
 import { prefetchPartnerChat, seedPartnerChatCache, type PartnerChatCacheEntry } from "@/lib/partnerChatCache";
 import {
   mapNotificationsFromApi,
@@ -1139,13 +1141,40 @@ export default function OrderDetailClient({
           // Refunds + line items load in background so the page renders without extra round trips.
           void (async () => {
             try {
-              const refundsRes = await fetch(`/api/orders/${row.id}/refunds`);
-              const refundsBody = await refundsRes.json().catch(() => null);
-              if (!cancelled && refundsRes.ok && refundsBody?.success && Array.isArray(refundsBody.data)) {
-                setOrderRefunds(refundsBody.data as OrderRefundListItem[]);
-              } else if (!cancelled) {
-                setOrderRefunds([]);
+              const loadRefunds = async (): Promise<OrderRefundListItem[]> => {
+                const refundsRes = await fetch(`/api/orders/${row.id}/refunds`);
+                const refundsBody = await refundsRes.json().catch(() => null);
+                if (refundsRes.ok && refundsBody?.success && Array.isArray(refundsBody.data)) {
+                  return refundsBody.data as OrderRefundListItem[];
+                }
+                return [];
+              };
+
+              let refunds = await loadRefunds();
+              const cancelInfo = row.cancellationInfo as OrderCancellationInfo | null | undefined;
+              const cancelType = String(cancelInfo?.cancelledByType ?? "").trim().toLowerCase();
+              const merchantOrSystemCancel =
+                cancelType.length > 0 &&
+                cancelType !== "customer" &&
+                cancelType !== "cx" &&
+                ["store", "merchant", "system", "rider", "admin"].includes(cancelType);
+
+              if (merchantOrSystemCancel && !refunds.some(isRefundSettled)) {
+                const repairRes = await fetch(`/api/orders/${row.id}/refunds/ensure-auto`, {
+                  method: "POST",
+                });
+                const repairBody = await repairRes.json().catch(() => null);
+                if (
+                  !cancelled &&
+                  repairRes.ok &&
+                  repairBody?.success &&
+                  Array.isArray(repairBody.data)
+                ) {
+                  refunds = repairBody.data as OrderRefundListItem[];
+                }
               }
+
+              if (!cancelled) setOrderRefunds(refunds);
             } catch {
               if (!cancelled) setOrderRefunds([]);
             }
@@ -1774,16 +1803,17 @@ export default function OrderDetailClient({
         });
       });
     }
-    return (
-      <div
-        className="flex h-full min-h-[50vh] w-full flex-1 items-center justify-center bg-[#F8FAFC] px-4"
-        role="alert"
-      >
-        <p className="text-center text-sm font-medium text-slate-600">
-          {isAuthError ? "Redirecting to login…" : (error ?? "Order not found.")}
-        </p>
-      </div>
-    );
+    if (isAuthError) {
+      return (
+        <div
+          className="flex h-full min-h-[50vh] w-full flex-1 items-center justify-center bg-[#F8FAFC] px-4"
+          role="alert"
+        >
+          <p className="text-center text-sm font-medium text-slate-600">Redirecting to login…</p>
+        </div>
+      );
+    }
+    return <OrderNotFoundState />;
   }
 
   const statusLabel = order.currentStatus ?? order.status;
@@ -2311,6 +2341,7 @@ export default function OrderDetailClient({
               recoveryRecords={orderRecoveryRecords}
               paymentDetail={paymentDetail}
               orderItemsPricing={orderItemsPayload?.pricing ?? null}
+              orderItems={orderItemsPayload?.items ?? []}
               onPrefetchOrderItems={ensureOrderItemsPrefetch}
             />
             </div>

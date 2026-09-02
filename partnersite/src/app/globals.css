@@ -616,6 +616,23 @@ body.mx-no-page-scroll .mx-main-scroll {
   transition: transform 0.35s ease-out;
 }
 
+/* Merchant onboarding document modals — Lora labels/titles, Poppins controls */
+.merchant-doc-modal {
+  font-family: var(--font-site-poppins, var(--font-auth-poppins)), ui-sans-serif, system-ui, sans-serif;
+  color: #0f172a;
+}
+.merchant-doc-modal h3,
+.merchant-doc-modal label,
+.merchant-doc-modal .merchant-doc-modal-heading {
+  font-family: var(--font-site-lora, var(--font-auth-lora)), Georgia, "Times New Roman", serif;
+}
+.merchant-doc-modal input,
+.merchant-doc-modal select,
+.merchant-doc-modal button,
+.merchant-doc-modal .merchant-doc-modal-ui {
+  font-family: var(--font-site-poppins, var(--font-auth-poppins)), ui-sans-serif, system-ui, sans-serif;
+}
+
 /* Auth register — Lora body; Poppins + Lora Bold for numbers */
 .auth-register-page {
   font-family: var(--font-site-lora, var(--font-auth-lora)), Georgia, "Times New Roman", serif;

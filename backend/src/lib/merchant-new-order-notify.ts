@@ -5,9 +5,9 @@ import type { Sql } from "postgres";
 import { insertMerchantStoreNotification } from "./merchant-push-notify.js";
 import { resolveMerchantVisibleOrderNotify } from "./merchant-visible-pricing.js";
 import { send as sendNotification } from "../modules/notifications/notificationService.js";
-import { merchantAppOrderHref } from "./merchant-app-deeplink.js";
+import { merchantAppHomeNewOrdersHref } from "./merchant-app-deeplink.js";
 
-export { merchantAppOrderHref, merchantAppOrdersTabHref } from "./merchant-app-deeplink.js";
+export { merchantAppOrderHref, merchantAppOrdersTabHref, merchantAppHomeNewOrdersHref } from "./merchant-app-deeplink.js";
 
 function formatExactMerchantInr(amount: number): string {
   const n = Math.round(amount * 100) / 100;
@@ -67,7 +67,7 @@ export async function notifyMerchantStoreNewOrder(
     merchantStoreId,
     orderIdText,
   });
-  const href = merchantAppOrderHref(foodId);
+  const href = merchantAppHomeNewOrdersHref();
 
   const foodRows = await sql`
     SELECT f.formatted_order_id
@@ -136,6 +136,7 @@ export async function notifyMerchantStoreNewOrder(
       orderId: orderIdText,
       foodOrderId: foodId,
       url: href,
+      skip_in_app_banner: true,
     },
   }).catch((e) =>
     console.warn("[merchant-new-order] v2 send failed (tolerated)", (e as Error).message)

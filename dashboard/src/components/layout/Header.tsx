@@ -550,12 +550,14 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/super-admin/customer-app-categories": "Super Admin",
   "/dashboard/super-admin/app-images": "Super Admin",
   "/dashboard/super-admin/commission": "Commission Engine",
+  "/dashboard/super-admin/menu-item-locks": "Item Lock Management",
   "/dashboard/users": "User Management",
 };
 
 const SUPER_ADMIN_HUB_PATH = "/dashboard/super-admin";
 const VERIFICATION_HUB_PATH = "/dashboard/super-admin/verification";
 const GEO_LIST_PATH = "/dashboard/super-admin/geo";
+const MENU_ITEM_LOCKS_PATH = "/dashboard/super-admin/menu-item-locks";
 const GEO_DETAIL_ROUTE_RE = /^\/dashboard\/super-admin\/geo\/[^/]+\/[^/]+$/;
 const VERIFICATION_INNER_ROUTE_RE =
   /^\/dashboard\/super-admin\/verification\/(policies|analytics|rider-queue|merchant-queue)(\/.*)?$/;
@@ -1284,6 +1286,21 @@ function HeaderComponent() {
               <h2 className="truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
               <p className="mt-0.5 hidden max-w-2xl truncate text-[11px] text-gray-500 sm:block">
                 Hierarchy from state to pincode; lazy load, service rules, and search.
+              </p>
+            </div>
+          </div>
+        ) : cleanPathname === MENU_ITEM_LOCKS_PATH ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <HeaderBackButton
+              href={SUPER_ADMIN_HUB_PATH}
+              ariaLabel="Back to Super Admin"
+              title="Back to Super Admin"
+            />
+            <div className="min-w-0 leading-tight">
+              <h2 className="truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+              <p className="mt-0.5 hidden max-w-2xl truncate text-[11px] text-gray-500 sm:block">
+                Stores with plan-locked items are listed first. Search by Store ID to view and unlock
+                items for that store.
               </p>
             </div>
           </div>

@@ -51,9 +51,11 @@ import { useSmsPermissionStore } from "@/store/smsPermissionStore";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
 import { MerchantNavTransitionShutter } from "@/components/MerchantNavTransitionShutter";
 import { CheckoutBottomSheetHost } from "@/components/checkout/CheckoutBottomSheetHost";
+import { CheckoutPaymentFailureHost } from "@/components/checkout/CheckoutPaymentFailedSheet";
 import { CartCheckoutGateHost } from "@/components/cart/CartCheckoutGateHost";
 import { CartUpdatedModal } from "@/components/cart/CartUpdatedModal";
 import { CustomerSystemChrome } from "@/components/CustomerSystemChrome";
+import { AndroidSystemNavigationFill } from "@/components/AndroidSystemNavigationFill";
 import { StatusBarRouteChromeGuard } from "@/components/StatusBarRouteChromeGuard";
 import { AuthNavigationGate } from "@/components/AuthNavigationGate";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
@@ -162,7 +164,10 @@ void (async () => {
     NativeStatusBar.setHidden(false, "none");
     NativeStatusBar.setBarStyle("light-content", true);
     const { applyAndroidNavigationChrome } = await import("@/lib/androidEdgeToEdgeChrome");
-    await applyAndroidNavigationChrome({ buttonStyle: "light" });
+    await applyAndroidNavigationChrome({
+      buttonStyle: "light",
+      backgroundColor: SPLASH_CHROME_COLOR,
+    });
   } catch {
     // Keep startup resilient; config-plugin defaults still apply natively.
   }
@@ -377,13 +382,15 @@ export default function RootLayout() {
                 </AppErrorBoundary>
                 <AuthNavigationGate />
                 <CustomerSystemChrome />
+                <AndroidSystemNavigationFill />
                 <StatusBarRouteChromeGuard />
-                <AppErrorBoundary source="navigator">
+                <NavigatorWithRecovery>
                   <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
-                </AppErrorBoundary>
+                </NavigatorWithRecovery>
                 {/* Overlay hosts: a throw here must not blank the navigator behind them. */}
                 <AppErrorBoundary source="overlay-hosts" fallback={() => null}>
                   <CheckoutBottomSheetHost />
+                  <CheckoutPaymentFailureHost />
                   <CartCheckoutGateHost />
                   <CartUpdatedModal />
                   <GlobalFloatingCart />
@@ -778,6 +785,15 @@ function StatusBarSystemUISync({ splashChromeActive }: { splashChromeActive: boo
   return null;
 }
 
+function NavigatorWithRecovery({ children }: { children: React.ReactNode }) {
+  const segments = useSegments();
+  return (
+    <AppErrorBoundary source="navigator" resetKey={segments.join("/")}>
+      {children}
+    </AppErrorBoundary>
+  );
+}
+
 function RootStack({
   onLayoutRootView,
   splashActive,
@@ -815,13 +831,15 @@ function RootStack({
       : immersiveStatusBar && statusBarBackground === "transparent"
       ? "transparent"
       : statusBarBackground === "transparent"
-        ? "#FFFFFF"
+        ? GatiMitraColors.softBackground
         : statusBarBackground;
   // Derive the icon style from the ACTUAL bar background so icons can never be
   // invisible (e.g. a screen that leaves "light" icons on a white bar). Splash keeps
   // its light icons over the mint chrome.
   const barBgForContrast =
-    resolvedStatusBarBackground === "transparent" ? "#FFFFFF" : resolvedStatusBarBackground;
+    resolvedStatusBarBackground === "transparent"
+      ? GatiMitraColors.softBackground
+      : resolvedStatusBarBackground;
   const resolvedStatusBarStyle = splashChromeActive
     ? "light"
     : isLightBarColor(barBgForContrast)
@@ -856,7 +874,9 @@ function RootStack({
           backgroundColor: splashChromeActive
             ? SPLASH_CHROME_COLOR
             : resolvedStatusBarBackground === "transparent"
-              ? "#FFFFFF"
+              ? immersiveStatusBar
+                ? "transparent"
+                : GatiMitraColors.softBackground
               : resolvedStatusBarBackground,
           width: "100%",
         }}

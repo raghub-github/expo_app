@@ -22,6 +22,7 @@ import { MerchantRatingBadge } from "@/components/home/MerchantRatingBadge";
 import { MerchantOfferRow } from "@/components/home/MerchantOfferRow";
 import { MerchantRatingExplainerSheet } from "@/components/store/MerchantRatingExplainerSheet";
 import {
+  resolveMerchantBannerUri,
   resolveMerchantCarouselBannerUri,
   resolveMerchantCarouselGalleryUris,
 } from "@/lib/merchantBanner";
@@ -78,7 +79,10 @@ function GMRestaurantCardV2Inner({
       ? Number(merchant.forYouRating)
       : null;
 
-  const bannerUri = useMemo(() => resolveMerchantCarouselBannerUri(merchant), [merchant]);
+  const bannerUri = useMemo(
+    () => resolveMerchantCarouselBannerUri(merchant) ?? resolveMerchantBannerUri(merchant),
+    [merchant]
+  );
 
   useEffect(() => {
     warmMerchantHeroImage(merchant.id, bannerUri);

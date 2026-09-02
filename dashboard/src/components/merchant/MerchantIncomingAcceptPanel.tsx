@@ -14,7 +14,7 @@ import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
 import { parseMerchantInstructionsList } from '@/lib/merchant-order-instructions';
 import { FormattedOrderId } from '@/components/FormattedOrderId';
 import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
-import { merchantBillPartsFromItems } from '@/lib/merchant-order-item-display';
+import { merchantBillPartsFromItems, resolveMerchantCtm } from '@/lib/merchant-order-item-display';
 
 const MAX_PREVIEW_ITEMS = 3;
 const PREP_STEP_MINUTES = 5;
@@ -130,30 +130,26 @@ export function MerchantIncomingAcceptPanel({
   const pricing = useMemo(() => {
     const precision = Math.max(0, Number(order.merchant_precision_discount) || 0);
     const packaging = Number(order.pricing?.packaging) || 0;
+    const frozenTotal = resolveMerchantCtm({
+      total_ctm: order.total_ctm,
+      food_items_total_value: order.food_items_total_value,
+      pricing: order.pricing,
+      merchant_precision_discount: order.merchant_precision_discount,
+      items: orderItems,
+    });
     const bill = merchantBillPartsFromItems(orderItems, {
       subtotal: 0,
       packaging,
       discount: precision,
-      total: 0,
+      total: frozenTotal,
     });
-    if (bill.total > 0.005) {
-      return {
-        subtotal: bill.itemsSubtotal,
-        packaging: bill.packaging,
-        taxes: 0,
-        discount: bill.discount,
-        total: bill.total,
-      };
-    }
-    return (
-      order.pricing ?? {
-        subtotal: 0,
-        packaging: 0,
-        taxes: 0,
-        discount: 0,
-        total: Number(order.food_items_total_value || order.total_ctm || 0),
-      }
-    );
+    return {
+      subtotal: bill.itemsSubtotal,
+      packaging: bill.packaging,
+      taxes: 0,
+      discount: bill.discount,
+      total: bill.total,
+    };
   }, [order, orderItems]);
   const itemCount = useMemo(() => computeOrderItemQuantityCount(order), [order]);
   const moreItemsCount = Math.max(0, orderItems.length - MAX_PREVIEW_ITEMS);

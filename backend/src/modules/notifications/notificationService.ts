@@ -107,6 +107,65 @@ function isRideCustomerPush(row: {
   return code.startsWith("RIDE_");
 }
 
+function isCustomerLiveOrderProgressRow(row: {
+  metadata?: Record<string, unknown> | null;
+}): boolean {
+  const meta = row.metadata ?? {};
+  return meta.gmLiveProgress === true || meta.gmLiveProgress === "true";
+}
+
+function customerLiveOrderCollapseKey(row: {
+  metadata?: Record<string, unknown> | null;
+}): string | null {
+  const orderId = String(row.metadata?.orderId ?? "").trim();
+  return orderId ? `customer-live-order-${orderId}` : null;
+}
+
+function customerLiveOrderDeliveryOpts(row: CreateLogRow, templateSilent: boolean): {
+  silent: boolean;
+  collapseKey: string | null;
+  dataOnly: boolean;
+} {
+  if (row.recipient.role !== "customer" || !isCustomerLiveOrderProgressRow(row)) {
+    return { silent: templateSilent, collapseKey: null, dataOnly: false };
+  }
+  return {
+    silent: true,
+    collapseKey: customerLiveOrderCollapseKey(row),
+    dataOnly: true,
+  };
+}
+
+function buildFcmV1InputForRow(
+  row: CreateLogRow,
+  templateSilent: boolean,
+  args: {
+    token?: string;
+    topic?: string;
+    deepLink?: string | null;
+    webLink?: string | null;
+    data?: Record<string, string>;
+  } = {},
+) {
+  const live = customerLiveOrderDeliveryOpts(row, templateSilent);
+  return {
+    notificationId: row.notificationId,
+    ...(args.token ? { token: args.token } : {}),
+    ...(args.topic ? { topic: args.topic } : {}),
+    title: row.title,
+    body: row.body,
+    imageUrl: row.imageUrl ?? null,
+    deepLink: args.deepLink ?? resolvedDeepLinkForRow(row),
+    webLink: args.webLink,
+    channelId: channelIdForRecipient(row.recipient, row.priority, row),
+    appRole: row.recipient.role,
+    data: args.data ?? fcmDataForRow(row),
+    priority: row.priority as never,
+    silent: live.silent,
+    collapseKey: live.collapseKey,
+  };
+}
+
 function channelIdForRecipient(
   recipient: Recipient,
   priority?: NotificationPriority | string | null,
@@ -118,6 +177,7 @@ function channelIdForRecipient(
     return "merchant_default";
   }
   if (recipient.role === "rider") return "default";
+  if (row && isCustomerLiveOrderProgressRow(row)) return "customer_live_order";
   // Ride lifecycle → CX custom chime channel (immutable after first Android create).
   if (row && isRideCustomerPush(row)) return "customer_ride_cx";
   return "customer_default";
@@ -201,6 +261,12 @@ function deepLinkForWebRecipient(
 
 function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
   const metadata = { ...(row.metadata ?? {}) };
+  if (isCustomerLiveOrderProgressRow(row)) {
+    metadata.skip_in_app_banner = true;
+  }
+  if (row.recipient.role === "merchant") {
+    metadata.skip_in_app_banner = true;
+  }
   const metaScreen = typeof metadata.screen === "string" ? metadata.screen.trim() : "";
   // Logical event names ("new_order") are not expo-router paths.
   if (metaScreen && !metaScreen.startsWith("/")) {
@@ -221,7 +287,7 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
     body: row.body,
     gmTitle: row.title,
     gmMessage: row.body,
-    gmBanner: true,
+    gmBanner: row.recipient.role !== "merchant",
     ...(deepLink
       ? {
           screen: deepLink,
@@ -263,25 +329,28 @@ function fcmDataForRow(row: CreateLogRow): Record<string, string> {
 
 async function dispatchExpoRow(
   row: CreateLogRow,
-  opts?: { maxRetries?: number; attempt?: number; forceInline?: boolean },
+  opts?: { maxRetries?: number; attempt?: number; forceInline?: boolean; templateSilent?: boolean },
 ): Promise<boolean> {
+  const liveDelivery = customerLiveOrderDeliveryOpts(row, opts?.templateSilent === true);
   console.info(
-    `[notifications] expo_dispatch start nid=${row.notificationId} role=${row.recipient.role} platform=${row.recipient.platform} forceInline=${Boolean(opts?.forceInline)}`,
+    `[notifications] expo_dispatch start nid=${row.notificationId} role=${row.recipient.role} platform=${row.recipient.platform} forceInline=${Boolean(opts?.forceInline)} liveDataOnly=${liveDelivery.dataOnly}`,
   );
   const result = await deliverExpoPush({
     to: row.recipient.deviceToken,
-    title: row.title,
-    body: row.body,
+    title: liveDelivery.dataOnly ? undefined : row.title,
+    body: liveDelivery.dataOnly ? undefined : row.body,
     data: pushDataForRow(row),
     screen: resolvedDeepLinkForRow(row) ?? undefined,
     imageUrl: row.imageUrl ?? undefined,
     channelId: channelIdForRecipient(row.recipient, row.priority, row),
-    sound: soundForRecipient(row.recipient, row),
+    sound: liveDelivery.dataOnly ? null : soundForRecipient(row.recipient, row),
     dispatchLogId: row.notificationId,
     templateCode: row.templateCode,
     attempt: opts?.attempt ?? 0,
     priority: row.priority,
     forceInline: opts?.forceInline === true,
+    contentAvailable: liveDelivery.dataOnly ? true : undefined,
+    collapseKey: liveDelivery.collapseKey ?? undefined,
   });
   if (!result.ok) {
     const errBlob = `${result.error ?? ""}`.toLowerCase();
@@ -298,18 +367,11 @@ async function dispatchExpoRow(
         console.warn(
           `[notifications] expo_dispatch fallback_fcm nid=${row.notificationId} reason=${result.error ?? "expo_failed"} token_fp=${nativeToken.slice(0, 12)}…`,
         );
-        const res = await sendFcmV1({
-          notificationId: row.notificationId,
-          token: nativeToken,
-          title: row.title,
-          body: row.body,
-          imageUrl: row.imageUrl ?? null,
-          deepLink: resolvedDeepLinkForRow(row),
-          channelId: channelIdForRecipient(row.recipient, row.priority, row),
-          appRole: row.recipient.role,
-          data: fcmDataForRow(row),
-          priority: row.priority as never,
-        });
+        const res = await sendFcmV1(
+          buildFcmV1InputForRow(row, opts?.templateSilent === true, {
+            token: nativeToken,
+          }),
+        );
         return finalizeFcmDelivery(row.notificationId, nativeToken, res, {
           maxRetries: opts?.maxRetries,
         });
@@ -754,7 +816,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
       if (row.recipient.userId === "__direct__") {
         const isExpo = isExpoDeviceToken(row.recipient.deviceToken);
         if (isExpo) {
-          if (await dispatchExpoRow(row, { maxRetries, forceInline })) {
+          if (await dispatchExpoRow(row, { maxRetries, forceInline, templateSilent: template.silent })) {
             queued++;
             accepted++;
           } else {
@@ -766,19 +828,12 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         console.info(
           `[notifications] fcm_direct nid=${row.notificationId} token_fp=${row.recipient.deviceToken.slice(0, 12)}…`,
         );
-        const res = await sendFcmV1({
-          notificationId: row.notificationId,
-          token: row.recipient.deviceToken,
-          title: row.title,
-          body: row.body,
-          imageUrl: row.imageUrl ?? null,
-          deepLink: resolvedDeepLinkForRow(row),
-          channelId: channelIdForRecipient(row.recipient, row.priority, row),
-          appRole: row.recipient.role,
-          data: fcmDataForRow(row),
-          priority: row.priority as never,
-          silent: template.silent,
-        });
+        const res = await sendFcmV1(
+          buildFcmV1InputForRow(row, template.silent, {
+            token: row.recipient.deviceToken,
+            deepLink: resolvedDeepLinkForRow(row),
+          }),
+        );
         if (await finalizeFcmDelivery(row.notificationId, row.recipient.deviceToken, res, { maxRetries })) {
           queued++;
           accepted++;
@@ -805,7 +860,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           continue;
         }
         if (isExpoDeviceToken(token)) {
-          if (await dispatchExpoRow(row, { maxRetries, forceInline })) {
+          if (await dispatchExpoRow(row, { maxRetries, forceInline, templateSilent: template.silent })) {
             queued++;
             accepted++;
           } else {
@@ -824,20 +879,15 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           `[notifications] fcm_token nid=${row.notificationId} role=${row.recipient.role} platform=${row.recipient.platform} token_fp=${token.slice(0, 12)}…`,
         );
         const res = await sendFcmV1({
-          notificationId: row.notificationId,
-          token,
-          title: row.title,
-          body: row.body,
-          imageUrl: row.imageUrl ?? null,
-          deepLink,
-          webLink: isWeb ? deepLink : undefined,
+          ...buildFcmV1InputForRow(row, template.silent, {
+            token,
+            deepLink,
+            webLink: isWeb ? deepLink : undefined,
+          }),
           channelId: isWeb
             ? undefined
             : channelIdForRecipient(row.recipient, row.priority, row),
           appRole: isWeb ? undefined : row.recipient.role,
-          data: fcmDataForRow(row),
-          priority: row.priority as never,
-          silent: template.silent,
         });
         if (await finalizeFcmDelivery(row.notificationId, token, res, { maxRetries })) {
           queued++;

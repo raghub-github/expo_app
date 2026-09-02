@@ -6,8 +6,8 @@ import {
   parseMerchantBillingBreakdown,
 } from "@/lib/orderLineItems";
 import { computeOrderItemQuantityCount } from "@/lib/merchantOrderFoodActions";
-import { merchantFundedDiscountFromBilling, parseBillingSnapshot } from "@/lib/merchant-billing-discount";
-import { merchantBillPartsFromItems } from "@/lib/merchant-order-item-display";
+import { merchantFundedDiscountFromBilling, annotateMerchantItemsWithItemOffers, parseBillingSnapshot } from "@/lib/merchant-billing-discount";
+import { merchantBillPartsFromItems, syncMerchantOrderLineDisplayAmounts } from "@/lib/merchant-order-item-display";
 import {
   applyMerchantBaseToOrderItems,
   loadSnapshotsByOrderTexts,
@@ -461,6 +461,51 @@ export async function loadMerchantStoreFoodOrders(
           });
         }
 
+        const billingSnapEarly = parseBillingSnapshot(core.billing_snapshot);
+        if (!allCtmFrozen) {
+          type AnnotatedLine = {
+            catalog_line_total?: number;
+            net_line_total?: number;
+            offer_discount?: number;
+            offer_label?: string | null;
+            is_item_promo?: boolean;
+            applied_offer_type?: string | null;
+          };
+          const annotated = annotateMerchantItemsWithItemOffers(
+            items.map((it) => ({
+              price: Number(it.total) || Number(it.price) || 0,
+              menu_item_id: it.menuItemId ?? null,
+              name: it.name,
+              offer_label: it.offerLabel ?? null,
+              offer_discount: it.offerDiscount,
+              catalog_line_total: it.catalogLineTotal,
+              net_line_total: it.netLineTotal,
+              is_item_promo: it.isItemPromo,
+              applied_offer_type: it.appliedOfferType ?? null,
+            })),
+            billingSnapEarly
+          ) as AnnotatedLine[];
+          items = items.map((it, i) => {
+            const a = annotated[i];
+            if (!a) return it;
+            const qty = Math.max(1, it.quantity || 1);
+            const net = Number(a.net_line_total ?? it.total) || Number(it.total) || 0;
+            return {
+              ...it,
+              catalogLineTotal: a.catalog_line_total,
+              netLineTotal: a.net_line_total,
+              offerDiscount: a.offer_discount,
+              offerLabel: a.offer_label,
+              isItemPromo: a.is_item_promo,
+              appliedOfferType: a.applied_offer_type ?? it.appliedOfferType,
+              total: net,
+              price: net / qty,
+            };
+          });
+        } else {
+          items = syncMerchantOrderLineDisplayAmounts(items);
+        }
+
         const riderId = core.rider_id != null ? Number(core.rider_id) : null;
         const riderDetails = riderId != null ? riderById.get(riderId) ?? null : null;
 
@@ -484,7 +529,7 @@ export async function loadMerchantStoreFoodOrders(
               ? Number(coreGrandRaw)
               : null;
         const customerPricing = parseMerchantBillingBreakdown(core, pricingTotal);
-        const billingSnap = parseBillingSnapshot(core.billing_snapshot);
+        const billingSnap = billingSnapEarly;
         const merchantDiscount = merchantFundedDiscountFromBilling(billingSnap);
         const merchantSubtotal = items.reduce((s, it) => s + (Number(it.total) || 0), 0);
         const ctmNetSum = items.reduce(

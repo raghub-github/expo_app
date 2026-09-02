@@ -5,28 +5,33 @@ import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import type { NormalizedOrderLineItem } from '@/lib/orderLineItems';
 import type { RejectPickItem } from '@/lib/rejectOrderPickItems';
+import { resolveLineItemMenuPk } from '@/lib/resolveLineItemMenuPk';
 
 type Row = {
   key: string;
   name: string;
   quantity: number;
-  menuItemId: number | null;
+  menuItemId: number | string | null;
   pickable: boolean;
 };
 
+function pickKey(menuItemId: number | string): string {
+  return String(menuItemId);
+}
+
 function buildRows(items: NormalizedOrderLineItem[]): Row[] {
   const rows: Row[] = [];
-  const seenIds = new Set<number>();
+  const seenIds = new Set<string>();
   let idx = 0;
   for (const it of items) {
     const name = String(it.name ?? 'Item').trim() || 'Item';
     const quantity = Math.max(1, Number(it.quantity) || 1);
-    const id = it.menuItemId;
-    if (id != null && Number.isFinite(Number(id))) {
-      const menuItemId = Number(id);
-      if (seenIds.has(menuItemId)) continue;
-      seenIds.add(menuItemId);
-      rows.push({ key: `id-${menuItemId}`, name, quantity, menuItemId, pickable: true });
+    const menuItemId = resolveLineItemMenuPk(it);
+    if (menuItemId != null) {
+      const idKey = pickKey(menuItemId);
+      if (seenIds.has(idKey)) continue;
+      seenIds.add(idKey);
+      rows.push({ key: `id-${idKey}`, name, quantity, menuItemId, pickable: true });
     } else {
       rows.push({ key: `row-${idx++}`, name, quantity, menuItemId: null, pickable: false });
     }
@@ -47,7 +52,7 @@ export function RejectOrderItemsPickSidesheet({
 }) {
   const rows = useMemo(() => buildRows(lineItems), [lineItems]);
   const pickableRows = rows.filter((r) => r.pickable);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!open) {
@@ -68,30 +73,31 @@ export function RejectOrderItemsPickSidesheet({
 
   if (!open || typeof document === 'undefined') return null;
 
-  const toggle = (menuItemId: number) => {
+  const toggle = (menuItemId: number | string) => {
+    const key = pickKey(menuItemId);
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(menuItemId)) next.delete(menuItemId);
-      else next.add(menuItemId);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
 
   const allPickableSelected =
     pickableRows.length > 0 &&
-    pickableRows.every((r) => r.menuItemId != null && selectedIds.has(r.menuItemId));
+    pickableRows.every((r) => r.menuItemId != null && selectedIds.has(pickKey(r.menuItemId)));
 
   const toggleSelectAll = () => {
     if (allPickableSelected) {
       setSelectedIds(new Set());
       return;
     }
-    setSelectedIds(new Set(pickableRows.map((r) => r.menuItemId!)));
+    setSelectedIds(new Set(pickableRows.map((r) => pickKey(r.menuItemId!))));
   };
 
   const handleContinue = () => {
     const selected: RejectPickItem[] = pickableRows
-      .filter((r) => r.menuItemId != null && selectedIds.has(r.menuItemId))
+      .filter((r) => r.menuItemId != null && selectedIds.has(pickKey(r.menuItemId)))
       .map((r) => ({
         menuItemId: r.menuItemId!,
         name: r.name,
@@ -150,7 +156,8 @@ export function RejectOrderItemsPickSidesheet({
                 </li>
               ) : null}
               {rows.map((row) => {
-                const checked = row.menuItemId != null && selectedIds.has(row.menuItemId);
+                const checked =
+                  row.menuItemId != null && selectedIds.has(pickKey(row.menuItemId));
                 return (
                   <li key={row.key}>
                     <label

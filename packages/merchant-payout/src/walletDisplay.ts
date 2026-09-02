@@ -221,3 +221,30 @@ export function resolveWithdrawalRequestDisplayDescription(
   }
   return "Withdrawal requested — funds held from your wallet.";
 }
+
+/** True for admin manual wallet credit/debit ledger rows. */
+export function isManualWalletAdjustmentLedgerEntry(entry: {
+  category?: string | null;
+  description?: string | null;
+}): boolean {
+  const cat = String(entry.category ?? "").trim().toUpperCase();
+  if (cat === "MANUAL_CREDIT" || cat === "MANUAL_DEBIT") return true;
+  return /^Manual (credit|debit):/i.test(String(entry.description ?? "").trim());
+}
+
+/**
+ * Merchant-facing manual credit/debit copy — hide internal request ids.
+ * e.g. "Manual credit: Cashback (request #12)" → "Manual credit: Cashback"
+ */
+export function resolveManualWalletAdjustmentDisplayDescription(
+  raw: string | null | undefined,
+): string {
+  let desc = String(raw ?? "").trim();
+  if (!desc) return desc;
+  return desc
+    .replace(/\s*\(request\s*(?:#\d+|ID unavailable)\)\s*/gi, "")
+    .replace(/\s*\(request\s*#\d+\)\s*/gi, "")
+    .replace(/\s*\(request ID unavailable\)\s*/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}

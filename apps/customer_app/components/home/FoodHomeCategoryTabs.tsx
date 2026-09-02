@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, TouchableOpacity, View, useWindowDimensions } from "react-native";
 import Animated, {
+  cancelAnimation,
   Easing,
   useAnimatedStyle,
   useSharedValue,
@@ -13,6 +14,7 @@ import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { FoodHomeCategoryItem } from "@/components/home/FoodHomeCategoryVariants";
 import { AppText } from "@/components/AppText";
+import { useCardAnimationsEnabled } from "@/hooks/useCardAnimationsEnabled";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
 export type FoodHomeCategoryTabLayout = {
@@ -144,8 +146,16 @@ function CategoryPhoto({
 function AnimatedExploreBar({ height }: { height: number }) {
   const pulse = useSharedValue(1);
   const chevronX = useSharedValue(0);
+  const motionAllowed = useCardAnimationsEnabled();
 
   useEffect(() => {
+    if (!motionAllowed) {
+      cancelAnimation(pulse);
+      cancelAnimation(chevronX);
+      pulse.value = 1;
+      chevronX.value = 0;
+      return;
+    }
     pulse.value = withRepeat(
       withSequence(
         withTiming(1.05, { duration: 850, easing: Easing.inOut(Easing.ease) }),
@@ -162,7 +172,7 @@ function AnimatedExploreBar({ height }: { height: number }) {
       -1,
       false
     );
-  }, [chevronX, pulse]);
+  }, [chevronX, pulse, motionAllowed]);
 
   const barStyle = useAnimatedStyle(() => ({
     transform: [{ scale: pulse.value }],
@@ -420,7 +430,7 @@ const styles = StyleSheet.create({
   content: {
     flexDirection: "row",
     alignItems: "flex-start",
-    paddingTop: 2,
+    paddingTop: 0,
     paddingBottom: 0,
   },
   tab: {

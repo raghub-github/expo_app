@@ -33,6 +33,8 @@ export {
   resolveWithdrawalRequestDisplayDescription,
   resolveLedgerCategoryLabel,
   resolveLedgerRowStatusBadge,
+  isManualWalletAdjustmentLedgerEntry,
+  resolveManualWalletAdjustmentDisplayDescription,
   LEDGER_CATEGORY_LABELS,
   type MerchantLedgerVisibilityEntry,
   type WalletBalanceSource,

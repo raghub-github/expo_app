@@ -8,8 +8,11 @@ type CountResult = { count: number };
 let inflight: Promise<CountResult | null> | null = null;
 let inflightKey = '';
 let cache: { key: string; count: number; at: number } | null = null;
+/** Skip hammering APIs when session is missing. */
+let authBlockedUntil = 0;
 
 const CACHE_MS = 5_000;
+const AUTH_BLOCK_MS = 60_000;
 
 function parseCountResponse(text: string, ok: boolean): CountResult | null {
   const trimmed = text.trim();
@@ -32,6 +35,7 @@ export async function fetchPartnerPendingNewOrdersCount(
   if (!key) return null;
 
   const now = Date.now();
+  if (now < authBlockedUntil) return null;
   if (cache && cache.key === key && now - cache.at < CACHE_MS) {
     return cache.count;
   }
@@ -48,6 +52,10 @@ export async function fetchPartnerPendingNewOrdersCount(
         `/api/merchant/pending-new-orders-count?store_id=${encodeURIComponent(key)}`,
         { credentials: 'include', cache: 'no-store' }
       );
+      if (res.status === 401 || res.status === 403) {
+        authBlockedUntil = Date.now() + AUTH_BLOCK_MS;
+        return null;
+      }
       const text = await res.text();
       const parsed = parseCountResponse(text, res.ok);
       if (!parsed) return null;
@@ -67,4 +75,5 @@ export async function fetchPartnerPendingNewOrdersCount(
 
 export function invalidatePartnerPendingCountCache(): void {
   cache = null;
+  authBlockedUntil = 0;
 }

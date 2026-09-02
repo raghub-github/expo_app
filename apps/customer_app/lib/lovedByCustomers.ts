@@ -1,4 +1,5 @@
 import type { MerchantSummary } from "@/services/merchant.service";
+import { compareMerchantsByDiscoveryRank } from "@/lib/merchantDiscoveryRank";
 
 const LOVED_RATING_MIN = 4;
 export const LOVED_GRID_MAX = 6;
@@ -21,15 +22,7 @@ export function pickLovedByCustomersMerchants(merchants: MerchantSummary[]): Mer
 
   return merchants
     .filter(hasEstablishedCustomerRating)
-    .sort((a, b) => {
-      const ordersA = Math.max(0, Number(a.completedOrderCount ?? 0));
-      const ordersB = Math.max(0, Number(b.completedOrderCount ?? 0));
-      if (ordersB !== ordersA) return ordersB - ordersA;
-      const ratingA = Number(a.avgRating ?? 0);
-      const ratingB = Number(b.avgRating ?? 0);
-      if (ratingB !== ratingA) return ratingB - ratingA;
-      return (a.distanceKm ?? 999) - (b.distanceKm ?? 999);
-    })
+    .sort(compareMerchantsByDiscoveryRank)
     .slice(0, LOVED_GRID_MAX);
 }
 

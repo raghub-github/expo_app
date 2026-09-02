@@ -156,17 +156,72 @@ function claimBannerDedupe(keys: string[]): boolean {
   return true;
 }
 
-/** Order-page / admin CX sends belong in the OS shade, not the in-app pill. */
+function orderServiceFromPushData(
+  data: Record<string, unknown>
+): "food" | "ride" | "parcel" | null {
+  const live = String(data.liveService ?? "").trim().toLowerCase();
+  if (live === "food") return "food";
+  if (live === "ride" || live === "person_ride") return "ride";
+  if (live === "parcel") return "parcel";
+
+  const orderId = orderIdFromData(data).toUpperCase();
+  if (/^GMF\d*/.test(orderId)) return "food";
+  if (/^GMP\d*/.test(orderId)) return "ride";
+  if (/^GMC\d*/.test(orderId) || /^GMX\d*/.test(orderId) || /^GMPARCEL/i.test(orderId)) {
+    return "parcel";
+  }
+  return null;
+}
+
+/**
+ * Food-order customer pushes — show in the OS shade only, never the in-app pill.
+ * Person-ride and parcel keep the floating banner.
+ */
+export function isFoodOrderPush(data: Record<string, unknown> | undefined | null): boolean {
+  if (!data) return false;
+
+  const service = orderServiceFromPushData(data);
+  if (service === "ride" || service === "parcel") return false;
+  if (service === "food") return true;
+
+  const code = templateFromData(data, null);
+  if (code.startsWith("RIDE_")) return false;
+  if (code.startsWith("PARCEL_")) return false;
+
+  if (code.startsWith("ORDER_")) {
+    if (code === "ORDER_RIDER_ASSIGNED") return service !== "ride";
+    return true;
+  }
+  if (code === "ORDER_PREP_DELAY") return true;
+
+  return false;
+}
+
+/** Order-page / admin CX / live sticky / food orders belong in the OS shade, not the in-app pill. */
 export function isSystemShadeOnlyPush(data: Record<string, unknown> | undefined | null): boolean {
   if (!data) return false;
+  if (isFoodOrderPush(data)) return true;
+  if (data.gmLiveProgress === true || data.gmLiveProgress === "true") return true;
   if (data.skip_in_app_banner === true || data.skip_in_app_banner === "true") return true;
   if (data.admin_cx === true || data.admin_cx === "true") return true;
+  const role = String(data.appRole ?? data.role ?? "").toLowerCase();
+  if (role === "merchant") return true;
+  const type = String(data.type ?? data.notificationType ?? data.event ?? "").toLowerCase();
+  if (
+    type.startsWith("merchant_") ||
+    type === "store_online" ||
+    type === "new_order"
+  ) {
+    return true;
+  }
   const gmType = typeof data.gmType === "string" ? data.gmType : "";
   const template =
     (typeof data.template_code === "string" && data.template_code) ||
     (typeof data.templateCode === "string" && data.templateCode) ||
     gmType;
-  if (template.toUpperCase().startsWith("ADMIN_CX_")) return true;
+  const code = template.toUpperCase();
+  if (code.startsWith("ADMIN_CX_")) return true;
+  if (code.startsWith("MERCHANT_")) return true;
   return false;
 }
 

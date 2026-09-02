@@ -28,7 +28,8 @@ import { getSql } from "../client";
 export type RefundGuardAction =
   | "cancel_without_refund"
   | "refund_with_cancellation"
-  | "refund_without_cancellation";
+  | "refund_without_cancellation"
+  | "refund_full_ctc";
 
 /** Small tolerance for floating-point money comparisons (₹0.01). */
 const MONEY_EPSILON = 0.01;
@@ -204,7 +205,9 @@ export function evaluateRefundGuard(
   const cancelsOrder =
     action === "cancel_without_refund" || action === "refund_with_cancellation";
   const movesRefund =
-    action === "refund_with_cancellation" || action === "refund_without_cancellation";
+    action === "refund_with_cancellation" ||
+    action === "refund_without_cancellation" ||
+    action === "refund_full_ctc";
 
   // Business rules:
   //  - Cancellation is ONE-TIME. It may ride on the first, second, or any

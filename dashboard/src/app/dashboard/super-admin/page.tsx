@@ -118,6 +118,11 @@ const ReferralRewardsIcon = dynamic(async () => {
   return (props: { className?: string }) => <Gift {...props} />;
 });
 
+const MenuItemLocksIcon = dynamic(async () => {
+  const { UnlockKeyhole } = await import("lucide-react");
+  return (props: { className?: string }) => <UnlockKeyhole {...props} />;
+});
+
 const adminOptions: AdminOption[] = [
   {
     name: "Users",
@@ -142,6 +147,14 @@ const adminOptions: AdminOption[] = [
     description: "Manage subscription plans for merchants, users, and riders",
     color: "text-purple-600",
     bgColor: "bg-purple-50 hover:bg-purple-100",
+  },
+  {
+    name: "Menu item locks",
+    href: "/dashboard/super-admin/menu-item-locks",
+    Icon: MenuItemLocksIcon,
+    description: "Unlock plan-locked menu items per store when merchants exceed subscription limits",
+    color: "text-orange-700",
+    bgColor: "bg-orange-50 hover:bg-orange-100",
   },
   {
     name: "Ticket settings",

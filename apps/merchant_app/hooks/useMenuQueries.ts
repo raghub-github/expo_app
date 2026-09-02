@@ -58,7 +58,7 @@ export const menuKeys = {
       inStock?: boolean | null;
     }
   ) => ["menu", "items", storeId, filters ?? {}] as const,
-  item: (storeId: string | null, itemId: number | null) => ["menu", "item", storeId, itemId] as const,
+  item: (storeId: string | null, itemId: number | string | null) => ["menu", "item", storeId, itemId] as const,
 };
 
 // ─── Queries ───────────────────────────────────────────────────────────────

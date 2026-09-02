@@ -74,5 +74,6 @@ export {
   subscribeInAppBanner,
   FloatingInAppBannerHost,
   isSystemShadeOnlyPush,
+  isFoodOrderPush,
   type InAppBannerItem,
 } from "./floatingBanner";

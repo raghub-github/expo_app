@@ -20,7 +20,7 @@ import { createFetchWithTimeout, runWithQuietAuthTimeoutErrors } from "@/lib/aut
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
 
-const adminFetch = createFetchWithTimeout(5_000);
+const adminFetch = createFetchWithTimeout(12_000);
 
 function getSupabaseAdmin() {
   return createClient(supabaseUrl, supabaseServiceKey, {

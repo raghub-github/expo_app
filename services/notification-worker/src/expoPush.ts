@@ -16,14 +16,15 @@ const MAX_ATTEMPTS = 3;
 
 export type ExpoPushMessage = {
   to: string[];
-  title: string;
-  body: string;
+  title?: string;
+  body?: string;
   data?: Record<string, unknown>;
   sound?: "default" | null;
   priority?: "default" | "normal" | "high";
   channelId?: string;
   mutableContent?: boolean;
   richContent?: { image?: string };
+  _contentAvailable?: boolean;
 };
 
 type Ticket = {
@@ -101,7 +102,16 @@ async function sendBatch(
  * (Expo's batch limit), aggregates ticket counts, returns the totals.
  */
 export async function sendPush(
-  payload: { to: string | string[]; title: string; body: string; data?: Record<string, unknown>; sound?: string; channelId?: string; imageUrl?: string },
+  payload: {
+    to: string | string[];
+    title?: string;
+    body?: string;
+    data?: Record<string, unknown>;
+    sound?: string | null;
+    channelId?: string;
+    imageUrl?: string;
+    contentAvailable?: boolean;
+  },
   log: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void },
 ): Promise<{ accepted: number; failed: number; chunks: number; deadTokens: string[] }> {
   const tokens = Array.isArray(payload.to) ? payload.to : [payload.to];
@@ -121,12 +131,13 @@ export async function sendPush(
   for (const tokenSlice of batches) {
     const message: ExpoPushMessage = {
       to: tokenSlice,
-      title: payload.title,
-      body: payload.body,
+      ...(payload.title != null && payload.title !== "" ? { title: payload.title } : {}),
+      ...(payload.body != null && payload.body !== "" ? { body: payload.body } : {}),
       data: payload.data,
       sound: (payload.sound as "default" | null | undefined) ?? "default",
       priority: "high",
       channelId: payload.channelId,
+      ...(payload.contentAvailable ? { _contentAvailable: true } : {}),
       ...(payload.imageUrl ? { mutableContent: true, richContent: { image: payload.imageUrl } } : {}),
     };
     const res = await sendBatch(message, log);

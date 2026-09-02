@@ -37,6 +37,7 @@ export type GmitraPlusMembershipSheetProps = {
   planName: string;
   benefits: string[];
   freeDeliveryNote?: string | null;
+  expiryCountdown?: string | null;
   description?: string | null;
   onBrowseRestaurants?: () => void;
 };
@@ -48,6 +49,7 @@ export function GmitraPlusMembershipSheet({
   planName,
   benefits,
   freeDeliveryNote,
+  expiryCountdown,
   description,
   onBrowseRestaurants,
 }: GmitraPlusMembershipSheetProps) {
@@ -87,7 +89,9 @@ export function GmitraPlusMembershipSheet({
             </View>
             <AppText style={styles.heroSubtitle}>
               {active
-                ? "Your membership perks are live on every eligible order."
+                ? expiryCountdown
+                  ? `${expiryCountdown}. Perks apply on every eligible order.`
+                  : "Your membership perks are live on every eligible order."
                 : `Unlock delivery savings and member-only offers with ${planName}.`}
             </AppText>
           </View>

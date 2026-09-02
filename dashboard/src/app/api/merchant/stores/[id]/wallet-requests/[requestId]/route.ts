@@ -146,7 +146,7 @@ export async function PATCH(
     const direction = String(r.direction);
     const category = String(r.category) as string;
     const idempotencyKey = `mwcr_${reqId}`;
-    const description = `${direction === "CREDIT" ? "Manual credit" : "Manual debit"}: ${r.reason} (request #${reqId})`;
+    const description = `${direction === "CREDIT" ? "Manual credit" : "Manual debit"}: ${r.reason}`;
 
     let ledgerId: number;
     try {

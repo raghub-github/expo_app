@@ -1,6 +1,7 @@
 import { Tabs } from "expo-router";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { CustomerTabBar } from "@/components/CustomerTabBar";
+import { GatiMitraColors } from "@/constants/gatimitra";
 
 export default function TabsLayout() {
   return (
@@ -10,7 +11,7 @@ export default function TabsLayout() {
         tabBar={(props) => <CustomerTabBar {...props} />}
         screenOptions={{
           headerShown: true,
-          headerStyle: { backgroundColor: "#fff" },
+          headerStyle: { backgroundColor: GatiMitraColors.softBackground },
           headerShadowVisible: false,
           // Inactive tabs stay mounted (so their data stays warm) but stop
           // re-rendering — otherwise Home's card animations and Orders' polling

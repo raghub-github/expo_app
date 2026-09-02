@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
+import { assertStoreAccess } from "@/lib/auth/assert-store-access";
 import { logStoreActivity } from "@/lib/store-activity-feed";
 import { buildMenuItemOosModePatch } from "@/lib/merchant-menu-item-stock";
+import { updateMerchantMenuItemOutOfStock } from "@/lib/merchant-menu-item-oos-update";
 import { client as pgClient } from "@/lib/drizzle";
 import { expireTimedMenuOutOfStockForStore } from "@/lib/menu-oos-expiry";
 
@@ -184,19 +184,6 @@ function resolveUpdate(mode: Mode, hours: unknown, until: unknown): { manual: bo
  */
 export async function PATCH(req: NextRequest) {
   try {
-    const supabaseServer = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabaseServer.auth.getUser();
-    if (userError || !user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-
-    const validation = await validateMerchantFromSession({
-      id: user.id,
-      email: user.email ?? null,
-      phone: user.phone ?? null,
-    });
-    if (!validation.isValid) {
-      return NextResponse.json({ error: validation.error ?? "Merchant not found" }, { status: 403 });
-    }
-
     const body = await req.json().catch(() => ({}));
     const storeId = String(body?.storeId ?? body?.restaurant_id ?? "").trim();
     const targetType =
@@ -206,21 +193,16 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "storeId and valid mode required" }, { status: 400 });
     }
 
-    const { data: store } = await supabase
-      .from("merchant_stores")
-      .select("id, parent_id")
-      .eq("store_id", storeId)
-      .single();
-    if (!store?.id || !store?.parent_id) return NextResponse.json({ error: "Store not found" }, { status: 404 });
-    if (store.parent_id !== validation.merchantParentId) {
-      return NextResponse.json({ error: "Store does not belong to this merchant" }, { status: 403 });
+    const access = await assertStoreAccess(storeId);
+    if (!access.ok) {
+      return NextResponse.json({ error: access.error }, { status: access.status });
     }
-
-    await expireTimedMenuOutOfStockForStore(pgClient, store.id);
+    const storeInternalId = access.storeIdNum;
+    await expireTimedMenuOutOfStockForStore(pgClient, storeInternalId);
 
     let patch = resolveUpdate(mode, body?.hours, body?.until);
     if (mode === "NEXT_OPEN") {
-      const nextIso = await computeNextOpenIsoForStore(store.id);
+      const nextIso = await computeNextOpenIsoForStore(storeInternalId);
       if (!nextIso) return NextResponse.json({ error: "next_open_not_available" }, { status: 400 });
       patch = { manual: false, until: new Date(nextIso) };
     }
@@ -236,7 +218,7 @@ export async function PATCH(req: NextRequest) {
       const { data: prevCat } = await supabase
         .from("merchant_menu_categories")
         .select("out_of_stock_updated_at, out_of_stock_until")
-        .eq("store_id", store.id)
+        .eq("store_id", storeInternalId)
         .eq("id", categoryId)
         .maybeSingle();
       const prevMarker = (prevCat as any)?.out_of_stock_updated_at ?? null;
@@ -251,7 +233,7 @@ export async function PATCH(req: NextRequest) {
           out_of_stock_updated_at: markerIso,
           updated_at,
         })
-        .eq("store_id", store.id)
+        .eq("store_id", storeInternalId)
         .eq("id", categoryId)
         .select("out_of_stock_manual, out_of_stock_until")
         .maybeSingle();
@@ -259,7 +241,7 @@ export async function PATCH(req: NextRequest) {
       if (!data) return NextResponse.json({ error: "category_not_found" }, { status: 404 });
       try {
         await logStoreActivity({
-          storeId: store.id,
+          storeId: storeInternalId,
           section: "menu_category",
           action: "update",
           entityId: categoryId,
@@ -283,7 +265,7 @@ export async function PATCH(req: NextRequest) {
             in_stock: false,
             updated_at,
           })
-          .eq("store_id", store.id)
+          .eq("store_id", storeInternalId)
           .eq("category_id", categoryId)
           .eq("is_deleted", false)
           .or("out_of_stock_manual.is.null,out_of_stock_manual.eq.false")
@@ -299,7 +281,7 @@ export async function PATCH(req: NextRequest) {
             in_stock: true,
             updated_at,
           })
-          .eq("store_id", store.id)
+          .eq("store_id", storeInternalId)
           .eq("category_id", categoryId)
           .eq("is_deleted", false)
           .eq("out_of_stock_manual", false)
@@ -330,7 +312,7 @@ export async function PATCH(req: NextRequest) {
           out_of_stock_updated_at: updated_at,
           updated_at,
         })
-        .eq("store_id", store.id)
+        .eq("store_id", storeInternalId)
         .eq("id", comboId)
         .select("id, out_of_stock_manual, out_of_stock_until")
         .maybeSingle();
@@ -338,7 +320,7 @@ export async function PATCH(req: NextRequest) {
       if (!data) return NextResponse.json({ error: "combo_not_found" }, { status: 404 });
       try {
         await logStoreActivity({
-          storeId: store.id,
+          storeId: storeInternalId,
           section: "combo",
           action: "update",
           entityId: (data as any).id ?? null,
@@ -354,33 +336,35 @@ export async function PATCH(req: NextRequest) {
       });
     }
 
-    const itemId = String(body?.id ?? body?.item_id ?? body?.itemId ?? "").trim();
-    if (!itemId) return NextResponse.json({ error: "item_id required" }, { status: 400 });
-    const itemPatch = buildMenuItemOosModePatch(patch.manual, patch.until, updated_at);
-    const { data, error } = await supabase
-      .from("merchant_menu_items")
-      .update(itemPatch)
-      .eq("store_id", store.id)
-      .eq("item_id", itemId)
-      .select("id, out_of_stock_manual, out_of_stock_until")
-      .maybeSingle();
+    const itemId = body?.id ?? body?.item_id ?? body?.itemId;
+    if (itemId == null || String(itemId).trim() === "") {
+      return NextResponse.json({ error: "item_id required" }, { status: 400 });
+    }
+    const { data, error } = await updateMerchantMenuItemOutOfStock(
+      supabase,
+      storeInternalId,
+      itemId as string | number,
+      patch,
+      updated_at
+    );
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     if (!data) return NextResponse.json({ error: "item_not_found" }, { status: 404 });
+    const itemPatch = buildMenuItemOosModePatch(patch.manual, patch.until, updated_at);
     try {
       await logStoreActivity({
-        storeId: store.id,
+        storeId: storeInternalId,
         section: "menu_item",
         action: "update",
-        entityId: (data as any).id ?? null,
-        summary: `Merchant updated out-of-stock for item ${itemId}`,
+        entityId: data.id ?? null,
+        summary: `Merchant updated out-of-stock for item ${String(itemId)}`,
         actorType: "merchant",
       });
     } catch {}
     return NextResponse.json({
       ok: true,
-      out_of_stock_manual: Boolean((data as any).out_of_stock_manual),
-      out_of_stock_until: (data as any).out_of_stock_until ?? null,
-      out_of_stock_updated_at: (data as any).out_of_stock_updated_at ?? updated_at,
+      out_of_stock_manual: Boolean(data.out_of_stock_manual),
+      out_of_stock_until: data.out_of_stock_until ?? null,
+      out_of_stock_updated_at: data.out_of_stock_updated_at ?? updated_at,
       in_stock: (itemPatch as { in_stock?: boolean }).in_stock,
     });
   } catch (err) {

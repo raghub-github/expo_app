@@ -1122,6 +1122,25 @@ export function seedOrderItemsCache(orderId: number, payload: OrderItemsPayload)
   }
 }
 
+export function invalidateOrderItemsCache(orderId: number): void {
+  orderItemsCache.delete(orderId);
+  orderItemsInflight.delete(orderId);
+}
+
+async function fetchOrderItemsOnce(
+  orderId: number
+): Promise<{ parsed: OrderItemsPayload | null; status: number }> {
+  const res = await fetch(`/api/orders/${orderId}/items`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    return { parsed: null, status: res.status };
+  }
+  const body = await res.json().catch(() => null);
+  return { parsed: parseOrderItemsApiResponse(body), status: res.status };
+}
+
 /** Deduped fetch — order detail + items modal share the same in-memory cache. */
 export function fetchOrderItemsCached(orderId: number): Promise<OrderItemsPayload | null> {
   const cached = orderItemsCache.get(orderId);
@@ -1134,16 +1153,34 @@ export function fetchOrderItemsCached(orderId: number): Promise<OrderItemsPayloa
   const inflight = orderItemsInflight.get(orderId);
   if (inflight) return inflight;
 
-  const request = fetch(`/api/orders/${orderId}/items`, {
-    credentials: "include",
-    cache: "no-store",
-  })
-    .then((res) => res.json())
-    .then((body) => parseOrderItemsApiResponse(body))
-    .then((parsed) => {
-      if (parsed?.items?.length) orderItemsCache.set(orderId, parsed);
-      return parsed;
-    })
+  const request = (async () => {
+    const maxAttempts = 4;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const { parsed, status } = await fetchOrderItemsOnce(orderId);
+      if (parsed?.items?.length) {
+        orderItemsCache.set(orderId, parsed);
+        return parsed;
+      }
+
+      if (status === 401 && attempt < maxAttempts - 1) {
+        try {
+          const { syncServerSessionCookies } = await import("@/lib/auth/sync-server-session");
+          if (await syncServerSessionCookies()) continue;
+        } catch {
+          /* ignore */
+        }
+      }
+
+      const transient = status === 503 || status === 429 || status === 499 || status === 0;
+      if (transient && attempt < maxAttempts - 1) {
+        await new Promise((r) => window.setTimeout(r, 400 * (attempt + 1)));
+        continue;
+      }
+
+      return null;
+    }
+    return null;
+  })()
     .catch(() => null)
     .finally(() => {
       orderItemsInflight.delete(orderId);

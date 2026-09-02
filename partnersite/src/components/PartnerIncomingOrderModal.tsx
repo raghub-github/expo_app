@@ -40,10 +40,14 @@ import { RejectFollowUpHost, useRejectFollowUp } from '@/components/orders/Rejec
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
 import { MerchantOrderItemsList } from '@/components/orders/MerchantOrderItemsList';
 import { MerchantOrderBillSummary } from '@/components/orders/MerchantOrderBillSummary';
-import { merchantBillPartsFromItems } from '@/lib/merchant-order-item-display';
+import {
+  merchantBillPartsFromItems,
+  merchantLineTotalForItem,
+  resolveMerchantCtm,
+} from '@/lib/merchant-order-item-display';
 import { parseMerchantInstructionsList } from '@/lib/merchant-order-instructions';
 import type { NormalizedOrderLineItem, OrderPricingBreakdown } from '@/lib/orderLineItems';
-import { rejectReasonNeedsFollowUp } from '@/lib/merchantCancellationReasons';
+import { rejectReasonNeedsFollowUp, isNotOperationalTodayReason } from '@/lib/merchantCancellationReasons';
 import type { MerchantCancellationReason } from '@/lib/merchantCancellationReasons';
 import {
   PREP_TIME_MIN,
@@ -97,7 +101,7 @@ function isIncomingSoundMuted(): boolean {
   }
 }
 const FALLBACK_POLL_MS = 15_000;
-const OPEN_ORDER_SYNC_MS = 2_500;
+const OPEN_ORDER_SYNC_MS = 5_000;
 const FALLBACK_SCAN_LIMIT = 12;
 const DISMISS_KEY = 'partner_incoming_order_dismissed_v1';
 
@@ -340,6 +344,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   /** In-memory dismiss set — avoids race when X is clicked before React state/ref sync. */
   const dismissedOrderIdsRef = useRef<Set<number>>(new Set());
   const hydrateBusyRef = useRef(false);
+  const coreFetchInFlightRef = useRef(false);
   const menuIdHydrateAttemptedRef = useRef<Set<number>>(new Set());
   const chimeRunIdRef = useRef(0);
   const chimeAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -1035,26 +1040,28 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
 
   const incomingOrderLineSum = useMemo(() => {
     if (!orderItems.length) return 0;
-    return orderItems.reduce(
-      (acc, it) => acc + Number(it.total || (it.price || 0) * (it.quantity || 1)),
-      0
-    );
+    return orderItems.reduce((acc, it) => acc + merchantLineTotalForItem(it), 0);
   }, [orderItems]);
 
   const incomingOrderPricing = useMemo((): OrderPricingBreakdown => {
     if (!modalOrder) {
       return { subtotal: 0, packaging: 0, taxes: 0, discount: 0, total: 0 };
     }
-    // Deterministic merchant bill: item subtotal (Boost/BOGO-adjusted nets) + packaging
-    // − frozen orders_core.merchant_precision_discount (SSOT), subtracted exactly once.
-    // We pass total:0 so merchantBillPartsFromItems recomputes from items rather than
-    // reusing any pre-existing total, guaranteeing a single subtraction.
     const precision = Math.max(0, Number(modalOrder.merchant_precision_discount) || 0);
     const packaging = Number(modalOrder.pricing?.packaging) || 0;
-    const bill = merchantBillPartsFromItems(
-      (Array.isArray(modalOrder.items) ? modalOrder.items : []) as NormalizedOrderLineItem[],
-      { subtotal: incomingOrderLineSum, packaging, discount: precision, total: 0 }
-    );
+    const frozenTotal = resolveMerchantCtm({
+      total_ctm: modalOrder.total_ctm,
+      food_items_total_value: modalOrder.food_items_total_value,
+      pricing: modalOrder.pricing,
+      merchant_precision_discount: modalOrder.merchant_precision_discount,
+      items: orderItems,
+    });
+    const bill = merchantBillPartsFromItems(orderItems, {
+      subtotal: incomingOrderLineSum,
+      packaging,
+      discount: precision,
+      total: frozenTotal,
+    });
     return {
       subtotal: bill.itemsSubtotal,
       packaging: bill.packaging,
@@ -1062,7 +1069,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       discount: bill.discount,
       total: bill.total,
     };
-  }, [modalOrder, incomingOrderLineSum]);
+  }, [modalOrder, orderItems, incomingOrderLineSum]);
   const moreItemsCount = Math.max(0, orderItems.length - MAX_PREVIEW_ITEMS);
   /** Free-text checkout note for the kitchen — cutlery already has its own pill. */
   const kitchenNotes = useMemo(
@@ -1137,11 +1144,11 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     const closedIds = queueRef.current.map((o) => o.order_id);
     stopChime();
     if (opts?.userDismissed) {
-      // X: park modal only — do NOT permanently dismiss pending CREATED orders.
-      // Floating bar / suppress-clear must be able to reopen them.
+      // X: dismiss viewed pending orders — never auto-popup again for those ids.
       if (storeId) setPartnerIncomingModalSuppressed(storeId);
       for (const id of closedIds) {
-        shownInsertIds.current.delete(`o:${id}`);
+        addDismissed(id);
+        shownInsertIds.current.add(`o:${id}`);
       }
     } else {
       for (const id of closedIds) addDismissed(id);
@@ -1209,7 +1216,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
    */
   const dismissByUser = () => {
     if (queueRef.current.length > 1) {
-      advanceOrClose({ markDismissed: false });
+      advanceOrClose({ markDismissed: true });
       return;
     }
     finishModal({ userDismissed: true });
@@ -1233,6 +1240,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   const syncOpenModalOrder = useCallback(async () => {
     const open = modalOrderRef.current;
     if (!storeId || !open) return;
+    if (coreFetchInFlightRef.current) return;
     const syncCoreId = Number(open.order_id);
     if (!Number.isFinite(syncCoreId)) return;
 
@@ -1240,6 +1248,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       dropOrderFromQueue(syncCoreId, { markDismissed: false });
       return;
     }
+    coreFetchInFlightRef.current = true;
     try {
       const snapDeadline = open.merchant_response_deadline_at
         ? new Date(open.merchant_response_deadline_at).getTime()
@@ -1271,6 +1280,8 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       }
     } catch {
       /* ignore */
+    } finally {
+      coreFetchInFlightRef.current = false;
     }
   }, [storeId, fetchByCoreId, isOrderDismissed, upsertOrderInQueue, acceptWindowMs, dropOrderFromQueue]);
 
@@ -1279,7 +1290,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
   useEffect(() => {
     if (!modalOrder || !storeId) return;
     void syncOpenModalOrder();
-    const intervalMs = fuseExpired ? 1_200 : OPEN_ORDER_SYNC_MS;
+    const intervalMs = fuseExpired ? 2_000 : OPEN_ORDER_SYNC_MS;
     const t = window.setInterval(() => void syncOpenModalOrder(), intervalMs);
     const onRefresh = () => void syncOpenModalOrder();
     window.addEventListener(PARTNER_PENDING_ORDERS_REFRESH, onRefresh);
@@ -1809,6 +1820,16 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
           setRejectOpen(false);
           if (rejectReasonNeedsFollowUp(reason)) {
             const items = (Array.isArray(snap.items) ? snap.items : []) as NormalizedOrderLineItem[];
+            if (isNotOperationalTodayReason(reason)) {
+              await patchStatus('CANCELLED', { rejected_reason: reason }, 'manual');
+              beginFollowUp(reason, {
+                storeId,
+                storeName: storeDisplayName || storeId,
+                lineItems: items,
+                finalizeReject: async () => {},
+              });
+              return;
+            }
             beginFollowUp(reason, {
               storeId,
               storeName: storeDisplayName || storeId,

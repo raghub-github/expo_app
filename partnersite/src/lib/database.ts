@@ -149,6 +149,11 @@ export const deleteMenuCategory = async (categoryId: number) => {
 // MERCHANT STORE QUERIES
 // ============================================
 
+/** Dedupe parallel store-record fetches; back off after auth failures. */
+const storeRecordInflight = new Map<string, Promise<MerchantStore | null>>();
+const storeRecordAuthBlockedUntil = new Map<string, number>();
+const STORE_RECORD_AUTH_BLOCK_MS = 60_000;
+
 function isTransientSupabaseError(message: string, code?: string | null): boolean {
   if (code === 'PGRST002') return true;
   return /fetch failed|ENOTFOUND|ECONNREFUSED|network|timeout|57014|temporarily unavailable|PGRST002|schema cache|retrying/i.test(
@@ -158,29 +163,47 @@ function isTransientSupabaseError(message: string, code?: string | null): boolea
 
 async function fetchStoreByIdViaApi(storeId: string): Promise<MerchantStore | null> {
   if (typeof window === 'undefined') return null;
-  // Client-side timeout — keep short so Menu does not hang; caller may proceed without row.
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12_000);
-  try {
-    const res = await fetch(
-      `/api/merchant/store-record?storeId=${encodeURIComponent(storeId)}`,
-      { credentials: 'include', cache: 'no-store', signal: controller.signal }
-    );
-    // True missing store only — do not treat 401/5xx/timeout as "not found".
-    if (res.status === 404) return null;
-    if (!res.ok) {
-      throw new Error(`store_record_${res.status}`);
+  const key = storeId.trim();
+  if (!key) return null;
+
+  const now = Date.now();
+  const neg = storeRecordAuthBlockedUntil.get(key);
+  if (neg != null && now < neg) return null;
+
+  const existing = storeRecordInflight.get(key);
+  if (existing) return existing;
+
+  const pending = (async (): Promise<MerchantStore | null> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12_000);
+    try {
+      const res = await fetch(
+        `/api/merchant/store-record?storeId=${encodeURIComponent(key)}`,
+        { credentials: 'include', cache: 'no-store', signal: controller.signal }
+      );
+      if (res.status === 401 || res.status === 403) {
+        storeRecordAuthBlockedUntil.set(key, Date.now() + STORE_RECORD_AUTH_BLOCK_MS);
+        return null;
+      }
+      // True missing store only — do not treat 5xx/timeout as "not found".
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        throw new Error(`store_record_${res.status}`);
+      }
+      const row = (await res.json()) as unknown;
+      const { normalizeProfileStore } = await import('@/lib/merchant-profile-cache');
+      return normalizeProfileStore(row as Parameters<typeof normalizeProfileStore>[0]) as MerchantStore;
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith('store_record_')) throw e;
+      throw e instanceof Error ? e : new Error('store_record_failed');
+    } finally {
+      clearTimeout(timer);
+      storeRecordInflight.delete(key);
     }
-    const row = (await res.json()) as unknown;
-    const { normalizeProfileStore } = await import('@/lib/merchant-profile-cache');
-    return normalizeProfileStore(row as Parameters<typeof normalizeProfileStore>[0]) as MerchantStore;
-  } catch (e) {
-    if (e instanceof Error && e.message.startsWith('store_record_')) throw e;
-    // Abort / network — let caller decide; do not pretend the store does not exist.
-    throw e instanceof Error ? e : new Error('store_record_failed');
-  } finally {
-    clearTimeout(timer);
-  }
+  })();
+
+  storeRecordInflight.set(key, pending);
+  return pending;
 }
 
 async function fetchStoreByIdViaSupabase(

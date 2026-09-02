@@ -26,8 +26,8 @@ import {
 } from "@/lib/merchantStoreDelistBus";
 const STATUS_CACHE_KEY_PREFIX = "merchant_store_status_";
 
-/** Poll interval for real-time status (schedule changes, auto open/close). */
-const STATUS_POLL_INTERVAL_MS = 20_000;
+/** Poll interval for status (schedule / auto open-close). Realtime + resume cover the rest. */
+const STATUS_POLL_INTERVAL_MS = 60_000;
 
 export type CloseStoreOptions = {
   manual_close_until?: string | null;

@@ -147,6 +147,27 @@ export async function syncOrderRefundCompletionMarkers(
     }
   }
 
+  if (args.kind === "completed") {
+    try {
+      const { maybeRevokeCustomerSubscriptionOnOrderRefundCompleted } = await import(
+        "../modules/subscription/customer-subscription-refund.service.js"
+      );
+      await maybeRevokeCustomerSubscriptionOnOrderRefundCompleted(
+        {
+          orderCoreId,
+          refundId,
+          refundAmount:
+            args.refundAmount != null && Number.isFinite(Number(args.refundAmount))
+              ? Number(args.refundAmount)
+              : null,
+        },
+        sql
+      );
+    } catch (err) {
+      console.error("[customer-subscription-refund] revoke on refund completion failed:", err);
+    }
+  }
+
   // Keep / mint a unique customer RRN (RRN-{UUID}). Gateway rfnd_* stays on
   // razorpay_refund_id / pg_refund_id — never overwrite a modern RRN.
   try {

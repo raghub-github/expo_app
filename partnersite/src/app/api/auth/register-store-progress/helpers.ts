@@ -889,10 +889,12 @@ export async function enrichStep5FromMerchantTables(
     ...prev,
     cuisine_types: cuisineFromDb.length > 0 ? cuisineFromDb : cuisineFromPrev,
     delivery_radius_km:
-      typeof (storeRow as any)?.delivery_radius_km === "number" &&
-      Number.isFinite((storeRow as any).delivery_radius_km)
-        ? (storeRow as any).delivery_radius_km
-        : prev.delivery_radius_km,
+      typeof prev.delivery_radius_km === "number" && Number.isFinite(prev.delivery_radius_km)
+        ? prev.delivery_radius_km
+        : typeof (storeRow as any)?.delivery_radius_km === "number" &&
+            Number.isFinite((storeRow as any).delivery_radius_km)
+          ? (storeRow as any).delivery_radius_km
+          : 8,
     avg_preparation_time_minutes:
       typeof (storeRow as any)?.avg_preparation_time_minutes === "number"
         ? (storeRow as any).avg_preparation_time_minutes
@@ -910,9 +912,7 @@ export async function enrichStep5FromMerchantTables(
         ? (storeRow as any).accepts_online_payment
         : prev.accepts_online_payment,
     accepts_cash:
-      typeof (storeRow as any)?.accepts_cash === "boolean"
-        ? (storeRow as any).accepts_cash
-        : prev.accepts_cash,
+      typeof prev.accepts_cash === "boolean" ? prev.accepts_cash : false,
     banner_url: bannerUrl || prev.banner_url || "",
     banner_preview: bannerUrl || prev.banner_preview || "",
     gallery_image_urls: galleryUrls.length > 0 ? galleryUrls : prev.gallery_image_urls || [],

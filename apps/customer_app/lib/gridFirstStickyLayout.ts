@@ -4,22 +4,27 @@ import { GRID_FIRST_LOCATION_ROW_H } from "@/components/home/FoodHomeGridFirstHe
 /** Default search row height (pill + veg toggle). */
 export const GRID_FIRST_SEARCH_ROW_H = 44;
 
-/** Breathing room between pinned search pill and pinned category icons. */
-export const GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP = 8;
+/** Small gap between pinned search and category icons — avoids visual overlap. */
+export const GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP = 6;
 
 /** Default category tabs block height incl. section padding. */
 export function gridFirstCategoryBlockHeight(circle: number): number {
-  return circle + 40;
+  return circle + 32;
 }
 
 /** Gold subscription strip approximate height when visible. */
 export const GRID_FIRST_GOLD_STRIP_H = 72;
 
 /** Filter chips row height incl. bottom padding. */
-export const GRID_FIRST_FILTER_ROW_H = 52;
+export const GRID_FIRST_FILTER_ROW_H = 48;
 
 /** In-flow filter begins appearing after this scroll offset (px). */
 export const GRID_FIRST_FILTER_SHOW_SCROLL_Y = 8;
+
+/** Header row + search overlay height on hero (excl. status bar). */
+export const GRID_FIRST_HEADER_OVERLAY_H = 122;
+/** Default media band when aspect ratio is unknown (legacy look). */
+export const GRID_FIRST_HERO_VISIBLE_H = 210;
 
 const STICK_HANDOFF_PX = 10;
 
@@ -29,10 +34,19 @@ export type GridFirstStickyMetrics = {
   goldStripHeight: number;
   categoryBlockY: number;
   categoryBlockHeight: number;
+  /** Measured in-flow header block (location + search) for sticky alignment. */
+  headerBlockHeight: number;
   searchRowHeight: number;
   filterBlockY: number;
   filterBlockHeight: number;
 };
+
+/** Default full header content height below the status bar (location + search). */
+export function gridFirstDefaultHeaderBlockHeight(): number {
+  return (
+    GRID_FIRST_HEADER_OVERLAY_H - STATUS_BAR_TO_HEADER_GAP
+  );
+}
 
 export function defaultGridFirstStickyMetrics(
   topInset: number,
@@ -47,6 +61,7 @@ export function defaultGridFirstStickyMetrics(
     goldStripHeight: GRID_FIRST_GOLD_STRIP_H,
     categoryBlockY,
     categoryBlockHeight,
+    headerBlockHeight: gridFirstDefaultHeaderBlockHeight(),
     searchRowHeight: GRID_FIRST_SEARCH_ROW_H,
     filterBlockY: categoryBlockY + categoryBlockHeight,
     filterBlockHeight: GRID_FIRST_FILTER_ROW_H,
@@ -63,11 +78,10 @@ export function gridFirstSearchStickScrollY(m: GridFirstStickyMetrics): number {
   return searchRowPinsAt;
 }
 
-/** Scroll offset when the category row should pin below the sticky search bar. */
+/** Scroll offset when the category row should pin below the sticky header. */
 export function gridFirstCategoryStickScrollY(m: GridFirstStickyMetrics): number {
-  const stickySearchBottom =
-    m.topInset + m.searchRowHeight + GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP;
-  return Math.max(0, m.categoryBlockY - stickySearchBottom);
+  const stickyHeaderBottom = m.topInset + m.headerBlockHeight;
+  return Math.max(0, m.categoryBlockY - stickyHeaderBottom);
 }
 
 /** Screen Y for the sticky search bar top edge. */
@@ -75,9 +89,9 @@ export function gridFirstStickySearchTop(m: GridFirstStickyMetrics): number {
   return m.topInset;
 }
 
-/** Screen Y for the sticky category row top edge. */
+/** Screen Y for the sticky category row top edge (flush below header; gap is inner padding). */
 export function gridFirstStickyCategoryTop(m: GridFirstStickyMetrics): number {
-  return m.topInset + m.searchRowHeight + GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP;
+  return m.topInset + m.headerBlockHeight;
 }
 
 /** Screen Y for the sticky filter row top edge. */
@@ -93,11 +107,6 @@ export function gridFirstFilterStickScrollY(m: GridFirstStickyMetrics): number {
     m.filterBlockY - stickyTop
   );
 }
-
-/** Header row + search overlay height on hero (excl. status bar). */
-export const GRID_FIRST_HEADER_OVERLAY_H = 122;
-/** Default media band when aspect ratio is unknown (legacy look). */
-export const GRID_FIRST_HERO_VISIBLE_H = 210;
 
 export function gridFirstSkySectionHeight(
   topInset: number,

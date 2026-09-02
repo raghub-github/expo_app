@@ -8,6 +8,7 @@ import {
   merchantSummaryToDetailPlaceholder,
   prefetchMerchantDetail,
 } from "@/lib/prefetchMerchantDetail";
+import { seedMerchantMenuQueryIfCached } from "@/lib/merchantMenuCache";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
 import { peekCachedFoodHomeLayoutKey } from "@/lib/foodHomeLayoutCache";
@@ -37,6 +38,7 @@ export function navigateToMerchant(
 
   // 2) Seed shell data for first merchant paint (under the Modal).
   const key = MERCHANT_DETAIL_QUERY_KEY(merchantId);
+  seedMerchantMenuQueryIfCached(queryClient, merchantId);
   const existing = queryClient.getQueryData<MerchantDetail>(key);
   if (!existing?.menu?.length) {
     const placeholder = merchant

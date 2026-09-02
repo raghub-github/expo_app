@@ -7,6 +7,11 @@ import {
   startForceAssignmentOnBackend,
 } from "@/lib/orders/rider-management-backend";
 import { stampOrderRoutedTo } from "@/lib/orders/stamp-order-routed-to";
+import { getSql } from "@/lib/db/client";
+import {
+  isSelfPickupFulfillmentOrder,
+  TAKEAWAY_RIDER_ASSIGN_BLOCKED_MESSAGE,
+} from "@/lib/orders/order-detail-display";
 
 export const runtime = "nodejs";
 
@@ -99,6 +104,41 @@ export async function POST(
       return NextResponse.json(
         { success: false, error: "Select a cancellation reason before Force Assignment" },
         { status: 400 }
+      );
+    }
+
+    const sql = getSql();
+    const orderRows = await sql`
+      SELECT
+        delivery_type AS "deliveryType",
+        billing_snapshot AS "billingSnapshot",
+        checkout_metadata AS "checkoutMetadata"
+      FROM orders_core
+      WHERE id = ${orderCoreId}
+      LIMIT 1
+    `;
+    const orderRow = (orderRows as unknown as Array<{
+      deliveryType: string | null;
+      billingSnapshot: unknown;
+      checkoutMetadata: unknown;
+    }>)[0];
+    if (!orderRow) {
+      return NextResponse.json({ success: false, error: "Order not found" }, { status: 404 });
+    }
+    if (
+      isSelfPickupFulfillmentOrder(
+        orderRow.deliveryType,
+        orderRow.billingSnapshot,
+        orderRow.checkoutMetadata
+      )
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: TAKEAWAY_RIDER_ASSIGN_BLOCKED_MESSAGE,
+          code: "TAKEAWAY_NO_RIDER",
+        },
+        { status: 409 }
       );
     }
 

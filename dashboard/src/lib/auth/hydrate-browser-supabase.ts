@@ -6,7 +6,7 @@ import {
   readClientSessionFromStorage,
   readUsableClientSessionFromStorage,
 } from "@/lib/auth/client-session-storage";
-import { isInvalidRefreshToken, isRefreshTokenNotFound } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, isRefreshTokenAlreadyUsed, isRefreshTokenNotFound } from "@/lib/auth/session-errors";
 
 let inFlight: Promise<boolean> | null = null;
 
@@ -21,17 +21,23 @@ async function applyServerTokensToClient(
   accessToken: string,
   refreshToken: string
 ): Promise<boolean> {
+  if (readUsableClientSessionFromStorage()?.access_token) return true;
+
   const { error } = await supabase.auth.setSession({
     access_token: accessToken,
     refresh_token: refreshToken,
   });
-  if (error) {
-    if (isRefreshTokenNotFound(error) || isInvalidRefreshToken(error)) {
-      clearStaleClientAuthStorage();
-    }
+  if (!error) return true;
+
+  if (isRefreshTokenAlreadyUsed(error)) {
+    if (readUsableClientSessionFromStorage()?.access_token) return true;
     return false;
   }
-  return true;
+
+  if (isRefreshTokenNotFound(error) || isInvalidRefreshToken(error)) {
+    clearStaleClientAuthStorage();
+  }
+  return false;
 }
 
 /**

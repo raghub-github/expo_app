@@ -98,3 +98,25 @@ test("auto-cancel with agent email still shows the agent", () => {
     "ops@gatimitra.com"
   );
 });
+
+test("merchant cancel refund initiated by shows Store", () => {
+  assert.equal(
+    refundInitiatedByLabel({
+      refundReason: "Items out of stock",
+      refundInitiatedBy: "merchant",
+      initiatedByEmail: null,
+    }),
+    "Store"
+  );
+});
+
+test("legacy merchant cancel stamped as system still shows Store", () => {
+  assert.equal(
+    refundInitiatedByLabel({
+      refundReason: "Items out of stock",
+      refundInitiatedBy: "system",
+      initiatedByEmail: null,
+    }),
+    "Store"
+  );
+});

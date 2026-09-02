@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import "react-native-gesture-handler";
 import { LogBox, Platform, StatusBar as RNStatusBar, View } from "react-native";
-import { Stack } from "expo-router";
+import { Stack, usePathname } from "expo-router";
 import { useFonts } from "expo-font";
 import { Lora_400Regular, Lora_700Bold } from "@expo-google-fonts/lora";
 import { Poppins_600SemiBold, Poppins_700Bold } from "@expo-google-fonts/poppins";
@@ -69,6 +69,10 @@ const queryClient = new QueryClient({
       retry: 1,
       refetchOnWindowFocus: false,
       refetchOnReconnect: true,
+      throwOnError: false,
+    },
+    mutations: {
+      throwOnError: false,
     },
   },
 });
@@ -85,6 +89,15 @@ function AndroidStatusBarSync({ color }: { color: string }) {
     RNStatusBar.setBarStyle("dark-content");
   }, [color]);
   return null;
+}
+
+function MerchantStackRecovery({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  return (
+    <AppErrorBoundary source="merchant-stack" resetKey={pathname}>
+      {children}
+    </AppErrorBoundary>
+  );
 }
 
 export default function RootLayout() {
@@ -181,6 +194,7 @@ export default function RootLayout() {
                               <AndroidStatusBarSync color={GatiMitraMerchant.surfaceWarm} />
                             ) : null}
                             <IncomingOrderSheetProvider>
+                              <AppErrorBoundary source="merchant-hosts" fallback={() => null}>
                               <NotificationSetup />
                               <AppAssetsPrefetch />
                               <BackgroundOrderPermissionsGate />
@@ -199,7 +213,8 @@ export default function RootLayout() {
                               <ServiceRestrictedNotice />
                               <SessionRevokedGate />
                               <MerchantReferralAttribution />
-                              <AppErrorBoundary source="merchant-stack">
+                              </AppErrorBoundary>
+                              <MerchantStackRecovery>
                               <Stack
                                 screenOptions={{
                                   headerShown: false,
@@ -216,7 +231,7 @@ export default function RootLayout() {
                                 <Stack.Screen name="order-history" options={{ headerShown: false }} />
                                 <Stack.Screen name="restaurant-status" options={{ headerShown: false }} />
                               </Stack>
-                              </AppErrorBoundary>
+                              </MerchantStackRecovery>
                               <OfflineNetworkChrome />
                               <PlayInAppUpdateBootstrap />
                             </IncomingOrderSheetProvider>

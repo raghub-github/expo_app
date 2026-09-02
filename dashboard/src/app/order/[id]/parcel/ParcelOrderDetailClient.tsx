@@ -11,6 +11,7 @@ import {
   useOrderDetailQuery,
 } from "@/hooks/queries/useOrderDetailQuery";
 import { useToast } from "@/context/ToastContext";
+import { OrderNotFoundState } from "@/components/orders/OrderNotFoundState";
 import RiderRouteMap from "../RiderRouteMap";
 import PersonRideRefundModal from "../person-ride/PersonRideRefundModal";
 import {
@@ -570,19 +571,7 @@ export default function ParcelOrderDetailClient({
   }
 
   if (notFound || !order) {
-    return (
-      <div
-        className="person-ride-typo flex h-full flex-col items-center justify-center gap-2 px-6 text-center"
-        style={{ background: PR_WHITE }}
-      >
-        <p className="pr-heading text-lg font-semibold" style={{ color: PR_BLACK }}>
-          Parcel not found
-        </p>
-        <p className="pr-body text-[13px]" style={{ color: PR_MUTED }}>
-          {error || `No parcel order matches ${normalizedId}.`}
-        </p>
-      </div>
-    );
+    return <OrderNotFoundState className="person-ride-typo" />;
   }
 
   return (

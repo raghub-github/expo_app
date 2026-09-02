@@ -29,7 +29,7 @@ import {
 export type NotificationType = "order" | "store" | "system" | "earning";
 
 /** Foreground cadence for the campaign inbox (no postgres realtime for it). */
-const CAMPAIGN_POLL_MS = 45_000;
+const FOREGROUND_INBOX_POLL_MS = 10_000;
 
 export interface MerchantNotification {
   id: string;
@@ -365,14 +365,14 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     return () => sub.remove();
   }, [fetchNotifications]);
 
-  // Campaign inbox has no realtime channel — poll it while the app is in the
-  // foreground so an admin announcement reaches the badge on its own.
+  // Campaign + store inbox rows have no dedicated realtime — poll while foreground
+  // so new-order accept notifications reach IncomingOrderNotificationBridge quickly.
   useEffect(() => {
     if (!token || !storeId) return;
     const id = setInterval(() => {
       if (AppState.currentState !== "active") return;
       void fetchNotifications({ silent: true });
-    }, CAMPAIGN_POLL_MS);
+    }, FOREGROUND_INBOX_POLL_MS);
     return () => clearInterval(id);
   }, [token, storeId, fetchNotifications]);
 

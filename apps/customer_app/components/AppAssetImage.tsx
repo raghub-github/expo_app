@@ -16,6 +16,7 @@ type Props = {
    * is visible as soon as the asset payload refreshes.
    */
   fresh?: boolean;
+  onLoad?: () => void;
 };
 
 /** Renders a CMS-managed image from backend (R2 signed / proxy), with optional bundled fallback. */
@@ -26,6 +27,7 @@ export function AppAssetImage({
   accessibilityLabel,
   fallbackSource = null,
   fresh = false,
+  onLoad,
 }: Props) {
   const rawUrl = useAppAssetsStore((s) => s.assets[assetKey]?.url ?? null);
   const proxyUrl = useAppAssetsStore((s) => s.assets[assetKey]?.proxyUrl ?? null);
@@ -90,6 +92,12 @@ export function AppAssetImage({
       priority="high"
       transition={0}
       accessibilityLabel={accessibilityLabel}
+      onLoad={() => {
+        onLoad?.();
+      }}
+      onDisplay={() => {
+        onLoad?.();
+      }}
       onError={() => {
         if (!useBundled && !primaryFailed && altUri) {
           setPrimaryFailed(true);

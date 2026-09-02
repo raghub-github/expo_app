@@ -17,6 +17,7 @@ import {
   foodOrderVariantLabel,
   resolveLineItemCookingNote,
 } from "@/lib/merchant-order-food-item-display";
+import { resolveLineItemMenuPk } from "@/lib/resolveLineItemMenuPk";
 
 type Props = {
   order: ApiFoodOrder;
@@ -27,10 +28,7 @@ function foodItemToLineItem(item: ApiFoodOrderItem): LineItem {
     qty: Math.max(1, item.qty || 1),
     name: item.name,
     price: merchantLineTotalForFoodItem(item),
-    menuItemId:
-      item.menu_item_id != null && Number.isFinite(Number(item.menu_item_id))
-        ? Number(item.menu_item_id)
-        : null,
+    menuItemId: resolveLineItemMenuPk(item),
     vegNonveg: item.veg_nonveg ?? null,
   };
 }

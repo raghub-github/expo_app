@@ -20,7 +20,7 @@ export type MerchantBillLineItem = {
   qty: number;
   name: string;
   price: number;
-  menuItemId?: number | null;
+  menuItemId?: number | string | null;
   vegNonveg?: string | null;
   customizations?: string[];
   variant_tag?: string | null;

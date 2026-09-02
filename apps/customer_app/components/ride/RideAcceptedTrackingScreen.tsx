@@ -180,8 +180,9 @@ export function RideAcceptedTrackingScreen({
   const { data: liveRideStatus } = useQuery({
     queryKey: liveStatusQueryKey,
     queryFn: () => fetchLiveTrackingStatus(order),
-    refetchInterval: (query) => pollIntervalWithBackoff(query, 5_000),
-    staleTime: 0,
+    refetchInterval: (query) => pollIntervalWithBackoff(query, 15_000),
+    refetchIntervalInBackground: false,
+    staleTime: 8_000,
     refetchOnMount: "always",
     initialData: () => queryClient.getQueryData<RideOrderStatusResponse>(liveStatusQueryKey),
     placeholderData: order.rider

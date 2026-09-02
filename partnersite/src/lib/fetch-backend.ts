@@ -193,11 +193,10 @@ export async function fetchBackendJson<T>(
 
 /** Lightweight probe — marks a working base preferred for subsequent calls. */
 export async function probeBackendHealth(timeoutMs = 1_200): Promise<boolean> {
-  const res = await fetchBackend('/health', { timeoutMs, force: true });
-  if (res?.ok) return true;
-  // Some builds expose /v1/health or only respond on /
   const alt = await fetchBackend('/v1/health', { timeoutMs, force: true });
-  return alt?.ok === true;
+  if (alt?.ok) return true;
+  const res = await fetchBackend('/health', { timeoutMs, force: true });
+  return res?.ok === true;
 }
 
 export function getPreferredBackendBase(): string | null {

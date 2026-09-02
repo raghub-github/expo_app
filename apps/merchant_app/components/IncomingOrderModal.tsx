@@ -32,6 +32,10 @@ import { useIncomingOrderSheet } from "@/context/IncomingOrderSheetContext";
 import { useOrders, type LineItem, type OrderRecord } from "@/hooks/useOrders";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { fetchFoodOrder, syncAcceptanceTimeout } from "@/services/ordersApi";
+import { isAppForeground } from "@/lib/appForeground";
+import { setCachedFoodOrder } from "@/lib/foodOrderCache";
+import { mapApiOrder } from "@/lib/orderRecord";
+import { shortLocalityFromAddress } from "@/lib/selectedStoreStorage";
 import { readDeviceOrderAlertsAsync } from "@/lib/deviceOrderAlerts";
 import {
   playIncomingOrderAlert,
@@ -54,11 +58,11 @@ import { FormattedOrderId } from "@/components/order/FormattedOrderId";
 import { formatPartnerIncomingCustomerLabel } from "@/components/order/orderFormatters";
 import { AnimatedPlacedTime } from "@/components/order/AnimatedPlacedTime";
 import { lineItemHasKitchenDetails } from "@/lib/merchant-order-food-item-display";
-import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
+import { GatiMitraMerchant, H_PADDING, CARD_RADIUS, HEADER_HEIGHT } from "@/constants/theme";
 import { merchantIncomingBillPartsFromOrder } from "@/lib/resolveMerchantOrderTotal";
 import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
-import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
+import { rejectReasonNeedsFollowUp, isNotOperationalTodayReason } from "@/lib/merchantCancellationReasons";
 import {
   acceptSecondsLeft,
   acceptDeadlineMs,
@@ -73,6 +77,7 @@ import {
 } from "@/lib/order-prep-time";
 import { TypographyVariantProvider } from "@/lib/typographyVariant";
 import { fetchStoreProfile } from "@/services/menuApi";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import * as SecureStore from "expo-secure-store";
 
 // v3: clear prior dismiss poison (v1 auto-dismissed on list flicker; v2 still
@@ -117,9 +122,20 @@ async function getDismissed(): Promise<Set<number>> {
   }
 }
 
+/** In-memory dismiss set — X can land before SecureStore round-trip. */
+const dismissedCoreIdsMem = new Set<number>();
+
+function isDismissedCore(orderCoreId: number): boolean {
+  const id = Number(orderCoreId);
+  return Number.isFinite(id) && dismissedCoreIdsMem.has(id);
+}
+
 async function addDismissed(orderCoreId: number) {
+  const id = Number(orderCoreId);
+  if (!Number.isFinite(id)) return;
+  dismissedCoreIdsMem.add(id);
   const prev = await getDismissed();
-  prev.add(orderCoreId);
+  prev.add(id);
   const arr = Array.from(prev).map((oid) => ({ order_id: oid, t: Date.now() }));
   await SecureStore.setItemAsync(DISMISS_KEY, JSON.stringify(arr.slice(-200)));
 }
@@ -278,6 +294,7 @@ function AcceptOrderSwipeButton({
   onPress: () => void;
 }) {
   const trackWidth = useRef(0);
+  const trackWidthSv = useSharedValue(0);
   const dragX = useRef(new RNAnimated.Value(0)).current;
   const confirmedRef = useRef(false);
   const btnPulse = useSharedValue(1);
@@ -400,7 +417,7 @@ function AcceptOrderSwipeButton({
   }));
 
   const progressStyle = useAnimatedStyle(() => ({
-    width: `${progressWidth.value}%`,
+    width: Math.max(0, (progressWidth.value / 100) * trackWidthSv.value),
   }));
 
   const accent = urgent ? "#DC2626" : "#16A34A";
@@ -412,7 +429,9 @@ function AcceptOrderSwipeButton({
       <View
         style={[styles.acceptBtn, { backgroundColor: btnBg }, disabled && styles.btnDisabled]}
         onLayout={(e) => {
-          trackWidth.current = e.nativeEvent.layout.width;
+          const w = e.nativeEvent.layout.width;
+          trackWidth.current = w;
+          trackWidthSv.value = w;
         }}
         {...panResponder.panHandlers}
       >
@@ -458,7 +477,7 @@ function openCustomizationSheet(
 export default function IncomingOrderModal() {
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
-  const { selectedStore } = useSelectedStore();
+  const { selectedStore, managedStores } = useSelectedStore();
   const {
     registerOpenHandler,
     registerRescanHandler,
@@ -493,18 +512,28 @@ export default function IncomingOrderModal() {
   const shownCoreIdsRef = useRef<Set<string>>(new Set());
   const soundPlayedForOrderRef = useRef<string | null>(null);
 
+  useEffect(() => {
+    void getDismissed().then((set) => {
+      for (const id of set) dismissedCoreIdsMem.add(id);
+    });
+  }, []);
+
   const openIfNew = useCallback(
     async (order: OrderRecord) => {
       if (!storeId || !token) return;
       if (order.status !== "created" || order.id.startsWith("core-")) return;
-      // X parks auto-popup until the floating pill clears it (partnersite parity).
-      if (parkedRef.current) return;
+      if (isDismissedCore(order.ordersCoreId)) return;
+      // Multi-order queue: X parks auto-popup until the floating bell clears it.
+      if (parkedRef.current && pendingCreatedFifo(orders).length > 1) return;
 
       // Session + persistent dedupe — never re-pop an order already shown/dismissed.
       const dedupeKey = `c:${order.ordersCoreId}`;
       if (shownCoreIdsRef.current.has(dedupeKey)) return;
       const dismissed = await getDismissed();
-      if (dismissed.has(order.ordersCoreId)) return;
+      if (dismissed.has(order.ordersCoreId)) {
+        dismissedCoreIdsMem.add(order.ordersCoreId);
+        return;
+      }
 
       // Suppress ONLY orders whose acceptance window is genuinely, finitely over.
       // A NaN/bogus deadline must never hide a fresh order.
@@ -583,16 +612,16 @@ export default function IncomingOrderModal() {
     [setParked, orders]
   );
 
-  /** Floating pill: clear park + open the oldest still-CREATED order. */
-  const rescanParkedOrders = useCallback(() => {
+  /** Floating pill: clear park + open the oldest still-CREATED, non-dismissed order. */
+  const rescanParkedOrders = useCallback(async () => {
     setParked(false);
     const created = pendingCreatedFifo(orders);
-    for (const o of created) {
-      shownCoreIdsRef.current.delete(`c:${o.ordersCoreId}`);
-      seenFoodIdsRef.current.delete(o.id);
-    }
-    const target = created[0];
+    const dismissed = await getDismissed();
+    for (const id of dismissed) dismissedCoreIdsMem.add(id);
+    const target = created.find((o) => !isDismissedCore(o.ordersCoreId));
     if (!target) return;
+    shownCoreIdsRef.current.delete(`c:${target.ordersCoreId}`);
+    seenFoodIdsRef.current.delete(target.id);
     soundPlayedForOrderRef.current = null;
     setSheetOrder(target);
     shownCoreIdsRef.current.add(`c:${target.ordersCoreId}`);
@@ -655,19 +684,25 @@ export default function IncomingOrderModal() {
   }, [sheetOrder?.id, storeId, acceptanceSettings]);
 
   useEffect(() => {
+    const created = pendingCreatedFifo(orders);
+    if (created.length <= 1 && parked) {
+      setParked(false);
+    }
+  }, [orders, parked, setParked]);
+
+  useEffect(() => {
     if (!storeId || !token) return;
     if (sheetOrder) return;
-    if (parked) return;
-    // Surface the oldest still-actionable pending order FIRST (FIFO), including
-    // orders that were already CREATED when the app mounted / resumed. This gives
-    // the merchant app cold-start parity with the Partner Site incoming queue, so
-    // both platforms show the same order instead of one silently hiding a pending
-    // order after a restart/store-switch. `openIfNew` still guards against orders
-    // outside the accept window and ones already dismissed on this device.
     const created = pendingCreatedFifo(orders);
+    if (created.length === 0) return;
+    // Park only applies when 2+ orders are waiting — a single pending order always
+    // gets the incoming sheet on cold start / push (unless permanently dismissed).
+    if (parked && created.length > 1) return;
+    // Surface the oldest still-actionable pending order FIRST (FIFO), including
+    // orders that were already CREATED when the app mounted / resumed.
     for (const o of created) {
       if (seenFoodIdsRef.current.has(o.id)) continue;
-      seenFoodIdsRef.current.add(o.id);
+      if (isDismissedCore(o.ordersCoreId)) continue;
       void openIfNew(o);
       break;
     }
@@ -683,7 +718,8 @@ export default function IncomingOrderModal() {
       acceptanceWindowMinutes,
       sheetOrder.merchantResponseDeadlineAt
     );
-    setFuseBaselineMs(Math.max(1000, deadline - Date.now()));
+    const baseline = deadline - Date.now();
+    setFuseBaselineMs(Number.isFinite(baseline) ? Math.max(1000, baseline) : 60_000);
   }, [
     sheetOrder?.id,
     sheetOrder?.createdAt,
@@ -693,7 +729,10 @@ export default function IncomingOrderModal() {
 
   useEffect(() => {
     if (!sheetOrder) return;
-    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    const t = setInterval(() => {
+      if (!isAppForeground()) return;
+      setNowTick(Date.now());
+    }, 1000);
     return () => clearInterval(t);
   }, [sheetOrder]);
 
@@ -717,7 +756,8 @@ export default function IncomingOrderModal() {
       sheetOrder.merchantResponseDeadlineAt
     );
     const msLeft = Math.max(0, deadline - nowTick);
-    return Math.min(1, msLeft / fuseBaselineMs);
+    const progress = msLeft / fuseBaselineMs;
+    return Number.isFinite(progress) ? Math.min(1, Math.max(0, progress)) : 1;
   }, [sheetOrder, fuseBaselineMs, acceptanceWindowMinutes, nowTick]);
   const fuseUrgent = secondsLeft > 0 && secondsLeft <= URGENT_SECONDS;
 
@@ -735,6 +775,47 @@ export default function IncomingOrderModal() {
     if (fromOrder != null && Number.isFinite(fromOrder) && fromOrder > 0) return fromOrder;
     return storeId;
   }, [displayOrder?.merchantStoreId, sheetOrder?.merchantStoreId, storeId]);
+
+  const mapFetchedOrder = useCallback(
+    (api: Awaited<ReturnType<typeof fetchFoodOrder>>, sid: number) => {
+      const managed = managedStores.find((s) => s.id === sid);
+      const storeMeta =
+        managed ??
+        (selectedStore?.id === sid
+          ? selectedStore
+          : null);
+      return mapApiOrder(api, {
+        storeId: sid,
+        storeName: storeMeta?.store_name ?? null,
+        storeLocality: storeMeta ? shortLocalityFromAddress(storeMeta.full_address) : null,
+      });
+    },
+    [managedStores, selectedStore]
+  );
+
+  /** Detail GET has full Partner Site CTM line math — hydrate as soon as the sheet opens. */
+  useEffect(() => {
+    if (!sheetOrder || !actionStoreId || !token) return;
+    if (sheetOrder.id.startsWith("core-")) return;
+    const foodId = parseInt(sheetOrder.id, 10);
+    if (!Number.isFinite(foodId) || foodId <= 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const updated = await fetchFoodOrder(actionStoreId, foodId, token);
+        if (cancelled) return;
+        setCachedFoodOrder(actionStoreId, foodId, updated);
+        upsertOrder(mapFetchedOrder(updated, actionStoreId));
+      } catch {
+        /* verifyOpenOrder / board refresh will retry */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sheetOrder?.id, actionStoreId, token, mapFetchedOrder, upsertOrder]);
 
   /** All still-pending orders (FIFO) the merchant can page through while the sheet is open. */
   const pendingList = useMemo(() => pendingCreatedFifo(orders), [orders]);
@@ -911,28 +992,47 @@ export default function IncomingOrderModal() {
     [pendingList, currentIndex, setParked]
   );
 
-  const minimizeSheet = useCallback(() => {
-    // X / backdrop: always close + park so the floating bell can reopen the queue.
+  /**
+   * X / backdrop: dismiss the viewed order — never auto-popup again for that order.
+   * With multiple pending orders, advance to the next FIFO card (partnersite parity).
+   */
+  const dismissByUser = useCallback(() => {
     stopOrderAlertSound();
     setRejectOpen(false);
     setAllItemsOpen(false);
     setBillBreakdownOpen(false);
     setCustomizationItem(null);
-    setParked(true);
+
     const current = sheetOrderRef.current;
-    if (current) {
-      // Allow FAB rescan to show these again (not permanently dismissed).
-      shownCoreIdsRef.current.delete(`c:${current.ordersCoreId}`);
-      seenFoodIdsRef.current.delete(current.id);
+    if (!current) {
+      setSheetOrder(null);
+      setParked(false);
+      return;
     }
-    // Also un-mark other pending cards so reopen shows the full FIFO queue.
-    for (const o of pendingList) {
-      shownCoreIdsRef.current.delete(`c:${o.ordersCoreId}`);
-      seenFoodIdsRef.current.delete(o.id);
+
+    void addDismissed(current.ordersCoreId);
+    shownCoreIdsRef.current.add(`c:${current.ordersCoreId}`);
+    seenFoodIdsRef.current.add(current.id);
+
+    const fifo = pendingCreatedFifo(orders);
+    const others = fifo.filter(
+      (o) => o.id !== current.id && o.ordersCoreId !== current.ordersCoreId
+    );
+    const nextTarget = others.find((o) => !isDismissedCore(o.ordersCoreId));
+
+    if (nextTarget) {
+      soundPlayedForOrderRef.current = nextTarget.id;
+      shownCoreIdsRef.current.add(`c:${nextTarget.ordersCoreId}`);
+      seenFoodIdsRef.current.add(nextTarget.id);
+      setParked(false);
+      setSheetOrder(nextTarget);
+      return;
     }
+
     soundPlayedForOrderRef.current = null;
+    setParked(false);
     setSheetOrder(null);
-  }, [setParked, pendingList]);
+  }, [orders, setParked]);
 
   const dismissSheet = useCallback(async () => {
     await advanceOrCloseSheet({ markDismissed: true, parkIfLast: false });
@@ -1046,6 +1146,7 @@ export default function IncomingOrderModal() {
 
     let cancelled = false;
     const syncKickInFlight = { current: false };
+    const timeoutSyncDone = { current: false };
 
     const verifyOpenOrder = async () => {
       try {
@@ -1056,12 +1157,13 @@ export default function IncomingOrderModal() {
             Date.now(),
             sheetOrder.merchantResponseDeadlineAt
           ) <= 0;
-        if (pastDeadline && !syncKickInFlight.current) {
+        if (pastDeadline && !timeoutSyncDone.current && !syncKickInFlight.current) {
           syncKickInFlight.current = true;
           try {
             await syncAcceptanceTimeout(actionStoreId, token);
+            timeoutSyncDone.current = true;
           } catch {
-            /* cron owns cancel; sync is a nudge */
+            /* cron owns cancel; sync is a one-shot nudge */
           } finally {
             syncKickInFlight.current = false;
           }
@@ -1069,6 +1171,8 @@ export default function IncomingOrderModal() {
 
         const updated = await fetchFoodOrder(actionStoreId, foodId, token);
         if (cancelled) return;
+        setCachedFoodOrder(actionStoreId, foodId, updated);
+        upsertOrder(mapFetchedOrder(updated, actionStoreId));
         // Only drop THIS order — if the pager already advanced to another card, do nothing.
         const stillViewing =
           sheetOrderRef.current?.id === String(foodId) ||
@@ -1095,9 +1199,10 @@ export default function IncomingOrderModal() {
       Date.now(),
       sheetOrder.merchantResponseDeadlineAt
     ) <= 0
-      ? 1_200
-      : 2_500;
+      ? 8_000
+      : 15_000;
     const t = setInterval(() => {
+      if (!isAppForeground()) return;
       void verifyOpenOrder();
     }, intervalMs);
     return () => {
@@ -1113,6 +1218,8 @@ export default function IncomingOrderModal() {
     token,
     acceptanceWindowMinutes,
     advanceOrCloseSheet,
+    mapFetchedOrder,
+    upsertOrder,
   ]);
 
   const order = displayOrder;
@@ -1182,11 +1289,11 @@ export default function IncomingOrderModal() {
   /** Checkout notes are rotated into the GatiMitra delivery banner slideshow. */
   const orderIsPaid = order ? isPrepaidOrder(order) : false;
 
-  /** Modest bottom inset — same visual gap as the original accept-button padding. */
-  const bottomGap = Math.max(insets.bottom, Platform.OS === "ios" ? 8 : 10);
+  const sheetMaxHeight = Dimensions.get("window").height * 0.92;
 
   return (
-    <TypographyVariantProvider variant="sans">
+    <AppErrorBoundary source="incoming-order-modal">
+    <TypographyVariantProvider variant="brand">
     <>
       <Modal
         visible={sheetVisible}
@@ -1194,12 +1301,12 @@ export default function IncomingOrderModal() {
         animationType="slide"
         statusBarTranslucent
         presentationStyle="overFullScreen"
-        onRequestClose={() => minimizeSheet()}
+        onRequestClose={() => dismissByUser()}
       >
         <View style={styles.overlay}>
-          <Pressable style={styles.dismissArea} onPress={() => minimizeSheet()} />
+          <Pressable style={styles.backdropTap} onPress={() => dismissByUser()} />
 
-          <View style={styles.sheetStack}>
+          <View style={styles.sheetStack} pointerEvents="box-none">
             {order ? (
               <>
                 <View style={styles.sheetOverlapHeader} pointerEvents="box-none">
@@ -1219,7 +1326,7 @@ export default function IncomingOrderModal() {
                   </Pressable>
                 </View>
 
-                <View style={styles.sheet}>
+                <View style={[styles.sheet, { maxHeight: sheetMaxHeight }]}>
                   <View style={styles.sheetTopCap} pointerEvents="none" />
                   {pendingTotal > 1 ? (
                     <View style={styles.pagerRowFixed}>
@@ -1285,9 +1392,6 @@ export default function IncomingOrderModal() {
                         fallbackFoodId={parseInt(order.id, 10) || undefined}
                         size="lg"
                       />
-                      {itemCount > 0 ? (
-                        <Text style={styles.itemCountBeside}>({itemCount})</Text>
-                      ) : null}
                     </View>
                     <AnimatedPlacedTime
                       createdAt={order.createdAt}
@@ -1379,7 +1483,17 @@ export default function IncomingOrderModal() {
                     </ScrollView>
                   </Animated.View>
 
-                  <View style={[styles.footerBlock, { paddingBottom: bottomGap }]}>
+                  <View
+                    style={[
+                      styles.footerBlock,
+                      {
+                        paddingBottom: Math.max(
+                          insets.bottom,
+                          Platform.OS === "ios" ? 10 : 12
+                        ),
+                      },
+                    ]}
+                  >
                     <View style={styles.prepFooterRow}>
                       <View style={styles.prepLabelHalf}>
                         <Text style={styles.prepTitle} numberOfLines={1}>
@@ -1432,8 +1546,8 @@ export default function IncomingOrderModal() {
 
           {order ? (
             <Pressable
-              onPress={() => minimizeSheet()}
-              style={[styles.minimizeBtn, { top: insets.top + 8 }]}
+              onPress={() => dismissByUser()}
+              style={[styles.minimizeBtn, { top: insets.top + HEADER_HEIGHT + 10 }]}
               accessibilityRole="button"
               accessibilityLabel="Close incoming order sheet"
               hitSlop={12}
@@ -1482,6 +1596,11 @@ export default function IncomingOrderModal() {
               const snap = order;
               setRejectOpen(false);
               if (rejectReasonNeedsFollowUp(reason)) {
+                if (isNotOperationalTodayReason(reason)) {
+                  void patchStatus("CANCELLED", { rejected_reason: reason }, "manual", snap);
+                  beginFollowUp(reason, snap.lineItems, async () => {});
+                  return;
+                }
                 beginFollowUp(reason, snap.lineItems, () =>
                   patchStatus("CANCELLED", { rejected_reason: reason }, "manual", snap)
                 );
@@ -1511,6 +1630,7 @@ export default function IncomingOrderModal() {
       ) : null}
     </>
     </TypographyVariantProvider>
+    </AppErrorBoundary>
   );
 }
 
@@ -1519,10 +1639,11 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(15, 23, 42, 0.52)",
     justifyContent: "flex-end",
-    margin: 0,
-    padding: 0,
   },
-  dismissArea: { flex: 1 },
+  backdropTap: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+  },
   minimizeBtn: {
     position: "absolute",
     right: H_PADDING,
@@ -1541,6 +1662,7 @@ const styles = StyleSheet.create({
     marginBottom: 0,
     paddingBottom: 0,
     overflow: "visible",
+    zIndex: 2,
   },
   /** Porter-style: pill + reject float above sheet top edge */
   sheetOverlapHeader: {
@@ -1632,7 +1754,6 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
     overflow: "hidden",
-    maxHeight: "97%",
     paddingTop: BADGE_OVERLAP + 6,
     ...Platform.select({
       ios: {
@@ -1657,7 +1778,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: CARD_RADIUS + 6,
     zIndex: 1,
   },
-  body: { maxHeight: 580 },
+  body: { flexShrink: 1, maxHeight: 560 },
   bodyContent: {
     paddingHorizontal: H_PADDING,
     paddingTop: 6,
@@ -1795,7 +1916,7 @@ const styles = StyleSheet.create({
   viewAllLink: {
     fontSize: 13,
     fontWeight: "700",
-    color: "#2563EB",
+    color: "#1B2B4B",
   },
   itemsCard: {
     borderWidth: 1,

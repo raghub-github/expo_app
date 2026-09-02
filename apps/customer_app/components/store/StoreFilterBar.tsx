@@ -99,7 +99,7 @@ export const StoreFilterBar = React.memo(function StoreFilterBar({
 const styles = StyleSheet.create({
   wrap: {
     backgroundColor: StoreTheme.background,
-    paddingVertical: 10,
+    paddingVertical: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: StoreTheme.border,
   },

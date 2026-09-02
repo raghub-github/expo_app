@@ -234,6 +234,7 @@ function AcceptRideSwipeButton({
   onPress: () => void;
 }) {
   const trackWidth = useRef(0);
+  const trackWidthSv = useSharedValue(0);
   const dragX = useRef(new RNAnimated.Value(0)).current;
   const confirmedRef = useRef(false);
   const btnPulse = useSharedValue(1);
@@ -320,7 +321,7 @@ function AcceptRideSwipeButton({
   }));
 
   const progressStyle = useAnimatedStyle(() => ({
-    width: `${progressWidth.value}%`,
+    width: Math.max(0, (progressWidth.value / 100) * trackWidthSv.value),
   }));
 
   const accent = urgent ? colors.error[600] : colors.success[600];
@@ -331,7 +332,9 @@ function AcceptRideSwipeButton({
       <View
         style={[styles.acceptBtn, { backgroundColor: btnBg }, disabled && styles.btnDisabled]}
         onLayout={(e) => {
-          trackWidth.current = e.nativeEvent.layout.width;
+          const w = e.nativeEvent.layout.width;
+          trackWidth.current = w;
+          trackWidthSv.value = w;
         }}
       >
         <Animated.View style={[styles.acceptProgressFill, progressStyle]} />

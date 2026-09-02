@@ -1,4 +1,5 @@
 import OrderPageClient from "./OrderPageClient";
+import { OrderNotFoundState } from "@/components/orders/OrderNotFoundState";
 
 export default async function StandaloneOrderPage({
   params,
@@ -9,11 +10,7 @@ export default async function StandaloneOrderPage({
   const publicId = decodeURIComponent(id ?? "").trim().replace(/[-\s]/g, "");
 
   if (!publicId) {
-    return (
-      <div className="flex min-h-screen w-full items-center justify-center bg-[#F8FAFC] px-4">
-        <p className="text-center text-sm font-medium text-red-600">Invalid order ID.</p>
-      </div>
-    );
+    return <OrderNotFoundState />;
   }
 
   return <OrderPageClient orderPublicId={publicId} />;

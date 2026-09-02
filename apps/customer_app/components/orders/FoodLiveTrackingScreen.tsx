@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Linking, Alert, Dimensions } from "react-native";
+import { View, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Linking, Alert, Dimensions, Modal } from "react-native";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { useRouter, useFocusEffect } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
@@ -56,7 +56,6 @@ import {
   isRiderAtStoreStatus,
   isTerminalOrderStatus,
   normalizeCustomerOrderStatus,
-  shouldShowCustomerDeliveryOtp,
 } from "@/lib/customer-order-status-display";
 import { buildLiveOrderStatusView, ORDER_PLACED_OVERDUE_MESSAGE } from "@/lib/live-order-status-engine";
 import {
@@ -96,7 +95,9 @@ const BORDER = GatiMitraColors.border;
 const TEXT = GatiMitraColors.textPrimaryNew;
 const MUTED = GatiMitraColors.textSecondary;
 
-const { height: SCREEN_H } = Dimensions.get("window");
+const { height: SCREEN_H, width: SCREEN_W } = Dimensions.get("window");
+/** Pill + refresh btn + row gap + header horizontal padding */
+const ETA_PILL_MAX_WIDTH = SCREEN_W - 70;
 const MAP_CORNER_RADIUS = 20;
 const MAP_HEIGHT = Math.round(SCREEN_H * 0.4);
 /** ETA pill + refresh square — matched height. */
@@ -231,6 +232,7 @@ export function FoodLiveTrackingScreen({
     }, [setStatusBarBackground, resetStatusBarBackground])
   );
   const [mapReady, setMapReady] = useState(false);
+  const [mapFullscreen, setMapFullscreen] = useState(false);
   const [mapRefitNonce, setMapRefitNonce] = useState(0);
   const [itemsExpanded, setItemsExpanded] = useState(false);
   const [customizationItem, setCustomizationItem] = useState<OrderDetailLineItem | null>(null);
@@ -296,22 +298,9 @@ export function FoodLiveTrackingScreen({
   );
   const hasRider = isSelfPickup ? false : assignedRider;
   const riderArrived = isRiderAtCustomerStatus(orderStatus);
-  const showDeliveryOtpNow = shouldShowCustomerDeliveryOtp(orderStatus, order.deliveryOtp);
-  const [deliveryOtpPinned, setDeliveryOtpPinned] = useState(false);
-
-  useEffect(() => {
-    if (showDeliveryOtpNow) setDeliveryOtpPinned(true);
-  }, [showDeliveryOtpNow]);
-
-  useEffect(() => {
-    setDeliveryOtpPinned(false);
-  }, [order.orderId]);
-
+  const deliveryOtpCode = (order.deliveryOtp ?? "").trim();
   const showDeliveryOtp =
-    !isSelfPickup &&
-    Boolean(order.deliveryOtp?.trim()) &&
-    !isTerminalOrderStatus(orderStatus) &&
-    (showDeliveryOtpNow || deliveryOtpPinned);
+    !isSelfPickup && Boolean(deliveryOtpCode) && !isTerminalOrderStatus(orderStatus);
 
   const restaurantName = order.merchantPublicName ?? order.merchantName ?? "Restaurant";
   const sessionCoords = useLocationStore((s) => s.coords);
@@ -565,8 +554,9 @@ export function FoodLiveTrackingScreen({
     setPinnedSelfPickupOtp(null);
   }, [order.orderId]);
   const displaySelfPickupOtp = pickupOtpCode || pinnedSelfPickupOtp || "";
-  /** Self-pick-up: OTP strip always on screen until collected (even while code loads). */
-  const showPickupOtp = isSelfPickup && !isTerminalOrderStatus(orderStatus);
+  /** Self-pick-up / takeaway: show pickup OTP for the whole active order. */
+  const showPickupOtp =
+    isSelfPickup && Boolean(displaySelfPickupOtp) && !isTerminalOrderStatus(orderStatus);
   const headline = liveStatus.headline;
   const awaitingAcceptOverdue =
     liveStatus.stage === "ORDER_PLACED" &&
@@ -848,6 +838,92 @@ export function FoodLiveTrackingScreen({
     }, 2500);
   }, []);
 
+  const handleRefitMap = useCallback(() => {
+    setMapRefitNonce((n) => n + 1);
+  }, []);
+
+  const openMapFullscreen = useCallback(() => {
+    setMapFullscreen(true);
+    setMapRefitNonce((n) => n + 1);
+  }, []);
+
+  const closeMapFullscreen = useCallback(() => {
+    setMapFullscreen(false);
+    setMapRefitNonce((n) => n + 1);
+  }, []);
+
+  const renderTrackingMap = (mode: "inline" | "fullscreen") => {
+    const fullscreen = mode === "fullscreen";
+    const mapControlTop = fullscreen ? insets.top + 12 : 12;
+    const mapControlBottom = fullscreen ? Math.max(insets.bottom, 8) + 12 : 16;
+    return (
+      <>
+        <View
+          style={
+            fullscreen
+              ? styles.mapSectionFullscreen
+              : [
+                  styles.mapSection,
+                  showDeliveryOtp || showPickupOtp ? styles.mapSectionFlushBottom : null,
+                ]
+          }
+        >
+          {mapReady ? (
+            <MapboxWebDeliveryMap
+              key={`${order.orderId}-${mode}`}
+              style={StyleSheet.absoluteFill}
+              center={trackingMapCenter}
+              payload={trackingMapPayload}
+              refitNonce={mapRefitNonce}
+            />
+          ) : (
+            <View style={styles.mapLoading}>
+              <ActivityIndicator size="small" color={MINT} />
+            </View>
+          )}
+        </View>
+        <LiveTrackingStatusChip
+          hasRiderFix={!isSelfPickup && riderLat != null && riderLng != null}
+          style={
+            fullscreen
+              ? [styles.liveStatusChipFullscreen, { bottom: mapControlBottom + 8 }]
+              : styles.liveStatusChip
+          }
+        />
+        <TouchableOpacity
+          style={[
+            styles.mapControlBtn,
+            fullscreen ? styles.mapCloseBtn : styles.mapExpandBtn,
+            { top: mapControlTop },
+          ]}
+          activeOpacity={0.85}
+          onPress={fullscreen ? closeMapFullscreen : openMapFullscreen}
+          hitSlop={8}
+          accessibilityLabel={fullscreen ? "Close full screen map" : "Open full screen map"}
+        >
+          <MaterialCommunityIcons
+            name={fullscreen ? "arrow-collapse" : "arrow-expand"}
+            size={18}
+            color="#1C1C1C"
+          />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.mapControlBtn,
+            fullscreen ? styles.mapLocateBtnFullscreen : styles.mapLocateBtn,
+            { bottom: mapControlBottom },
+          ]}
+          activeOpacity={0.85}
+          onPress={handleRefitMap}
+          hitSlop={8}
+          accessibilityLabel="Center map on route"
+        >
+          <MaterialCommunityIcons name="crosshairs-gps" size={18} color="#1C1C1C" />
+        </TouchableOpacity>
+      </>
+    );
+  };
+
   const handleRefreshEta = useCallback(async () => {
     setRefreshingEta(true);
     try {
@@ -1002,7 +1078,11 @@ export function FoodLiveTrackingScreen({
 
   return (
     <View style={styles.screen}>
-      <StatusBar style={headerLight ? "dark" : "light"} backgroundColor={headerBg} />
+      <StatusBar
+        style={headerLight ? "dark" : "light"}
+        backgroundColor={headerBg}
+        hidden={mapFullscreen}
+      />
 
       <LinearGradient
         colors={[headerBg, headerBg]}
@@ -1067,29 +1147,37 @@ export function FoodLiveTrackingScreen({
 
         <View style={styles.etaPillRow}>
           <View style={styles.etaPillInner}>
-            <View
-              style={[
-                styles.etaPill,
-                styles.etaPillChipBase,
-                headerLight ? styles.etaPillChipLight : null,
-              ]}
-            >
-              {showPrepDelayPillSlideshow ? (
-                <PrepDelayStatusPillSlideshow
-                  followUpText={etaPillText}
-                  extraMinutes={prepDelayExtraMinutes!}
-                  light={headerLight}
-                  textColor={headerFg}
-                />
-              ) : (
+            {showPrepDelayPillSlideshow ? (
+              <PrepDelayStatusPillSlideshow
+                followUpText={etaPillText}
+                extraMinutes={prepDelayExtraMinutes!}
+                light={headerLight}
+                textColor={headerFg}
+                chipStyle={[
+                  styles.etaPillChipBase,
+                  { maxWidth: ETA_PILL_MAX_WIDTH },
+                  headerLight ? styles.etaPillChipLight : null,
+                ]}
+                textStyle={headerLight ? { color: headerFg } : styles.etaPillText}
+              />
+            ) : (
+              <View
+                style={[
+                  styles.etaPill,
+                  styles.etaPillChipBase,
+                  { maxWidth: ETA_PILL_MAX_WIDTH },
+                  headerLight ? styles.etaPillChipLight : null,
+                ]}
+              >
                 <CheckoutText
                   style={[styles.etaPillText, headerLight ? { color: headerFg } : null]}
-                  numberOfLines={2}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
                 >
                   {etaPillText}
                 </CheckoutText>
-              )}
-            </View>
+              </View>
+            )}
             <TouchableOpacity
               style={[
                 styles.etaRefreshBtn,
@@ -1114,67 +1202,39 @@ export function FoodLiveTrackingScreen({
         </View>
       </LinearGradient>
 
+      <Modal
+        visible={mapFullscreen}
+        animationType="fade"
+        transparent={false}
+        statusBarTranslucent
+        presentationStyle="overFullScreen"
+        onRequestClose={closeMapFullscreen}
+      >
+        <View style={styles.mapFullscreenRoot}>{renderTrackingMap("fullscreen")}</View>
+      </Modal>
+
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 0) }}
         showsVerticalScrollIndicator={false}
+        nestedScrollEnabled
       >
         <View style={styles.mapWrap}>
-          <View
-            style={[
-              styles.mapSection,
-              showDeliveryOtp || showPickupOtp ? styles.mapSectionFlushBottom : null,
-            ]}
-          >
-            {mapReady ? (
-              <MapboxWebDeliveryMap
-                key={order.orderId}
-                style={StyleSheet.absoluteFill}
-                center={trackingMapCenter}
-                payload={trackingMapPayload}
-                refitNonce={mapRefitNonce}
-                onReady={() => setMapRefitNonce((n) => n + 1)}
-              />
-            ) : (
-              <View style={styles.mapLoading}>
-                <ActivityIndicator size="small" color={MINT} />
-              </View>
-            )}
-          </View>
-          <LiveTrackingStatusChip
-            hasRiderFix={!isSelfPickup && riderLat != null && riderLng != null}
-            style={styles.liveStatusChip}
-          />
-          <TouchableOpacity
-            style={[styles.mapControlBtn, styles.mapExpandBtn]}
-            activeOpacity={0.85}
-            onPress={() => setMapRefitNonce((n) => n + 1)}
-            hitSlop={8}
-          >
-            <MaterialCommunityIcons name="arrow-expand" size={18} color="#1C1C1C" />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.mapControlBtn, styles.mapLocateBtn]}
-            activeOpacity={0.85}
-            onPress={() => setMapRefitNonce((n) => n + 1)}
-            hitSlop={8}
-          >
-            <MaterialCommunityIcons name="crosshairs-gps" size={18} color="#1C1C1C" />
-          </TouchableOpacity>
+          {mapFullscreen ? <View style={styles.mapSection} /> : renderTrackingMap("inline")}
         </View>
 
-        {showPickupOtp && displaySelfPickupOtp ? (
+        {showPickupOtp ? (
           <>
             <DeliveryOtpBanner
               otp={displaySelfPickupOtp}
-              label="Self-Pick-Up OTP"
+              label="Pickup OTP"
             />
             <SelfPickupOtpShareMarquee />
           </>
         ) : null}
 
-        {showDeliveryOtp && order.deliveryOtp ? (
-          <DeliveryOtpBanner otp={order.deliveryOtp} />
+        {showDeliveryOtp ? (
+          <DeliveryOtpBanner otp={deliveryOtpCode} />
         ) : null}
 
         <View style={styles.cardsSection}>
@@ -1223,7 +1283,7 @@ export function FoodLiveTrackingScreen({
             isSelfPickup ? "Please go to the store to pick up your order." : null
           }
           otp={null}
-          otpLabel="Self-Pick-Up OTP"
+          otpLabel={isSelfPickup ? "Pickup OTP" : "Delivery OTP"}
         />
 
         <OrderRestaurantCard
@@ -1480,6 +1540,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#D1D5DB",
   },
   etaPillRow: {
+    width: "100%",
     alignItems: "center",
     justifyContent: "center",
     marginTop: 2,
@@ -1487,7 +1548,9 @@ const styles = StyleSheet.create({
   etaPillInner: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 8,
+    alignSelf: "center",
   },
   etaPillChipBase: {
     backgroundColor: ETA_CHIP_BG,
@@ -1500,13 +1563,15 @@ const styles = StyleSheet.create({
     borderColor: "#D1D5DB",
   },
   etaPill: {
-    minHeight: ETA_CHIP_HEIGHT,
-    maxWidth: Dimensions.get("window").width - 96,
+    height: ETA_CHIP_HEIGHT,
+    maxHeight: ETA_CHIP_HEIGHT,
     paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingVertical: 0,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
+    alignSelf: "center",
+    flexShrink: 1,
   },
   etaPillText: {
     fontSize: 12,
@@ -1532,6 +1597,10 @@ const styles = StyleSheet.create({
   mapWrap: {
     position: "relative",
   },
+  mapFullscreenRoot: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#E5E7EB",
+  },
   liveStatusChip: {
     position: "absolute",
     left: 12,
@@ -1539,11 +1608,22 @@ const styles = StyleSheet.create({
     bottom: 16,
     zIndex: 4,
   },
+  liveStatusChipFullscreen: {
+    position: "absolute",
+    left: 12,
+    right: 56,
+    zIndex: 4,
+  },
   mapSection: {
     height: MAP_HEIGHT,
     backgroundColor: "#E5E7EB",
     borderBottomLeftRadius: MAP_CORNER_RADIUS,
     borderBottomRightRadius: MAP_CORNER_RADIUS,
+    overflow: "hidden",
+  },
+  mapSectionFullscreen: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#E5E7EB",
     overflow: "hidden",
   },
   mapSectionFlushBottom: {
@@ -1565,8 +1645,10 @@ const styles = StyleSheet.create({
     elevation: 3,
     zIndex: 2,
   },
-  mapExpandBtn: { top: 12, right: 12 },
-  mapLocateBtn: { bottom: 16, right: 12 },
+  mapExpandBtn: { right: 12 },
+  mapCloseBtn: { right: 12 },
+  mapLocateBtn: { right: 12 },
+  mapLocateBtnFullscreen: { right: 12 },
   mapLoading: {
     flex: 1,
     alignItems: "center",

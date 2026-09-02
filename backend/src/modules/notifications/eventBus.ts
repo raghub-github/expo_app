@@ -33,6 +33,7 @@ import { resolveCustomerOrderCancelledTemplateCode } from "../../lib/order-cance
 import {
   lookupFoodOrderIdByCoreOrderText,
   merchantAppOrderHref,
+  merchantAppHomeNewOrdersHref,
 } from "../../lib/merchant-new-order-notify.js";
 import { resolveMerchantVisibleOrderNotify } from "../../lib/merchant-visible-pricing.js";
 
@@ -357,6 +358,7 @@ const FOOD_LIVE_BY_TEMPLATE: Record<
   string,
   { step: number; title: string; body: string }
 > = {
+  ORDER_CREATED: { step: 1, title: "Order placed", body: "Waiting for store confirmation" },
   ORDER_ACCEPTED: { step: 1, title: "Order Confirmed by the Store", body: "Your order has been confirmed by the store and is now being prepared." },
   ORDER_PREPARING: { step: 1, title: "Preparing Your Order", body: "Preparing" },
   ORDER_FOOD_READY: { step: 2, title: "Ready for Pickup", body: "Rider arriving at store" },
@@ -438,8 +440,6 @@ export function registerDomainEventHandlers(): void {
       orderIdText: e.orderId,
       merchantStoreId: e.merchantStoreId,
     });
-    const merchantHref = merchantAppOrderHref(foodOrderId);
-
     // Store-token lifecycle push for every merchant-visible stage (works when
     // the template map has no merchant row, e.g. preparing / ready / RTO).
     if (e.merchantStoreId != null && e.merchantStoreId > 0) {
@@ -524,48 +524,59 @@ export function registerDomainEventHandlers(): void {
       });
     }
     if (map.merchant && e.merchantUserId) {
-      const merchantVars: TemplateVariables = {
-        ...vars,
-        foodOrderId: foodOrderId ?? "",
-        orderId: foodOrderId ?? e.orderId,
-      };
-      if (
-        map.merchant === "MERCHANT_NEW_ORDER" &&
+      // Store-token lifecycle push already covers cancel (avoids twin shade alerts).
+      const skipMerchantTemplate =
+        map.merchant === "MERCHANT_ORDER_CANCELLED" &&
         e.merchantStoreId != null &&
-        e.merchantStoreId > 0
-      ) {
-        try {
-          const ctm = await resolveMerchantVisibleOrderNotify(getSql(), {
-            merchantStoreId: e.merchantStoreId,
-            orderIdText: e.orderId,
-          });
-          if (ctm) {
-            merchantVars.amount = ctm.amount;
-            merchantVars.itemCount = ctm.itemCount;
-            merchantVars.customerName = ctm.customerName;
+        e.merchantStoreId > 0;
+      if (!skipMerchantTemplate) {
+        const merchantVars: TemplateVariables = {
+          ...vars,
+          foodOrderId: foodOrderId ?? "",
+          orderId: foodOrderId ?? e.orderId,
+        };
+        if (
+          map.merchant === "MERCHANT_NEW_ORDER" &&
+          e.merchantStoreId != null &&
+          e.merchantStoreId > 0
+        ) {
+          try {
+            const ctm = await resolveMerchantVisibleOrderNotify(getSql(), {
+              merchantStoreId: e.merchantStoreId,
+              orderIdText: e.orderId,
+            });
+            if (ctm) {
+              merchantVars.amount = ctm.amount;
+              merchantVars.itemCount = ctm.itemCount;
+              merchantVars.customerName = ctm.customerName;
+            }
+          } catch {
+            /* keep template without amount rather than customer CTC */
           }
-        } catch {
-          /* keep template without amount rather than customer CTC */
         }
+        await sendNotification({
+          templateCode: map.merchant,
+          variables: merchantVars,
+          // Prefer store_id so merchant_store_push_tokens + parent Expo tokens resolve.
+          target:
+            e.merchantStoreId != null && e.merchantStoreId > 0
+              ? { store_id: e.merchantStoreId }
+              : { user_id: e.merchantUserId },
+          idempotencyKey: `${map.merchant}:${e.orderId}:${e.toStatus}`,
+          metadata: {
+            type: map.merchant === "MERCHANT_NEW_ORDER" ? "merchant_new_order" : "merchant_order",
+            orderId: e.orderId,
+            foodOrderId,
+            url:
+              map.merchant === "MERCHANT_NEW_ORDER"
+                ? merchantAppHomeNewOrdersHref()
+                : merchantAppOrderHref(foodOrderId),
+            gmType: map.merchant,
+            stage: toStatus,
+            skip_in_app_banner: true,
+          },
+        });
       }
-      await sendNotification({
-        templateCode: map.merchant,
-        variables: merchantVars,
-        // Prefer store_id so merchant_store_push_tokens + parent Expo tokens resolve.
-        target:
-          e.merchantStoreId != null && e.merchantStoreId > 0
-            ? { store_id: e.merchantStoreId }
-            : { user_id: e.merchantUserId },
-        idempotencyKey: `${map.merchant}:${e.orderId}:${e.toStatus}`,
-        metadata: {
-          type: map.merchant === "MERCHANT_NEW_ORDER" ? "merchant_new_order" : "merchant_order",
-          orderId: e.orderId,
-          foodOrderId,
-          url: merchantHref,
-          gmType: map.merchant,
-          stage: toStatus,
-        },
-      });
     }
     if (map.rider && e.riderUserId) {
       await sendNotification({

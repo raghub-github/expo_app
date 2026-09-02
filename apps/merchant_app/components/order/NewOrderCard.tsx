@@ -62,7 +62,12 @@ export function NewOrderCard({
   const timeSince = formatTimeSince(order.createdAt, nowMs);
   const acceptSecondsRemaining =
     acceptanceWindowMinutes != null
-      ? acceptSecondsLeft(order.createdAt, acceptanceWindowMinutes, nowMs)
+      ? acceptSecondsLeft(
+          order.createdAt,
+          acceptanceWindowMinutes,
+          nowMs,
+          order.merchantResponseDeadlineAt
+        )
       : null;
   const countdown =
     acceptSecondsRemaining != null ? formatAcceptCountdown(acceptSecondsRemaining) : null;
@@ -71,7 +76,11 @@ export function NewOrderCard({
 
   const fuseProgress = useMemo(() => {
     if (acceptanceWindowMinutes == null) return 1;
-    const deadline = acceptDeadlineMs(order.createdAt, acceptanceWindowMinutes);
+    const deadline = acceptDeadlineMs(
+      order.createdAt,
+      acceptanceWindowMinutes,
+      order.merchantResponseDeadlineAt
+    );
     const windowMs = deadline - new Date(order.createdAt).getTime();
     if (windowMs <= 0) return 0;
     const msLeft = Math.max(0, deadline - nowMs);

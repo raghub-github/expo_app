@@ -169,14 +169,80 @@ function parseBreakdownAmounts(gatewayResponse: unknown): {
     root.breakdown && typeof root.breakdown === "object"
       ? (root.breakdown as Record<string, unknown>)
       : root;
+  let gatiCashUsed = Math.max(0, round2(numOrZero(breakdown.gatiCashUsed)));
+  let gatewayAmount = Math.max(0, round2(numOrZero(breakdown.gatewayAmount)));
+  // Mixed checkouts also stamp these at the gateway_response root.
+  if (gatiCashUsed <= 0.005 && numOrZero(root.gatiCashUsed) > 0.005) {
+    gatiCashUsed = round2(numOrZero(root.gatiCashUsed));
+  }
+  if (gatewayAmount <= 0.005 && numOrZero(root.gatewayAmount) > 0.005) {
+    gatewayAmount = round2(numOrZero(root.gatewayAmount));
+  }
   return {
-    gatiCashUsed: Math.max(0, round2(numOrZero(breakdown.gatiCashUsed))),
-    gatewayAmount: Math.max(0, round2(numOrZero(breakdown.gatewayAmount))),
+    gatiCashUsed,
+    gatewayAmount,
     settlement:
       typeof breakdown.settlement === "string"
         ? breakdown.settlement.trim().toLowerCase()
-        : null,
+        : typeof root.settledBy === "string" && root.settledBy.trim().toLowerCase() === "mixed"
+          ? "mixed"
+          : null,
   };
+}
+
+function extractRazorpayPaymentId(
+  transactionId: string,
+  gatewayResponse: unknown
+): string | null {
+  if (/^pay_/.test(transactionId)) return transactionId;
+  if (!gatewayResponse || typeof gatewayResponse !== "object") return null;
+  const root = gatewayResponse as Record<string, unknown>;
+  const candidates = [
+    root.razorpayPaymentId,
+    root.razorpay_payment_id,
+    (root.payment as Record<string, unknown> | undefined)?.id,
+  ];
+  for (const candidate of candidates) {
+    const id = typeof candidate === "string" ? candidate.trim() : "";
+    if (/^pay_/.test(id)) return id;
+  }
+  return null;
+}
+
+/** Infer gateway capture when breakdown only recorded the wallet half. */
+function inferGatewayAmountForMixedCheckout(args: {
+  gatiCashUsed: number;
+  gatewayAmount: number;
+  paymentAmount: number;
+  grandTotal: number;
+  hasRazorpayPaymentId: boolean;
+}): number {
+  let gatewayAmount = args.gatewayAmount;
+  if (!args.hasRazorpayPaymentId) return round2(gatewayAmount);
+
+  if (args.gatiCashUsed > 0.005 && gatewayAmount <= 0.005) {
+    if (args.paymentAmount > args.gatiCashUsed + 0.005) {
+      gatewayAmount = round2(args.paymentAmount - args.gatiCashUsed);
+    } else if (args.grandTotal > 0.005) {
+      gatewayAmount = round2(args.grandTotal);
+    } else if (args.paymentAmount > 0.005) {
+      gatewayAmount = args.paymentAmount;
+    }
+  }
+
+  if (
+    args.gatiCashUsed > 0.005 &&
+    gatewayAmount > 0.005 &&
+    args.paymentAmount > 0.005 &&
+    round2(args.gatiCashUsed + gatewayAmount) > round2(args.paymentAmount + 0.02)
+  ) {
+    const corrected = round2(Math.max(0, args.paymentAmount - args.gatiCashUsed));
+    if (corrected > 0.005 && corrected < gatewayAmount) {
+      gatewayAmount = corrected;
+    }
+  }
+
+  return round2(gatewayAmount);
 }
 
 /**
@@ -240,7 +306,7 @@ async function loadOrderPaymentSnapshot(
   // (pay_…) lives on orders_core_payments.transaction_id.
   const txn =
     typeof r.transaction_id === "string" ? String(r.transaction_id).trim() : "";
-  const razorpayPaymentId = /^pay_/.test(txn) ? txn : null;
+  const razorpayPaymentId = extractRazorpayPaymentId(txn, r.gateway_response);
 
   const fromBreakdown = parseBreakdownAmounts(r.gateway_response);
   const pendingGati = Math.max(0, round2(numOrZero(r.pending_gati_cash)));
@@ -255,10 +321,13 @@ async function loadOrderPaymentSnapshot(
   }
 
   // Infer missing half when breakdown was incomplete.
-  if (gatiCashUsed > 0.005 && gatewayAmount <= 0.005 && razorpayPaymentId) {
-    // Mixed checkout often stamps payment_gateway=razorpay with amount = post-wallet payable.
-    gatewayAmount = paymentAmount > 0.005 ? paymentAmount : grandTotal;
-  }
+  gatewayAmount = inferGatewayAmountForMixedCheckout({
+    gatiCashUsed,
+    gatewayAmount,
+    paymentAmount,
+    grandTotal,
+    hasRazorpayPaymentId: Boolean(razorpayPaymentId),
+  });
   if (
     gatewayAmount <= 0.005 &&
     razorpayPaymentId &&
