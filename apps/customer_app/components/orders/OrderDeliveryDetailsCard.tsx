@@ -2,13 +2,12 @@
  * Live tracking — delivery contact, address, and instructions card (Zomato-style).
  */
 
-import { useMemo } from "react";
-import { View, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { View, TouchableOpacity, StyleSheet } from "react-native";
+import Svg, { Circle, Path, Rect } from "react-native-svg";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { BiPencilSquareIcon } from "@/components/icons/BiPencilSquareIcon";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { getConfig } from "@/config/env";
 import type { OrderDeliveryDetailsView } from "@/lib/order-delivery-details";
 
 const CARD = GatiMitraColors.cardSurface;
@@ -54,28 +53,28 @@ function SolidDivider() {
   return <View style={styles.solidDivider} />;
 }
 
-function ViewMapThumb({
-  lat,
-  lng,
-  onPress,
-}: {
-  lat?: number | null;
-  lng?: number | null;
-  onPress?: () => void;
-}) {
-  const staticUri = useMemo(() => {
-    const token =
-      getConfig().mapboxAccessToken?.trim() ||
-      process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN?.trim() ||
-      null;
-    if (!token || lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) {
-      return null;
-    }
-    const lon = lng.toFixed(5);
-    const la = lat.toFixed(5);
-    return `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/pin-s+059669(${lon},${la})/${lon},${la},14,0/120x90@2x?access_token=${encodeURIComponent(token)}`;
-  }, [lat, lng]);
+function SelfPickupMapThumbArt() {
+  return (
+    <Svg width="100%" height="100%" viewBox="0 0 120 52" preserveAspectRatio="xMidYMid slice">
+      <Rect x="0" y="0" width="120" height="52" fill="#D1FAE5" />
+      <Rect x="6" y="8" width="30" height="16" rx="3" fill="#A7F3D0" opacity={0.9} />
+      <Rect x="42" y="5" width="24" height="22" rx="3" fill="#6EE7B7" opacity={0.75} />
+      <Rect x="72" y="10" width="38" height="14" rx="3" fill="#A7F3D0" opacity={0.85} />
+      <Path d="M0 30 H120" stroke="#86EFAC" strokeWidth="5" strokeLinecap="round" />
+      <Path d="M46 0 V52" stroke="#86EFAC" strokeWidth="4" strokeLinecap="round" />
+      <Path d="M0 42 Q60 36 120 44" stroke="#6EE7B7" strokeWidth="3" fill="none" strokeLinecap="round" />
+      <Path
+        d="M60 40C60 40 50 28 50 22C50 17.58 53.58 14 58 14C62.42 14 66 17.58 66 22C66 28 60 40 60 40Z"
+        fill={VIEW_MAP_LABEL}
+        stroke="#FFFFFF"
+        strokeWidth="1.5"
+      />
+      <Circle cx="58" cy="22" r="3.5" fill="#FFFFFF" />
+    </Svg>
+  );
+}
 
+function ViewMapThumb({ onPress }: { onPress?: () => void }) {
   return (
     <TouchableOpacity
       onPress={onPress}
@@ -86,18 +85,7 @@ function ViewMapThumb({
       style={styles.viewMapBox}
     >
       <View style={styles.viewMapPreview}>
-        {staticUri ? (
-          <Image source={{ uri: staticUri }} style={styles.viewMapImage} resizeMode="cover" />
-        ) : (
-          <View style={styles.viewMapFallback}>
-            <View style={styles.viewMapRoadH} />
-            <View style={styles.viewMapRoadV} />
-            <View style={styles.viewMapRoadDiag} />
-          </View>
-        )}
-        <View style={styles.viewMapPinOverlay} pointerEvents="none">
-          <Ionicons name="location" size={18} color={VIEW_MAP_LABEL} />
-        </View>
+        <SelfPickupMapThumbArt />
       </View>
       <View style={styles.viewMapLabelBar}>
         <CheckoutText style={styles.viewMapLabel}>View Map</CheckoutText>
@@ -107,6 +95,7 @@ function ViewMapThumb({
 }
 
 function OtpDetailRow({ label, otp }: { label: string; otp: string }) {
+  const isDelivery = /delivery/i.test(label);
   return (
     <View style={styles.otpRow} accessibilityRole="text" accessibilityLabel={`${label} ${otp}`}>
       <View style={[styles.iconCircle, styles.otpIconCircle]}>
@@ -114,7 +103,9 @@ function OtpDetailRow({ label, otp }: { label: string; otp: string }) {
       </View>
       <View style={styles.textWrap}>
         <CheckoutText style={styles.otpRowLabel}>{label}</CheckoutText>
-        <CheckoutText style={styles.otpRowHint}>Show this code at the store</CheckoutText>
+        <CheckoutText style={styles.otpRowHint}>
+          {isDelivery ? "Share with delivery partner at delivery" : "Show this code at the store"}
+        </CheckoutText>
       </View>
       <CheckoutText style={styles.otpRowValue}>{otp}</CheckoutText>
     </View>
@@ -168,7 +159,7 @@ function DetailRow({
       </View>
       {showAction ? (
         actionKind === "view_map" ? (
-          <ViewMapThumb lat={mapLat} lng={mapLng} onPress={onEdit} />
+          <ViewMapThumb onPress={onEdit} />
         ) : onEdit ? (
           <TouchableOpacity
             onPress={onEdit}
@@ -427,47 +418,6 @@ const styles = StyleSheet.create({
     height: 52,
     backgroundColor: "#D1FAE5",
     overflow: "hidden",
-  },
-  viewMapImage: {
-    ...StyleSheet.absoluteFillObject,
-    width: "100%",
-    height: "100%",
-  },
-  viewMapFallback: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#D1FAE5",
-  },
-  viewMapRoadH: {
-    position: "absolute",
-    left: -4,
-    right: -4,
-    top: 24,
-    height: 4,
-    backgroundColor: "#A7F3D0",
-    transform: [{ rotate: "-8deg" }],
-  },
-  viewMapRoadV: {
-    position: "absolute",
-    top: -4,
-    bottom: -4,
-    left: 30,
-    width: 4,
-    backgroundColor: "#6EE7B7",
-    transform: [{ rotate: "12deg" }],
-  },
-  viewMapRoadDiag: {
-    position: "absolute",
-    top: 8,
-    left: 8,
-    width: 40,
-    height: 3,
-    backgroundColor: "#A7F3D0",
-    transform: [{ rotate: "35deg" }],
-  },
-  viewMapPinOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
   },
   viewMapLabelBar: {
     flex: 1,

@@ -1386,7 +1386,7 @@ export async function createMerchantStoreChild(
       store_id, parent_id, store_name, owner_full_name, store_display_name, store_description, store_type, custom_store_type,
       store_email, store_phones, full_address, city, state, postal_code, country,
       area_manager_id, status, approval_status, current_onboarding_step, onboarding_completed,
-      is_active, is_accepting_orders, is_available, created_by
+      is_active, is_accepting_orders, is_available, delivery_radius_km, accepts_cash, created_by
     ) VALUES (
       ${params.storeId},
       ${params.parentId},
@@ -1410,6 +1410,8 @@ export async function createMerchantStoreChild(
       false,
       false,
       false,
+      false,
+      8,
       false,
       ${params.createdBy ?? null}
     )

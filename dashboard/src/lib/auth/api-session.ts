@@ -9,7 +9,11 @@ import {
   isRefreshTokenNotFound,
   isTransientAuthError,
 } from "@/lib/auth/session-errors";
-import { hasSupabaseAuthCookies, parseCookieHeaderPairs } from "@/lib/auth/read-cookie-access-session";
+import {
+  hasSupabaseAuthCookies,
+  parseCookieHeaderPairs,
+  readCookieAccessSession,
+} from "@/lib/auth/read-cookie-access-session";
 import {
   peekDashboardIdentity,
   rememberDashboardIdentity,
@@ -58,9 +62,32 @@ function cookiePairsFromHeader(header: string): Array<{ name: string; value: str
   return parseCookieHeaderPairs(header);
 }
 
+function cookieReaderFromPairs(pairs: Array<{ name: string; value: string }>) {
+  if (pairs.length === 0) return null;
+  const byName = new Map<string, string>();
+  for (const c of pairs) {
+    if (c.value) byName.set(c.name, c.value);
+  }
+  if (byName.size === 0) return null;
+  const normalized = Array.from(byName, ([name, value]) => ({ name, value }));
+  return {
+    get: (name: string) => {
+      const value = byName.get(name);
+      return value != null ? { value } : undefined;
+    },
+    getAll: () => normalized,
+  };
+}
+
 function cookieReaderFromRequest(request?: ApiAuthRequest) {
   try {
     const byName = new Map<string, string>();
+    const header = request?.headers?.get?.("cookie") ?? "";
+    if (header) {
+      for (const c of cookiePairsFromHeader(header)) {
+        if (c.value) byName.set(c.name, c.value);
+      }
+    }
     try {
       for (const c of request?.cookies?.getAll() ?? []) {
         if (c.value) byName.set(c.name, c.value);
@@ -68,24 +95,79 @@ function cookieReaderFromRequest(request?: ApiAuthRequest) {
     } catch {
       /* Next cookie jar can throw/miss during compile */
     }
-    const header = request?.headers?.get?.("cookie") ?? "";
-    if (header) {
-      for (const c of cookiePairsFromHeader(header)) {
-        if (c.value && !byName.has(c.name)) byName.set(c.name, c.value);
-      }
-    }
-    if (byName.size === 0) return null;
-    const pairs = Array.from(byName, ([name, value]) => ({ name, value }));
-    return {
-      get: (name: string) => {
-        const value = byName.get(name);
-        return value != null ? { value } : undefined;
-      },
-      getAll: () => pairs,
-    };
+    return cookieReaderFromPairs(Array.from(byName, ([name, value]) => ({ name, value })));
   } catch {
     return null;
   }
+}
+
+function userFromCookieReader(
+  cookieReader: ReturnType<typeof cookieReaderFromRequest>
+): User | null {
+  if (!cookieReader) return null;
+  const session = readCookieAccessSession(cookieReader);
+  if (session?.user?.id) return session.user;
+  const cached = peekCachedResolvedUser();
+  return cached?.id ? cached : null;
+}
+
+function serviceUnavailableFailure(): ApiAuthFailure {
+  return {
+    ok: false,
+    status: 503,
+    body: {
+      success: false,
+      error: "Service temporarily unavailable",
+      code: "SERVICE_UNAVAILABLE",
+    },
+  };
+}
+
+/** Next compile / parallel refresh races can miss cookies briefly — retry before 503. */
+async function recoverUserFromCookieRace(
+  request?: ApiAuthRequest
+): Promise<ApiAuthSuccess | null> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 100 * attempt));
+    }
+    if (request?.signal.aborted) return null;
+
+    let reader = cookieReaderFromRequest(request);
+    if (!reader || !hasSupabaseAuthCookies(reader)) {
+      reader = (await cookieReaderFromNextHeaders()) ?? reader;
+    }
+    const cookieEmail = identityEmailFromCookies(reader);
+    const fromCookie = userFromCookieReader(reader);
+    if (fromCookie?.id) {
+      const supabase = await createServerSupabaseClient();
+      return {
+        ok: true,
+        user: withDashboardEmail(fromCookie, cookieEmail),
+        supabase,
+      };
+    }
+    const cached = peekCachedResolvedUser();
+    if (cached?.id) {
+      const supabase = await createServerSupabaseClient();
+      return {
+        ok: true,
+        user: withDashboardEmail(cached, cookieEmail),
+        supabase,
+      };
+    }
+  }
+  return null;
+}
+
+async function serviceUnavailableAfterRetry(
+  request?: ApiAuthRequest
+): Promise<ApiAuthSuccess | ApiAuthFailure> {
+  const recovered = await recoverUserFromCookieRace(request);
+  if (recovered) {
+    return recovered;
+  }
+  return serviceUnavailableFailure();
 }
 
 async function cookieReaderFromNextHeaders() {
@@ -98,11 +180,7 @@ async function cookieReaderFromNextHeaders() {
       fromStore.some((c) => c.name.startsWith("sb-") && c.value)
         ? fromStore
         : parseCookieHeaderPairs(header);
-    if (pairs.length === 0) return null;
-    return {
-      get: (name: string) => pairs.find((c) => c.name === name),
-      getAll: () => pairs,
-    };
+    return cookieReaderFromPairs(pairs);
   } catch {
     return null;
   }
@@ -130,9 +208,20 @@ export async function getAuthenticatedApiUser(
     cookieReader = (await cookieReaderFromNextHeaders()) ?? cookieReader;
   }
 
+  const cookieEmailEarly = identityEmailFromCookies(cookieReader);
+  const earlyCookieUser = userFromCookieReader(cookieReader);
+  if (earlyCookieUser?.id) {
+    const supabase = await createServerSupabaseClient();
+    return {
+      ok: true,
+      user: withDashboardEmail(earlyCookieUser, cookieEmailEarly),
+      supabase,
+    };
+  }
+
   const resolved = await resolveSupabaseUser({
-    maxAttempts: 2,
-    retryDelayMs: 400,
+    maxAttempts: 3,
+    retryDelayMs: 300,
     cookieReader,
   });
 
@@ -155,23 +244,26 @@ export async function getAuthenticatedApiUser(
 
   const hasSbCookies = cookieReader ? hasSupabaseAuthCookies(cookieReader) : false;
   const cachedUser = peekCachedResolvedUser();
+  const cookieFallbackUser = userFromCookieReader(cookieReader);
+
+  const succeedWithFallback = (fallbackUser: User) =>
+    ({
+      ok: true as const,
+      user: withDashboardEmail(fallbackUser, cookieEmail),
+      supabase,
+    });
 
   // Loser of a parallel refresh often sees refresh_token_not_found while the
   // winner already wrote new cookies. Never treat that as a dead session.
   if (userError && isRefreshTokenNotFound(userError)) {
     if (cachedUser?.id) {
-      return { ok: true, user: withDashboardEmail(cachedUser, cookieEmail), supabase };
+      return succeedWithFallback(cachedUser);
+    }
+    if (cookieFallbackUser?.id) {
+      return succeedWithFallback(cookieFallbackUser);
     }
     if (hasSbCookies) {
-      return {
-        ok: false,
-        status: 503,
-        body: {
-          success: false,
-          error: "Service temporarily unavailable",
-          code: "SERVICE_UNAVAILABLE",
-        },
-      };
+      return serviceUnavailableAfterRetry(request);
     }
     return {
       ok: false,
@@ -181,46 +273,37 @@ export async function getAuthenticatedApiUser(
   }
 
   if (userError && isRefreshTokenAlreadyUsed(userError)) {
+    if (cookieFallbackUser?.id) {
+      return succeedWithFallback(cookieFallbackUser);
+    }
+    if (cachedUser?.id) {
+      return succeedWithFallback(cachedUser);
+    }
     // Parallel refresh races — do not force logout; client should retry.
-    return {
-      ok: false,
-      status: 503,
-      body: {
-        success: false,
-        error: "Service temporarily unavailable",
-        code: "SERVICE_UNAVAILABLE",
-      },
-    };
+    return serviceUnavailableAfterRetry(request);
   }
 
   if (userError && isTransientAuthError(userError)) {
+    if (cookieFallbackUser?.id) {
+      return succeedWithFallback(cookieFallbackUser);
+    }
+    if (cachedUser?.id) {
+      return succeedWithFallback(cachedUser);
+    }
     // Quiet 503 — do not console.error AbortError/timeout objects here.
-    return {
-      ok: false,
-      status: 503,
-      body: {
-        success: false,
-        error: "Service temporarily unavailable",
-        code: "SERVICE_UNAVAILABLE",
-      },
-    };
+    return serviceUnavailableAfterRetry(request);
   }
 
   if (hasSbCookies) {
     if (cachedUser?.id) {
-      return { ok: true, user: withDashboardEmail(cachedUser, cookieEmail), supabase };
+      return succeedWithFallback(cachedUser);
+    }
+    if (cookieFallbackUser?.id) {
+      return succeedWithFallback(cookieFallbackUser);
     }
     // Cookie jar is present but parse/getUser missed during Next compile load.
     // Never 401 here — the client treats 401 as logout and wipes a live session.
-    return {
-      ok: false,
-      status: 503,
-      body: {
-        success: false,
-        error: "Service temporarily unavailable",
-        code: "SERVICE_UNAVAILABLE",
-      },
-    };
+    return serviceUnavailableAfterRetry(request);
   }
 
   return {

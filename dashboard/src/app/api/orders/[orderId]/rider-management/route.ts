@@ -11,6 +11,10 @@ import {
 } from "@/lib/orders/rider-management-backend";
 import { applyRiderCancellationPenalty } from "@/lib/orders/apply-rider-cancellation-penalty";
 import { stampOrderRoutedTo } from "@/lib/orders/stamp-order-routed-to";
+import {
+  isSelfPickupFulfillmentOrder,
+  TAKEAWAY_RIDER_ASSIGN_BLOCKED_MESSAGE,
+} from "@/lib/orders/order-detail-display";
 
 export const runtime = "nodejs";
 
@@ -96,7 +100,13 @@ export async function POST(
 
     const sql = getSql();
     const orderRows = await sql`
-      SELECT id, rider_id AS "riderId", order_type AS "orderType"
+      SELECT
+        id,
+        rider_id AS "riderId",
+        order_type AS "orderType",
+        delivery_type AS "deliveryType",
+        billing_snapshot AS "billingSnapshot",
+        checkout_metadata AS "checkoutMetadata"
       FROM orders_core
       WHERE id = ${orderCoreId}
       LIMIT 1
@@ -105,6 +115,9 @@ export async function POST(
       id: number;
       riderId: number | null;
       orderType: string | null;
+      deliveryType: string | null;
+      billingSnapshot: unknown;
+      checkoutMetadata: unknown;
     }>)[0];
 
     if (!orderRow) {
@@ -115,6 +128,25 @@ export async function POST(
       return NextResponse.json(
         { success: false, error: "Rider management is only supported for food orders" },
         { status: 400 }
+      );
+    }
+
+    const takeawayNoRider =
+      isSelfPickupFulfillmentOrder(
+        orderRow.deliveryType,
+        orderRow.billingSnapshot,
+        orderRow.checkoutMetadata
+      ) &&
+      (action === "assign_rider" || action === "hard_assign" || action === "cancel_reassign");
+
+    if (takeawayNoRider) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: TAKEAWAY_RIDER_ASSIGN_BLOCKED_MESSAGE,
+          code: "TAKEAWAY_NO_RIDER",
+        },
+        { status: 409 }
       );
     }
 

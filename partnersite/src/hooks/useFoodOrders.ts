@@ -34,6 +34,8 @@ export interface OrdersFoodRow {
   food_items_count: number | null;
   display_item_count?: number | null;
   food_items_total_value: string | number | null;
+  /** Frozen merchant CTM (orders_core.total_ctm) — SSOT for bill total after accept. */
+  total_ctm?: string | number | null;
   items?: Array<{
     name: string;
     quantity: number;

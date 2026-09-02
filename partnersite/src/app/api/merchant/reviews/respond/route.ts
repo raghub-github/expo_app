@@ -6,6 +6,7 @@ import {
   appendMerchantReviewReply,
   encodeLegacyMerchantResponse,
 } from "@/lib/merchant-review-replies";
+import { fetchBackend } from "@/lib/fetch-backend";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -129,6 +130,25 @@ export async function POST(request: NextRequest) {
     if (updateError) {
       console.error("[merchant/reviews/respond] update error:", updateError);
       return NextResponse.json({ success: false, error: "Failed to save response." }, { status: 500 });
+    }
+
+    const secret =
+      process.env.INTERNAL_API_TOKEN?.trim() ||
+      process.env.BACKEND_SCHEDULE_TICK_SECRET?.trim() ||
+      "";
+    if (secret) {
+      try {
+        await fetchBackend(`/v1/internal/reviews/${reviewId}/notify-customer-reply`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-internal-secret": secret,
+          },
+          body: "{}",
+        });
+      } catch (notifyErr) {
+        console.warn("[merchant/reviews/respond] customer notify failed:", notifyErr);
+      }
     }
 
     return NextResponse.json({

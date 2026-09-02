@@ -56,9 +56,10 @@ import { RazorpayCheckoutModal, type RazorpayPaymentResult, type RazorpayOrderPa
 import { CheckoutDeliveryTypeToggle } from "@/components/checkout/CheckoutDeliveryTypeToggle";
 import { CheckoutRiderUnavailableBanner } from "@/components/checkout/CheckoutRiderUnavailableBanner";
 import { CheckoutTakeawayConfirmModal } from "@/components/checkout/CheckoutTakeawayConfirmModal";
+import { CheckoutAlmostThereModal } from "@/components/checkout/CheckoutAlmostThereModal";
 import { CheckoutPayUsingButton } from "@/components/checkout/CheckoutPayUsingButton";
-import { CheckoutPaymentFailedSheet, CheckoutPaymentReturnOverlay } from "@/components/checkout/CheckoutPaymentFailedSheet";
-import { useCheckoutPaymentFailureStore } from "@/store/checkoutPaymentFailureStore";
+import { CheckoutPaymentReturnOverlay } from "@/components/checkout/CheckoutPaymentFailedSheet";
+import { useCheckoutPaymentFailureStore, presentCheckoutPaymentFailure } from "@/store/checkoutPaymentFailureStore";
 import { DietIndicator } from "@/components/store/DietIndicator";
 import { resolveItemDiet } from "@/lib/itemDiet";
 import { merchantService, type MerchantSummary, type MenuItem } from "@/services/merchant.service";
@@ -135,7 +136,10 @@ import {
   type BillingCalculateKeyParams,
 } from "@/lib/billingCalculateQuery";
 import { DeliveryAddressText } from "@/components/address/DeliveryAddressText";
-import { computeCheckoutToPayAmount } from "@/lib/checkoutToPayAmount";
+import {
+  computeCheckoutStrikethroughTotal,
+  computeCheckoutToPayAmount,
+} from "@/lib/checkoutToPayAmount";
 import { CURRENT_SUBSCRIPTION_QUERY_KEY } from "@/lib/subscriptionCache";
 import { useCheckoutOfferStore } from "@/store/checkoutOfferStore";
 import { useCheckoutAddressHandoffStore } from "@/store/checkoutAddressHandoffStore";
@@ -1020,13 +1024,6 @@ function CheckoutScreen() {
     [subscriptionAccentColor]
   );
 
-  useFocusEffect(
-    useCallback(() => {
-      void refetchCurrentSubscription();
-      void queryClient.invalidateQueries({ queryKey: CURRENT_SUBSCRIPTION_QUERY_KEY });
-    }, [queryClient, refetchCurrentSubscription])
-  );
-
   const [selectedAddressId, setSelectedAddressId] = useState<number | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<string>("upi");
   /** Delivery / Self pickup toggle. Self pickup waives the delivery fee server-side. */
@@ -1065,6 +1062,10 @@ function CheckoutScreen() {
   } | null>(null);
   const [riderAvailabilityRefreshing, setRiderAvailabilityRefreshing] = useState(false);
   const [takeawayConfirmVisible, setTakeawayConfirmVisible] = useState(false);
+  const [almostThereModal, setAlmostThereModal] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
   const recheckDeliveryUnavailableGateRef = useRef<(forceShow: boolean) => Promise<boolean>>(
     async () => true
   );
@@ -1123,10 +1124,24 @@ function CheckoutScreen() {
   const [razorpayModalVisible, setRazorpayModalVisible] = useState(false);
   const [razorpayCreating, setRazorpayCreating] = useState(false);
   const [paymentReturnBusy, setPaymentReturnBusy] = useState(false);
-  const paymentFailVisible = useCheckoutPaymentFailureStore((s) => s.visible);
-  const paymentFailAmount = useCheckoutPaymentFailureStore((s) => s.amountInr);
-  const paymentFailMethod = useCheckoutPaymentFailureStore((s) => s.methodLabel);
+  const paymentFailureRetryNonce = useCheckoutPaymentFailureStore((s) => s.retryNonce);
+  const paymentFailureChooseNonce = useCheckoutPaymentFailureStore((s) => s.chooseMethodNonce);
   const [simulatedPaymentOrder, setSimulatedPaymentOrder] = useState<{ orderId: string; amount: number; pendingId?: string } | null>(null);
+
+  const paymentInProgress =
+    razorpayModalVisible ||
+    paymentReturnBusy ||
+    razorpayCreating ||
+    simulatedPaymentOrder != null;
+
+  useFocusEffect(
+    useCallback(() => {
+      if (paymentInProgress) return;
+      void refetchCurrentSubscription();
+      void queryClient.invalidateQueries({ queryKey: CURRENT_SUBSCRIPTION_QUERY_KEY });
+    }, [queryClient, refetchCurrentSubscription, paymentInProgress])
+  );
+
   /**
    * Idempotency key for the current checkout attempt. Generated on first
    * "Place order" tap and cleared on success / cancel / address change, so
@@ -2032,11 +2047,11 @@ function CheckoutScreen() {
    */
   const debouncedItems = useDebouncedValue(items, CART_QTY_BILLING_DEBOUNCE_MS);
   const debouncedClientFullCartSubtotal = useMemo(
-    () => computeFullCartSubtotal(debouncedItems),
+    () => roundBillAmount(computeFullCartSubtotal(debouncedItems)),
     [debouncedItems]
   );
   const debouncedClientEligibleCheckoutSubtotal = useMemo(
-    () => computeEligibleCheckoutSubtotal(debouncedItems, itemOfferById),
+    () => roundBillAmount(computeEligibleCheckoutSubtotal(debouncedItems, itemOfferById)),
     [debouncedItems, itemOfferById]
   );
 
@@ -2235,6 +2250,7 @@ function CheckoutScreen() {
     !!merchantId &&
     items.length > 0 &&
     hasPickupCoords &&
+    !paymentInProgress &&
     (deliveryType === "self_pickup" ||
       selectedAddress != null ||
       (provisionalDropLat != null && provisionalDropLon != null));
@@ -2362,11 +2378,17 @@ function CheckoutScreen() {
    * falling back to the platform default if the server hasn't been updated yet.
    * Only treat as out-of-zone once a delivery address is selected and the bill matches it.
    */
-  const billMatchesSelectedAddress =
+  /** Delivery address on the current billing request matches the user's selection. */
+  const billAddressMatchesSelection =
     hasDeliveryAddress &&
     selectedAddress != null &&
-    billingCalculateKeyParams.addressId === String(selectedAddress.id) &&
-    !billingQuery.isPlaceholderData;
+    billingCalculateKeyParams.addressId === String(selectedAddress.id);
+  /**
+   * Authoritative for Place Order — never charge while keepPreviousData is showing a
+   * prior key's bill (e.g. right after an address change).
+   */
+  const billMatchesSelectedAddress =
+    billAddressMatchesSelection && !billingQuery.isPlaceholderData;
   const isDeliveryOutOfRange =
     billMatchesSelectedAddress &&
     (serverBill?.serviceable === false ||
@@ -3981,14 +4003,18 @@ function CheckoutScreen() {
    */
   const toPayAmount = useMemo(() => {
     if (deliveryType === "delivery" && !hasDeliveryAddress) return undefined;
-    const scopeSettled = lastSettledScopeRef.current === billingDisplayScope;
-    const stalePlaceholder =
-      billingQuery.isPlaceholderData ||
-      (hasDeliveryAddress && !billMatchesSelectedAddress);
-    if (!scopeSettled && (confirmedToPayAmount == null || stalePlaceholder || billingQuery.isFetching)) {
-      return undefined;
-    }
+
+    const scopeChanged =
+      lastSettledScopeRef.current != null &&
+      lastSettledScopeRef.current !== billingDisplayScope;
+    // Only hide for placeholder when the address/delivery scope changed — cart/tip
+    // refetches keep the last total visible (with optional qty delta below).
+    const stalePlaceholder = billingQuery.isPlaceholderData && scopeChanged;
+    if (stalePlaceholder) return undefined;
     if (confirmedToPayAmount == null) return undefined;
+
+    if (scopeChanged && billingQuery.isFetching) return undefined;
+
     const snapshot = lastSettledBillRef.current;
     if (!snapshot || snapshot.items === items) return confirmedToPayAmount;
     const delta =
@@ -4004,7 +4030,6 @@ function CheckoutScreen() {
     billingDisplayScope,
     billingQuery.isPlaceholderData,
     billingQuery.isFetching,
-    billMatchesSelectedAddress,
   ]);
 
   const showPaymentFailedSheet = useCallback(
@@ -4014,7 +4039,7 @@ function CheckoutScreen() {
       setRazorpayOrderParams(null);
       setSimulatedPaymentOrder(null);
       setPaymentReturnBusy(false);
-      useCheckoutPaymentFailureStore.getState().show({
+      presentCheckoutPaymentFailure({
         amountInr:
           amountOverride ?? (typeof toPayAmount === "number" ? toPayAmount : null),
         methodLabel: "UPI / Cards",
@@ -4032,23 +4057,13 @@ function CheckoutScreen() {
    */
   const gmStrikethroughTotal = useMemo(() => {
     if (toPayAmount == null) return null;
-    const walletAdd =
-      missedOfferWalletPending && missedOfferWalletPendingAmount > 0.005
-        ? missedOfferWalletPendingAmount
-        : 0;
-    // Wallet add makes bold total higher than food bill — don't show a misleading strike.
-    if (walletAdd > 0.005) return null;
-    const preWalletTotal = roundBillAmount(toPayAmount + gatiCashApplyAmount);
-    if (checkoutSavingsTotal > 0.005) {
-      const list = Math.round((preWalletTotal + checkoutSavingsTotal) * 100) / 100;
-      if (list > toPayAmount + 0.005) return list;
-    }
-    // GatiCash (partial or 100%) — strike the pre-wallet bill so ₹100 off is visible
-    // next to the remaining payable (e.g. ~~₹107.93~~ ₹7.93).
-    if (gatiCashApplyAmount > 0.005 && preWalletTotal > toPayAmount + 0.005) {
-      return preWalletTotal;
-    }
-    return null;
+    return computeCheckoutStrikethroughTotal({
+      toPayAmount,
+      gatiCashApplyAmount,
+      checkoutSavingsTotal,
+      missedOfferWalletPending,
+      missedOfferWalletPendingAmount,
+    });
   }, [
     toPayAmount,
     checkoutSavingsTotal,
@@ -4329,12 +4344,10 @@ function CheckoutScreen() {
           "This service is temporarily unavailable in your current location. Please try again later or choose another nearby location."
         : data?.message ?? err?.message ?? "Could not place order.";
       if (blocked) {
-        router.replace({
-          pathname: "/orders/payment-failure",
-          params: {
-            message: msg,
-            ...(data?.title ? { title: data.title } : {}),
-          },
+        Alert.alert(data?.title ?? "Checkout unavailable", msg, [{ text: "OK" }]);
+        presentCheckoutPaymentFailure({
+          amountInr: typeof toPayAmount === "number" ? toPayAmount : null,
+          methodLabel: "UPI / Cards",
         });
         return;
       }
@@ -4557,6 +4570,9 @@ function CheckoutScreen() {
             pendingId: pending.pendingId,
           });
         } else {
+          await new Promise<void>((resolve) => {
+            InteractionManager.runAfterInteractions(() => resolve());
+          });
           // Open full Razorpay Standard Checkout (all enabled methods). Method is
           // chosen there — do not lock to a preselected UPI app / custom sheet.
           setRazorpayOrderParams({
@@ -4614,6 +4630,16 @@ function CheckoutScreen() {
     paymentReturnBusy,
     runPlaceOrderFlow,
   ]);
+
+  useEffect(() => {
+    if (paymentFailureRetryNonce < 1) return;
+    void handlePlaceOrderPress();
+  }, [paymentFailureRetryNonce, handlePlaceOrderPress]);
+
+  useEffect(() => {
+    if (paymentFailureChooseNonce < 1) return;
+    void handlePlaceOrderPress();
+  }, [paymentFailureChooseNonce, handlePlaceOrderPress]);
 
   const handleRazorpaySuccess = useCallback(
     (result: RazorpayPaymentResult) => {
@@ -4771,7 +4797,7 @@ function CheckoutScreen() {
   const handleSimulatedPaymentFail = useCallback(async () => {
     if (!simulatedPaymentOrder || simulatedSubmitting) return;
     setSimulatedSubmitting(true);
-    const { pendingId, orderId } = simulatedPaymentOrder;
+    const { pendingId, orderId, amount } = simulatedPaymentOrder;
     setSimulatedPaymentOrder(null);
     try {
       if (pendingId) {
@@ -4782,19 +4808,16 @@ function CheckoutScreen() {
         });
       }
     } catch (e) {
-      // Best-effort: even if the failure call errors out, we still take the user
-      // to the failure screen so they don't get stuck on checkout.
       console.warn("[checkout] dummy fail call errored", e);
     } finally {
       idempotencyKeyRef.current = null;
       setSimulatedSubmitting(false);
-      showPaymentFailedSheet(
-        typeof simulatedPaymentOrder?.amount === "number"
-          ? simulatedPaymentOrder.amount / 100
-          : undefined
-      );
+      presentCheckoutPaymentFailure({
+        amountInr: typeof amount === "number" ? amount / 100 : null,
+        methodLabel: "UPI / Cards",
+      });
     }
-  }, [simulatedPaymentOrder, simulatedSubmitting, showPaymentFailedSheet]);
+  }, [simulatedPaymentOrder, simulatedSubmitting]);
 
   const handleSimulatedPaymentCancel = useCallback(() => {
     if (simulatedSubmitting) return;
@@ -6104,7 +6127,7 @@ function CheckoutScreen() {
                           : !serverBill
                             ? "Waiting for the bill to load."
                             : "Select a payment method to continue.";
-                    Alert.alert("Almost there", reason);
+                    setAlmostThereModal({ title: "Almost there", message: reason });
                     return;
                   }
                   handlePlaceOrderPress();
@@ -6140,7 +6163,7 @@ function CheckoutScreen() {
                       {showBillSkeleton ? (
                         <GMSkeleton
                           dark={false}
-                          style={{ width: 76, height: 18, borderRadius: 4, backgroundColor: "rgba(255,255,255,0.28)" }}
+                          style={{ width: 52, height: 18, borderRadius: 4, backgroundColor: "rgba(255,255,255,0.28)" }}
                         />
                       ) : (
                         <>
@@ -6956,21 +6979,6 @@ function CheckoutScreen() {
         onUpiAppOpened={handleUpiAppOpened}
       />
 
-      <CheckoutPaymentFailedSheet
-        visible={paymentFailVisible}
-        amountInr={paymentFailAmount}
-        methodLabel={paymentFailMethod}
-        onRetry={() => {
-          useCheckoutPaymentFailureStore.getState().hide();
-          handlePlaceOrderPress();
-        }}
-        onChooseMethod={() => {
-          useCheckoutPaymentFailureStore.getState().hide();
-          void handlePlaceOrderPress();
-        }}
-        onLeave={() => useCheckoutPaymentFailureStore.getState().hide()}
-      />
-
       <CheckoutPaymentReturnOverlay visible={paymentReturnBusy} />
 
       <CheckoutTakeawayConfirmModal
@@ -6981,6 +6989,13 @@ function CheckoutScreen() {
           setTakeawayConfirmVisible(false);
           void runPlaceOrderFlow();
         }}
+      />
+
+      <CheckoutAlmostThereModal
+        visible={almostThereModal != null}
+        title={almostThereModal?.title ?? "Almost there"}
+        message={almostThereModal?.message ?? ""}
+        onDismiss={() => setAlmostThereModal(null)}
       />
 
       {/* Dummy / simulated payment sheet (backend has PAYMENT_DUMMY_MODE=true

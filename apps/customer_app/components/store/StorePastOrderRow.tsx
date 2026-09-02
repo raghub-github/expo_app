@@ -1,14 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { AppText } from "@/components/AppText";
-
 import { Pressable, View, StyleSheet } from "react-native";
 import { Image } from "expo-image";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
-import { StoreText } from "./StoreText";
+import { StoreFonts } from "@/constants/storeTypography";
 import { DietIndicator } from "./DietIndicator";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
-import { StoreMenuInstantCartControl, MENU_ADD_CONTROL_HEIGHT } from "./StoreMenuCartControls";
+import { StoreMenuInstantCartControl } from "./StoreMenuCartControls";
 import { getBasePrice, getItemDiet, getSellingPrice } from "./storeMenuUtils";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { formatOfferRupee, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
@@ -29,6 +28,7 @@ export type StorePastOrderRowProps = {
   onItemPress?: (item: MenuItem) => void;
   isStoreClosed?: boolean;
   itemOffer?: ItemOfferDisplay | null;
+  showDivider?: boolean;
 };
 
 function formatOrderedAgo(iso: string): string {
@@ -45,8 +45,8 @@ function formatOrderedAgo(iso: string): string {
   return `You ordered ${years} year${years > 1 ? "s" : ""} ago`;
 }
 
-const IMAGE = 96;
-const ACTION_W = 104;
+const THUMB = 56;
+const ACTION_W = 90;
 
 export const StorePastOrderRow = React.memo(function StorePastOrderRow({
   item: { menuItem, orderedAt, userRating },
@@ -57,6 +57,7 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
   onItemPress,
   isStoreClosed = false,
   itemOffer = null,
+  showDivider = true,
 }: StorePastOrderRowProps) {
   const cartQty = useMenuItemCartQty(menuItem.id, menuItem.menuItemId, merchantId);
   const [imageFailed, setImageFailed] = useState(false);
@@ -81,235 +82,256 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
     [menuItem.imageUrl]
   );
 
-  // Same key as menu rows so past-order + menu steppers stay in sync.
   const itemKey = `${merchantId}:${menuItem.listRowKey ?? menuItem.id}`;
 
   useEffect(() => {
     setImageFailed(false);
   }, [imageUri]);
 
+  const outOfStock = menuItem.inStock === false;
+  const controlsDisabled = isStoreClosed || outOfStock;
+
   const handleAdd = useCallback(() => {
-    if (isStoreClosed) return;
+    if (controlsDisabled) return;
     onAdd(menuItem);
-  }, [menuItem, onAdd, isStoreClosed]);
+  }, [menuItem, onAdd, controlsDisabled]);
 
   const handleIncrement = useCallback(() => {
-    if (isStoreClosed) return;
+    if (controlsDisabled) return;
     onIncrement(menuItem.id, menuItem.menuItemId);
-  }, [isStoreClosed, menuItem.id, menuItem.menuItemId, onIncrement]);
+  }, [controlsDisabled, menuItem.id, menuItem.menuItemId, onIncrement]);
 
   const handleDecrement = useCallback(() => {
-    if (isStoreClosed) return;
+    if (controlsDisabled) return;
     onDecrement(menuItem.id, menuItem.menuItemId);
-  }, [isStoreClosed, menuItem.id, menuItem.menuItemId, onDecrement]);
+  }, [controlsDisabled, menuItem.id, menuItem.menuItemId, onDecrement]);
 
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`View ${menuItem.name} details`}
-      onPress={() => onItemPress?.(menuItem)}
-      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-    >
-      <View style={styles.imageCol} pointerEvents="none">
-        <View style={styles.imageWrap}>
-          {imageUri && !imageFailed ? (
-            <Image
-              source={{ uri: imageUri }}
-              style={styles.image}
-              contentFit="cover"
-              cachePolicy="memory-disk"
-              transition={0}
-              onError={() => setImageFailed(true)}
-            />
-          ) : (
-            <MenuItemImagePlaceholder size="sm" />
-          )}
-        </View>
-        <View style={styles.dietBadge} pointerEvents="none">
-          <DietIndicator type={diet} />
-        </View>
-      </View>
-
-      <View style={styles.infoCol} pointerEvents="none">
-        <StoreText style={styles.name} bold numberOfLines={2}>
-          {menuItem.name}
-        </StoreText>
-
-        {showOfferPrice ? (
-          <>
-            <View style={styles.offerPriceRow}>
-              {itemOffer?.kind === "bogo" ? (
-                <View style={styles.offerBadge}>
-                  <AppText style={styles.bogoBadgeText}>{itemOffer.label}</AppText>
-                </View>
-              ) : itemOffer ? (
-                <View style={[styles.offerBadge, styles.boostBadge]}>
-                  <AppText style={styles.boostBadgeText}>{itemOffer.label}</AppText>
-                </View>
-              ) : null}
-              <AppText style={styles.basePriceStrike}>{formatOfferRupee(strikeAmount ?? payableAmount)}</AppText>
+    <View style={styles.rowWrap}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`View ${menuItem.name} details`}
+        onPress={() => onItemPress?.(menuItem)}
+        style={({ pressed }) => [styles.pressable, pressed && styles.rowPressed]}
+      >
+        <View style={styles.row}>
+          <View style={styles.thumbSlot} pointerEvents="none">
+            {imageUri && !imageFailed ? (
+              <Image
+                source={{ uri: imageUri }}
+                style={styles.thumbImage}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                transition={0}
+                onError={() => setImageFailed(true)}
+              />
+            ) : (
+              <View style={styles.thumbPlaceholder}>
+                <MenuItemImagePlaceholder size="xs" />
+              </View>
+            )}
+            <View style={styles.dietBadge}>
+              <DietIndicator type={diet} />
             </View>
-            <AppText style={styles.discountPrice}>Get for {formatOfferRupee(payableAmount)}</AppText>
-          </>
-        ) : (
-          <>
-            {itemOffer?.kind === "bogo" ? (
-              <View style={styles.offerBadge}>
-                <AppText style={styles.bogoBadgeText}>{itemOffer.label}</AppText>
-              </View>
-            ) : itemOffer ? (
-              <View style={[styles.offerBadge, styles.boostBadge]}>
-                <AppText style={styles.boostBadgeText}>{itemOffer.label}</AppText>
-              </View>
+          </View>
+
+          <View style={styles.bodyCol} pointerEvents="none">
+            <AppText style={styles.name} numberOfLines={2} ellipsizeMode="tail">
+              {menuItem.name}
+            </AppText>
+
+            {showOfferPrice ? (
+              <>
+                <View style={styles.offerPriceRow}>
+                  {itemOffer ? (
+                    <View style={styles.offerBadge}>
+                      <AppText style={styles.offerBadgeText} numberOfLines={1}>
+                        {itemOffer.label}
+                      </AppText>
+                    </View>
+                  ) : null}
+                  <AppText style={styles.basePriceStrike} numberOfLines={1}>
+                    {formatOfferRupee(strikeAmount ?? payableAmount)}
+                  </AppText>
+                </View>
+                <AppText style={styles.discountPrice} numberOfLines={1}>
+                  Get for {formatOfferRupee(payableAmount)}
+                </AppText>
+              </>
+            ) : (
+              <>
+                {itemOffer ? (
+                  <View style={styles.offerBadge}>
+                    <AppText style={styles.offerBadgeText} numberOfLines={1}>
+                      {itemOffer.label}
+                    </AppText>
+                  </View>
+                ) : null}
+                <AppText style={styles.price} numberOfLines={1}>
+                  {formatOfferRupee(sellingPrice)}
+                </AppText>
+              </>
+            )}
+
+            <AppText style={styles.meta} numberOfLines={1} ellipsizeMode="tail">
+              {formatOrderedAgo(orderedAt)}
+            </AppText>
+            {userRating != null && userRating > 0 ? (
+              <AppText style={styles.meta} numberOfLines={1}>
+                You rated {Math.round(userRating)} ★
+              </AppText>
             ) : null}
-            <StoreText style={styles.price} bold>
-              {formatOfferRupee(sellingPrice)}
-            </StoreText>
-          </>
-        )}
+          </View>
 
-        <StoreText style={styles.orderedAgo}>{formatOrderedAgo(orderedAt)}</StoreText>
-        {userRating != null && userRating > 0 ? (
-          <StoreText style={styles.rating}>You rated {Math.round(userRating)} ★</StoreText>
-        ) : null}
-      </View>
-
-      <View style={styles.actionCol} collapsable={false} pointerEvents="auto">
-        <StoreMenuInstantCartControl
-          itemKey={itemKey}
-          merchantId={merchantId}
-          quantity={cartQty}
-          disabled={isStoreClosed}
-          allowOptimisticAdd={!isCustomisable}
-          onAdd={handleAdd}
-          onIncrement={handleIncrement}
-          onDecrement={handleDecrement}
-          accessibilityLabel={`${menuItem.name} quantity`}
-        />
-        {isCustomisable ? (
-          <StoreText style={styles.customisable}>customisable</StoreText>
-        ) : null}
-      </View>
-    </Pressable>
+          <View style={styles.actionCol} pointerEvents="auto" collapsable={false}>
+            <StoreMenuInstantCartControl
+              itemKey={itemKey}
+              merchantId={merchantId}
+              quantity={cartQty}
+              disabled={controlsDisabled}
+              allowOptimisticAdd={!isCustomisable}
+              accent="zomato"
+              onAdd={handleAdd}
+              onIncrement={handleIncrement}
+              onDecrement={handleDecrement}
+              accessibilityLabel={`${menuItem.name} quantity`}
+            />
+            {isCustomisable ? (
+              <AppText style={styles.customisable} numberOfLines={1}>
+                customisable
+              </AppText>
+            ) : null}
+          </View>
+        </View>
+      </Pressable>
+      {showDivider ? <View style={styles.divider} /> : null}
+    </View>
   );
 });
 
 const styles = StyleSheet.create({
+  rowWrap: {
+    width: "100%",
+    alignSelf: "stretch",
+  },
+  pressable: {
+    width: "100%",
+    alignSelf: "stretch",
+  },
   row: {
+    width: "100%",
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 14,
-    gap: 12,
+    paddingVertical: 12,
   },
   rowPressed: {
-    backgroundColor: "rgba(19, 114, 67, 0.045)",
+    backgroundColor: "rgba(34, 197, 94, 0.05)",
   },
-  imageCol: {
-    width: IMAGE,
-    position: "relative",
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: StoreTheme.border,
+    marginLeft: THUMB + 12,
   },
-  imageWrap: {
-    width: IMAGE,
-    height: IMAGE,
-    borderRadius: 12,
+  thumbSlot: {
+    width: THUMB,
+    height: THUMB,
+    borderRadius: 10,
     overflow: "hidden",
     backgroundColor: "#F3F4F6",
+    flexShrink: 0,
   },
-  image: {
-    width: "100%",
-    height: "100%",
+  thumbImage: {
+    width: THUMB,
+    height: THUMB,
+  },
+  thumbPlaceholder: {
+    width: THUMB,
+    height: THUMB,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F0F0F0",
   },
   dietBadge: {
     position: "absolute",
-    top: 6,
-    left: 6,
+    top: 4,
+    left: 4,
     backgroundColor: "#FFFFFF",
     borderRadius: 3,
     padding: 1,
   },
-  infoCol: {
+  bodyCol: {
     flex: 1,
     minWidth: 0,
-    paddingRight: 4,
+    marginLeft: 12,
+    marginRight: 8,
+    overflow: "hidden",
   },
   name: {
-    fontSize: 17,
+    fontFamily: StoreFonts.poppinsSemiBold,
+    fontSize: 14,
     color: StoreTheme.textPrimary,
-    lineHeight: 23,
-    letterSpacing: -0.2,
+    lineHeight: 18,
+    letterSpacing: -0.15,
   },
   offerBadge: {
     alignSelf: "flex-start",
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: "#2563EB",
+    borderColor: StoreTheme.linkBlue,
     backgroundColor: "#EFF6FF",
+    marginTop: 2,
+    maxWidth: "100%",
   },
-  boostBadge: {
-    borderColor: "#2563EB",
-  },
-  bogoBadgeText: {
-    fontSize: 11,
+  offerBadgeText: {
+    fontSize: 10,
     fontWeight: "700",
-    color: "#2563EB",
-  },
-  boostBadgeText: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#2563EB",
+    color: StoreTheme.linkBlue,
   },
   price: {
-    fontSize: 18,
+    fontFamily: StoreFonts.poppinsBold,
+    fontSize: 14,
     color: StoreTheme.textPrimary,
-    letterSpacing: -0.2,
     marginTop: 2,
   },
   offerPriceRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    marginTop: 4,
-    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 2,
+    maxWidth: "100%",
   },
   basePriceStrike: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: "600",
     color: StoreTheme.textSecondary,
     textDecorationLine: "line-through",
+    flexShrink: 1,
   },
   discountPrice: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#2563EB",
-    letterSpacing: -0.2,
-    marginTop: 2,
+    fontFamily: StoreFonts.poppinsBold,
+    fontSize: 14,
+    color: StoreTheme.linkBlue,
+    marginTop: 1,
   },
-  orderedAgo: {
-    fontSize: 12,
-    color: "#E57373",
-    marginTop: 3,
-  },
-  rating: {
+  meta: {
     fontSize: 11,
     color: StoreTheme.textSecondary,
+    lineHeight: 14,
     marginTop: 2,
   },
   actionCol: {
     width: ACTION_W,
-    minWidth: ACTION_W,
-    minHeight: MENU_ADD_CONTROL_HEIGHT + 12,
+    flexShrink: 0,
     alignItems: "stretch",
     justifyContent: "center",
-    zIndex: 60,
-    elevation: 60,
-    paddingVertical: 6,
   },
   customisable: {
-    fontSize: 10,
+    fontSize: 9,
     color: StoreTheme.textMuted,
-    marginTop: 5,
+    marginTop: 3,
     textAlign: "center",
+    textTransform: "lowercase",
   },
 });

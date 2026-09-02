@@ -192,7 +192,7 @@ export async function playOrderAlertSound(
 
   if (chimeRunId !== myRun) return false;
 
-  const safeRepeats = Math.max(1, Math.min(25, Math.floor(repeatCount || 1)));
+  const safeRepeats = Math.max(1, Math.min(5, Math.floor(repeatCount || 1)));
   const volume = Math.min(1, Math.max(0, volume01));
 
   let played = false;

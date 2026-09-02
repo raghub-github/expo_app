@@ -31,6 +31,9 @@ import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { profileService, type UserProfile } from "@/services/profile.service";
 import { referralService } from "@/services/referral.service";
 import { invalidateProfileCache, PROFILE_QUERY_KEY, writeCachedProfile } from "@/lib/profileCache";
+import { CURRENT_SUBSCRIPTION_QUERY_KEY } from "@/lib/subscriptionCache";
+import { formatSubscriptionExpiryCountdown } from "@/services/subscription.service";
+import { resolveSubscriptionExpiryIso } from "@/lib/subscriptionExpiry";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -64,7 +67,7 @@ export default function ProfileScreen() {
   const profileTopPad =
     (inProfileStack || hideStatusBarSpacer ? insets.top : 0) + STATUS_BAR_TO_HEADER_GAP + 6;
   const { data: profile } = useProfile();
-  const { data: subscriptionStatus } = useCurrentSubscription(true);
+  const { data: subscriptionStatus, isFetched: subscriptionFetched } = useCurrentSubscription(true);
 
   useLayoutEffect(() => {
     if (!inProfileStack) return;
@@ -88,6 +91,8 @@ export default function ProfileScreen() {
         hideStatusBarSpacer: false,
       });
       void queryClient.invalidateQueries({ queryKey: ["referral", "config", "customer"] });
+      void queryClient.invalidateQueries({ queryKey: CURRENT_SUBSCRIPTION_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: PROFILE_QUERY_KEY });
     }, [queryClient, inProfileStack])
   );
 
@@ -133,11 +138,21 @@ export default function ProfileScreen() {
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const avatarUri = avatarCandidates[avatarIndex] ?? null;
   const showAvatarImage = !!avatarUri;
-  const subscriptionActive = subscriptionStatus?.active ?? profile?.gmitra_plus_active ?? false;
+  const subscriptionActive = subscriptionFetched
+    ? subscriptionStatus?.active === true
+    : profile?.gmitra_plus_active ?? false;
   const subscriptionPlanName =
     subscriptionStatus?.subscription?.planName ??
     subscriptionStatus?.plan?.planName ??
     "Membership";
+  const membershipExpiryCountdown = useMemo(() => {
+    if (!subscriptionActive) return null;
+    const iso =
+      resolveSubscriptionExpiryIso(subscriptionStatus?.subscription ?? null) ??
+      subscriptionStatus?.subscription?.expiresAt ??
+      null;
+    return formatSubscriptionExpiryCountdown(iso);
+  }, [subscriptionActive, subscriptionStatus?.subscription]);
 
   useEffect(() => {
     setAvatarIndex(0);
@@ -373,9 +388,14 @@ export default function ProfileScreen() {
             <View style={styles.plusCrownRing}>
               <MaterialCommunityIcons name="crown" size={16} color={GOLD} />
             </View>
-            <AppText style={styles.plusStripText}>
-              {subscriptionActive ? `${subscriptionPlanName} Active` : `Join ${subscriptionPlanName}`}
-            </AppText>
+            <View style={styles.plusStripCopy}>
+              <AppText style={styles.plusStripText}>
+                {subscriptionActive ? `${subscriptionPlanName} Active` : `Join ${subscriptionPlanName}`}
+              </AppText>
+              {subscriptionActive && membershipExpiryCountdown ? (
+                <AppText style={styles.plusStripExpiry}>{membershipExpiryCountdown}</AppText>
+              ) : null}
+            </View>
             <Ionicons name="chevron-forward" size={18} color={MUTED} />
           </TouchableOpacity>
         </View>
@@ -480,6 +500,7 @@ export default function ProfileScreen() {
         planName={subscriptionPlanName}
         benefits={subscriptionBenefits}
         freeDeliveryNote={freeDeliveryNote}
+        expiryCountdown={membershipExpiryCountdown}
         description={
           subscriptionActive
             ? null
@@ -595,6 +616,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     gap: 10,
   },
+  plusStripCopy: { flex: 1, minWidth: 0 },
   plusCrownRing: {
     width: 30,
     height: 30,
@@ -606,11 +628,16 @@ const styles = StyleSheet.create({
     borderColor: "#FDE68A",
   },
   plusStripText: {
-    flex: 1,
     fontSize: 14,
     fontWeight: "700",
     color: GREEN_DARK,
     letterSpacing: 0.1,
+  },
+  plusStripExpiry: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "600",
+    color: MUTED,
   },
   savingsCard: {
     marginTop: 12,

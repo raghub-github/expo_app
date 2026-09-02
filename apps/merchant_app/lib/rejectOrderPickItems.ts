@@ -1,20 +1,21 @@
 import type { LineItem } from "@/hooks/useOrders";
+import { resolveLineItemMenuPk } from "@/lib/resolveLineItemMenuPk";
 
 export type RejectPickItem = {
-  menuItemId: number;
+  menuItemId: number | string;
   name: string;
   quantity: number;
 };
 
 export function lineItemsForRejectPick(items: LineItem[]): RejectPickItem[] {
-  const seen = new Set<number>();
+  const seen = new Set<string>();
   const out: RejectPickItem[] = [];
   for (const it of items) {
-    const id = it.menuItemId;
-    if (id == null || !Number.isFinite(Number(id))) continue;
-    const menuItemId = Number(id);
-    if (seen.has(menuItemId)) continue;
-    seen.add(menuItemId);
+    const menuItemId = resolveLineItemMenuPk(it);
+    if (menuItemId == null) continue;
+    const key = String(menuItemId);
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push({
       menuItemId,
       name: String(it.name ?? "Item").trim() || "Item",

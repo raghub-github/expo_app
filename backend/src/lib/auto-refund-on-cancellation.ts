@@ -28,6 +28,7 @@ import {
   executeOrderRefund,
   type RefundExecutionResult,
 } from "../modules/orders/order-refund-executor.js";
+import { syncOrderRefundCompletionMarkers } from "./order-refund-completion-sync.js";
 
 export interface AutoRefundArgs {
   /** orders_core primary key. */
@@ -48,9 +49,73 @@ export interface AutoRefundOutcome {
     | "prior_failed"
     | "nothing_paid"
     | "order_not_found"
-    | "below_gateway_minimum";
+    | "below_gateway_minimum"
+    | "customer_cancellation";
   refundId?: number;
   result?: RefundExecutionResult;
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Sum money already returned to the customer for this order (all settled refund rows). */
+async function sumSettledRefundAmount(sql: Sql, orderCoreId: number): Promise<number> {
+  const rows = await sql<{ total: string | number | null }[]>`
+    SELECT COALESCE(SUM(
+      CASE
+        WHEN UPPER(COALESCE(execution_status, '')) = 'FAILED' THEN 0
+        WHEN LOWER(COALESCE(refund_status, '')) IN ('failed', 'cancelled', 'rejected') THEN 0
+        WHEN UPPER(COALESCE(execution_status, '')) IN ('COMPLETED', 'NOOP')
+          THEN COALESCE(net_refund_amount, refund_amount, 0)
+        WHEN customer_wallet_ledger_id IS NOT NULL AND customer_wallet_ledger_id > 0
+          THEN COALESCE(net_refund_amount, refund_amount, 0)
+        WHEN NULLIF(TRIM(COALESCE(razorpay_refund_id, '')), '') IS NOT NULL
+          THEN COALESCE(net_refund_amount, refund_amount, 0)
+        WHEN LOWER(COALESCE(refund_status, '')) IN ('completed', 'refunded')
+          THEN COALESCE(net_refund_amount, refund_amount, 0)
+        ELSE 0
+      END
+    ), 0) AS total
+    FROM order_refunds
+    WHERE order_id = ${orderCoreId}
+  `;
+  const total = Number(rows[0]?.total ?? 0);
+  return Number.isFinite(total) ? round2(total) : 0;
+}
+
+function resolveRefundAmount(
+  args: AutoRefundArgs,
+  paidAmount: number,
+  remainingCap: number
+): number {
+  let amount =
+    typeof args.amount === "number" && Number.isFinite(args.amount) && args.amount > 0
+      ? round2(args.amount)
+      : remainingCap;
+  if (amount <= 0.005) return 0;
+  if (paidAmount > 0 && amount > paidAmount) amount = paidAmount;
+  if (remainingCap > 0 && amount > remainingCap) amount = remainingCap;
+  return amount;
+}
+
+/** Customer-initiated cancellations must never auto-refund. */
+export function isCustomerCancellationActor(actorRole?: string | null): boolean {
+  const role = String(actorRole ?? "").trim().toLowerCase();
+  return role === "customer" || role === "cx";
+}
+
+/** Merchant / system / rider / admin cancels — customer gets money back. */
+export function shouldAutoRefundForCancellationActor(actorRole?: string | null): boolean {
+  return !isCustomerCancellationActor(actorRole);
+}
+
+/** Map cancel actor → order_refunds.refund_initiated_by enum text. */
+export function refundInitiatedByFromCancelActor(actorRole?: string | null): string {
+  const role = String(actorRole ?? "").trim().toLowerCase();
+  if (role === "store" || role === "merchant") return "merchant";
+  if (role === "rider") return "rider";
+  if (role === "admin" || role === "agent" || role === "dashboard") return "agent";
+  if (role === "customer" || role === "cx") return "customer";
+  return "system";
 }
 
 type RefundProbeRow = {
@@ -78,7 +143,19 @@ function isActiveRefundRow(row: RefundProbeRow): boolean {
   const wallet =
     row.customer_wallet_ledger_id != null && Number(row.customer_wallet_ledger_id) > 0;
   const razorpay = Boolean(trimRef(row.razorpay_refund_id));
-  return wallet || razorpay || exec === "PROCESSING";
+  if (wallet || razorpay) return true;
+  // Rule-engine wallet credits can complete without ledger id backfill on order_refunds.
+  if (exec === "COMPLETED" || exec === "NOOP" || status === "completed" || status === "refunded") {
+    const amt = Number(row.refund_amount ?? 0);
+    return Number.isFinite(amt) && amt > 0.005;
+  }
+  return false;
+}
+
+function refundRowHasMoneyMovement(row: RefundProbeRow): boolean {
+  const wallet =
+    row.customer_wallet_ledger_id != null && Number(row.customer_wallet_ledger_id) > 0;
+  return wallet || Boolean(trimRef(row.razorpay_refund_id));
 }
 
 function isHollowRefundRow(row: RefundProbeRow): boolean {
@@ -98,13 +175,46 @@ function isHollowRefundRow(row: RefundProbeRow): boolean {
   if (!statusOk) return false;
 
   const ref = String(row.refund_reference ?? "").trim();
+  const hollowExec =
+    !exec ||
+    ["COMPLETED", "NOOP", "INITIATED", "PROCESSING", "PENDING", "SUCCESS"].includes(exec);
   return (
-    ["COMPLETED", "NOOP", "INITIATED", "PROCESSING"].includes(exec) ||
+    hollowExec ||
     /^RFND-\d+$/i.test(ref) ||
-    (["completed", "refunded", "pending"].includes(status) &&
-      (!exec || ["COMPLETED", "NOOP", "INITIATED", "PROCESSING"].includes(exec))) ||
+    (["completed", "refunded", "pending", "processing"].includes(status) && hollowExec) ||
     (exec === "FAILED" && missingPayId)
   );
+}
+
+async function syncSubscriptionRevokeForExistingRefund(
+  sql: Sql,
+  orderCoreId: number,
+  row: RefundProbeRow
+): Promise<void> {
+  const refundId = Number(row.id);
+  if (!Number.isFinite(refundId) || refundId <= 0) return;
+  const exec = String(row.execution_status ?? "").toUpperCase();
+  const status = String(row.refund_status ?? "").toLowerCase();
+  const kind =
+    exec === "COMPLETED" || exec === "NOOP" || status === "completed"
+      ? "completed"
+      : exec === "FAILED" || status === "failed"
+        ? "failed"
+        : "processing";
+  if (kind !== "completed") return;
+  try {
+    await syncOrderRefundCompletionMarkers(
+      {
+        orderCoreId,
+        refundId,
+        kind: "completed",
+        refundAmount: Number(row.refund_amount ?? 0),
+      },
+      sql
+    );
+  } catch (err) {
+    console.error("[auto-refund] subscription revoke on existing refund failed:", err);
+  }
 }
 
 /** Latest refund row for an order — index-friendly top-N, never a created_at walk. */
@@ -142,13 +252,16 @@ async function resolvePaidAmount(sql: Sql, orderCoreId: number): Promise<number>
   const rows = await sql`
     SELECT
       c.grand_total AS grand_total,
+      c.payment_method AS core_payment_method,
+      c.payment_status AS core_payment_status,
       p.amount      AS paid_amount,
       p.payment_gateway AS payment_gateway,
+      p.payment_method AS payment_method,
       p.gateway_response AS gateway_response,
       po.gati_cash_applied AS pending_gati_cash
     FROM orders_core c
     LEFT JOIN LATERAL (
-      SELECT op.amount, op.payment_gateway, op.gateway_response
+      SELECT op.amount, op.payment_gateway, op.gateway_response, op.payment_method
       FROM orders_core_payments op
       WHERE op.order_id = c.order_id
         AND UPPER(COALESCE(op.payment_status, '')) IN ('PAID','CAPTURED','SUCCESS','COMPLETED')
@@ -167,8 +280,11 @@ async function resolvePaidAmount(sql: Sql, orderCoreId: number): Promise<number>
   `;
   const r = rows[0] as {
     grand_total?: unknown;
+    core_payment_method?: unknown;
+    core_payment_status?: unknown;
     paid_amount?: unknown;
     payment_gateway?: unknown;
+    payment_method?: unknown;
     gateway_response?: unknown;
     pending_gati_cash?: unknown;
   } | undefined;
@@ -196,32 +312,61 @@ async function resolvePaidAmount(sql: Sql, orderCoreId: number): Promise<number>
 
   const paidRow = num(r.paid_amount);
   const gw = String(r.payment_gateway ?? "").toLowerCase();
+  const methodCore = String(r.core_payment_method ?? "").toLowerCase();
+  const methodPay = String(r.payment_method ?? "").toLowerCase();
   if (gatewayAmt <= 0.005 && paidRow > 0.005 && (gw === "razorpay" || gw === "upi" || gw === "card")) {
     gatewayAmt = paidRow;
   }
   if (gatiCash <= 0.005 && paidRow > 0.005 && (gw === "gati_cash" || gw === "wallet")) {
     gatiCash = paidRow;
   }
-  // Prepaid often stamped payment_gateway=online with Source=Wallet and no pay_*.
+  // Prepaid GatiCash often stamped payment_gateway=online / payment_method=wallet.
   if (
     gatiCash <= 0.005 &&
     gatewayAmt <= 0.005 &&
     paidRow > 0.005 &&
-    gw !== "cod" &&
-    gw !== "cash"
+    (gw === "online" ||
+      gw === "mixed" ||
+      methodCore === "wallet" ||
+      methodCore === "gati_cash" ||
+      methodCore === "online" ||
+      methodPay === "wallet" ||
+      methodPay === "gati_cash" ||
+      !gw)
   ) {
-    if (gw === "online" || gw === "mixed" || !gw) {
-      gatiCash = paidRow;
-    }
+    gatiCash = paidRow;
   }
 
   const fromBreakdown = round2(gatiCash + gatewayAmt);
   if (fromBreakdown > 0.005) return fromBreakdown;
   if (paidRow > 0.005) return round2(paidRow);
+
+  const gross = num(r.grand_total);
+  const corePayStatus = String(r.core_payment_status ?? "").toUpperCase();
+  const coreMarkedPaid = ["PAID", "CAPTURED", "SUCCESS", "COMPLETED"].includes(corePayStatus);
+  if (coreMarkedPaid && gross > 0.005) return round2(gross);
+
+  const methodLooksPrepaid =
+    methodCore === "wallet" ||
+    methodCore === "gati_cash" ||
+    methodCore === "online" ||
+    methodCore === "upi" ||
+    methodCore === "card" ||
+    methodCore === "prepaid" ||
+    methodPay === "wallet" ||
+    methodPay === "gati_cash" ||
+    methodPay === "upi" ||
+    methodPay === "card" ||
+    gw === "razorpay" ||
+    gw === "online" ||
+    gw === "mixed" ||
+    gw === "upi" ||
+    gw === "card";
+  if (methodLooksPrepaid && gross > 0.005) return round2(gross);
+
   // Never invent a COD/cash "paid" amount from grand_total — that forces hollow
   // wallet credits. Prepaid wallet without a payments row still needs grand_total.
-  if (gw === "cod" || gw === "cash") return 0;
-  const gross = num(r.grand_total);
+  if (gw === "cod" || gw === "cash" || methodCore === "cod" || methodCore === "cash") return 0;
   return gross > 0.005 ? round2(gross) : 0;
 }
 
@@ -253,9 +398,22 @@ export async function autoRefundOnCancellation(
   args: AutoRefundArgs,
   sql: Sql = getSql()
 ): Promise<AutoRefundOutcome> {
+  if (!shouldAutoRefundForCancellationActor(args.actorRole)) {
+    return { triggered: false, skippedReason: "customer_cancellation" };
+  }
+
   const orderCoreId = Number(args.orderCoreId);
   if (!Number.isFinite(orderCoreId) || orderCoreId <= 0) {
     return { triggered: false, skippedReason: "order_not_found" };
+  }
+
+  const paidAmount = await resolvePaidAmount(sql, orderCoreId);
+  if (paidAmount < 0) return { triggered: false, skippedReason: "order_not_found" };
+  const alreadyRefunded = await sumSettledRefundAmount(sql, orderCoreId);
+  const remainingCap =
+    paidAmount > 0.005 ? Math.max(0, round2(paidAmount - alreadyRefunded)) : 0;
+  if (paidAmount > 0.005 && remainingCap <= 0.005) {
+    return { triggered: false, skippedReason: "already_refunded" };
   }
 
   // One index probe for the latest row. Do not walk created_at or seq-scan
@@ -266,14 +424,8 @@ export async function autoRefundOnCancellation(
     if (hollowId == null) {
       return { triggered: false, skippedReason: "order_not_found" };
     }
-    const paidAmount = await resolvePaidAmount(sql, orderCoreId);
-    if (paidAmount < 0) return { triggered: false, skippedReason: "order_not_found" };
-    let amount =
-      typeof args.amount === "number" && Number.isFinite(args.amount) && args.amount > 0
-        ? Math.round(args.amount * 100) / 100
-        : paidAmount;
+    let amount = resolveRefundAmount(args, paidAmount, remainingCap);
     if (amount === 0) return { triggered: false, skippedReason: "nothing_paid" };
-    if (paidAmount > 0 && amount > paidAmount) amount = paidAmount;
     await sql`
       UPDATE order_refunds
       SET refund_amount = ${amount},
@@ -299,31 +451,72 @@ export async function autoRefundOnCancellation(
   }
 
   if (latest && isActiveRefundRow(latest)) {
-    return { triggered: false, skippedReason: "already_refunded" };
+    await syncSubscriptionRevokeForExistingRefund(sql, orderCoreId, latest);
+    if (remainingCap <= 0.005) {
+      return { triggered: false, skippedReason: "already_refunded", refundId: Number(latest.id) };
+    }
+    // Partial engine refund already moved money — only top up the remainder below.
+  } else if (latest && remainingCap <= 0.005) {
+    return { triggered: false, skippedReason: "already_refunded", refundId: Number(latest.id) };
   }
 
-  // A refund row already exists (almost always FAILED gateway). Inserting
-  // another row was creating ~88k duplicates per stuck accept-timeout order.
-  // Retry remains available via /v1/internal/orders/:id/refund/execute on the
-  // existing row; this path must not mint a new financial record.
-  if (latest) {
+  // A refund row already exists (often FAILED gateway). Retry execution for
+  // merchant/system cancels instead of leaving the customer without money back.
+  if (latest && !isActiveRefundRow(latest)) {
+    const exec = String(latest.execution_status ?? "").toUpperCase();
+    const status = String(latest.refund_status ?? "").toLowerCase();
+    const isFailed = exec === "FAILED" || status === "failed";
+    const actor = String(args.actorRole ?? "").toLowerCase();
+    const merchantCancel = shouldAutoRefundForCancellationActor(actor);
+    const staleWithoutMovement = merchantCancel && !refundRowHasMoneyMovement(latest);
+    const zeroAmountStale =
+      merchantCancel && Number(latest.refund_amount ?? 0) <= 0.005 && !refundRowHasMoneyMovement(latest);
+    if ((isFailed || staleWithoutMovement || zeroAmountStale) && merchantCancel) {
+      let amount = resolveRefundAmount(args, paidAmount, remainingCap);
+      if (amount === 0) return { triggered: false, skippedReason: "nothing_paid" };
+      const refundId = Number(latest.id);
+      await sql`
+        UPDATE order_refunds
+        SET refund_amount = ${amount},
+            net_refund_amount = ${amount},
+            refund_reason = COALESCE(NULLIF(TRIM(refund_reason), ''), ${args.reason}),
+            refund_status = 'pending',
+            execution_key = NULL,
+            execution_status = NULL,
+            execution_route = NULL,
+            failure_reason = NULL,
+            failed_at = NULL
+        WHERE id = ${refundId}
+      `;
+      const result = await executeOrderRefund({
+        refundId,
+        orderCoreId,
+        refundAmount: amount,
+        refundReason: args.reason,
+        actor: {
+          actorSystemUserId: null,
+          actorEmail: args.actorEmail ?? null,
+          actorName: "System",
+          actorRole: args.actorRole ?? "system",
+          actorIp: null,
+          actorUserAgent: "auto-cancel-retry",
+        },
+      });
+      return { triggered: true, refundId, result };
+    }
     return { triggered: false, skippedReason: "prior_failed" };
   }
 
-  const paidAmount = await resolvePaidAmount(sql, orderCoreId);
-  if (paidAmount < 0) return { triggered: false, skippedReason: "order_not_found" };
-
-  let amount =
-    typeof args.amount === "number" && Number.isFinite(args.amount) && args.amount > 0
-      ? Math.round(args.amount * 100) / 100
-      : paidAmount;
+  let amount = resolveRefundAmount(args, paidAmount, remainingCap);
 
   if (amount === 0) {
     // Nothing was paid (COD / unpaid) — no money to return.
     return { triggered: false, skippedReason: "nothing_paid" };
   }
-  // Never refund more than the customer actually paid.
+
+  // Never refund more than the customer actually paid (incl. prior partial refunds).
   if (paidAmount > 0 && amount > paidAmount) amount = paidAmount;
+  if (remainingCap > 0 && amount > remainingCap) amount = remainingCap;
 
   // Razorpay rejects sub-₹1 refunds. Wallet-only credits have no such floor —
   // only enforce the minimum when some portion must go through the gateway.
@@ -378,6 +571,15 @@ export async function autoRefundOnCancellation(
   // Create the refund ledger row the executor will fill in.
   // Mint a unique customer-facing RRN up front (RRN-{UUID}) — never RFND-{id}.
   const refundRrn = generateRefundRrn();
+  const refundInitiatedBy = refundInitiatedByFromCancelActor(args.actorRole);
+  const refundActorName =
+    refundInitiatedBy === "merchant"
+      ? "Store"
+      : refundInitiatedBy === "rider"
+        ? "Rider"
+        : refundInitiatedBy === "agent"
+          ? "Agent"
+          : "System";
   let refundId: number;
   try {
     const inserted = await sql<{ id: number }[]>`
@@ -388,7 +590,7 @@ export async function autoRefundOnCancellation(
       ) VALUES (
         ${orderCoreId}, 'full'::refund_type, ${args.reason}, ${amount},
         0, ${amount}, 'order',
-        'pending', 'system', ${refundRrn}
+        'pending', ${refundInitiatedBy}, ${refundRrn}
       )
       RETURNING id
     `;
@@ -402,7 +604,7 @@ export async function autoRefundOnCancellation(
       ) VALUES (
         ${orderCoreId}, 'full'::refund_type, ${args.reason}, ${amount},
         0, ${amount}, 'order',
-        'pending', 'system'
+        'pending', ${refundInitiatedBy}
       )
       RETURNING id
     `;
@@ -420,8 +622,8 @@ export async function autoRefundOnCancellation(
     actor: {
       actorSystemUserId: null,
       actorEmail: args.actorEmail ?? null,
-      actorName: "System",
-      actorRole: args.actorRole ?? "system",
+      actorName: refundActorName,
+      actorRole: args.actorRole ?? refundInitiatedBy,
       actorIp: null,
       actorUserAgent: "auto-cancel",
     },

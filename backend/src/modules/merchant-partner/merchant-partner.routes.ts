@@ -31,6 +31,7 @@ import { resolveTicketTitleForUnifiedTicketsInsert } from "./unified-ticket-titl
 import { buildGrowthBusinessInsights } from "./growth-business-insights.js";
 import { insertSatisfactionRatingAudit } from "../../lib/ticket-satisfaction-audit.js";
 import { repliesApiFields } from "../../lib/merchant-review-replies.js";
+import { notifyCustomerStoreReviewReply } from "../../lib/customer-review-reply-notify.js";
 import { buildLivePreviewInsights } from "./live-preview-insights.js";
 import { buildGrowthQuickInsights } from "./growth-quick-insights.js";
 import { buildGrowthKitchenInsights } from "./growth-kitchen-insights.js";
@@ -6995,6 +6996,10 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           }
           return reply.code(409).send({ error: "reply_cap" });
         }
+
+        void notifyCustomerStoreReviewReply(sql, { reviewId }).catch((err) => {
+          req.log.warn({ err: (err as Error)?.message, reviewId }, "customer review reply push failed");
+        });
 
         return reply.send({ success: true });
       });

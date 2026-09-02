@@ -22,6 +22,7 @@ export type LiveProgressMeta = {
 };
 
 const FOOD_LIVE: Record<string, { step: number; title: string; body: string }> = {
+  ORDER_CREATED: { step: 1, title: "Order placed", body: "Waiting for store confirmation" },
   ORDER_ACCEPTED: { step: 1, title: "Order Confirmed by the Store", body: "Your order has been confirmed by the store and is now being prepared." },
   ORDER_PREPARING: { step: 1, title: "Preparing Your Order", body: "Preparing" },
   ORDER_FOOD_READY: { step: 2, title: "Ready for Pickup", body: "Rider arriving at store" },

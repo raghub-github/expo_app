@@ -6,10 +6,18 @@
 
 import React, { useEffect, useState } from "react";
 import { View, TouchableOpacity, StyleSheet, Platform } from "react-native";
-import Animated, { useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from "react-native-reanimated";
+import Animated, {
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AppText } from "@/components/AppText";
+import { useCardAnimationsEnabled } from "@/hooks/useCardAnimationsEnabled";
 
 const PLACEHOLDERS = [
   "Search biryani…",
@@ -34,16 +42,22 @@ export function GMSearchBar({
 }: GMSearchBarProps) {
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
   const micScale = useSharedValue(1);
+  const motionAllowed = useCardAnimationsEnabled();
 
   useEffect(() => {
-    if (!rotatingPlaceholder) return;
+    if (!rotatingPlaceholder || !motionAllowed) return;
     const id = setInterval(() => {
       setPlaceholderIndex((i) => (i + 1) % PLACEHOLDERS.length);
     }, ROTATE_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [rotatingPlaceholder]);
+  }, [rotatingPlaceholder, motionAllowed]);
 
   useEffect(() => {
+    if (!motionAllowed) {
+      cancelAnimation(micScale);
+      micScale.value = 1;
+      return;
+    }
     micScale.value = withRepeat(
       withSequence(
         withTiming(1.08, { duration: 800 }),
@@ -52,7 +66,7 @@ export function GMSearchBar({
       -1,
       true
     );
-  }, [micScale]);
+  }, [micScale, motionAllowed]);
 
   const micStyle = useAnimatedStyle(() => ({
     transform: [{ scale: micScale.value }],

@@ -1,11 +1,13 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Check, CheckCircle2, Loader2, X } from "lucide-react";
+import { toast } from "sonner";
 import {
   DigilockerConsentSheet,
   openDigilockerLoadingPopup,
 } from "@/components/onboarding/DigilockerConsentSheet";
+import { FileDropSurface, PayUDocumentDropzone } from "@/components/FileDropSurface";
 import {
   isMaskedAadhaar,
   maskAadhaarNumber,
@@ -25,12 +27,125 @@ import {
   hasDoc,
   isDocMandatory,
   onboardingNavDocs,
+  partnerFormKey,
   PHARMA_DOC_CODES,
   resolveMerchantDocs,
   shortDocNavLabel,
   showPharmaLicence,
   storeTypeDocsSidebarHint,
 } from "@/lib/merchant-onboarding-docs";
+
+const DOC_SUBMIT_MARQUEE_TEXT =
+  "Please submit all your documents. Our team would verify the documents within 24-48 business hours once you submit them.";
+const AUTO_VERIFIED_STATUS_LABEL = "Auto verified By Cashfree Verification method";
+const MANUAL_UPLOADED_STATUS_LABEL = "manual uploaded";
+const BANK_MANUAL_FALLBACK_MESSAGE =
+  "Automatic verification failed. Please enter your bank details manually and upload valid bank proof.";
+const UPI_MANUAL_FALLBACK_MESSAGE =
+  "Automatic verification failed. Please upload a UPI QR screenshot with your UPI ID clearly visible.";
+
+function ManualVerifyFallbackBanner({ message }: { message: string }) {
+  return (
+    <div className="flex items-start gap-2 rounded-xl border border-amber-200/80 bg-gradient-to-r from-amber-50 to-orange-50/50 px-3 py-2">
+      <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-amber-200/90 text-[10px] font-bold text-amber-900">
+        !
+      </span>
+      <p className="text-[11px] sm:text-xs leading-relaxed text-amber-950">{message}</p>
+    </div>
+  );
+}
+
+function DocumentSubmitMarquee({ className = "" }: { className?: string }) {
+  return (
+    <div
+      className={`overflow-hidden border-t border-blue-100 bg-blue-50 py-1 ${className}`}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex w-max animate-store-closed-marquee whitespace-nowrap">
+        {[0, 1].map((i) => (
+          <span key={i} className="px-6 text-xs text-blue-900">
+            {DOC_SUBMIT_MARQUEE_TEXT}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PendingDocCircleIcon() {
+  return (
+    <span
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 border-amber-400 bg-amber-50 text-amber-500"
+      aria-hidden
+    >
+      <Check className="h-4 w-4" strokeWidth={3} />
+    </span>
+  );
+}
+
+function ChangeDocsNoFooterButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-lg border border-indigo-600 bg-white px-4 py-2 text-sm font-medium text-indigo-700 shadow-sm hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 inline-flex items-center gap-2"
+    >
+      Change docs no
+    </button>
+  );
+}
+
+function isLikelyPdfUrl(url?: string): boolean {
+  if (!url) return false;
+  const pathOnly = url.split("?")[0].toLowerCase();
+  if (pathOnly.endsWith(".pdf")) return true;
+  try {
+    const u = new URL(url, "http://localhost");
+    const k = u.searchParams.get("key");
+    if (k && decodeURIComponent(k).toLowerCase().endsWith(".pdf")) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+function fileNameFromAttachmentUrl(url: string | undefined): string {
+  if (!url) return "";
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+
+  try {
+    const base =
+      typeof window !== "undefined" ? window.location.origin : "https://example.com";
+    const parsed = new URL(trimmed, base);
+    const key = parsed.searchParams.get("key");
+    if (key) {
+      const leaf =
+        decodeURIComponent(key).replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
+      if (leaf && leaf.toLowerCase() !== "proxy") return leaf;
+    }
+    const pathLeaf = parsed.pathname.split("/").filter(Boolean).pop() || "";
+    if (pathLeaf && pathLeaf.toLowerCase() !== "proxy") return pathLeaf;
+  } catch {
+    /* fall through */
+  }
+
+  const leaf =
+    trimmed.replace(/\\/g, "/").split("?")[0]?.split("/").filter(Boolean).pop() || "";
+  if (leaf && leaf.toLowerCase() !== "proxy") return leaf;
+  return "";
+}
+
+function BoldUploadIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M12 5v11" stroke="currentColor" strokeWidth="2.75" strokeLinecap="round" />
+      <path d="M8 10l4-4 4 4" stroke="currentColor" strokeWidth="2.75" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 19h14" stroke="currentColor" strokeWidth="2.75" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 /** Cashfree DigiLocker requires redirect_url to start with https://. */
 function digilockerRedirectUrl(): string {
@@ -125,15 +240,18 @@ interface Step4DocumentsProps {
   onRequiredValidChange?: (valid: boolean) => void;
   /** Notify parent when DigiLocker Aadhaar verify is in-flight (blocks Skip). */
   onDigilockerInFlightChange?: (inFlight: boolean) => void;
-  /** Partnersite-style footer: Previous within docs subsections / back to step 3. */
-  onPrevious?: () => void;
-  /** Partnersite-style footer: Save & Continue for current subsection. */
-  onContinue?: () => void;
+  /** Wizard back — previous onboarding step (not previous doc section). */
+  onWizardBack?: () => void;
+  /** Save current document section only (modal Upload). */
+  onUploadSection?: () => void | Promise<void>;
+  /** Finish Step 4 when all documents are complete. */
+  onFinishDocuments?: () => void | Promise<void>;
   /** Visible Step 4 subsections for the selected store type (from Super Admin catalog). */
   onVisibleSectionsChange?: (sections: Step4SectionKey[]) => void;
   actionLoading?: boolean;
-  continueDisabled?: boolean;
-  continueLabel?: string;
+  uploadDisabled?: boolean;
+  uploadLoading?: boolean;
+  finishDocumentsDisabled?: boolean;
 }
 
 const Step4Documents: React.FC<Step4DocumentsProps> = ({
@@ -147,12 +265,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
   initialDocUrls,
   onRequiredValidChange,
   onDigilockerInFlightChange,
-  onPrevious,
-  onContinue,
+  onWizardBack,
+  onUploadSection,
+  onFinishDocuments,
   onVisibleSectionsChange,
   actionLoading = false,
-  continueDisabled = false,
-  continueLabel = "Save & Continue",
+  uploadDisabled = false,
+  uploadLoading = false,
+  finishDocumentsDisabled = true,
 }) => {
   const [sectionInternal, setSectionInternal] = useState<Step4SectionKey>("PAN");
   const sectionRaw = sectionProp ?? sectionInternal;
@@ -195,6 +315,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     if (idx > maxReachedSectionIdx) return;
     setSection(s);
   };
+  const [docFormModalOpen, setDocFormModalOpen] = useState(false);
+  const [modalOpenedComplete, setModalOpenedComplete] = useState(false);
+  const [docEditUnlocked, setDocEditUnlocked] = useState(false);
+  const [changeCertConfirm, setChangeCertConfirm] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   useEffect(() => {
     onVisibleSectionsChange?.(step4SectionOrder);
@@ -446,7 +574,9 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       }
     }
   }, [initialForm]);
-  const [err, setErr] = useState<string | null>(null);
+  const reportError = (message: string) => {
+    toast.error(message);
+  };
   const [uploadingDocType, setUploadingDocType] = useState<
     | null
     | "pan"
@@ -679,6 +809,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
   const [docPreviews, setDocPreviews] = useState<Record<string, string>>(
     () => initialDocUrls ?? {} // hydrate from existing document URLs on first render
   );
+  const [docOriginalFileNames, setDocOriginalFileNames] = useState<Record<string, string>>({});
 
   // If parent passes new initialDocUrls later (e.g. after async load), merge them in.
   useEffect(() => {
@@ -686,21 +817,100 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     setDocPreviews((prev) => ({ ...initialDocUrls, ...prev }));
   }, [initialDocUrls]);
 
-  const getFileNameFromUrl = (url: string | undefined) => {
-    if (!url) return "";
-    try {
-      const u = new URL(url, typeof window !== "undefined" ? window.location.origin : "https://example.com");
-      const parts = u.pathname.split("/");
-      return parts[parts.length - 1] || "";
-    } catch {
-      const parts = url.split("/");
-      return parts[parts.length - 1] || "";
-    }
+  const getFileNameFromUrl = (url: string | undefined, previewKey?: string) => {
+    const stored = previewKey ? docOriginalFileNames[previewKey] : undefined;
+    if (stored) return stored;
+    return fileNameFromAttachmentUrl(url);
+  };
+
+  const renderUploadedDocumentPanel = (args: {
+    viewTitle: string;
+    url?: string;
+    previewKey?: string;
+    onChange: () => void;
+    onRemove: () => void;
+    uploading?: boolean;
+  }) => {
+    const { viewTitle, url, previewKey, onChange, onRemove, uploading } = args;
+    const displayName =
+      getFileNameFromUrl(url, previewKey) || "Uploaded document";
+    const pdfOnly = isLikelyPdfUrl(url);
+    const thumbSrc = url && !pdfOnly ? url : null;
+    const openPreview = () => {
+      if (url) window.open(url, "_blank", "noopener,noreferrer");
+    };
+    return (
+      <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2.5 sm:p-3">
+        <div className="flex flex-col items-stretch gap-2.5 sm:flex-row sm:items-center sm:gap-3">
+          <button
+            type="button"
+            onClick={openPreview}
+            className="group relative mx-auto flex h-[104px] w-[140px] shrink-0 cursor-zoom-in items-center justify-center overflow-hidden rounded-md border border-slate-200 bg-white text-left focus:outline-none focus:ring-2 focus:ring-indigo-500 sm:mx-0 sm:h-[112px] sm:w-[150px]"
+            aria-label={`Open ${viewTitle} preview`}
+          >
+            {thumbSrc ? (
+              <>
+                <img src={thumbSrc} alt="" className="max-h-full max-w-full object-contain" />
+                <span className="pointer-events-none absolute bottom-1 right-1 rounded bg-slate-900/70 px-1.5 py-0.5 text-[9px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
+                  Enlarge
+                </span>
+              </>
+            ) : (
+              <div className="flex flex-col items-center gap-1 px-2 py-3 text-center text-slate-600">
+                <svg className="h-8 w-8 shrink-0 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <p className="text-[11px] font-medium leading-tight text-slate-700">{pdfOnly ? "PDF" : "File"}</p>
+                <p className="text-[10px] leading-tight text-slate-500">Tap · View</p>
+              </div>
+            )}
+          </button>
+          <div className="flex min-w-0 flex-1 flex-col justify-center gap-1.5">
+            <div className="min-w-0">
+              <p className="truncate text-xs font-medium text-slate-800 sm:text-sm" title={displayName}>
+                {displayName}
+              </p>
+              <p className="text-[10px] text-slate-500 sm:text-xs">Saved</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={openPreview}
+                className="rounded-md border border-indigo-200 bg-white px-2 py-1 text-[11px] font-medium text-indigo-700 hover:bg-indigo-50 sm:px-2.5 sm:text-xs"
+              >
+                View
+              </button>
+              <button
+                type="button"
+                onClick={onChange}
+                disabled={!!uploading}
+                className="rounded-md border border-indigo-200 bg-white px-2 py-1 text-[11px] font-medium text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 sm:px-2.5 sm:text-xs"
+              >
+                Change
+              </button>
+              <button
+                type="button"
+                onClick={onRemove}
+                className="rounded-md p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800"
+                title="Remove"
+              >
+                <span className="sr-only">Remove</span>
+                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const panInputRef = useRef<HTMLInputElement | null>(null);
   const aadhaarFrontInputRef = useRef<HTMLInputElement | null>(null);
   const aadhaarBackInputRef = useRef<HTMLInputElement | null>(null);
+  const gstUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const bankProofInputRef = useRef<HTMLInputElement | null>(null);
   type ReplaceTarget = null | "pan" | "aadhaar_front" | "aadhaar_back";
   const [replaceTarget, setReplaceTarget] = useState<ReplaceTarget>(null);
 
@@ -869,9 +1079,8 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
 
   useEffect(() => {
     const num = (form.pan_number || "").trim().toUpperCase();
-    if (panVerifiedNumberRef.current && panVerifiedNumberRef.current === num) {
-      if (panVerify.state === "verified" && form.pan_is_verified) return;
-      const details = panVerifiedDetailsRef.current || { pan_status: "VALID" };
+
+    const restorePanVerified = (details: Record<string, unknown>) => {
       const flattened = flattenPanVerifiedData(details);
       const registered = pickPanFetchedInfo(flattened).registered_name || "";
       setPanVerify({ state: "verified", details: flattened });
@@ -883,9 +1092,38 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
         pan_verification_method: prev.pan_verification_method || "CASHFREE_AUTO",
         pan_verified_at: prev.pan_verified_at || new Date().toISOString(),
       }));
+    };
+
+    if (form.pan_is_verified) {
+      if (!num) return;
+      if (!panVerifiedNumberRef.current) {
+        panVerifiedNumberRef.current = num;
+        panVerifiedDetailsRef.current = flattenPanVerifiedData(
+          (form.pan_verified_details as Record<string, unknown> | null) || {
+            pan_status: "VALID",
+          },
+        );
+      }
+      if (panVerifiedNumberRef.current === num) {
+        if (panVerify.state !== "verified") {
+          restorePanVerified(panVerifiedDetailsRef.current || { pan_status: "VALID" });
+        }
+        return;
+      }
+    }
+
+    if (!num) return;
+
+    if (panVerifiedNumberRef.current && panVerifiedNumberRef.current === num) {
+      if (panVerify.state === "verified") return;
+      restorePanVerified(panVerifiedDetailsRef.current || { pan_status: "VALID" });
       return;
     }
-    if (panVerify.state === "idle" && !form.pan_is_verified) return;
+
+    if (panVerify.state === "idle") return;
+
+    panVerifiedNumberRef.current = null;
+    panVerifiedDetailsRef.current = null;
     setPanVerify({ state: "idle" });
     setForm((prev) => ({
       ...prev,
@@ -1130,7 +1368,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
 
   const verifyDocNow = async (kind: "pan" | "gstin" | "aadhaar" | "bank" | "upi") => {
     if (!storeInternalId) {
-      setErr("Save store details first so a store id exists.");
+      reportError("Save store details first so a store id exists.");
       return;
     }
     if (kind === "pan") {
@@ -1153,7 +1391,6 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     }
     if (kind === "aadhaar") {
       setAadhaarVerify({ state: "verifying" });
-      setErr(null);
       digilockerPopupRef.current = openDigilockerLoadingPopup();
       try {
         const postVerify = () =>
@@ -1180,7 +1417,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           }
           const errMsg = "Couldn't verify right now. Wait a moment and try again.";
           setAadhaarVerify({ state: "failed", error: errMsg });
-          setErr(errMsg);
+          reportError(errMsg);
           return;
         }
         if (data?.outcome === "digilocker" && data?.url) {
@@ -1218,7 +1455,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           }
           const errMsg = String(data?.error || "DigiLocker verification failed.");
           setAadhaarVerify({ state: "failed", error: errMsg });
-          setErr(errMsg);
+          reportError(errMsg);
         }
       } catch {
         if (digilockerPopupRef.current && !digilockerPopupRef.current.closed) {
@@ -1227,7 +1464,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
         }
         const errMsg = "Could not reach the verification service.";
         setAadhaarVerify({ state: "failed", error: errMsg });
-        setErr(errMsg);
+        reportError(errMsg);
       }
       return;
     }
@@ -1241,7 +1478,6 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
             ? setBankVerify
             : setUpiVerify;
     setter({ state: "verifying" });
-    setErr(null);
     try {
       const body =
         kind === "pan"
@@ -1287,7 +1523,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       if (res.status === 401) {
         const errMsg = "Couldn't verify right now. Wait a moment and try again.";
         setter({ state: "failed", error: errMsg });
-        setErr(errMsg);
+        reportError(errMsg);
         return;
       }
       if (data?.outcome === "verified") {
@@ -1367,12 +1603,12 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       } else {
         const errMsg = String(data?.error || "Verification failed.");
         setter({ state: "failed", error: errMsg });
-        setErr(errMsg);
+        reportError(errMsg);
       }
     } catch {
       const errMsg = "Could not reach the verification service.";
       setter({ state: "failed", error: errMsg });
-      setErr(errMsg);
+      reportError(errMsg);
     }
   };
 
@@ -1447,9 +1683,10 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     return rows;
   };
 
-  // Compute whether mandatory fields for the CURRENT section are satisfied
-  useEffect(() => {
-    if (!onRequiredValidChange) return;
+  // Compute whether mandatory fields for a given section are satisfied
+  const evaluateSectionValid = (sectionCode: Step4SectionKey): boolean => {
+    const targetSection = coerceToNavCode(sectionCode, navDocs);
+    const targetFormSection = formSectionOf(resolvedDocs, targetSection);
     const hasPanNumber =
       !!form.pan_number &&
       form.pan_number.trim().length === 10 &&
@@ -1458,7 +1695,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     const hasPanImage = !!docPreviews.pan;
     let valid = true;
 
-    if (activeFormSection === "PAN") {
+    if (targetFormSection === "PAN") {
       const panBlank =
         !hasPanNumber && !hasPanHolder && !hasPanImage && !form.pan_is_verified;
       if (!panIsMandatory && panBlank) {
@@ -1468,7 +1705,6 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
         if (panMode === "auto") {
           valid = hasPanNumber && verified;
         } else {
-          // hybrid: verified OR (failed/manual + image) OR existing image on file
           valid =
             hasPanNumber &&
             (verified ||
@@ -1478,29 +1714,30 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       } else {
         valid = hasPanNumber && hasPanHolder && hasPanImage;
       }
-    } else if (activeFormSection === "LICENCE") {
-      // FSSAI / Drug Lic — unlock rest only after unique check passes
+    } else if (targetFormSection === "LICENCE") {
       if (licenceDup.fssai || licenceDup.drug || licenceDup.checkingFssai || licenceDup.checkingDrug) {
         valid = false;
-      } else if (PHARMA_DOC_CODES.has(section)) {
+      } else if (PHARMA_DOC_CODES.has(targetSection)) {
         valid =
           !!form.drug_license_number &&
           form.drug_license_number.trim().length > 0 &&
           !docFormatErrors.drug_license_number &&
           licenceDup.drugOk;
-      } else if (section === "FSSAI") {
+      } else if (targetSection === "FSSAI") {
         const fssaiOk =
-          !!form.fssai_number &&
-          form.fssai_number.trim().length > 0 &&
+          !!(form.fssai_number || "").trim() &&
+          (form.fssai_number || "").replace(/\D/g, "").length === 14 &&
           !docFormatErrors.fssai_number &&
-          licenceDup.fssaiOk;
+          licenceDup.fssaiOk &&
+          !!form.fssai_expiry_date &&
+          !!docPreviews.fssai;
         if (fssaiIsMandatory) {
           valid = fssaiOk;
         } else {
           const started = !!(form.fssai_number || "").trim() || !!docPreviews.fssai;
           valid = !started || fssaiOk;
         }
-      } else if (section === "TRADE_LICENSE") {
+      } else if (targetSection === "TRADE_LICENSE") {
         const started =
           !!(form.trade_license_number || "").trim() ||
           !!docPreviews.trade_license ||
@@ -1511,7 +1748,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           !!docPreviews.trade_license &&
           !!form.trade_license_expiry_date;
         valid = tradeIsMandatory ? tradeOk : !started || tradeOk;
-      } else if (section === "SHOP_ACT") {
+      } else if (targetSection === "SHOP_ACT") {
         const started =
           !!(form.shop_establishment_number || "").trim() ||
           !!docPreviews.shop_establishment;
@@ -1520,7 +1757,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           !docFormatErrors.shop_establishment_number &&
           !!docPreviews.shop_establishment;
         valid = shopIsMandatory ? shopOk : !started || shopOk;
-      } else if (section === "UDYAM") {
+      } else if (targetSection === "UDYAM") {
         const started = !!(form.udyam_number || "").trim() || !!docPreviews.udyam;
         const udyamOk =
           !!(form.udyam_number || "").trim() &&
@@ -1530,8 +1767,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       } else {
         valid = true;
       }
-    } else if (activeFormSection === "GST") {
-      // GST is optional unless Super Admin marked it mandatory for this store type.
+    } else if (targetFormSection === "GST") {
       valid = true;
       const gstEntered = !!(form.gst_number || "").trim();
       if (gstIsMandatory && !gstEntered) {
@@ -1547,8 +1783,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       } else if (gstEntered && !!docFormatErrors.gst_number) {
         valid = false;
       }
-    } else if (activeFormSection === "BANK") {
-      // Bank section: auto / hybrid / manual payout details
+    } else if (targetFormSection === "BANK") {
       const hasHolder =
         !!form.bank_account_holder_name &&
         form.bank_account_holder_name.trim().length > 0;
@@ -1561,17 +1796,13 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
         !!form.bank_ifsc_code &&
         form.bank_ifsc_code.trim().length > 0 &&
         !docFormatErrors.bank_ifsc_code;
-
       const hasUpiId = !!form.upi_id && form.upi_id.trim().length > 0;
       const upiPattern = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z0-9]{2,64}$/;
-      const hasValidUpiId =
-        hasUpiId && upiPattern.test(form.upi_id!.trim());
+      const hasValidUpiId = hasUpiId && upiPattern.test(form.upi_id!.trim());
       const hasBankProof = !!docPreviews.bank_proof;
       const hasUpiQr = !!docPreviews.upi_qr;
-      const bankVerified =
-        bankVerify.state === "verified" || !!form.bank_is_verified;
-      const upiVerified =
-        upiVerify.state === "verified" || !!form.upi_verified;
+      const bankVerified = bankVerify.state === "verified" || !!form.bank_is_verified;
+      const upiVerified = upiVerify.state === "verified" || !!form.upi_verified;
       const bankBlank =
         !hasAccountNumber && !hasIfsc && !hasUpiId && !hasBankProof && !hasUpiQr && !bankVerified;
 
@@ -1602,34 +1833,40 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
         } else if (bankVerified) {
           valid = hasAccountType;
         } else {
-          // hybrid fallback: manual details + proof
           valid = hasHolder && hasBankName && hasBankProof;
         }
       } else {
         valid = hasHolder && hasBankName && hasAccountNumber && hasIfsc && hasBankProof;
       }
     } else {
-      // Aadhaar: catalog optional → skip anytime. Mandatory → number required.
-      // Hybrid/auto DigiLocker still never blocks Skip when the field is empty.
-      const aadhaarNum = (form.aadhar_number || "").replace(/\s/g, "").trim();
+      const aadhaarRaw = (form.aadhar_number || "").trim();
+      const aadhaarNum = aadhaarRaw.replace(/\s/g, "");
+      const hasAadhaarInput = !!(aadhaarNum || isMaskedAadhaar(aadhaarRaw));
       valid = true;
-      if (aadhaarIsMandatory && !aadhaarNum && !form.aadhaar_is_verified) {
+      if (aadhaarIsMandatory && !hasAadhaarInput && !form.aadhaar_is_verified) {
         valid = false;
       } else if (aadhaarNum && docFormatErrors.aadhar_number) {
         valid = false;
+      } else if (isElectronic(aadhaarMode) && hasAadhaarInput) {
+        const verified =
+          aadhaarVerify.state === "verified" || !!form.aadhaar_is_verified;
+        if (!verified) valid = false;
       }
     }
 
-    // Global rule: if any document number field has a format error while value is present,
-    // block progression even if that doc is "optional".
     const hasAnyFormatError =
       (!!form.trade_license_number && !!docFormatErrors.trade_license_number) ||
-      (!!form.shop_establishment_number &&
-        !!docFormatErrors.shop_establishment_number) ||
+      (!!form.shop_establishment_number && !!docFormatErrors.shop_establishment_number) ||
       (!!form.udyam_number && !!docFormatErrors.udyam_number) ||
       (!!form.other_document_number && !!docFormatErrors.other_document_number);
 
-    onRequiredValidChange(valid && !hasAnyFormatError);
+    return valid && !hasAnyFormatError;
+  };
+
+  // Compute whether mandatory fields for the CURRENT section are satisfied
+  useEffect(() => {
+    if (!onRequiredValidChange) return;
+    onRequiredValidChange(evaluateSectionValid(section));
     // Note: docFormatErrors is intentionally not in the dependency array to keep
     // the deps length stable across hot reloads and avoid the Next.js warning.
   }, [
@@ -1666,28 +1903,37 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     docFormatErrors.drug_license_number,
   ]);
 
+  type DocUploadType =
+    | "pan"
+    | "aadhaar_front"
+    | "aadhaar_back"
+    | "gst"
+    | "fssai"
+    | "drug_license"
+    | "trade_license"
+    | "shop_establishment"
+    | "udyam"
+    | "pharmacist_certificate"
+    | "pharmacy_council_registration"
+    | "bank_proof"
+    | "other";
+
   const handleFileUpload = async (
     e: React.ChangeEvent<HTMLInputElement>,
-    docType:
-      | "pan"
-      | "aadhaar_front"
-      | "aadhaar_back"
-      | "gst"
-      | "fssai"
-      | "drug_license"
-      | "trade_license"
-      | "shop_establishment"
-      | "udyam"
-      | "pharmacist_certificate"
-      | "pharmacy_council_registration"
-      | "bank_proof"
-      | "other"
+    docType: DocUploadType,
   ) => {
-    setErr(null);
     const file = e.target.files?.[0];
     if (!file) return;
+    try {
+      await processFileUpload(docType, file);
+    } finally {
+      e.target.value = "";
+    }
+  };
+
+  const processFileUpload = async (docType: DocUploadType, file: File) => {
     if (!storeInternalId || !Number.isFinite(storeInternalId)) {
-      setErr("Please complete Step 1 so the store is created before uploading documents.");
+      reportError("Please complete Step 1 so the store is created before uploading documents.");
       return;
     }
     try {
@@ -1729,6 +1975,10 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           }
           return next;
         });
+        setDocOriginalFileNames((prev) => ({
+          ...prev,
+          [payoutMode === "UPI" ? "upi_qr" : "bank_proof"]: file.name,
+        }));
 
         // Persist URL into form patch so parent can save into merchant_store_bank_accounts
         setForm((prev) => ({
@@ -1809,15 +2059,15 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
         next[docType] = previewUrl;
         return next;
       });
+      setDocOriginalFileNames((prev) => ({ ...prev, [docType]: file.name }));
     } catch (e) {
-      setErr(
+      reportError(
         e instanceof Error
           ? e.message
           : "Failed to upload document. Please try again."
       );
     } finally {
       setUploadingDocType(null);
-      e.target.value = "";
     }
   };
 
@@ -1828,78 +2078,30 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     };
   }, [docPreviews]);
 
-  const renderPanSection = () => (
+  const renderPanSection = () => {
+    const showPanManualFields = !isElectronic(panMode) || uploadAllowedFor(panMode, panVerify);
+    const panLocked = modalOpenedComplete && !docEditUnlocked;
+    return (
     <div className="space-y-2">
-      <div className="rounded-lg bg-indigo-50/80 border border-indigo-100 p-3">
-        <div className="flex items-start gap-2">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path
-                fillRule="evenodd"
-                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-indigo-900">
-              PAN Card {panIsMandatory ? "(Mandatory)" : <span className="text-slate-500 text-xs font-normal">(Optional)</span>}
-            </p>
-            <p className="text-xs text-indigo-700 mt-0.5">
-              {isElectronic(panMode)
-                ? "PAN number is verified automatically — no card image needed when it verifies. Format: ABCDE1234F"
-                : "PAN is required for store verification. Format: ABCDE1234F."}
-            </p>
-          </div>
-        </div>
-      </div>
-      <div className="rounded-xl bg-amber-50/80 border border-amber-100 p-4">
-        <div className="flex items-start gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path
-                fillRule="evenodd"
-                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-amber-900">Note</p>
-            <p className="text-xs text-amber-800 mt-0.5">
-              PAN must be valid and belong to the business owner or authorized signatory.
-            </p>
-          </div>
-        </div>
-      </div>
-      <div className={`grid grid-cols-1 ${isElectronic(panMode) && !(panVerify.state === "failed" && /name/i.test(panVerify.error || "")) ? "" : "sm:grid-cols-2"} gap-3`}>
-        {(!isElectronic(panMode) ||
-          (panVerify.state === "failed" && /name/i.test(panVerify.error || ""))) && (
-          <div>
-            <label className="block text-xs font-medium text-slate-700 mb-1">
-              Name as on PAN {isElectronic(panMode) ? "" : <span className="text-rose-500">*</span>}
-            </label>
-            <input
-              type="text"
-              name="pan_holder_name"
-              value={form.pan_holder_name ?? ""}
-              onChange={handleChange}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-              placeholder="Full name as on PAN card"
-            />
-          </div>
-        )}
+      <p className="text-xs text-amber-800 rounded-lg border border-amber-100 bg-amber-50/80 px-3 py-2">
+        <span className="font-semibold text-amber-900">Note</span> - PAN number must be valid and belong to the business owner or authorized signatory.
+      </p>
+      <div className="space-y-3">
         <div>
           <label className="block text-xs font-medium text-slate-700 mb-1">
             PAN Number <span className="text-rose-500">*</span>
           </label>
-          <div className="relative">
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-start">
+            <div className="relative flex-1 min-w-0">
             <input
               type="text"
               name="pan_number"
               value={form.pan_number ?? ""}
               onChange={handleChange}
-              className={`w-full rounded-lg border px-3 pr-10 py-2 text-sm uppercase tracking-wider bg-white font-medium focus:outline-none focus:ring-2 ${
+              readOnly={panLocked}
+              className={`w-full rounded-lg border px-3 pr-10 py-2 text-sm uppercase tracking-wider font-medium focus:outline-none focus:ring-2 ${
+                panLocked ? "bg-slate-50 cursor-default" : "bg-white"
+              } ${
                 form.pan_number
                   ? docFormatErrors.pan_number
                     ? "border-rose-400 focus:ring-rose-200"
@@ -1916,6 +2118,29 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 </span>
               </span>
             )}
+            </div>
+            {!panLocked && isElectronic(panMode) && panVerify.state !== "verified" && !form.pan_is_verified ? (
+              <button
+                type="button"
+                onClick={() => verifyDocNow("pan")}
+                disabled={
+                  panVerify.state === "verifying" ||
+                  !(form.pan_number || "").trim() ||
+                  !!documentFormatValidators.pan((form.pan_number || "").trim()) ||
+                  !storeInternalId
+                }
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed sm:min-h-[42px]"
+              >
+                {panVerify.state === "verifying" ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Verifying…
+                  </>
+                ) : (
+                  "Verify PAN"
+                )}
+              </button>
+            ) : null}
           </div>
           {docFormatErrors.pan_number && (
             <p className="mt-1 text-xs text-rose-600">{docFormatErrors.pan_number}</p>
@@ -1924,68 +2149,59 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
             10 characters, auto uppercase (e.g. ABCDE1234F)
           </p>
         </div>
+        {showPanManualFields ? (
+        <div>
+          <label className="block text-xs font-medium text-slate-700 mb-1">
+            Name as on PAN <span className="text-rose-500">*</span>
+          </label>
+          <input
+            type="text"
+            name="pan_holder_name"
+            value={form.pan_holder_name ?? ""}
+            onChange={handleChange}
+            readOnly={panLocked}
+            className={`w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${panLocked ? "bg-slate-50 cursor-default" : "bg-white"}`}
+            placeholder="Full name as on PAN card"
+          />
+        </div>
+        ) : null}
       </div>
 
-      {isElectronic(panMode) && (
-        <div className="space-y-2">
-          {panVerify.state === "verified" || form.pan_is_verified ? (
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-              <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
-                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">
-                  ✓
-                </span>
-                PAN verified automatically
-              </p>
-              {verifiedDetailRows(panVerify.details || form.pan_verified_details || undefined).length > 0 && (
-                <dl className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                  {verifiedDetailRows(panVerify.details || form.pan_verified_details || undefined).map(
-                    ([label, value]) => (
-                      <div key={label} className="flex gap-1.5">
-                        <dt className="text-emerald-700">{label}:</dt>
-                        <dd className="font-medium text-emerald-900">{value}</dd>
-                      </div>
-                    ),
-                  )}
-                </dl>
+      {isElectronic(panMode) && (panVerify.state === "verified" || form.pan_is_verified) && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+          <p className="text-sm font-semibold text-emerald-800 flex items-center gap-1.5">
+            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">
+              ✓
+            </span>
+            PAN verified automatically
+          </p>
+          {verifiedDetailRows(panVerify.details || form.pan_verified_details || undefined).length > 0 && (
+            <dl className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              {verifiedDetailRows(panVerify.details || form.pan_verified_details || undefined).map(
+                ([label, value]) => (
+                  <div key={label} className="flex gap-1.5">
+                    <dt className="text-emerald-700">{label}:</dt>
+                    <dd className="font-medium text-emerald-900">{value}</dd>
+                  </div>
+                ),
               )}
-              <p className="mt-1.5 text-xs text-emerald-700">
-                No card image needed. You can continue.
-              </p>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => verifyDocNow("pan")}
-              disabled={
-                panVerify.state === "verifying" ||
-                !(form.pan_number || "").trim() ||
-                !!documentFormatValidators.pan((form.pan_number || "").trim()) ||
-                !storeInternalId
-              }
-              className="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {panVerify.state === "verifying" ? (
-                <>
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                  Verifying…
-                </>
-              ) : (
-                "Verify PAN"
-              )}
-            </button>
+            </dl>
           )}
-          {panVerify.state === "failed" && (
-            <p className="text-[11px] text-rose-600">
-              {panVerify.error || "Automatic verification failed."}
-              {panMode === "hybrid" ? " Upload a PAN card image to continue." : ""}
-            </p>
-          )}
+          <p className="mt-1.5 text-xs text-emerald-700">
+            No card image needed. You can continue.
+          </p>
         </div>
       )}
 
-      {/* Upload — always for manual; for auto/hybrid only after fail/manual */}
-      {uploadAllowedFor(panMode, panVerify) && (
-        <>
+      {isElectronic(panMode) && panVerify.state === "failed" && (
+        <p className="text-[11px] text-rose-600">
+          {panVerify.error || "Automatic verification failed."}
+          {panMode === "hybrid" ? " Upload a PAN card image to continue." : ""}
+        </p>
+      )}
+
+      {(uploadAllowedFor(panMode, panVerify) || docPreviews.pan) && (
+      <>
       {docPreviews.pan ? (
         <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 relative">
           <div className="flex items-center justify-between gap-3">
@@ -2058,39 +2274,35 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           />
         </div>
       ) : (
-        <div className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-6 text-center mt-3">
-          <p className="text-xs sm:text-sm font-medium text-slate-700 mb-1">
-            PAN Card Image {isElectronic(panMode) ? "(fallback)" : "*"}
-          </p>
-          <p className="text-[11px] text-slate-500">
-            JPG, PNG or PDF · Max 5MB
-          </p>
-          <div className="mt-3 flex items-center justify-center">
-            <label className="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium cursor-pointer hover:bg-indigo-700">
-              {uploadingDocType === "pan" && (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              )}
-              <span>
-                {uploadingDocType === "pan" ? "Uploading..." : "Choose file"}
-              </span>
-              <input
-                ref={panInputRef}
-                type="file"
-                accept="image/*,.pdf"
-                className="hidden"
-                onChange={(e) => handleFileUpload(e, "pan")}
-                disabled={uploadingDocType === "pan"}
-              />
-            </label>
-          </div>
-        </div>
+        <PayUDocumentDropzone
+          label={
+            isElectronic(panMode)
+              ? "Upload document (PAN Card Image fallback)"
+              : "Upload document (PAN Card Image)"
+          }
+          onChoose={() => panInputRef.current?.click()}
+          onFile={(file) => processFileUpload("pan", file)}
+          uploading={uploadingDocType === "pan"}
+          hint="Upload .png, .pdf, .jpg, .jpeg file (max size 5MB)"
+        />
       )}
-        </>
+      <input
+        ref={panInputRef}
+        type="file"
+        accept="image/*,.pdf"
+        className="hidden"
+        onChange={(e) => handleFileUpload(e, "pan")}
+        disabled={uploadingDocType === "pan"}
+      />
+      </>
       )}
     </div>
-  );
+    );
+  };
 
-  const renderAadhaarSection = () => (
+  const renderAadhaarSection = () => {
+    const aadhaarLocked = modalOpenedComplete && !docEditUnlocked;
+    return (
     <div className="space-y-3">
       <div className="rounded-lg bg-indigo-50/80 border border-indigo-100 p-3">
         <div className="flex items-start gap-2">
@@ -2111,20 +2323,11 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
               </span>
             </p>
             <p className="text-xs text-indigo-700 mt-0.5">
-              {isElectronic(aadhaarMode)
-                ? aadhaarIsMandatory
-                  ? "DigiLocker verify when available."
-                  : "Optional — DigiLocker verify, or skip and continue anytime."
-                : "Identity verification. Images are optional—number and name sufficient."}
+              Aadhaar details are optional, but if provided, both sides must be clear and readable.
             </p>
           </div>
         </div>
       </div>
-      {!isElectronic(aadhaarMode) && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] sm:text-xs text-amber-800">
-          Both sides should be clear and readable.
-        </div>
-      )}
       <div
         className={`grid grid-cols-1 ${isElectronic(aadhaarMode) ? "" : "sm:grid-cols-2"} gap-3`}
       >
@@ -2149,16 +2352,25 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
             Aadhaar Number{" "}
             <span className="font-normal text-slate-500">(if providing)</span>
           </label>
-          <div className="relative">
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-start">
+          <div className="relative flex-1 min-w-0">
             <input
               type="text"
               name="aadhar_number"
               value={form.aadhar_number ?? ""}
               onChange={handleChange}
               readOnly={
-                aadhaarVerify.state === "verified" || !!form.aadhaar_is_verified
+                aadhaarLocked ||
+                aadhaarVerify.state === "verified" ||
+                !!form.aadhaar_is_verified
               }
-              className={`w-full rounded-lg border px-3 pr-8 py-2 text-sm bg-slate-50 ${
+              className={`w-full rounded-lg border px-3 pr-8 py-2 text-sm ${
+                aadhaarLocked ||
+                aadhaarVerify.state === "verified" ||
+                !!form.aadhaar_is_verified
+                  ? "bg-slate-50 cursor-default"
+                  : "bg-slate-50"
+              } ${
                 form.aadhar_number
                   ? docFormatErrors.aadhar_number
                     ? "border-rose-400"
@@ -2175,6 +2387,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 </span>
               </span>
             )}
+          </div>
           </div>
           {docFormatErrors.aadhar_number && (
             <p className="mt-0.5 text-[11px] text-rose-600">
@@ -2242,7 +2455,6 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     aadhaarPollRef.current = null;
                   }
                   setAadhaarVerify({ state: "idle" });
-                  setErr(null);
                 }}
                 className="inline-flex w-fit items-center rounded-lg border border-indigo-300 bg-white px-3 py-1.5 text-xs font-medium text-indigo-800 hover:bg-indigo-50"
               >
@@ -2362,7 +2574,12 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
             )}
           </div>
         ) : (
-          <div className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-6 text-center">
+          <FileDropSurface
+            onChoose={() => aadhaarFrontInputRef.current?.click()}
+            onFile={(file) => processFileUpload("aadhaar_front", file)}
+            uploading={uploadingDocType === "aadhaar_front"}
+            className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-6 text-center"
+          >
             <p className="text-xs sm:text-sm font-medium text-slate-700 mb-1">
               Front Side (optional)
             </p>
@@ -2389,7 +2606,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 />
               </label>
             </div>
-          </div>
+          </FileDropSurface>
         )}
 
         {/* Back side card */}
@@ -2459,7 +2676,12 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
             )}
           </div>
         ) : (
-          <div className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-6 text-center">
+          <FileDropSurface
+            onChoose={() => aadhaarBackInputRef.current?.click()}
+            onFile={(file) => processFileUpload("aadhaar_back", file)}
+            uploading={uploadingDocType === "aadhaar_back"}
+            className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-6 text-center"
+          >
             <p className="text-xs sm:text-sm font-medium text-slate-700 mb-1">
               Back Side (optional)
             </p>
@@ -2486,12 +2708,13 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 />
               </label>
             </div>
-          </div>
+          </FileDropSurface>
         )}
       </div>
       )}
     </div>
-  );
+    );
+  };
 
   const renderGstSection = () => {
     const isGstValid =
@@ -2499,6 +2722,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     const gstVerified =
       gstVerify.state === "verified" || Boolean(form.gst_is_verified);
     const gstDetails = gstVerify.details || form.gst_verified_details || undefined;
+    const gstLocked = modalOpenedComplete && !docEditUnlocked;
 
     return (
       <div className="space-y-3">
@@ -2557,14 +2781,18 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
               <label className="block text-xs font-medium text-slate-700">
                 GSTIN {isElectronic(gstMode) ? "(if providing)" : ""}
               </label>
-              <div className="relative">
+              <div className="flex flex-col sm:flex-row gap-2 sm:items-start">
+              <div className="relative flex-1 min-w-0">
                 <input
                   type="text"
                   name="gst_number"
                   value={form.gst_number ?? ""}
                   onChange={handleChange}
+                  readOnly={gstLocked}
                   placeholder="15 CHARACTER GSTIN"
-                  className={`w-full px-3 py-2 pr-10 text-sm border rounded-xl bg-white uppercase focus:outline-none focus:ring-2 ${
+                  className={`w-full px-3 py-2 pr-10 text-sm border rounded-xl uppercase focus:outline-none focus:ring-2 ${
+                    gstLocked ? "bg-slate-50 cursor-default" : "bg-white"
+                  } ${
                     isGstValid
                       ? "border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200"
                       : "border-slate-300 focus:border-indigo-500 focus:ring-indigo-500"
@@ -2577,6 +2805,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     </span>
                   </span>
                 )}
+              </div>
               </div>
               {docFormatErrors.gst_number && (
                 <p className="text-xs text-rose-600">{docFormatErrors.gst_number}</p>
@@ -2724,7 +2953,12 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
               !form.gst_is_verified && (
                 <div className="space-y-2 md:col-span-2">
                   {!docPreviews.gst ? (
-                    <label className="flex w-full cursor-pointer items-center justify-center rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100">
+                    <FileDropSurface
+                      onChoose={() => gstUploadInputRef.current?.click()}
+                      onFile={(file) => processFileUpload("gst", file)}
+                      uploading={uploadingDocType === "gst"}
+                      className="flex w-full cursor-pointer items-center justify-center rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                    >
                       {uploadingDocType === "gst" ? (
                         <span className="inline-flex items-center justify-center gap-2">
                           <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
@@ -2733,13 +2967,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                         "Upload GST certificate"
                       )}
                       <input
+                        ref={gstUploadInputRef}
                         type="file"
                         accept="image/*,.pdf"
                         className="hidden"
                         onChange={(e) => handleFileUpload(e, "gst")}
                         disabled={uploadingDocType === "gst"}
                       />
-                    </label>
+                    </FileDropSurface>
                   ) : (
                     <div className="flex flex-wrap items-center gap-2">
                       <button
@@ -2753,7 +2988,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                       </button>
                       <div className="flex items-center gap-1 rounded-full bg-slate-50 border border-slate-200 px-2 py-1 text-[11px] text-slate-800">
                         <span className="truncate max-w-[110px]">
-                          {getFileNameFromUrl(docPreviews.gst)}
+                          {getFileNameFromUrl(docPreviews.gst, "gst")}
                         </span>
                         <button
                           type="button"
@@ -2943,7 +3178,17 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     </div>
                   </div>
                 ) : null}
-                <label className="flex h-[40px] items-center justify-center rounded-lg border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 text-[11px] font-semibold text-indigo-700 cursor-pointer hover:bg-indigo-100">
+                <FileDropSurface
+                  onChoose={() => {
+                    const input = document.getElementById(
+                      "drug-license-upload-input",
+                    ) as HTMLInputElement | null;
+                    input?.click();
+                  }}
+                  onFile={(file) => processFileUpload("drug_license", file)}
+                  uploading={uploadingDocType === "drug_license"}
+                  className="flex h-[40px] items-center justify-center rounded-lg border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 text-[11px] font-semibold text-indigo-700 cursor-pointer hover:bg-indigo-100"
+                >
                   {uploadingDocType === "drug_license" && (
                     <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                   )}
@@ -2962,7 +3207,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     onChange={(e) => handleFileUpload(e, "drug_license")}
                     disabled={uploadingDocType === "drug_license"}
                   />
-                </label>
+                </FileDropSurface>
               </div>
             </div>
           </div>
@@ -3058,7 +3303,17 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     </button>
                   </div>
                 )}
-                <label className="mt-1 flex h-[40px] items-center justify-center rounded-lg border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 text-[11px] font-semibold text-indigo-700 cursor-pointer hover:bg-indigo-100">
+                <FileDropSurface
+                  onChoose={() => {
+                    const input = document.getElementById(
+                      "pharmacist-certificate-upload-input",
+                    ) as HTMLInputElement | null;
+                    input?.click();
+                  }}
+                  onFile={(file) => processFileUpload("pharmacist_certificate", file)}
+                  uploading={uploadingDocType === "pharmacist_certificate"}
+                  className="mt-1 flex h-[40px] items-center justify-center rounded-lg border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 text-[11px] font-semibold text-indigo-700 cursor-pointer hover:bg-indigo-100"
+                >
                   {uploadingDocType === "pharmacist_certificate" && (
                     <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                   )}
@@ -3077,7 +3332,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     onChange={(e) => handleFileUpload(e, "pharmacist_certificate")}
                     disabled={uploadingDocType === "pharmacist_certificate"}
                   />
-                </label>
+                </FileDropSurface>
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
@@ -3142,7 +3397,17 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     </button>
                   </div>
                 )}
-                <label className="mt-1 flex h-[40px] items-center justify-center rounded-lg border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 text-[11px] font-semibold text-indigo-700 cursor-pointer hover:bg-indigo-100">
+                <FileDropSurface
+                  onChoose={() => {
+                    const input = document.getElementById(
+                      "pharmacy-council-registration-upload-input",
+                    ) as HTMLInputElement | null;
+                    input?.click();
+                  }}
+                  onFile={(file) => processFileUpload("pharmacy_council_registration", file)}
+                  uploading={uploadingDocType === "pharmacy_council_registration"}
+                  className="mt-1 flex h-[40px] items-center justify-center rounded-lg border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 text-[11px] font-semibold text-indigo-700 cursor-pointer hover:bg-indigo-100"
+                >
                   {uploadingDocType === "pharmacy_council_registration" && (
                     <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                   )}
@@ -3163,14 +3428,13 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     }
                     disabled={uploadingDocType === "pharmacy_council_registration"}
                   />
-                </label>
+                </FileDropSurface>
               </div>
             </div>
           </div>
         </>
       ) : showFssaiBlock ? (
         <>
-          {/* FSSAI documents header */}
           <div className="rounded-lg border border-amber-100 bg-amber-50/80 p-2.5">
             <div className="flex items-start gap-3">
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
@@ -3188,28 +3452,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 </p>
                 <p className="text-xs text-amber-700 mt-0.5">
                   {fssaiIsMandatory
-                    ? "FSSAI is mandatory for this store type."
+                    ? "A valid FSSAI Certificate is mandatory for this store type."
                     : "Add FSSAI if you have a licence, or skip this step."}
                 </p>
               </div>
             </div>
           </div>
-          <div className="mt-1 rounded-lg border border-indigo-100 bg-indigo-50 px-3.5 py-2 text-[11px] sm:text-xs text-indigo-800">
-            <div className="flex items-start gap-2">
-              <div className="mt-[2px] flex h-4 w-4 items-center justify-center rounded-full bg-indigo-600 text-white text-[10px]">
-                i
-              </div>
-              <div>
-                <p className="font-semibold mb-0.5">Note</p>
-                <p>
-                  {fssaiIsMandatory
-                    ? "FSSAI is mandatory. GST can be added separately in the GST section."
-                    : "FSSAI is optional for this store type. GST can be added separately in the GST section."}
-                </p>
-              </div>
-            </div>
-          </div>
           {(() => {
+            const fssaiDocLocked = modalOpenedComplete && !docEditUnlocked;
             const fssaiUnlocked =
               licenceDup.fssaiOk &&
               !licenceDup.checkingFssai &&
@@ -3217,63 +3467,65 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
               !docFormatErrors.fssai_number &&
               (form.fssai_number || "").replace(/\D/g, "").length === 14;
             return (
-          <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,2.1fr)_minmax(0,1.35fr)] gap-2">
-            <div className="space-y-2">
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  FSSAI Certificate <span className="text-rose-600">*</span>
+                <label className="block text-sm font-medium text-slate-800 mb-2">
+                  FSSAI License Number <span className="text-rose-600">*</span>
                 </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    name="fssai_number"
-                    value={form.fssai_number ?? ""}
-                    onChange={handleChange}
-                    maxLength={14}
-                    inputMode="numeric"
-                    className={`w-full rounded-lg border px-3 pr-9 py-2 text-sm ${
-                      form.fssai_number
-                        ? docFormatErrors.fssai_number || licenceDup.fssai
-                          ? "border-rose-400"
-                          : licenceDup.fssaiOk
-                            ? "border-emerald-400"
-                            : "border-slate-300"
-                        : "border-slate-300"
-                    }`}
-                    placeholder="FSSAI License Number"
-                  />
-                  <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
-                    {licenceDup.checkingFssai ? (
-                      <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
-                    ) : licenceDup.fssaiOk &&
-                      !docFormatErrors.fssai_number &&
-                      !licenceDup.fssai ? (
-                      <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-600 text-white text-[8px]">
-                        ✓
-                      </span>
-                    ) : null}
-                  </span>
+                <div className="flex flex-col sm:flex-row gap-2 sm:items-start">
+                  <div className="relative flex-1 min-w-0">
+                    <input
+                      type="text"
+                      name="fssai_number"
+                      value={form.fssai_number ?? ""}
+                      onChange={handleChange}
+                      readOnly={fssaiDocLocked}
+                      maxLength={14}
+                      inputMode="numeric"
+                      className={`w-full rounded-xl border px-4 pr-10 py-3 text-sm ${
+                        fssaiDocLocked ? "bg-slate-50 cursor-default" : "bg-white"
+                      } ${
+                        form.fssai_number
+                          ? docFormatErrors.fssai_number || licenceDup.fssai
+                            ? "border-rose-400"
+                            : licenceDup.fssaiOk
+                              ? "border-emerald-400"
+                              : "border-slate-300"
+                          : "border-slate-300"
+                      }`}
+                      placeholder="14-digit FSSAI number"
+                    />
+                    <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
+                      {licenceDup.checkingFssai ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                      ) : licenceDup.fssaiOk &&
+                        !docFormatErrors.fssai_number &&
+                        !licenceDup.fssai ? (
+                        <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-white text-[10px]">
+                          ✓
+                        </span>
+                      ) : null}
+                    </span>
+                  </div>
                 </div>
                 {docFormatErrors.fssai_number && (
-                  <p className="mt-0.5 text-[11px] text-rose-600">
-                    {docFormatErrors.fssai_number}
-                  </p>
-                )}
-                {!form.fssai_number &&
-                  !docFormatErrors.fssai_number &&
-                  !licenceDup.checkingFssai && (
-                  <p className="mt-0.5 text-[11px] text-slate-500">
-                    {fssaiIsMandatory ? "FSSAI number must be 14 digits." : "Optional. FSSAI number must be 14 digits."}
-                  </p>
+                  <p className="mt-1 text-xs text-rose-600">{docFormatErrors.fssai_number}</p>
                 )}
                 {licenceDup.checkingFssai && (
-                  <p className="mt-0.5 text-[11px] text-indigo-600">
-                    Checking FSSAI number…
+                  <p className="mt-1 text-xs text-indigo-600">Checking FSSAI number…</p>
+                )}
+                {!docFormatErrors.fssai_number && !licenceDup.checkingFssai && (
+                  <p className="mt-1.5 text-xs text-slate-500">
+                    {fssaiIsMandatory
+                      ? "FSSAI number must be 14 digits."
+                      : "Optional. FSSAI number must be 14 digits."}
                   </p>
                 )}
               </div>
+
               <div className={!fssaiUnlocked ? "opacity-50 pointer-events-none" : undefined}>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
+                <label className="block text-sm font-medium text-slate-800 mb-2">
                   FSSAI Expiry Date <span className="text-rose-600">*</span>
                 </label>
                 <input
@@ -3282,94 +3534,65 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   value={form.fssai_expiry_date ?? ""}
                   onChange={handleChange}
                   disabled={!fssaiUnlocked}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50 disabled:cursor-not-allowed"
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm disabled:bg-slate-50 disabled:cursor-not-allowed"
                 />
-                <p className="mt-0.5 text-[11px] text-slate-500">
+                <p className="mt-1.5 text-xs text-slate-500">
                   {fssaiUnlocked
                     ? "FSSAI license expiry date (mandatory)"
                     : "Enter a unique 14-digit FSSAI number first"}
                 </p>
               </div>
             </div>
-            <div
-              className={`flex items-end pt-2 sm:pt-0 ${
-                !fssaiUnlocked ? "opacity-50 pointer-events-none" : ""
-              }`}
-            >
-              <div className="w-full space-y-1.5">
-                <span className="block text-xs font-medium text-slate-700">
-                  Upload Certificate <span className="text-rose-600">*</span>
-                </span>
-                {docPreviews.fssai ? (
-                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-600 text-white text-xs font-bold">
-                        ✓
-                      </div>
-                      <div>
-                        <p className="text-xs font-semibold text-emerald-800">
-                          File uploaded
-                        </p>
-                        <button
-                          type="button"
-                          disabled={!fssaiUnlocked}
-                          className="text-[11px] font-medium text-emerald-800 underline underline-offset-2 disabled:cursor-not-allowed"
-                          onClick={() =>
-                            window.open(
-                              docPreviews.fssai,
-                              "_blank",
-                              "noopener,noreferrer"
-                            )
-                          }
-                        >
-                          View certificate
-                        </button>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={!fssaiUnlocked}
-                        onClick={() => {
-                          const input = document.getElementById(
-                            "fssai-upload-input"
-                          ) as HTMLInputElement | null;
-                          input?.click();
-                        }}
-                        className="rounded-lg border border-emerald-500 bg-white px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        Change
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-                <label
-                  className={`flex h-[40px] items-center justify-center rounded-lg border-2 border-dashed border-rose-300 bg-rose-50/60 px-3 text-[11px] font-semibold text-rose-700 ${
-                    fssaiUnlocked
-                      ? "cursor-pointer hover:bg-rose-100"
-                      : "cursor-not-allowed"
-                  }`}
-                >
-                  {uploadingDocType === "fssai" && (
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                  )}
-                  <span>
-                    {uploadingDocType === "fssai"
-                      ? "Uploading Certificate..."
-                      : docPreviews.fssai
-                      ? "Upload new file"
-                      : "Upload Certificate"}
-                  </span>
-                  <input
-                    id="fssai-upload-input"
-                    type="file"
-                    accept="image/*,.pdf"
-                    className="hidden"
-                    onChange={(e) => handleFileUpload(e, "fssai")}
-                    disabled={!fssaiUnlocked || uploadingDocType === "fssai"}
-                  />
-                </label>
-              </div>
+
+            <div className={!fssaiUnlocked ? "opacity-50 pointer-events-none" : undefined}>
+              <input
+                id="fssai-upload-input"
+                type="file"
+                accept="image/*,.pdf"
+                className="hidden"
+                onChange={(e) => handleFileUpload(e, "fssai")}
+                disabled={!fssaiUnlocked || uploadingDocType === "fssai"}
+              />
+              {docPreviews.fssai ? (
+                renderUploadedDocumentPanel({
+                  viewTitle: "FSSAI certificate",
+                  url: docPreviews.fssai,
+                  previewKey: "fssai",
+                  onChange: () => {
+                    const input = document.getElementById(
+                      "fssai-upload-input",
+                    ) as HTMLInputElement | null;
+                    input?.click();
+                  },
+                  onRemove: () => {
+                    setDocPreviews((prev) => {
+                      const next = { ...prev };
+                      if (next.fssai?.startsWith("blob:")) URL.revokeObjectURL(next.fssai);
+                      delete next.fssai;
+                      return next;
+                    });
+                    setDocOriginalFileNames((prev) => {
+                      const next = { ...prev };
+                      delete next.fssai;
+                      return next;
+                    });
+                  },
+                  uploading: uploadingDocType === "fssai",
+                })
+              ) : (
+                <PayUDocumentDropzone
+                  label="Upload document *"
+                  onChoose={() => {
+                    const input = document.getElementById(
+                      "fssai-upload-input",
+                    ) as HTMLInputElement | null;
+                    input?.click();
+                  }}
+                  onFile={(file) => processFileUpload("fssai", file)}
+                  uploading={uploadingDocType === "fssai"}
+                  disabled={!fssaiUnlocked}
+                />
+              )}
             </div>
           </div>
             );
@@ -3442,7 +3665,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   </button>
                   <div className="flex items-center gap-1 rounded-full bg-slate-50 border border-slate-200 px-2 py-1 text-[11px] text-slate-800">
                     <span className="truncate max-w-[120px]">
-                      {getFileNameFromUrl(docPreviews.trade_license)}
+                      {getFileNameFromUrl(docPreviews.trade_license, "trade_license")}
                     </span>
                     <button
                       type="button"
@@ -3461,7 +3684,17 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   </div>
                 </div>
               ) : (
-                <label className="inline-flex items-center px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-[11px] font-medium text-slate-700 cursor-pointer hover:bg-slate-50 w-fit">
+                <FileDropSurface
+                  onChoose={() => {
+                    const input = document.getElementById(
+                      "trade-license-upload-input",
+                    ) as HTMLInputElement | null;
+                    input?.click();
+                  }}
+                  onFile={(file) => processFileUpload("trade_license", file)}
+                  uploading={uploadingDocType === "trade_license"}
+                  className="inline-flex items-center px-3 py-1.5 rounded-lg bg-white border border-dashed border-slate-300 text-[11px] font-medium text-slate-700 hover:bg-slate-50 w-fit"
+                >
                   {uploadingDocType === "trade_license" && (
                     <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                   )}
@@ -3471,13 +3704,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                       : "Upload file"}
                   </span>
                   <input
+                    id="trade-license-upload-input"
                     type="file"
                     accept="image/*,.pdf"
                     className="hidden"
                     onChange={(e) => handleFileUpload(e, "trade_license")}
                     disabled={uploadingDocType === "trade_license"}
                   />
-                </label>
+                </FileDropSurface>
               )}
             </div>
           </div>
@@ -3577,7 +3811,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   </button>
                   <div className="flex items-center gap-1 rounded-full bg-slate-50 border border-slate-200 px-2 py-1 text-[11px] text-slate-800">
                     <span className="truncate max-w-[120px]">
-                      {getFileNameFromUrl(docPreviews.shop_establishment)}
+                      {getFileNameFromUrl(docPreviews.shop_establishment, "shop_establishment")}
                     </span>
                     <button
                       type="button"
@@ -3597,7 +3831,17 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   </div>
                 </div>
               ) : (
-                <label className="inline-flex items-center px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-[11px] font-medium text-slate-700 cursor-pointer hover:bg-slate-50 w-fit">
+                <FileDropSurface
+                  onChoose={() => {
+                    const input = document.getElementById(
+                      "shop-establishment-upload-input",
+                    ) as HTMLInputElement | null;
+                    input?.click();
+                  }}
+                  onFile={(file) => processFileUpload("shop_establishment", file)}
+                  uploading={uploadingDocType === "shop_establishment"}
+                  className="inline-flex items-center px-3 py-1.5 rounded-lg bg-white border border-dashed border-slate-300 text-[11px] font-medium text-slate-700 hover:bg-slate-50 w-fit"
+                >
                   {uploadingDocType === "shop_establishment" && (
                     <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                   )}
@@ -3607,13 +3851,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                       : "Upload file"}
                   </span>
                   <input
+                    id="shop-establishment-upload-input"
                     type="file"
                     accept="image/*,.pdf"
                     className="hidden"
                     onChange={(e) => handleFileUpload(e, "shop_establishment")}
                     disabled={uploadingDocType === "shop_establishment"}
                   />
-                </label>
+                </FileDropSurface>
               )}
             </div>
           </div>
@@ -3694,7 +3939,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   </button>
                   <div className="flex items-center gap-1 rounded-full bg-slate-50 border border-slate-200 px-2 py-1 text-[11px] text-slate-800">
                     <span className="truncate max-w-[120px]">
-                      {getFileNameFromUrl(docPreviews.udyam)}
+                      {getFileNameFromUrl(docPreviews.udyam, "udyam")}
                     </span>
                     <button
                       type="button"
@@ -3713,7 +3958,17 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   </div>
                 </div>
               ) : (
-                <label className="inline-flex items-center px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-[11px] font-medium text-slate-700 cursor-pointer hover:bg-slate-50 w-fit">
+                <FileDropSurface
+                  onChoose={() => {
+                    const input = document.getElementById(
+                      "udyam-upload-input",
+                    ) as HTMLInputElement | null;
+                    input?.click();
+                  }}
+                  onFile={(file) => processFileUpload("udyam", file)}
+                  uploading={uploadingDocType === "udyam"}
+                  className="inline-flex items-center px-3 py-1.5 rounded-lg bg-white border border-dashed border-slate-300 text-[11px] font-medium text-slate-700 hover:bg-slate-50 w-fit"
+                >
                   {uploadingDocType === "udyam" && (
                     <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                   )}
@@ -3723,13 +3978,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                       : "Upload file"}
                   </span>
                   <input
+                    id="udyam-upload-input"
                     type="file"
                     accept="image/*,.pdf"
                     className="hidden"
                     onChange={(e) => handleFileUpload(e, "udyam")}
                     disabled={uploadingDocType === "udyam"}
                   />
-                </label>
+                </FileDropSurface>
               )}
             </div>
           </div>
@@ -3809,7 +4065,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 </button>
                 <div className="flex items-center gap-1 rounded-full bg-slate-50 border border-slate-200 px-2 py-1 text-[11px] text-slate-800">
                   <span className="truncate max-w-[120px]">
-                    {getFileNameFromUrl(docPreviews.other)}
+                    {getFileNameFromUrl(docPreviews.other, "other")}
                   </span>
                   <button
                     type="button"
@@ -3828,7 +4084,17 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 </div>
               </div>
             ) : (
-              <label className="inline-flex items-center px-3 py-1.5 rounded-lg bg-white border border-slate-300 text-[11px] font-medium text-slate-700 cursor-pointer hover:bg-slate-50 w-fit">
+              <FileDropSurface
+                onChoose={() => {
+                  const input = document.getElementById(
+                    "other-document-upload-input",
+                  ) as HTMLInputElement | null;
+                  input?.click();
+                }}
+                onFile={(file) => processFileUpload("other", file)}
+                uploading={uploadingDocType === "other"}
+                className="inline-flex items-center px-3 py-1.5 rounded-lg bg-white border border-dashed border-slate-300 text-[11px] font-medium text-slate-700 hover:bg-slate-50 w-fit"
+              >
                 {uploadingDocType === "other" && (
                   <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                 )}
@@ -3836,13 +4102,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   {uploadingDocType === "other" ? "Uploading..." : "Upload file"}
                 </span>
                 <input
+                  id="other-document-upload-input"
                   type="file"
                   accept="image/*,.pdf"
                   className="hidden"
                   onChange={(e) => handleFileUpload(e, "other")}
                   disabled={uploadingDocType === "other"}
                 />
-              </label>
+              </FileDropSurface>
             )}
           </div>
 
@@ -3875,29 +4142,17 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
     const showManualBankFields =
       !bankVerified &&
       (!isElectronic(bankMode) || uploadAllowedFor(bankMode, bankVerify));
+    const showBankManualFallback =
+      isElectronic(bankMode) && uploadAllowedFor(bankMode, bankVerify) && !bankVerified;
+    const bankLocked = modalOpenedComplete && !docEditUnlocked;
 
     return (
     <div className="space-y-3">
-      <div className="rounded-lg bg-amber-50/80 border border-amber-100 p-3">
-        <div className="flex items-start gap-2">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700 text-sm font-bold">
-            ₹
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-amber-900">Payout details</p>
-            <p className="text-xs text-amber-800 mt-0.5">
-              Choose Bank Account or UPI for payouts. Switch the toggle to verify
-              each separately.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 space-y-2">
-        <p className="text-xs font-medium text-slate-700">
+      <div>
+        <label className="mb-1.5 block text-xs font-medium text-slate-700">
           Use for payout <span className="text-rose-600">*</span>
-        </p>
-        <div className="rounded-lg border border-slate-200 bg-white p-1 flex text-xs sm:text-sm font-medium text-slate-600">
+        </label>
+        <div className="flex rounded-lg border border-slate-200 bg-white p-1 text-xs sm:text-sm font-medium text-slate-600">
           <button
             type="button"
             onClick={() => setPayoutMode("BANK")}
@@ -3924,16 +4179,8 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       </div>
 
       {payoutMode === "BANK" && (
-      <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-semibold text-slate-800">Bank account</p>
-          {bankVerified && (
-            <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">
-              Verified
-            </span>
-          )}
-        </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="space-y-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
                 Account number <span className="text-rose-600">*</span>
@@ -3943,7 +4190,8 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 name="bank_account_number"
                 value={form.bank_account_number ?? ""}
                 onChange={handleChange}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono"
+                readOnly={bankLocked}
+                className={`w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono ${bankLocked ? "bg-slate-50 cursor-default" : ""}`}
                 placeholder="e.g. 123456789012"
               />
               {docFormatErrors.bank_account_number && (
@@ -3961,7 +4209,8 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 name="bank_ifsc_code"
                 value={form.bank_ifsc_code ?? ""}
                 onChange={handleChange}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono uppercase"
+                readOnly={bankLocked}
+                className={`w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono uppercase ${bankLocked ? "bg-slate-50 cursor-default" : ""}`}
                 placeholder="E.g. SBIN0001234"
               />
               {docFormatErrors.bank_ifsc_code && (
@@ -4046,37 +4295,23 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     )}
                   </button>
                 )}
-                {bankVerify.state === "failed" && (
-                  <div
-                    className={`rounded-lg border p-3 text-xs ${
-                      bankMode === "auto"
-                        ? "border-rose-200 bg-rose-50 text-rose-700"
-                        : "border-amber-200 bg-amber-50 text-amber-800"
-                    }`}
-                  >
-                    <span className="font-semibold">
-                      {bankMode === "auto"
-                        ? "Bank verification failed. "
-                        : "Instant verification didn't succeed. "}
-                    </span>
-                    {bankVerify.error || "Please check account number / IFSC."}
-                    {bankMode === "hybrid"
-                      ? " Enter details manually and upload bank proof."
-                      : " Retry later — automatic verification is required."}
+                {bankVerify.state === "failed" && bankMode === "auto" ? (
+                  <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-700">
+                    <p className="font-semibold">Bank verification failed.</p>
+                    <p className="mt-0.5">
+                      {bankVerify.error ||
+                        "Please check account number / IFSC. Retry later — automatic verification is required."}
+                    </p>
                   </div>
-                )}
+                ) : null}
               </div>
             )}
 
           {showManualBankFields && (
-            <>
-              {isElectronic(bankMode) &&
-                uploadAllowedFor(bankMode, bankVerify) && (
-                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                    Auto verification didn&apos;t succeed — enter bank details
-                    manually and upload proof.
-                  </p>
-                )}
+            <div className="space-y-3 border-t border-slate-100 pt-3">
+              {showBankManualFallback ? (
+                <ManualVerifyFallbackBanner message={BANK_MANUAL_FALLBACK_MESSAGE} />
+              ) : null}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
@@ -4171,7 +4406,12 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 </div>
               </div>
 
-              <div className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-4 text-center">
+              <FileDropSurface
+                onChoose={() => bankProofInputRef.current?.click()}
+                onFile={(file) => processFileUpload("bank_proof", file)}
+                uploading={uploadingDocType === "bank_proof"}
+                className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-4 text-center"
+              >
                 <p className="text-xs sm:text-sm font-medium text-slate-700 mb-1">
                   Upload passbook / cancelled cheque / bank statement
                 </p>
@@ -4180,7 +4420,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   verification.
                 </p>
                 <div className="mt-3 flex flex-col items-center gap-2">
-                  <label className="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium cursor-pointer hover:bg-indigo-700">
+                  <span className="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium">
                     {uploadingDocType === "bank_proof" && (
                       <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                     )}
@@ -4191,14 +4431,15 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                           ? "Upload new file"
                           : "Upload passbook / cheque / statement"}
                     </span>
-                    <input
-                      type="file"
-                      accept="image/*,.pdf"
-                      className="hidden"
-                      onChange={(e) => handleFileUpload(e, "bank_proof")}
-                      disabled={uploadingDocType === "bank_proof"}
-                    />
-                  </label>
+                  </span>
+                  <input
+                    ref={bankProofInputRef}
+                    type="file"
+                    accept="image/*,.pdf"
+                    className="hidden"
+                    onChange={(e) => handleFileUpload(e, "bank_proof")}
+                    disabled={uploadingDocType === "bank_proof"}
+                  />
                   {docPreviews.bank_proof && (
                     <button
                       type="button"
@@ -4215,24 +4456,15 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     </button>
                   )}
                 </div>
-              </div>
-            </>
+              </FileDropSurface>
+            </div>
           )}
-        </div>
+      </div>
       )}
 
       {payoutMode === "UPI" && (
-        <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-sm font-semibold text-slate-800">UPI</p>
-            {(upiVerify.state === "verified" || !!form.upi_verified) && (
-              <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">
-                Verified
-              </span>
-            )}
-          </div>
-          <div className="grid grid-cols-1 gap-3">
-            <div>
+        <div className="space-y-3">
+          <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
                 UPI ID <span className="text-rose-600">*</span>
               </label>
@@ -4241,11 +4473,11 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 name="upi_id"
                 value={form.upi_id ?? ""}
                 onChange={handleChange}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                readOnly={bankLocked}
+                className={`w-full rounded-lg border border-slate-300 px-3 py-2 text-sm ${bankLocked ? "bg-slate-50 cursor-default" : ""}`}
                 placeholder="e.g. merchant@upi"
               />
             </div>
-          </div>
 
           {isElectronic(upiMode) && !!String(form.upi_id || "").trim() && (
             <div className="space-y-2">
@@ -4289,25 +4521,15 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   )}
                 </button>
               )}
-              {upiVerify.state === "failed" && (
-                <div
-                  className={`rounded-lg border p-3 text-xs ${
-                    upiMode === "auto"
-                      ? "border-rose-200 bg-rose-50 text-rose-700"
-                      : "border-amber-200 bg-amber-50 text-amber-800"
-                  }`}
-                >
-                  <span className="font-semibold">
-                    {upiMode === "auto"
-                      ? "UPI verification failed. "
-                      : "Instant verification didn't succeed. "}
-                  </span>
-                  {upiVerify.error || "Please check the UPI ID."}
-                  {upiMode === "hybrid"
-                    ? " Upload a UPI QR screenshot where the UPI ID is clearly visible."
-                    : " Retry later — automatic verification is required."}
+              {upiVerify.state === "failed" && upiMode === "auto" ? (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-700">
+                  <p className="font-semibold">UPI verification failed.</p>
+                  <p className="mt-0.5">
+                    {upiVerify.error ||
+                      "Please check the UPI ID. Retry later — automatic verification is required."}
+                  </p>
                 </div>
-              )}
+              ) : null}
             </div>
           )}
 
@@ -4315,13 +4537,16 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
             upiVerify.state === "verified" || form.upi_verified
           ) &&
             (!isElectronic(upiMode) || uploadAllowedFor(upiMode, upiVerify)) && (
-              <div className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-4 text-center">
-                {isElectronic(upiMode) && uploadAllowedFor(upiMode, upiVerify) && (
-                  <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2 text-left">
-                    Auto verification didn&apos;t succeed — upload a QR screenshot
-                    with UPI ID visible.
-                  </p>
-                )}
+              <div className="space-y-2 border-t border-slate-100 pt-2.5">
+                {isElectronic(upiMode) && uploadAllowedFor(upiMode, upiVerify) ? (
+                  <ManualVerifyFallbackBanner message={UPI_MANUAL_FALLBACK_MESSAGE} />
+                ) : null}
+              <FileDropSurface
+                onChoose={() => bankProofInputRef.current?.click()}
+                onFile={(file) => processFileUpload("bank_proof", file)}
+                uploading={uploadingDocType === "bank_proof"}
+                className="rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/80 px-4 py-3 text-center"
+              >
                 <label className="block text-xs font-medium text-slate-700 mb-1">
                   UPI QR screenshot <span className="text-rose-600">*</span>
                 </label>
@@ -4329,7 +4554,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   Upload screenshot where UPI ID is clearly visible on the QR.
                 </p>
                 <div className="mt-3 flex flex-col items-center gap-2">
-                  <label className="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium cursor-pointer hover:bg-indigo-700">
+                  <span className="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium">
                     {uploadingDocType === "bank_proof" && (
                       <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                     )}
@@ -4340,14 +4565,15 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                           ? "Upload new screenshot"
                           : "Upload QR screenshot (UPI ID visible)"}
                     </span>
-                    <input
-                      type="file"
-                      accept="image/*,.pdf"
-                      className="hidden"
-                      onChange={(e) => handleFileUpload(e, "bank_proof")}
-                      disabled={uploadingDocType === "bank_proof"}
-                    />
-                  </label>
+                  </span>
+                  <input
+                    ref={bankProofInputRef}
+                    type="file"
+                    accept="image/*,.pdf"
+                    className="hidden"
+                    onChange={(e) => handleFileUpload(e, "bank_proof")}
+                    disabled={uploadingDocType === "bank_proof"}
+                  />
                   {docPreviews.upi_qr && (
                     <button
                       type="button"
@@ -4360,12 +4586,238 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                     </button>
                   )}
                 </div>
+              </FileDropSurface>
               </div>
             )}
         </div>
       )}
     </div>
     );
+  };
+
+  const isSectionLocked = (_docSection: Step4SectionKey) => false;
+
+  const allDocumentsComplete =
+    catalogLoaded &&
+    navDocs.length > 0 &&
+    navDocs.filter((d) => d.isMandatory).every((d) => evaluateSectionValid(d.code));
+
+  const openDocumentModal = (docSection: Step4SectionKey) => {
+    if (isSectionLocked(docSection)) return;
+    setModalOpenedComplete(getDocumentCardStatus(docSection) !== null);
+    setDocEditUnlocked(false);
+    setSection(docSection);
+    setDocFormModalOpen(true);
+  };
+
+  const isDocumentAutoVerified = (docSection: Step4SectionKey): boolean => {
+    const key = partnerFormKey(docSection, resolvedDocs);
+    return (
+      (key === "pan" && (panVerify.state === "verified" || !!form.pan_is_verified)) ||
+      (key === "aadhar" &&
+        (aadhaarVerify.state === "verified" || !!form.aadhaar_is_verified)) ||
+      (key === "gst" && (gstVerify.state === "verified" || !!form.gst_is_verified)) ||
+      (key === "bank" &&
+        (payoutMode === "UPI"
+          ? upiVerify.state === "verified" || !!form.upi_verified
+          : bankVerify.state === "verified" || !!form.bank_is_verified))
+    );
+  };
+
+  const hasDocumentManualUpload = (docSection: Step4SectionKey): boolean => {
+    const key = partnerFormKey(docSection, resolvedDocs);
+    if (key === "pan") return !!docPreviews.pan;
+    if (key === "aadhar") return !!(docPreviews.aadhaar_front || docPreviews.aadhaar_back);
+    if (key === "gst") return !!docPreviews.gst;
+    if (key === "bank") {
+      return payoutMode === "UPI" ? !!docPreviews.upi_qr : !!docPreviews.bank_proof;
+    }
+    if (docSection === "FSSAI") return !!docPreviews.fssai;
+    if (PHARMA_DOC_CODES.has(docSection)) {
+      return !!(
+        docPreviews.drug_license ||
+        docPreviews.pharmacist_certificate ||
+        docPreviews.pharmacy_council_registration
+      );
+    }
+    if (docSection === "TRADE_LICENSE") return !!docPreviews.trade_license;
+    if (docSection === "SHOP_ACT") return !!docPreviews.shop_establishment;
+    if (docSection === "UDYAM") return !!docPreviews.udyam;
+    if (docSection === "OTHER") return !!docPreviews.other;
+    return false;
+  };
+
+  const getUploadedFileDisplayName = (docSection: Step4SectionKey): string => {
+    const pick = (previewKey: string, url?: string) =>
+      docOriginalFileNames[previewKey] || fileNameFromAttachmentUrl(url) || "";
+
+    const key = partnerFormKey(docSection, resolvedDocs);
+    if (key === "pan") return pick("pan", docPreviews.pan);
+    if (key === "gst") return pick("gst", docPreviews.gst);
+    if (key === "aadhar") {
+      return (
+        pick("aadhaar_front", docPreviews.aadhaar_front) ||
+        pick("aadhaar_back", docPreviews.aadhaar_back)
+      );
+    }
+    if (key === "bank") {
+      return payoutMode === "UPI"
+        ? pick("upi_qr", docPreviews.upi_qr)
+        : pick("bank_proof", docPreviews.bank_proof);
+    }
+    if (docSection === "FSSAI") return pick("fssai", docPreviews.fssai);
+    if (PHARMA_DOC_CODES.has(docSection)) {
+      return (
+        pick("drug_license", docPreviews.drug_license) ||
+        pick("pharmacist_certificate", docPreviews.pharmacist_certificate) ||
+        pick("pharmacy_council_registration", docPreviews.pharmacy_council_registration)
+      );
+    }
+    if (docSection === "TRADE_LICENSE") return pick("trade_license", docPreviews.trade_license);
+    if (docSection === "SHOP_ACT") return pick("shop_establishment", docPreviews.shop_establishment);
+    if (docSection === "UDYAM") return pick("udyam", docPreviews.udyam);
+    if (docSection === "OTHER") return pick("other", docPreviews.other);
+    return "";
+  };
+
+  const getDocumentCardStatus = (
+    docSection: Step4SectionKey,
+  ): { type: "auto" | "manual"; label: string; fileName?: string } | null => {
+    if (isDocumentAutoVerified(docSection)) {
+      return { type: "auto", label: AUTO_VERIFIED_STATUS_LABEL };
+    }
+    if (hasDocumentManualUpload(docSection)) {
+      const fileName = getUploadedFileDisplayName(docSection);
+      return {
+        type: "manual",
+        label: MANUAL_UPLOADED_STATUS_LABEL,
+        fileName: fileName || undefined,
+      };
+    }
+    return null;
+  };
+
+  const isDocFieldLocked = (docSection: Step4SectionKey = section) =>
+    getDocumentCardStatus(docSection) !== null && !docEditUnlocked;
+
+  const isModalViewOnly = modalOpenedComplete && !docEditUnlocked;
+
+  const clearDocumentSubmissionForEdit = (docSection: Step4SectionKey) => {
+    const key = partnerFormKey(docSection, resolvedDocs);
+    setDocEditUnlocked(true);
+    if (key === "pan") {
+      panVerifiedNumberRef.current = null;
+      panVerifiedDetailsRef.current = null;
+      setPanVerify({ state: "idle" });
+      setForm((prev) => ({
+        ...prev,
+        pan_is_verified: false,
+        pan_verified_details: null,
+        pan_verification_method: null,
+        pan_verified_at: null,
+      }));
+      setDocPreviews((prev) => {
+        if (!prev.pan) return prev;
+        const next = { ...prev };
+        if (next.pan?.startsWith("blob:")) URL.revokeObjectURL(next.pan);
+        delete next.pan;
+        return next;
+      });
+    } else if (key === "gst") {
+      gstVerifiedNumberRef.current = null;
+      gstVerifiedDetailsRef.current = null;
+      setGstVerify({ state: "idle" });
+      setForm((prev) => ({
+        ...prev,
+        gst_is_verified: false,
+        gst_verified_details: null,
+        gst_verification_method: null,
+        gst_verified_at: null,
+      }));
+      setDocPreviews((prev) => {
+        if (!prev.gst) return prev;
+        const next = { ...prev };
+        if (next.gst?.startsWith("blob:")) URL.revokeObjectURL(next.gst);
+        delete next.gst;
+        return next;
+      });
+    } else if (key === "aadhar") {
+      aadhaarVerifiedNumberRef.current = null;
+      aadhaarVerifiedDetailsRef.current = null;
+      setAadhaarVerify({ state: "idle" });
+      setForm((prev) => ({
+        ...prev,
+        aadhaar_is_verified: false,
+        aadhaar_verified_details: null,
+      }));
+      setDocPreviews((prev) => {
+        const next = { ...prev };
+        (["aadhaar_front", "aadhaar_back"] as const).forEach((k) => {
+          if (next[k]?.startsWith("blob:")) URL.revokeObjectURL(next[k]);
+          delete next[k];
+        });
+        return next;
+      });
+    } else if (key === "bank") {
+      bankVerifiedDetailsRef.current = null;
+      upiVerifiedDetailsRef.current = null;
+      setBankVerify({ state: "idle" });
+      setUpiVerify({ state: "idle" });
+      setForm((prev) => ({
+        ...prev,
+        bank_is_verified: false,
+        upi_verified: false,
+        bank_verified_details: null,
+        bank_verified_at: null,
+        bank_verification_method: null,
+      }));
+      setDocPreviews((prev) => {
+        const next = { ...prev };
+        (["bank_proof", "upi_qr"] as const).forEach((k) => {
+          if (next[k]?.startsWith("blob:")) URL.revokeObjectURL(next[k]);
+          delete next[k];
+        });
+        return next;
+      });
+    } else {
+      const clearPreview = (previewKey: string) => {
+        setDocPreviews((prev) => {
+          if (!prev[previewKey]) return prev;
+          const next = { ...prev };
+          if (next[previewKey]?.startsWith("blob:")) URL.revokeObjectURL(next[previewKey]);
+          delete next[previewKey];
+          return next;
+        });
+      };
+      if (docSection === "FSSAI") clearPreview("fssai");
+      if (PHARMA_DOC_CODES.has(docSection)) {
+        clearPreview("drug_license");
+        clearPreview("pharmacist_certificate");
+        clearPreview("pharmacy_council_registration");
+      }
+      if (docSection === "TRADE_LICENSE") clearPreview("trade_license");
+      if (docSection === "SHOP_ACT") clearPreview("shop_establishment");
+      if (docSection === "UDYAM") clearPreview("udyam");
+      if (docSection === "OTHER") clearPreview("other");
+    }
+  };
+
+  const promptChangeCertificateNo = (docSection: Step4SectionKey = section) => {
+    setChangeCertConfirm({
+      title: "Change certificate number?",
+      message:
+        "This will clear the current verification or uploaded document. You will need to verify or upload again before saving.",
+      onConfirm: () => {
+        clearDocumentSubmissionForEdit(docSection);
+        setChangeCertConfirm(null);
+      },
+    });
+  };
+
+  const closeDocumentModal = () => {
+    setDocFormModalOpen(false);
+    setDocEditUnlocked(false);
+    setModalOpenedComplete(false);
   };
 
   let sectionContent: React.ReactNode = null;
@@ -4389,6 +4841,135 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
   else if (activeFormSection === "GST") sectionContent = renderGstSection();
   else sectionContent = renderBankSection();
 
+  const getDocumentCardLabel = (doc: (typeof navDocs)[number]) =>
+    doc.label || shortDocNavLabel(doc);
+
+  const renderDocumentCardsList = () => (
+    <div className="w-full space-y-3">
+      {!catalogLoaded ? (
+        <p className="text-sm text-slate-500 py-4 text-center">Loading documents…</p>
+      ) : null}
+      {navDocs.map((doc) => {
+        const docSection = doc.code;
+        const locked = isSectionLocked(docSection);
+        const status = getDocumentCardStatus(docSection);
+        const isComplete = status !== null;
+        const cardLabel = getDocumentCardLabel(doc);
+        return (
+          <button
+            key={docSection}
+            type="button"
+            onClick={() => openDocumentModal(docSection)}
+            disabled={locked}
+            aria-disabled={locked}
+            className={`group w-full flex items-center gap-4 rounded-md border px-4 py-3.5 sm:py-4 text-left transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+              locked
+                ? "cursor-not-allowed border-slate-200 bg-slate-50 opacity-60"
+                : isComplete
+                  ? "border-slate-200 bg-white hover:bg-slate-50"
+                  : "border-slate-200 bg-slate-50/90 hover:bg-slate-100/80"
+            }`}
+          >
+            {status ? (
+              <CheckCircle2 className="h-7 w-7 shrink-0 text-emerald-600" strokeWidth={2.5} aria-hidden />
+            ) : (
+              <PendingDocCircleIcon />
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-slate-900">
+                {cardLabel}
+                {doc.isMandatory ? (
+                  <span className="text-rose-500 font-semibold ml-0.5" aria-label="Mandatory">
+                    *
+                  </span>
+                ) : null}
+              </p>
+              {status ? (
+                status.type === "auto" ? (
+                  <p className="mt-0.5 text-xs sm:text-sm truncate text-emerald-700">{status.label}</p>
+                ) : status.fileName ? (
+                  <p className="mt-0.5 text-xs sm:text-sm truncate text-slate-600">
+                    {cardLabel}:{" "}
+                    <span className="font-medium text-teal-700">{status.fileName}</span>
+                  </p>
+                ) : (
+                  <p className="mt-0.5 text-xs sm:text-sm truncate text-emerald-700">{status.label}</p>
+                )
+              ) : null}
+            </div>
+            <BoldUploadIcon className="h-6 w-6 shrink-0 text-slate-800 group-hover:text-slate-900" />
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const renderDocumentFormModal = () => {
+    if (!docFormModalOpen) return null;
+    const modalDoc = navDocs.find((d) => d.code === section);
+    const modalTitle = modalDoc
+      ? getDocumentCardLabel(modalDoc)
+      : shortDocNavLabel({ code: section, label: section } as (typeof navDocs)[number]);
+    const isBankDocModal = partnerFormKey(section, resolvedDocs) === "bank";
+    return (
+      <div
+        className="fixed inset-0 z-[200] flex items-center justify-center p-3 sm:p-4 bg-slate-900/50"
+        aria-modal="true"
+        role="dialog"
+        aria-labelledby="doc-form-modal-title"
+      >
+        <div className={`merchant-doc-modal flex max-h-[min(92vh,760px)] w-full ${isBankDocModal ? "max-w-4xl" : "max-w-3xl"} flex-col overflow-hidden rounded-2xl bg-white shadow-2xl`}>
+          <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-3 sm:px-6">
+            <h3 id="doc-form-modal-title" className="text-base font-semibold text-slate-900 sm:text-lg">
+              {modalTitle}
+            </h3>
+            <button
+              type="button"
+              onClick={closeDocumentModal}
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              aria-label="Close"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto overflow-x-hidden px-5 py-4 sm:px-6 space-y-3">
+            {sectionContent}
+          </div>
+          <div className="shrink-0 border-t border-slate-200 bg-slate-50/80 px-5 py-3 sm:px-6 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={closeDocumentModal}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
+            >
+              {isModalViewOnly ? "Close" : "Cancel"}
+            </button>
+            {isModalViewOnly ? (
+              <ChangeDocsNoFooterButton onClick={() => promptChangeCertificateNo(section)} />
+            ) : (
+            <button
+              type="button"
+              onClick={async () => {
+                if (!onUploadSection || uploadDisabled) return;
+                await onUploadSection();
+                closeDocumentModal();
+              }}
+              disabled={actionLoading || uploadLoading || uploadDisabled || !onUploadSection}
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
+            >
+              {actionLoading || uploadLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <BoldUploadIcon className="h-5 w-5" />
+              )}
+              {actionLoading || uploadLoading ? "Uploading…" : "Upload"}
+            </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <>
       <DigilockerConsentSheet
@@ -4410,115 +4991,97 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           }
           digilockerPopupRef.current = null;
           setAadhaarVerify({ state: "idle" });
-          setErr(null);
         }}
         onConsentActivity={() => {
           void pollAadhaarStatusOnce();
         }}
       />
-    <div className="w-full min-h-0 max-w-full bg-slate-50/50 overflow-x-hidden">
-      <div className="mx-auto flex w-full max-w-6xl flex-col lg:flex-row gap-3 sm:gap-4 p-1 sm:p-2">
-        {/* Left: title + business type + tabs (partnersite layout) */}
-        <aside className="w-full lg:w-52 xl:w-60 shrink-0 flex flex-col gap-2 sm:gap-3 min-w-0 lg:sticky lg:top-4 lg:self-start">
-          <div className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
-            <h2 className="text-base sm:text-lg font-semibold text-slate-800">Store Documents</h2>
-            <p className="mt-0.5 text-xs text-slate-600">
-              Upload required documents for verification.
-            </p>
-            <div className="mt-3 rounded-lg bg-indigo-50/80 border border-indigo-100 p-2.5">
-              <p className="text-xs font-semibold text-indigo-900">
-                {upperStoreType.replace(/_/g, " ")}
-              </p>
-              {isPharmaStoreType ? (
-                <p className="mt-0.5 text-[11px] text-indigo-700">
-                  Drug License & Pharmacist mandatory.
-                </p>
-              ) : (
-                <p className="mt-0.5 text-[11px] text-indigo-700">
-                  {storeTypeDocsSidebarHint(resolvedDocs)}
-                </p>
-              )}
+      {renderDocumentFormModal()}
+      {changeCertConfirm && (
+        <div className="fixed inset-0 z-[250] flex items-center justify-center p-4 bg-slate-900/50" aria-modal="true" role="dialog">
+          <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl border border-slate-200 p-5">
+            <h3 className="text-base font-semibold text-slate-900">{changeCertConfirm.title}</h3>
+            <p className="mt-2 text-sm text-slate-600 leading-relaxed">{changeCertConfirm.message}</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setChangeCertConfirm(null)}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={changeCertConfirm.onConfirm}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+              >
+                Yes, change
+              </button>
             </div>
           </div>
-          <div className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
-            <p className="px-2 py-1 text-xs font-medium text-slate-500">Sections</p>
-            {!catalogLoaded ? (
-              <p className="px-3 py-2 text-xs text-slate-400">Loading documents…</p>
-            ) : null}
-            {step4SectionOrder.map((s) => {
-                const nav = navDocs.find((d) => d.code === s);
-                const isActive = section === s;
-                const sIdx = step4SectionOrder.indexOf(s);
-                const locked = sIdx > maxReachedSectionIdx;
-                return (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => {
-                      if (locked) return;
-                      goToSectionFromSidebar(s);
-                    }}
-                    disabled={locked}
-                    aria-disabled={locked}
-                    title={
-                      locked
-                        ? "Use Save & Continue to open the next section"
-                        : undefined
-                    }
-                    className={`w-full rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-inset ${
-                      isActive
-                        ? "bg-indigo-600 text-white"
-                        : locked
-                          ? "cursor-not-allowed text-slate-400"
-                          : "text-slate-600 hover:bg-slate-100"
-                    }`}
-                  >
-                    {nav ? shortDocNavLabel(nav) : s}
-                  </button>
-                );
-              })}
-          </div>
-        </aside>
+        </div>
+      )}
+    <div className="w-full min-h-0 max-w-full bg-white overflow-x-hidden flex flex-col">
+      <div className="flex-1 w-full px-4 sm:px-6 md:px-8 pt-2 sm:pt-3 pb-28">
+        <div className="mb-3 sm:mb-4">
+          <h2 className="text-lg sm:text-xl font-semibold text-slate-800">Store documents</h2>
+          <p className="mt-0.5 text-xs sm:text-sm text-slate-400 font-normal">
+            As per regulatory guidelines, please share the required documents of your business.
+          </p>
+        </div>
 
-        {/* Right: content + inline actions */}
-        <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
-          <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden flex flex-col min-h-[320px] sm:min-h-[380px]">
-            <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4">
-              {err && (
-                <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {err}
-                </div>
-              )}
-              {sectionContent}
-            </div>
-            <div className="shrink-0 border-t border-slate-200 bg-slate-50/80 px-3 sm:px-4 py-2 flex flex-wrap items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => onPrevious?.()}
-                disabled={actionLoading || !onPrevious}
-                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs sm:text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
-              >
-                {actionLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                Previous
-              </button>
-              <button
-                type="button"
-                onClick={() => onContinue?.()}
-                disabled={actionLoading || continueDisabled || !onContinue}
-                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
-              >
-                {actionLoading ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                )}
-                {actionLoading ? "Saving…" : continueLabel}
-              </button>
-            </div>
-          </div>
-        </main>
+        {catalogLoaded && catalogFetchFailed ? (
+          <p className="text-sm text-slate-600">
+            Could not load documents for this store type. Refresh the page, or check that
+            Super Admin has configured documents under RX / MX Documents type → Merchant.
+          </p>
+        ) : catalogLoaded && navDocs.length === 0 ? (
+          <p className="text-sm text-slate-600">
+            No documents are configured for this store type. Ask Super Admin to add
+            documents under RX / MX Documents type → Merchant.
+          </p>
+        ) : (
+          renderDocumentCardsList()
+        )}
+      </div>
+
+      <div
+        className="fixed bottom-0 left-14 lg:left-[220px] right-0 z-30 bg-white border-t border-slate-200 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.08)]"
+        style={{ paddingBottom: "max(env(safe-area-inset-bottom, 0px), 0px)" }}
+      >
+        <DocumentSubmitMarquee className="border-t-0" />
+        <div className="flex items-center justify-end gap-3 px-4 py-2 min-h-[44px] border-t border-slate-200/80">
+          <button
+            type="button"
+            onClick={() => onWizardBack?.()}
+            disabled={actionLoading || uploadLoading || !onWizardBack}
+            className="px-4 py-2 text-sm border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 font-medium shadow-sm transition-all disabled:opacity-60 inline-flex items-center gap-2 shrink-0"
+          >
+            ← Previous
+          </button>
+          <button
+            type="button"
+            onClick={() => onFinishDocuments?.()}
+            disabled={
+              actionLoading ||
+              uploadLoading ||
+              !onFinishDocuments ||
+              finishDocumentsDisabled ||
+              !allDocumentsComplete
+            }
+            title={!allDocumentsComplete ? "Upload and complete all required documents first" : undefined}
+            className="px-5 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium shadow-sm transition-all disabled:opacity-50 inline-flex items-center gap-2 shrink-0 cursor-pointer disabled:cursor-not-allowed"
+          >
+            {actionLoading || uploadLoading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+              </svg>
+            )}
+            Continue with documents
+          </button>
+        </div>
       </div>
       {replaceTarget && (
         <div className="fixed inset-0 z-[2400] flex items-center justify-center bg-black/40">

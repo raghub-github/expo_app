@@ -28,6 +28,7 @@ async function redispatchRow(row: Awaited<ReturnType<typeof claimDueRetryLogs>>[
   }
 
   const deepLink = row.deep_link ?? undefined;
+  const isMerchant = String(row.recipient_role ?? "") === "merchant";
   const data: Record<string, unknown> = {
     notification_id: row.notification_id,
     template_code: row.template_code ?? undefined,
@@ -36,9 +37,10 @@ async function redispatchRow(row: Awaited<ReturnType<typeof claimDueRetryLogs>>[
     body: row.body,
     gmTitle: row.title,
     gmMessage: row.body,
-    gmBanner: true,
+    gmBanner: !isMerchant,
     ...(deepLink ? { screen: deepLink, deepLink, deep_link: deepLink } : {}),
     ...(row.metadata ?? {}),
+    ...(isMerchant ? { skip_in_app_banner: true, appRole: "merchant" } : {}),
   };
 
   if (isExpoPushTokenString(token)) {

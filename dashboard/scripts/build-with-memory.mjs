@@ -4,23 +4,42 @@
  */
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+
+import {
+  isProductionBuildComplete,
+  localNextOutputDir,
+  repoOnOneDrive,
+  resolveBuildOutputDir,
+} from "./onedrive-build-paths.mjs";
 import {
   applyOneDriveModuleResolutionOptions,
   forceRemoveLock,
+  isJunction,
   lockPath,
+  nextDir,
   prepareNextBuildOutput,
   root,
 } from "./prepare-next-output.mjs";
 
-const require = createRequire(path.join(root, "package.json"));
+const require = createRequire(`${root}/package.json`);
 const nextBin = require.resolve("next/dist/bin/next");
+
+process.env.NODE_ENV = "production";
 
 forceRemoveLock();
 await prepareNextBuildOutput();
 spawnSync("cmd", ["/c", "attrib", "-R", "-S", "-H", lockPath], { stdio: "ignore" });
 spawnSync("cmd", ["/c", "del", "/f", "/q", lockPath], { stdio: "ignore" });
+
+if (repoOnOneDrive()) {
+  if (!isJunction(nextDir)) {
+    console.error(
+      `[build] .next is not junctioned off OneDrive (found regular folder). Stop dev server and run: npm run build`
+    );
+    process.exit(1);
+  }
+  console.log(`[build] production output → ${localNextOutputDir()}`);
+}
 
 applyOneDriveModuleResolutionOptions(process.env);
 
@@ -35,5 +54,14 @@ const result = spawnSync(process.execPath, [nextBin, "build", "--webpack"], {
   env: process.env,
   stdio: "inherit",
 });
+
+if (result.status === 0 && repoOnOneDrive()) {
+  const distDir = resolveBuildOutputDir(nextDir);
+  if (!isProductionBuildComplete(distDir)) {
+    console.error(`[build] incomplete output in ${distDir} — OneDrive may have interrupted the build.`);
+    process.exit(1);
+  }
+  console.log(`[build] verified production output in ${distDir}`);
+}
 
 process.exit(result.status ?? 1);

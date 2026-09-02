@@ -19,7 +19,9 @@ import {
   patchFoodOrderStatus,
   postCompleteSelfPickup,
   postFoodOrderPrepDelay,
+  syncAcceptanceTimeout,
 } from "@/services/ordersApi";
+import { acceptSecondsLeft } from "@/lib/orderAcceptanceWindow";
 import { prefetchMenuItemsForOrders } from "@/lib/menuItemCache";
 import { prefetchOrderTimeline } from "@/lib/orderTimelineCache";
 import { cacheFoodOrders, getCachedFoodOrdersForStore, setCachedFoodOrder } from "@/lib/foodOrderCache";
@@ -29,6 +31,7 @@ import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardSta
 import {
   mapApiOrder,
   attachStoreRatingsFromReviews,
+  mergeOrderRecordPreferringMerchantLinePricing,
   stageTransitionToApi,
   type OrderCounts,
   type OrderRecord,
@@ -38,8 +41,9 @@ import { fetchStoreReviews } from "@/services/ratingsApi";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 import { shortLocalityFromAddress } from "@/lib/selectedStoreStorage";
 
-const POLL_FAST_MS = 15_000;
+const POLL_FAST_MS = 12_000;
 const POLL_NORMAL_MS = 25_000;
+const POLL_IDLE_MS = 15_000;
 const POLL_BACKOFF_MS = 60_000;
 /** Avoid stampeding the API when managing many outlets at once. */
 const ORDERS_FETCH_CONCURRENCY = 2;
@@ -258,7 +262,13 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
           console.log(`[orders] food-orders ok count=${merged.length}`);
         }
         setOrders((current) => {
-          const next = mergePendingOptimistic(merged);
+          const withPricing = merged.map((serverRow) => {
+            const local = current.find(
+              (o) => o.id === serverRow.id || o.ordersCoreId === serverRow.ordersCoreId
+            );
+            return mergeOrderRecordPreferringMerchantLinePricing(serverRow, local);
+          });
+          const next = mergePendingOptimistic(withPricing);
           if (transitionInFlightRef.current.size === 0) return next;
           // Keep local optimistic status while a mark-ready / accept PATCH is in flight
           // so a concurrent poll can't snap the card back to Preparing.
@@ -402,28 +412,29 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     [orders]
   );
 
-  const ordersTabHot =
-    activeTab === "index" || activeTab === "orders" || hasPendingAccept || hasActivePipeline;
+  const ordersTabHot = hasPendingAccept || hasActivePipeline || activeTab === "orders";
 
   useEffect(() => {
-    if (!ordersTabHot) {
+    if (!token || orderStoreIds.length === 0) {
       setLoading(false);
       return;
     }
     if (ordersCountRef.current === 0) setLoading(true);
     void refetch();
-  }, [refetch, ordersTabHot]);
+  }, [refetch, token, orderStoreIds.length]);
 
   const pollIntervalMs =
     pollFailStreak >= 2
       ? POLL_BACKOFF_MS
-      : hasPendingAccept || hasActivePipeline
+      : hasPendingAccept
         ? POLL_FAST_MS
-        : POLL_NORMAL_MS;
+        : ordersTabHot
+          ? POLL_NORMAL_MS
+          : POLL_IDLE_MS;
 
   useMerchantOrdersRealtime({
     storeIds: orderStoreIds,
-    enabled: Boolean(token && orderStoreIds.length > 0 && ordersTabHot),
+    enabled: Boolean(token && orderStoreIds.length > 0),
     authToken: token,
     onOrdersStale: () => {
       void refetch();
@@ -436,11 +447,10 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const id = setInterval(() => {
       if (!isAppForeground()) return;
-      if (!ordersTabHot) return;
       void refetch();
     }, pollIntervalMs);
     return () => clearInterval(id);
-  }, [pollIntervalMs, refetch, ordersTabHot]);
+  }, [pollIntervalMs, refetch]);
 
   // Read-only freshness sync when app is resumed (skip if a poll just succeeded).
   useEffect(() => {
@@ -466,6 +476,58 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     },
     [orderStoreIds]
   );
+
+  /** Fuse expiry: one-shot nudge (IncomingOrderModal + AcceptanceTimeoutSync + backend cron own the rest). */
+  const expiredCreatedSyncRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!token || orderStoreIds.length === 0) return;
+    if (!hasPendingAccept) return;
+    if (!isAppForeground()) return;
+
+    const now = Date.now();
+    const expired = ordersRef.current.filter(
+      (o) =>
+        o.status === "created" &&
+        !o.id.startsWith("core-") &&
+        acceptSecondsLeft(
+          o.createdAt,
+          acceptanceWindowMinutes,
+          now,
+          o.merchantResponseDeadlineAt
+        ) <= 0
+    );
+    if (expired.length === 0) return;
+
+    for (const order of expired) {
+      const coreId = order.ordersCoreId;
+      if (expiredCreatedSyncRef.current.has(coreId)) continue;
+      expiredCreatedSyncRef.current.add(coreId);
+      const foodId = parseInt(order.id, 10);
+      const storeId = resolveOrderStoreId(order);
+      if (!storeId || !Number.isFinite(foodId)) {
+        expiredCreatedSyncRef.current.delete(coreId);
+        continue;
+      }
+      void (async () => {
+        try {
+          await syncAcceptanceTimeout(storeId, token);
+          await applyRealtimeFoodRow(foodId, storeId);
+        } catch {
+          /* cron owns cancel */
+        } finally {
+          setTimeout(() => expiredCreatedSyncRef.current.delete(coreId), 30_000);
+        }
+      })();
+    }
+  }, [
+    token,
+    orderStoreIds,
+    hasPendingAccept,
+    orders.length,
+    acceptanceWindowMinutes,
+    applyRealtimeFoodRow,
+    resolveOrderStoreId,
+  ]);
 
   const transitionOrder = useCallback(
     async (

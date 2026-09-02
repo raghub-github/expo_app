@@ -3,7 +3,7 @@
  * Hero height auto-fits the active slide's image/video aspect ratio.
  */
 
-import { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
+import { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo, memo } from "react";
 import {
   View,
   ScrollView,
@@ -13,7 +13,7 @@ import {
   NativeScrollEvent,
   useWindowDimensions,
 } from "react-native";
-import { Video, ResizeMode } from "expo-av";
+import { GridFirstHeroVideo } from "@/components/home/GridFirstHeroVideo";
 import { Image, type ImageLoadEventData } from "expo-image";
 import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
@@ -23,10 +23,6 @@ import type { GridFirstHeroMediaItem } from "@/lib/gridFirstHeroMedia";
 import type { HomeBannerOffer } from "@/services/offers.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { prefetchFoodHomeImageUri } from "@/lib/prefetchGridFirstHeroMedia";
-import {
-  GridFirstDefaultHeroBg,
-  GRID_FIRST_DEFAULT_HERO_BASE,
-} from "@/components/home/GridFirstDefaultHeroBg";
 import { FOOD_OFFERS_HERO_ROW_H } from "@/components/home/FoodOffersRibbonCarousel";
 
 import {
@@ -36,10 +32,12 @@ import {
 } from "@/lib/gridFirstStickyLayout";
 
 const PROMO_AUTO_MS = 5200;
+/** Only mount hero slides near the active index (avoids decoding every video at once). */
+const SLIDE_WINDOW = 1;
 /** Sky / status-bar tint for grid-first hero (keep in sync with home status bar). */
 export const GRID_FIRST_SKY_TOP = "#7DD3FC";
-/** Warm fallback while hero media loads — Swiggy-style cream. */
-export const GRID_FIRST_HERO_PLACEHOLDER = GRID_FIRST_DEFAULT_HERO_BASE;
+/** Warm fallback while hero media loads — plain white until decode completes. */
+export const GRID_FIRST_HERO_PLACEHOLDER = "#FFFFFF";
 export { GRID_FIRST_HEADER_OVERLAY_H, GRID_FIRST_HERO_VISIBLE_H, gridFirstSkySectionHeight };
 
 const HERO_VISIBLE_H = GRID_FIRST_HERO_VISIBLE_H;
@@ -110,6 +108,14 @@ function buildSlides(
   return slides;
 }
 
+/** True when at least one hero slide can render (valid media URL). */
+export function hasGridFirstHeroSlides(
+  heroMedia: GridFirstHeroMediaItem[] = [],
+  offers: HomeBannerOffer[] = []
+): boolean {
+  return buildSlides(heroMedia, offers).length > 0;
+}
+
 type Props = {
   heroMedia?: GridFirstHeroMediaItem[];
   offers?: HomeBannerOffer[];
@@ -122,22 +128,30 @@ type Props = {
   onHeroReadyChange?: (ready: boolean) => void;
   /** Flat placeholder behind hero media while it decodes (grocery uses page bg). */
   placeholderColor?: string;
+  /** Pause video decode/playback while scrolling away or tab blurred. */
+  shouldPlay?: boolean;
 };
 
 function HeroPlaceholder({ color }: { color?: string }) {
-  if (color) {
-    return <View style={[StyleSheet.absoluteFillObject, { backgroundColor: color }]} />;
-  }
-  return <GridFirstDefaultHeroBg />;
+  return (
+    <View
+      style={[
+        StyleSheet.absoluteFillObject,
+        { backgroundColor: color ?? "#FFFFFF" },
+      ]}
+    />
+  );
 }
 
-function HeroMediaSlide({
+const HeroMediaSlide = memo(function HeroMediaSlide({
   slide,
   slideWidth,
   slideHeight,
   imageFailed,
   onImageError,
   isActive,
+  shouldPlay,
+  mounted,
   onPress,
   onAspectRatio,
   onMediaReady,
@@ -150,6 +164,8 @@ function HeroMediaSlide({
   imageFailed: boolean;
   onImageError: () => void;
   isActive: boolean;
+  shouldPlay: boolean;
+  mounted: boolean;
   onPress: () => void;
   onAspectRatio?: (ratio: number) => void;
   onMediaReady?: () => void;
@@ -157,6 +173,8 @@ function HeroMediaSlide({
   placeholderColor?: string;
 }) {
   const hasMedia = !!slide.mediaUrl && !imageFailed;
+  const showVideo = mounted && slide.kind === "video" && hasMedia;
+  const playVideo = showVideo && isActive && shouldPlay;
   const [imageReady, setImageReady] = useState(false);
   const reportedRef = useRef<string | null>(null);
 
@@ -187,34 +205,34 @@ function HeroMediaSlide({
     [onMediaReady, reportAspect]
   );
 
-  const content = (
+  const content = !mounted ? (
+    <HeroPlaceholder color={placeholderColor} />
+  ) : (
     <>
       {!hideSlidePlaceholder ? <HeroPlaceholder color={placeholderColor} /> : null}
 
-      {slide.kind === "video" && hasMedia ? (
-        <Video
-          source={{ uri: slide.mediaUrl! }}
-          style={StyleSheet.absoluteFill}
-          resizeMode={ResizeMode.COVER}
-          shouldPlay={isActive}
-          isLooping
-          isMuted
-          useNativeControls={false}
-          onReadyForDisplay={(ev) => {
-            onMediaReady?.();
-            const nat = ev.naturalSize;
-            if (nat?.width && nat?.height) {
-              reportAspect(nat.width, nat.height);
-            }
-          }}
+      {showVideo && playVideo ? (
+        <GridFirstHeroVideo
+          uri={slide.mediaUrl!}
+          shouldPlay
+          onReady={onMediaReady}
+          onAspectRatio={
+            onAspectRatio
+              ? (ratio) => {
+                  if (ratio > 0.15 && ratio <= 8) onAspectRatio(ratio);
+                }
+              : undefined
+          }
         />
-      ) : hasMedia ? (
+      ) : showVideo ? (
+        <HeroPlaceholder color={placeholderColor} />
+      ) : slide.kind === "video" && hasMedia ? null : hasMedia ? (
         <Image
           source={{ uri: slide.mediaUrl! }}
           style={[styles.heroMedia, { opacity: imageReady ? 1 : 0 }]}
           contentFit="cover"
           cachePolicy="memory-disk"
-          priority="high"
+          priority={isActive ? "high" : "normal"}
           transition={0}
           recyclingKey={slide.mediaUrl!}
           onLoad={onImageLoad}
@@ -238,7 +256,7 @@ function HeroMediaSlide({
       {content}
     </TouchableOpacity>
   );
-}
+});
 
 export function FoodHomeHeroCarousel({
   heroMedia = [],
@@ -249,6 +267,7 @@ export function FoodHomeHeroCarousel({
   onHeroHeightChange,
   onHeroReadyChange,
   placeholderColor,
+  shouldPlay = true,
 }: Props) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -274,8 +293,8 @@ export function FoodHomeHeroCarousel({
 
   const activeSlide = slides[Math.min(activeIndex, Math.max(0, slides.length - 1))];
   const activeAspect =
-    (activeSlide ? measuredAspectById[activeSlide.id] : null) ??
     activeSlide?.aspectRatio ??
+    (activeSlide ? measuredAspectById[activeSlide.id] : null) ??
     null;
 
   const mediaVisibleH = useMemo(() => {
@@ -310,7 +329,9 @@ export function FoodHomeHeroCarousel({
   }, [slides.map((s) => s.id).join("|"), slideWidth]);
 
   useEffect(() => {
-    if (slides.length < 2) return;
+    if (slides.length < 2 || !shouldPlay) return;
+    const active = slides[Math.min(activeIndex, slides.length - 1)];
+    if (active?.kind === "video") return;
     const timer = setInterval(() => {
       setActiveIndex((prev) => {
         const next = (prev + 1) % slides.length;
@@ -319,7 +340,7 @@ export function FoodHomeHeroCarousel({
       });
     }, PROMO_AUTO_MS);
     return () => clearInterval(timer);
-  }, [slides.length, slideWidth]);
+  }, [slides.length, slideWidth, shouldPlay]);
 
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -339,12 +360,16 @@ export function FoodHomeHeroCarousel({
   const onSlideAspect = useCallback((slideId: string, ratio: number) => {
     setMeasuredAspectById((prev) => {
       if (prev[slideId] === ratio) return prev;
+      const slide = slides.find((s) => s.id === slideId);
+      if (slide?.kind === "video" && prev[slideId] != null) return prev;
       return { ...prev, [slideId]: ratio };
     });
-  }, []);
+  }, [slides]);
 
   const firstSlide = slides[0];
   const prevFirstSlideIdRef = useRef<string | undefined>(undefined);
+  const allSlidesFailed =
+    slides.length > 0 && slides.every((slide) => failedIds.has(slide.id));
 
   useEffect(() => {
     const id = firstSlide?.id;
@@ -355,8 +380,8 @@ export function FoodHomeHeroCarousel({
       onHeroReadyChange?.(false);
     }
     prevFirstSlideIdRef.current = id;
-    if (!id) onHeroReadyChange?.(false);
-  }, [firstSlide?.id, onHeroReadyChange]);
+    if (!id || allSlidesFailed) onHeroReadyChange?.(false);
+  }, [firstSlide?.id, allSlidesFailed, onHeroReadyChange]);
 
   if (slides.length === 0) {
     return null;
@@ -384,32 +409,37 @@ export function FoodHomeHeroCarousel({
         delaysContentTouches={false}
         keyboardShouldPersistTaps="handled"
         onScroll={onScroll}
-        scrollEventThrottle={16}
+        scrollEventThrottle={32}
         style={[immersive ? styles.scrollImmersive : undefined, { width: slideWidth || "100%" }]}
         contentContainerStyle={styles.scrollContent}
       >
-        {slides.map((slide, index) => (
-          <HeroMediaSlide
-            key={slide.id}
-            slide={slide}
-            slideWidth={slideWidth}
-            slideHeight={slideHeight}
-            onPress={() => onPress(slide)}
-            imageFailed={failedIds.has(slide.id)}
-            onImageError={() => setFailedIds((s) => new Set(s).add(slide.id))}
-            isActive={index === activeIndex}
-            hideSlidePlaceholder={immersive}
-            placeholderColor={placeholderColor}
-            onAspectRatio={
-              slide.aspectRatio
-                ? undefined
-                : (ratio) => onSlideAspect(slide.id, ratio)
-            }
-            onMediaReady={
-              index === 0 ? () => onHeroReadyChange?.(true) : undefined
-            }
-          />
-        ))}
+        {slides.map((slide, index) => {
+          const mounted = Math.abs(index - activeIndex) <= SLIDE_WINDOW;
+          return (
+            <HeroMediaSlide
+              key={slide.id}
+              slide={slide}
+              slideWidth={slideWidth}
+              slideHeight={slideHeight}
+              onPress={() => onPress(slide)}
+              imageFailed={failedIds.has(slide.id)}
+              onImageError={() => setFailedIds((s) => new Set(s).add(slide.id))}
+              isActive={index === activeIndex}
+              shouldPlay={shouldPlay}
+              mounted={mounted}
+              hideSlidePlaceholder={immersive}
+              placeholderColor={placeholderColor}
+              onAspectRatio={
+                slide.aspectRatio
+                  ? undefined
+                  : (ratio) => onSlideAspect(slide.id, ratio)
+              }
+              onMediaReady={
+                index === 0 ? () => onHeroReadyChange?.(true) : undefined
+              }
+            />
+          );
+        })}
       </ScrollView>
       {slides.length > 1 ? (
         <View style={[styles.dots, immersive && styles.dotsImmersive]}>

@@ -78,8 +78,17 @@ export function isMerchantOrderRelatedPush(data: Record<string, unknown>): boole
   return false;
 }
 
+/** Home dashboard — New orders tab (CREATED-order notification tap). */
+export function merchantHomeNewOrdersHref(): string {
+  return "/(tabs)?orderTab=New";
+}
+
 /** Live-board tab when a push has no numeric food order id. */
 export function merchantOrdersTabHrefFromPush(data: Record<string, unknown>): string {
+  const t = String(data.type ?? data.event ?? data.gmType ?? data.template_code ?? "").toLowerCase();
+  if (t.includes("merchant_new_order") || t === "new_order") {
+    return merchantHomeNewOrdersHref();
+  }
   const s = String(data.stage ?? data.toStatus ?? "")
     .trim()
     .toUpperCase()
@@ -100,7 +109,7 @@ export function merchantOrdersTabHrefFromPush(data: Record<string, unknown>): st
   ) {
     return "/(tabs)/orders?tab=picked_up";
   }
-  if (s === "CREATED" || s === "NEW" || s === "PLACED") return "/(tabs)/orders";
+  if (s === "CREATED" || s === "NEW" || s === "PLACED") return merchantHomeNewOrdersHref();
   return "/(tabs)/orders?tab=preparing";
 }
 

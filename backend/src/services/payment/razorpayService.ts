@@ -275,19 +275,99 @@ export interface RefundResponse {
  * "The receipt has already been used" — the caller should catch that and
  * treat it as "refund already exists" rather than a hard error.
  */
+function clipRazorpayRefundError(err: unknown): string {
+  if (err == null) return "unknown_error";
+  if (typeof err === "string") return err.slice(0, 500);
+  if (err instanceof Error && err.message && err.message !== "[object Object]") {
+    return err.message.slice(0, 500);
+  }
+  if (typeof err === "object") {
+    const o = err as Record<string, unknown>;
+    const nested =
+      o.error != null && typeof o.error === "object"
+        ? (o.error as Record<string, unknown>)
+        : null;
+    const parts: string[] = [];
+    const code = nested?.code ?? o.code;
+    const description = nested?.description ?? o.description ?? o.message;
+    if (code != null && String(code).trim()) parts.push(String(code));
+    if (description != null && String(description).trim()) parts.push(String(description));
+    if (parts.length > 0) return parts.join(" | ").slice(0, 500);
+  }
+  return String(err).slice(0, 500);
+}
+
+function sanitizeRazorpayRefundNotes(
+  notes?: Record<string, string>
+): Record<string, string> | undefined {
+  if (!notes) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(notes)) {
+    out[key.slice(0, 64)] = String(value ?? "").slice(0, 256);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export async function createRazorpayRefund(params: RefundParams): Promise<RefundResponse> {
   const razorpay = getRazorpayInstance();
+  const paymentRaw = await getPaymentDetails(params.paymentId);
+  const payment = paymentRaw as unknown as Record<string, unknown>;
+  const status = String(payment.status ?? "").toLowerCase();
+  if (status !== "captured" && status !== "partially_refunded") {
+    throw new Error(`payment_not_refundable_status_${status || "unknown"}`);
+  }
+
+  const amountRefundablePaise = Math.round(
+    Number(payment.amount_refundable ?? payment.amount ?? 0)
+  );
+  let amountPaise: number | undefined;
+  if (params.amountPaise != null) {
+    const requested = Math.round(params.amountPaise);
+    if (requested <= 0) throw new Error("refund_amount_must_be_positive");
+    if (amountRefundablePaise <= 0) {
+      throw new Error("refund_amount_exceeds_refundable_balance");
+    }
+    amountPaise = Math.min(requested, amountRefundablePaise);
+    if (amountPaise <= 0) {
+      throw new Error("refund_amount_exceeds_refundable_balance");
+    }
+  } else if (amountRefundablePaise > 0) {
+    amountPaise = amountRefundablePaise;
+  }
+
   const payload: Record<string, unknown> = {
-    receipt: params.receipt,
+    receipt: String(params.receipt).slice(0, 40),
     speed: params.speed ?? "normal",
   };
-  if (params.amountPaise != null) payload.amount = params.amountPaise;
-  if (params.notes) payload.notes = params.notes;
-  const refund = await razorpay.payments.refund(
-    params.paymentId,
-    payload as Parameters<typeof razorpay.payments.refund>[1]
-  );
-  return refund as unknown as RefundResponse;
+  if (amountPaise != null) payload.amount = amountPaise;
+  const notes = sanitizeRazorpayRefundNotes(params.notes);
+  if (notes) payload.notes = notes;
+
+  try {
+    const refund = await razorpay.payments.refund(
+      params.paymentId,
+      payload as Parameters<typeof razorpay.payments.refund>[1]
+    );
+    return refund as unknown as RefundResponse;
+  } catch (err) {
+    const msg = clipRazorpayRefundError(err);
+    if (!/receipt has already been used/i.test(msg)) throw err;
+
+    const listed = (await razorpay.payments.fetchMultipleRefund(params.paymentId, {
+      count: 100,
+    })) as unknown as { items?: Array<{ id?: unknown; receipt?: unknown }> };
+    const items = Array.isArray(listed?.items) ? listed.items : [];
+    const receipt = String(params.receipt).slice(0, 40);
+    const existing = items.find((item) => String(item.receipt ?? "") === receipt);
+    if (existing?.id) {
+      const refund = await razorpay.payments.fetchRefund(
+        params.paymentId,
+        String(existing.id)
+      );
+      return refund as unknown as RefundResponse;
+    }
+    throw err;
+  }
 }
 
 function extractUpiIntentUrl(payload: Record<string, unknown>): string | null {

@@ -22,7 +22,7 @@ import { resolveStoreProfileMediaForDisplay } from "@/lib/merchant/resolve-store
 export const runtime = "nodejs";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -35,7 +35,7 @@ export async function GET(
       );
     }
 
-    const actor = await resolveMerchantApiActor();
+    const actor = await resolveMerchantApiActor(request);
     if (!actor.ok) {
       return NextResponse.json(
         {

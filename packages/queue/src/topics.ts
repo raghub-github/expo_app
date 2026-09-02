@@ -29,16 +29,20 @@ export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
 export type PushSendJob = {
   /** Either single token OR an array — worker fans out internally. */
   to: string | string[];
-  title: string;
-  body: string;
+  title?: string;
+  body?: string;
   data?: Record<string, unknown>;
   /** Optional deep-link target for tap. */
   screen?: string;
   /** Optional image attachment URL. */
   imageUrl?: string;
   /** Sound, badge, channel etc. */
-  sound?: "default" | string;
+  sound?: "default" | string | null;
   channelId?: string;
+  /** Data-only / background delivery (live-order sticky updates). */
+  contentAvailable?: boolean;
+  /** Android FCM collapse key — replaces prior tray row for same order. */
+  collapseKey?: string;
   /** Links job to notification_dispatch_logs.notification_id for delivery tracking. */
   dispatchLogId?: string;
   /** Template code for observability / retry. */

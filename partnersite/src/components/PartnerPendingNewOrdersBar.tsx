@@ -184,7 +184,7 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
     };
   }, [managedInternalIds.join(','), internalId, loadPending]);
 
-  if (!showFloatingOrders || onNewOrdersList || pending <= 0 || incomingModalOpen) return null;
+  if (!showFloatingOrders || onNewOrdersList || pending <= 1 || incomingModalOpen) return null;
 
   const sid = storeId || readPartnerSelectedStoreId(restaurantId);
   if (!sid) return null;

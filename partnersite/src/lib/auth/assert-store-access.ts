@@ -2,12 +2,16 @@
  * Resolve store by store_id (text e.g. GMMC1015), validate merchant owns it.
  * Use for menu/combos/modifier-groups etc. in partnersite.
  */
-import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant'
-import { isNetworkOrTransientError } from '@/lib/auth/session-errors'
+import {
+  partnerMissingUserStatus,
+  requestHasPartnerAuthCookies,
+  resolvePartnerUser,
+} from '@/lib/auth/resolve-partner-user'
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { client as pgClient } from '@/lib/drizzle'
+import { cookies } from 'next/headers'
 
 // Lazy singleton — building this at module load fails during `next build`'s
 // "Collecting page data" pass because process.env.NEXT_PUBLIC_SUPABASE_URL is
@@ -104,72 +108,24 @@ async function findSystemUserOverride(
   }
 }
 
-async function resolveAuthenticatedUser(
-  supabaseServer: Awaited<ReturnType<typeof createServerSupabaseClient>>,
-): Promise<
+async function resolveAuthenticatedUser(): Promise<
   | { ok: true; user: { id: string; email?: string | null; phone?: string | null } }
   | { ok: false; error: string; status: number }
 > {
-  const maxAttempts = 3;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    try {
-      if (attempt > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 120 * attempt));
-        try {
-          await supabaseServer.auth.getSession();
-        } catch {
-          /* ignore */
-        }
-      }
-
-      let {
-        data: { user: sessionUser },
-        error: userError,
-      } = await supabaseServer.auth.getUser();
-
-      if ((!sessionUser || userError) && attempt === 0) {
-        try {
-          await supabaseServer.auth.getSession();
-        } catch {
-          /* ignore */
-        }
-        const retry = await supabaseServer.auth.getUser();
-        sessionUser = retry.data.user;
-        userError = retry.error;
-      }
-
-      if (sessionUser && !userError) {
-        return { ok: true, user: sessionUser };
-      }
-
-      // Cookie / refresh races: getUser can briefly fail while getSession still
-      // has a valid user — prefer that over a flaky 401 that breaks Menu.
-      try {
-        const {
-          data: { session },
-        } = await supabaseServer.auth.getSession();
-        if (session?.user?.id) {
-          return { ok: true, user: session.user };
-        }
-      } catch {
-        /* ignore */
-      }
-
-      if (userError && isNetworkOrTransientError(userError)) {
-        if (attempt < maxAttempts - 1) continue;
-        return { ok: false, error: 'Auth service unavailable', status: 503 };
-      }
-    } catch (e) {
-      if (isNetworkOrTransientError(e)) {
-        if (attempt < maxAttempts - 1) continue;
-        return { ok: false, error: 'Auth service unavailable', status: 503 };
-      }
-      throw e;
-    }
+  const cookieStore = await cookies();
+  const reader = {
+    get: (name: string) => cookieStore.get(name),
+    getAll: () => cookieStore.getAll(),
+  };
+  const resolved = await resolvePartnerUser({ cookieReader: reader });
+  if (resolved.user?.id) {
+    return { ok: true, user: resolved.user };
   }
-
-  return { ok: false, error: 'Not authenticated', status: 401 };
+  const mapped = partnerMissingUserStatus(
+    requestHasPartnerAuthCookies({ cookies: reader }),
+    resolved.error,
+  );
+  return { ok: false, error: mapped.error, status: mapped.status };
 }
 
 export async function assertStoreAccess(storeIdParam: string | null): Promise<AssertStoreResult> {
@@ -182,13 +138,13 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
 
   let user: { id: string; email?: string | null; phone?: string | null } | null = null
   try {
-    const supabaseServer = await createServerSupabaseClient()
-    const resolved = await resolveAuthenticatedUser(supabaseServer)
+    const resolved = await resolveAuthenticatedUser()
     if (!resolved.ok) {
       return { ok: false, error: resolved.error, status: resolved.status }
     }
     user = resolved.user
   } catch (e) {
+    const { isNetworkOrTransientError } = await import('@/lib/auth/session-errors')
     // DNS blips / connect timeouts to Supabase throw TypeError: fetch failed
     // instead of returning an AuthError — surface a clean status, don't crash the route.
     if (isNetworkOrTransientError(e)) {

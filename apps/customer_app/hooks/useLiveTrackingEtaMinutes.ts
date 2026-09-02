@@ -19,8 +19,8 @@ import {
 import { pushEtaAudit } from "@/lib/eta-audit-log";
 import { effectiveNowMs } from "@/lib/server-time-offset";
 
-/** UI countdown animation — PRD: update every 1 second. */
-const TICK_MS = 1_000;
+/** Live ETA minute flips — 5s is enough for countdown UI without heating the device. */
+const TICK_MS = 5_000;
 /** Rider motion / GPS staleness checks (map health only — not ETA inventing). */
 const MOTION_TICK_MS = 15_000;
 
@@ -108,6 +108,7 @@ export function useLiveTrackingEtaMinutes(args: {
   useEffect(() => {
     if (!active) return;
     const tick = () => {
+      if (AppState.currentState !== "active") return;
       setNowMs((prev) => {
         const next = effectiveNowMs();
         // Bail when the displayed second is unchanged — avoids render storms.

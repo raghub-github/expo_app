@@ -51,7 +51,7 @@ export type MerchantRiderTrackingPayload = {
   approach: MerchantRiderApproach | null;
 };
 
-export const MERCHANT_RIDER_TRACKING_POLL_MS = 2000;
+export const MERCHANT_RIDER_TRACKING_POLL_MS = 5000;
 
 export async function fetchMerchantRiderTracking(
   storeId: number,

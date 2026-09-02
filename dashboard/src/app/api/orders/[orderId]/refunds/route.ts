@@ -482,7 +482,7 @@ export async function POST(
       );
     }
 
-    // Per-item remaining cap for partial (refund without cancellation).
+    // Per-item remaining cap for partial (item-selected) refunds only.
     if (refundType === "refund_without_cancellation") {
       const meta =
         body?.refundMetadata && typeof body.refundMetadata === "object"
@@ -517,9 +517,9 @@ export async function POST(
                 success: false,
                 error: `Item #${itemId}: refund ₹${requested.toFixed(
                   2
-                )} exceeds remaining refundable ₹${bal.remainingRefundable.toFixed(
+                )} exceeds this item's remaining share ₹${bal.remainingRefundable.toFixed(
                   2
-                )} (already refunded ₹${bal.alreadyRefunded.toFixed(2)} of ₹${bal.originalTotal.toFixed(
+                )} (₹${bal.alreadyRefunded.toFixed(2)} already refunded; item CTC cap ₹${bal.originalTotal.toFixed(
                   2
                 )}).`,
                 code: "ITEM_REFUND_EXCEEDS_REMAINING",
@@ -744,6 +744,9 @@ export async function POST(
           );
         }
       }
+    } else if (refundType === "refund_full_ctc") {
+      // Full CTC is order-level — no per-item money split or order_refund_items rows.
+      attributedItems = [];
     } else if (refundType !== "refund_without_cancellation") {
       attributedItems = [];
     }

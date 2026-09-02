@@ -6,6 +6,7 @@ import { recordCancellationTimeline } from "../lib/order-cancellation-timeline.j
 import { recordOrderCancellation } from "../lib/record-order-cancellation.js";
 import { applyMerchantOrderCancellationLedger } from "../lib/apply-merchant-cancellation-ledger.js";
 import { autoRefundOnCancellation } from "../lib/auto-refund-on-cancellation.js";
+import { syncOrderRefundCompletionMarkers } from "../lib/order-refund-completion-sync.js";
 import { clearMerchantStoreOrderNotifications } from "../lib/clear-merchant-order-notifications.js";
 import { emitEvent } from "../modules/notifications/eventBus.js";
 
@@ -315,6 +316,23 @@ async function finalizeCancelledRow(
         },
         sql
       );
+      if (outcome.triggered && outcome.refundId != null) {
+        const execStatus = String(outcome.result?.status ?? "").toUpperCase();
+        const kind =
+          execStatus === "COMPLETED" || execStatus === "NOOP"
+            ? "completed"
+            : execStatus === "FAILED"
+              ? "failed"
+              : "processing";
+        await syncOrderRefundCompletionMarkers(
+          {
+            orderCoreId: coreId,
+            refundId: outcome.refundId,
+            kind,
+          },
+          sql
+        );
+      }
       log.info(
         { coreId, triggered: outcome.triggered, skipped: outcome.skippedReason, status: outcome.result?.status },
         "order_acceptance_timeout_auto_refund"
@@ -495,8 +513,75 @@ async function repairUnrefundedAcceptTimeoutCancels(
   return repaired;
 }
 
+/** Merchant/system cancels (incl. OOS reject) that never moved money back to the customer. */
+async function repairUnrefundedMerchantCancelledOrders(
+  sql: Sql,
+  log: TimeoutLog,
+  opts?: { merchantStoreId?: number; limit?: number }
+): Promise<number> {
+  const limit = Math.max(1, Math.min(100, opts?.limit ?? 40));
+  const storeId = opts?.merchantStoreId;
+  const storeFilter =
+    storeId != null && Number.isFinite(storeId) && storeId > 0
+      ? sql`AND f.merchant_store_id = ${storeId}`
+      : sql``;
+
+  const rows = (await sql`
+    SELECT DISTINCT c.id AS core_id, COALESCE(f.rejected_reason, '') AS rejected_reason
+    FROM orders_food f
+    JOIN orders_core c ON c.id = f.order_id
+    WHERE upper(COALESCE(f.order_status, '')) = 'CANCELLED'
+      AND f.cancelled_at IS NOT NULL
+      AND f.cancelled_at > NOW() - INTERVAL '30 days'
+      AND upper(COALESCE(f.rejected_reason, '')) <> ${MERCHANT_ACCEPT_TIMEOUT_REASON}
+      AND COALESCE(lower(f.cancelled_by_type::text), lower(c.cancelled_by::text), '') NOT IN (
+        'customer', 'cx'
+      )
+      ${storeFilter}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM order_refunds r
+        WHERE r.order_id = c.id
+          AND (
+            (r.customer_wallet_ledger_id IS NOT NULL AND r.customer_wallet_ledger_id > 0)
+            OR NULLIF(TRIM(COALESCE(r.razorpay_refund_id, '')), '') IS NOT NULL
+          )
+      )
+    ORDER BY c.id DESC
+    LIMIT ${limit}
+  `) as Array<{ core_id: number; rejected_reason: string }>;
+
+  let repaired = 0;
+  for (const row of rows) {
+    const coreId = Number(row.core_id);
+    if (!Number.isFinite(coreId) || coreId <= 0) continue;
+    const reason = String(row.rejected_reason ?? "").trim() || "Order cancelled by merchant";
+    try {
+      const outcome = await autoRefundOnCancellation(
+        {
+          orderCoreId: coreId,
+          reason,
+          actorEmail: null,
+          actorRole: "store",
+        },
+        sql
+      );
+      if (outcome.triggered) {
+        repaired += 1;
+        log.info(
+          { coreId, status: outcome.result?.status, skipped: outcome.skippedReason },
+          "merchant_cancel_auto_refund_repair"
+        );
+      }
+    } catch (err) {
+      log.error({ err, coreId }, "merchant_cancel_auto_refund_repair_failed");
+    }
+  }
+  return repaired;
+}
+
 /** Repair is for missed HTTP auto-refund hops, not a 10s retry of FAILED rows. */
-const REPAIR_EVERY_MS = 5 * 60 * 1000;
+const REPAIR_EVERY_MS = 30 * 1000;
 let lastRepairAtMs = 0;
 
 /**
@@ -516,15 +601,17 @@ export async function runOrderAcceptanceTimeoutTick(log: TimeoutLog): Promise<vo
       await finalizeCancelledRows(sql, cancelledRows, log);
 
       let repaired = 0;
+      let merchantRepaired = 0;
       const nowMs = Date.now();
       if (nowMs - lastRepairAtMs >= REPAIR_EVERY_MS) {
         repaired = await repairUnrefundedAcceptTimeoutCancels(sql, log, { limit: 40 });
+        merchantRepaired = await repairUnrefundedMerchantCancelledOrders(sql, log, { limit: 40 });
         lastRepairAtMs = nowMs;
       }
 
       const cancelled = cancelledRows.length;
-      if (cancelled > 0 || autoAccepted > 0 || repaired > 0) {
-        log.info({ cancelled, autoAccepted, repaired, now }, "order_acceptance_timeout_tick");
+      if (cancelled > 0 || autoAccepted > 0 || repaired > 0 || merchantRepaired > 0) {
+        log.info({ cancelled, autoAccepted, repaired, merchantRepaired, now }, "order_acceptance_timeout_tick");
       }
     });
   } catch (e) {
@@ -553,10 +640,26 @@ export async function syncOrderAcceptanceTimeoutForStore(
     });
     await finalizeCancelledRows(sql, cancelledRows, log);
 
+    let repaired = 0;
+    let merchantRepaired = 0;
+    const nowMs = Date.now();
+    if (nowMs - lastRepairAtMs >= REPAIR_EVERY_MS) {
+      repaired = await repairUnrefundedAcceptTimeoutCancels(sql, log, {
+        merchantStoreId,
+        limit: 40,
+      });
+      lastRepairAtMs = nowMs;
+    }
+    // Lightweight safety net on every portal/app sync — only orders with no real refund movement.
+    merchantRepaired = await repairUnrefundedMerchantCancelledOrders(sql, log, {
+      merchantStoreId,
+      limit: 5,
+    });
+
     const cancelled = cancelledRows.length;
-    if (cancelled > 0 || autoAccepted > 0) {
+    if (cancelled > 0 || autoAccepted > 0 || repaired > 0 || merchantRepaired > 0) {
       log.info(
-        { cancelled, autoAccepted, merchantStoreId, now },
+        { cancelled, autoAccepted, repaired, merchantRepaired, merchantStoreId, now },
         "order_acceptance_timeout_store_sync"
       );
     }

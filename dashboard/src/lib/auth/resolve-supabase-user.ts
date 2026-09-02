@@ -50,7 +50,7 @@ let refreshInFlight: Promise<ResolvedSupabaseAuth> | null = null;
  * losers of a refresh race can still authenticate from this process-local cache.
  */
 let lastResolvedUser: { user: User; until: number } | null = null;
-const LAST_RESOLVED_USER_TTL_MS = 15_000;
+const LAST_RESOLVED_USER_TTL_MS = 120_000;
 
 export type ResolveCookieReader = {
   get: (name: string) => { value: string } | undefined;

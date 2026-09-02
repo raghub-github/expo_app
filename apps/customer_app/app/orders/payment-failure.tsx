@@ -1,12 +1,13 @@
 /**
- * Payment / order confirmation failed.
- * Forwards to checkout and opens the Retry / Leave bottom sheet.
+ * Legacy deep-link route — opens the root payment-failure sheet and returns to checkout.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { View, ActivityIndicator, StyleSheet } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useCheckoutPaymentFailureStore } from "@/store/checkoutPaymentFailureStore";
+import { presentCheckoutPaymentFailure } from "@/store/checkoutPaymentFailureStore";
+import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
+import { useCartStore } from "@/store/cartStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 export default function PaymentFailureScreen() {
@@ -15,16 +16,26 @@ export default function PaymentFailureScreen() {
     amount?: string | string[];
     method?: string | string[];
   }>();
+  const handledRef = useRef(false);
 
   useEffect(() => {
+    if (handledRef.current) return;
+    handledRef.current = true;
     const amountRaw = Array.isArray(params.amount) ? params.amount[0] : params.amount;
     const methodRaw = Array.isArray(params.method) ? params.method[0] : params.method;
     const amount = amountRaw != null ? Number(amountRaw) : NaN;
-    useCheckoutPaymentFailureStore.getState().show({
+    presentCheckoutPaymentFailure({
       amountInr: Number.isFinite(amount) ? amount : null,
       methodLabel: methodRaw?.trim() || "UPI",
     });
-    router.replace("/checkout");
+    if (useCartStore.getState().items.length > 0) {
+      useCheckoutSheetStore.getState().show();
+    }
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace("/checkout");
+    }
   }, [params.amount, params.method, router]);
 
   return (

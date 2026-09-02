@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 import { AppText } from "@/components/AppText";
 
 import { ActivityIndicator, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
@@ -8,7 +8,9 @@ import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { orderService } from "@/services/order.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { useCheckoutPaymentFailureStore } from "@/store/checkoutPaymentFailureStore";
+import { presentCheckoutPaymentFailure } from "@/store/checkoutPaymentFailureStore";
+import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
+import { useCartStore } from "@/store/cartStore";
 
 const PAD = 20;
 
@@ -37,11 +39,13 @@ export default function PaymentConfirmingScreen() {
     refetchInterval: 4000,
     retry: true,
   });
+  const handledTerminalRef = useRef(false);
 
   useEffect(() => {
     const data = statusQuery.data;
-    if (!data) return;
+    if (!data || handledTerminalRef.current) return;
     if (data.finalized && data.orderId) {
+      handledTerminalRef.current = true;
       router.replace({
         pathname: "/orders/payment-success",
         params: {
@@ -53,12 +57,20 @@ export default function PaymentConfirmingScreen() {
       return;
     }
     if (data.paymentState === "refunded" || data.paymentState === "failed" || data.paymentState === "refund_pending") {
+      handledTerminalRef.current = true;
       const amount = amountRaw != null ? Number(amountRaw) : NaN;
-      useCheckoutPaymentFailureStore.getState().show({
+      presentCheckoutPaymentFailure({
         amountInr: Number.isFinite(amount) ? amount : null,
         methodLabel: methodRaw?.trim() || "UPI",
       });
-      router.replace("/checkout");
+      if (useCartStore.getState().items.length > 0) {
+        useCheckoutSheetStore.getState().show();
+      }
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace("/checkout");
+      }
     }
   }, [amountRaw, deliveryEtaLabel, merchantName, methodRaw, router, statusQuery.data]);
 

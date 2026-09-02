@@ -411,17 +411,21 @@ app.post<{
   const body = (req.body ?? {}) as Record<string, unknown>;
   const actorRole = String(body.actorRole ?? "system").trim().toLowerCase();
 
+  const { triggerOrderAutoRefundAfterCancel } = await import(
+    "./lib/trigger-order-auto-refund.js"
+  );
+  const { shouldAutoRefundForCancellationActor } = await import(
+    "./lib/auto-refund-on-cancellation.js"
+  );
+
   // Customer-initiated cancellations must never auto-refund.
-  if (actorRole === "customer" || actorRole === "cx") {
+  if (!shouldAutoRefundForCancellationActor(actorRole)) {
     return reply.send({ ok: true, skipped: "customer_cancellation_no_auto_refund" });
   }
 
   const rawAmount = body.amount != null ? Number(body.amount) : NaN;
   try {
-    const { autoRefundOnCancellation } = await import(
-      "./lib/auto-refund-on-cancellation.js"
-    );
-    const outcome = await autoRefundOnCancellation({
+    const outcome = await triggerOrderAutoRefundAfterCancel({
       orderCoreId: orderId,
       reason: String(body.reason ?? "").trim() || "Order cancelled",
       actorEmail: body.actorEmail != null ? String(body.actorEmail) : null,
@@ -435,6 +439,33 @@ app.post<{
     return reply.code(500).send({ error: "auto_refund_failed" });
   }
 });
+
+app.post<{ Params: { reviewId: string } }>(
+  "/v1/internal/reviews/:reviewId/notify-customer-reply",
+  async (req, reply) => {
+    const internalSecret = process.env.INTERNAL_API_TOKEN;
+    const tickSecret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+    const header = String(req.headers["x-internal-secret"] ?? "");
+    if (!header || (header !== internalSecret && header !== tickSecret)) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    const reviewId = Number(req.params.reviewId);
+    if (!Number.isInteger(reviewId) || reviewId < 1) {
+      return reply.code(400).send({ error: "invalid_review_id" });
+    }
+    try {
+      const { getSql } = await import("./db/client.js");
+      const { notifyCustomerStoreReviewReply } = await import(
+        "./lib/customer-review-reply-notify.js"
+      );
+      await notifyCustomerStoreReviewReply(getSql(), { reviewId });
+      return reply.send({ ok: true });
+    } catch (e) {
+      req.log.error({ err: e, reviewId }, "customer_review_reply_notify_failed");
+      return reply.code(500).send({ error: "notify_failed" });
+    }
+  }
+);
 
 // Internal: manually trigger the merchant subscription lifecycle tick.
 // Runs the same reminders + renewals + expired notices the 10-min interval

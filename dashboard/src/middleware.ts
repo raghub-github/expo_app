@@ -192,7 +192,8 @@ function isProbeNetworkError(error: { message?: string; code?: string } | null):
 }
 
 async function probeAuthUserForPageNavigation(
-  supabase: ReturnType<typeof createServerClient>
+  supabase: ReturnType<typeof createServerClient>,
+  request?: NextRequest
 ): Promise<{ user: { id: string; email?: string } | null; error: { message?: string; code?: string } | null }> {
   const now = Date.now();
   if (now < pageAuthProbeNetworkDownUntil) {
@@ -201,6 +202,20 @@ async function probeAuthUserForPageNavigation(
   }
   if (now < pageAuthProbeOkUntil) {
     return { user: { id: "probe-cached" }, error: null };
+  }
+
+  if (request) {
+    const cookieSession = readCookieAccessSession({
+      get: (name) => request.cookies.get(name),
+      getAll: () => request.cookies.getAll(),
+    });
+    if (isCookieAccessTokenUsable(cookieSession) && cookieSession?.user?.id) {
+      pageAuthProbeOkUntil = now + PAGE_AUTH_PROBE_OK_MS;
+      return {
+        user: { id: cookieSession.user.id, email: cookieSession.user.email },
+        error: null,
+      };
+    }
   }
 
   const probe = await probeAuthUser(supabase);
@@ -306,7 +321,7 @@ export async function middleware(request: NextRequest) {
     if (hasAuthCookie) {
       const isApiRoute = pathname.startsWith("/api/");
       if (!isApiRoute) {
-        const probe = await probeAuthUserForPageNavigation(supabase);
+        const probe = await probeAuthUserForPageNavigation(supabase, request);
         if (!probe.user && isDeadRefreshError(probe.error)) {
           // Soft-pass when the access JWT cookie is still usable. Hard-clearing
           // sb-* on refresh races was wiping the shared session for other tabs
@@ -485,16 +500,8 @@ export async function middleware(request: NextRequest) {
       // Auth probe timeout/network miss during compile: cookies may exist but
       // getUser hung. Never bounce the user to login or 401 SESSION_REQUIRED.
       if (authProbeTimedOut) {
-        if (pathname.startsWith("/api/")) {
-          return NextResponse.json(
-            {
-              success: false,
-              error: "Service temporarily unavailable",
-              code: "SERVICE_UNAVAILABLE",
-            },
-            { status: 503, headers: { "Content-Type": "application/json" } }
-          );
-        }
+        // API routes authenticate cookie-first in route handlers — never block
+        // the whole order page on a transient Supabase fetch/timeout in middleware.
         return continueRequest(request);
       }
       if (pathname.startsWith("/api/")) {

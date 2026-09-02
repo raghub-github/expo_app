@@ -64,7 +64,7 @@ import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
 import { MerchantPrepDelaySheet } from "@/components/order/MerchantPrepDelaySheet";
 import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/RejectFollowUpHost";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
-import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
+import { rejectReasonNeedsFollowUp, isNotOperationalTodayReason } from "@/lib/merchantCancellationReasons";
 import { PastOrdersBanner } from "@/components/order/PastOrdersBanner";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
 import {
@@ -624,6 +624,15 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       const orderSnap = rejectTarget;
       if (rejectReasonNeedsFollowUp(reason)) {
         setRejectTarget(null);
+        if (isNotOperationalTodayReason(reason)) {
+          try {
+            await transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason });
+          } catch {
+            /* error surfaced via useOrders */
+          }
+          beginFollowUp(reason, orderSnap.lineItems, async () => {});
+          return;
+        }
         beginFollowUp(reason, orderSnap.lineItems, () =>
           void transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason }).catch(
             () => {}

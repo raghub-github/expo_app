@@ -20,7 +20,7 @@ import { AppState, Platform, type AppStateStatus } from "react-native";
 import Constants from "expo-constants";
 import NetInfo, { type NetInfoState } from "@react-native-community/netinfo";
 
-import { isMerchantIdleStatusNotification } from "@/lib/merchantStatusNotification";
+import { installMerchantForegroundNotificationHandler } from "@/lib/merchantNotificationHandler";
 const OFFLINE_CHANNEL = "merchant_connectivity";
 
 type NetworkContextValue = {
@@ -76,35 +76,7 @@ async function ensureOfflineChannel(): Promise<void> {
 
 /** Allow the offline tray alert even while the app is in the foreground. */
 async function ensureForegroundPresentation(): Promise<void> {
-  try {
-    const Notifications = await import("expo-notifications");
-    Notifications.setNotificationHandler({
-      handleNotification: async (notification) => {
-        const data = notification.request.content.data as { type?: string } | undefined;
-        const type = data?.type;
-        const isOffline = type === "offline_network";
-        const isIdleStatus = isMerchantIdleStatusNotification(data ?? null);
-        if (isIdleStatus) {
-          return {
-            shouldShowAlert: false,
-            shouldPlaySound: false,
-            shouldSetBadge: false,
-            shouldShowBanner: false,
-            shouldShowList: false,
-          };
-        }
-        return {
-          shouldShowAlert: true,
-          shouldPlaySound: !isOffline,
-          shouldSetBadge: !isOffline,
-          shouldShowBanner: true,
-          shouldShowList: true,
-        };
-      },
-    });
-  } catch {
-    /* ignore */
-  }
+  await installMerchantForegroundNotificationHandler();
 }
 
 const OFFLINE_NOTIF_ID = "mx_offline_network_v1";

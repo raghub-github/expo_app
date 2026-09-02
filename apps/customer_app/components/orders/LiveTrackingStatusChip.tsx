@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { AppState, StyleSheet, View } from "react-native";
 import { AppText } from "@/components/AppText";
 import {
   resolveLiveTrackingStatus,
@@ -22,8 +22,19 @@ export function LiveTrackingStatusChip({ hasRiderFix = true, style }: Props) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 2500);
-    return () => clearInterval(id);
+    const tick = () => {
+      if (AppState.currentState !== "active") return;
+      setNow(Date.now());
+    };
+    tick();
+    const id = setInterval(tick, 10_000);
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") tick();
+    });
+    return () => {
+      clearInterval(id);
+      sub.remove();
+    };
   }, []);
 
   if (!hasRiderFix) return null;

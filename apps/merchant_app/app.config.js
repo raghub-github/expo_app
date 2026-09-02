@@ -120,6 +120,7 @@ module.exports = ({ config }) => ({
           channels: [
             { id: "merchant_new_orders", name: "New orders", importance: 5 },
             { id: "merchant_complaints", name: "Complaints", importance: 5 },
+            { id: "merchant_order_lifecycle", name: "Order updates", importance: 4 },
             { id: "merchant_default", name: "Store & Orders", importance: 4 },
             { id: "merchant_online", name: "Store online status", importance: 4 },
             { id: "default", name: "Store & Orders", importance: 4 },

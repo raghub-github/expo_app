@@ -6,6 +6,7 @@ import api from "./api";
 import {
   resolveSubscriptionExpiryIso,
   formatSubscriptionExpiryLabel,
+  formatSubscriptionExpiryCountdown,
   toIsoTimestampString,
 } from "@/lib/subscriptionExpiry";
 
@@ -114,7 +115,7 @@ export async function fetchCurrentSubscription(): Promise<CurrentSubscription> {
   };
 }
 
-export { formatSubscriptionExpiryLabel };
+export { formatSubscriptionExpiryLabel, formatSubscriptionExpiryCountdown };
 
 export function formatPlanPriceLine(price: SubscriptionPlanPrice): string {
   return `₹${Math.round(price.amount)} for 1 ${price.cycleLabel}`;

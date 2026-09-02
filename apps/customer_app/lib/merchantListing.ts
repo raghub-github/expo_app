@@ -5,6 +5,7 @@
 
 import type { MerchantSummary } from "@/services/merchant.service";
 import type { LiveStatus } from "@/store/storeStatusStore";
+import { compareMerchantsByDiscoveryRank } from "@/lib/merchantDiscoveryRank";
 import { toTimestamp } from "@/lib/storeScheduleUi";
 
 export type MerchantListSort = "default" | "rating" | "distance";
@@ -122,7 +123,7 @@ export function filterAndSortMerchants(
     if (aOpen !== bOpen) return aOpen ? -1 : 1;
     if (sortBy === "rating") return (b.avgRating ?? 0) - (a.avgRating ?? 0);
     if (sortBy === "distance") return (a.distanceKm ?? 999) - (b.distanceKm ?? 999);
-    return 0;
+    return compareMerchantsByDiscoveryRank(a, b);
   });
 }
 

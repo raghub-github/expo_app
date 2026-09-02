@@ -46,7 +46,7 @@ function roundBill(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-function pickSubscriptionFromCharges(snapshot: Record<string, unknown>): {
+export function pickSubscriptionFromCharges(snapshot: Record<string, unknown>): {
   label: string | null;
   amount: number;
 } {

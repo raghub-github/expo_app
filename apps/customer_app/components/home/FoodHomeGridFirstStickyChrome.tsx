@@ -11,7 +11,6 @@ import Animated, {
 } from "react-native-reanimated";
 import {
   FoodHomeGridFirstHeader,
-  GRID_FIRST_LOCATION_ROW_H,
 } from "@/components/home/FoodHomeGridFirstHeader";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
@@ -71,13 +70,12 @@ export function FoodHomeGridFirstStickyChrome({
 }: Props) {
   const pinFullHeader = Boolean(locationPrimary || locationSecondary);
   const searchTop = gridFirstStickySearchTop(metrics);
+  const stickyHeaderHeight = pinFullHeader
+    ? metrics.headerBlockHeight
+    : metrics.searchRowHeight;
   const categoryTop = pinFullHeader
-    ? metrics.topInset +
-      GRID_FIRST_LOCATION_ROW_H +
-      10 +
-      GRID_FIRST_SEARCH_ROW_H +
-      GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP
-    : gridFirstStickyCategoryTop(metrics);
+    ? gridFirstStickyCategoryTop(metrics)
+    : metrics.topInset + stickyHeaderHeight;
   const filterTop = pinFullHeader
     ? categoryTop + metrics.categoryBlockHeight
     : gridFirstStickyFilterTop(metrics);
@@ -124,7 +122,7 @@ export function FoodHomeGridFirstStickyChrome({
   const searchBarStyle = useAnimatedStyle(() => {
     const y = scrollY.value;
     const stickAt = searchStickAt.value;
-    if (stickAt <= 1) {
+    if (stickAt <= STICK_FADE_PX || y < STICK_FADE_PX) {
       return {
         opacity: 0,
         backgroundColor: "transparent",
@@ -169,7 +167,7 @@ export function FoodHomeGridFirstStickyChrome({
   const categoryBarStyle = useAnimatedStyle(() => {
     const y = scrollY.value;
     const stickAt = categoryStickAt.value;
-    if (stickAt <= 1) {
+    if (stickAt <= STICK_FADE_PX || y < STICK_FADE_PX) {
       return {
         opacity: 0,
         backgroundColor: "transparent",
@@ -224,7 +222,7 @@ export function FoodHomeGridFirstStickyChrome({
     const showAt = categoryStickAt.value - STICK_FADE_PX;
     const handoffAt = filterStickAt.value + GRID_FIRST_STICK_HANDOFF_PX;
 
-    if (y < showAt) {
+    if (y < STICK_FADE_PX || y < showAt) {
       return {
         opacity: 0,
         backgroundColor: "transparent",
@@ -287,10 +285,10 @@ export function FoodHomeGridFirstStickyChrome({
         pointerEvents={searchStickyOn ? "box-none" : "none"}
       >
         <View
-          style={[
-            styles.searchInner,
-            { paddingTop: searchTop, paddingBottom: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP },
-          ]}
+          style={{
+            paddingTop: searchTop,
+            paddingBottom: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
+          }}
           pointerEvents="box-none"
         >
           <FoodHomeGridFirstHeader
@@ -346,9 +344,6 @@ const styles = StyleSheet.create({
     right: 0,
     backgroundColor: "transparent",
   },
-  searchInner: {
-    paddingBottom: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
-  },
   categoryLayer: {
     position: "absolute",
     left: 0,
@@ -357,6 +352,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   categoryInner: {
+    paddingTop: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
     paddingBottom: 4,
   },
   filterLayer: {

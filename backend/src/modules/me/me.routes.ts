@@ -17,6 +17,7 @@ import {
 import { getCustomerLifetimeSavingsInr } from "./customer-lifetime-savings.js";
 import { getReferralSettings } from "../referral/referral.config.service.js";
 import { referralTrackingEnabled } from "../referral/referral.participants.js";
+import { getActiveCustomerSubscription } from "../subscription/customer-subscription.service.js";
 
 /** Random words for referral code suffix (1 or 2 words) */
 const REFERRAL_WORDS = [
@@ -204,19 +205,25 @@ async function customerProfileResponse(
   db: ReturnType<typeof getDb>,
   row: typeof customers.$inferSelect,
 ) {
-  const lifetimeSavingsInr = await getCustomerLifetimeSavingsInr(db, row.id);
+  const [lifetimeSavingsInr, subscription] = await Promise.all([
+    getCustomerLifetimeSavingsInr(db, row.id),
+    getActiveCustomerSubscription(row.id),
+  ]);
   // Avatar lookup can take several seconds — refresh in background, don't block profile load.
   void ensureEmailAvatarForCustomer(db, row).catch(() => {});
   return {
     ...toResponseFromCustomer(row),
+    gmitra_plus_active: subscription.active,
     lifetime_savings_inr: lifetimeSavingsInr,
   };
 }
 
 /** PATCH responses skip the heavy lifetime-savings aggregate (GET /profile still returns it). */
-function customerPatchResponse(row: typeof customers.$inferSelect) {
+async function customerPatchResponse(row: typeof customers.$inferSelect) {
+  const subscription = await getActiveCustomerSubscription(row.id);
   return {
     ...toResponseFromCustomer(row),
+    gmitra_plus_active: subscription.active,
     lifetime_savings_inr: 0,
   };
 }
@@ -469,7 +476,7 @@ export async function meRoutes(app: FastifyInstance) {
           if (!updated) {
             return reply.code(500).send({ message: "Could not save. Try again." } as any);
           }
-          return customerPatchResponse(updated);
+          return await customerPatchResponse(updated);
         }
 
         if (sub.startsWith("usr_")) {

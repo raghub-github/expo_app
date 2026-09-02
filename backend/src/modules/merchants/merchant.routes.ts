@@ -525,7 +525,8 @@ export async function merchantRoutes(app: FastifyInstance) {
           (isFoodHeroMediaUrl(bannerAbs) ? bannerAbs : null) ??
           galleryImages[0] ??
           (isFoodHeroMediaUrl(displayImageRaw) ? toAbsoluteClientMediaUrl(displayImageRaw) : null) ??
-          menuHero;
+          menuHero ??
+          (bannerAbs && !isBrandOrPlaceholderHeroUrl(bannerAbs) ? bannerAbs : null);
         const heroBanner = displayImage ?? null;
         const galleryDeduped = galleryImages.filter((u) => u !== heroBanner);
         const storeLevelPrep = nearby.avg_preparation_time_minutes ?? s.avg_preparation_time_minutes;
@@ -621,6 +622,25 @@ export async function merchantRoutes(app: FastifyInstance) {
                   : null)
               : null,
         };
+      });
+      body.sort((a, b) => {
+        const score = (row: (typeof body)[number]) => {
+          const orders = row.completedOrderCount ?? 0;
+          const rating = row.avgRating ?? 0;
+          const reviews = row.totalReviews ?? 0;
+          const reviewSignal = Math.log10(reviews + 1);
+          const ratingQuality =
+            rating >= 4.5
+              ? rating * reviewSignal * 120
+              : rating >= 4
+                ? rating * reviewSignal * 80
+                : rating * 20;
+          const establishedBonus = rating >= 4 && reviews >= 5 ? 150 : 0;
+          return orders * 1000 + ratingQuality + establishedBonus;
+        };
+        const delta = score(b) - score(a);
+        if (delta !== 0) return delta;
+        return (a.distanceKm ?? 999) - (b.distanceKm ?? 999);
       });
       return reply.send({ items: body });
     }

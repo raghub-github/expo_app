@@ -7,6 +7,7 @@ import { useRouter } from "expo-router";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT,
+  CUSTOMER_SYSTEM_NAV_MINT,
   resolveCustomerBottomNavHeight,
   resolveTabBarBottomInset,
 } from "@/constants/layout";
@@ -118,8 +119,14 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   }, [foodEnabled, foodBlocked, state.index, state.routes, navigation]);
 
   return (
-    <View style={[styles.wrapper, bottomPad > 0 ? { paddingBottom: bottomPad } : null]}>
-      <View style={styles.bar}>
+    <View
+      style={[
+        styles.outer,
+        bottomPad > 0 ? { paddingBottom: bottomPad, backgroundColor: CUSTOMER_SYSTEM_NAV_MINT } : null,
+      ]}
+    >
+      <View style={styles.wrapper}>
+        <View style={styles.bar}>
         {visibleRoutes.map((route) => {
           const focused = state.routes[state.index]?.name === route.name;
           const tab = getTabConfig(route.name);
@@ -175,12 +182,16 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
             </Pressable>
           );
         })}
+        </View>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  outer: {
+    backgroundColor: "#FFFFFF",
+  },
   wrapper: {
     backgroundColor: "#FFFFFF",
     borderTopWidth: StyleSheet.hairlineWidth,

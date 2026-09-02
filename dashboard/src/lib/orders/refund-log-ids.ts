@@ -141,7 +141,23 @@ export function resolveRefundLogIds(r: RefundLogIdsInput): RefundLogIdLine[] {
   return lines;
 }
 
-/** Manual refunds keep the agent email. Auto-cancel system refunds show a fixed label. */
+function isAutoCancelRefundReason(reason: string): boolean {
+  return /auto\s*cancelled|merchant_accept_timeout|auto[_-\s]?cancel/i.test(reason);
+}
+
+/** Merchant manual cancel reasons (store reject / OOS) — legacy rows used refund_initiated_by=system. */
+function isMerchantCancelRefundReason(reason: string): boolean {
+  const r = reason.trim().toLowerCase();
+  if (!r) return false;
+  if (isAutoCancelRefundReason(r)) return false;
+  return (
+    /items?\s+out\s+of\s+stock|out\s+of\s+stock|kitchen\s+closed|store\s+closed|unable\s+to\s+fulfill|not\s+accepting|merchant\s+reject|cancelled\s+by\s+merchant|order\s+cancelled\s+by\s+merchant/i.test(
+      r
+    ) || r.includes("merchant")
+  );
+}
+
+/** Manual refunds keep the agent email. Store cancels show Store; timeout auto-cancel shows Auto - System. */
 export function refundInitiatedByLabel(r: {
   refundReason?: string | null;
   refundInitiatedBy?: string | null;
@@ -149,10 +165,14 @@ export function refundInitiatedByLabel(r: {
 }): string {
   const email = trimRef(r.initiatedByEmail);
   if (email) return email;
+  const by = String(r.refundInitiatedBy ?? "").trim().toLowerCase();
+  if (by === "merchant" || by === "store") return "Store";
+  if (by === "rider") return "Rider";
+  if (by === "agent" || by === "admin") return "Agent";
   const reason = String(r.refundReason ?? "");
-  const autoCancelled =
-    /auto\s*cancelled|merchant_accept_timeout|auto[_-\s]?cancel/i.test(reason);
-  if (autoCancelled) return "Auto - System";
+  if (isAutoCancelRefundReason(reason)) return "Auto - System";
+  if (by === "system" && isMerchantCancelRefundReason(reason)) return "Store";
+  if (by === "system") return "System";
   return "—";
 }
 

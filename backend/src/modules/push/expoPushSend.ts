@@ -2,14 +2,16 @@ const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 
 export type ExpoPushMessage = {
   to: string[];
-  title: string;
-  body: string;
+  title?: string;
+  body?: string;
   data?: Record<string, unknown>;
   sound?: "default" | string | null;
   priority?: "default" | "normal" | "high";
   channelId?: string;
   mutableContent?: boolean;
   richContent?: { image?: string };
+  /** Expo: silent/data-only background delivery. */
+  _contentAvailable?: boolean;
 };
 
 export type ExpoPushTicket = {

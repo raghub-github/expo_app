@@ -45,13 +45,14 @@ runWorker(
   async (job, jobLog) => {
     const payload = job.data as {
       to: string | string[];
-      title: string;
-      body: string;
+      title?: string;
+      body?: string;
       data?: Record<string, unknown>;
       screen?: string;
       imageUrl?: string;
-      sound?: string;
+      sound?: string | null;
       channelId?: string;
+      contentAvailable?: boolean;
     };
 
     const data: Record<string, unknown> = { ...(payload.data ?? {}) };
@@ -72,9 +73,10 @@ runWorker(
         title: payload.title,
         body: payload.body,
         data,
-        sound: payload.sound,
+        sound: payload.sound ?? undefined,
         channelId: payload.channelId,
         imageUrl: payload.imageUrl,
+        contentAvailable: payload.contentAvailable,
       },
       jobLog,
     );

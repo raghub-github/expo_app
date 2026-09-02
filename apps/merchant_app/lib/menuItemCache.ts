@@ -4,23 +4,23 @@ import { fetchMenuItem } from "@/services/menuApi";
 
 const cache = new Map<string, MenuItemDetail>();
 
-export function menuItemCacheKey(storeId: string | number, itemId: number): string {
+export function menuItemCacheKey(storeId: string | number, itemId: number | string): string {
   return `${storeId}:${itemId}`;
 }
 
-export function getCachedMenuItem(storeId: string | number, itemId: number): MenuItemDetail | null {
+export function getCachedMenuItem(storeId: string | number, itemId: number | string): MenuItemDetail | null {
   return cache.get(menuItemCacheKey(storeId, itemId)) ?? null;
 }
 
 export function setCachedMenuItem(
   storeId: string | number,
-  itemId: number,
+  itemId: number | string,
   detail: MenuItemDetail
 ): void {
   cache.set(menuItemCacheKey(storeId, itemId), detail);
 }
 
-export function invalidateMenuItemCache(storeId: string | number, itemId: number): void {
+export function invalidateMenuItemCache(storeId: string | number, itemId: number | string): void {
   cache.delete(menuItemCacheKey(storeId, itemId));
 }
 
@@ -34,7 +34,7 @@ function warmMenuItemImageCache(detail: MenuItemDetail, token: string): void {
 /** Warm item detail + image files before opening photo/edit sheets. */
 export function prefetchMenuItemDetail(
   storeId: string | number,
-  itemId: number,
+  itemId: number | string,
   token: string,
 ): void {
   const cached = getCachedMenuItem(storeId, itemId);
@@ -55,12 +55,12 @@ export function prefetchMenuItemDetail(
 export function prefetchMenuItemsForOrders(
   storeId: string | number,
   token: string,
-  lineItems: Array<{ menuItemId?: number | null }>
+  lineItems: Array<{ menuItemId?: number | string | null }>
 ): void {
   const pending = new Set<number>();
   for (const item of lineItems) {
     const id = item.menuItemId;
-    if (id == null || !Number.isFinite(id) || getCachedMenuItem(storeId, id)) continue;
+    if (typeof id !== "number" || !Number.isFinite(id) || getCachedMenuItem(storeId, id)) continue;
     pending.add(id);
   }
   for (const id of pending) {

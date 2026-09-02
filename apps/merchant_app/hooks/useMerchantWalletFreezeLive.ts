@@ -16,7 +16,7 @@ import {
   type MerchantWalletFreezeLiveState,
 } from "@/lib/merchantWalletFreezeBus";
 
-const POLL_MS = 30_000;
+const POLL_MS = 90_000;
 
 function applyFreeze(storeId: number, isFrozen: boolean, freezeReason: string | null): void {
   emitMerchantWalletFreeze({ storeId, isFrozen, freezeReason });

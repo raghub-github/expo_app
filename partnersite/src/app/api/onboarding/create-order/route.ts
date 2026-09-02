@@ -94,6 +94,13 @@ export async function POST(request: NextRequest) {
         amount: amountPaise,
         currency: "INR",
         receipt,
+        notes: {
+          purpose: "merchant_onboarding",
+          merchant_parent_id: String(merchantParentId),
+          ...(typeof merchantStoreId === "string" && merchantStoreId.startsWith("GMMC")
+            ? { merchant_store_public_id: merchantStoreId }
+            : {}),
+        },
       }),
     });
     if (!orderRes.ok) {
