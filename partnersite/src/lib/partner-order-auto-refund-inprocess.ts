@@ -33,10 +33,13 @@ export async function partnerOrderAutoRefundInProcess(args: {
 }): Promise<PartnerInProcessAutoRefundOutcome> {
   ensureBackendEnvShim();
   try {
-    const mod = await import(
-      /* webpackIgnore: true */
-      '../../../backend/src/lib/trigger-order-auto-refund'
-    );
+    // Resolved at runtime only when partnersite is co-located with the backend source.
+    // The path is assembled dynamically so the partnersite production build's type-checker
+    // does not try to resolve backend/src (which is absent from the partnersite Docker
+    // build context); webpackIgnore keeps it external from the bundle either way.
+    const backendRefundModulePath = ["..", "..", "..", "backend", "src", "lib", "trigger-order-auto-refund"].join("/");
+    const mod: { triggerOrderAutoRefundAfterCancel: (input: unknown, sql: unknown) => Promise<unknown> } =
+      await import(/* webpackIgnore: true */ backendRefundModulePath);
     const outcome = await mod.triggerOrderAutoRefundAfterCancel(
       {
         orderCoreId: args.orderCorePk,
