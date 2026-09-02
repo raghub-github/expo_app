@@ -41,16 +41,18 @@ type ServerSupabase = Awaited<ReturnType<typeof createServerSupabaseClient>>;
 let authNetworkDownUntil = 0;
 const AUTH_NETWORK_COOLDOWN_MS = 60_000;
 
-/** Single-flight refresh so parallel API routes don't rotate the same refresh token. */
-let refreshInFlight: Promise<ResolvedSupabaseAuth> | null = null;
-
 /**
- * Short-lived cache of the last successfully resolved user.
- * Parallel API handlers under Next compile load can miss `cookies()` briefly;
- * losers of a refresh race can still authenticate from this process-local cache.
+ * Single-flight refresh KEYED BY the requesting cookie's user id. Concurrent
+ * requests from the SAME admin dedupe the token refresh; two DIFFERENT admins
+ * NEVER share a refresh result.
+ *
+ * SECURITY: a GLOBAL single-flight — or a global "last resolved user" cache —
+ * authenticated Admin B's request as Admin A whenever B's own cookie parse
+ * momentarily raced in the shared Next.js server process (the account-switching
+ * incident). Authentication identity must derive ONLY from THIS request's own
+ * cookie/token — never from process-global state shared across admins.
  */
-let lastResolvedUser: { user: User; until: number } | null = null;
-const LAST_RESOLVED_USER_TTL_MS = 120_000;
+const refreshInFlightByUser = new Map<string, Promise<ResolvedSupabaseAuth>>();
 
 export type ResolveCookieReader = {
   get: (name: string) => { value: string } | undefined;
@@ -65,23 +67,15 @@ function isAuthNetworkCoolingDown(): boolean {
   return Date.now() < authNetworkDownUntil;
 }
 
-function rememberResolvedUser(user: User): void {
-  if (!user?.id) return;
-  lastResolvedUser = { user, until: Date.now() + LAST_RESOLVED_USER_TTL_MS };
-}
-
-function readCachedResolvedUser(): User | null {
-  if (!lastResolvedUser) return null;
-  if (Date.now() > lastResolvedUser.until) {
-    lastResolvedUser = null;
-    return null;
-  }
-  return lastResolvedUser.user;
-}
-
-/** Process-local identity from a recent successful resolve (compile-race fallback). */
+/**
+ * REMOVED cross-admin identity cache. This used to return "the last user any
+ * request resolved" and was the root cause of admins seeing each other's
+ * identity/permissions/data. It now always returns null; recovery from transient
+ * cookie/refresh races is done strictly from THIS request's own cookie. Kept as a
+ * null-returning shim so no caller can accidentally resurrect the shared cache.
+ */
 export function peekCachedResolvedUser(): User | null {
-  return readCachedResolvedUser();
+  return null;
 }
 
 function readSessionFromCookieReader(reader: ResolveCookieReader | null | undefined): CookieAccessSession | null {
@@ -187,7 +181,6 @@ function ok(
   supabase: ServerSupabase,
   usedSessionFallback: boolean
 ): ResolvedSupabaseAuth {
-  rememberResolvedUser(user);
   return { user, error: null, usedSessionFallback, supabase };
 }
 
@@ -216,13 +209,10 @@ async function resolveWithRemoteValidation(
 
     if (lastError && isRefreshTokenAlreadyUsed(lastError) && attempt < maxAttempts) {
       await new Promise((r) => setTimeout(r, 350));
+      // Recover ONLY from this request's own cookie — never a shared cache.
       const local = await readLocalCookieSession(cookieReader);
       if (local?.user?.id) {
         return ok(local.user, supabase, true);
-      }
-      const cached = readCachedResolvedUser();
-      if (cached?.id) {
-        return ok(cached, supabase, true);
       }
       continue;
     }
@@ -279,17 +269,6 @@ async function resolveWithRemoteValidation(
     }
   }
 
-  const cached = readCachedResolvedUser();
-  if (
-    cached?.id &&
-    lastError &&
-    (isTimeoutOrAbortError(lastError) ||
-      isNetworkOrTransientError(lastError) ||
-      isRefreshTokenAlreadyUsed(lastError))
-  ) {
-    return ok(cached, supabase, true);
-  }
-
   // Last resort: supabase cookie decode (may warn once) when local parse failed.
   // Skip on abort/timeout — getSession() would abort again and spam the terminal.
   if (!(lastError && (isTimeoutOrAbortError(lastError) || isNetworkOrTransientError(lastError)))) {
@@ -323,14 +302,18 @@ export async function resolveSupabaseUser(options?: {
   const supabase = await createServerSupabaseClient();
 
   const cookieSession = await readLocalCookieSession(cookieReader);
+  // The single-flight key is THIS request's own cookie identity. Requests only
+  // ever share a refresh with other requests carrying the SAME admin's cookie.
+  const requestUserId = cookieSession?.user?.id ?? null;
 
   // Fast path: any identifiable cookie user — never block API routes on Auth refresh.
   // Parallel getUser()/refresh under ticket list load was the main 503 storm source.
   // Soft-refresh in the background when the access JWT is expired/near-expiry.
   if (!forceRemote && cookieSession?.user?.id) {
+    const uid = cookieSession.user.id;
     if (
       !isCookieAccessTokenUsable(cookieSession) &&
-      !refreshInFlight &&
+      !refreshInFlightByUser.has(uid) &&
       !isAuthNetworkCoolingDown()
     ) {
       const softRefresh = resolveWithRemoteValidation(supabase, {
@@ -338,21 +321,19 @@ export async function resolveSupabaseUser(options?: {
         retryDelayMs,
         cookieReader,
       });
-      refreshInFlight = softRefresh.finally(() => {
-        refreshInFlight = null;
-      });
+      refreshInFlightByUser.set(
+        uid,
+        softRefresh.finally(() => {
+          refreshInFlightByUser.delete(uid);
+        })
+      );
       // Background only — never surface AbortError/timeout to this request.
       void softRefresh.catch(() => undefined);
     }
     return ok(cookieSession.user, supabase, true);
   }
 
-  if (!forceRemote && isAuthNetworkCoolingDown()) {
-    const cached = readCachedResolvedUser();
-    if (cached?.id) {
-      return ok(cached, supabase, true);
-    }
-  }
+  // (No global "last user" cooldown fallback — that leaked identity across admins.)
 
   // Soft-trust the signed cookie identity even when the access token is expired.
   // The BROWSER's supabase client owns token refresh. Refreshing server-side across a
@@ -365,19 +346,23 @@ export async function resolveSupabaseUser(options?: {
     return ok(cookieSession.user, supabase, true);
   }
 
-  // Need remote validation / refresh — single-flight across concurrent route handlers.
-  if (refreshInFlight) {
-    try {
-      const shared = await refreshInFlight;
-      if (shared.user?.id) {
-        const latest = await readLocalCookieSession(cookieReader);
-        if (latest?.user?.id) {
-          return ok(latest.user, supabase, true);
+  // Need remote validation / refresh — single-flight PER ADMIN (keyed by cookie id).
+  // A request may only adopt a shared refresh result belonging to its OWN identity.
+  if (requestUserId) {
+    const shared = refreshInFlightByUser.get(requestUserId);
+    if (shared) {
+      try {
+        const result = await shared;
+        if (result.user?.id === requestUserId) {
+          const latest = await readLocalCookieSession(cookieReader);
+          if (latest?.user?.id === requestUserId) {
+            return ok(latest.user, supabase, true);
+          }
+          return ok(result.user, supabase, result.usedSessionFallback);
         }
-        return ok(shared.user, supabase, shared.usedSessionFallback);
+      } catch {
+        /* fall through to this request's own resolution */
       }
-    } catch {
-      /* fall through */
     }
   }
 
@@ -386,9 +371,14 @@ export async function resolveSupabaseUser(options?: {
     retryDelayMs,
     cookieReader,
   });
-  refreshInFlight = run.finally(() => {
-    refreshInFlight = null;
-  });
+  if (requestUserId) {
+    refreshInFlightByUser.set(
+      requestUserId,
+      run.finally(() => {
+        refreshInFlightByUser.delete(requestUserId);
+      })
+    );
+  }
   return run;
 }
 

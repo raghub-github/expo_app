@@ -15,7 +15,7 @@
     "migrate": "tsx scripts/run-migration.ts",
     "migrate:owner": "tsx scripts/run-owner-full-name-migration.ts",
     "verify-migration": "tsx scripts/verify-migration.ts",
-    "test": "tsx --test src/lib/pricing/__tests__/slabPricingEngine.test.ts src/lib/pricing/__tests__/slabInputUtils.test.ts src/lib/orders/__tests__/refund-log-ids.test.ts"
+    "test": "tsx --test src/lib/pricing/__tests__/slabPricingEngine.test.ts src/lib/pricing/__tests__/slabInputUtils.test.ts src/lib/orders/__tests__/refund-log-ids.test.ts src/lib/auth/read-cookie-access-session.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.985.0",

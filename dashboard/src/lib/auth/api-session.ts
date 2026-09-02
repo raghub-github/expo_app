@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { cookies, headers } from "next/headers";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { peekCachedResolvedUser, resolveSupabaseUser } from "@/lib/auth/resolve-supabase-user";
+import { resolveSupabaseUser } from "@/lib/auth/resolve-supabase-user";
 import {
   isRefreshTokenAlreadyUsed,
   isRefreshTokenNotFound,
@@ -105,10 +105,9 @@ function userFromCookieReader(
   cookieReader: ReturnType<typeof cookieReaderFromRequest>
 ): User | null {
   if (!cookieReader) return null;
+  // Identity comes ONLY from this request's own cookie — never a shared cache.
   const session = readCookieAccessSession(cookieReader);
-  if (session?.user?.id) return session.user;
-  const cached = peekCachedResolvedUser();
-  return cached?.id ? cached : null;
+  return session?.user?.id ? session.user : null;
 }
 
 function serviceUnavailableFailure(): ApiAuthFailure {
@@ -144,15 +143,6 @@ async function recoverUserFromCookieRace(
       return {
         ok: true,
         user: withDashboardEmail(fromCookie, cookieEmail),
-        supabase,
-      };
-    }
-    const cached = peekCachedResolvedUser();
-    if (cached?.id) {
-      const supabase = await createServerSupabaseClient();
-      return {
-        ok: true,
-        user: withDashboardEmail(cached, cookieEmail),
         supabase,
       };
     }
@@ -243,7 +233,8 @@ export async function getAuthenticatedApiUser(
   }
 
   const hasSbCookies = cookieReader ? hasSupabaseAuthCookies(cookieReader) : false;
-  const cachedUser = peekCachedResolvedUser();
+  // ONLY this request's own cookie identity is a valid fallback — never a
+  // process-global "last resolved user" (that leaked identity across admins).
   const cookieFallbackUser = userFromCookieReader(cookieReader);
 
   const succeedWithFallback = (fallbackUser: User) =>
@@ -254,11 +245,9 @@ export async function getAuthenticatedApiUser(
     });
 
   // Loser of a parallel refresh often sees refresh_token_not_found while the
-  // winner already wrote new cookies. Never treat that as a dead session.
+  // winner already wrote new cookies. Never treat that as a dead session — but
+  // recover only from THIS request's own cookie.
   if (userError && isRefreshTokenNotFound(userError)) {
-    if (cachedUser?.id) {
-      return succeedWithFallback(cachedUser);
-    }
     if (cookieFallbackUser?.id) {
       return succeedWithFallback(cookieFallbackUser);
     }
@@ -276,9 +265,6 @@ export async function getAuthenticatedApiUser(
     if (cookieFallbackUser?.id) {
       return succeedWithFallback(cookieFallbackUser);
     }
-    if (cachedUser?.id) {
-      return succeedWithFallback(cachedUser);
-    }
     // Parallel refresh races — do not force logout; client should retry.
     return serviceUnavailableAfterRetry(request);
   }
@@ -287,17 +273,11 @@ export async function getAuthenticatedApiUser(
     if (cookieFallbackUser?.id) {
       return succeedWithFallback(cookieFallbackUser);
     }
-    if (cachedUser?.id) {
-      return succeedWithFallback(cachedUser);
-    }
     // Quiet 503 — do not console.error AbortError/timeout objects here.
     return serviceUnavailableAfterRetry(request);
   }
 
   if (hasSbCookies) {
-    if (cachedUser?.id) {
-      return succeedWithFallback(cachedUser);
-    }
     if (cookieFallbackUser?.id) {
       return succeedWithFallback(cookieFallbackUser);
     }
