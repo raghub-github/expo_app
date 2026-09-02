@@ -258,6 +258,34 @@ services:
       - "3000"
     networks: [app]
 
+  coredash:
+    # Coredash — internal financial dashboard (treasury.gatimitra.com).
+    # Standalone Next.js app (own package-lock, NOT a workspace) — build context
+    # is the Coredash/ dir itself. Only NEXT_PUBLIC_SUPABASE_* + APP_URL are baked
+    # at build (client bundle + middleware auth); all server secrets (DATABASE_URL,
+    # SUPABASE_SERVICE_ROLE_KEY) come from the runtime env_file below.
+    image: ghcr.io/raghub-github/gm-coredash:${IMAGE_TAG:-latest}
+    build:
+      context: ../../Coredash
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_APP_URL: ${COREDASH_PUBLIC_APP_URL:-https://treasury.gatimitra.com}
+    restart: unless-stopped
+    # required:false so a missing Coredash/.env.local (before the operator pastes
+    # it) can NEVER break `docker compose` parsing for the other services. The
+    # coredash-deploy workflow also seeds a placeholder .env.local from .env.example.
+    env_file:
+      - path: ../../Coredash/.env.local
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: "3004"
+    expose:
+      - "3004"
+    networks: [app]
+
   rider-web:
     # Rider-facing marketing/onboarding + policy site (rider.gatimitra.com).
     # Standalone Next.js app (own package-lock, NOT a workspace) — build
