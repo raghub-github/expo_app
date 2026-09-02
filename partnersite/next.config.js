@@ -8,7 +8,7 @@ const nextConfig = {
   output: 'standalone',
   reactCompiler: true,
   // Phone / LAN testing hits the machine IP, not localhost — allow Next dev assets.
-  allowedDevOrigins: ['10.190.225.181', '127.0.0.1', 'localhost'],
+  allowedDevOrigins: ['10.106.243.181', '127.0.0.1', 'localhost'],
   transpilePackages: [
     '@gatimitra/kot-print',
     '@gatimitra/bill-print',

@@ -54,12 +54,13 @@ async function sendInline(
   const res = await sendExpoPushWithRetry(
     {
       to: tokens,
-      title: payload.title,
-      body: payload.body,
+      ...(payload.title != null && payload.title !== "" ? { title: payload.title } : {}),
+      ...(payload.body != null && payload.body !== "" ? { body: payload.body } : {}),
       data,
       sound: (payload.sound as string | null | undefined) ?? "default",
       priority: "high",
       channelId: payload.channelId,
+      ...(payload.contentAvailable ? { _contentAvailable: true } : {}),
       ...(payload.imageUrl
         ? { mutableContent: true, richContent: { image: payload.imageUrl } }
         : {}),

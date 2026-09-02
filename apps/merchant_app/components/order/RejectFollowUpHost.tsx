@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { Alert } from "react-native";
+import { useQueryClient } from "@tanstack/react-query";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 import {
   isItemsOutOfStockReason,
@@ -13,6 +14,7 @@ import { OutOfStockModal, type OutOfStockPayload } from "@/components/OutOfStock
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { patchItemOutOfStock } from "@/services/menuApi";
+import { menuKeys } from "@/hooks/useMenuQueries";
 
 type FinalizeReject = () => void | Promise<void>;
 
@@ -70,6 +72,7 @@ export function RejectFollowUpHost({
 }) {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
+  const queryClient = useQueryClient();
   const storeId = selectedStore?.id ?? null;
   const [oosBusy, setOosBusy] = useState(false);
 
@@ -93,7 +96,7 @@ export function RejectFollowUpHost({
         onClose={onDismiss}
         onContinue={(selected) => {
           if (selected.length === 0) {
-            onDismiss();
+            void finalizeAndDismiss(followUp.finalizeReject, onDismiss);
             return;
           }
           setFollowUp({
@@ -112,17 +115,39 @@ export function RejectFollowUpHost({
       : `${followUp.items.length} items selected`;
 
   const confirmOos = async (payload: OutOfStockPayload) => {
-    if (!storeId || !token) return;
+    if (!storeId || !token) {
+      await finalizeAndDismiss(followUp.finalizeReject, onDismiss);
+      return;
+    }
     setOosBusy(true);
     try {
-      for (const item of followUp.items) {
-        await patchItemOutOfStock(String(storeId), item.menuItemId, token, payload);
+      const results = await Promise.allSettled(
+        followUp.items.map((item) =>
+          patchItemOutOfStock(String(storeId), item.menuItemId, token, payload)
+        )
+      );
+      const failed = results.filter((r) => r.status === "rejected");
+      if (failed.length > 0) {
+        Alert.alert(
+          "Some items not updated",
+          "Order will still be cancelled. You can mark stock from Menu if needed."
+        );
       }
-      await finalizeAndDismiss(followUp.finalizeReject, onDismiss);
+      const storeIdStr = String(storeId);
+      void queryClient.invalidateQueries({ queryKey: menuKeys.items(storeIdStr) });
+      for (const item of followUp.items) {
+        void queryClient.invalidateQueries({
+          queryKey: menuKeys.item(storeIdStr, item.menuItemId),
+        });
+      }
     } catch {
-      Alert.alert("Could not update stock", "Please try again from the menu.");
+      Alert.alert(
+        "Could not update stock",
+        "Order will still be cancelled. You can mark stock from Menu if needed."
+      );
     } finally {
       setOosBusy(false);
+      await finalizeAndDismiss(followUp.finalizeReject, onDismiss);
     }
   };
 

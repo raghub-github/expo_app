@@ -67,7 +67,17 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { AppText } from "@/components/AppText";
 
-import { Modal, View, ActivityIndicator, Pressable, StatusBar, Platform, StyleSheet, BackHandler } from "react-native";
+import {
+  Modal,
+  View,
+  ActivityIndicator,
+  Pressable,
+  StatusBar,
+  Platform,
+  StyleSheet,
+  BackHandler,
+  InteractionManager,
+} from "react-native";
 import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
 import { Ionicons } from "@expo/vector-icons";
@@ -654,9 +664,17 @@ export function RazorpayCheckoutModal({
 
   const upiAppLabel = upiAppDisplayName(checkoutMethod?.upiApp);
 
+  const schedulePaymentFailure = (handler: () => void) => {
+    InteractionManager.runAfterInteractions(() => {
+      requestAnimationFrame(handler);
+    });
+  };
+
   const failOrCancel = () => {
-    if (onFailure) onFailure();
-    else onCancel();
+    schedulePaymentFailure(() => {
+      if (onFailure) onFailure();
+      else onCancel();
+    });
   };
 
   const markUpiOpened = () => {
@@ -733,7 +751,7 @@ export function RazorpayCheckoutModal({
         }
         if (isExplicitUserCancel(e)) {
           completedRef.current = true;
-          onCancel();
+          schedulePaymentFailure(onCancel);
           return;
         }
         if (isRazorpayNoMethodError(e)) {
@@ -786,6 +804,8 @@ export function RazorpayCheckoutModal({
 
   if (!visible || !orderParams) return null;
 
+  const showOpeningOverlay = tier == null && !waitingUpiLaunch;
+
   const handleLaunchUrl = (url: string) => {
     if (!isUpiLaunchUrl(url) || completedRef.current) return;
     void (async () => {
@@ -811,7 +831,7 @@ export function RazorpayCheckoutModal({
         <AppText style={styles.retryTxt}>Close</AppText>
       </Pressable>
     </View>
-  ) : (
+  ) : html.length > 0 ? (
     <WebView
       originWhitelist={["*"]}
       source={{ html, baseUrl: "https://checkout.razorpay.com" }}
@@ -819,12 +839,13 @@ export function RazorpayCheckoutModal({
       domStorageEnabled
       thirdPartyCookiesEnabled
       mixedContentMode="always"
-      setSupportMultipleWindows={true}
+      setSupportMultipleWindows={Platform.OS === "android" ? false : true}
       allowsBackForwardNavigationGestures={false}
       keyboardDisplayRequiresUserAction={false}
       injectedJavaScript={UPI_INTERCEPT_JS}
       style={styles.webview}
       startInLoadingState
+      androidHardwareAccelerationDisabled={false}
       renderLoading={() => (
         <View style={styles.spinnerWrap}>
           <ActivityIndicator size="large" color={theme} />
@@ -891,10 +912,50 @@ export function RazorpayCheckoutModal({
         failOrCancel();
       }}
     />
+  ) : (
+    <View style={styles.spinnerWrap}>
+      <ActivityIndicator size="large" color={theme} />
+      <AppText style={styles.openingHint}>Loading secure payment…</AppText>
+    </View>
   );
 
-  // Spinner only while minting / opening PhonePe. Never sit this overlay on
-  // top of a loaded Razorpay sheet — that made Continue untappable.
+  if (showOpeningOverlay) {
+    return (
+      <Modal
+        visible
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!completedRef.current) {
+            completedRef.current = true;
+            onCancel();
+          }
+        }}
+      >
+        <View style={styles.upiLaunchRoot}>
+          <View style={styles.upiLaunchDim}>
+            <View style={styles.upiLaunchCard}>
+              <ActivityIndicator color={theme} />
+              <AppText style={styles.upiLaunchText}>Opening secure payment…</AppText>
+              <Pressable
+                onPress={() => {
+                  if (!completedRef.current) {
+                    completedRef.current = true;
+                    onCancel();
+                  }
+                }}
+                hitSlop={10}
+                style={styles.upiLaunchCancelHit}
+              >
+                <AppText style={styles.upiLaunchCancel}>Cancel</AppText>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
   if (waitingUpiLaunch) {
     return (
       <Modal
@@ -1026,6 +1087,12 @@ const styles = StyleSheet.create({
     top: 0, left: 0, right: 0, bottom: 0,
     alignItems: "center", justifyContent: "center",
     backgroundColor: "#ffffff",
+  },
+  openingHint: {
+    marginTop: 12,
+    fontSize: 14,
+    color: "#475569",
+    textAlign: "center",
   },
   errorWrap: {
     flex: 1,

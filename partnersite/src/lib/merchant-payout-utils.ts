@@ -15,6 +15,8 @@ import {
   resolveWithdrawalRequestDisplayDescription,
   resolveLedgerCategoryLabel,
   resolveLedgerRowStatusBadge,
+  isManualWalletAdjustmentLedgerEntry,
+  resolveManualWalletAdjustmentDisplayDescription,
   LEDGER_CATEGORY_LABELS,
   type MerchantLedgerVisibilityEntry,
   type LedgerRowStatusBadge,
@@ -841,7 +843,13 @@ const WITHDRAWAL_COMPLETED_DESCRIPTION =
 
 export function resolveLedgerDisplayDescription(entry: LedgerEntry): string {
   const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
-  const desc = entry.description?.trim() ?? "";
+  const rawDesc = entry.description?.trim() ?? "";
+
+  if (isManualWalletAdjustmentLedgerEntry(entry)) {
+    return resolveManualWalletAdjustmentDisplayDescription(rawDesc);
+  }
+
+  const desc = rawDesc;
 
   if (entry.category === "FAILED_WITHDRAWAL_REVERSAL") {
     return resolveWithdrawalReversalDisplayDescription(desc, meta);

@@ -24,12 +24,10 @@ if (!isExpoGo()) {
       handleNotification: async (notification) => {
         const data = notification?.request?.content?.data ?? {};
         const t = String(data.type ?? data.notificationType ?? "").toLowerCase();
-        const isIdleStatus =
-          t === "live_orders" ||
-          t === "store_online" ||
-          t === "merchant_go_online" ||
-          t === "merchant_waiting_for_order";
-        if (isIdleStatus) {
+        // Only suppress the local kitchen sticky duplicate — server pushes for
+        // store_online / go-online must still appear in the system shade.
+        const isLocalKitchenSticky = t === "live_orders";
+        if (isLocalKitchenSticky) {
           return {
             shouldShowAlert: false,
             shouldPlaySound: false,

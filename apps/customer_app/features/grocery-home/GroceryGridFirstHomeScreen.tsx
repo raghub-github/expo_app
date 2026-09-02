@@ -83,8 +83,10 @@ import {
   defaultGridFirstStickyMetrics,
   GRID_FIRST_FILTER_ROW_H,
   GRID_FIRST_STICK_HANDOFF_PX,
+  GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
   gridFirstCategoryBlockHeight,
   gridFirstCategoryStickScrollY,
+  gridFirstDefaultHeaderBlockHeight,
   gridFirstFilterStickScrollY,
   gridFirstSearchStickScrollY,
   type GridFirstStickyMetrics,
@@ -575,12 +577,16 @@ export default function GroceryGridFirstHomeScreen() {
     y: 0,
     height: GRID_FIRST_FILTER_ROW_H,
   });
+  const [gridFirstHeaderBlockH, setGridFirstHeaderBlockH] = useState(
+    gridFirstDefaultHeaderBlockHeight
+  );
 
   const gridFirstStickyMetrics = useMemo<GridFirstStickyMetrics>(() => {
     const base = defaultGridFirstStickyMetrics(statusBarTopInset, gridFirstSkyHeight, categoryCircle);
     return {
       ...base,
       goldStripHeight: 0,
+      headerBlockHeight: gridFirstHeaderBlockH,
       categoryBlockY:
         gridFirstCategoryLayout.y > 0 ? gridFirstCategoryLayout.y : gridFirstSkyHeight,
       categoryBlockHeight: gridFirstCategoryLayout.height || gridFirstCategoryBlockHeight(categoryCircle),
@@ -597,6 +603,7 @@ export default function GroceryGridFirstHomeScreen() {
     gridFirstCategoryLayout,
     gridFirstFilterLayout,
     categoryCircle,
+    gridFirstHeaderBlockH,
   ]);
 
   const gridFirstSearchStickAt = useMemo(
@@ -912,6 +919,14 @@ export default function GroceryGridFirstHomeScreen() {
                       { paddingTop: statusBarTopInset + STATUS_BAR_TO_HEADER_GAP },
                     ]}
                     pointerEvents="box-none"
+                    onLayout={(e) => {
+                      const h = e.nativeEvent.layout.height;
+                      if (h > statusBarTopInset + STATUS_BAR_TO_HEADER_GAP) {
+                        setGridFirstHeaderBlockH(
+                          h - statusBarTopInset - STATUS_BAR_TO_HEADER_GAP
+                        );
+                      }
+                    }}
                   >
                     <FoodHomeGridFirstHeader
                       topInset={0}
@@ -1038,7 +1053,7 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
   },
   categoryTabsSection: {
-    paddingTop: 8,
+    paddingTop: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
     paddingBottom: 10,
     marginBottom: 0,
   },

@@ -1,14 +1,15 @@
 /**
- * Remove `.next` and webpack caches before build/dev.
- * On Windows + OneDrive, stale `.next/lock` files often block `next build`.
+ * Remove `.next` / production caches before build/dev.
+ * Production builds on OneDrive junction `.next` → %LOCALAPPDATA%.
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+import { dashboardRoot, localNextOutputDir, repoOnOneDrive } from "./onedrive-build-paths.mjs";
+
+const root = dashboardRoot;
 const nextDir = path.join(root, ".next");
 const lockPath = path.join(nextDir, "lock");
 
@@ -37,7 +38,6 @@ function forceRemoveLock() {
   }
 }
 
-/** Stale Next workers can leave `.next/trace` locked → EPERM on the next build. */
 function forceRemoveTrace() {
   const tracePath = path.join(nextDir, "trace");
   if (!fs.existsSync(tracePath)) return;
@@ -50,89 +50,36 @@ function forceRemoveTrace() {
   }
 }
 
-function removeNextDir() {
-  if (repoOnOneDrive()) {
-    removeDirBestEffort(localNextOutputDir());
-  }
-  if (!fs.existsSync(nextDir)) return;
-
-  if (isJunction(nextDir)) {
-    spawnSync("cmd", ["/c", "rmdir", nextDir], { stdio: "ignore" });
-    return;
-  }
-
-  forceRemoveLock();
-  try {
-    fs.rmSync(nextDir, {
-      recursive: true,
-      force: true,
-      maxRetries: 10,
-      retryDelay: 250,
+function forceRemovePath(dirPath) {
+  if (!fs.existsSync(dirPath)) return true;
+  if (isJunction(dirPath)) {
+    spawnSync("cmd", ["/c", "rmdir", dirPath], { stdio: "ignore" });
+  } else {
+    spawnSync("cmd", ["/c", "attrib", "-R", "-S", "-H", path.join(dirPath, "*"), "/S", "/D"], {
+      stdio: "ignore",
     });
-  } catch {
-    spawnSync("cmd", ["/c", "rmdir", "/s", "/q", nextDir], { stdio: "ignore" });
+    try {
+      fs.rmSync(dirPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    } catch {
+      spawnSync("cmd", ["/c", "rmdir", "/s", "/q", dirPath], { stdio: "ignore" });
+    }
   }
+  return !fs.existsSync(dirPath);
 }
 
 function removeDirBestEffort(dirPath) {
   if (!fs.existsSync(dirPath)) return;
-  try {
-    fs.rmSync(dirPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 150 });
-  } catch {
-    if (process.platform === "win32") {
-      spawnSync("cmd", ["/c", "rmdir", "/s", "/q", dirPath], { stdio: "ignore" });
-    }
-  }
+  forceRemovePath(dirPath);
 }
 
-/**
- * Corrupted webpack filesystem packs cause:
- * - ENOENT rename …/4.pack_ → …/4.pack
- * - "No template for dependency: PureExpressionDependency"
- * Keep this off OneDrive and wipe on clean/dev:clean.
- */
-function localNextOutputDir() {
-  if (process.platform === "win32") {
-    const local =
-      process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || os.homedir(), "AppData", "Local");
-    return path.join(local, "gatimitra-dashboard-next");
-  }
-  return path.join(root, ".next-local");
-}
-
-function repoOnOneDrive() {
-  return process.platform === "win32" && root.includes("OneDrive");
-}
-
-/**
- * OneDrive sync deletes/locks `.next` mid-build → ENOENT on pages-manifest.json.
- * Junction repo `.next` → %LOCALAPPDATA% so Next writes off synced folders.
- */
-function ensureNextOutputJunction() {
-  if (!repoOnOneDrive()) return;
-
-  const target = localNextOutputDir();
-  removeDirBestEffort(target);
-  fs.mkdirSync(target, { recursive: true });
-
+function removeAllNextOutputs() {
   if (fs.existsSync(nextDir)) {
-    if (isJunction(nextDir)) {
-      spawnSync("cmd", ["/c", "rmdir", nextDir], { stdio: "ignore" });
-    } else {
-      removeNextDir();
-    }
+    forceRemoveLock();
+    forceRemoveTrace();
+    forceRemovePath(nextDir);
   }
-
-  const link = spawnSync("cmd", ["/c", "mklink", "/J", nextDir, target], {
-    cwd: root,
-    stdio: "pipe",
-    encoding: "utf8",
-  });
-  if (link.status !== 0) {
-    console.warn(
-      `[prepare-next] Could not junction .next → ${target}; builds may fail on OneDrive.`,
-      link.stderr?.trim() || link.stdout?.trim() || ""
-    );
+  if (repoOnOneDrive()) {
+    removeDirBestEffort(localNextOutputDir());
   }
 }
 
@@ -142,10 +89,90 @@ function removeDashboardWebpackCache() {
       process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || "", "AppData", "Local");
     removeDirBestEffort(path.join(local, "gatimitra-dashboard-webpack"));
   } else {
-    removeDirBestEffort(
-      path.join(process.env.HOME || os.homedir(), ".cache", "gatimitra-dashboard-webpack")
-    );
+    removeDirBestEffort(path.join(os.homedir(), ".cache", "gatimitra-dashboard-webpack"));
   }
+}
+
+function stopDashboardDevServer() {
+  if (process.platform !== "win32") return;
+  spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-Command",
+      "Get-NetTCPConnection -LocalPort 3001 -ErrorAction SilentlyContinue | ForEach-Object { if ($_.OwningProcess -gt 0) { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue } }",
+    ],
+    { stdio: "ignore" }
+  );
+  spawnSync("cmd", ["/c", "timeout", "/t", "2", "/nobreak"], { stdio: "ignore" });
+}
+
+function tryRemoveNextDir(maxAttempts = 8) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (fs.existsSync(nextDir) && !forceRemovePath(nextDir)) {
+      spawnSync("cmd", ["/c", "rmdir", "/s", "/q", nextDir], { stdio: "ignore" });
+    }
+    if (!fs.existsSync(nextDir)) return true;
+    if (attempt < maxAttempts) {
+      spawnSync("cmd", ["/c", "timeout", "/t", "1", "/nobreak"], { stdio: "ignore" });
+    }
+  }
+  return !fs.existsSync(nextDir);
+}
+
+/**
+ * Junction repo `.next` → %LOCALAPPDATA% for production builds on OneDrive.
+ * @param {{ required?: boolean }} opts - exit process when junction cannot be created
+ */
+function ensureNextOutputJunction(opts = {}) {
+  const { required = false } = opts;
+  if (!repoOnOneDrive()) return true;
+
+  const target = localNextOutputDir();
+  removeDirBestEffort(target);
+  fs.mkdirSync(target, { recursive: true });
+
+  let removed = tryRemoveNextDir();
+  if (!removed && required && fs.existsSync(nextDir) && !isJunction(nextDir)) {
+    console.log("[prepare-next] stopping dashboard dev server on :3001 to release .next");
+    stopDashboardDevServer();
+    removed = tryRemoveNextDir(5);
+  }
+
+  if (!removed && fs.existsSync(nextDir) && !isJunction(nextDir)) {
+    const msg = `[prepare-next] Could not remove dev .next at ${nextDir}. Stop \`npm run dev\` and retry.`;
+    if (required) {
+      console.error(msg);
+      process.exit(1);
+    }
+    console.warn(msg);
+    return false;
+  }
+
+  if (isJunction(nextDir)) {
+    console.log(`[prepare-next] .next junction → ${target}`);
+    return true;
+  }
+
+  const link = spawnSync("cmd", ["/c", "mklink", "/J", nextDir, target], {
+    cwd: root,
+    stdio: "pipe",
+    encoding: "utf8",
+  });
+
+  if (link.status === 0 && isJunction(nextDir)) {
+    console.log(`[prepare-next] .next junction → ${target}`);
+    return true;
+  }
+
+  const detail = link.stderr?.trim() || link.stdout?.trim() || "unknown error";
+  const msg = `[prepare-next] Could not junction .next → ${target}: ${detail}`;
+  if (required) {
+    console.error(msg);
+    process.exit(1);
+  }
+  console.warn(msg);
+  return false;
 }
 
 function appendNodeOption(env, flag) {
@@ -155,11 +182,6 @@ function appendNodeOption(env, flag) {
   env.NODE_OPTIONS = [existing, flag].filter(Boolean).join(" ");
 }
 
-/**
- * `.next` is junctioned off OneDrive on Windows; Node resolves the real path
- * under %LOCALAPPDATA% during "Collecting page data", so hoisted deps (next,
- * postgres, drizzle, …) are not found unless symlinks are preserved.
- */
 export function applyOneDriveModuleResolutionOptions(env = process.env) {
   if (!repoOnOneDrive()) return;
   appendNodeOption(env, "--preserve-symlinks");
@@ -168,11 +190,11 @@ export function applyOneDriveModuleResolutionOptions(env = process.env) {
 export async function prepareNextBuildOutput() {
   forceRemoveLock();
   forceRemoveTrace();
-  removeNextDir();
+  removeAllNextOutputs();
   forceRemoveLock();
   forceRemoveTrace();
   removeDashboardWebpackCache();
-  ensureNextOutputJunction();
+  ensureNextOutputJunction({ required: repoOnOneDrive() });
 
   const cacheDir = path.join(root, "node_modules", ".cache");
   for (let attempt = 1; attempt <= 8; attempt += 1) {
@@ -187,4 +209,14 @@ export async function prepareNextBuildOutput() {
   }
 }
 
-export { forceRemoveLock, lockPath, nextDir, root, repoOnOneDrive, localNextOutputDir, ensureNextOutputJunction };
+export {
+  forceRemoveLock,
+  forceRemovePath,
+  isJunction,
+  lockPath,
+  nextDir,
+  root,
+  repoOnOneDrive,
+  localNextOutputDir,
+  ensureNextOutputJunction,
+};

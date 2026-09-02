@@ -11,8 +11,10 @@ export type MerchantApiActor =
 /**
  * Cookie-safe merchant actor (avoids raw getUser() 401/503 races under parallel loads).
  */
-export async function resolveMerchantApiActor(): Promise<MerchantApiActor> {
-  const auth = await getAuthenticatedApiUser();
+export async function resolveMerchantApiActor(
+  request?: Parameters<typeof getAuthenticatedApiUser>[0]
+): Promise<MerchantApiActor> {
+  const auth = await getAuthenticatedApiUser(request);
   if (!auth.ok) {
     if (auth.status === 503 || auth.status === 499) {
       return { ok: false, error: "Service temporarily unavailable", status: 503 };

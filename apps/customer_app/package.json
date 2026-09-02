@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "test": "node --import tsx --experimental-test-module-mocks --test lib/locationFixSelection.test.ts lib/lastKnownLocationCache.test.ts lib/reverseGeocodeCacheKey.test.ts",
+    "test": "node --import tsx --experimental-test-module-mocks --test lib/locationFixSelection.test.ts lib/lastKnownLocationCache.test.ts lib/reverseGeocodeCacheKey.test.ts lib/checkoutToPayAmount.test.ts",
     "start": "expo start --offline --go",
     "start:c": "node scripts/clear-metro-cache.js && expo start --offline --go --clear",
     "start:dev-client": "expo start --offline --dev-client",
@@ -74,6 +74,7 @@
     "expo-status-bar": "~3.0.9",
     "expo-system-ui": "~6.0.9",
     "expo-task-manager": "~14.0.9",
+    "expo-video": "~3.0.16",
     "expo-web-browser": "~15.0.7",
     "i18next": "^25.8.13",
     "metro-runtime": "0.83.3",

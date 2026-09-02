@@ -12,6 +12,7 @@ import {
 } from "@/hooks/queries/useOrderDetailQuery";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { useToast } from "@/context/ToastContext";
+import { OrderNotFoundState } from "@/components/orders/OrderNotFoundState";
 import RiderRouteMap from "../RiderRouteMap";
 import PersonRideRefundModal from "./PersonRideRefundModal";
 import {
@@ -637,19 +638,7 @@ export default function PersonRideOrderDetailClient({
   }
 
   if (notFound || !order) {
-    return (
-      <div
-        className="person-ride-typo flex h-full flex-col items-center justify-center gap-2 px-6 text-center"
-        style={{ background: PR_WHITE }}
-      >
-        <p className="pr-heading text-lg font-semibold" style={{ color: PR_BLACK }}>
-          Ride not found
-        </p>
-        <p className="pr-body text-[13px]" style={{ color: PR_MUTED }}>
-          {error || `No person ride matches ${normalizedId}.`}
-        </p>
-      </div>
-    );
+    return <OrderNotFoundState className="person-ride-typo" />;
   }
 
   return (

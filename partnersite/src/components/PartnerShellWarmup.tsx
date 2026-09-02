@@ -62,11 +62,8 @@ export function PartnerShellWarmup() {
     });
 
     if (storeId) {
+      // Warm dashboard first; other routes prefetch on hover/navigation.
       prefetchPartnerRouteData(queryClient, '/partners/dashboard', storeId);
-      prefetchPartnerRouteData(queryClient, '/partners/payments', storeId);
-      prefetchPartnerRouteData(queryClient, '/partners/orders', storeId);
-      prefetchPartnerRouteData(queryClient, '/partners/store-settings?tab=operations', storeId);
-      prefetchPartnerRouteData(queryClient, '/partners/profile', storeId);
     }
   }, [queryClient]);
 

@@ -36,7 +36,11 @@ import {
 } from "../../lib/financial-rule-executor.js";
 import { refundFieldsFromEngineResult } from "../../lib/order-cancellation-refund.js";
 import { recordOrderCancellation } from "../../lib/record-order-cancellation.js";
-import { autoRefundOnCancellation } from "../../lib/auto-refund-on-cancellation.js";
+import { shouldAutoRefundForCancellationActor } from "../../lib/auto-refund-on-cancellation.js";
+import {
+  refundStatusFromAutoRefundOutcome,
+  triggerOrderAutoRefundAfterCancel,
+} from "../../lib/trigger-order-auto-refund.js";
 import { creditMerchantOrderEarningOnDelivered } from "../../lib/credit-merchant-order-on-delivered.js";
 import { applyMerchantOrderCancellationLedger } from "../../lib/apply-merchant-cancellation-ledger.js";
 import {
@@ -46,7 +50,7 @@ import {
 import { recordReadyTimeline } from "../../lib/order-food-status-timeline.js";
 import { maybeStartOrderDispatch } from "../../lib/order-dispatch.service.js";
 import { fetchFoodRiderAcceptFlow } from "../../lib/food-rider-accept-flow.js";
-import { loadMerchantOrderLineItemsByTextIds } from "../../lib/load-merchant-order-line-items.js";
+import { loadMerchantOrderLineItemsByTextIds, loadMerchantOrderItemMenuMetaByTextIds } from "../../lib/load-merchant-order-line-items.js";
 import { resolveMerchantCancellationFields } from "../../lib/merchant-cancellation-fields.js";
 import {
   resolveOrderCancellationCompensationDisplay,
@@ -390,7 +394,7 @@ function normalizeItems(raw: unknown): MerchantFoodOrderItem[] {
       instructionRaw != null && String(instructionRaw).trim()
         ? String(instructionRaw).trim().slice(0, 100)
         : null;
-    const menuItemRaw = r.menu_item_id ?? r.menuItemId ?? null;
+    const menuItemRaw = r.menu_item_id ?? r.menuItemId ?? r.item_id ?? null;
     const menu_item_id =
       menuItemRaw != null && Number.isFinite(Number(menuItemRaw)) && Number(menuItemRaw) > 0
         ? Number(menuItemRaw)
@@ -1312,24 +1316,26 @@ async function buildOrderDto(
   const itemsBeforeBase = items.map((it) => ({ ...it }));
   const allCtmFrozen =
     items.length > 0 && items.every((it) => it.ctm_from_snapshot === true);
-  const boardList = opts.boardList === true;
   if (allCtmFrozen) {
-    // Merchant CTM snapshot is menu selling-price SSOT (minus BOGO/BOOST) — do not rescale from commission.
+    // Merchant CTM snapshot — display net CTM on lines (Partner Site parity); keep catalog for strike.
     items = items.map((it) => ({
       ...it,
-      // Keep catalog for strike; price stays catalog so annotate/bill math stay consistent.
-      price: num(it.catalog_line_total ?? it.price),
+      price: num(it.net_line_total ?? it.catalog_line_total ?? it.price),
     }));
-  } else if (boardList) {
-    // Board: trust JSON / lite meta prices — applyMerchantBase is too slow at list scale.
-    items = itemsBeforeBase;
   } else {
+    // Board list and detail share the same merchant line math as Partner Site food-orders.
     const { items: merchantItems, merchantSubtotal } = await applyMerchantBaseToOrderItems(
       items,
       snaps,
       { storeId: opts.storeId, commissionPercent: opts.commissionPercent }
     );
     items = itemsBeforeBase.map((it, i) => {
+      if (it.ctm_from_snapshot === true) {
+        return {
+          ...it,
+          price: num(it.net_line_total ?? it.catalog_line_total ?? it.price),
+        };
+      }
       const mapped = merchantItems[i];
       const lineTotal = num(mapped?.price ?? it.price);
       return scaleMerchantOrderItemBreakdown(it, lineTotal) as MerchantFoodOrderItem;
@@ -1342,8 +1348,7 @@ async function buildOrderDto(
       ? (core.billing_snapshot as Record<string, unknown>)
       : null;
   // CTM snapshot is immutable SSOT — skip recompute. Legacy orders still annotate.
-  // Board list also skips annotate (avoids per-order CPU on the hot path).
-  if (!allCtmFrozen && !boardList) {
+  if (!allCtmFrozen) {
     items = annotateMerchantItemsWithItemOffers(items, billingSnap);
   }
 
@@ -1920,6 +1925,78 @@ export async function loadMerchantFoodOrderRidersLog(
   });
 }
 
+/** Per-order store/platform ordinal — one query for the whole batch (Partner Site parity). */
+async function loadCustomerOrderOrdinalsForCores(
+  sql: Sql,
+  storeId: number,
+  cores: Array<{ id: number; customer_id: unknown; created_at: unknown }>
+): Promise<{
+  storeOrdinalByCoreId: Map<number, number>;
+  customerStoreOrdersTotalById: Map<number, number>;
+  customerPlatformOrdersTotalById: Map<number, number>;
+}> {
+  const storeOrdinalByCoreId = new Map<number, number>();
+  const customerStoreOrdersTotalById = new Map<number, number>();
+  const customerPlatformOrdersTotalById = new Map<number, number>();
+  const coreIds = cores.map((c) => Number(c.id)).filter((n) => Number.isFinite(n) && n > 0);
+  if (coreIds.length === 0) {
+    return { storeOrdinalByCoreId, customerStoreOrdersTotalById, customerPlatformOrdersTotalById };
+  }
+
+  const rows = await sql<
+    Array<{
+      order_id: number;
+      customer_id: number;
+      store_ordinal: number;
+      platform_ordinal: number;
+    }>
+  >`
+    SELECT
+      o.id AS order_id,
+      o.customer_id,
+      (
+        SELECT COUNT(*)::int
+        FROM orders_core c2
+        WHERE c2.merchant_store_id = ${storeId}
+          AND c2.customer_id = o.customer_id
+          AND (
+            c2.created_at < o.created_at
+            OR (c2.created_at = o.created_at AND c2.id <= o.id)
+          )
+      ) AS store_ordinal,
+      (
+        SELECT COUNT(*)::int
+        FROM orders_core c3
+        WHERE c3.customer_id = o.customer_id
+          AND (
+            c3.created_at < o.created_at
+            OR (c3.created_at = o.created_at AND c3.id <= o.id)
+          )
+      ) AS platform_ordinal
+    FROM orders_core o
+    WHERE o.id IN ${sql(coreIds)}
+      AND o.customer_id IS NOT NULL
+  `;
+
+  for (const r of rows) {
+    const coreId = Number(r.order_id);
+    const cid = Number(r.customer_id);
+    const storeOrd = Number(r.store_ordinal);
+    const platOrd = Number(r.platform_ordinal);
+    if (Number.isFinite(coreId) && storeOrd > 0) {
+      storeOrdinalByCoreId.set(coreId, storeOrd);
+    }
+    if (Number.isFinite(cid) && storeOrd > 0) {
+      customerStoreOrdersTotalById.set(cid, storeOrd);
+    }
+    if (Number.isFinite(cid) && platOrd > 0) {
+      customerPlatformOrdersTotalById.set(cid, platOrd);
+    }
+  }
+
+  return { storeOrdinalByCoreId, customerStoreOrdersTotalById, customerPlatformOrdersTotalById };
+}
+
 export async function loadMerchantFoodOrders(
   sql: Sql,
   storeId: number,
@@ -2015,13 +2092,14 @@ export async function loadMerchantFoodOrders(
 
   if (isBoardList) {
     /**
-     * Board must stay under ~2s. Skip menu-meta + Nth-order COUNTs (those stall
-     * the pool under partner-site + app polling). Enrich is best-effort with
-     * hard caps so one slow table cannot trip the route deadline.
+     * Board must stay under ~2s. Skip Nth-order COUNTs (those stall the pool).
+     * Load CTM line items (merchant_ctm_pricing_snapshot) so inline amounts match Partner Site.
      */
     const [
       settingsRows,
       custs,
+      lineItems,
+      menuMeta,
       otpRows,
       tokPack,
       riders,
@@ -2045,6 +2123,12 @@ export async function loadMerchantFoodOrders(
             [] as Array<CustomerRow & { id: number | string | bigint }>
           )
         : Promise.resolve([] as Array<CustomerRow & { id: number | string | bigint }>),
+      textOrderIds.length > 0
+        ? withTimeout(loadMerchantOrderLineItemsByTextIds(sql, textOrderIds), 2_000, new Map())
+        : Promise.resolve(new Map() as typeof itemsByOrderTextId),
+      textOrderIds.length > 0
+        ? withTimeout(loadMerchantOrderItemMenuMetaByTextIds(sql, textOrderIds), 1_500, new Map())
+        : Promise.resolve(new Map() as typeof menuMetaByOrderTextId),
       coreIds.length > 0
         ? withTimeout(
             sql`
@@ -2113,6 +2197,8 @@ export async function loadMerchantFoodOrders(
         primary_mobile: c.primary_mobile,
       });
     }
+    itemsByOrderTextId = lineItems;
+    menuMetaByOrderTextId = menuMeta;
     for (const o of otpRows) {
       const cid = Number(o.order_id);
       const entry = otpByCoreId.get(cid) ?? { pickup: null, rto: null };
@@ -2271,7 +2357,28 @@ export async function loadMerchantFoodOrders(
     }
   }
 
-  // Legacy ordinal / heavy detail blocks removed — board + detail use parallel paths above.
+  if (coreIds.length > 0) {
+    try {
+      const ordinals = await withTimeout(
+        loadCustomerOrderOrdinalsForCores(sql, storeId, cores),
+        isBoardList ? 1_500 : 2_500,
+        {
+          storeOrdinalByCoreId: new Map<number, number>(),
+          customerStoreOrdersTotalById: new Map<number, number>(),
+          customerPlatformOrdersTotalById: new Map<number, number>(),
+        }
+      );
+      for (const [k, v] of ordinals.storeOrdinalByCoreId) storeOrdinalByCoreId.set(k, v);
+      for (const [k, v] of ordinals.customerStoreOrdersTotalById) {
+        customerStoreOrdersTotalById.set(k, v);
+      }
+      for (const [k, v] of ordinals.customerPlatformOrdersTotalById) {
+        customerPlatformOrdersTotalById.set(k, v);
+      }
+    } catch {
+      /* Ordinal is enrichment only — incoming UI still works without it. */
+    }
+  }
 
   const buildOpts = {
     storeId,
@@ -2956,29 +3063,60 @@ export async function patchMerchantFoodOrderStatus(
     }
   } else if (status === "CANCELLED") {
     const cancelLabel = actionLabels.cancelled_by_label ?? null;
+    const cancelledByTypeForDb =
+      actionSource === "admin" ? "admin" : actionSource === "system" ? "system" : "store";
     // Optimistic concurrency: only cancel if status is still the expected previous state.
     // Prevents double-accept/reject races across devices.
     const cancelRows = rejectedReason
       ? await sql`
           UPDATE orders_food
           SET order_status = ${status}, updated_at = ${now}::timestamptz, cancelled_at = ${now}::timestamptz,
-              rejected_reason = ${rejectedReason}, cancelled_by_label = ${cancelLabel}
+              rejected_reason = ${rejectedReason}, cancelled_by_label = ${cancelLabel},
+              cancelled_by_type = ${cancelledByTypeForDb}
           WHERE id = ${ordersFoodId}
             AND merchant_store_id = ${storeId}
-            AND UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED')) = ${currentStatus}
+            AND (
+              CASE
+                WHEN UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED')) IN (
+                  'PLACED', 'ORDER_RECEIVED', 'ORDER_PLACED'
+                ) THEN 'CREATED'
+                ELSE UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED'))
+              END
+            ) = ${currentStatus}
           RETURNING id
         `
       : await sql`
           UPDATE orders_food
           SET order_status = ${status}, updated_at = ${now}::timestamptz, cancelled_at = ${now}::timestamptz,
-              cancelled_by_label = ${cancelLabel}
+              cancelled_by_label = ${cancelLabel},
+              cancelled_by_type = ${cancelledByTypeForDb}
           WHERE id = ${ordersFoodId}
             AND merchant_store_id = ${storeId}
-            AND UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED')) = ${currentStatus}
+            AND (
+              CASE
+                WHEN UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED')) IN (
+                  'PLACED', 'ORDER_RECEIVED', 'ORDER_PLACED'
+                ) THEN 'CREATED'
+                ELSE UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED'))
+              END
+            ) = ${currentStatus}
           RETURNING id
         `;
     if (!Array.isArray(cancelRows) || cancelRows.length === 0) {
       throw new Error(`invalid_transition:${currentStatus}:${status}`);
+    }
+    // Sync core status immediately so customer refund can start without waiting on rule engine.
+    try {
+      await sql`
+        UPDATE orders_core
+        SET current_status = ${status},
+            status = 'cancelled',
+            updated_at = ${now}::timestamptz,
+            cancelled_at = ${now}::timestamptz
+        WHERE id = ${corePk}
+      `;
+    } catch {
+      /* non-fatal — retried after food row updates */
     }
     try {
       await recordCancellationTimeline(sql, {
@@ -2999,6 +3137,28 @@ export async function patchMerchantFoodOrderStatus(
     const cancelledByType =
       actionSource === "admin" ? "admin" : actionSource === "system" ? "system" : "store";
     const orderCtx = await lookupOrderContext(corePk, sql);
+    let autoRefundOutcome: Awaited<ReturnType<typeof triggerOrderAutoRefundAfterCancel>> | null =
+      null;
+    if (shouldAutoRefundForCancellationActor(cancelledByType)) {
+      try {
+        autoRefundOutcome = await triggerOrderAutoRefundAfterCancel(
+          {
+            orderCoreId: corePk,
+            reason: displayReason || "Order cancelled by merchant",
+            actorRole: cancelledByType,
+            amount: null,
+            orderGrandTotal: num(coreRow?.grand_total ?? orderCtx.grandTotal),
+          },
+          sql
+        );
+      } catch (refundErr) {
+        console.error(
+          "[merchant-cancel] early auto_refund failed",
+          corePk,
+          (refundErr as Error).message
+        );
+      }
+    }
     const engineResult = await executeOrderCancellationFinancials({
       orderCoreId: corePk,
       ordersFoodId,
@@ -3031,40 +3191,20 @@ export async function patchMerchantFoodOrderStatus(
     } catch {
       /* non-fatal */
     }
-    // Auto-refund the customer when the MERCHANT (store) or the SYSTEM cancelled
-    // — the customer paid and didn't get the order, so their money goes back.
-    // Agent/admin uses the dashboard refund flow. Customer cancel refunds only
-    // pre-accept (full) inside food.order-cancel.service.ts via autoRefundOnCancellation.
-    // Amount uses the rule engine's computed refund, falling back to 100% of what was paid.
-    // Best-effort: leaves a retriable order_refunds row on failure.
-    if (cancelledByType === "store" || cancelledByType === "system") {
-      try {
-        const engineAmount = Number(refund.refundAmount);
-        await autoRefundOnCancellation(
-          {
-            orderCoreId: corePk,
-            reason: displayReason || "Order cancelled by merchant",
-            actorRole: cancelledByType,
-            amount: Number.isFinite(engineAmount) && engineAmount > 0 ? engineAmount : null,
-          },
-          sql
-        );
-      } catch {
-        /* non-fatal — refund can be retried via /v1/internal/orders/:id/refund/execute */
-      }
-    }
-    // Store/system cancel always auto-refunds paid amount; admin follows engine result.
     const engineAmt = Number(refund.refundAmount);
     cancelNotifyRefund = {
       refundEligible:
-        cancelledByType === "store" ||
-        cancelledByType === "system" ||
+        shouldAutoRefundForCancellationActor(cancelledByType) ||
         (Number.isFinite(engineAmt) && engineAmt > 0.005 && refund.refundStatus !== "no_refund"),
-      refundStatus: refund.refundStatus,
+      refundStatus: autoRefundOutcome
+        ? refundStatusFromAutoRefundOutcome(autoRefundOutcome, refund.refundStatus)
+        : shouldAutoRefundForCancellationActor(cancelledByType)
+          ? "pending"
+          : refund.refundStatus,
       refundAmount:
         Number.isFinite(engineAmt) && engineAmt > 0.005
           ? engineAmt
-          : cancelledByType === "store" || cancelledByType === "system"
+          : shouldAutoRefundForCancellationActor(cancelledByType)
             ? num(coreRow?.grand_total ?? orderCtx.grandTotal)
             : null,
     };

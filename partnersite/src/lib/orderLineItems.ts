@@ -128,7 +128,8 @@ export function normalizeOrderItems(rawItems: unknown): NormalizedOrderLineItem[
       (variant && !String(row.variant_tag ?? '').trim()
         ? `${baseName} (${variant})`
         : baseName);
-    const menuItemIdRaw = row.menu_item_id ?? row.menuItemId ?? snap?.menu_item_id;
+    const menuItemIdRaw =
+      row.menu_item_id ?? row.menuItemId ?? row.item_id ?? snap?.menu_item_id ?? snap?.item_id;
     const menuItemId =
       menuItemIdRaw != null && menuItemIdRaw !== '' ? Number(menuItemIdRaw) : null;
     let customizations: string[] | undefined;

@@ -1,15 +1,15 @@
 /**
  * Zomato-style Android sticky for merchant kitchen status.
  *
- * DISABLED (product): merchants receive server push for new orders only — no local
- * ongoing "store is online · Waiting for orders" tray row or foreground pill.
- *
- * Dismiss helpers remain so existing tray rows are cleared on app start.
+ * Shows an ongoing "🟢 {store} is online · Waiting for orders" tray row while
+ * the store is open (see LiveOrdersOngoingNotification). Server push for
+ * store_online / go-online is also enabled in pushBackgroundTask.
  */
 
 import { Platform } from "react-native";
 import Constants from "expo-constants";
 import { GatiMitraMerchant } from "@/constants/theme";
+import { isAppForeground } from "@/lib/appForeground";
 import {
   getActiveOrdersBreakdown,
   type ActiveOrdersBreakdown,
@@ -23,8 +23,8 @@ export const LIVE_ORDERS_HREF = "/(tabs)/orders?tab=active";
 
 const BAR_LEN = 12;
 
-/** Product flag — local kitchen sticky is off; use server push only. */
-const KITCHEN_STICKY_ENABLED = false;
+/** Zomato-style ongoing tray while the store is online (waiting for orders / kitchen status). */
+const KITCHEN_STICKY_ENABLED = true;
 
 /** When false, sticky must not be shown (store closed / logged out / feature off). */
 let kitchenStickyAllowed = false;
@@ -267,6 +267,7 @@ export async function refreshLiveOrdersOngoingNotification(args: {
   if (!KITCHEN_STICKY_ENABLED) return;
   if (Platform.OS !== "android" || isExpoGo()) return;
   if (!kitchenStickyAllowed) return;
+  if (!args.force && !isAppForeground()) return;
   if (inFlight || nativeBusy) return;
   inFlight = true;
   try {

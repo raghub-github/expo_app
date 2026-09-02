@@ -1,4 +1,9 @@
-import { fetchBackend } from '@/lib/fetch-backend';
+import {
+  clearBackendCircuitBreaker,
+  fetchBackend,
+} from '@/lib/fetch-backend';
+import { resolveBackendApiBaseUrlList } from '@/lib/backend-api-url';
+import { partnerOrderAutoRefundInProcess } from '@/lib/partner-order-auto-refund-inprocess';
 
 /**
  * Auto-refund the customer for a cancelled order.
@@ -8,18 +13,6 @@ import { fetchBackend } from '@/lib/fetch-backend';
  * auto-refunds a merchant/system cancel. Without this hop the portal only stamped
  * refund INTENT (order_cancellation refund_status = pending) and the customer's
  * money never actually moved.
- *
- * The backend endpoint creates the `order_refunds` row AND executes it
- * (Razorpay / customer wallet / COD-noop). It is idempotent — it no-ops when a
- * non-failed refund already exists for the order, so retries can't double-pay.
- *
- * Policy enforced by the backend:
- *   • system / merchant (store) / rider cancel → full refund of what was paid
- *   • customer cancel → never auto-refunded (refused here and in the backend)
- *   • agent/admin → dashboard engine-driven flow, not this path
- *
- * Best-effort: a refund failure must never abort the cancellation itself. The
- * order_refunds row is left behind for ops retry.
  */
 export async function triggerOrderAutoRefund(args: {
   /** orders_core primary key. */
@@ -35,35 +28,99 @@ export async function triggerOrderAutoRefund(args: {
   if (!Number.isInteger(orderCorePk) || orderCorePk < 1) return;
 
   const role = String(args.actorRole || '').trim().toLowerCase();
-  // Customer cancellations never auto-refund — don't even make the call.
   if (role === 'customer' || role === 'cx') return;
 
   const secret =
-    process.env.INTERNAL_API_TOKEN || process.env.BACKEND_SCHEDULE_TICK_SECRET;
-  if (!secret) {
-    console.warn('[triggerOrderAutoRefund] no internal secret configured; skipping');
-    return;
+    process.env.INTERNAL_API_TOKEN?.trim() ||
+    process.env.BACKEND_SCHEDULE_TICK_SECRET?.trim() ||
+    '';
+
+  const body = JSON.stringify({
+    reason: args.reason,
+    actorRole: role,
+    actorEmail: args.actorEmail ?? null,
+    amount:
+      args.amount != null && Number.isFinite(Number(args.amount)) && Number(args.amount) > 0
+        ? Number(args.amount)
+        : null,
+  });
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(secret ? { 'X-Internal-Secret': secret } : {}),
+  };
+
+  let httpOk = false;
+
+  if (secret) {
+    clearBackendCircuitBreaker();
+    try {
+      const res = await fetchBackend(`/v1/internal/orders/${orderCorePk}/auto-refund`, {
+        method: 'POST',
+        headers,
+        body,
+        timeoutMs: 30_000,
+        force: true,
+      });
+      if (res?.ok) {
+        httpOk = true;
+      } else if (res) {
+        const text = await res.text().catch(() => '');
+        console.warn(
+          `[triggerOrderAutoRefund] backend ${res.status} for core=${orderCorePk}: ${text.slice(0, 200)}`
+        );
+      }
+    } catch (err) {
+      console.warn('[triggerOrderAutoRefund] fetchBackend failed:', err);
+    }
+
+    if (!httpOk) {
+      for (const base of resolveBackendApiBaseUrlList()) {
+        try {
+          const res = await fetch(`${base}/v1/internal/orders/${orderCorePk}/auto-refund`, {
+            method: 'POST',
+            headers,
+            body,
+            cache: 'no-store',
+            signal: AbortSignal.timeout(30_000),
+          });
+          if (res.ok) {
+            httpOk = true;
+            break;
+          }
+          const text = await res.text().catch(() => '');
+          console.warn(
+            `[triggerOrderAutoRefund] ${base} → ${res.status} for core=${orderCorePk}: ${text.slice(0, 160)}`
+          );
+        } catch (err) {
+          console.warn(`[triggerOrderAutoRefund] ${base} unreachable:`, err);
+        }
+      }
+    }
+  } else {
+    console.warn(
+      '[triggerOrderAutoRefund] INTERNAL_API_TOKEN / BACKEND_SCHEDULE_TICK_SECRET missing — trying in-process refund'
+    );
   }
 
-  try {
-    await fetchBackend(`/v1/internal/orders/${orderCorePk}/auto-refund`, {
-      method: 'POST',
-      headers: {
-        'X-Internal-Secret': secret,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        reason: args.reason,
-        actorRole: role,
-        actorEmail: args.actorEmail ?? null,
-        amount:
-          args.amount != null && Number.isFinite(Number(args.amount)) && Number(args.amount) > 0
-            ? Number(args.amount)
-            : null,
-      }),
-      timeoutMs: 15_000,
-    });
-  } catch (err) {
-    console.warn('[triggerOrderAutoRefund] request failed:', err);
+  if (httpOk) return;
+
+  const local = await partnerOrderAutoRefundInProcess({
+    orderCorePk,
+    reason: args.reason,
+    actorRole: role,
+    actorEmail: args.actorEmail ?? null,
+    amount: args.amount ?? null,
+  });
+  if (!local.ok) {
+    console.warn(
+      `[triggerOrderAutoRefund] in-process refund failed for core=${orderCorePk}:`,
+      local.error
+    );
+  } else {
+    console.info(
+      `[triggerOrderAutoRefund] in-process refund for core=${orderCorePk}:`,
+      JSON.stringify(local.outcome)
+    );
   }
 }

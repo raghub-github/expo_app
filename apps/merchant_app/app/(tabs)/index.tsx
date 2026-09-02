@@ -16,7 +16,7 @@ import {
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { runOnJS } from "react-native-reanimated";
 import { AppText as Text } from "@/components/AppText";
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useMerchantNavigate } from "@/lib/merchantNavigation";
 import { useProfileNav } from "@/context/ProfileNavContext";
 import { Ionicons } from "@expo/vector-icons";
@@ -40,7 +40,7 @@ import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
 import { MerchantPrepDelaySheet } from "@/components/order/MerchantPrepDelaySheet";
 import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/RejectFollowUpHost";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
-import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
+import { rejectReasonNeedsFollowUp, isNotOperationalTodayReason } from "@/lib/merchantCancellationReasons";
 import { fetchWalletSummary } from "@/services/walletApi";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
 import { openOrderDetailOnce } from "@/lib/openOrderDetailOnce";
@@ -152,6 +152,25 @@ export default function DashboardScreen() {
 
   const [orderTab, setOrderTab] = useState<OrderFilterTab>("New");
   const orderTabBootstrapped = useRef(false);
+  const { orderTab: orderTabParam } = useLocalSearchParams<{ orderTab?: string }>();
+
+  const applyOrderTabParam = useCallback((raw: string | undefined) => {
+    const tab = String(raw ?? "").trim();
+    if (tab === "New" || tab === "Active") {
+      orderTabBootstrapped.current = true;
+      setOrderTab(tab);
+    }
+  }, []);
+
+  useEffect(() => {
+    applyOrderTabParam(orderTabParam);
+  }, [orderTabParam, applyOrderTabParam]);
+
+  useFocusEffect(
+    useCallback(() => {
+      applyOrderTabParam(orderTabParam);
+    }, [orderTabParam, applyOrderTabParam])
+  );
   const [todayEarning, setTodayEarning] = useState(0);
   const [deliveredToday, setDeliveredToday] = useState(0);
   const [walletBalance, setWalletBalance] = useState(0);
@@ -292,6 +311,15 @@ export default function DashboardScreen() {
       const orderSnap = rejectTarget;
       if (rejectReasonNeedsFollowUp(reason)) {
         setRejectTarget(null);
+        if (isNotOperationalTodayReason(reason)) {
+          try {
+            await transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason });
+          } catch {
+            /* useOrders surfaces error */
+          }
+          beginFollowUp(reason, orderSnap.lineItems, async () => {});
+          return;
+        }
         beginFollowUp(reason, orderSnap.lineItems, () =>
           void transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason }).catch(
             () => {}

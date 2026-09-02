@@ -42,7 +42,7 @@ export function redirectSystemPath({
   try {
     const p = stripScheme(path ?? "");
     const foodId = foodOrderIdFromPath(p);
-    if (foodId) return `/order/${foodId}`;
+    if (foodId) return "/(tabs)?orderTab=New";
 
     const empty =
       !p ||
@@ -53,7 +53,7 @@ export function redirectSystemPath({
       /^\/+$/.test(p);
     if (empty) return "/(tabs)";
 
-    if (/(^|\/)new_order(\/|\?|$)/i.test(p)) return "/(tabs)/orders";
+    if (/(^|\/)new_order(\/|\?|$)/i.test(p)) return "/(tabs)?orderTab=New";
 
     const ordersList = p.match(/^\/+orders\/?(?:\?(.*))?$/i);
     if (ordersList) {

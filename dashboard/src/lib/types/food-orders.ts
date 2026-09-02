@@ -2,7 +2,7 @@
  * Store food orders (aligned with partnersite OrdersFoodRow / orders_core + orders_food pipeline).
  */
 
-import type { OrderPricingBreakdown } from "@/lib/orderLineItems";
+import type { NormalizedOrderLineItem, OrderPricingBreakdown } from "@/lib/orderLineItems";
 
 export type OrdersFoodRow = {
   id: number;
@@ -48,28 +48,7 @@ export type OrdersFoodRow = {
   last_prep_delay_minutes_added?: number | null;
   prepared_late_minutes?: number | null;
   estimated_delivery_time?: string | null;
-  items?: Array<{
-    name?: string;
-    quantity?: number;
-    price?: number;
-    total?: number;
-    customizations?: string[];
-    vegNonveg?: string | null;
-    menuItemId?: number | null;
-    variantName?: string | null;
-    variantTag?: string | null;
-    categoryName?: string | null;
-    description?: string | null;
-    imageUrl?: string | null;
-    customizationLines?: Array<{
-      name: string;
-      amount: number;
-      kind: "variant" | "addon" | "note";
-    }>;
-    baseAmount?: number;
-    customizationsTotal?: number;
-    hasCustomizations?: boolean;
-  }> | null;
+  items?: NormalizedOrderLineItem[] | null;
   pricing?: OrderPricingBreakdown;
   /** orders_core.grand_total — partial fallback when pricing snapshot is unavailable. */
   grand_total?: number | string | null;

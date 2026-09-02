@@ -31,6 +31,7 @@ export const queryClient = new QueryClient({
         return true;
       },
       retryDelay: () => 1_500,
+      throwOnError: false,
     },
     mutations: {
       retry: (failureCount, error) => {
@@ -39,6 +40,7 @@ export const queryClient = new QueryClient({
         return status === 503 || isNetworkError(error);
       },
       retryDelay: (attempt) => 2000 * (attempt + 1),
+      throwOnError: false,
     },
   },
 });

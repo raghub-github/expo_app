@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
+import { assertStoreAccess } from "@/lib/auth/assert-store-access";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -10,18 +9,6 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey, {
 });
 
 type TargetType = "variant" | "addon" | "modifier_option" | "menu_addon";
-
-async function assertStoreAccess(storeId: string, merchantParentId: number) {
-  const { data: store } = await supabase
-    .from("merchant_stores")
-    .select("id, parent_id")
-    .eq("store_id", String(storeId).trim())
-    .single();
-  if (!store?.id || store.parent_id !== merchantParentId) {
-    return null;
-  }
-  return store;
-}
 
 async function assertMenuItemBelongsToStore(menuItemId: number, storeInternalId: number) {
   const { data: item } = await supabase
@@ -36,24 +23,6 @@ async function assertMenuItemBelongsToStore(menuItemId: number, storeInternalId:
 /** PATCH /api/merchant/menu-option-stock — toggle variant/addon/modifier in_stock */
 export async function PATCH(req: NextRequest) {
   try {
-    const supabaseServer = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabaseServer.auth.getUser();
-    if (userError || !user) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-    }
-
-    const validation = await validateMerchantFromSession({
-      id: user.id,
-      email: user.email ?? null,
-      phone: user.phone ?? null,
-    });
-    if (!validation.isValid) {
-      return NextResponse.json({ error: validation.error ?? "Merchant not found" }, { status: 403 });
-    }
-
     const body = await req.json().catch(() => ({}));
     const storeId = String(body?.storeId ?? "").trim();
     const targetType = body?.targetType as TargetType;
@@ -68,10 +37,11 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    const store = await assertStoreAccess(storeId, validation.merchantParentId!);
-    if (!store) {
-      return NextResponse.json({ error: "Store not found" }, { status: 404 });
+    const access = await assertStoreAccess(storeId);
+    if (!access.ok) {
+      return NextResponse.json({ error: access.error }, { status: access.status });
     }
+    const store = { id: access.storeIdNum };
 
     let table = "";
     let menuItemId: number | null = null;

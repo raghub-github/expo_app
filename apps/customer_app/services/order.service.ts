@@ -44,6 +44,8 @@ export type OrderSummary = {
   storeRatingSubmitted?: boolean;
   storeRating?: number | null;
   deliveryRating?: number | null;
+  storeMerchantReplyText?: string | null;
+  storeMerchantRepliedAt?: string | null;
   /** Human-readable cancellation reason (orders_food.rejected_reason). */
   cancellationReason?: string | null;
   /** Who cancelled — e.g. Cancelled by me, Rejected by Restaurant. */
@@ -128,6 +130,8 @@ export type OrderDetail = OrderSummary & {
   storeRating?: number | null;
   deliveryRating?: number | null;
   storeReviewText?: string | null;
+  storeMerchantReplyText?: string | null;
+  storeMerchantRepliedAt?: string | null;
   riderReviewText?: string | null;
   storeReviewTags?: string[];
   riderReviewTags?: string[];

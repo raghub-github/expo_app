@@ -8,7 +8,7 @@ import {
   formatPaymentInstrumentSource,
   formatPaymentModeOnlineOrCash,
 } from '@/lib/orders/order-payment-display';
-import type { OrderItemsPricing } from '@/lib/orderItemsPayload';
+import type { OrderItemApiRow, OrderItemsPricing } from '@/lib/orderItemsPayload';
 import {
   customerDiscountFromOrderPricing,
   customerDeliveryFromOrderPricing,
@@ -73,8 +73,59 @@ type RefundItemLine = {
   id: number;
   name: string;
   amount: number | null;
+  originalTotal?: number | null;
   refundPercentage: number | null;
+  quantity?: number | null;
 };
+
+function menuLineTotalFromOrderItem(item: OrderItemApiRow): number {
+  const qty = Math.max(1, item.quantity);
+  if (item.amountPerQuantity > 0.005) {
+    return Math.round(item.amountPerQuantity * qty * 100) / 100;
+  }
+  if (item.netAmountPerQuantity != null && item.netAmountPerQuantity > 0.005) {
+    return Math.round(item.netAmountPerQuantity * qty * 100) / 100;
+  }
+  if (item.catalogAmountPerQuantity != null && item.catalogAmountPerQuantity > 0.005) {
+    return Math.round(item.catalogAmountPerQuantity * qty * 100) / 100;
+  }
+  return Math.round(item.totalPerQuantity * qty * 100) / 100;
+}
+
+function orderItemMenuTotalsById(
+  items: OrderItemApiRow[] | undefined
+): Map<number, number> {
+  const map = new Map<number, number>();
+  if (!items?.length) return map;
+  for (const item of items) {
+    if (item.id > 0) map.set(item.id, menuLineTotalFromOrderItem(item));
+  }
+  return map;
+}
+
+function enrichRefundDisplayLines(
+  r: OrderRefundForDisplay,
+  orderItemTotals: Map<number, number>
+): RefundItemLine[] {
+  const lines = refundDisplayLines(r);
+  if (!isFullCtcRefundRecord(r) || orderItemTotals.size === 0) return lines;
+  return lines.map((line) => {
+    const fromOrder = orderItemTotals.get(line.id);
+    if (fromOrder == null || fromOrder <= 0) return line;
+    return {
+      ...line,
+      amount: fromOrder,
+      refundPercentage: line.refundPercentage ?? 100,
+    };
+  });
+}
+
+function isFullCtcRefundRecord(r: OrderRefundForDisplay): boolean {
+  const meta = r.refundMetadata;
+  if (!meta) return false;
+  if (meta.fullCtcRefund === true) return true;
+  return String(meta.refundTypeUI ?? "") === "refund_full_ctc";
+}
 
 function refundItemLines(r: OrderRefundForDisplay): RefundItemLine[] {
   const meta = r.refundMetadata;
@@ -89,14 +140,239 @@ function refundItemLines(r: OrderRefundForDisplay): RefundItemLine[] {
       String(row.name ?? row.itemName ?? row.item_name ?? "").trim() || `Item #${id}`;
     const amountRaw = Number(row.amount);
     const pctRaw = Number(row.refundPercentage);
+    const originalRaw = Number(row.originalTotal);
     out.push({
       id,
       name,
       amount: Number.isFinite(amountRaw) && amountRaw > 0 ? amountRaw : null,
+      originalTotal:
+        Number.isFinite(originalRaw) && originalRaw > 0 ? originalRaw : null,
       refundPercentage: Number.isFinite(pctRaw) && pctRaw > 0 ? pctRaw : null,
     });
   }
   return out;
+}
+
+function refundCatalogLines(r: OrderRefundForDisplay): RefundItemLine[] {
+  const meta = r.refundMetadata;
+  const raw = meta && Array.isArray(meta.refundItemsCatalog) ? meta.refundItemsCatalog : [];
+  const out: RefundItemLine[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    const id = Number(row.id);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    const name =
+      String(row.name ?? row.itemName ?? row.item_name ?? "").trim() || `Item #${id}`;
+    const lineTotal = Number(row.lineTotal ?? row.originalTotal);
+    const pctRaw = Number(row.refundPercentage);
+    out.push({
+      id,
+      name,
+      amount: Number.isFinite(lineTotal) && lineTotal > 0 ? lineTotal : null,
+      refundPercentage:
+        Number.isFinite(pctRaw) && pctRaw > 0 ? pctRaw : 100,
+      quantity: Number.isFinite(Number(row.quantity)) && Number(row.quantity) > 0
+        ? Number(row.quantity)
+        : null,
+    });
+  }
+  return out;
+}
+
+function refundDisplayLines(r: OrderRefundForDisplay): RefundItemLine[] {
+  if (isFullCtcRefundRecord(r)) {
+    const catalog = refundCatalogLines(r);
+    const totalRefund = Number(r.refundAmount) || 0;
+    if (catalog.length > 0) {
+      const lineSum = catalog.reduce((s, line) => s + (line.amount ?? 0), 0);
+      // Legacy rows stored CTC-proportional inflated line totals — hide wrong amounts.
+      if (totalRefund > 0 && lineSum > totalRefund + 0.02) {
+        return catalog.map((line) => ({
+          ...line,
+          amount: null,
+          refundPercentage: line.refundPercentage ?? 100,
+        }));
+      }
+      return catalog.map((line) => ({
+        ...line,
+        refundPercentage: line.refundPercentage ?? 100,
+      }));
+    }
+    // Legacy full-CTC rows stored inflated per-item amounts — show names only.
+    return refundItemLines(r).map((line) => ({
+      ...line,
+      amount: null,
+      refundPercentage: line.refundPercentage ?? 100,
+    }));
+  }
+  return refundItemLines(r);
+}
+
+function RefundItemsBreakdownModal({
+  isOpen,
+  onClose,
+  lines,
+  totalRefund,
+  fullCtc,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  lines: RefundItemLine[];
+  totalRefund: number;
+  fullCtc: boolean;
+}) {
+  if (!isOpen) return null;
+
+  return (
+    <OrderPageOverlay
+      className="fixed inset-0 z-[220] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+      role="presentation"
+      onBackdropClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Refund items breakdown"
+        className="bg-white rounded-lg shadow-lg max-w-md w-full p-4 text-[12px] text-slate-800"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-slate-900">
+            {fullCtc ? "Order items (full CTC refund)" : "Refund items"}
+          </h3>
+          <button
+            type="button"
+            className="text-slate-400 hover:text-slate-600 cursor-pointer"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+        <ul className="space-y-2 max-h-[50vh] overflow-y-auto">
+          {lines.map((line) => {
+            const pct = line.refundPercentage ?? (fullCtc ? 100 : null);
+            const itemValue = fullCtc
+              ? line.amount
+              : line.originalTotal ?? line.amount;
+            const refundedAmt =
+              !fullCtc && line.amount != null
+                ? line.amount
+                : itemValue != null && pct != null
+                  ? Math.min(
+                      itemValue,
+                      Math.round(itemValue * (pct / 100) * 100) / 100
+                    )
+                  : null;
+
+            return (
+              <li
+                key={line.id}
+                className="flex items-start justify-between gap-3 border-b border-slate-100 pb-2 last:border-0"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-slate-800 leading-snug">{line.name}</p>
+                  {line.quantity != null && line.quantity > 1 ? (
+                    <p className="text-[10px] text-slate-500">Qty {line.quantity}</p>
+                  ) : null}
+                  {pct != null ? (
+                    <p className="text-[10px] text-emerald-700 font-medium">
+                      {pct}% refunded
+                    </p>
+                  ) : null}
+                </div>
+                <div className="shrink-0 text-right">
+                  {itemValue != null ? (
+                    <p className="tabular-nums text-slate-700 font-medium">
+                      {formatInrWithGap(itemValue)}
+                    </p>
+                  ) : null}
+                  {refundedAmt != null && !fullCtc ? (
+                    <p className="tabular-nums text-[11px] font-semibold text-red-700">
+                      -{formatInrWithGap(refundedAmt)}
+                    </p>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+        <div className="mt-3 pt-3 border-t border-slate-200 flex justify-between font-semibold">
+          <span>{fullCtc ? "Order refund (CTC)" : "Total refunded"}</span>
+          <span className="tabular-nums text-red-700">
+            {Number.isFinite(totalRefund) && totalRefund > 0
+              ? `-${formatInrWithGap(totalRefund)}`
+              : "—"}
+          </span>
+        </div>
+        {fullCtc ? (
+          <p className="mt-2 text-[10px] text-slate-500 leading-snug">
+            Item prices are menu values only. Full CTC refund (delivery, fees &amp; taxes) is
+            shown below as the order total.
+          </p>
+        ) : null}
+      </div>
+    </OrderPageOverlay>
+  );
+}
+
+function RefundItemsCell({
+  r,
+  orderItemTotals,
+}: {
+  r: OrderRefundForDisplay;
+  orderItemTotals: Map<number, number>;
+}) {
+  const [open, setOpen] = useState(false);
+  const fullCtc = isFullCtcRefundRecord(r);
+  const lines = enrichRefundDisplayLines(r, orderItemTotals);
+  const totalRefund = Number(r.refundAmount);
+
+  if (lines.length === 0) {
+    return <span className="text-slate-400">—</span>;
+  }
+
+  if (lines.length === 1) {
+    const line = lines[0];
+    return (
+      <span className="text-[10px] leading-snug text-slate-700">
+        <span className="font-medium text-slate-800">{line.name}</span>
+        {!fullCtc && line.refundPercentage != null ? (
+          <span className="text-slate-500"> · {line.refundPercentage}%</span>
+        ) : null}
+        {!fullCtc && line.amount != null ? (
+          <span className="tabular-nums text-red-700"> · {formatInrWithGap(line.amount)}</span>
+        ) : null}
+        {fullCtc ? (
+          <span className="text-slate-500"> · Full CTC</span>
+        ) : null}
+      </span>
+    );
+  }
+
+  const first = lines[0];
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="text-left text-[10px] leading-snug cursor-pointer hover:opacity-90"
+      >
+        <span className="font-medium text-slate-800">{first.name}</span>
+        <span className="ml-1.5 inline-flex items-center rounded bg-emerald-50 border border-emerald-200 px-1.5 py-px text-[9px] font-bold text-emerald-800">
+          T-{lines.length}
+        </span>
+      </button>
+      <RefundItemsBreakdownModal
+        isOpen={open}
+        onClose={() => setOpen(false)}
+        lines={lines}
+        totalRefund={totalRefund}
+        fullCtc={fullCtc}
+      />
+    </>
+  );
 }
 
 function refundMethodsLabel(r: OrderRefundForDisplay): string {
@@ -136,6 +412,7 @@ interface PaymentDetailsProps {
   recoveryRecords?: OrderRecoveryRecordForDisplay[];
   paymentDetail?: OrderPaymentDetail | null;
   orderItemsPricing?: OrderItemsPricing | null;
+  orderItems?: OrderItemApiRow[];
   onPrefetchOrderItems?: () => void;
 }
 
@@ -175,6 +452,8 @@ interface PaymentDetailsModalProps {
   records: OrderPaymentRecord[];
   orderRefunds?: OrderRefundForDisplay[];
   recoveryRecords?: OrderRecoveryRecordForDisplay[];
+  refundIntentPending?: boolean;
+  orderItemTotals?: Map<number, number>;
   summary: {
     totalAmount: number | null;
     totalCtm: number | null;
@@ -319,6 +598,8 @@ function PaymentDetailsModal({
   records,
   orderRefunds = [],
   recoveryRecords = [],
+  refundIntentPending = false,
+  orderItemTotals = new Map(),
   summary,
 }: PaymentDetailsModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
@@ -650,7 +931,6 @@ function PaymentDetailsModal({
                             : outcome === 'failed'
                               ? 'bg-red-100 text-red-800'
                               : 'bg-amber-100 text-amber-900';
-                        const itemLines = refundItemLines(r);
                         return (
                           <tr key={r.id} className="hover:bg-gray-50 transition-colors">
                             <td className={TD}>
@@ -658,26 +938,7 @@ function PaymentDetailsModal({
                             </td>
                             <td className={TD}>{formatPlain(r.refundReason)}</td>
                             <td className={`${TD} max-w-[220px]`}>
-                              {itemLines.length === 0 ? (
-                                <span className="text-slate-400">—</span>
-                              ) : (
-                                <ul className="space-y-0.5">
-                                  {itemLines.map((line) => (
-                                    <li key={`${r.id}-${line.id}`} className="text-[10px] leading-snug text-slate-700">
-                                      <span className="font-medium text-slate-800">{line.name}</span>
-                                      {line.refundPercentage != null ? (
-                                        <span className="text-slate-500"> · {line.refundPercentage}%</span>
-                                      ) : null}
-                                      {line.amount != null ? (
-                                        <span className="tabular-nums text-red-700">
-                                          {" "}
-                                          · {formatInrWithGap(line.amount)}
-                                        </span>
-                                      ) : null}
-                                    </li>
-                                  ))}
-                                </ul>
-                              )}
+                              <RefundItemsCell r={r} orderItemTotals={orderItemTotals} />
                             </td>
                             <td className={`${TD} tabular-nums font-semibold text-red-700`}>
                               {Number.isFinite(amt) ? `-${formatInrWithGap(amt)}` : '—'}
@@ -711,7 +972,17 @@ function PaymentDetailsModal({
               </>
             ) : (
               <div className="py-10 text-center text-sm text-gray-500 rounded-lg border border-dashed border-gray-200">
-                No refund records for this order.
+                {refundIntentPending ? (
+                  <>
+                    Refund was marked on cancellation but no refund ledger row exists yet.
+                    <br />
+                    <span className="text-[11px] text-amber-800">
+                      Refresh this order page — the system will retry moving money to the customer.
+                    </span>
+                  </>
+                ) : (
+                  "No refund records for this order."
+                )}
               </div>
             )}
           </div>
@@ -835,9 +1106,14 @@ export default function PaymentDetails({
   recoveryRecords = [],
   paymentDetail = null,
   orderItemsPricing = null,
+  orderItems = [],
   onPrefetchOrderItems,
 }: PaymentDetailsProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const orderItemTotals = useMemo(
+    () => orderItemMenuTotalsById(orderItems),
+    [orderItems]
+  );
 
   useEffect(() => {
     onPrefetchOrderItems?.();
@@ -849,6 +1125,13 @@ export default function PaymentDetails({
   const hasFailedRefundOnly =
     !hasRefundRecords && orderRefunds.some(isRefundFailed);
   const totalRefundFromRefunds = settledRefundTotal(orderRefunds);
+  const refundIntentPending =
+    !hasRefundRecords &&
+    !hasFailedRefundOnly &&
+    ((paymentDetail?.refundAmount != null && paymentDetail.refundAmount > 0) ||
+      String(order.paymentStatus ?? "")
+        .toLowerCase()
+        .includes("refund"));
 
   const resolved = useMemo(() => {
     const customerFromItems = orderItemsPricing?.customer?.totalOrderAmount;
@@ -920,10 +1203,7 @@ export default function PaymentDetails({
     };
 
     if (paymentDetail) {
-      const isRefunded =
-        hasRefundRecords ||
-        paymentDetail.records.some((r) => r.refunded) ||
-        (paymentDetail.refundAmount != null && paymentDetail.refundAmount > 0);
+      const isRefunded = hasRefundRecords;
       const totalCtc =
         paymentDetail.totalAmount ??
         (customerFromItems != null && customerFromItems > 0 ? customerFromItems : null);
@@ -1030,10 +1310,7 @@ export default function PaymentDetails({
     }
 
     const paymentStatus = order.paymentStatus ?? '—';
-    const isRefunded =
-      hasRefundRecords ||
-      paymentStatus.toLowerCase().includes('refund') ||
-      order.orderType.toLowerCase() === 'refund';
+    const isRefunded = hasRefundRecords;
     const totalCtc =
       (order.grandTotal as number | null | undefined) ??
       (order.totalAmount as number | null | undefined) ??
@@ -1120,6 +1397,14 @@ export default function PaymentDetails({
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-purple-50 text-purple-700 border border-purple-100">
               <i className="bi bi-check-circle-fill text-[12px]" />
               Refunded
+            </span>
+          ) : refundIntentPending ? (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-800 border border-amber-100"
+              title="Cancellation recorded a refund, but no refund ledger row has settled yet. Open Payment Details → Refund Records or refresh the page."
+            >
+              <i className="bi bi-hourglass-split text-[12px]" />
+              Refund pending
             </span>
           ) : hasFailedRefundOnly ? (
             <span
@@ -1289,6 +1574,8 @@ export default function PaymentDetails({
         records={resolved.records}
         orderRefunds={orderRefunds}
         recoveryRecords={recoveryRecords}
+        refundIntentPending={refundIntentPending}
+        orderItemTotals={orderItemTotals}
         summary={{
           totalAmount: resolved.totalAmount,
           totalCtm: resolved.totalCtm,

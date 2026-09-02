@@ -67,6 +67,54 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ received: true }, { status: 200 });
   }
 
+  async function captureOnboardingByOrderId(orderId: string, paymentId: string) {
+    const db = getSupabaseAdmin();
+    const { data: onboardingRow } = await db
+      .from("merchant_onboarding_payments")
+      .select("id, merchant_parent_id, merchant_store_id")
+      .eq("razorpay_order_id", orderId)
+      .maybeSingle();
+
+    if (!onboardingRow) return false;
+
+    let storeIdToUpdate = onboardingRow.merchant_store_id;
+    if (!storeIdToUpdate) {
+      const { data: latestStore } = await db
+        .from("merchant_stores")
+        .select("id")
+        .eq("parent_id", onboardingRow.merchant_parent_id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      storeIdToUpdate = latestStore?.id ?? null;
+    }
+    await db
+      .from("merchant_onboarding_payments")
+      .update({
+        razorpay_payment_id: paymentId,
+        status: "captured",
+        razorpay_status: "captured",
+        captured_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        merchant_store_id: storeIdToUpdate,
+      })
+      .eq("razorpay_order_id", orderId);
+    return true;
+  }
+
+  if (event === "qr_code.credited") {
+    const qrEntity = (payload as { payload?: { qr_code?: { entity?: { notes?: Record<string, string> } }; payment?: { entity?: { id?: string } } } })
+      .payload?.qr_code?.entity;
+    const paymentEntity = (payload as { payload?: { payment?: { entity?: { id?: string } } } }).payload
+      ?.payment?.entity;
+    const orderId = qrEntity?.notes?.razorpay_order_id?.trim();
+    const paymentId = paymentEntity?.id;
+    if (orderId && paymentId) {
+      await captureOnboardingByOrderId(orderId, paymentId);
+    }
+    return NextResponse.json({ received: true }, { status: 200 });
+  }
+
   if (event === "payment.captured") {
     const payment = payload.payload?.payment?.entity;
     if (!payment?.order_id || !payment?.id) {
@@ -76,40 +124,10 @@ export async function POST(request: NextRequest) {
     const paymentId = payment.id;
     const db = getSupabaseAdmin();
 
-    // 1) Onboarding: update merchant_onboarding_payments
-    const { data: onboardingRow } = await db
-      .from("merchant_onboarding_payments")
-      .select("id, merchant_parent_id, merchant_store_id")
-      .eq("razorpay_order_id", orderId)
-      .maybeSingle();
-
-    if (onboardingRow) {
-      let storeIdToUpdate = onboardingRow.merchant_store_id;
-      if (!storeIdToUpdate) {
-        const { data: latestStore } = await db
-          .from("merchant_stores")
-          .select("id")
-          .eq("parent_id", onboardingRow.merchant_parent_id)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        storeIdToUpdate = latestStore?.id ?? null;
-      }
-      await db
-        .from("merchant_onboarding_payments")
-        .update({
-          razorpay_payment_id: paymentId,
-          status: "captured",
-          razorpay_status: "captured",
-          captured_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          merchant_store_id: storeIdToUpdate,
-        })
-        .eq("razorpay_order_id", orderId);
-    }
+    const onboardingCaptured = await captureOnboardingByOrderId(orderId, paymentId);
 
     // 2) Subscription: order was created by create-payment-order with notes; fetch order to get store_id, plan_id
-    if (!onboardingRow && razorpayKeyId && razorpayKeySecret) {
+    if (!onboardingCaptured && razorpayKeyId && razorpayKeySecret) {
       const orderRes = await fetch(`https://api.razorpay.com/v1/orders/${orderId}`, {
         headers: { Authorization: getRazorpayAuthHeader() },
       });

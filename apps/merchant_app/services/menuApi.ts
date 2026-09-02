@@ -692,7 +692,7 @@ function normalizeMenuItemRow(item: MenuItemRow): MenuItemRow {
 
 export async function patchItemOutOfStock(
   storeId: string,
-  itemId: number,
+  itemId: number | string,
   token: string,
   body: { mode: OutOfStockMode; hours?: number; until?: string | Date }
 ): Promise<{ ok: boolean; out_of_stock_manual: boolean; out_of_stock_until: string | null }> {
@@ -701,7 +701,7 @@ export async function patchItemOutOfStock(
   const storeIdStr = String(storeId);
   const tokenStr = String(token);
   const res = await authFetch(
-    `${base}/v1/merchant-menu/items/${itemId}/out-of-stock?storeId=${encodeURIComponent(storeIdStr)}`,
+    `${base}/v1/merchant-menu/items/${encodeURIComponent(String(itemId))}/out-of-stock?storeId=${encodeURIComponent(storeIdStr)}`,
     tokenStr,
     { method: "PATCH", body: bodyJson }
   );

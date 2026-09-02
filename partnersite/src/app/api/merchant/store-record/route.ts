@@ -47,11 +47,6 @@ export async function GET(req: NextRequest) {
 
     const trimmed = storeId.trim();
     let gate = await assertStoreAccess(trimmed);
-    // Brief cookie/session race — one soft retry avoids flaky 401s during Menu load.
-    if (!gate.ok && gate.status === 401) {
-      await new Promise((r) => setTimeout(r, 150));
-      gate = await assertStoreAccess(trimmed);
-    }
     if (!gate.ok) {
       return NextResponse.json({ error: gate.error }, { status: gate.status });
     }

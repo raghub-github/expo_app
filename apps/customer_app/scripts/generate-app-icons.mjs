@@ -3,7 +3,8 @@
  *
  * - icon.png: 1024×1024 full launcher icon (logo on pure black background)
  * - adaptive-icon.png: 1024×1024 transparent foreground (logo only, safe-zone sized)
- * - splash-logo.png: logo-only for login + notification icon (not the launch splash)
+ * - splash-logo.png: logo-only for login (not the launch splash)
+ * - notification-icon.png: white "GatiMitra" wordmark for Android status-bar small icon
  *
  * Logo occupies ~40% of canvas for clear safe-zone padding inside
  * circle / squircle / teardrop launcher masks (avoids edge overlap).
@@ -29,6 +30,8 @@ const LOGO_CANDIDATES = [
 const ICON_OUT = path.join(projectRoot, "assets/icon.png");
 const ADAPTIVE_OUT = path.join(projectRoot, "assets/adaptive-icon.png");
 const SPLASH_LOGO_OUT = path.join(projectRoot, "assets/images/splash-logo.png");
+const NOTIFICATION_ICON_OUT = path.join(projectRoot, "assets/notification-icon.png");
+const NOTIFICATION_CANVAS = 96;
 
 function resolveLogoSource() {
   for (const candidate of LOGO_CANDIDATES) {
@@ -56,6 +59,26 @@ async function buildLogoLayer() {
   const top = Math.round((CANVAS - logoSize) / 2);
 
   return { resized, logoSize, left, top, trimmedMeta: meta, logoSource };
+}
+
+async function generateGatiMitraNotificationIcon() {
+  const c = NOTIFICATION_CANVAS;
+  const svg = `
+<svg width="${c}" height="${c}" viewBox="0 0 ${c} ${c}" xmlns="http://www.w3.org/2000/svg">
+  <text
+    x="50%"
+    y="52%"
+    dominant-baseline="middle"
+    text-anchor="middle"
+    font-family="Arial Black, Helvetica Neue, Helvetica, Arial, sans-serif"
+    font-weight="900"
+    font-size="15"
+    letter-spacing="-0.6"
+    fill="#FFFFFF"
+  >GatiMitra</text>
+</svg>`;
+  fs.mkdirSync(path.dirname(NOTIFICATION_ICON_OUT), { recursive: true });
+  await sharp(Buffer.from(svg)).png().toFile(NOTIFICATION_ICON_OUT);
 }
 
 async function generateIcons() {
@@ -89,6 +112,8 @@ async function generateIcons() {
 
   await sharp(resized).png().toFile(SPLASH_LOGO_OUT);
 
+  await generateGatiMitraNotificationIcon();
+
   console.log(
     JSON.stringify(
       {
@@ -102,6 +127,7 @@ async function generateIcons() {
           path.relative(projectRoot, ICON_OUT),
           path.relative(projectRoot, ADAPTIVE_OUT),
           path.relative(projectRoot, SPLASH_LOGO_OUT),
+          path.relative(projectRoot, NOTIFICATION_ICON_OUT),
         ],
       },
       null,

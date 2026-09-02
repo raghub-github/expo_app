@@ -23,6 +23,7 @@ import {
 } from "@/lib/orders/order-payment-display";
 import type { OrderPaymentDetail, OrderPaymentRecord } from "@/lib/orders/order-payment-types";
 import { resolveCustomerCtcPaidAmount } from "@/lib/orders/customer-ctc";
+import { settledRefundTotal } from "@/lib/orders/refund-status";
 
 export type { OrderPaymentDetail, OrderPaymentRecord } from "@/lib/orders/order-payment-types";
 export {
@@ -654,6 +655,7 @@ export async function fetchOrderPaymentDetail(input: {
     pendingRows,
     paymentEventRows,
     timelineRows,
+    refundLedgerRows,
   ] = await Promise.all([
     safeRows(
       db.execute(sql`
@@ -741,6 +743,18 @@ export async function fetchOrderPaymentDetail(input: {
         AND metadata IS NOT NULL
       ORDER BY occurred_at DESC
       LIMIT 5
+    `)
+    ),
+    safeRows(
+      db.execute(sql`
+      SELECT
+        refund_amount,
+        refund_status,
+        execution_status,
+        customer_wallet_ledger_id,
+        razorpay_refund_id
+      FROM order_refunds
+      WHERE order_id = ${orderCoreId}
     `)
     ),
   ]);
@@ -902,8 +916,34 @@ export async function fetchOrderPaymentDetail(input: {
       : Promise.resolve(null),
   ]);
 
+  const totalRefundedFromLedger = settledRefundTotal(
+    (refundLedgerRows as Array<{
+      refund_amount?: unknown;
+      refund_status?: unknown;
+      execution_status?: unknown;
+      customer_wallet_ledger_id?: unknown;
+      razorpay_refund_id?: unknown;
+    }>).map((r) => ({
+      refundAmount: asNum(r.refund_amount),
+      refundStatus:
+        r.refund_status == null || r.refund_status === ""
+          ? null
+          : String(r.refund_status),
+      executionStatus:
+        r.execution_status == null || r.execution_status === ""
+          ? null
+          : String(r.execution_status),
+      customerWalletLedgerId: asNum(r.customer_wallet_ledger_id),
+      razorpayRefundId:
+        r.razorpay_refund_id == null || r.razorpay_refund_id === ""
+          ? null
+          : String(r.razorpay_refund_id),
+    }))
+  );
   const totalRefunded =
-    asNum(core.total_refunded) ?? null;
+    totalRefundedFromLedger > 0.005
+      ? round2(totalRefundedFromLedger)
+      : asNum(core.total_refunded) ?? null;
   const totalPaid = asNum(core.total_paid) ?? totalAmount;
 
   const paymentStatus =
@@ -930,9 +970,7 @@ export async function fetchOrderPaymentDetail(input: {
 
   gatiCashUsed = gatiCashUsed ?? gatiCashFromBilling(billing);
 
-  const isRefunded =
-    paymentStatus.toLowerCase().includes("refund") ||
-    (totalRefunded != null && totalRefunded > 0);
+  const isRefunded = totalRefundedFromLedger > 0.005;
 
   const cashbackEarned = cashbackFromBilling(billing);
   const discountSummary = {

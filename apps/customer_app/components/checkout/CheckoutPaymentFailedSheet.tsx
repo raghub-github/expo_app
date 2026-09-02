@@ -1,10 +1,14 @@
 import { View, Pressable, StyleSheet, Modal, ActivityIndicator } from "react-native";
+import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { AppText } from "@/components/AppText";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { formatCheckoutSavingsRupees } from "@/lib/checkoutAppliedSavings";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreFonts } from "@/constants/storeTypography";
+import { useCheckoutPaymentFailureStore } from "@/store/checkoutPaymentFailureStore";
+import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
+import { useCartStore } from "@/store/cartStore";
 
 type Props = {
   visible: boolean;
@@ -203,3 +207,40 @@ const overlayStyles = StyleSheet.create({
     textAlign: "center",
   },
 });
+
+/** Root overlay — keep outside CheckoutBottomSheetHost to avoid nested Modals on Android. */
+export function CheckoutPaymentFailureHost() {
+  const router = useRouter();
+  const visible = useCheckoutPaymentFailureStore((s) => s.visible);
+  const amountInr = useCheckoutPaymentFailureStore((s) => s.amountInr);
+  const methodLabel = useCheckoutPaymentFailureStore((s) => s.methodLabel);
+
+  const ensureCheckoutSurface = () => {
+    const cartItems = useCartStore.getState().items.length;
+    if (cartItems > 0) {
+      useCheckoutSheetStore.getState().show();
+    } else {
+      router.replace("/checkout");
+    }
+  };
+
+  return (
+    <CheckoutPaymentFailedSheet
+      visible={visible}
+      amountInr={amountInr}
+      methodLabel={methodLabel}
+      onRetry={() => {
+        ensureCheckoutSurface();
+        useCheckoutPaymentFailureStore.getState().requestRetry();
+      }}
+      onChooseMethod={() => {
+        ensureCheckoutSurface();
+        useCheckoutPaymentFailureStore.getState().requestChooseMethod();
+      }}
+      onLeave={() => {
+        useCheckoutPaymentFailureStore.getState().hide();
+        ensureCheckoutSurface();
+      }}
+    />
+  );
+}

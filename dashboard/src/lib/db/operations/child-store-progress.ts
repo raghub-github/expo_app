@@ -229,7 +229,7 @@ async function syncStep5ToMerchantStores(
     : null;
 
   const hasCash = Object.prototype.hasOwnProperty.call(step5, "accepts_cash");
-  const accepts_cash = hasCash ? (step5 as any).accepts_cash !== false : null;
+  const accepts_cash = hasCash ? !!(step5 as any).accepts_cash : null;
 
   const operatingHoursRaw = (step5 as any).store_hours;
   const hasOperatingHours =

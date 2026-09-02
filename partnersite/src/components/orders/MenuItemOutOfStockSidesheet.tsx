@@ -79,6 +79,7 @@ export function MenuItemOutOfStockSidesheet({
         const res = await fetch('/api/merchant/menu-out-of-stock', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify(body),
         });
         const data = await res.json().catch(() => ({}));

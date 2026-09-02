@@ -63,7 +63,12 @@ function MerchantGridCardInner({
   width = MERCHANT_RAIL_CARD_W,
 }: MerchantGridCardProps) {
   const { foodLocked } = usePreventServicesAtPin();
-  const bannerUri = useMemo(() => resolveMerchantBannerUri(merchant), [merchant]);
+  const bannerUri = useMemo(() => {
+    const resolved = resolveMerchantBannerUri(merchant);
+    if (resolved) return resolved;
+    const raw = merchant.displayImage?.trim() || merchant.banner_url?.trim();
+    return raw || null;
+  }, [merchant]);
   const handlePress = () => {
     if (foodLocked) return;
     onPress();

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { OrderNotFoundState } from "@/components/orders/OrderNotFoundState";
 
 interface OrderDetail {
   id: number;
@@ -92,11 +93,7 @@ export default function FoodOrderDetailClient({ orderId }: { orderId: number }) 
   }
 
   if (!order) {
-    return (
-      <div className="rounded-xl border border-gray-200 bg-white p-6 text-sm text-gray-500 shadow-sm">
-        Order not found.
-      </div>
-    );
+    return <OrderNotFoundState className="min-h-[40vh]" />;
   }
 
   const statusLabel = order.currentStatus ?? order.status;

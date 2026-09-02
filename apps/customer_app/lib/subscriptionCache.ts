@@ -71,7 +71,7 @@ export async function prefetchSubscriptionPlans(queryClient: QueryClient): Promi
     queryClient.prefetchQuery({
       queryKey: CURRENT_SUBSCRIPTION_QUERY_KEY,
       queryFn: fetchCurrentSubscription,
-      staleTime: 60 * 1000,
+      staleTime: 30 * 1000,
       gcTime: SUBSCRIPTION_PLANS_GC_MS,
       retry: 1,
     }),

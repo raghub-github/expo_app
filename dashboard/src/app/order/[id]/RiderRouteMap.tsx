@@ -855,7 +855,10 @@ export default function RiderRouteMap({
 
   const containerRefCallback = useCallback((node: HTMLDivElement | null) => {
     containerRef.current = node;
-    setContainerReady(Boolean(node));
+    const ready = Boolean(node);
+    queueMicrotask(() => {
+      setContainerReady((prev) => (prev === ready ? prev : ready));
+    });
   }, []);
 
   const [error, setError] = useState<string | null>(null);

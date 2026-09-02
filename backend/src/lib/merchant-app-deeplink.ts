@@ -6,6 +6,11 @@ export function merchantAppOrderHref(foodOrderId: string | number | null | undef
   return /^\d+$/.test(id) ? `/order/${id}` : "/(tabs)/orders";
 }
 
+/** Home dashboard — New orders tab (notification tap for CREATED orders). */
+export function merchantAppHomeNewOrdersHref(): string {
+  return "/(tabs)?orderTab=New";
+}
+
 /** Orders-board tab when a push has no numeric food id. */
 export function merchantAppOrdersTabHref(stage?: string | null): string {
   const s = String(stage ?? "")
@@ -28,6 +33,6 @@ export function merchantAppOrdersTabHref(stage?: string | null): string {
   ) {
     return "/(tabs)/orders?tab=picked_up";
   }
-  if (s === "CREATED" || s === "NEW" || s === "PLACED") return "/(tabs)/orders";
+  if (s === "CREATED" || s === "NEW" || s === "PLACED") return merchantAppHomeNewOrdersHref();
   return "/(tabs)/orders?tab=preparing";
 }

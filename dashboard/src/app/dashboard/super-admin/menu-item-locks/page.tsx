@@ -275,17 +275,9 @@ export default function MenuItemLocksPage() {
     items.some((i) => i.isLocked);
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 p-4 sm:p-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Item Lock Management</h1>
-        <p className="mt-1 text-sm text-gray-600">
-          Stores with plan-locked items are listed first. Search by Store ID to view and unlock
-          items for that store.
-        </p>
-      </div>
-
+    <div className="w-full min-w-0 max-w-none space-y-6">
       <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <label className="block text-sm">
             <span className="mb-1 block font-medium text-gray-700">Store</span>
             <input
@@ -377,7 +369,7 @@ export default function MenuItemLocksPage() {
               : `${total} store${total === 1 ? "" : "s"} with locked items · ${totalLockedAllStores} total locked`}
           </div>
           <div className="overflow-x-auto">
-            <table className="min-w-full text-left text-sm">
+            <table className="w-full text-left text-sm">
               <thead className="bg-gray-50 text-xs uppercase text-gray-500">
                 <tr>
                   <th className="px-4 py-3">Store</th>
@@ -439,7 +431,7 @@ export default function MenuItemLocksPage() {
             </span>
           </div>
           <div className="overflow-x-auto">
-            <table className="min-w-full text-left text-sm">
+            <table className="w-full text-left text-sm">
               <thead className="bg-gray-50 text-xs uppercase text-gray-500">
                 <tr>
                   <th className="px-4 py-3">Item</th>

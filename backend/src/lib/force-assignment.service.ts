@@ -39,7 +39,7 @@ const FORCE_KEY = (orderCoreId: number) => `force_assignment:order:${orderCoreId
 const FORCE_RIDER_KEY = (riderId: number) => `force_assignment:rider:${riderId}`;
 /** Keep state after offer expiry so UI can show timeout / history briefly. */
 const STATE_TTL_SEC = 60 * 60;
-const DEFAULT_OFFER_SEC = 90;
+const DEFAULT_OFFER_SEC = 120;
 
 async function withForceLock<T>(orderCoreId: number, ttlMs: number, fn: () => Promise<T>): Promise<T> {
   const result = await withLock(`force_assignment:${orderCoreId}`, ttlMs, fn);

@@ -11,7 +11,7 @@ function clampStoreDeliveryRadiusKm(v: number): number {
 import { useState, useEffect, useRef, useCallback, useMemo, Suspense } from 'react';
 import dynamic from 'next/dynamic';
 import axios from 'axios';
-import { Loader2, Menu, X, HelpCircle, CheckCircle2, Download } from 'lucide-react';
+import { Loader2, Menu, X, HelpCircle, CheckCircle2, Download, Check } from 'lucide-react';
 import NeedHelpBadge from '@/components/NeedHelpBadge';
 import { openMxNeedHelp } from '@/lib/openMxNeedHelp';
 import { createClient } from '@/lib/supabase/client';
@@ -49,6 +49,11 @@ import {
   resolvePartnerMenuImageVerificationTag,
 } from '@/lib/store-verification-menu-rejection-detail-shared';
 import { handleAuthError, isAuthError, refreshAuthIfNeeded } from '@/lib/auth/client-auth-handler';
+import {
+  asRecord,
+  mergeGstFetchedIntoVerifiedDetails,
+  verifiedDetailsForUi,
+} from '@/lib/merchant-doc-auto-verification';
 import CombinedDocumentStoreSetup from './doc';
 import Step3MenuUpload from './Step3MenuUpload';
 import PreviewPage from './preview';
@@ -362,6 +367,219 @@ interface StoreSetupData {
 
 type MenuUploadMode = 'IMAGE' | 'PDF' | 'CSV';
 
+type StoreDocumentsRow = Record<string, unknown>;
+type BankAccountRow = Record<string, unknown>;
+
+/** DB source of truth for auto-verification flags (same data dashboard reads via verification-data). */
+function mergeMerchantStoreDocumentsIntoDocuments(
+  prev: DocumentData,
+  storeDocuments: StoreDocumentsRow | null | undefined,
+  bankAccount?: BankAccountRow | null,
+): DocumentData {
+  let next: DocumentData = { ...prev };
+
+  if (storeDocuments) {
+    next = {
+      ...next,
+      pan_number: (storeDocuments.pan_document_number as string | null) ?? next.pan_number,
+      pan_holder_name: (storeDocuments.pan_holder_name as string | null) ?? next.pan_holder_name,
+      pan_is_verified:
+        Boolean(storeDocuments.pan_is_verified) || Boolean((next as { pan_is_verified?: boolean }).pan_is_verified),
+      pan_verified_at: storeDocuments.pan_verified_at ?? (next as any).pan_verified_at,
+      pan_verification_method:
+        storeDocuments.pan_verification_method ?? (next as any).pan_verification_method,
+      pan_verified_details:
+        verifiedDetailsForUi(
+          Boolean(storeDocuments.pan_is_verified),
+          storeDocuments.pan_document_metadata,
+          storeDocuments.pan_holder_name as string | null,
+          asRecord(storeDocuments.extracted_data_summary).pan,
+        ) ?? (next as any).pan_verified_details,
+      aadhar_number: (storeDocuments.aadhaar_document_number as string | null) ?? next.aadhar_number,
+      aadhar_holder_name: (storeDocuments.aadhaar_holder_name as string | null) ?? next.aadhar_holder_name,
+      aadhaar_is_verified:
+        Boolean(storeDocuments.aadhaar_is_verified) ||
+        Boolean((next as { aadhaar_is_verified?: boolean }).aadhaar_is_verified),
+      aadhaar_verified_at: storeDocuments.aadhaar_verified_at ?? (next as any).aadhaar_verified_at,
+      aadhaar_verification_method:
+        storeDocuments.aadhaar_verification_method ?? (next as any).aadhaar_verification_method,
+      aadhaar_verified_details:
+        verifiedDetailsForUi(
+          Boolean(storeDocuments.aadhaar_is_verified),
+          storeDocuments.aadhaar_document_metadata,
+          storeDocuments.aadhaar_holder_name as string | null,
+          asRecord(storeDocuments.extracted_data_summary).aadhaar,
+        ) ?? (next as any).aadhaar_verified_details,
+      fssai_number: (storeDocuments.fssai_document_number as string | null) ?? next.fssai_number,
+      gst_number: (storeDocuments.gst_document_number as string | null) ?? next.gst_number,
+      gst_legal_business_name:
+        (storeDocuments.gst_legal_business_name as string | null) ?? (next as any).gst_legal_business_name,
+      gst_principal_place_of_business:
+        (storeDocuments.gst_principal_place_of_business as string | null) ??
+        (next as any).gst_principal_place_of_business,
+      gst_effective_registration_date:
+        typeof storeDocuments.gst_effective_registration_date === 'string'
+          ? storeDocuments.gst_effective_registration_date.slice(0, 10)
+          : (next as any).gst_effective_registration_date,
+      gst_is_verified:
+        Boolean(storeDocuments.gst_is_verified) || Boolean((next as { gst_is_verified?: boolean }).gst_is_verified),
+      gst_verified_at: storeDocuments.gst_verified_at ?? (next as any).gst_verified_at,
+      gst_verification_method:
+        storeDocuments.gst_verification_method ?? (next as any).gst_verification_method,
+      gst_verified_details: (() => {
+        const base = verifiedDetailsForUi(
+          Boolean(storeDocuments.gst_is_verified),
+          storeDocuments.gst_document_metadata,
+          null,
+          asRecord(storeDocuments.extracted_data_summary).gstin ??
+            asRecord(storeDocuments.extracted_data_summary).gst,
+        );
+        if (!base) return (next as any).gst_verified_details;
+        return mergeGstFetchedIntoVerifiedDetails(base, {
+          legal_business_name: (storeDocuments.gst_legal_business_name as string | null) ?? null,
+          principal_place_of_business:
+            (storeDocuments.gst_principal_place_of_business as string | null) ?? null,
+          effective_registration_date: (storeDocuments.gst_effective_registration_date as string | null) ?? null,
+        });
+      })(),
+      drug_license_number:
+        (storeDocuments.drug_license_document_number as string | null) ?? next.drug_license_number,
+      pharmacist_registration_number:
+        (storeDocuments.pharmacist_certificate_document_number as string | null) ??
+        next.pharmacist_registration_number,
+      trade_license_number:
+        (storeDocuments.trade_license_document_number as string | null) ?? (next as any).trade_license_number,
+      shop_establishment_number:
+        (storeDocuments.shop_establishment_document_number as string | null) ??
+        (next as any).shop_establishment_number,
+      udyam_number: (storeDocuments.udyam_document_number as string | null) ?? (next as any).udyam_number,
+      fssai_expiry_date:
+        typeof storeDocuments.fssai_expiry_date === 'string'
+          ? storeDocuments.fssai_expiry_date.slice(0, 10)
+          : next.fssai_expiry_date,
+      drug_license_expiry_date:
+        typeof storeDocuments.drug_license_expiry_date === 'string'
+          ? storeDocuments.drug_license_expiry_date.slice(0, 10)
+          : next.drug_license_expiry_date,
+      pharmacist_expiry_date:
+        typeof storeDocuments.pharmacist_certificate_expiry_date === 'string'
+          ? storeDocuments.pharmacist_certificate_expiry_date.slice(0, 10)
+          : next.pharmacist_expiry_date,
+      trade_license_expiry_date:
+        typeof storeDocuments.trade_license_expiry_date === 'string'
+          ? storeDocuments.trade_license_expiry_date.slice(0, 10)
+          : (next as any).trade_license_expiry_date,
+      shop_establishment_expiry_date:
+        typeof storeDocuments.shop_establishment_expiry_date === 'string'
+          ? storeDocuments.shop_establishment_expiry_date.slice(0, 10)
+          : (next as any).shop_establishment_expiry_date,
+      other_document_type: (storeDocuments.other_document_type as string | null) ?? next.other_document_type,
+      other_document_number: (storeDocuments.other_document_number as string | null) ?? next.other_document_number,
+      other_document_name: (storeDocuments.other_document_name as string | null) ?? next.other_document_name,
+      other_document_expiry_date:
+        (storeDocuments.other_expiry_date as string | null) ?? next.other_document_expiry_date,
+      pan_image_url: (storeDocuments.pan_document_url as string | null) ?? (next as any).pan_image_url,
+      aadhar_front_url: (storeDocuments.aadhaar_document_url as string | null) ?? (next as any).aadhar_front_url,
+      aadhar_back_url:
+        (storeDocuments.aadhaar_document_metadata as { back_url?: string } | null)?.back_url ??
+        (next as any).aadhar_back_url,
+      fssai_image_url: (storeDocuments.fssai_document_url as string | null) ?? (next as any).fssai_image_url,
+      gst_image_url: (storeDocuments.gst_document_url as string | null) ?? (next as any).gst_image_url,
+      drug_license_image_url:
+        (storeDocuments.drug_license_document_url as string | null) ?? (next as any).drug_license_image_url,
+      pharmacist_certificate_url:
+        (storeDocuments.pharmacist_certificate_document_url as string | null) ??
+        (next as any).pharmacist_certificate_url,
+      pharmacy_council_registration_url:
+        (storeDocuments.pharmacy_council_registration_document_url as string | null) ??
+        (next as any).pharmacy_council_registration_url,
+      trade_license_document_url:
+        (storeDocuments.trade_license_document_url as string | null) ?? (next as any).trade_license_document_url,
+      shop_establishment_document_url:
+        (storeDocuments.shop_establishment_document_url as string | null) ??
+        (next as any).shop_establishment_document_url,
+      udyam_document_url: (storeDocuments.udyam_document_url as string | null) ?? (next as any).udyam_document_url,
+      other_document_file_url:
+        (storeDocuments.other_document_url as string | null) ?? (next as any).other_document_file_url,
+      pan_rejection_reason: (storeDocuments.pan_rejection_reason as string | null) ?? (next as any).pan_rejection_reason,
+      gst_rejection_reason: (storeDocuments.gst_rejection_reason as string | null) ?? (next as any).gst_rejection_reason,
+      aadhaar_rejection_reason:
+        (storeDocuments.aadhaar_rejection_reason as string | null) ?? (next as any).aadhaar_rejection_reason,
+      fssai_rejection_reason:
+        (storeDocuments.fssai_rejection_reason as string | null) ?? (next as any).fssai_rejection_reason,
+      drug_license_rejection_reason:
+        (storeDocuments.drug_license_rejection_reason as string | null) ??
+        (next as any).drug_license_rejection_reason,
+      pharmacist_certificate_rejection_reason:
+        (storeDocuments.pharmacist_certificate_rejection_reason as string | null) ??
+        (next as any).pharmacist_certificate_rejection_reason,
+      pharmacy_council_registration_rejection_reason:
+        (storeDocuments.pharmacy_council_registration_rejection_reason as string | null) ??
+        (next as any).pharmacy_council_registration_rejection_reason,
+      trade_license_rejection_reason:
+        (storeDocuments.trade_license_rejection_reason as string | null) ??
+        (next as any).trade_license_rejection_reason,
+      shop_establishment_rejection_reason:
+        (storeDocuments.shop_establishment_rejection_reason as string | null) ??
+        (next as any).shop_establishment_rejection_reason,
+      udyam_rejection_reason:
+        (storeDocuments.udyam_rejection_reason as string | null) ?? (next as any).udyam_rejection_reason,
+      other_rejection_reason:
+        (storeDocuments.other_rejection_reason as string | null) ?? (next as any).other_rejection_reason,
+      bank_proof_rejection_reason:
+        (storeDocuments.bank_proof_rejection_reason as string | null) ?? (next as any).bank_proof_rejection_reason,
+    };
+  }
+
+  if (bankAccount) {
+    const bankMeta = asRecord(bankAccount.bank_metadata);
+    const auto = asRecord(bankMeta.auto_verification);
+    const upiAuto = asRecord(bankMeta.upi_auto_verification);
+    const prevBank = (next.bank || {}) as Record<string, unknown>;
+    next = {
+      ...next,
+      bank: {
+        ...prevBank,
+        payout_method: bankAccount.payout_method === 'upi' ? 'upi' : 'bank',
+        account_holder_name:
+          (bankAccount.account_holder_name as string) ?? String(prevBank.account_holder_name ?? ''),
+        account_number:
+          (bankAccount.account_number as string) ?? String(prevBank.account_number ?? ''),
+        ifsc_code: (bankAccount.ifsc_code as string) ?? String(prevBank.ifsc_code ?? ''),
+        bank_name: (bankAccount.bank_name as string) ?? String(prevBank.bank_name ?? ''),
+        branch_name: (bankAccount.branch_name as string | null) ?? String(prevBank.branch_name ?? ''),
+        account_type:
+          (bankAccount.account_type as string | null)?.toLowerCase?.() ||
+          String(prevBank.account_type ?? ''),
+        upi_id: (bankAccount.upi_id as string) ?? String(prevBank.upi_id ?? ''),
+        bank_proof_type:
+          ((bankAccount.bank_proof_type as string | null)?.toLowerCase?.() as
+            | 'passbook'
+            | 'cancelled_cheque'
+            | 'bank_statement'
+            | undefined) ?? (prevBank.bank_proof_type as typeof prevBank.bank_proof_type),
+        bank_proof_file_url:
+          (bankAccount.bank_proof_file_url as string | null) ??
+          (prevBank.bank_proof_file_url as string | undefined),
+        upi_qr_screenshot_url:
+          (bankAccount.upi_qr_screenshot_url as string | null) ??
+          (prevBank.upi_qr_screenshot_url as string | undefined),
+        bank_is_verified:
+          Boolean(Object.keys(asRecord(auto.verified_data)).length > 0) ||
+          (Boolean(bankAccount.is_verified) && Boolean(bankAccount.account_number)) ||
+          Boolean(prevBank.bank_is_verified),
+        upi_verified: Boolean(bankAccount.upi_verified) || Boolean(prevBank.upi_verified),
+        bank_verified_at: bankAccount.verified_at ?? prevBank.bank_verified_at,
+        bank_verification_method: bankAccount.verification_method ?? prevBank.bank_verification_method,
+        bank_verified_details: asRecord(auto.verified_data),
+        upi_verified_details: asRecord(upiAuto.verified_data),
+      },
+    };
+  }
+
+  return next;
+}
+
 const supabase = createClient();
 
 const StoreRegistrationForm = () => {
@@ -377,6 +595,7 @@ const StoreRegistrationForm = () => {
   /** Step 6 (bank) `rejection_reason` from `store_verification_step_rejections` (not always copied to `bank_proof_rejection_reason`). */
   const [verificationBankRejectionReason, setVerificationBankRejectionReason] = useState<string | null>(null);
   const stepRestoredRef = useRef(false); // Track if step has been restored from DB
+  const step4DocsDbEnrichedRef = useRef<string | null>(null);
   const setStep = useCallback(
     (newStep: number | ((prev: number) => number)) => {
       setStepStateOnly((prev) => {
@@ -506,7 +725,7 @@ const StoreRegistrationForm = () => {
     food_categories: [],
     avg_preparation_time_minutes: 30,
     min_order_amount: 0,
-    delivery_radius_km: 5,
+    delivery_radius_km: 8,
     is_pure_veg: false,
     accepts_online_payment: true,
     accepts_cash: false,
@@ -706,13 +925,13 @@ const StoreRegistrationForm = () => {
         ...prev,
         pan_number: saved.step4.pan_number ?? prev.pan_number,
         pan_holder_name: saved.step4.pan_holder_name ?? prev.pan_holder_name,
-        pan_is_verified: s4.pan_is_verified ?? prev.pan_is_verified,
+        pan_is_verified: s4.pan_is_verified === true || prev.pan_is_verified === true,
         pan_verified_at: s4.pan_verified_at ?? prev.pan_verified_at,
         pan_verification_method: s4.pan_verification_method ?? prev.pan_verification_method,
         pan_verified_details: s4.pan_verified_details ?? prev.pan_verified_details,
         aadhar_number: saved.step4.aadhar_number ?? prev.aadhar_number,
         aadhar_holder_name: saved.step4.aadhar_holder_name ?? prev.aadhar_holder_name,
-        aadhaar_is_verified: s4.aadhaar_is_verified ?? prev.aadhaar_is_verified,
+        aadhaar_is_verified: s4.aadhaar_is_verified === true || prev.aadhaar_is_verified === true,
         aadhaar_verified_at: s4.aadhaar_verified_at ?? prev.aadhaar_verified_at,
         aadhaar_verification_method: s4.aadhaar_verification_method ?? prev.aadhaar_verification_method,
         aadhaar_verified_details: s4.aadhaar_verified_details ?? prev.aadhaar_verified_details,
@@ -723,7 +942,7 @@ const StoreRegistrationForm = () => {
           s4.gst_principal_place_of_business ?? (prev as any).gst_principal_place_of_business,
         gst_effective_registration_date:
           s4.gst_effective_registration_date ?? (prev as any).gst_effective_registration_date,
-        gst_is_verified: s4.gst_is_verified ?? prev.gst_is_verified,
+        gst_is_verified: s4.gst_is_verified === true || prev.gst_is_verified === true,
         gst_verified_at: s4.gst_verified_at ?? prev.gst_verified_at,
         gst_verification_method: s4.gst_verification_method ?? prev.gst_verification_method,
         gst_verified_details: s4.gst_verified_details ?? prev.gst_verified_details,
@@ -1331,7 +1550,7 @@ const StoreRegistrationForm = () => {
               is_pure_veg: typeof existingStore.is_pure_veg === 'boolean' ? existingStore.is_pure_veg : prev.is_pure_veg,
               accepts_online_payment: typeof existingStore.accepts_online_payment === 'boolean'
                 ? existingStore.accepts_online_payment : prev.accepts_online_payment,
-              accepts_cash: typeof existingStore.accepts_cash === 'boolean' ? existingStore.accepts_cash : prev.accepts_cash,
+              accepts_cash: prev.accepts_cash,
               banner_preview: existingStore.banner_url ?? prev.banner_preview,
               ...(Array.isArray(existingStore.gallery_images) && existingStore.gallery_images.length > 0
                 ? {
@@ -1349,99 +1568,17 @@ const StoreRegistrationForm = () => {
               .eq('store_id', existingStore.id)
               .maybeSingle();
             
-            if (storeDocuments) {
-              setDocuments((prev) => ({
-                ...prev,
-                pan_number: storeDocuments.pan_document_number ?? prev.pan_number,
-                pan_holder_name: storeDocuments.pan_holder_name ?? prev.pan_holder_name,
-                aadhar_number: storeDocuments.aadhaar_document_number ?? prev.aadhar_number,
-                aadhar_holder_name: storeDocuments.aadhaar_holder_name ?? prev.aadhar_holder_name,
-                fssai_number: storeDocuments.fssai_document_number ?? prev.fssai_number,
-                gst_number: storeDocuments.gst_document_number ?? prev.gst_number,
-                gst_legal_business_name:
-                  storeDocuments.gst_legal_business_name ?? (prev as any).gst_legal_business_name,
-                gst_principal_place_of_business:
-                  storeDocuments.gst_principal_place_of_business ??
-                  (prev as any).gst_principal_place_of_business,
-                gst_effective_registration_date:
-                  typeof storeDocuments.gst_effective_registration_date === "string"
-                    ? storeDocuments.gst_effective_registration_date.slice(0, 10)
-                    : (prev as any).gst_effective_registration_date,
-                drug_license_number: storeDocuments.drug_license_document_number ?? prev.drug_license_number,
-                pharmacist_registration_number: storeDocuments.pharmacist_certificate_document_number ?? prev.pharmacist_registration_number,
-                trade_license_number: storeDocuments.trade_license_document_number ?? (prev as any).trade_license_number,
-                shop_establishment_number: storeDocuments.shop_establishment_document_number ?? (prev as any).shop_establishment_number,
-                udyam_number: storeDocuments.udyam_document_number ?? (prev as any).udyam_number,
-                // Ensure dates are compatible with <input type="date"> (YYYY-MM-DD)
-                fssai_expiry_date: typeof storeDocuments.fssai_expiry_date === 'string' ? storeDocuments.fssai_expiry_date.slice(0, 10) : prev.fssai_expiry_date,
-                drug_license_expiry_date: typeof storeDocuments.drug_license_expiry_date === 'string' ? storeDocuments.drug_license_expiry_date.slice(0, 10) : prev.drug_license_expiry_date,
-                pharmacist_expiry_date: typeof storeDocuments.pharmacist_certificate_expiry_date === 'string' ? storeDocuments.pharmacist_certificate_expiry_date.slice(0, 10) : prev.pharmacist_expiry_date,
-                trade_license_expiry_date: typeof storeDocuments.trade_license_expiry_date === 'string' ? storeDocuments.trade_license_expiry_date.slice(0, 10) : (prev as any).trade_license_expiry_date,
-                shop_establishment_expiry_date: typeof storeDocuments.shop_establishment_expiry_date === 'string' ? storeDocuments.shop_establishment_expiry_date.slice(0, 10) : (prev as any).shop_establishment_expiry_date,
-                other_document_type: storeDocuments.other_document_type ?? prev.other_document_type,
-                other_document_number: storeDocuments.other_document_number ?? prev.other_document_number,
-                other_document_name: storeDocuments.other_document_name ?? prev.other_document_name,
-                other_document_expiry_date: storeDocuments.other_expiry_date ?? prev.other_document_expiry_date,
-                pan_image_url: storeDocuments.pan_document_url ?? (prev as any).pan_image_url,
-                aadhar_front_url: storeDocuments.aadhaar_document_url ?? (prev as any).aadhar_front_url,
-                aadhar_back_url: (storeDocuments.aadhaar_document_metadata as any)?.back_url ?? (prev as any).aadhar_back_url,
-                fssai_image_url: storeDocuments.fssai_document_url ?? (prev as any).fssai_image_url,
-                gst_image_url: storeDocuments.gst_document_url ?? (prev as any).gst_image_url,
-                drug_license_image_url: storeDocuments.drug_license_document_url ?? (prev as any).drug_license_image_url,
-                pharmacist_certificate_url: storeDocuments.pharmacist_certificate_document_url ?? (prev as any).pharmacist_certificate_url,
-                pharmacy_council_registration_url: storeDocuments.pharmacy_council_registration_document_url ?? (prev as any).pharmacy_council_registration_url,
-                trade_license_document_url: storeDocuments.trade_license_document_url ?? (prev as any).trade_license_document_url,
-                shop_establishment_document_url: storeDocuments.shop_establishment_document_url ?? (prev as any).shop_establishment_document_url,
-                udyam_document_url: storeDocuments.udyam_document_url ?? (prev as any).udyam_document_url,
-                other_document_file_url: storeDocuments.other_document_url ?? (prev as any).other_document_file_url,
-                pan_rejection_reason: storeDocuments.pan_rejection_reason ?? (prev as any).pan_rejection_reason,
-                gst_rejection_reason: storeDocuments.gst_rejection_reason ?? (prev as any).gst_rejection_reason,
-                aadhaar_rejection_reason: storeDocuments.aadhaar_rejection_reason ?? (prev as any).aadhaar_rejection_reason,
-                fssai_rejection_reason: storeDocuments.fssai_rejection_reason ?? (prev as any).fssai_rejection_reason,
-                drug_license_rejection_reason: storeDocuments.drug_license_rejection_reason ?? (prev as any).drug_license_rejection_reason,
-                pharmacist_certificate_rejection_reason:
-                  storeDocuments.pharmacist_certificate_rejection_reason ?? (prev as any).pharmacist_certificate_rejection_reason,
-                pharmacy_council_registration_rejection_reason:
-                  storeDocuments.pharmacy_council_registration_rejection_reason ??
-                  (prev as any).pharmacy_council_registration_rejection_reason,
-                trade_license_rejection_reason: storeDocuments.trade_license_rejection_reason ?? (prev as any).trade_license_rejection_reason,
-                shop_establishment_rejection_reason:
-                  storeDocuments.shop_establishment_rejection_reason ?? (prev as any).shop_establishment_rejection_reason,
-                udyam_rejection_reason: storeDocuments.udyam_rejection_reason ?? (prev as any).udyam_rejection_reason,
-                other_rejection_reason: storeDocuments.other_rejection_reason ?? (prev as any).other_rejection_reason,
-                bank_proof_rejection_reason: storeDocuments.bank_proof_rejection_reason ?? (prev as any).bank_proof_rejection_reason,
-              }));
-              
-              // Load bank account data
-              const { data: bankAccount } = await supabase
-                .from('merchant_store_bank_accounts')
-                .select('*')
-                .eq('store_id', existingStore.id)
-                .eq('is_active', true)
-                .maybeSingle();
-              
-              if (bankAccount) {
-                setDocuments((prev) => ({
-                  ...prev,
-                  bank: {
-                    payout_method: bankAccount.payout_method === 'upi' ? 'upi' : 'bank',
-                    account_holder_name: bankAccount.account_holder_name ?? '',
-                    account_number: bankAccount.account_number ?? '',
-                    ifsc_code: bankAccount.ifsc_code ?? '',
-                    bank_name: bankAccount.bank_name ?? '',
-                    branch_name: bankAccount.branch_name ?? '',
-                    account_type: (bankAccount.account_type as string | null)?.toLowerCase?.() || '',
-                    upi_id: bankAccount.upi_id ?? '',
-                    bank_proof_type: (bankAccount.bank_proof_type as string | null)?.toLowerCase?.() as
-                      | 'passbook'
-                      | 'cancelled_cheque'
-                      | 'bank_statement'
-                      | undefined,
-                    bank_proof_file_url: bankAccount.bank_proof_file_url ?? undefined,
-                    upi_qr_screenshot_url: bankAccount.upi_qr_screenshot_url ?? undefined,
-                  },
-                }));
-              }
+            const { data: bankAccount } = await supabase
+              .from('merchant_store_bank_accounts')
+              .select('*')
+              .eq('store_id', existingStore.id)
+              .eq('is_active', true)
+              .maybeSingle();
+
+            if (storeDocuments || bankAccount) {
+              setDocuments((prev) =>
+                mergeMerchantStoreDocumentsIntoDocuments(prev, storeDocuments, bankAccount),
+              );
             }
             
             // Load Step 5 operating hours
@@ -1652,6 +1789,103 @@ const StoreRegistrationForm = () => {
     });
     if (storePublicId) syncOnboardingUrl(storePublicId);
   }, [step, progressHydrated, parentIdParam, currentStoreId, draftStorePublicId]);
+
+  // Mirror dashboard: enrich step4 verification from DB via server APIs (not browser Supabase — RLS can hide flags).
+  useEffect(() => {
+    const storePublicId = (selectedStorePublicId || currentStoreId || draftStorePublicId || '').trim();
+    if (!progressHydrated || !storePublicId) return;
+    const enrichKey = `${storePublicId}:${draftStoreDbId ?? ''}`;
+    if (step4DocsDbEnrichedRef.current === enrichKey) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const [docsRes, progressResult] = await Promise.all([
+          fetch(`/api/merchant/store-documents?storeId=${encodeURIComponent(storePublicId)}`, {
+            credentials: 'include',
+            cache: 'no-store',
+          }),
+          fetchRegisterStoreProgress(
+            `/api/auth/register-store-progress?storePublicId=${encodeURIComponent(storePublicId)}`,
+          ),
+        ]);
+        if (cancelled) return;
+
+        const docsJson = (await docsRes.json().catch(() => ({}))) as {
+          documents?: StoreDocumentsRow | null;
+        };
+        const storeDocuments =
+          docsRes.ok && docsJson?.documents && typeof docsJson.documents === 'object'
+            ? docsJson.documents
+            : null;
+
+        const step4 = progressResult.payload?.progress?.form_data?.step4 as
+          | Record<string, unknown>
+          | undefined;
+        const progressBank =
+          step4?.bank && typeof step4.bank === 'object'
+            ? (step4.bank as Record<string, unknown>)
+            : null;
+
+        if (!storeDocuments && !progressBank) return;
+
+        step4DocsDbEnrichedRef.current = enrichKey;
+        setDocuments((prev) => {
+          let next = storeDocuments
+            ? mergeMerchantStoreDocumentsIntoDocuments(prev, storeDocuments, null)
+            : { ...prev };
+
+          if (step4) {
+            next = {
+              ...next,
+              pan_number: (step4.pan_number as string | undefined) ?? next.pan_number,
+              pan_holder_name: (step4.pan_holder_name as string | undefined) ?? next.pan_holder_name,
+              pan_is_verified:
+                step4.pan_is_verified === true ||
+                Boolean((next as { pan_is_verified?: boolean }).pan_is_verified),
+              pan_verified_at: step4.pan_verified_at ?? (next as any).pan_verified_at,
+              pan_verification_method:
+                step4.pan_verification_method ?? (next as any).pan_verification_method,
+              pan_verified_details: step4.pan_verified_details ?? (next as any).pan_verified_details,
+              aadhaar_is_verified:
+                step4.aadhaar_is_verified === true ||
+                Boolean((next as { aadhaar_is_verified?: boolean }).aadhaar_is_verified),
+              aadhaar_verified_details:
+                step4.aadhaar_verified_details ?? (next as any).aadhaar_verified_details,
+              gst_is_verified:
+                step4.gst_is_verified === true ||
+                Boolean((next as { gst_is_verified?: boolean }).gst_is_verified),
+              gst_verified_details: step4.gst_verified_details ?? (next as any).gst_verified_details,
+            };
+          }
+
+          if (progressBank) {
+            next = {
+              ...next,
+              bank: {
+                ...((next.bank || {}) as Record<string, unknown>),
+                ...progressBank,
+              },
+            } as DocumentData;
+          }
+
+          return next;
+        });
+      } catch (e) {
+        console.warn('[register-store] step4 DB document enrich failed:', e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    progressHydrated,
+    draftStoreDbId,
+    selectedStorePublicId,
+    currentStoreId,
+    draftStorePublicId,
+  ]);
 
   useEffect(() => {
     if (step < 6) return;
@@ -3915,7 +4149,7 @@ const StoreRegistrationForm = () => {
       food_categories: [],
       avg_preparation_time_minutes: 30,
       min_order_amount: 0,
-      delivery_radius_km: 5,
+      delivery_radius_km: 8,
       is_pure_veg: false,
       accepts_online_payment: true,
       accepts_cash: false,
@@ -4356,15 +4590,43 @@ const StoreRegistrationForm = () => {
                   aria-current={isCurrent ? 'step' : undefined}
                   aria-disabled={!canGoTo}
                 >
-                  <div
-                    className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-xs sm:text-sm font-bold shrink-0
-                      ${isCurrent ? 'bg-indigo-600 text-white ring-2 ring-indigo-300' : isDone ? 'bg-emerald-500 text-white' : 'bg-slate-200 text-slate-500'}`}
-                  >
-                    {stepNum}
+                  <div className="relative shrink-0">
+                    <div
+                      className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-xs sm:text-sm font-bold
+                        ${
+                          isCurrent
+                            ? 'bg-indigo-600 text-white ring-2 ring-indigo-300'
+                            : isDone
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : 'bg-slate-200 text-slate-600'
+                        }`}
+                    >
+                      {stepNum}
+                    </div>
+                    {(isDone || isCurrent) && (
+                      <span
+                        className={`sm:hidden absolute -bottom-0.5 -right-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border border-white ${
+                          isDone ? 'bg-emerald-500' : 'bg-amber-400'
+                        }`}
+                        aria-hidden
+                      >
+                        <Check className="h-2 w-2 text-white" strokeWidth={4} />
+                      </span>
+                    )}
                   </div>
-                  <span className={`hidden sm:block text-xs font-medium truncate ${isCurrent ? 'text-indigo-800' : isDone ? 'text-slate-700' : 'text-slate-500'}`}>
+                  <span className={`hidden sm:block flex-1 min-w-0 text-xs font-medium truncate ${isCurrent ? 'text-indigo-800' : isDone ? 'text-slate-700' : 'text-slate-500'}`}>
                     {label}
                   </span>
+                  {(isDone || isCurrent) && (
+                    <span
+                      className={`hidden sm:inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full ml-auto ${
+                        isDone ? 'bg-emerald-500' : 'bg-amber-400'
+                      }`}
+                      aria-hidden
+                    >
+                      <Check className="h-2.5 w-2.5 text-white" strokeWidth={3} />
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -4387,7 +4649,7 @@ const StoreRegistrationForm = () => {
         </aside>
 
         {/* Main content area - only this scrolls; margin-left for fixed sidebar */}
-        <main className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden ml-14 sm:ml-52 md:ml-56 lg:ml-60">
+        <main className={`flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden ml-14 sm:ml-52 md:ml-56 lg:ml-60 ${step === 4 ? 'bg-white' : ''}`}>
       {verificationLock && (
         <div
           className="flex-none border-b border-red-200 bg-red-50 px-3 py-3 sm:px-4"
@@ -4562,6 +4824,8 @@ const StoreRegistrationForm = () => {
             ? "overflow-hidden pb-0 pt-0 px-2 sm:px-4 md:px-6 flex flex-col"
             : step === 1
               ? "overflow-hidden flex flex-col pb-20 sm:pb-24 pt-4 sm:pt-5 px-4 sm:px-6 md:px-8 bg-white"
+              : step === 4
+                ? "overflow-y-auto pb-0 pt-0 px-0 bg-white flex flex-col"
               : step >= 7 && step <= 9
                 ? "pb-24 sm:pb-28 overflow-y-auto pt-0 px-2 sm:px-4 md:px-6"
                 : "pb-24 sm:pb-28 overflow-y-auto p-2 sm:p-3 md:px-5"
@@ -5233,13 +5497,13 @@ const StoreRegistrationForm = () => {
                             ...prev,
                             pan_number: saved.step4.pan_number ?? prev.pan_number,
                             pan_holder_name: saved.step4.pan_holder_name ?? prev.pan_holder_name,
-                            pan_is_verified: s4.pan_is_verified ?? prev.pan_is_verified,
+                            pan_is_verified: s4.pan_is_verified === true || prev.pan_is_verified === true,
                             pan_verified_at: s4.pan_verified_at ?? prev.pan_verified_at,
                             pan_verification_method: s4.pan_verification_method ?? prev.pan_verification_method,
                             pan_verified_details: s4.pan_verified_details ?? prev.pan_verified_details,
                             aadhar_number: saved.step4.aadhar_number ?? prev.aadhar_number,
                             aadhar_holder_name: saved.step4.aadhar_holder_name ?? prev.aadhar_holder_name,
-                            aadhaar_is_verified: s4.aadhaar_is_verified ?? prev.aadhaar_is_verified,
+                            aadhaar_is_verified: s4.aadhaar_is_verified === true || prev.aadhaar_is_verified === true,
                             aadhaar_verified_at: s4.aadhaar_verified_at ?? prev.aadhaar_verified_at,
                             aadhaar_verification_method: s4.aadhaar_verification_method ?? prev.aadhaar_verification_method,
                             aadhaar_verified_details: s4.aadhaar_verified_details ?? prev.aadhaar_verified_details,
@@ -5253,7 +5517,7 @@ const StoreRegistrationForm = () => {
                             gst_effective_registration_date:
                               s4.gst_effective_registration_date ??
                               (prev as any).gst_effective_registration_date,
-                            gst_is_verified: s4.gst_is_verified ?? prev.gst_is_verified,
+                            gst_is_verified: s4.gst_is_verified === true || prev.gst_is_verified === true,
                             gst_verified_at: s4.gst_verified_at ?? prev.gst_verified_at,
                             gst_verification_method: s4.gst_verification_method ?? prev.gst_verification_method,
                             gst_verified_details: s4.gst_verified_details ?? prev.gst_verified_details,
@@ -5596,7 +5860,6 @@ const StoreRegistrationForm = () => {
                   disabled={uploadLoading || actionLoading}
                   className="px-4 py-2.5 text-sm border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 font-medium shadow-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2"
                 >
-                  {uploadLoading || actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                   ← Previous
                 </button>
               )}

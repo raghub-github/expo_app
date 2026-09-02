@@ -10,6 +10,7 @@ const path = require("path");
 const {
   withAndroidManifest,
   withDangerousMod,
+  withMainActivity,
   AndroidConfig,
 } = require("@expo/config-plugins");
 
@@ -20,6 +21,8 @@ const DEFAULTS = {
   channelName: "Reconnect after restart",
   notificationId: 91001,
 };
+
+const MAIN_ACTIVITY_HOOK = "BootReconnectHelper.showPendingIfNeeded(this)";
 
 function ensureUsesPermission(androidManifest, name) {
   const manifest = androidManifest.manifest;
@@ -57,44 +60,54 @@ function ensureBootReceiver(androidManifest, packageName) {
   });
 }
 
-function javaSource({ packageName, title, body, channelId, channelName, notificationId }) {
+function helperJavaSource({ packageName, title, body, channelId, channelName, notificationId }) {
   const esc = (s) => String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return `package ${packageName};
 
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Build;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 
-/**
- * Posts a reconnect notification after the device boots so partners/riders
- * reopen the app and resume order alerts.
- */
-public class BootReconnectReceiver extends BroadcastReceiver {
+/** Shared boot-reconnect tray logic (receiver + MainActivity resume). */
+public final class BootReconnectHelper {
+  private static final String PREFS = "gatimitra_boot_reconnect";
+  private static final String PENDING_KEY = "pending";
   private static final String CHANNEL_ID = "${esc(channelId)}";
   private static final String CHANNEL_NAME = "${esc(channelName)}";
   private static final int NOTIFICATION_ID = ${Number(notificationId) || 91001};
   private static final String TITLE = "${esc(title)}";
   private static final String BODY = "${esc(body)}";
 
-  @Override
-  public void onReceive(Context context, Intent intent) {
-    if (intent == null) return;
-    String action = intent.getAction();
-    if (action == null) return;
-    if (!Intent.ACTION_BOOT_COMPLETED.equals(action)
-        && !"android.intent.action.LOCKED_BOOT_COMPLETED".equals(action)
-        && !"android.intent.action.QUICKBOOT_POWERON".equals(action)
-        && !"com.htc.intent.action.QUICKBOOT_POWERON".equals(action)) {
-      return;
-    }
+  private BootReconnectHelper() {}
 
+  public static void markPending(Context context) {
+    prefs(context).edit().putBoolean(PENDING_KEY, true).apply();
+  }
+
+  public static void clearPending(Context context) {
+    prefs(context).edit().remove(PENDING_KEY).apply();
+  }
+
+  public static void showPendingIfNeeded(Context context) {
+    if (!prefs(context).getBoolean(PENDING_KEY, false)) return;
+    if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return;
+    if (showNotification(context)) {
+      clearPending(context);
+    }
+  }
+
+  public static boolean showNotification(Context context) {
     try {
+      if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+        markPending(context);
+        return false;
+      }
       ensureChannel(context);
 
       Intent launch = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
@@ -121,9 +134,14 @@ public class BootReconnectReceiver extends BroadcastReceiver {
           .setContentIntent(contentIntent);
 
       NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, builder.build());
+      return true;
     } catch (Throwable ignored) {
-      // Never crash the boot receiver.
+      return false;
     }
+  }
+
+  private static SharedPreferences prefs(Context context) {
+    return context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
   }
 
   private static void ensureChannel(Context context) {
@@ -152,8 +170,43 @@ public class BootReconnectReceiver extends BroadcastReceiver {
 `;
 }
 
+function receiverJavaSource({ packageName }) {
+  return `package ${packageName};
+
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+
+/** Posts a reconnect notification after the device boots so partners reopen the app. */
+public class BootReconnectReceiver extends BroadcastReceiver {
+  @Override
+  public void onReceive(Context context, Intent intent) {
+    if (intent == null) return;
+    String action = intent.getAction();
+    if (action == null) return;
+    if (!Intent.ACTION_BOOT_COMPLETED.equals(action)
+        && !"android.intent.action.LOCKED_BOOT_COMPLETED".equals(action)
+        && !"android.intent.action.QUICKBOOT_POWERON".equals(action)
+        && !"com.htc.intent.action.QUICKBOOT_POWERON".equals(action)) {
+      return;
+    }
+
+    try {
+      if (!BootReconnectHelper.showNotification(context)) {
+        BootReconnectHelper.markPending(context);
+      }
+    } catch (Throwable ignored) {
+      // Never crash the boot receiver.
+    }
+  }
+}
+`;
+}
+
 function withBootReconnectNotification(config, props = {}) {
   const options = { ...DEFAULTS, ...props };
+  let packageNameForMain =
+    config.android?.package || "com.gatimitra.partner";
 
   config = withAndroidManifest(config, (cfg) => {
     ensureUsesPermission(cfg.modResults, "android.permission.RECEIVE_BOOT_COMPLETED");
@@ -164,7 +217,33 @@ function withBootReconnectNotification(config, props = {}) {
       cfg.modRequest?.projectConfig?.android?.package ||
       config.android?.package;
     if (packageName) {
+      packageNameForMain = packageName;
       ensureBootReceiver(cfg.modResults, packageName);
+    }
+    return cfg;
+  });
+
+  config = withMainActivity(config, (cfg) => {
+    if (cfg.modResults.contents.includes(MAIN_ACTIVITY_HOOK)) {
+      return cfg;
+    }
+    const hook = `
+    // Deferred boot-reconnect tray when POST_NOTIFICATIONS was not granted at boot.
+    try {
+      ${packageNameForMain}.BootReconnectHelper.showPendingIfNeeded(this);
+    } catch (Throwable ignored) {
+    }
+`;
+    if (cfg.modResults.contents.includes("super.onCreate(null);")) {
+      cfg.modResults.contents = cfg.modResults.contents.replace(
+        "super.onCreate(null);",
+        `super.onCreate(null);${hook}`
+      );
+    } else if (cfg.modResults.contents.includes("super.onCreate(savedInstanceState);")) {
+      cfg.modResults.contents = cfg.modResults.contents.replace(
+        "super.onCreate(savedInstanceState);",
+        `super.onCreate(savedInstanceState);${hook}`
+      );
     }
     return cfg;
   });
@@ -185,8 +264,13 @@ function withBootReconnectNotification(config, props = {}) {
       );
       fs.mkdirSync(javaDir, { recursive: true });
       fs.writeFileSync(
+        path.join(javaDir, "BootReconnectHelper.java"),
+        helperJavaSource({ packageName, ...options }),
+        "utf8"
+      );
+      fs.writeFileSync(
         path.join(javaDir, "BootReconnectReceiver.java"),
-        javaSource({ packageName, ...options }),
+        receiverJavaSource({ packageName }),
         "utf8"
       );
       return cfg;

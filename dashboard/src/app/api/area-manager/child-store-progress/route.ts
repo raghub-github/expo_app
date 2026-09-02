@@ -68,36 +68,74 @@ export async function GET(req: NextRequest) {
       step_store: { ...(formData.step_store as object ?? {}), ...stepStore },
     } as Record<string, unknown> & { step1?: Record<string, unknown> };
 
-    // If payment has been successfully captured on Partner Site, automatically
-    // advance onboarding to at least step 8 so AM dashboard reflects it.
+    // Payment captured → mark step 7 complete in form_data only (do NOT advance to step 8).
+    // Agreement step stays locked until merchant_store_agreement_acceptances is signed.
     let effectiveCurrentStep = progress?.current_step ?? 1;
+    let paymentCaptured = false;
+    let agreementSigned = false;
     if (effectiveParentId != null) {
-      // Step 7 → 8: onboarding payment captured
-      if (effectiveCurrentStep < 8) {
+      try {
+        const sql = getSql();
+        const paymentRows = await sql`
+          SELECT id
+          FROM merchant_onboarding_payments
+          WHERE merchant_parent_id = ${effectiveParentId}
+            AND merchant_store_id = ${storeInternalId}
+            AND status = 'captured'
+          ORDER BY created_at DESC
+          LIMIT 1
+        `;
+        const paymentRow = Array.isArray(paymentRows) ? paymentRows[0] : paymentRows;
+        paymentCaptured = Boolean(paymentRow);
+        if (paymentCaptured) {
+          const step7Patch = {
+            step7: {
+              ...((formDataWithStepStore.step7 as Record<string, unknown> | undefined) ?? {}),
+              paymentCaptured: true,
+            },
+          };
+          // Stay on step 7 after payment — do not unlock agreement (step 8) yet.
+          const nextStep = effectiveCurrentStep >= 9 ? effectiveCurrentStep : 7;
+          await upsertChildStoreProgress({
+            parentId: effectiveParentId,
+            storeInternalId,
+            currentStep: nextStep,
+            formDataPatch: step7Patch,
+          });
+          formDataWithStepStore = { ...formDataWithStepStore, ...step7Patch };
+          effectiveCurrentStep = nextStep;
+        }
+      } catch {
+        // If payment table is unavailable, ignore and fall back to existing progress.
+      }
+
+      // Repair: payment-only bump to step 8 without agreement — roll back to step 7.
+      if (paymentCaptured && !agreementSigned && effectiveCurrentStep === 8) {
         try {
           const sql = getSql();
-          const rows = await sql`
+          const agreementProbe = await sql`
             SELECT id
-            FROM merchant_onboarding_payments
-            WHERE merchant_parent_id = ${effectiveParentId}
-              AND merchant_store_id = ${storeInternalId}
-              AND status = 'captured'
-            ORDER BY created_at DESC
+            FROM merchant_store_agreement_acceptances
+            WHERE store_id = ${storeInternalId}
+              AND terms_accepted = true
+              AND contract_read_confirmed = true
+              AND digital_signature_confirmed = true
             LIMIT 1
           `;
-          const row = Array.isArray(rows) ? rows[0] : rows;
-          if (row) {
-            const bumped = Math.max(effectiveCurrentStep, 8);
+          const hasAgreement = Boolean(
+            Array.isArray(agreementProbe) ? agreementProbe[0] : agreementProbe
+          );
+          if (!hasAgreement) {
             await upsertChildStoreProgress({
               parentId: effectiveParentId,
               storeInternalId,
-              currentStep: bumped,
+              currentStep: 7,
               formDataPatch: null,
             });
-            effectiveCurrentStep = bumped;
+            effectiveCurrentStep = 7;
           }
         } catch {
-          // If payment table is unavailable, ignore and fall back to existing progress.
+          /* ignore */
         }
       }
 
@@ -117,6 +155,7 @@ export async function GET(req: NextRequest) {
           `;
           const row = Array.isArray(rows) ? rows[0] : rows;
           if (row) {
+            agreementSigned = true;
             const bumped = Math.max(effectiveCurrentStep, 9);
             await upsertChildStoreProgress({
               parentId: effectiveParentId,
@@ -369,9 +408,11 @@ export async function GET(req: NextRequest) {
             ...existingStep5,
             cuisine_types: cuisineFromDb.length > 0 ? cuisineFromDb : cuisineFromPrev,
             delivery_radius_km:
-              typeof storeRow?.delivery_radius_km === "number"
-                ? storeRow.delivery_radius_km
-                : existingStep5.delivery_radius_km,
+              typeof existingStep5.delivery_radius_km === "number"
+                ? existingStep5.delivery_radius_km
+                : typeof storeRow?.delivery_radius_km === "number"
+                  ? storeRow.delivery_radius_km
+                  : 8,
             avg_preparation_time_minutes:
               typeof storeRow?.avg_preparation_time_minutes === "number"
                 ? storeRow.avg_preparation_time_minutes
@@ -389,9 +430,9 @@ export async function GET(req: NextRequest) {
                 ? storeRow.accepts_online_payment
                 : existingStep5.accepts_online_payment,
             accepts_cash:
-              typeof storeRow?.accepts_cash === "boolean"
-                ? storeRow.accepts_cash
-                : existingStep5.accepts_cash,
+              typeof existingStep5.accepts_cash === "boolean"
+                ? existingStep5.accepts_cash
+                : false,
             banner_url: bannerUrl || existingStep5.banner_url || "",
             banner_preview: bannerUrl || existingStep5.banner_preview || "",
             gallery_image_urls:
@@ -416,10 +457,13 @@ export async function GET(req: NextRequest) {
 
     const res = NextResponse.json({
       success: true,
+      parent_id: effectiveParentId,
       parent_name: parent_name ?? undefined,
       parent_merchant_id: parent_merchant_id ?? undefined,
       progress: {
         current_step: effectiveCurrentStep,
+        payment_captured: paymentCaptured,
+        agreement_signed: agreementSigned,
         form_data: formDataWithStepStore,
       },
     });

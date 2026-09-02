@@ -191,6 +191,30 @@ export function resolveWithdrawalRequestDisplayDescription(
   return "Withdrawal requested — funds held from your wallet.";
 }
 
+/** True for admin manual wallet credit/debit ledger rows. */
+export function isManualWalletAdjustmentLedgerEntry(entry: {
+  category?: string | null;
+  description?: string | null;
+}): boolean {
+  const cat = String(entry.category ?? "").trim().toUpperCase();
+  if (cat === "MANUAL_CREDIT" || cat === "MANUAL_DEBIT") return true;
+  return /^Manual (credit|debit):/i.test(String(entry.description ?? "").trim());
+}
+
+/** Merchant-facing manual credit/debit copy — hide internal request ids. */
+export function resolveManualWalletAdjustmentDisplayDescription(
+  raw: string | null | undefined,
+): string {
+  let desc = String(raw ?? "").trim();
+  if (!desc) return desc;
+  return desc
+    .replace(/\s*\(request\s*(?:#\d+|ID unavailable)\)\s*/gi, "")
+    .replace(/\s*\(request\s*#\d+\)\s*/gi, "")
+    .replace(/\s*\(request ID unavailable\)\s*/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 const WITHDRAWAL_COMPLETED_DESCRIPTION =
   "Funds have been successfully transferred to the registered bank account.";
 
@@ -210,7 +234,13 @@ export function resolveLedgerDisplayDescription(
   entry: MerchantLedgerVisibilityEntry,
 ): string {
   const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
-  const desc = entry.description?.trim() ?? "";
+  const rawDesc = entry.description?.trim() ?? "";
+
+  if (isManualWalletAdjustmentLedgerEntry(entry)) {
+    return resolveManualWalletAdjustmentDisplayDescription(rawDesc);
+  }
+
+  const desc = rawDesc;
 
   if (String(entry.category ?? "").toUpperCase() === "FAILED_WITHDRAWAL_REVERSAL") {
     return resolveWithdrawalReversalDisplayDescription(desc, meta);

@@ -106,7 +106,7 @@ export function RejectFollowUpHost({
         onClose={onDismiss}
         onContinue={(selected) => {
           if (selected.length === 0) {
-            onDismiss();
+            void finalizeAndDismiss(followUp.finalizeReject, onDismiss);
             return;
           }
           setFollowUp({

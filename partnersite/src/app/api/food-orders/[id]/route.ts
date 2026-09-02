@@ -299,6 +299,16 @@ export async function PATCH(
       console.warn('[food-orders PATCH] orders_core sync failed:', coreErr);
     }
 
+    if (newStatus === 'CANCELLED') {
+      const displayReasonEarly = (rejectedReason ?? '').trim() || 'Order cancelled';
+      const cancelledByTypeEarly = actorTypeFromSource(actionSource);
+      await triggerOrderAutoRefund({
+        orderCorePk: existing.order_id as number,
+        reason: displayReasonEarly,
+        actorRole: cancelledByTypeEarly,
+      });
+    }
+
     if (newStatus === 'ACCEPTED') {
       try {
         await appendAcceptanceTimeline(db, {
@@ -400,18 +410,6 @@ export async function PATCH(
       } catch (cancelRowErr) {
         console.warn('[food-orders PATCH] order_cancellation_reasons failed:', cancelRowErr);
       }
-
-      // Actually MOVE the money. recordOrderCancellation above only stamps refund
-      // INTENT, which left the customer at PENDING forever on a merchant reject.
-      // Any non-customer cancel (store / system / rider) refunds in full — they
-      // paid and got nothing; fault only decides who gets debited (rule engine).
-      // Awaited so the refund is attempted before we respond; the helper swallows
-      // its own errors so a refund failure can never fail the cancellation.
-      await triggerOrderAutoRefund({
-        orderCorePk: existing.order_id as number,
-        reason: displayReason,
-        actorRole: cancelledByType,
-      });
     }
 
     if (newStatus === 'RTO') {

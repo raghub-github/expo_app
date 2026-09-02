@@ -4,6 +4,8 @@
 
 import { View, StyleSheet } from "react-native";
 
+import { GatiMitraColors } from "@/constants/gatimitra";
+
 export default function FoodTabScreen() {
   return <View style={styles.wrap} />;
 }
@@ -11,6 +13,6 @@ export default function FoodTabScreen() {
 const styles = StyleSheet.create({
   wrap: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: GatiMitraColors.softBackground,
   },
 });

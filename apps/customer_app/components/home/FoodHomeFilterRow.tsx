@@ -10,12 +10,19 @@ export type FoodHomeFilterRowProps = {
   hasActiveFilters: boolean;
   sortBy: "default" | "rating" | "distance";
   openNow: boolean;
+  nearFast?: boolean;
+  filterHasOffers?: boolean;
+  topBrands?: boolean;
   noPackagingCharges: boolean;
   showMealsUnderPriceChip?: boolean;
   mealsUnderPriceLabel?: string;
   onOpenFilters: () => void;
   onToggleSort: () => void;
   onToggleOpenNow: () => void;
+  onToggleNearFast?: () => void;
+  onToggleOffers?: () => void;
+  onToggleTopBrands?: () => void;
+  onToggleHighlyRated?: () => void;
   onToggleNoPackagingCharges: () => void;
   onMealsUnderPricePress?: () => void;
   /** Sticky overlay — tighter vertical padding. */
@@ -28,12 +35,19 @@ export function FoodHomeFilterRow({
   hasActiveFilters,
   sortBy,
   openNow,
+  nearFast = false,
+  filterHasOffers = false,
+  topBrands = false,
   noPackagingCharges,
   showMealsUnderPriceChip = false,
   mealsUnderPriceLabel = "",
   onOpenFilters,
   onToggleSort,
   onToggleOpenNow,
+  onToggleNearFast,
+  onToggleOffers,
+  onToggleTopBrands,
+  onToggleHighlyRated,
   onToggleNoPackagingCharges,
   onMealsUnderPricePress,
   compact = false,
@@ -54,6 +68,7 @@ export function FoodHomeFilterRow({
             <TouchableOpacity
               style={[styles.chip, hasActiveFilters && styles.chipActive]}
               onPress={onOpenFilters}
+              activeOpacity={0.85}
             >
               <Ionicons
                 name="options-outline"
@@ -65,34 +80,50 @@ export function FoodHomeFilterRow({
               </AppText>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.chip, sortBy === "distance" && styles.chipNearFast]}
-              onPress={onToggleSort}
+              style={[styles.chip, nearFast && styles.chipNearFast]}
+              onPress={onToggleNearFast ?? onToggleSort}
+              activeOpacity={0.85}
             >
               <Ionicons
                 name="flash"
                 size={16}
-                color={sortBy === "distance" ? "#15803D" : "#16A34A"}
+                color={nearFast ? "#15803D" : "#16A34A"}
               />
-              <AppText style={[styles.chipText, sortBy === "distance" && styles.chipTextNearFast]}>
+              <AppText style={[styles.chipText, nearFast && styles.chipTextNearFast]}>
                 Near & Fast
               </AppText>
             </TouchableOpacity>
-            {vertical === "grocery" ? (
+            <TouchableOpacity
+              style={[styles.chip, openNow && styles.chipActive]}
+              onPress={onToggleOpenNow}
+              activeOpacity={0.85}
+            >
+              <Ionicons
+                name="storefront-outline"
+                size={16}
+                color={openNow ? "#fff" : GatiMitraColors.primaryMint}
+              />
+              <AppText style={[styles.chipText, openNow && styles.chipTextActive]}>
+                Open Now
+              </AppText>
+            </TouchableOpacity>
+            {onToggleOffers ? (
               <TouchableOpacity
-                style={[styles.chip, openNow && styles.chipActive]}
-                onPress={onToggleOpenNow}
+                style={[styles.chip, filterHasOffers && styles.chipActive]}
+                onPress={onToggleOffers}
                 activeOpacity={0.85}
               >
                 <Ionicons
-                  name="storefront-outline"
+                  name="sparkles-outline"
                   size={16}
-                  color={openNow ? "#fff" : GatiMitraColors.primaryMint}
+                  color={filterHasOffers ? "#fff" : GatiMitraColors.textPrimaryNew}
                 />
-                <AppText style={[styles.chipText, openNow && styles.chipTextActive]}>
-                  Open now
+                <AppText style={[styles.chipText, filterHasOffers && styles.chipTextActive]}>
+                  Offers
                 </AppText>
               </TouchableOpacity>
-            ) : (
+            ) : null}
+            {vertical === "food" ? (
               <TouchableOpacity
                 style={[styles.chip, noPackagingCharges && styles.chipActive]}
                 onPress={onToggleNoPackagingCharges}
@@ -102,7 +133,39 @@ export function FoodHomeFilterRow({
                   No packaging charges
                 </AppText>
               </TouchableOpacity>
-            )}
+            ) : null}
+            {onToggleHighlyRated ? (
+              <TouchableOpacity
+                style={[styles.chip, sortBy === "rating" && styles.chipActive]}
+                onPress={onToggleHighlyRated}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name="star-outline"
+                  size={16}
+                  color={sortBy === "rating" ? "#fff" : "#F59E0B"}
+                />
+                <AppText style={[styles.chipText, sortBy === "rating" && styles.chipTextActive]}>
+                  Highly rated
+                </AppText>
+              </TouchableOpacity>
+            ) : null}
+            {onToggleTopBrands ? (
+              <TouchableOpacity
+                style={[styles.chip, topBrands && styles.chipActive]}
+                onPress={onToggleTopBrands}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name="pricetag-outline"
+                  size={16}
+                  color={topBrands ? "#fff" : "#6366F1"}
+                />
+                <AppText style={[styles.chipText, topBrands && styles.chipTextActive]}>
+                  Top Brands
+                </AppText>
+              </TouchableOpacity>
+            ) : null}
             {showMealsUnderPriceChip ? (
               <TouchableOpacity
                 style={[styles.chip, styles.chipMeals]}
@@ -165,12 +228,12 @@ export function FoodHomeFilterRow({
 
 const styles = StyleSheet.create({
   wrap: {
-    paddingBottom: 12,
+    paddingBottom: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "rgba(0, 0, 0, 0.06)",
   },
   wrapCompact: {
-    paddingBottom: 8,
+    paddingBottom: 6,
   },
   chipsScroll: {
     flexGrow: 0,

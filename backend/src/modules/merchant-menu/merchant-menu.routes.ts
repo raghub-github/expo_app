@@ -1002,18 +1002,18 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!storeId) return reply.code(400).send({ error: "storeId query required" });
           const access = await getStore(req, reply, storeId);
           if (!access) return;
-          const id = parseInt(req.params.id, 10);
-          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_item_id" });
+          const rawId = String(req.params.id ?? "").trim();
+          if (!rawId) return reply.code(400).send({ error: "invalid_item_id" });
           try {
-            const out = await patchItemOutOfStock(id, access.storeIdNum, req.body as any as { mode: OutOfStockMode; hours?: number; until?: string });
+            const out = await patchItemOutOfStock(rawId, access.storeIdNum, req.body as any as { mode: OutOfStockMode; hours?: number; until?: string });
             if (!out.ok) return reply.code(404).send({ error: "item_not_found" });
             try {
               await logStoreActivity({
                 storeId: access.storeIdNum,
                 section: "menu_item",
                 action: "update",
-                entityId: id,
-                summary: `Merchant updated out-of-stock for item #${id}`,
+                entityId: Number(out.ok ? rawId : 0) || null,
+                summary: `Merchant updated out-of-stock for item ${rawId}`,
                 actorType: "merchant",
                 source: "merchant_app",
               });

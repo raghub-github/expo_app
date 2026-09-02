@@ -330,6 +330,7 @@ export async function startForceAssignmentOnBackend(args: {
         actor_email: args.actorEmail ?? undefined,
         actor_id: args.actorId ?? undefined,
         radius_km: args.radiusKm ?? undefined,
+        offer_seconds: 120,
       }),
       cache: "no-store",
     });

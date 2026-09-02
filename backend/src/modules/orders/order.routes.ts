@@ -47,6 +47,7 @@ import {
   canCustomerAppendCookingRequest,
   resolveMerchantInstructionsList,
 } from "../../lib/merchant-instructions.js";
+import { repliesApiFields } from "../../lib/merchant-review-replies.js";
 import {
   canCustomerUpdateDeliveryInstructions,
   normalizeDeliveryInstructionsList,
@@ -153,6 +154,30 @@ function resolveDeliveryStarFromRatingRow(
   row: { serviceRating?: unknown } | null | undefined
 ): number | null {
   return sanitizeStarRating(row?.serviceRating);
+}
+
+function storeReplyApiFields(
+  row:
+    | {
+        merchantResponse?: string | null;
+        merchantResponses?: unknown;
+        merchantRespondedAt?: Date | string | null;
+      }
+    | null
+    | undefined
+): { storeMerchantReplyText: string | null; storeMerchantRepliedAt: string | null } {
+  if (!row) {
+    return { storeMerchantReplyText: null, storeMerchantRepliedAt: null };
+  }
+  const { replyText, repliedAt } = repliesApiFields(
+    row.merchantResponses,
+    row.merchantResponse,
+    row.merchantRespondedAt
+  );
+  return {
+    storeMerchantReplyText: replyText?.trim() || null,
+    storeMerchantRepliedAt: repliedAt,
+  };
 }
 
 function normalizeReviewTags(input: unknown): string[] {
@@ -341,6 +366,8 @@ const orderDetailResponseSchema = z.object({
   storeRating: z.number().int().min(1).max(5).optional().nullable(),
   deliveryRating: z.number().int().min(1).max(5).optional().nullable(),
   storeReviewText: z.string().optional().nullable(),
+  storeMerchantReplyText: z.string().optional().nullable(),
+  storeMerchantRepliedAt: z.string().optional().nullable(),
   riderReviewText: z.string().optional().nullable(),
   storeReviewTags: z.array(z.string().max(120)).max(20).optional(),
   riderReviewTags: z.array(z.string().max(120)).max(20).optional(),
@@ -418,6 +445,8 @@ const orderSummarySchema = z.object({
   storeRatingSubmitted: z.boolean().optional(),
   storeRating: z.number().int().min(1).max(5).optional().nullable(),
   deliveryRating: z.number().int().min(1).max(5).optional().nullable(),
+  storeMerchantReplyText: z.string().optional().nullable(),
+  storeMerchantRepliedAt: z.string().optional().nullable(),
   paymentStatus: z.string().optional().nullable(),
   paymentMethod: z.string().optional().nullable(),
   checkoutMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
@@ -735,6 +764,9 @@ export async function orderRoutes(app: FastifyInstance) {
         rating: number;
         foodRating: number | null;
         serviceRating: number | null;
+        merchantResponse: string | null;
+        merchantResponses: unknown;
+        merchantRespondedAt: Date | null;
       }> = [];
       if (pageOrderPks.length > 0) {
         try {
@@ -744,6 +776,9 @@ export async function orderRoutes(app: FastifyInstance) {
               rating: merchantStoreRatings.rating,
               foodRating: merchantStoreRatings.foodRating,
               serviceRating: merchantStoreRatings.serviceRating,
+              merchantResponse: merchantStoreRatings.merchantResponse,
+              merchantResponses: merchantStoreRatings.merchantResponses,
+              merchantRespondedAt: merchantStoreRatings.merchantRespondedAt,
             })
             .from(merchantStoreRatings)
             .where(
@@ -1041,6 +1076,7 @@ export async function orderRoutes(app: FastifyInstance) {
             storeRatingSubmitted: resolveStoreStarFromRatingRow(customerRating) != null,
             storeRating: resolveStoreStarFromRatingRow(customerRating),
             deliveryRating: resolveDeliveryStarFromRatingRow(customerRating),
+            ...storeReplyApiFields(customerRating),
             cancellationReason: foodRow?.rejectedReason?.trim() || null,
             cancelledByLabel: foodRow?.cancelledByLabel?.trim() || null,
             refundStatus: refundStatusByCorePk.get(row.id) ?? null,
@@ -1929,6 +1965,9 @@ export async function orderRoutes(app: FastifyInstance) {
           riderReviewText: merchantStoreRatings.riderReviewText,
           storeReviewTags: merchantStoreRatings.storeReviewTags,
           riderReviewTags: merchantStoreRatings.riderReviewTags,
+          merchantResponse: merchantStoreRatings.merchantResponse,
+          merchantResponses: merchantStoreRatings.merchantResponses,
+          merchantRespondedAt: merchantStoreRatings.merchantRespondedAt,
         })
         .from(merchantStoreRatings)
         .where(
@@ -2137,6 +2176,9 @@ export async function orderRoutes(app: FastifyInstance) {
         deliveryOtp: (() => {
           const orderType = String(coreRow.orderType ?? "").toLowerCase();
           const cur = String(coreRow.currentStatus ?? "").toUpperCase();
+          const terminal = ["DELIVERED", "CANCELLED", "PAYMENT_FAILED", "FAILED"].includes(
+            String(appStatus ?? "").toUpperCase()
+          );
           const afterPickup =
             riderPickedUpAtResolved != null ||
             deliveryOtpRadiusNotified ||
@@ -2155,8 +2197,17 @@ export async function orderRoutes(app: FastifyInstance) {
             appStatus === "IN_TRANSIT" ||
             appStatus === "DISPATCHED" ||
             appStatus === "REACHED_CUSTOMER";
-          // Food + parcel: expose delivery OTP once rider has picked up / OTW.
-          if (orderType === "food" || orderType === "parcel") {
+          if (orderType === "food") {
+            const dt = resolveCustomerDeliveryType(
+              coreRow.deliveryType,
+              coreRow.billingSnapshot,
+              coreRow.checkoutMetadata
+            );
+            if (dt === "self_pickup" || terminal) return null;
+            // Delivery food: expose OTP for live tracking (parity with takeaway pickup OTP).
+            return resolvedDeliveryOtp;
+          }
+          if (orderType === "parcel") {
             return afterPickup ? resolvedDeliveryOtp : null;
           }
           return null;
@@ -2238,6 +2289,7 @@ export async function orderRoutes(app: FastifyInstance) {
         storeRating: resolveStoreStarFromRatingRow(existingStoreRating),
         deliveryRating: resolveDeliveryStarFromRatingRow(existingStoreRating),
         storeReviewText: existingStoreRating?.reviewText?.trim() || null,
+        ...storeReplyApiFields(existingStoreRating),
         riderReviewText:
           existingStoreRating?.riderReviewText?.trim() ||
           existingStoreRating?.reviewTitle?.trim() ||

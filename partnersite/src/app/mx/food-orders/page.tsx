@@ -63,6 +63,7 @@ import {
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import {
   PARTNER_MANAGED_STORES_CHANGED,
+  persistPartnerManagedStoreIds,
   readPartnerManagedStoreIds,
 } from '@/lib/partner-selected-store';
 import { fetchStoreById } from '@/lib/database';
@@ -109,7 +110,7 @@ import { RiderPhotoModal } from '@/components/orders/RiderPhotoModal';
 import { RejectOrderSidesheet } from '@/components/orders/RejectOrderSidesheet';
 import { CloseStoreSidesheet } from '@/components/CloseStoreSidesheet';
 import { RejectFollowUpHost, useRejectFollowUp } from '@/components/orders/RejectFollowUpHost';
-import { rejectReasonNeedsFollowUp } from '@/lib/merchantCancellationReasons';
+import { rejectReasonNeedsFollowUp, isNotOperationalTodayReason } from '@/lib/merchantCancellationReasons';
 import { OrderCancellationBanner } from '@/components/orders/OrderCancellationBanner';
 import { OrderOtpSection } from '@/components/orders/OrderOtpSection';
 import { MerchantWeatherBanner } from '@/components/merchant/MerchantWeatherBanner';
@@ -183,6 +184,12 @@ type FoodOrdersSidebarFilterId = (typeof FOOD_ORDERS_SIDEBAR_FILTERS)[number]['i
 /** Zomato-style pills: white active tab, light grey inactive */
 const SIDEBAR_ACTIVE_CLASS = 'bg-white text-gray-900 border-gray-300 shadow-sm';
 const SIDEBAR_INACTIVE_CLASS = 'bg-[#F0F0F0] text-gray-700 border-transparent hover:bg-[#E8E8E8]';
+
+/** Fixed toolbar geometry — prevents CLS when store status / sounds load async. */
+const FO_TOOLBAR_H = 'h-9 min-h-9';
+const FO_TOOLBAR_BTN = `inline-flex ${FO_TOOLBAR_H} shrink-0 items-center justify-center gap-1.5 rounded-lg px-2.5 sm:px-3 text-xs font-semibold whitespace-nowrap transition-colors`;
+const FO_TOOLBAR_INPUT = `w-full ${FO_TOOLBAR_H} rounded-lg border border-gray-200 bg-white text-sm text-gray-900 shadow-sm`;
+const FO_SOUND_SELECT_W = 'w-[10.75rem] sm:w-[12rem]';
 
 function prepDeadlineMs(order: OrdersFoodRow): number {
   const base = order.accepted_at || order.created_at;
@@ -530,17 +537,26 @@ function OrdersPageContent() {
     const syncManaged = async () => {
       const ids = readPartnerManagedStoreIds(storeId);
       const unique = ids.length > 0 ? ids : [storeId];
-      if (cancelled) return;
-      setManagedStoreIds(unique);
+      const verified: string[] = [];
       const internals: number[] = [];
       for (const sid of unique) {
         try {
           const s = await fetchStoreById(sid);
-          if (s?.id != null && Number.isFinite(Number(s.id))) internals.push(Number(s.id));
+          if (s?.id != null && Number.isFinite(Number(s.id))) {
+            verified.push(sid);
+            internals.push(Number(s.id));
+          }
         } catch {
-          /* skip */
+          /* skip stale outlet */
         }
       }
+      const nextManaged =
+        verified.length > 0 ? [...new Set(verified)] : [storeId];
+      if (cancelled) return;
+      if (nextManaged.join(',') !== unique.join(',')) {
+        persistPartnerManagedStoreIds(nextManaged);
+      }
+      setManagedStoreIds(nextManaged);
       if (!cancelled) setManagedInternalIds([...new Set(internals)]);
     };
     void syncManaged();
@@ -765,10 +781,16 @@ function OrdersPageContent() {
       const seen = new Set<number>();
       let anyOk = false;
       let timedOut = false;
+      const staleStoreIds: string[] = [];
       for (const result of batches) {
         if (!result) continue;
-        const { res, data } = result;
+        const { res, data, sid } = result;
         if (!res.ok) {
+          if (res.status === 404 && data?.error === 'Store not found') {
+            staleStoreIds.push(sid);
+            console.warn(`[FoodOrders] skipping unknown outlet ${sid}`);
+            continue;
+          }
           if (res.status === 504 || data?.error === 'timeout') {
             timedOut = true;
             console.warn('[FoodOrders] slow load (timeout) — keeping cached orders if any');
@@ -784,6 +806,14 @@ function OrdersPageContent() {
           if (!Number.isFinite(key) || seen.has(key)) continue;
           seen.add(key);
           merged.push(row);
+        }
+      }
+      if (staleStoreIds.length > 0) {
+        const pruned = ids.filter((id) => !staleStoreIds.includes(id));
+        const nextManaged = pruned.length > 0 ? pruned : storeId ? [storeId] : [];
+        if (nextManaged.length > 0 && nextManaged.join(',') !== ids.join(',')) {
+          persistPartnerManagedStoreIds(nextManaged);
+          setManagedStoreIds(nextManaged);
         }
       }
       if (!anyOk) {
@@ -1874,16 +1904,13 @@ function OrdersPageContent() {
       <MerchantWeatherBanner storeId={storeId || null} />
       <div className="flex h-full min-h-0 overflow-hidden bg-gray-50 relative flex-col">
         <header id="food-orders-header" className="shrink-0 z-20 bg-white">
-          <div className="mx-shell-header !px-3 sm:!px-4 md:!px-4 lg:!px-6">
-            {/* Mobile: 2 rows (Row 1 = Today+Active, Row 2 = Filter + status + sound). Desktop: single row */}
-            <div className="flex w-full min-w-0 flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-0">
-              {/* Row 1 (mobile) / Left (desktop): On mobile Today+Active on right. On desktop title + all stats on left */}
-              <div className="flex items-center justify-end md:justify-start md:flex-1 md:items-center md:gap-3 min-w-0 overflow-x-auto hide-scrollbar">
-                {/* Hamburger menu on left (mobile) */}
-                <div className="md:hidden mr-2">
+          <div className="mx-shell-header !border-b-0 !px-3 !py-2 sm:!px-4 md:!px-4 lg:!px-6">
+            <div className="flex w-full min-w-0 flex-col gap-2 md:flex-row md:items-center md:justify-between md:gap-3">
+              <div className="flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto hide-scrollbar md:justify-start md:gap-3">
+                <div className="mr-1 shrink-0 md:hidden">
                   <MobileHamburgerButton />
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex shrink-0 items-center gap-2">
                   <StatBadge
                     label="Today"
                     value={String(
@@ -1898,92 +1925,124 @@ function OrdersPageContent() {
                     accent
                   />
                 </div>
-                <div className="hidden md:flex items-center gap-2 sm:gap-3 shrink-0 flex-1 min-w-0">
+                <div className="hidden min-w-0 flex-1 items-center gap-2 md:flex lg:gap-3">
                   <StatBadge label="Avg Prep" value={`${displayStats.avgPreparationTimeMinutes}m`} />
                   <StatBadge label="Completion" value={`${displayStats.completionRatePercent}%`} />
-                  <div className="relative ml-1 min-w-0 flex-1 max-w-[280px] lg:max-w-[340px]">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" aria-hidden />
+                  <div className="relative ml-1 min-w-0 max-w-[280px] flex-1 lg:max-w-[340px]">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden />
                     <input
                       type="search"
                       inputMode="numeric"
                       placeholder="Search with order id  ..............."
                       value={orderIdSearch}
                       onChange={(e) => setOrderIdSearch(e.target.value)}
-                      className="w-full pl-9 pr-3 py-1.5 rounded-lg border border-gray-200 bg-white text-sm text-gray-900 placeholder:text-gray-400 shadow-sm"
+                      className={`${FO_TOOLBAR_INPUT} pl-9 pr-3`}
                     />
                   </div>
                 </div>
               </div>
-              <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0">
-              <button
-                onClick={handleStoreToggle}
-                disabled={isStoreOpen === null}
-                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
-                  isStoreOpen === null
-                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                    : isStoreOpen
-                      ? 'bg-green-100 text-green-700 border border-green-200 hover:bg-green-200'
-                      : 'bg-red-100 text-red-700 border border-red-200 hover:bg-red-200'
-                }`}
-                title={isStoreOpen === null ? 'Loading store status...' : isStoreOpen ? 'Click to close store' : 'Click to open store'}
-              >
-                <Store size={14} className="shrink-0" />
-                <span className="hidden min-[400px]:inline">{isStoreOpen === null ? 'Loading...' : isStoreOpen ? 'Store Open' : 'Store Closed'}</span>
-                <span className="min-[400px]:hidden">{isStoreOpen === null ? '...' : isStoreOpen ? 'Open' : 'Closed'}</span>
-              </button>
-              {/* View mode toggle - only visible on large screens (lg+) */}
-              <div className="hidden lg:flex items-center gap-1 border border-gray-200 rounded-lg p-0.5 shrink-0">
-                <button
-                  onClick={() => { setViewMode('card'); persistLocal('viewMode', 'card'); }}
-                  className={`p-1.5 rounded transition-colors ${viewMode === 'card' ? 'bg-orange-100 text-orange-600' : 'text-gray-500 hover:bg-gray-100'}`}
-                  title="Card view"
-                >
-                  <LayoutGrid size={16} />
-                </button>
-                <button
-                  onClick={() => { setViewMode('list'); persistLocal('viewMode', 'list'); }}
-                  className={`p-1.5 rounded transition-colors ${viewMode === 'list' ? 'bg-orange-100 text-orange-600' : 'text-gray-500 hover:bg-gray-100'}`}
-                  title="List view"
-                >
-                  <List size={16} />
-                </button>
-              </div>
-              <button
-                onClick={() => {
-                  const next = !notifyEnabled;
-                  setNotifyEnabled(next);
-                  persistLocal('notifyEnabled', next);
-                }}
-                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${
-                  notifyEnabled ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-600'
-                }`}
-                title={notifyEnabled ? 'Disable new order sound' : 'Enable new order sound'}
-              >
-                {notifyEnabled ? <Bell size={14} /> : <BellOff size={14} />}
-                <span className="hidden sm:inline">{notifyEnabled ? 'Sound On' : 'Sound Off'}</span>
-              </button>
-              {notificationSoundOptions.length > 1 ? (
-                <div className="relative shrink-0">
-                  <select
-                    value={notificationSoundSelectValue}
-                    onChange={(e) => {
-                      const v = Number(e.target.value);
-                      if (!Number.isInteger(v) || v < 0 || v > 2) return;
-                      void patchNotificationSoundSlot(v);
-                    }}
-                    className="appearance-none pl-2 pr-7 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-medium text-gray-800 cursor-pointer max-w-[140px] sm:max-w-[180px] truncate"
-                    aria-label="Notification sound"
-                    title="Choose which uploaded notification sound plays"
+              <div className="flex shrink-0 items-center justify-end gap-1.5 sm:gap-2">
+                {isStoreOpen === null ? (
+                  <div
+                    className={`${FO_TOOLBAR_BTN} min-w-[6.75rem] cursor-wait border border-gray-200 bg-gray-100 sm:min-w-[7.5rem]`}
+                    aria-busy="true"
+                    aria-label="Loading store status"
                   >
-                    {notificationSoundOptions.map(({ slot, label }) => (
-                      <option key={slot} value={slot}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-orange-500 pointer-events-none" aria-hidden />
+                    <Store size={14} className="shrink-0 text-gray-300" />
+                    <span className="hidden min-[400px]:inline text-gray-300">Store…</span>
+                    <span className="min-[400px]:hidden text-gray-300">…</span>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleStoreToggle}
+                    className={`${FO_TOOLBAR_BTN} min-w-[6.75rem] sm:min-w-[7.5rem] ${
+                      isStoreOpen
+                        ? 'border border-green-200 bg-green-100 text-green-700 hover:bg-green-200'
+                        : 'border border-red-200 bg-red-100 text-red-700 hover:bg-red-200'
+                    }`}
+                    title={isStoreOpen ? 'Click to close store' : 'Click to open store'}
+                  >
+                    <Store size={14} className="shrink-0" />
+                    <span className="hidden min-[400px]:inline">{isStoreOpen ? 'Store Open' : 'Store Closed'}</span>
+                    <span className="min-[400px]:hidden">{isStoreOpen ? 'Open' : 'Closed'}</span>
+                  </button>
+                )}
+                <div className={`hidden ${FO_TOOLBAR_H} shrink-0 items-center gap-1 rounded-lg border border-gray-200 p-0.5 lg:flex`}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setViewMode('card');
+                      persistLocal('viewMode', 'card');
+                    }}
+                    className={`flex h-7 w-7 items-center justify-center rounded transition-colors ${viewMode === 'card' ? 'bg-orange-100 text-orange-600' : 'text-gray-500 hover:bg-gray-100'}`}
+                    title="Card view"
+                  >
+                    <LayoutGrid size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setViewMode('list');
+                      persistLocal('viewMode', 'list');
+                    }}
+                    className={`flex h-7 w-7 items-center justify-center rounded transition-colors ${viewMode === 'list' ? 'bg-orange-100 text-orange-600' : 'text-gray-500 hover:bg-gray-100'}`}
+                    title="List view"
+                  >
+                    <List size={16} />
+                  </button>
                 </div>
-              ) : null}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !notifyEnabled;
+                    setNotifyEnabled(next);
+                    persistLocal('notifyEnabled', next);
+                  }}
+                  className={`${FO_TOOLBAR_BTN} min-w-[2.25rem] sm:min-w-[6.5rem] ${
+                    notifyEnabled ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-600'
+                  }`}
+                  title={notifyEnabled ? 'Disable new order sound' : 'Enable new order sound'}
+                >
+                  {notifyEnabled ? <Bell size={14} /> : <BellOff size={14} />}
+                  <span className="hidden sm:inline">{notifyEnabled ? 'Sound On' : 'Sound Off'}</span>
+                </button>
+                <div className={`relative shrink-0 ${FO_SOUND_SELECT_W} ${FO_TOOLBAR_H}`}>
+                  {acceptanceSettings === null ? (
+                    <div
+                      className={`${FO_TOOLBAR_H} w-full animate-pulse rounded-lg border border-gray-200 bg-gray-100`}
+                      aria-hidden
+                    />
+                  ) : notificationSoundOptions.length > 1 ? (
+                    <>
+                      <select
+                        value={notificationSoundSelectValue}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (!Number.isInteger(v) || v < 0 || v > 2) return;
+                          void patchNotificationSoundSlot(v);
+                        }}
+                        className={`${FO_TOOLBAR_H} w-full cursor-pointer appearance-none truncate rounded-lg border border-gray-200 bg-white pl-2 pr-7 text-xs font-medium text-gray-800`}
+                        aria-label="Notification sound"
+                        title="Choose which uploaded notification sound plays"
+                      >
+                        {notificationSoundOptions.map(({ slot, label }) => (
+                          <option key={slot} value={slot}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-orange-500" aria-hidden />
+                    </>
+                  ) : notificationSoundOptions.length === 1 ? (
+                    <div
+                      className={`${FO_TOOLBAR_H} flex w-full items-center truncate rounded-lg border border-gray-200 bg-white px-2 text-xs font-medium text-gray-800`}
+                      title={notificationSoundOptions[0]?.label}
+                    >
+                      {notificationSoundOptions[0]?.label}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
           </div>
@@ -2002,7 +2061,7 @@ function OrdersPageContent() {
                     key={id}
                     type="button"
                     onClick={() => handleFilterChange(id)}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors shrink-0 ${
+                    className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-sm font-semibold transition-colors shrink-0 ${
                       filter === id ? SIDEBAR_ACTIVE_CLASS : SIDEBAR_INACTIVE_CLASS
                     }`}
                   >
@@ -2022,7 +2081,7 @@ function OrdersPageContent() {
                   <select
                     value={orderSort}
                     onChange={(e) => setOrderSort(e.target.value as 'remaining' | 'newest' | 'oldest')}
-                    className="w-full appearance-none pl-3 pr-9 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-gray-800 cursor-pointer"
+                    className={`${FO_TOOLBAR_INPUT} w-full cursor-pointer appearance-none pl-3 pr-9 text-sm font-medium`}
                     aria-label="Sort orders"
                   >
                     <optgroup label="Placed at">
@@ -2033,15 +2092,15 @@ function OrdersPageContent() {
                   </select>
                   <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-orange-500 pointer-events-none" aria-hidden />
                 </div>
-                <div className="relative flex-1 sm:min-w-[220px] lg:min-w-[300px] md:hidden">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" aria-hidden />
+                <div className="relative flex-1 md:hidden sm:min-w-[220px] lg:min-w-[300px]">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden />
                   <input
                     type="search"
                     inputMode="numeric"
                     placeholder="Search with order id  ..............."
                     value={orderIdSearch}
                     onChange={(e) => setOrderIdSearch(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 bg-white text-sm text-gray-900 placeholder:text-gray-400 shadow-sm"
+                    className={`${FO_TOOLBAR_INPUT} pl-9 pr-3`}
                   />
                 </div>
               </div>
@@ -2432,6 +2491,16 @@ function OrdersPageContent() {
           if (rejectReasonNeedsFollowUp(reason)) {
             setRejectModal(null);
             const items = (Array.isArray(snap.items) ? snap.items : []) as NormalizedOrderLineItem[];
+            if (isNotOperationalTodayReason(reason)) {
+              await updateStatus(snap, 'CANCELLED', { rejected_reason: reason });
+              beginFollowUp(reason, {
+                storeId,
+                storeName: store?.store_name ?? storeId,
+                lineItems: items,
+                finalizeReject: async () => {},
+              });
+              return;
+            }
             beginFollowUp(reason, {
               storeId,
               storeName: store?.store_name ?? storeId,
@@ -2747,11 +2816,12 @@ function StatBadge({
   return (
     <div
       title={title}
-      className={`px-3 py-1.5 rounded-lg text-xs font-medium ${
+      className={`inline-flex ${FO_TOOLBAR_H} items-center rounded-lg px-3 text-xs font-medium ${
         accent ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-700'
       }`}
     >
-      <span className="opacity-80">{label}:</span> <span className="font-semibold">{value}</span>
+      <span className="opacity-80">{label}:</span>{' '}
+      <span className="min-w-[1.25rem] text-center font-semibold tabular-nums">{value}</span>
     </div>
   );
 }

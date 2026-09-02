@@ -282,19 +282,39 @@ export async function patchCategoryOutOfStock(
 }
 
 export async function patchItemOutOfStock(
-  itemId: number,
+  rawItemId: string | number,
   storeIdNum: number,
   body: { mode: OutOfStockMode; hours?: unknown; until?: unknown }
 ): Promise<{ ok: boolean; out_of_stock_until: string | null; out_of_stock_manual: boolean }> {
   const sql = getSql();
   await expireTimedMenuOutOfStockForStore(sql, storeIdNum);
-  const [it] = await sql`
+  const idStr = String(rawItemId ?? "").trim();
+  if (!idStr) return { ok: false, out_of_stock_until: null, out_of_stock_manual: false };
+
+  let itemPk: number | null = null;
+  const byItemId = await sql<{ id: number }[]>`
     SELECT id FROM merchant_menu_items
-    WHERE id = ${itemId} AND store_id = ${storeIdNum}
+    WHERE store_id = ${storeIdNum}
+      AND item_id = ${idStr}
       AND (is_deleted IS NULL OR is_deleted = FALSE)
     LIMIT 1
   `;
-  if (!it) return { ok: false, out_of_stock_until: null, out_of_stock_manual: false };
+  if (byItemId[0]?.id != null) itemPk = Number(byItemId[0].id);
+
+  if (itemPk == null) {
+    const pk = Number(rawItemId);
+    if (Number.isFinite(pk) && pk > 0) {
+      const byPk = await sql<{ id: number }[]>`
+        SELECT id FROM merchant_menu_items
+        WHERE id = ${pk} AND store_id = ${storeIdNum}
+          AND (is_deleted IS NULL OR is_deleted = FALSE)
+        LIMIT 1
+      `;
+      if (byPk[0]?.id != null) itemPk = Number(byPk[0].id);
+    }
+  }
+
+  if (itemPk == null) return { ok: false, out_of_stock_until: null, out_of_stock_manual: false };
 
   let patch = resolveOutOfStockUpdate(body);
   if (body.mode === "NEXT_OPEN") {
@@ -315,7 +335,7 @@ export async function patchItemOutOfStock(
       out_of_stock_updated_at = NOW(),
       in_stock = ${!itemNowOos},
       updated_at = NOW()
-    WHERE id = ${itemId} AND store_id = ${storeIdNum}
+    WHERE id = ${itemPk} AND store_id = ${storeIdNum}
       AND (is_deleted IS NULL OR is_deleted = FALSE)
     RETURNING out_of_stock_manual, out_of_stock_until
   `;

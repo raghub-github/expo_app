@@ -26,6 +26,8 @@ const merchantApiProxyTarget = normalizeDevBackendProxyTarget(
 /** Monorepo root — used for standalone tracing and Turbopack (must match per Next.js 16). */
 const monorepoRoot = path.join(__dirname, "..");
 
+const onOneDrive = process.platform === "win32" && __dirname.includes("OneDrive");
+
 type WebpackCompilerKind = "client" | "nodejs" | "edge";
 
 /**
@@ -109,7 +111,6 @@ const nextConfig: NextConfig = {
   // Mapbox is loaded from CDN, no webpack config needed
 
   webpack: (config, { dev, isServer }) => {
-    const onOneDrive = process.platform === "win32" && __dirname.includes("OneDrive");
     if (dev) {
       // OneDrive + concurrent /login + _not-found compiles corrupt memory packs.
       // Disable cache entirely on synced Windows paths; memory cache elsewhere.

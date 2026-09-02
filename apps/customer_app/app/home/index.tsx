@@ -16,8 +16,6 @@ import {
   RefreshControl,
   useWindowDimensions,
   StatusBar as NativeStatusBar,
-  Animated as NativeAnimated,
-  Easing as NativeEasing,
 } from "react-native";
 import { FlashList } from "@shopify/flash-list";
 import { LinearGradient } from "expo-linear-gradient";
@@ -30,13 +28,11 @@ import Animated, {
   runOnJS,
   interpolate,
   Extrapolation,
-  withTiming,
-  cancelAnimation,
-  Easing,
 } from "react-native-reanimated";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { StatusBar } from "expo-status-bar";
 import { useRouter, useFocusEffect, useNavigation } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { foodHomeRouterBack } from "@/lib/safeRouterBack";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
@@ -89,6 +85,7 @@ import {
   FoodHomeHeroCarousel,
   GRID_FIRST_HEADER_OVERLAY_H,
   gridFirstSkySectionHeight,
+  hasGridFirstHeroSlides,
 } from "@/components/home/FoodHomeHeroCarousel";
 import { FoodHomeGoldStrip } from "@/components/home/FoodHomeGoldStrip";
 import { FoodHomeGridFirstHeader } from "@/components/home/FoodHomeGridFirstHeader";
@@ -99,8 +96,10 @@ import {
   GRID_FIRST_FILTER_ROW_H,
   GRID_FIRST_GOLD_STRIP_H,
   GRID_FIRST_STICK_HANDOFF_PX,
+  GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
   gridFirstCategoryBlockHeight,
   gridFirstCategoryStickScrollY,
+  gridFirstDefaultHeaderBlockHeight,
   gridFirstFilterStickScrollY,
   gridFirstSearchStickScrollY,
   type GridFirstStickyMetrics,
@@ -120,7 +119,7 @@ import {
 import { GMHeader } from "@/components/GMHeader";
 import { HEADER_TOP_PADDING_NONE, STATUS_BAR_TO_HEADER_GAP, resolveTopSafeInset, FLOATING_CART_BAR_HEIGHT, FLOATING_CART_UI_LIFT } from "@/constants/layout";
 import { GMSearchBar } from "@/components/GMSearchBar";
-import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
+import { GMRestaurantCardV2, RESTAURANT_CARD_ESTIMATED_SIZE } from "@/components/GMRestaurantCardV2";
 import { GMEmptyState } from "@/components/GMEmptyState";
 import { NON_SERVICEABLE_STATUS_BAR_BG } from "@/store/screenChromeStore";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
@@ -170,7 +169,8 @@ const OFFERS_SECTION_PAD = 10;
 const OFFER_CARD_HEIGHT = 72;
 const OFFER_GAP = 12;
 
-/** Grid-first food home immersive hero — scoped via screenChromeStore on focus. */
+/** Match list body — status bar uses the same surface as the main scroll area. */
+const GRID_FIRST_PAGE_BG = GatiMitraColors.softBackground;
 type SortOption = "default" | "rating" | "distance";
 
 type DeliveryFilter = "any" | "30" | "45" | "60";
@@ -928,6 +928,14 @@ export default function FoodMerchantsScreen() {
     setSortBy((s) => (s === "distance" ? "default" : "distance"));
   }, []);
 
+  const handleGridFirstHighlyRatedToggle = useCallback(() => {
+    setSortBy((s) => {
+      const next = s === "rating" ? "default" : "rating";
+      if (next === "rating") setNearFast(false);
+      return next;
+    });
+  }, []);
+
   const handleClassicSortToggle = useCallback(() => {
     setSortBy((s) => {
       const next = s === "default" ? "rating" : s === "rating" ? "distance" : "default";
@@ -1051,12 +1059,19 @@ export default function FoodMerchantsScreen() {
       hasActiveFilters,
       sortBy,
       openNow,
+      nearFast,
+      filterHasOffers,
+      topBrands,
       noPackagingCharges,
       showMealsUnderPriceChip: showMealsUnderPriceChip,
       mealsUnderPriceLabel: gridFirstUnder250FilterLabel,
       onOpenFilters: () => setFilterSheetVisible(true),
       onToggleSort: isGridFirstLayout ? handleGridFirstSortToggle : handleClassicSortToggle,
       onToggleOpenNow: () => setOpenNow((v) => !v),
+      onToggleNearFast: handleNearFastToggle,
+      onToggleOffers: () => setFilterHasOffers((v) => !v),
+      onToggleTopBrands: () => setTopBrands((v) => !v),
+      onToggleHighlyRated: isGridFirstLayout ? handleGridFirstHighlyRatedToggle : undefined,
       onToggleNoPackagingCharges: () => setNoPackagingCharges((v) => !v),
       onMealsUnderPricePress: handleMealsUnderPricePress,
     }),
@@ -1064,6 +1079,9 @@ export default function FoodMerchantsScreen() {
       hasActiveFilters,
       sortBy,
       openNow,
+      nearFast,
+      filterHasOffers,
+      topBrands,
       noPackagingCharges,
       showMealsUnderPriceChip,
       gridFirstUnder250FilterLabel,
@@ -1071,6 +1089,8 @@ export default function FoodMerchantsScreen() {
       isGridFirstLayout,
       handleGridFirstSortToggle,
       handleClassicSortToggle,
+      handleNearFastToggle,
+      handleGridFirstHighlyRatedToggle,
     ]
   );
 
@@ -1095,21 +1115,56 @@ export default function FoodMerchantsScreen() {
   const isGridFirstLayoutRef = useRef(isGridFirstLayout);
   isGridFirstLayoutRef.current = isGridFirstLayout;
 
-  const syncGridFirstStickyStatusBar = useCallback(
-    (_searchSticky: boolean) => {
+  const gridFirstHeroReadyRef = useRef(false);
+  const gridFirstHeroHasSlidesRef = useRef(false);
+
+  const applyGridFirstStatusBarChrome = useCallback(
+    (searchSticky: boolean) => {
       if (!isGridFirstLayoutRef.current) return;
-      // Keep translucent at top so hero media stays visible under the status bar.
-      setStatusBarBackground("transparent", "dark");
+      const heroImmersive =
+        gridFirstHeroHasSlidesRef.current &&
+        gridFirstHeroReadyRef.current &&
+        !searchSticky;
+      if (heroImmersive) {
+        setStatusBarBackground("transparent", "dark");
+        if (Platform.OS === "android") {
+          NativeStatusBar.setTranslucent(true);
+          NativeStatusBar.setBackgroundColor("transparent", true);
+          NativeStatusBar.setBarStyle("dark-content", true);
+        }
+      } else {
+        setStatusBarBackground(GRID_FIRST_PAGE_BG, "dark");
+        if (Platform.OS === "android") {
+          NativeStatusBar.setTranslucent(true);
+          NativeStatusBar.setBackgroundColor(GRID_FIRST_PAGE_BG, true);
+          NativeStatusBar.setBarStyle("dark-content", true);
+        }
+      }
     },
     [setStatusBarBackground]
   );
+
+  const syncGridFirstStickyStatusBar = useCallback(
+    (searchSticky: boolean) => {
+      applyGridFirstStatusBarChrome(searchSticky);
+    },
+    [applyGridFirstStatusBarChrome]
+  );
   const statusBarTopInset = resolveTopSafeInset(insets.top);
+  const isScreenFocused = useIsFocused();
+  const [listScrolling, setListScrolling] = useState(false);
+  const gridFirstSkyHeightRef = useRef(0);
 
   useLayoutEffect(() => {
     if (!isGridFirstLayout || isNonServiceableScreen) return;
-    useScreenChromeStore.getState().setImmersiveStatusBarChrome(true);
-    useScreenChromeStore.getState().setStatusBarBackground("transparent", "dark");
-  }, [isGridFirstLayout, isNonServiceableScreen]);
+    setImmersiveStatusBarChrome(true);
+    applyGridFirstStatusBarChrome(false);
+  }, [
+    isGridFirstLayout,
+    isNonServiceableScreen,
+    setImmersiveStatusBarChrome,
+    applyGridFirstStatusBarChrome,
+  ]);
 
   useLayoutEffect(() => {
     if (!isDiscoveryLayout || isNonServiceableScreen) return;
@@ -1166,9 +1221,8 @@ export default function FoodMerchantsScreen() {
         return;
       }
       setImmersiveStatusBarChrome(true);
-      setStatusBarBackground("transparent", "dark");
+      applyGridFirstStatusBarChrome(false);
       return () => {
-        setImmersiveStatusBarChrome(false);
         useScreenChromeStore.getState().resetStatusBarBackground();
       };
     }, [
@@ -1176,6 +1230,7 @@ export default function FoodMerchantsScreen() {
       isNonServiceableScreen,
       setImmersiveStatusBarChrome,
       setStatusBarBackground,
+      applyGridFirstStatusBarChrome,
     ])
   );
 
@@ -1218,25 +1273,39 @@ export default function FoodMerchantsScreen() {
     () => gridFirstSkySectionHeight(statusBarTopInset),
     [statusBarTopInset]
   );
+  const gridFirstHeroHasSlides = useMemo(
+    () => hasGridFirstHeroSlides(gridFirstHeroMedia, homeFeaturedOffers),
+    [gridFirstHeroMedia, homeFeaturedOffers]
+  );
   const gridFirstCompactSkyHeight =
     statusBarTopInset + GRID_FIRST_HEADER_OVERLAY_H;
-  const [gridFirstMeasuredSkyHeight, setGridFirstMeasuredSkyHeight] =
-    useState(gridFirstSkyHeightDefault);
+  const gridFirstReservedSkyHeight = gridFirstHeroHasSlides
+    ? gridFirstSkyHeightDefault
+    : gridFirstCompactSkyHeight;
+  const [gridFirstMeasuredSkyHeight, setGridFirstMeasuredSkyHeight] = useState(
+    () => gridFirstReservedSkyHeight
+  );
   const [gridFirstHeroReady, setGridFirstHeroReady] = useState(false);
   /** Once the carousel reports an aspect-based height, don't clobber it with the default. */
   const gridFirstSkyMeasuredFromHeroRef = useRef(false);
-  const gridFirstSkyHeight = gridFirstHeroReady
-    ? gridFirstMeasuredSkyHeight
-    : gridFirstCompactSkyHeight;
-  // Reanimated shared value (UI-thread driven) — react-native core Animated
-  // can't native-drive a `height` change, so this one ran on the JS thread
-  // and competed with list scrolling for frame budget. gridFirstHeroReveal
-  // below stays on the core Animated API since it's already native-driven.
-  const gridFirstSkyAnimatedHeight = useSharedValue(gridFirstCompactSkyHeight);
-  const gridFirstSkyAnimatedStyle = useAnimatedStyle(() => ({
-    height: gridFirstSkyAnimatedHeight.value,
-  }));
-  const gridFirstHeroReveal = useRef(new NativeAnimated.Value(0)).current;
+  const gridFirstSkyHeight =
+    !gridFirstHeroHasSlides || !gridFirstHeroReady
+      ? gridFirstCompactSkyHeight
+      : Math.max(gridFirstReservedSkyHeight, gridFirstMeasuredSkyHeight);
+  gridFirstSkyHeightRef.current = gridFirstSkyHeight;
+  gridFirstHeroReadyRef.current = gridFirstHeroReady;
+  gridFirstHeroHasSlidesRef.current = gridFirstHeroHasSlides;
+
+  useLayoutEffect(() => {
+    if (!isGridFirstLayout || isNonServiceableScreen) return;
+    applyGridFirstStatusBarChrome(false);
+  }, [
+    isGridFirstLayout,
+    isNonServiceableScreen,
+    gridFirstHeroReady,
+    gridFirstHeroHasSlides,
+    applyGridFirstStatusBarChrome,
+  ]);
   const prevSkyDefaultRef = useRef(gridFirstSkyHeightDefault);
 
   // Only adjust for status-bar inset changes — never reset a hero-measured height
@@ -1265,39 +1334,27 @@ export default function FoodMerchantsScreen() {
   }, []);
 
   useEffect(() => {
-    if (gridFirstHeroMedia.length === 0) {
+    if (!gridFirstHeroHasSlides) {
       setGridFirstHeroReady(false);
       gridFirstSkyMeasuredFromHeroRef.current = false;
-    }
-  }, [gridFirstHeroMedia.length]);
-
-  useEffect(() => {
-    cancelAnimation(gridFirstSkyAnimatedHeight);
-    gridFirstHeroReveal.stopAnimation();
-
-    if (!gridFirstHeroReady) {
-      gridFirstSkyAnimatedHeight.value = gridFirstCompactSkyHeight;
-      gridFirstHeroReveal.setValue(0);
+      setGridFirstMeasuredSkyHeight(gridFirstCompactSkyHeight);
       return;
     }
-
-    gridFirstSkyAnimatedHeight.value = withTiming(gridFirstSkyHeight, {
-      duration: 620,
-      easing: Easing.out(Easing.cubic),
-    });
-    NativeAnimated.timing(gridFirstHeroReveal, {
-      toValue: 1,
-      duration: 500,
-      easing: NativeEasing.out(NativeEasing.cubic),
-      useNativeDriver: true,
-    }).start();
+    if (!gridFirstSkyMeasuredFromHeroRef.current) {
+      setGridFirstMeasuredSkyHeight(gridFirstSkyHeightDefault);
+    }
   }, [
-    gridFirstHeroReady,
-    gridFirstSkyHeight,
+    gridFirstHeroHasSlides,
     gridFirstCompactSkyHeight,
-    gridFirstSkyAnimatedHeight,
-    gridFirstHeroReveal,
+    gridFirstSkyHeightDefault,
   ]);
+
+  useEffect(() => {
+    if (!gridFirstHeroHasSlides) return;
+    setGridFirstHeroReady(false);
+    gridFirstSkyMeasuredFromHeroRef.current = false;
+    setGridFirstMeasuredSkyHeight(gridFirstSkyHeightDefault);
+  }, [gridFirstHeroHasSlides, gridFirstHeroMedia.map((m) => m.id).join("|"), gridFirstSkyHeightDefault]);
 
   const [gridFirstGoldStripH, setGridFirstGoldStripH] = useState(() =>
     showGridFirstSubscriptionRow ? GRID_FIRST_GOLD_STRIP_H : 0
@@ -1310,6 +1367,9 @@ export default function FoodMerchantsScreen() {
     y: 0,
     height: GRID_FIRST_FILTER_ROW_H,
   });
+  const [gridFirstHeaderBlockH, setGridFirstHeaderBlockH] = useState(
+    gridFirstDefaultHeaderBlockHeight
+  );
 
   useEffect(() => {
     if (!showGridFirstSubscriptionRow) {
@@ -1336,6 +1396,7 @@ export default function FoodMerchantsScreen() {
     return {
       ...base,
       goldStripHeight,
+      headerBlockHeight: gridFirstHeaderBlockH,
       categoryBlockY:
         gridFirstCategoryLayout.y > 0
           ? gridFirstCategoryLayout.y
@@ -1360,6 +1421,7 @@ export default function FoodMerchantsScreen() {
     showGridFirstSubscriptionRow,
     useGridFirstCategoryTabs,
     classicCategoryRailMinHeight,
+    gridFirstHeaderBlockH,
   ]);
 
   const gridFirstSearchStickAt = useMemo(
@@ -1390,19 +1452,37 @@ export default function FoodMerchantsScreen() {
     gridFirstFilterStickAt,
   ]);
 
+  const gridFirstScrollRafRef = useRef<number | null>(null);
+
   const onGridFirstScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      gridFirstScrollY.value = e.nativeEvent.contentOffset.y;
+      const y = e.nativeEvent.contentOffset.y;
+      if (gridFirstScrollRafRef.current != null) return;
+      gridFirstScrollRafRef.current = requestAnimationFrame(() => {
+        gridFirstScrollRafRef.current = null;
+        gridFirstScrollY.value = y;
+      });
     },
     [gridFirstScrollY]
   );
 
+  useEffect(
+    () => () => {
+      if (gridFirstScrollRafRef.current != null) {
+        cancelAnimationFrame(gridFirstScrollRafRef.current);
+      }
+    },
+    []
+  );
+
   const onFoodHomeListScrollBegin = useCallback(() => {
     markFoodHomeListScrollActive();
+    setListScrolling(true);
   }, []);
 
   const onFoodHomeListScrollEnd = useCallback(() => {
     markFoodHomeListScrollEnded();
+    setListScrolling(false);
   }, []);
 
   // Never leave the global scroll flag stuck after unmount / mid-fling leave.
@@ -1445,15 +1525,14 @@ export default function FoodMerchantsScreen() {
   );
 
   const gridFirstCategoryFlowStyle = useAnimatedStyle(() => {
-    // Hide in-flow category while sticky overlay owns it; reveal again on scroll-up
-    // past stick point so hero + category return to natural document flow.
+    const stickAt = gridFirstCategoryStickAtSv.value;
+    if (stickAt <= GRID_FIRST_STICK_HANDOFF_PX * 2) {
+      return { opacity: 1 };
+    }
     return {
       opacity: interpolate(
         gridFirstScrollY.value,
-        [
-          gridFirstCategoryStickAtSv.value - GRID_FIRST_STICK_HANDOFF_PX,
-          gridFirstCategoryStickAtSv.value + GRID_FIRST_STICK_HANDOFF_PX,
-        ],
+        [stickAt - GRID_FIRST_STICK_HANDOFF_PX, stickAt + GRID_FIRST_STICK_HANDOFF_PX],
         [1, 0],
         Extrapolation.CLAMP
       ),
@@ -1579,7 +1658,9 @@ export default function FoodMerchantsScreen() {
           keyExtractor={restaurantKeyExtractor}
           renderItem={renderRestaurantItem}
           extraData={restaurantListExtraData}
+          estimatedItemSize={RESTAURANT_CARD_ESTIMATED_SIZE}
           drawDistance={480}
+          removeClippedSubviews={Platform.OS === "android"}
           contentInsetAdjustmentBehavior="never"
           overScrollMode="never"
           bounces={!isDiscoveryLayout}
@@ -1598,7 +1679,7 @@ export default function FoodMerchantsScreen() {
           keyboardShouldPersistTaps="handled"
           nestedScrollEnabled
           onScroll={isGridFirstLayout ? onGridFirstScroll : undefined}
-          scrollEventThrottle={isGridFirstLayout ? 16 : undefined}
+          scrollEventThrottle={isGridFirstLayout ? 32 : undefined}
           onScrollBeginDrag={onFoodHomeListScrollBegin}
           onScrollEndDrag={onFoodHomeListScrollEnd}
           onMomentumScrollBegin={onFoodHomeListScrollBegin}
@@ -1616,28 +1697,19 @@ export default function FoodMerchantsScreen() {
             <>
           {isGridFirstLayout ? (
             <View style={styles.gridFirstSkyBlock}>
-              <Animated.View
+              <View
                 style={[
                   styles.gridFirstSkyInner,
-                  !gridFirstHeroReady && styles.gridFirstSkyInnerCompact,
-                  gridFirstSkyAnimatedStyle,
+                  (!gridFirstHeroHasSlides || !gridFirstHeroReady) &&
+                    styles.gridFirstSkyInnerCompact,
+                  { height: gridFirstSkyHeight },
                 ]}
               >
-                <NativeAnimated.View
+                {gridFirstHeroHasSlides ? (
+                <View
                   style={[
                     StyleSheet.absoluteFillObject,
-                    !gridFirstHeroReady && styles.gridFirstHeroLoading,
-                    gridFirstHeroReady && {
-                      opacity: gridFirstHeroReveal,
-                      transform: [
-                        {
-                          translateY: gridFirstHeroReveal.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: [-24, 0],
-                          }),
-                        },
-                      ],
-                    },
+                    { opacity: gridFirstHeroReady ? 1 : 0 },
                   ]}
                   pointerEvents={gridFirstHeroReady ? "auto" : "none"}
                 >
@@ -1647,16 +1719,27 @@ export default function FoodMerchantsScreen() {
                     embeddedInSky
                     immersive
                     topInset={statusBarTopInset}
+                    placeholderColor={GRID_FIRST_PAGE_BG}
+                    shouldPlay={isScreenFocused && !listScrolling}
                     onHeroHeightChange={onGridFirstHeroHeightChange}
                     onHeroReadyChange={onGridFirstHeroReadyChange}
                   />
-                </NativeAnimated.View>
+                </View>
+                ) : null}
                 <View
                   style={[
                     styles.gridFirstHeaderOverlay,
                     { paddingTop: statusBarTopInset + STATUS_BAR_TO_HEADER_GAP },
                   ]}
                   pointerEvents="box-none"
+                  onLayout={(e) => {
+                    const h = e.nativeEvent.layout.height;
+                    if (h > statusBarTopInset + STATUS_BAR_TO_HEADER_GAP) {
+                      setGridFirstHeaderBlockH(
+                        h - statusBarTopInset - STATUS_BAR_TO_HEADER_GAP
+                      );
+                    }
+                  }}
                 >
                   <FoodHomeGridFirstHeader
                     topInset={0}
@@ -1669,10 +1752,10 @@ export default function FoodMerchantsScreen() {
                     stickyScrollY={gridFirstScrollY}
                     searchStickAt={gridFirstSearchStickAtSv}
                     fadeLocationOnSticky
-                    heroReady={gridFirstHeroReady}
+                    heroReady={gridFirstHeroHasSlides && gridFirstHeroReady}
                   />
                 </View>
-                {gridFirstHeroReady ? (
+                {gridFirstHeroHasSlides && gridFirstHeroReady ? (
                   <View style={styles.gridFirstOffersOverlay} pointerEvents="box-none">
                     <FoodOffersRibbonCarousel
                       offers={homeFeaturedOffers}
@@ -1683,17 +1766,7 @@ export default function FoodMerchantsScreen() {
                     />
                   </View>
                 ) : null}
-              </Animated.View>
-              {!gridFirstHeroReady ? (
-                <View style={styles.offersSection}>
-                  <FoodOffersRibbonCarousel
-                    offers={homeFeaturedOffers}
-                    merchantFallbacks={merchants}
-                    cardHeight={promoCardHeight}
-                    showDefaultWhenEmpty={false}
-                  />
-                </View>
-              ) : null}
+              </View>
             </View>
           ) : isDiscoveryLayout && discoveryCtaTiles.length > 0 ? (
             <View style={[styles.discoveryPromoSection, styles.discoveryPromoSlot]}>
@@ -1717,13 +1790,9 @@ export default function FoodMerchantsScreen() {
             </View>
           )}
 
-          {isGridFirstLayout ? (
+          {isGridFirstLayout && showGridFirstSubscriptionRow ? (
             <View
-              style={
-                showGridFirstSubscriptionRow
-                  ? { minHeight: GRID_FIRST_GOLD_STRIP_H }
-                  : undefined
-              }
+              style={{ minHeight: GRID_FIRST_GOLD_STRIP_H }}
               onLayout={(e) => {
                 const h = e.nativeEvent.layout.height;
                 if (h > 0) setGridFirstGoldStripH(h);
@@ -1735,7 +1804,7 @@ export default function FoodMerchantsScreen() {
                 backgroundColor={gridFirstSubscriptionRowBgColor}
               />
             </View>
-          ) : isDiscoveryLayout ? null : (
+          ) : isGridFirstLayout ? null : isDiscoveryLayout ? null : (
             <View style={styles.sectionGap} />
           )}
 
@@ -2200,7 +2269,7 @@ const styles = StyleSheet.create({
   },
   gridFirstSkyBlock: {
     marginBottom: 0,
-    overflow: "visible",
+    overflow: "hidden",
   },
   gridFirstOffersOnHero: {
     zIndex: 3,
@@ -2217,14 +2286,10 @@ const styles = StyleSheet.create({
   gridFirstSkyInner: {
     position: "relative",
     overflow: "hidden",
-    backgroundColor: "#F3E8D4",
+    backgroundColor: "transparent",
   },
   gridFirstSkyInnerCompact: {
-    // Match page bg so pre-hero header + categories read as one surface
     backgroundColor: GatiMitraColors.softBackground,
-  },
-  gridFirstHeroLoading: {
-    opacity: 0,
   },
   gridFirstHeaderOverlay: {
     position: "absolute",
@@ -2318,9 +2383,12 @@ const styles = StyleSheet.create({
     marginBottom: SECTION_GAP_SM,
   },
   categoryTabsSection: {
-    paddingTop: 8,
-    paddingBottom: 10,
+    paddingTop: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
+    paddingBottom: 4,
     marginBottom: 0,
+    marginTop: 0,
+    backgroundColor: GRID_FIRST_PAGE_BG,
+    overflow: "hidden",
   },
   categoryChipsSection: {
     paddingVertical: 8,

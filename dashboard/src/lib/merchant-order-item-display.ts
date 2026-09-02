@@ -274,6 +274,42 @@ export function merchantItemLineParts(item: NormalizedOrderLineItem) {
   };
 }
 
+/** After merchant-base mapping, align catalog/net with mapped line totals (Partner Site parity). */
+export function syncMerchantOrderLineDisplayAmounts(
+  items: NormalizedOrderLineItem[]
+): NormalizedOrderLineItem[] {
+  return items.map((it) => {
+    const qty = Math.max(1, it.quantity || 1);
+    const lineFromTotal = Number(it.total) || 0;
+    const lineFromUnit = menuRupee((Number(it.price) || 0) * qty);
+    const mappedLine = lineFromTotal > 0.005 ? lineFromTotal : lineFromUnit;
+
+    if (it.ctmFromSnapshot) {
+      const gross = Number(it.catalogLineTotal ?? mappedLine) || mappedLine;
+      const net = Number(it.netLineTotal ?? gross) || gross;
+      const promo =
+        it.isItemPromo === true ||
+        (it.offerDiscount != null && it.offerDiscount > 0.005);
+      const display = promo ? net : gross;
+      return {
+        ...it,
+        total: display,
+        price: display / qty,
+        catalogLineTotal: gross,
+        netLineTotal: net,
+      };
+    }
+
+    return {
+      ...it,
+      total: mappedLine,
+      price: mappedLine / qty,
+      catalogLineTotal: mappedLine,
+      netLineTotal: mappedLine,
+    };
+  });
+}
+
 export function merchantBillPartsFromItems(
   items: NormalizedOrderLineItem[],
   pricing: { subtotal: number; packaging: number; discount: number; total: number }

@@ -1917,6 +1917,7 @@ export async function finalizeOrder(
         checkoutMetadata: checkoutMeta,
         razorpayOrderId,
         razorpayPaymentId,
+        sourceOrderId: orderIdText,
       })
     )
     .catch((e) => {
@@ -2571,6 +2572,7 @@ export async function finalizePendingOrderFromWebhook(
             checkoutMetadata: checkoutMeta,
             razorpayOrderId,
             razorpayPaymentId,
+            sourceOrderId: result.orderId ?? undefined,
           });
         } catch (e) {
           console.error("[customer-subscription] webhook post-finalize activation failed:", e);

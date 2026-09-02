@@ -58,4 +58,14 @@ export declare function resolveLedgerRowStatusBadge(entry: {
 }): LedgerRowStatusBadge;
 /** Remarks for the merchant-facing withdrawal request (HOLD_LOCK AVAILABLE debit) row. */
 export declare function resolveWithdrawalRequestDisplayDescription(entry: MerchantLedgerVisibilityEntry): string;
+/** True for admin manual wallet credit/debit ledger rows. */
+export declare function isManualWalletAdjustmentLedgerEntry(entry: {
+    category?: string | null;
+    description?: string | null;
+}): boolean;
+/**
+ * Merchant-facing manual credit/debit copy — hide internal request ids.
+ * e.g. "Manual credit: Cashback (request #12)" → "Manual credit: Cashback"
+ */
+export declare function resolveManualWalletAdjustmentDisplayDescription(raw: string | null | undefined): string;
 //# sourceMappingURL=walletDisplay.d.ts.map

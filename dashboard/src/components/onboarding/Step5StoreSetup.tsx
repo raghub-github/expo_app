@@ -46,7 +46,7 @@ const defaultStoreSetup: StoreSetupData = {
   cuisine_types: [],
   avg_preparation_time_minutes: 30,
   min_order_amount: 0,
-  delivery_radius_km: 5,
+  delivery_radius_km: 8,
   is_pure_veg: false,
   accepts_online_payment: true,
   accepts_cash: false,
@@ -697,7 +697,7 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                   typeof storeSetup.delivery_radius_km === "number" &&
                   !Number.isNaN(storeSetup.delivery_radius_km)
                     ? storeSetup.delivery_radius_km
-                    : 5
+                    : 8
                 }
                 onChange={handleSimpleFieldChange}
                 className="w-full px-3 py-2.5 sm:py-3 text-sm border border-slate-300 rounded-lg sm:rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
@@ -716,8 +716,15 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5">
+          <div
+            className={
+              showCuisineList
+                ? "grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5"
+                : "flex flex-col gap-4 sm:gap-5"
+            }
+          >
             <div className="space-y-4 sm:space-y-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5">
               <div className="border border-slate-200 rounded-lg p-3 sm:p-4 bg-white shadow-sm">
                 <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">
                   Store Banner
@@ -899,6 +906,7 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                 <p className="text-xs text-gray-500 mt-1">
                   Multiple images (JPG, PNG) · Max {MAX_GALLERY_IMAGES}
                 </p>
+              </div>
               </div>
 
               {showCuisineList ? (
@@ -1104,7 +1112,13 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                 </div>
               </div>
 
-              <div className="space-y-2">
+              <div
+                className={
+                  showCuisineList
+                    ? "space-y-2"
+                    : "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2"
+                }
+              >
                 {(
                   [
                     "monday",
@@ -1148,7 +1162,13 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                           <div className="text-xs text-slate-500 mb-0.5">
                             Slot 1
                           </div>
-                          <div className="grid grid-cols-2 gap-1">
+                          <div
+                            className={
+                              showCuisineList
+                                ? "grid grid-cols-2 gap-1"
+                                : "flex items-center gap-1"
+                            }
+                          >
                             <input
                               type="time"
                               value={hours.slot1_open || ""}
@@ -1159,7 +1179,7 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                                   e.target.value
                                 )
                               }
-                              className="w-full px-1.5 py-1 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 bg-white"
+                              className="w-full min-w-0 flex-1 px-1.5 py-1 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 bg-white"
                             />
                             <input
                               type="time"
@@ -1171,7 +1191,7 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                                   e.target.value
                                 )
                               }
-                              className="w-full px-1.5 py-1 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 bg-white"
+                              className="w-full min-w-0 flex-1 px-1.5 py-1 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 bg-white"
                             />
                           </div>
                         </div>
@@ -1202,7 +1222,13 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                               Remove
                             </button>
                           </div>
-                          <div className="grid grid-cols-2 gap-1">
+                          <div
+                            className={
+                              showCuisineList
+                                ? "grid grid-cols-2 gap-1"
+                                : "flex items-center gap-1"
+                            }
+                          >
                             <input
                               type="time"
                               value={hours.slot2_open || ""}
@@ -1213,7 +1239,7 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                                   e.target.value
                                 )
                               }
-                              className="w-full px-1.5 py-1 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 bg-white"
+                              className="w-full min-w-0 flex-1 px-1.5 py-1 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 bg-white"
                             />
                             <input
                               type="time"
@@ -1225,7 +1251,7 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                                   e.target.value
                                 )
                               }
-                              className="w-full px-1.5 py-1 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 bg-white"
+                              className="w-full min-w-0 flex-1 px-1.5 py-1 text-xs border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 bg-white"
                             />
                           </div>
                         </div>

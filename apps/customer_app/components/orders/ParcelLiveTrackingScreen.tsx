@@ -163,8 +163,9 @@ export function ParcelLiveTrackingScreen({
   const { data: liveDetail } = useQuery({
     queryKey: ["parcelOrderStatus", order.orderId],
     queryFn: () => orderService.getOrder(order.orderId),
-    refetchInterval: (q) => pollIntervalWithBackoff(q, 5_000),
-    staleTime: 2_500,
+    refetchInterval: (q) => pollIntervalWithBackoff(q, 15_000),
+    refetchIntervalInBackground: false,
+    staleTime: 8_000,
     retry: 2,
     retryDelay: queryRetryDelay,
   });
@@ -498,42 +499,42 @@ export function ParcelLiveTrackingScreen({
         ) : null}
       </LinearGradient>
 
+      <View style={styles.mapWrap}>
+        <View style={styles.mapSection}>
+          <MapboxWebDeliveryMap
+            key={order.orderId}
+            style={StyleSheet.absoluteFill}
+            center={deliveryMapCenter}
+            payload={deliveryMapPayload}
+            refitNonce={mapRefitNonce}
+          />
+        </View>
+        <LiveTrackingStatusChip
+          hasRiderFix={riderLat != null && riderLng != null}
+          style={styles.liveStatusChip}
+        />
+        <TouchableOpacity
+          style={[styles.mapControlBtn, styles.mapExpandBtn]}
+          activeOpacity={0.85}
+          onPress={() => setMapRefitNonce((n) => n + 1)}
+        >
+          <MaterialCommunityIcons name="arrow-expand" size={18} color="#1C1C1C" />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.mapControlBtn, styles.mapLocateBtn]}
+          activeOpacity={0.85}
+          onPress={() => setMapRefitNonce((n) => n + 1)}
+        >
+          <MaterialCommunityIcons name="crosshairs-gps" size={18} color="#1C1C1C" />
+        </TouchableOpacity>
+      </View>
+
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) }}
         showsVerticalScrollIndicator={false}
+        nestedScrollEnabled
       >
-        <View style={styles.mapWrap}>
-          <View style={styles.mapSection}>
-            <MapboxWebDeliveryMap
-              key={order.orderId}
-              style={StyleSheet.absoluteFill}
-              center={deliveryMapCenter}
-              payload={deliveryMapPayload}
-              refitNonce={mapRefitNonce}
-              onReady={() => setMapRefitNonce((n) => n + 1)}
-            />
-          </View>
-          <LiveTrackingStatusChip
-            hasRiderFix={riderLat != null && riderLng != null}
-            style={styles.liveStatusChip}
-          />
-          <TouchableOpacity
-            style={[styles.mapControlBtn, styles.mapExpandBtn]}
-            activeOpacity={0.85}
-            onPress={() => setMapRefitNonce((n) => n + 1)}
-          >
-            <MaterialCommunityIcons name="arrow-expand" size={18} color="#1C1C1C" />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.mapControlBtn, styles.mapLocateBtn]}
-            activeOpacity={0.85}
-            onPress={() => setMapRefitNonce((n) => n + 1)}
-          >
-            <MaterialCommunityIcons name="crosshairs-gps" size={18} color="#1C1C1C" />
-          </TouchableOpacity>
-        </View>
-
         {showPickupOtp && merged.pickupOtp ? (
           <OtpBanner label="Pickup OTP" otp={merged.pickupOtp} />
         ) : null}

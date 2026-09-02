@@ -7,6 +7,7 @@ import type {
   ApiFoodOrderItem,
 } from "@/services/ordersApi";
 import { resolveMerchantOrderTotal } from "@/lib/resolveMerchantOrderTotal";
+import { resolveLineItemMenuPk } from "@/lib/resolveLineItemMenuPk";
 
 export type DeliveryType = "GATIMITRA_RIDER" | "SELF_DELIVERY" | "SELF_PICKUP";
 
@@ -51,7 +52,7 @@ export type LineItem = {
   qty: number;
   name: string;
   price: number;
-  menuItemId?: number | null;
+  menuItemId?: number | string | null;
   /** Live menu image from order payload — empty means show Add photo. */
   itemImageUrl?: string | null;
   vegNonveg?: string | null;
@@ -246,6 +247,44 @@ export function stageTransitionToApi(from: OrderStage, to: OrderStage): string {
   return to.toUpperCase();
 }
 
+/** Higher score = more trustworthy merchant CTM line pricing (Partner Site parity). */
+export function merchantLineItemPricingScore(items: LineItem[]): number {
+  if (items.length === 0) return 0;
+  return items.reduce((score, it) => {
+    if (it.ctm_from_snapshot === true) return score + 3;
+    if (
+      it.net_line_total != null &&
+      Number.isFinite(it.net_line_total) &&
+      it.catalog_line_total != null &&
+      Number.isFinite(it.catalog_line_total)
+    ) {
+      return score + 2;
+    }
+    if (
+      (it.net_line_total != null && Number.isFinite(it.net_line_total)) ||
+      (it.catalog_line_total != null && Number.isFinite(it.catalog_line_total))
+    ) {
+      return score + 1;
+    }
+    if (it.base_amount != null && it.base_amount > 0.005) return score + 0.5;
+    return score;
+  }, 0);
+}
+
+/** Keep detail/single-order CTM lines when a board-list refetch returns customer-priced rows. */
+export function mergeOrderRecordPreferringMerchantLinePricing(
+  incoming: OrderRecord,
+  existing: OrderRecord | undefined
+): OrderRecord {
+  if (!existing) return incoming;
+  const incomingScore = merchantLineItemPricingScore(incoming.lineItems);
+  const existingScore = merchantLineItemPricingScore(existing.lineItems);
+  if (existingScore > incomingScore + 0.25) {
+    return { ...incoming, lineItems: existing.lineItems };
+  }
+  return incoming;
+}
+
 export function mapApiOrder(
   o: ApiFoodOrder,
   storeCtx?: {
@@ -277,10 +316,7 @@ export function mapApiOrder(
       qty: Number(it.qty) || 0,
       name: String(it.name ?? "Item"),
       price: Number(it.price) || 0,
-      menuItemId:
-        it.menu_item_id != null && Number.isFinite(Number(it.menu_item_id))
-          ? Number(it.menu_item_id)
-          : null,
+      menuItemId: resolveLineItemMenuPk(it),
       itemImageUrl:
         typeof it.item_image_url === "string" && it.item_image_url.trim()
           ? it.item_image_url.trim()

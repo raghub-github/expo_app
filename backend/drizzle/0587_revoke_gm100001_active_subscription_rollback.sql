@@ -1,0 +1,2 @@
+-- Rollback is informational only — re-activating a manually revoked subscription
+-- requires a new purchase. No automatic restore.

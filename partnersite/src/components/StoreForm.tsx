@@ -102,7 +102,7 @@ export default function StoreForm({ parentId, onSuccess }: { parentId: number; o
     food_categories: [],
     avg_preparation_time_minutes: 30,
     min_order_amount: 0,
-    delivery_radius_km: 5,
+    delivery_radius_km: 8,
     is_pure_veg: false,
     accepts_online_payment: true,
     accepts_cash: false,

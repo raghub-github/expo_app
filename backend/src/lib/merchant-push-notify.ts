@@ -55,7 +55,11 @@ async function sendMerchantExpoPush(tokens: string[], payload: PushPayload): Pro
     sound: "default",
     title: payload.title,
     body: payload.body,
-    data: payload.data ?? {},
+    data: {
+      ...(payload.data ?? {}),
+      skip_in_app_banner: true,
+      appRole: "merchant",
+    },
     priority: "high",
     channelId: payload.channelId ?? "merchant_default",
   }));
@@ -502,6 +506,7 @@ const LIFECYCLE_STAGES = new Set([
   "READY_FOR_PICKUP",
   "OUT_FOR_DELIVERY",
   "PICKED_UP",
+  "HANDED_OVER",
   "IN_TRANSIT",
   "DISPATCHED",
   "CANCELLED",
@@ -556,7 +561,14 @@ function lifecycleCopy(
       subtitle: `Order ${id} is ready`,
     };
   }
-  if (s === "OUT_FOR_DELIVERY" || s === "PICKED_UP" || s === "IN_TRANSIT" || s === "DISPATCHED") {
+  if (s === "OUT_FOR_DELIVERY" || s === "PICKED_UP" || s === "HANDED_OVER") {
+    return {
+      title: `Order ${id} handed over`,
+      body: "Handed over to delivery partner — tap to view",
+      subtitle: `Order ${id} handed over`,
+    };
+  }
+  if (s === "IN_TRANSIT" || s === "DISPATCHED") {
     return {
       title: `Order ${id} out for delivery`,
       body: "On the way to customer — tap to view",

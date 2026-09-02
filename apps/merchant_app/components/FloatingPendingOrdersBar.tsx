@@ -73,8 +73,9 @@ export function FloatingPendingOrdersBar() {
   );
 
   const sheetOpen = sheet?.sheetOpen === true;
+  /** One pending order uses the full incoming sheet only — bell is for a multi-order queue. */
   const show =
-    settings.show_floating_orders && pending > 0 && !sheetOpen && !hideOnPackagingTips;
+    settings.show_floating_orders && pending > 1 && !sheetOpen && !hideOnPackagingTips;
 
   const minBottom = TAB_BAR_HEIGHT + TAB_BAR_FLOATING_GAP + insets.bottom + 8;
   const defaultPos = useMemo(

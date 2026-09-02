@@ -5,7 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import type { MerchantTrackingMapPayload } from "@/lib/merchant-rider-tracking-html";
 
 /** Poll cadence while the tracking view is open (matches the partnersite). */
-export const MERCHANT_RIDER_TRACKING_POLL_MS = 2000;
+export const MERCHANT_RIDER_TRACKING_POLL_MS = 5000;
 
 type ApiPin = { latitude: number; longitude: number } | null;
 type ApiLocation = {
@@ -79,6 +79,7 @@ export function useMerchantRiderTracking(args: {
     queryKey: ["merchant", "rider-tracking", storeId ?? null, ordersFoodId ?? null],
     enabled: canFetch,
     refetchInterval: canFetch ? MERCHANT_RIDER_TRACKING_POLL_MS : false,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: canFetch,
     staleTime: MERCHANT_RIDER_TRACKING_POLL_MS,
     queryFn: async (): Promise<ApiPayload> => {

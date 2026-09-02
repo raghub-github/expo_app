@@ -27,7 +27,7 @@ import {
   dispatchMerchantStoreOrderUpdated,
   setIncomingOrderModalOpen,
 } from '@/lib/merchant-incoming-order-modal-bus';
-import { merchantBillPartsFromItems } from '@/lib/merchant-order-item-display';
+import { merchantBillPartsFromItems, merchantLineTotalForItem, resolveMerchantCtm } from '@/lib/merchant-order-item-display';
 import {
   DASH_MX_INCOMING_RESOLVED_EVENT,
   dashMxIncomingChannel,
@@ -310,13 +310,19 @@ export function MerchantIncomingOrderModal() {
 
   useEffect(() => {
     if (!storeId || !modalOrder) return;
+    const items = (Array.isArray(modalOrder.items) ? modalOrder.items : []) as NormalizedOrderLineItem[];
     const needsHydrate =
       !modalOrder.customer_name ||
-      !Array.isArray(modalOrder.items) ||
-      modalOrder.items.length === 0 ||
+      items.length === 0 ||
       (modalOrder as unknown as Record<string, unknown>).is_bulk_order === undefined ||
-      !(modalOrder.items as NormalizedOrderLineItem[]).some(
-        (it) => it.ctmFromSnapshot === true || (it.netLineTotal != null && it.netLineTotal > 0)
+      !items.some(
+        (it) =>
+          it.ctmFromSnapshot === true ||
+          (it.netLineTotal != null &&
+            it.catalogLineTotal != null &&
+            Math.abs(Number(it.netLineTotal) - Number(it.catalogLineTotal)) > 0.005) ||
+          (it.netLineTotal != null && Number(it.netLineTotal) > 0 && Number(it.total) > 0 &&
+            Math.abs(Number(it.netLineTotal) - Number(it.total)) < 0.5)
       );
     if (!needsHydrate) return;
     if (hydrateBusyRef.current) return;
@@ -332,8 +338,14 @@ export function MerchantIncomingOrderModal() {
   }, [storeId, modalOrder?.order_id, fetchByCoreId]);
 
   const openIfNew = useCallback(
-    async (full: OrdersFoodRow | null): Promise<boolean> => {
-      if (!full || !storeId) return false;
+    async (seed: OrdersFoodRow | null): Promise<boolean> => {
+      if (!seed || !storeId) return false;
+      const foodRowId = merchantFoodRowId(seed);
+      const hydrated =
+        (foodRowId != null ? await fetchByFoodRow(foodRowId) : null) ??
+        (await fetchByCoreId(seed.order_id)) ??
+        seed;
+      const full = hydrated;
       if (!readPartnerDeviceOrderAlerts(alertStoreKey).orderAlertsEnabled) return false;
       const dismissed = getDismissed();
       if (dismissed.has(full.order_id)) return false;
@@ -397,6 +409,8 @@ export function MerchantIncomingOrderModal() {
     [
       alertStoreKey,
       storeId,
+      fetchByCoreId,
+      fetchByFoodRow,
       settings.acceptance_window_minutes,
       settings.alert_sound_enabled,
       settings.alert_sound_repeat_count,
@@ -618,14 +632,13 @@ export function MerchantIncomingOrderModal() {
     return `${m}:${s.toString().padStart(2, '0')}`;
   }, [secondsLeft]);
 
-  const orderItems = modalOrder ? (Array.isArray(modalOrder.items) ? modalOrder.items : []) : [];
+  const orderItems = (
+    modalOrder && Array.isArray(modalOrder.items) ? modalOrder.items : []
+  ) as NormalizedOrderLineItem[];
 
   const incomingOrderLineSum = useMemo(() => {
     if (!orderItems.length) return 0;
-    return orderItems.reduce(
-      (acc, it) => acc + Number(it.total || (it.price || 0) * (it.quantity || 1)),
-      0
-    );
+    return orderItems.reduce((acc, it) => acc + merchantLineTotalForItem(it), 0);
   }, [orderItems]);
 
   const incomingOrderPricing = useMemo((): OrderPricingBreakdown => {
@@ -634,30 +647,27 @@ export function MerchantIncomingOrderModal() {
     }
     const precision = Math.max(0, Number(modalOrder.merchant_precision_discount) || 0);
     const packaging = Number(modalOrder.pricing?.packaging) || 0;
-    const bill = merchantBillPartsFromItems(
-      (Array.isArray(modalOrder.items) ? modalOrder.items : []) as NormalizedOrderLineItem[],
-      { subtotal: incomingOrderLineSum, packaging, discount: precision, total: 0 }
-    );
-    if (bill.total > 0.005) {
-      return {
-        subtotal: bill.itemsSubtotal,
-        packaging: bill.packaging,
-        taxes: 0,
-        discount: bill.discount,
-        total: bill.total,
-      };
-    }
-    const p = modalOrder.pricing;
-    if (p && Number(p.total) > 0.005) return p;
-    const total = Number(modalOrder.total_ctm ?? modalOrder.food_items_total_value ?? incomingOrderLineSum);
-    return {
+    const frozenTotal = resolveMerchantCtm({
+      total_ctm: modalOrder.total_ctm,
+      food_items_total_value: modalOrder.food_items_total_value,
+      pricing: modalOrder.pricing,
+      merchant_precision_discount: modalOrder.merchant_precision_discount,
+      items: orderItems,
+    });
+    const bill = merchantBillPartsFromItems(orderItems, {
       subtotal: incomingOrderLineSum,
-      packaging: 0,
+      packaging,
+      discount: precision,
+      total: frozenTotal,
+    });
+    return {
+      subtotal: bill.itemsSubtotal,
+      packaging: bill.packaging,
       taxes: 0,
-      discount: 0,
-      total: Number.isFinite(total) ? total : incomingOrderLineSum,
+      discount: bill.discount,
+      total: bill.total,
     };
-  }, [modalOrder, incomingOrderLineSum]);
+  }, [modalOrder, orderItems, incomingOrderLineSum]);
 
   useEffect(() => {
     setItemsSheetOpen(false);

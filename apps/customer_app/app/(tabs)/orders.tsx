@@ -39,7 +39,12 @@ import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
-import { populateCartFromOrder, orderItemsMissingMenuIds, resolveOrderItemDiet } from "@/lib/reorderFromOrder";
+import {
+  tryPopulateCartFromOrder,
+  orderItemsMissingMenuIds,
+  resolveOrderItemDiet,
+  formatReorderSkippedMessage,
+} from "@/lib/reorderFromOrder";
 import { ReorderUnavailableBottomSheet } from "@/components/orders/ReorderUnavailableBottomSheet";
 import {
   getMyOrdersCachedAt,
@@ -317,6 +322,7 @@ function HistoryOrderCard({
       refundStatus: order.refundStatus,
     });
   const hasRating = order.storeRatingSubmitted === true && order.storeRating != null;
+  const hasStoreReply = Boolean(order.storeMerchantReplyText?.trim());
   const price = orderListPriceDisplay(order);
 
   const { canReorder, reason: reorderReason } = useReorderStoreEligibility({
@@ -506,7 +512,9 @@ function HistoryOrderCard({
                     onPress={onViewFeedback}
                     activeOpacity={0.8}
                   >
-                    <AppText style={styles.viewFeedbackText}>View your feedback</AppText>
+                    <AppText style={styles.viewFeedbackText}>
+                      {hasStoreReply ? "Store replied to your review" : "View your feedback"}
+                    </AppText>
                     <Ionicons name="chevron-forward" size={12} color={GREEN} />
                   </TouchableOpacity>
                 </View>
@@ -788,19 +796,30 @@ export default function OrdersScreen() {
             return;
           }
         }
-        const ok = populateCartFromOrder(orderData);
-        if (!ok) {
+        const result = await tryPopulateCartFromOrder(orderData);
+        if (!result.ok) {
+          const allOos =
+            result.reason === "all_unavailable" && result.skippedNames.length > 0;
           setReorderSheet({
-            title: "Unable to reorder",
-            message:
-              "Items from this order are unavailable. Try viewing the menu instead.",
+            title: allOos ? "Items out of stock" : "Unable to reorder",
+            message: allOos
+              ? `${formatReorderSkippedMessage(result.skippedNames)} You can browse the menu for other items.`
+              : "Items from this order are unavailable. Try viewing the menu instead.",
             order,
           });
           return;
         }
         if (navLockRef.current) return;
         navLockRef.current = true;
-        router.push("/checkout");
+        if (result.skippedNames.length > 0) {
+          Alert.alert(
+            "Some items unavailable",
+            formatReorderSkippedMessage(result.skippedNames),
+            [{ text: "Continue", onPress: () => router.push("/checkout") }]
+          );
+        } else {
+          router.push("/checkout");
+        }
       } finally {
         reorderInFlightRef.current = false;
       }

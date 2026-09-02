@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import { GatiMitraColors } from "@/constants/gatimitra";
 
 /**
  * Global layout constants for status bar and header spacing.
@@ -23,23 +24,24 @@ export function resolveTopSafeInset(insetsTop: number): number {
   return DEFAULT_STATUS_BAR_HEIGHT;
 }
 
-/** Fallback when Android edge-to-edge reports 0 but 3-button nav is present. */
-export const ANDROID_FALLBACK_BOTTOM_INSET = 48;
+/** GatiMitra mint for Android system navigation bar (matches native splash / nav chrome). */
+export const CUSTOMER_SYSTEM_NAV_MINT = GatiMitraColors.splashMint;
 
-/** Matches Android system navigation bar — tab bar inset area uses same color. */
-export const ANDROID_SYSTEM_NAV_COLOR = "#121212";
+/** @deprecated Use CUSTOMER_SYSTEM_NAV_MINT */
+export const ANDROID_SYSTEM_NAV_COLOR = CUSTOMER_SYSTEM_NAV_MINT;
 
-/** Bottom safe inset for scroll content / floating UI (not tab bar chrome). */
+/**
+ * Bottom safe inset for scroll content / floating UI.
+ * Uses OS-reported inset only — no artificial 48dp strip on gesture navigation.
+ */
 export function resolveBottomSafeInset(insetsBottom: number): number {
   if (Platform.OS !== "android") return insetsBottom;
-  if (insetsBottom >= 16) return insetsBottom;
-  return ANDROID_FALLBACK_BOTTOM_INSET;
+  return Math.max(0, insetsBottom);
 }
 
-/** Bottom inset for tab / ride nav — OS value only (no extra in-app black strip). */
+/** Bottom inset for tab / ride nav — OS WindowInsets value only. */
 export function resolveTabBarBottomInset(insetsBottom: number): number {
-  if (Platform.OS !== "android") return insetsBottom;
-  return Math.max(0, insetsBottom);
+  return resolveBottomSafeInset(insetsBottom);
 }
 
 /** Bar padding + tab minHeight + bar padding — keep in sync with bottom nav chrome. */

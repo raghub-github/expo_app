@@ -12,28 +12,14 @@ import { useEffect, useRef } from "react";
 import { Platform, AppState } from "react-native";
 import Constants from "expo-constants";
 import { useOrderStore, type ActiveOrder, type ActiveOrderService } from "@/store/orderStore";
-import { GatiMitraColors } from "@/constants/gatimitra";
-
-const CHANNEL_ID = "customer_live_order";
-const BAR_LEN = 8;
+import {
+  applyLiveProgressFromPush as applyLiveProgressNative,
+  dismissStaleLiveOrderTrayNotifications,
+  postOrUpdateLiveNotification as postOrUpdateLiveNative,
+} from "@/lib/customerLiveOrderNotificationNative";
 
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
-}
-
-function ongoingId(orderId: string): string {
-  return `customer-live-order-${orderId}`;
-}
-
-/**
- * Text progress for shade notifications (no View / CSS).
- * Thin rounded track — reads like a 2px pill bar, not a block of █.
- */
-function progressBar(step: number, steps: number): string {
-  const filled = Math.max(0, Math.min(BAR_LEN, Math.round((step / Math.max(1, steps)) * BAR_LEN)));
-  const empty = BAR_LEN - filled;
-  if (filled <= 0) return "·".repeat(BAR_LEN);
-  return `${"●".repeat(filled)}${"·".repeat(empty)}`;
 }
 
 type LiveUi = {
@@ -209,122 +195,16 @@ function liveUiFromOrder(order: ActiveOrder): LiveUi {
   return liveUiFood(order);
 }
 
-function screenForService(service: ActiveOrderService | string | undefined, orderId: string): string {
-  return `/orders/${orderId}`;
-}
-
 /** Apply a live-progress push into the sticky shade (food / ride / parcel). */
 export async function applyLiveProgressFromPush(data: Record<string, unknown>): Promise<void> {
   if (Platform.OS !== "android" || isExpoGo()) return;
-  const live = data.gmLiveProgress === true || data.gmLiveProgress === "true";
-  if (!live) return;
-
-  const serviceRaw = String(data.liveService ?? "food").trim().toLowerCase();
-  const service: ActiveOrderService =
-    serviceRaw === "ride" || serviceRaw === "person_ride"
-      ? "ride"
-      : serviceRaw === "parcel"
-        ? "parcel"
-        : "food";
-
-  const orderId = typeof data.orderId === "string" ? data.orderId.trim() : "";
-  if (!orderId) return;
-
-  const step = Number(data.liveStep);
-  const defaultSteps = service === "ride" ? 6 : 5;
-  const steps = Number(data.liveSteps) || defaultSteps;
-  const title =
-    typeof data.liveTitle === "string" && data.liveTitle.trim()
-      ? data.liveTitle.trim()
-      : service === "ride"
-        ? "Ride update"
-        : service === "parcel"
-          ? "Parcel update"
-          : "Order update";
-  let body =
-    typeof data.liveBody === "string" && data.liveBody.trim() ? data.liveBody.trim() : "Tap to track";
-  const eta = Number(data.etaMinutes);
-  if (Number.isFinite(eta) && eta > 0 && !/min/i.test(body)) {
-    body = `${body} · ${Math.round(eta)} mins`;
-  }
-
-  const terminal =
-    (Number.isFinite(step) && step >= steps) ||
-    /delivered|completed|cancelled/i.test(title) ||
-    String(data.gmType ?? "").includes("DELIVERED") ||
-    String(data.gmType ?? "").includes("COMPLETED") ||
-    String(data.gmType ?? "").includes("CANCELLED");
-
-  await postOrUpdateLiveNotification({
-    orderId,
-    title,
-    body,
-    step: Number.isFinite(step) ? step : 1,
-    steps,
-    terminal,
-    service,
-  });
-}
-
-async function ensureChannel(Notifications: typeof import("expo-notifications")) {
-  await Notifications.setNotificationChannelAsync(CHANNEL_ID, {
-    name: "Live trip progress",
-    importance: Notifications.AndroidImportance.LOW,
-    sound: undefined,
-    vibrationPattern: undefined,
-    enableVibrate: false,
-    showBadge: true,
-  });
-}
-
-async function postOrUpdateLiveNotification(args: {
-  orderId: string;
-  title: string;
-  body: string;
-  step: number;
-  steps: number;
-  terminal?: boolean;
-  service?: ActiveOrderService;
-}): Promise<void> {
-  try {
-    const Notifications = await import("expo-notifications");
-    await ensureChannel(Notifications);
-    const id = ongoingId(args.orderId);
-    if (args.terminal) {
-      await Notifications.dismissNotificationAsync(id).catch(() => undefined);
-      return;
-    }
-    const bar = progressBar(args.step, args.steps);
-    const href = screenForService(args.service, args.orderId);
-    await Notifications.scheduleNotificationAsync({
-      identifier: id,
-      content: {
-        title: args.title,
-        body: `${args.body}\n${bar}`,
-        data: {
-          type: "live_order_progress",
-          liveService: args.service ?? "food",
-          orderId: args.orderId,
-          screen: href,
-          deepLink: href,
-        },
-        color: GatiMitraColors.deepMintStart,
-        sticky: true,
-        autoDismiss: false,
-        sound: undefined,
-        ...(Platform.OS === "android" ? { channelId: CHANNEL_ID } : {}),
-      },
-      trigger: null,
-    });
-  } catch {
-    // best-effort
-  }
+  await applyLiveProgressNative(data);
 }
 
 async function dismissLive(orderId: string): Promise<void> {
   try {
     const Notifications = await import("expo-notifications");
-    await Notifications.dismissNotificationAsync(ongoingId(orderId));
+    await Notifications.dismissNotificationAsync(`customer-live-order-${orderId}`);
   } catch {
     // ignore
   }
@@ -344,7 +224,8 @@ export function LiveOrderProgressNotification() {
         if (!order.orderId) continue;
         nextIds.add(order.orderId);
         const ui = liveUiFromOrder(order);
-        const sig = `${order.serviceType ?? "food"}|${ui.title}|${ui.body}|${ui.step}|${order.etaMinutes}|${ui.terminal ? 1 : 0}`;
+        // Step / title only — raw ETA ticks were rescheduling the sticky every poll (ANR).
+        const sig = `${order.serviceType ?? "food"}|${ui.title}|${ui.step}|${ui.terminal ? 1 : 0}`;
         if (lastSigRef.current[order.orderId] === sig) continue;
         lastSigRef.current[order.orderId] = sig;
         if (ui.terminal) {
@@ -352,7 +233,7 @@ export function LiveOrderProgressNotification() {
           delete lastSigRef.current[order.orderId];
           continue;
         }
-        void postOrUpdateLiveNotification({
+        void postOrUpdateLiveNative({
           orderId: order.orderId,
           title: ui.title,
           body: ui.body,
@@ -369,13 +250,17 @@ export function LiveOrderProgressNotification() {
         }
       }
       knownIdsRef.current = nextIds;
+      void dismissStaleLiveOrderTrayNotifications(nextIds);
     };
 
-    sync();
+    const t = setTimeout(sync, 400);
     const sub = AppState.addEventListener("change", (state) => {
       if (state === "active") sync();
     });
-    return () => sub.remove();
+    return () => {
+      clearTimeout(t);
+      sub.remove();
+    };
   }, [activeOrders]);
 
   return null;

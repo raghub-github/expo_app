@@ -1,25 +1,29 @@
 import { Platform, StatusBar } from "react-native";
+import { CUSTOMER_SYSTEM_NAV_MINT } from "@/constants/layout";
 
 /**
- * SDK 53+ Android is edge-to-edge. Position / background APIs warn and no-op.
- * Keep visibility + icon style only.
+ * SDK 53+ Android may be edge-to-edge. When edge-to-edge is off, native nav bar
+ * background can be set; otherwise the in-app AndroidSystemNavigationFill paints mint.
  */
 export async function applyAndroidNavigationChrome(options?: {
   buttonStyle?: "light" | "dark";
+  backgroundColor?: string;
 }): Promise<void> {
   if (Platform.OS !== "android") return;
   const NavigationBar = await import("expo-navigation-bar");
   const style = options?.buttonStyle ?? "light";
-  // Best-effort: on edge-to-edge SDK 53+ some of these warn/no-op, and the
-  // synchronous `setStyle` returns void (no `.catch`), so guard them together.
+  const backgroundColor = options?.backgroundColor ?? CUSTOMER_SYSTEM_NAV_MINT;
   try {
     await NavigationBar.setVisibilityAsync("visible");
     await NavigationBar.setButtonStyleAsync(style);
+    if (typeof NavigationBar.setBackgroundColorAsync === "function") {
+      await NavigationBar.setBackgroundColorAsync(backgroundColor);
+    }
     if (typeof NavigationBar.setStyle === "function") {
       NavigationBar.setStyle(style === "light" ? "dark" : "light");
     }
   } catch {
-    // unsupported / edge-to-edge navigation-bar API — safe no-op
+    // Edge-to-edge builds may no-op background APIs — AndroidSystemNavigationFill covers it.
   }
 }
 

@@ -11,21 +11,19 @@ import { Ionicons } from "@expo/vector-icons";
 import {
   navigateFromPushData,
   usePushPermissionController,
-  enqueueInAppBannerFromPush,
-  FloatingInAppBannerHost,
   type PushNotificationOpenPayload,
 } from "@gatimitra/expo-push-kit";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useNotifications } from "@/context/NotificationContext";
-import { useOrders, mapApiOrder } from "@/hooks/useOrders";
 import { useIncomingOrderSheet } from "@/context/IncomingOrderSheetContext";
+import { useOrders, mapApiOrder } from "@/hooks/useOrders";
 import { fetchFoodOrder } from "@/services/ordersApi";
 import { registerStorePushToken, unregisterAllStorePushTokens } from "@/services/pushTokenApi";
 import { getConfig } from "@/config/env";
 import { setMerchantPushUnregister } from "@/lib/merchantPushUnregister";
 import { openOrderDetailOnce } from "@/lib/openOrderDetailOnce";
-import { isSafeMerchantPushHref, extractMerchantFoodOrderIdFromPush, isMerchantOrderRelatedPush, merchantOrdersTabHrefFromPush } from "@/lib/merchantNavigation";
+import { isSafeMerchantPushHref, extractMerchantFoodOrderIdFromPush, isMerchantOrderRelatedPush, merchantOrdersTabHrefFromPush, merchantHomeNewOrdersHref } from "@/lib/merchantNavigation";
 import {
   dispatchMerchantForegroundPush,
   dispatchMerchantNotificationResponse,
@@ -36,7 +34,7 @@ import type { PartnerData } from "@/context/AuthContext";
 import * as SecureStore from "expo-secure-store";
 import { useMerchantWalletFreezeLive } from "@/hooks/useMerchantWalletFreezeLive";
 import { useMerchantStoreDelistLive } from "@/hooks/useMerchantStoreDelistLive";
-import { isMerchantIdleStatusNotification } from "@/lib/merchantStatusNotification";
+import { installMerchantForegroundNotificationHandler } from "@/lib/merchantNotificationHandler";
 
 const LORA = "Lora_400Regular";
 const LORA_BOLD = "Lora_700Bold";
@@ -91,8 +89,14 @@ export default function NotificationSetup() {
   applyIncomingPushRef.current = applyIncomingPush;
   const partnerRef = useRef<PartnerData | null>(partner);
   partnerRef.current = partner;
-  const { orders, upsertOrder } = useOrders();
+  const { orders, upsertOrder, refetch: refetchOrders } = useOrders();
   const { openIncomingOrderSheet } = useIncomingOrderSheet();
+  const upsertOrderRef = useRef(upsertOrder);
+  upsertOrderRef.current = upsertOrder;
+  const refetchOrdersRef = useRef(refetchOrders);
+  refetchOrdersRef.current = refetchOrders;
+  const openIncomingOrderSheetRef = useRef(openIncomingOrderSheet);
+  openIncomingOrderSheetRef.current = openIncomingOrderSheet;
   const { forceOpen, closePermissionGate, signalNotificationsGranted, setNotificationsGranted } =
     useNotificationPermissionGate();
   const ordersRef = useRef(orders);
@@ -133,34 +137,28 @@ export default function NotificationSetup() {
         }
         return;
       }
-      if (isMerchantNewOrderPush(data) || isMerchantOrderRelatedPush(data)) {
+      if (isMerchantNewOrderPush(data)) {
+        void (async () => {
+          const foodIdRaw = extractMerchantFoodOrderIdFromPush(data);
+          const foodId = foodIdRaw != null ? parseInt(foodIdRaw, 10) : NaN;
+          if (storeId && authToken && Number.isFinite(foodId)) {
+            try {
+              const order = mapApiOrder(await fetchFoodOrder(storeId, foodId, authToken));
+              upsertOrder(order);
+            } catch {
+              /* home tab still opens; board refresh will catch up */
+            }
+          }
+          router.replace(merchantHomeNewOrdersHref() as never);
+        })();
+        return;
+      }
+      if (isMerchantOrderRelatedPush(data)) {
         void (async () => {
           const foodIdRaw = extractMerchantFoodOrderIdFromPush(data);
           const foodId = foodIdRaw != null ? parseInt(foodIdRaw, 10) : NaN;
           if (!Number.isFinite(foodId)) {
             router.push(merchantOrdersTabHrefFromPush(data) as never);
-            return;
-          }
-          if (isMerchantNewOrderPush(data)) {
-            if (!storeId || !authToken) {
-              openOrderDetailOnce(router, String(foodId), { currentPath: pathname });
-              return;
-            }
-            let order = ordersRef.current.find((o) => o.id === String(foodId));
-            if (!order) {
-              try {
-                order = mapApiOrder(await fetchFoodOrder(storeId, foodId, authToken));
-              } catch {
-                openOrderDetailOnce(router, String(foodId), { currentPath: pathname });
-                return;
-              }
-            }
-            upsertOrder(order);
-            if (order.status === "created" && !order.id.startsWith("core-")) {
-              openIncomingOrderSheet(order);
-              return;
-            }
-            openOrderDetailOnce(router, order.id, { currentPath: pathname });
             return;
           }
           openOrderDetailOnce(router, String(foodId), { currentPath: pathname });
@@ -169,11 +167,19 @@ export default function NotificationSetup() {
       }
       if (data?.url && typeof data.url === "string") {
         if (isSafeMerchantPushHref(data.url)) {
-          router.push(data.url as never);
+          if (isMerchantNewOrderPush(data)) {
+            router.replace(merchantHomeNewOrdersHref() as never);
+          } else {
+            router.push(data.url as never);
+          }
         } else {
           const foodId = data.url.match(/\/order\/(\d+)/)?.[1];
           if (foodId) {
-            openOrderDetailOnce(router, foodId, { currentPath: pathname });
+            if (isMerchantNewOrderPush(data)) {
+              router.replace(merchantHomeNewOrdersHref() as never);
+            } else {
+              openOrderDetailOnce(router, foodId, { currentPath: pathname });
+            }
           }
         }
         return;
@@ -221,7 +227,7 @@ export default function NotificationSetup() {
         appRole: "merchant",
       });
     },
-    [router, pathname, storeId, authToken, openIncomingOrderSheet, upsertOrder]
+    [router, pathname, storeId, authToken, upsertOrder]
   );
 
   const { apiBaseUrl } = getConfig();
@@ -246,9 +252,25 @@ export default function NotificationSetup() {
           lightColor: "#1E3A5F",
           importance: 5,
         },
-        { channelId: "merchant_default", name: "Store & Orders", lightColor: "#3EB489" },
-        { channelId: "merchant_online", name: "Store online status", lightColor: "#3EB489" },
-        { channelId: "default", name: "Store & Orders", lightColor: "#3EB489" },
+        {
+          channelId: "merchant_order_lifecycle",
+          name: "Order updates",
+          lightColor: "#3EB489",
+          importance: 4,
+        },
+        {
+          channelId: "merchant_default",
+          name: "Store & Orders",
+          lightColor: "#3EB489",
+          importance: 4,
+        },
+        {
+          channelId: "merchant_online",
+          name: "Store online status",
+          lightColor: "#3EB489",
+          importance: 4,
+        },
+        { channelId: "default", name: "Store & Orders", lightColor: "#3EB489", importance: 4 },
       ],
       getAuth: () => {
         const { authToken: t, storeId: sid } = authRef.current;
@@ -330,11 +352,27 @@ export default function NotificationSetup() {
             orderId: pick("foodOrderId", "orderId", "order_id"),
           });
         }
+        if (isMerchantNewOrderPush(data)) {
+          void (async () => {
+            const foodIdRaw = extractMerchantFoodOrderIdFromPush(data);
+            const foodId = foodIdRaw != null ? parseInt(foodIdRaw, 10) : NaN;
+            const { authToken: t, storeId: sid } = authRef.current;
+            if (!t || !sid || !Number.isFinite(foodId)) return;
+            try {
+              const order = mapApiOrder(await fetchFoodOrder(sid, foodId, t));
+              upsertOrderRef.current(order);
+              if (order.status === "created" && !order.id.startsWith("core-")) {
+                openIncomingOrderSheetRef.current(order);
+              }
+            } catch {
+              /* notification bridge + orders poll will retry */
+            } finally {
+              void refetchOrdersRef.current();
+            }
+          })();
+        }
         dispatchMerchantForegroundPush(payload);
-        if (isMerchantNewOrderPush(data)) return;
-        if (isMerchantComplaintPush(data)) return;
-        if (isMerchantIdleStatusNotification(data)) return;
-        enqueueInAppBannerFromPush(payload);
+        // System shade only — do not enqueue the in-app floating pill.
       },
     }),
     [apiBaseUrl, handleOpen]
@@ -355,7 +393,14 @@ export default function NotificationSetup() {
   useEffect(() => {
     if (!authToken) return;
     controller.startLifecycle();
+    // startLifecycle also installs shared shade-on defaults; restore Partner
+    // handler so remote events stay in the OS tray (sticky local notif stays quiet).
+    void installMerchantForegroundNotificationHandler();
+    const restoreHandler = setTimeout(() => {
+      void installMerchantForegroundNotificationHandler();
+    }, 300);
     void controller.refresh({ syncIfGranted: !expoGo });
+    return () => clearTimeout(restoreHandler);
   }, [authToken, storeId, partner?.childStores?.length, controller, expoGo]);
 
   // Source of truth for the sheet: Android POST_NOTIFICATIONS / Settings toggle.
@@ -442,11 +487,6 @@ export default function NotificationSetup() {
 
   return (
     <>
-      <FloatingInAppBannerHost
-        onPressBanner={(item) => {
-          if (item.data) handleOpen({ title: item.title, body: item.body ?? null, data: item.data });
-        }}
-      />
       <PermissionBottomSheetShell visible={showGate} dismissible onDismiss={dismiss}>
       <View style={styles.content}>
         <View style={styles.iconWrap}>

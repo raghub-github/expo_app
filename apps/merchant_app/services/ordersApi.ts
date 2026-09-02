@@ -14,6 +14,8 @@ export type ApiFoodOrderItem = {
   name: string;
   price: number;
   menu_item_id?: number | null;
+  /** Persisted on orders_core.items / orders_food.items JSON (same as menu_item_id PK). */
+  item_id?: number | null;
   item_image_url?: string | null;
   veg_nonveg?: string | null;
   customizations?: string[];
@@ -194,20 +196,36 @@ export async function fetchFoodOrders(
 }
 
 /** Cancel unaccepted orders past the acceptance window (portal-open flush). */
+const syncAcceptanceInFlight = new Map<number, Promise<{ cancelled: number }>>();
+
 export async function syncAcceptanceTimeout(
   storeId: number,
   token: string
 ): Promise<{ cancelled: number }> {
-  const res = await authFetch(
-    `${getBase()}/v1/merchant-partner/stores/${storeId}/sync-acceptance-timeout`,
-    token,
-    { method: "POST" }
-  );
-  const data = (await res.json().catch(() => ({}))) as { cancelled?: number; error?: string };
-  if (!res.ok) {
-    throw new Error(data.error || "Failed to sync acceptance timeout");
+  const existing = syncAcceptanceInFlight.get(storeId);
+  if (existing) return existing;
+
+  const run = (async () => {
+    const res = await authFetch(
+      `${getBase()}/v1/merchant-partner/stores/${storeId}/sync-acceptance-timeout`,
+      token,
+      { method: "POST", timeoutMs: 25_000 }
+    );
+    const data = (await res.json().catch(() => ({}))) as { cancelled?: number; error?: string };
+    if (!res.ok) {
+      throw new Error(data.error || "Failed to sync acceptance timeout");
+    }
+    return { cancelled: Number(data.cancelled ?? 0) };
+  })();
+
+  syncAcceptanceInFlight.set(storeId, run);
+  try {
+    return await run;
+  } finally {
+    if (syncAcceptanceInFlight.get(storeId) === run) {
+      syncAcceptanceInFlight.delete(storeId);
+    }
   }
-  return { cancelled: Number(data.cancelled ?? 0) };
 }
 
 export async function fetchFoodOrder(

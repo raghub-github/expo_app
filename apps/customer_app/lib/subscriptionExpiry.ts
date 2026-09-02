@@ -70,3 +70,24 @@ export function formatSubscriptionExpiryLabel(iso: string | null | undefined): s
     year: "numeric",
   });
 }
+
+/** Daily-updated countdown for membership banners (e.g. "Expires in 5 days"). */
+export function formatSubscriptionExpiryCountdown(
+  iso: string | null | undefined,
+  now: Date = new Date()
+): string | null {
+  if (!iso?.trim()) return null;
+  const expiry = new Date(iso);
+  if (Number.isNaN(expiry.getTime())) return null;
+
+  const endOfToday = new Date(now);
+  endOfToday.setHours(23, 59, 59, 999);
+
+  const ms = expiry.getTime() - now.getTime();
+  if (ms <= 0) return "Expired";
+
+  const days = Math.ceil((expiry.getTime() - endOfToday.getTime()) / (24 * 60 * 60 * 1000));
+  if (days <= 0) return "Expires today";
+  if (days === 1) return "Expires tomorrow";
+  return `Expires in ${days} days`;
+}
