@@ -338,6 +338,67 @@ test("SCENARIO: a rejected DL is treated as failed (not merely missing) and bloc
   assert.equal(food.eligible, true);
 });
 
+/* ── Additional vehicle-evidence document gates (§4, §13) — default exempt ───────────── */
+
+test("SCENARIO: EV-proof gate — default exempt does NOT block an EV; required + missing blocks", () => {
+  const evPerson = buildInput({
+    vehicleCategory: "3_wheeler",
+    vehicleType: "ev_auto",
+    fuel: "electric",
+    isCommercial: true,
+    dl: MANUAL_APPROVED,
+    rc: MANUAL_APPROVED,
+  });
+  // Default policy has no EV-proof gate → eligible.
+  assert.equal(resolveRiderServiceEligibility(evPerson, policy("person_ride")).eligible, true);
+  // City requires EV proof, rider hasn't submitted it → blocked with EV_PROOF.
+  const gated = resolveRiderServiceEligibility(evPerson, policy("person_ride", { evProofRequirement: "required" }));
+  assert.equal(gated.eligible, false);
+  assert.ok(codes(gated).includes("EV_PROOF_REQUIRED_NOT_VERIFIED"));
+  assert.ok(gated.missingDocuments.includes("EV_PROOF"));
+  // With EV proof verified → eligible again.
+  const withProof = resolveRiderServiceEligibility(
+    { ...evPerson, evProof: "verified" },
+    policy("person_ride", { evProofRequirement: "required" })
+  );
+  assert.equal(withProof.eligible, true);
+});
+
+test("SCENARIO: EV-proof gate does NOT apply to a non-EV (petrol) vehicle", () => {
+  const petrol = buildInput({
+    vehicleCategory: "4_wheeler",
+    vehicleType: "cab-economy",
+    fuel: "petrol",
+    isCommercial: true,
+    dl: MANUAL_APPROVED,
+    rc: MANUAL_APPROVED,
+  });
+  const d = resolveRiderServiceEligibility(petrol, policy("person_ride", { evProofRequirement: "required" }));
+  assert.equal(d.eligible, true); // EV-proof gate only applies to EVs
+});
+
+test("SCENARIO: commercial-proof gate applies only to commercial vehicles", () => {
+  const base = {
+    vehicleCategory: "3_wheeler",
+    vehicleType: "auto",
+    dl: MANUAL_APPROVED,
+    rc: MANUAL_APPROVED,
+  } as const;
+  // Commercial rider, proof required + missing → blocked.
+  const commercial = resolveRiderServiceEligibility(
+    buildInput({ ...base, isCommercial: true }),
+    policy("parcel", { commercialProofRequirement: "required" })
+  );
+  assert.equal(commercial.eligible, false);
+  assert.ok(codes(commercial).includes("COMMERCIAL_PROOF_REQUIRED_NOT_VERIFIED"));
+  // Non-commercial rider with the same policy → gate does not apply.
+  const nonCommercial = resolveRiderServiceEligibility(
+    buildInput({ ...base, isCommercial: false }),
+    policy("parcel", { commercialProofRequirement: "required" })
+  );
+  assert.ok(!codes(nonCommercial).includes("COMMERCIAL_PROOF_REQUIRED_NOT_VERIFIED"));
+});
+
 /* ── Admin ELIGIBILITY_OVERRIDE (§31) ───────────────────────────────────────────────── */
 
 test("SCENARIO: override GRANTS a blocked service (clears blocks) but records the exception", () => {

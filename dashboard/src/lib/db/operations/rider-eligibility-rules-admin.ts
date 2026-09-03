@@ -25,6 +25,9 @@ export type RiderEligibilityRuleRow = {
   serviceEnabled: boolean;
   dlRequirement: DocRequirement;
   rcRequirement: DocRequirement;
+  evProofRequirement: DocRequirement;
+  ownershipProofRequirement: DocRequirement;
+  commercialProofRequirement: DocRequirement;
   commercialRequired: boolean;
   allowedVehicleClasses: VehicleClass[];
   allowedFuelKinds: string[];
@@ -42,6 +45,12 @@ function normReq(v: unknown): DocRequirement {
   return s === "optional" || s === "exempt" ? s : "required";
 }
 
+/** Proof gates default to exempt (no gate) when null/legacy. */
+function normProof(v: unknown): DocRequirement {
+  const s = String(v ?? "exempt").toLowerCase();
+  return s === "required" || s === "optional" ? s : "exempt";
+}
+
 function mapRule(r: Record<string, unknown>): RiderEligibilityRuleRow {
   const arr = (v: unknown): string[] =>
     Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean) : [];
@@ -53,6 +62,9 @@ function mapRule(r: Record<string, unknown>): RiderEligibilityRuleRow {
     serviceEnabled: r.service_enabled !== false,
     dlRequirement: normReq(r.dl_requirement),
     rcRequirement: normReq(r.rc_requirement),
+    evProofRequirement: normProof(r.ev_proof_requirement),
+    ownershipProofRequirement: normProof(r.ownership_proof_requirement),
+    commercialProofRequirement: normProof(r.commercial_proof_requirement),
     commercialRequired: r.commercial_required === true,
     allowedVehicleClasses: arr(r.allowed_vehicle_classes) as VehicleClass[],
     allowedFuelKinds: arr(r.allowed_fuel_kinds),
@@ -99,6 +111,9 @@ export type RiderEligibilityRuleInput = {
   serviceEnabled: boolean;
   dlRequirement: DocRequirement;
   rcRequirement: DocRequirement;
+  evProofRequirement: DocRequirement;
+  ownershipProofRequirement: DocRequirement;
+  commercialProofRequirement: DocRequirement;
   commercialRequired: boolean;
   allowedVehicleClasses: VehicleClass[];
   allowedFuelKinds: string[];
@@ -116,12 +131,16 @@ export async function insertRiderEligibilityRule(
   const rows = await sql`
     INSERT INTO rider_service_eligibility_rules (
       geo_level, geo_ref_id, service_type, service_enabled,
-      dl_requirement, rc_requirement, commercial_required,
+      dl_requirement, rc_requirement,
+      ev_proof_requirement, ownership_proof_requirement, commercial_proof_requirement,
+      commercial_required,
       allowed_vehicle_classes, allowed_fuel_kinds, allowed_ownership,
       priority, is_active, effective_from, effective_to
     ) VALUES (
       ${args.level}::geo_pricing_level, ${args.refId}::uuid, ${args.service}, ${args.serviceEnabled},
-      ${args.dlRequirement}, ${args.rcRequirement}, ${args.commercialRequired},
+      ${args.dlRequirement}, ${args.rcRequirement},
+      ${args.evProofRequirement}, ${args.ownershipProofRequirement}, ${args.commercialProofRequirement},
+      ${args.commercialRequired},
       ${args.allowedVehicleClasses}::text[], ${args.allowedFuelKinds}::text[], ${args.allowedOwnership}::text[],
       ${args.priority}, ${args.isActive}, ${args.effectiveFrom}, ${args.effectiveTo}
     )
@@ -140,6 +159,9 @@ export async function updateRiderEligibilityRule(
       service_enabled = ${args.serviceEnabled},
       dl_requirement = ${args.dlRequirement},
       rc_requirement = ${args.rcRequirement},
+      ev_proof_requirement = ${args.evProofRequirement},
+      ownership_proof_requirement = ${args.ownershipProofRequirement},
+      commercial_proof_requirement = ${args.commercialProofRequirement},
       commercial_required = ${args.commercialRequired},
       allowed_vehicle_classes = ${args.allowedVehicleClasses}::text[],
       allowed_fuel_kinds = ${args.allowedFuelKinds}::text[],

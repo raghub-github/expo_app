@@ -23,6 +23,9 @@ type RuleRow = {
   allowed_vehicle_classes: string[] | null;
   allowed_fuel_kinds: string[] | null;
   allowed_ownership: string[] | null;
+  ev_proof_requirement: string | null;
+  ownership_proof_requirement: string | null;
+  commercial_proof_requirement: string | null;
   effective_from: string | null;
   effective_to: string | null;
 };
@@ -31,6 +34,11 @@ let tableMissing = false;
 
 function normReq(v: string | null | undefined): DocRequirement {
   return v === "optional" || v === "exempt" ? v : "required";
+}
+
+/** Proof gates default to exempt (no gate) when the column is null/legacy. */
+function normProof(v: string | null | undefined): DocRequirement {
+  return v === "required" || v === "optional" ? v : "exempt";
 }
 
 async function findEffectiveNode(
@@ -49,6 +57,7 @@ async function findEffectiveNode(
     const rows = await sql<RuleRow[]>`
       SELECT service_enabled, dl_requirement, rc_requirement, commercial_required,
              allowed_vehicle_classes, allowed_fuel_kinds, allowed_ownership,
+             ev_proof_requirement, ownership_proof_requirement, commercial_proof_requirement,
              effective_from, effective_to
       FROM rider_service_eligibility_rules
       WHERE geo_level = ${step.step_level}::geo_pricing_level
@@ -100,6 +109,9 @@ export async function resolveEffectiveEligibilityPolicy(args: {
       allowedOwnership:
         (r.allowed_ownership?.filter(Boolean) as OwnershipType[] | undefined) ??
         fallback.allowedOwnership,
+      evProofRequirement: normProof(r.ev_proof_requirement),
+      ownershipProofRequirement: normProof(r.ownership_proof_requirement),
+      commercialProofRequirement: normProof(r.commercial_proof_requirement),
       resolvedGeo: { level: hit.level, refId: hit.refId },
       ruleVersion: `${hit.level}:${hit.refId}`,
     };
