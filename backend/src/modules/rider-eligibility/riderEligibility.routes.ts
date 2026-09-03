@@ -17,6 +17,11 @@ import { resolveGeoLocation } from "../billing/geoLocationResolver.js";
 import { pickMostSpecificGeoAnchor } from "../ride-state-config/rideStateConfig.repository.js";
 import { resolveOnboardingDecision } from "./onboardingEligibility.js";
 import { resolveRiderOnboardingSummary } from "./onboardingEligibility.service.js";
+import {
+  insertOverride,
+  listOverridesForRider,
+  revokeOverride,
+} from "./riderEligibilityOverrides.repository.js";
 
 function requireInternalSecret(headers: Record<string, string | string[] | undefined>): boolean {
   const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
@@ -197,5 +202,52 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
     const summary = await resolveRiderOnboardingSummary(parsed.data.riderId);
     if (!summary) return reply.code(404).send({ error: "rider_not_found" });
     return reply.send(summary);
+  });
+
+  /* ── Admin ELIGIBILITY_OVERRIDE management (§31) — internal-secret gated ───────────── */
+
+  app.get("/rider-overrides", async (req, reply) => {
+    if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const riderId = Number((req.query as { riderId?: string })?.riderId);
+    if (!Number.isInteger(riderId) || riderId < 1) return reply.code(400).send({ error: "invalid_rider_id" });
+    return reply.send({ overrides: await listOverridesForRider(riderId) });
+  });
+
+  app.post("/rider-overrides", async (req, reply) => {
+    if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const parsed = z
+      .object({
+        riderId: z.number().int().positive(),
+        service: z.enum(["food", "parcel", "person_ride"]),
+        reason: z.string().trim().min(3).max(500),
+        createdByLabel: z.string().trim().max(200).optional().nullable(),
+        effectiveTo: z.string().datetime().optional().nullable(),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_request", details: parsed.error.flatten() });
+    const d = parsed.data;
+    const row = await insertOverride({
+      riderId: d.riderId,
+      service: d.service,
+      reason: d.reason,
+      createdByLabel: d.createdByLabel ?? null,
+      effectiveTo: d.effectiveTo ?? null,
+    });
+    return reply.send({ override: row });
+  });
+
+  app.post("/rider-overrides/revoke", async (req, reply) => {
+    if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const parsed = z.object({ id: z.number().int().positive(), riderId: z.number().int().positive() }).safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_request" });
+    const ok = await revokeOverride(parsed.data.id, parsed.data.riderId);
+    if (!ok) return reply.code(404).send({ error: "not_found" });
+    return reply.send({ ok: true });
   });
 }
