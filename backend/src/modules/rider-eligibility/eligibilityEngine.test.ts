@@ -44,10 +44,18 @@ test("FOOD: valid documents on a 3W do NOT make it food-eligible (verification �
   assert.ok(d.blocking.some((b) => b.code === "VEHICLE_CLASS_NOT_ALLOWED"));
 });
 
-test("FOOD: missing DL blocks (DL required); RC optional never blocks", () => {
+test("FOOD (default): DL + RC are OPTIONAL — a 2-wheeler with no documents is eligible", () => {
   const food = defaultPolicyForService("food");
-  assert.deepEqual(codes(food, input({ dl: "missing", rc: "missing" })), ["DL_REQUIRED_NOT_VERIFIED"]);
-  assert.equal(resolveRiderServiceEligibility(input({ rc: "missing" }), food).eligible, true);
+  // Lowest-barrier onboarding: neither missing DL nor missing RC blocks food by default.
+  assert.deepEqual(codes(food, input({ dl: "missing", rc: "missing" })), []);
+  assert.equal(resolveRiderServiceEligibility(input({ dl: "missing", rc: "missing" }), food).eligible, true);
+  // Even a failed DL doesn't block food while DL is optional.
+  assert.equal(resolveRiderServiceEligibility(input({ dl: "failed", rc: "missing" }), food).eligible, true);
+});
+
+test("FOOD (admin override): setting DL required makes a missing DL block again", () => {
+  const food = { ...defaultPolicyForService("food"), dlRequirement: "required" as const };
+  assert.deepEqual(codes(food, input({ dl: "missing" })), ["DL_REQUIRED_NOT_VERIFIED"]);
 });
 
 // ── PARCEL ──────────────────────────────────────────────────────────────

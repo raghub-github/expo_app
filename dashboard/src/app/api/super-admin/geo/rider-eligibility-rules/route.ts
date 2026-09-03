@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
       refId: d.refId,
       service: d.service as EligibilityService,
       serviceEnabled: d.serviceEnabled ?? true,
-      dlRequirement: d.dlRequirement ?? "required",
+      dlRequirement: d.dlRequirement ?? (d.service === "food" ? "optional" : "required"),
       rcRequirement: d.rcRequirement ?? (d.service === "food" ? "optional" : "required"),
       commercialRequired: d.commercialRequired ?? (d.service === "person_ride"),
       allowedVehicleClasses:
