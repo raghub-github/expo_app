@@ -3,8 +3,9 @@
  * used when no geo node (STATE→…→PINCODE) overrides them. These encode the stated
  * defaults but remain fully overridable per geo node in the policy table:
  *
- *  - FOOD: 2-wheeler ONLY (3W/4W never food-eligible), DL required, RC optional,
- *          non-commercial allowed. (Matches rider-dispatch-service-rules food rule.)
+ *  - FOOD: 2-wheeler ONLY (3W/4W never food-eligible), DL OPTIONAL, RC optional,
+ *          non-commercial allowed. (Easiest onboarding — cycles/e-bikes need no licence;
+ *          admin can set DL required per state. Matches rider-dispatch-service-rules food.)
  *  - PARCEL: 2W/3W/4W, DL required, RC required, commercial not required by default.
  *  - PERSON RIDE: 2W/3W/4W, DL required, RC required, COMMERCIAL REQUIRED by default
  *          (overridable to false per location — the key geo-configurable rule).
@@ -34,7 +35,7 @@ export const DEFAULT_SERVICE_ELIGIBILITY: Record<
 > = {
   food: {
     serviceEnabled: true,
-    dlRequirement: "required",
+    dlRequirement: "optional",
     rcRequirement: "optional",
     commercialRequired: false,
     allowedVehicleClasses: ["2_wheeler"],

@@ -106,7 +106,7 @@ const btnSecondary =
 function defaultsForService(service: EligibilityService) {
   return {
     serviceEnabled: true,
-    dlRequirement: "required" as DocRequirement,
+    dlRequirement: (service === "food" ? "optional" : "required") as DocRequirement,
     rcRequirement: (service === "food" ? "optional" : "required") as DocRequirement,
     commercialRequired: service === "person_ride",
     allowedVehicleClasses: (service === "food"

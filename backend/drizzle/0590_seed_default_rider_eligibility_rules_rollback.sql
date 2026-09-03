@@ -14,7 +14,7 @@ WHERE r.geo_level = 'state'::geo_pricing_level
   AND array_length(r.allowed_ownership, 1) = 2
   AND (
     (r.service_type = 'food'
-      AND r.dl_requirement = 'required' AND r.rc_requirement = 'optional'
+      AND r.dl_requirement = 'optional' AND r.rc_requirement = 'optional'
       AND r.commercial_required = false
       AND r.allowed_vehicle_classes = ARRAY['2_wheeler']::text[])
     OR (r.service_type = 'parcel'

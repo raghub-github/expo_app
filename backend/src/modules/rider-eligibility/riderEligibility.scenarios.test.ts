@@ -110,7 +110,7 @@ test("SCENARIO: Cashfree auto-verified DL counts as verified (no back-photo/manu
   assert.equal(docStateFromRow(EXPIRED_BUT_WAS_VERIFIED), "expired");
 });
 
-/* ── FOOD (2-wheeler only, DL required, RC optional) ───────────────────────────────── */
+/* ── FOOD (2-wheeler only, DL OPTIONAL + RC optional by default) ────────────────────── */
 
 test("SCENARIO: food · verified 2W bike, DL Cashfree-verified, NO RC → ELIGIBLE", () => {
   const d = resolveRiderServiceEligibility(
@@ -130,19 +130,27 @@ test("SCENARIO: food · 3-wheeler auto → NOT eligible (food is 2W only)", () =
   assert.ok(codes(d).includes("VEHICLE_CLASS_NOT_ALLOWED"));
 });
 
-test("SCENARIO: food · 2W but DL not submitted → NOT eligible (DL required)", () => {
+test("SCENARIO: food · 2W with NO documents at all → ELIGIBLE (DL + RC optional by default)", () => {
   const d = resolveRiderServiceEligibility(
     buildInput({ vehicleCategory: "2_wheeler", vehicleType: "bike" }),
     policy("food")
   );
-  assert.equal(d.eligible, false);
-  assert.ok(codes(d).includes("DL_REQUIRED_NOT_VERIFIED"));
+  assert.equal(d.eligible, true);
+  assert.deepEqual(codes(d), []);
 });
 
-test("SCENARIO: food · 2W, DL still pending manual review → NOT eligible (not verified yet)", () => {
+test("SCENARIO: food · 2W, DL still pending manual review → ELIGIBLE (DL optional; pending never blocks food)", () => {
   const d = resolveRiderServiceEligibility(
     buildInput({ vehicleCategory: "2_wheeler", vehicleType: "bike", dl: SUBMITTED_PENDING }),
     policy("food")
+  );
+  assert.equal(d.eligible, true);
+});
+
+test("SCENARIO: food · a STATE that set DL required → a 2W with no DL is NOT eligible (admin override works)", () => {
+  const d = resolveRiderServiceEligibility(
+    buildInput({ vehicleCategory: "2_wheeler", vehicleType: "bike" }),
+    policy("food", { dlRequirement: "required" })
   );
   assert.equal(d.eligible, false);
   assert.ok(codes(d).includes("DL_REQUIRED_NOT_VERIFIED"));
@@ -311,13 +319,22 @@ test("SCENARIO: brand-new rider (no vehicle, no docs) collects ALL relevant bloc
 });
 
 test("SCENARIO: a rejected DL is treated as failed (not merely missing) and blocks a DL-required service", () => {
+  // Parcel keeps DL required by default, so it demonstrates the failed-DL block.
   const d = resolveRiderServiceEligibility(
-    buildInput({ vehicleCategory: "2_wheeler", vehicleType: "bike", dl: REJECTED }),
-    policy("food")
+    buildInput({ vehicleCategory: "2_wheeler", vehicleType: "bike", dl: REJECTED, rc: MANUAL_APPROVED }),
+    policy("parcel")
   );
   assert.equal(d.eligible, false);
   assert.equal(d.dlState, "failed");
   assert.ok(codes(d).includes("DL_REQUIRED_NOT_VERIFIED"));
+
+  // On food (DL optional by default) the same rejected DL does NOT block.
+  const food = resolveRiderServiceEligibility(
+    buildInput({ vehicleCategory: "2_wheeler", vehicleType: "bike", dl: REJECTED }),
+    policy("food")
+  );
+  assert.equal(food.dlState, "failed");
+  assert.equal(food.eligible, true);
 });
 
 /* ── A realistic mixed rider evaluated across ALL THREE services at once ────────────── */

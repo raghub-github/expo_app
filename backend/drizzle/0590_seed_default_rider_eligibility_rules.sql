@@ -4,8 +4,9 @@
 -- so this is purely to surface + make them editable in the dashboard.
 --
 -- Real-life defaults (see rationale in the eligibility engine / dashboard):
---   FOOD        — 2-wheeler only; DL required, RC optional; commercial NOT required.
---                 (Food runs on personal motorbikes — licence needed, low RC scrutiny.)
+--   FOOD        — 2-wheeler only; DL OPTIONAL, RC optional; commercial NOT required.
+--                 (Easiest onboarding — cycles/e-bikes need no licence; admin can set DL
+--                  required per state. Food runs on personal 2-wheelers, low scrutiny.)
 --   PARCEL      — 2/3/4-wheeler; DL + RC required; commercial NOT required.
 --                 (Goods vehicle should be registered; small 2W parcel on private bikes OK.)
 --   PERSON_RIDE — 2/3/4-wheeler; DL + RC required; commercial REQUIRED.
@@ -39,7 +40,7 @@ SELECT
 FROM states s
 CROSS JOIN (
   VALUES
-    ('food',        'required', 'optional', false, ARRAY['2_wheeler']::text[]),
+    ('food',        'optional', 'optional', false, ARRAY['2_wheeler']::text[]),
     ('parcel',      'required', 'required', false, ARRAY['2_wheeler','3_wheeler','4_wheeler']::text[]),
     ('person_ride', 'required', 'required', true,  ARRAY['2_wheeler','3_wheeler','4_wheeler']::text[])
 ) AS v(service_type, dl_req, rc_req, commercial_required, vehicle_classes)
