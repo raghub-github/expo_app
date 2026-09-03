@@ -86,6 +86,19 @@ export type EligibilityBlock = {
   requiredAction?: string;
 };
 
+/** Canonical document identifiers a rider can be asked to submit/verify. */
+export type MissingDocumentCode = "DRIVING_LICENSE" | "REGISTRATION_CERTIFICATE";
+
+/** Which blocking codes correspond to a concrete missing/invalid document. */
+function missingDocsFromBlocking(blocking: EligibilityBlock[]): MissingDocumentCode[] {
+  const out = new Set<MissingDocumentCode>();
+  for (const b of blocking) {
+    if (b.code === "DL_REQUIRED_NOT_VERIFIED" || b.code === "DL_EXPIRED") out.add("DRIVING_LICENSE");
+    if (b.code === "RC_REQUIRED_NOT_VERIFIED" || b.code === "RC_EXPIRED") out.add("REGISTRATION_CERTIFICATE");
+  }
+  return [...out];
+}
+
 export type EligibilityDecision = {
   service: EligibilityService;
   eligible: boolean;
@@ -97,6 +110,8 @@ export type EligibilityDecision = {
   commercialRequired: boolean;
   /** All failed conditions, most-severe first (precedence order). */
   blocking: EligibilityBlock[];
+  /** Concrete documents the rider must submit/verify to clear the blocks (subset of blocking). */
+  missingDocuments: MissingDocumentCode[];
   resolvedGeo?: { level: string; refId: string } | null;
   ruleVersion?: string | null;
 };
@@ -230,6 +245,7 @@ export function resolveRiderServiceEligibility(
     rcState: input.rc,
     commercialRequired: policy.commercialRequired,
     blocking,
+    missingDocuments: missingDocsFromBlocking(blocking),
     resolvedGeo: policy.resolvedGeo ?? null,
     ruleVersion: policy.ruleVersion ?? null,
   };

@@ -4,7 +4,7 @@
  * geo policy for the order's location, and runs the deterministic engine. Order
  * assignment/acceptance calls this; the app is never trusted.
  */
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
 import { riderDocuments, riderVehicles } from "../../db/schema.js";
 import { resolveGeoLocation } from "../billing/geoLocationResolver.js";
@@ -55,6 +55,10 @@ export async function loadRiderEligibilityAttributes(
 ): Promise<RiderEligibilityInput> {
   const db = getDb();
 
+  // Read the rider's ACTIVE vehicle's declared attributes (class/fuel/ownership) — these are
+  // known at selection, independent of RC verification. A verified vehicle is preferred when
+  // present, but an unverified one still supplies the attributes so a service whose RC is
+  // optional (e.g. food) can be evaluated. Document VERIFICATION is handled separately below.
   const [vehicle] = await db
     .select({
       vehicleType: riderVehicles.vehicleType,
@@ -68,10 +72,10 @@ export async function loadRiderEligibilityAttributes(
       and(
         eq(riderVehicles.riderId, riderId),
         eq(riderVehicles.isActive, true),
-        eq(riderVehicles.verified, true),
         isNull(riderVehicles.deletedAt)
       )
     )
+    .orderBy(desc(riderVehicles.verified))
     .limit(1);
 
   const docs = await db
@@ -80,20 +84,31 @@ export async function loadRiderEligibilityAttributes(
       verified: riderDocuments.verified,
       verificationMethod: riderDocuments.verificationMethod,
       verificationStatus: riderDocuments.verificationStatus,
+      metadata: riderDocuments.metadata,
     })
     .from(riderDocuments)
     .where(eq(riderDocuments.riderId, riderId));
 
-  const dl = docVerified(docs.find((d) => d.docType === "dl"));
-  const rc = docVerified(docs.find((d) => d.docType === "rc"));
+  const now = Date.now();
+  const isDocExpired = (row: (typeof docs)[number] | undefined): boolean => {
+    const raw = (row?.metadata as { expiresAt?: string } | null | undefined)?.expiresAt;
+    if (!raw) return false;
+    const t = new Date(raw).getTime();
+    return Number.isFinite(t) && t < now;
+  };
+
+  const dlRow = docs.find((d) => d.docType === "dl");
+  const rcRow = docs.find((d) => d.docType === "rc");
+  const dl = docVerified(dlRow);
+  const rc = docVerified(rcRow);
 
   return {
     vehicleClass: vehicleClassFromCategory(vehicle?.vehicleCategory ?? null, vehicle?.vehicleType ?? null),
     vehicleType: vehicle?.vehicleType ?? null,
     fuelKind: vehicle?.fuelType ?? null,
     ownership: ownershipFromVehicle(vehicle?.isCommercial ?? false),
-    dl: docStateFrom(dl),
-    rc: docStateFrom(rc),
+    dl: docStateFrom({ ...dl, expired: isDocExpired(dlRow) }),
+    rc: docStateFrom({ ...rc, expired: isDocExpired(rcRow) }),
   };
 }
 
