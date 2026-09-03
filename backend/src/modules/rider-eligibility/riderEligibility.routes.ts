@@ -16,6 +16,7 @@ import { normalizeFuelKind, ALL_ELIGIBILITY_SERVICES } from "./serviceEligibilit
 import { resolveGeoLocation } from "../billing/geoLocationResolver.js";
 import { pickMostSpecificGeoAnchor } from "../ride-state-config/rideStateConfig.repository.js";
 import { resolveOnboardingDecision } from "./onboardingEligibility.js";
+import { resolveRiderOnboardingSummary } from "./onboardingEligibility.service.js";
 
 function requireInternalSecret(headers: Record<string, string | string[] | undefined>): boolean {
   const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
@@ -178,5 +179,23 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
     });
 
     return reply.send({ onboarding, services, resolvedGeo });
+  });
+
+  /**
+   * POST /v1/rider-eligibility/rider-summary (§41) — the REAL onboarding + eligibility
+   * summary for a specific rider, for the agent/super-admin dashboard. Internal-secret
+   * gated (the dashboard proxies with the actor's admin session).
+   */
+  app.post("/rider-summary", async (req, reply) => {
+    if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const parsed = z.object({ riderId: z.number().int().positive() }).safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_request" });
+    }
+    const summary = await resolveRiderOnboardingSummary(parsed.data.riderId);
+    if (!summary) return reply.code(404).send({ error: "rider_not_found" });
+    return reply.send(summary);
   });
 }
