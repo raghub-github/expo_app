@@ -14,8 +14,6 @@ import Animated, {
   useAnimatedStyle,
   withTiming,
   withDelay,
-  withRepeat,
-  withSequence,
   withSpring,
   Easing,
 } from "react-native-reanimated";
@@ -33,6 +31,7 @@ import { HEADER_PADDING_TOP, HEADER_VERTICAL_PADDING } from "@/constants/layout"
 import { useRecentSearchStore } from "@/store/recentSearchStore";
 import { useLocationStore } from "@/store/locationStore";
 import { useDebouncedSearch, type SearchResults } from "@/hooks/useDebouncedSearch";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { VoiceInputButton } from "@/components/VoiceInputButton";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { BrandingFooter } from "@/components/BrandingFooter";
@@ -53,7 +52,7 @@ import {
 } from "@/constants/search";
 import { useAppAssetSource } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
-import type { MerchantSummary } from "@/services/merchant.service";
+import { merchantService, type MerchantSummary } from "@/services/merchant.service";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
 
 const { width, height } = Dimensions.get("window");
@@ -63,9 +62,8 @@ const GRID_COLS = 3;
 const GRID_GAP = 14;
 const CARD_WIDTH = (width - PAD * 2 - GRID_GAP * (GRID_COLS - 1)) / GRID_COLS;
 const CARD_IMAGE_SIZE = CARD_WIDTH;
-const SEARCH_CATEGORY_STORE_TYPE = "FOOD";
-
 const PLACEHOLDER = "Restaurant name or a dish...";
+const GROCERY_PLACEHOLDER = "Grocery store or item...";
 const ACCENT_RED = "#E23744";
 const SLOGAN_PINK = "#E11D8C";
 const CHIP_BORDER = "#E9D5FF";
@@ -145,9 +143,18 @@ function normalizeSearchParam(raw: string | string[] | undefined): string {
 export default function SearchScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const params = useLocalSearchParams<{ voice?: string; q?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    voice?: string;
+    q?: string | string[];
+    storeType?: string | string[];
+  }>();
   const insets = useSafeAreaInsets();
   const voiceMode = params.voice === "1";
+  const searchStoreType = useMemo(() => {
+    const raw = Array.isArray(params.storeType) ? params.storeType[0] : params.storeType;
+    const st = String(raw ?? "FOOD").trim().toUpperCase();
+    return st === "GROCERY" ? "GROCERY" : "FOOD";
+  }, [params.storeType]);
 
   const [query, setQuery] = React.useState(() => normalizeSearchParam(params.q));
   const inputRef = useRef<TextInput>(null);
@@ -160,12 +167,36 @@ export default function SearchScreen() {
   const { coords } = useLocationStore();
   const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
   const hydrateDietaryPreferences = useDietaryPreferenceStore((s) => s.hydrate);
-  const { results, isLoading } = useDebouncedSearch(
+  const { results, isLoading, isError, errorMessage, refetch } = useDebouncedSearch(
     query,
     coords?.latitude,
     coords?.longitude,
-    vegOnly
+    vegOnly,
+    searchStoreType
   );
+
+  const debouncedSuggestQ = useDebouncedValue(query.trim(), 150);
+  const { data: suggestData } = useQuery({
+    queryKey: [
+      "food-search-suggest",
+      debouncedSuggestQ,
+      coords?.latitude,
+      coords?.longitude,
+      searchStoreType,
+    ],
+    queryFn: ({ signal }) =>
+      merchantService.searchSuggest({
+        q: debouncedSuggestQ,
+        limit: 8,
+        lat: coords?.latitude,
+        lng: coords?.longitude,
+        storeType: searchStoreType,
+        signal,
+      }),
+    enabled: debouncedSuggestQ.length >= 2,
+    staleTime: 8_000,
+  });
+  const suggestions = suggestData?.suggestions ?? [];
   const [showSkeleton, setShowSkeleton] = React.useState(false);
   useEffect(() => {
     if (!isLoading) {
@@ -185,11 +216,11 @@ export default function SearchScreen() {
   }, [hydrateDietaryPreferences]);
 
   const { data: mindCategoriesResponse, isPending: mindCategoriesPending } = useQuery({
-    queryKey: userAppCategoriesQueryKey(SEARCH_CATEGORY_STORE_TYPE),
-    queryFn: () => fetchUserAppCategoriesWithCache(SEARCH_CATEGORY_STORE_TYPE),
+    queryKey: userAppCategoriesQueryKey(searchStoreType),
+    queryFn: () => fetchUserAppCategoriesWithCache(searchStoreType),
     ...USER_APP_CATEGORIES_QUERY_OPTIONS,
-    initialData: () => readSyncUserAppCategories(SEARCH_CATEGORY_STORE_TYPE),
-    initialDataUpdatedAt: () => getUserAppCategoriesCachedAt(SEARCH_CATEGORY_STORE_TYPE),
+    initialData: () => readSyncUserAppCategories(searchStoreType),
+    initialDataUpdatedAt: () => getUserAppCategoriesCachedAt(searchStoreType),
     placeholderData: (previousData) => previousData,
   });
 
@@ -248,11 +279,17 @@ export default function SearchScreen() {
 
   const handleDiscoveryChipPress = (slug: string, categoryName: string) => {
     addRecentSearch(categoryName);
-    router.push(`/home/category/${slug}`);
+    router.push({
+      pathname: `/home/category/${slug}`,
+      params: { storeType: searchStoreType },
+    });
   };
 
   const handleCategoryPress = (slug: string) => {
-    router.push(`/home/category/${slug}`);
+    router.push({
+      pathname: `/home/category/${slug}`,
+      params: { storeType: searchStoreType },
+    });
   };
 
   // `query` changes on every keystroke; reading it via a ref (instead of as a
@@ -265,9 +302,12 @@ export default function SearchScreen() {
   const handleCategoryResultPress = useCallback(
     (slug: string) => {
       addRecentSearch(queryRef.current.trim());
-      router.push(`/home/category/${slug}`);
+      router.push({
+        pathname: `/home/category/${slug}`,
+        params: { storeType: searchStoreType },
+      });
     },
-    [router, addRecentSearch]
+    [router, addRecentSearch, searchStoreType]
   );
 
   const handleDishPress = useCallback(
@@ -305,7 +345,7 @@ export default function SearchScreen() {
           <TextInput
             ref={inputRef}
             style={styles.searchInput}
-            placeholder={PLACEHOLDER}
+            placeholder={searchStoreType === "GROCERY" ? GROCERY_PLACEHOLDER : PLACEHOLDER}
             placeholderTextColor="#9CA3AF"
             value={query}
             onChangeText={setQuery}
@@ -443,9 +483,33 @@ export default function SearchScreen() {
             <View style={styles.skeletonWrap}>
               <RestaurantListSkeleton count={5} />
             </View>
+          ) : isError ? (
+            <View style={styles.emptyStateOuter}>
+              <AppText style={styles.resultSectionTitle}>Couldn’t search</AppText>
+              <AppText style={styles.resultSectionEmpty}>
+                {errorMessage ?? "Something went wrong. Please try again."}
+              </AppText>
+              <TouchableOpacity
+                style={styles.retryBtn}
+                onPress={() => void refetch()}
+                activeOpacity={0.85}
+              >
+                <AppText style={styles.retryBtnText}>Retry</AppText>
+              </TouchableOpacity>
+            </View>
           ) : results ? (
             <SearchResultsList
               results={results}
+              storeType={searchStoreType}
+              suggestions={suggestions}
+              onSuggestionPress={(text) => {
+                setQuery(text);
+                addRecentSearch(text);
+              }}
+              onDidYouMeanPress={(text) => {
+                setQuery(text);
+                addRecentSearch(text);
+              }}
               onCategoryPress={handleCategoryResultPress}
               onDishPress={handleDishPress}
               onRestaurantPress={handleRestaurantPress}
@@ -462,12 +526,20 @@ export default function SearchScreen() {
 
 function SearchResultsList({
   results,
+  storeType = "FOOD",
+  suggestions = [],
+  onSuggestionPress,
+  onDidYouMeanPress,
   onCategoryPress,
   onDishPress,
   onRestaurantPress,
   onExplorePopular,
 }: {
   results: SearchResults;
+  storeType?: string;
+  suggestions?: Array<{ type: string; text: string; storeId?: string; itemId?: string }>;
+  onSuggestionPress?: (text: string) => void;
+  onDidYouMeanPress?: (text: string) => void;
   onCategoryPress: (slug: string) => void;
   onDishPress: (dish: SearchDish) => void;
   onRestaurantPress: (id: string) => void;
@@ -475,15 +547,61 @@ function SearchResultsList({
 }) {
   const { category, dishes, restaurants } = results;
   const hasAny = !!(category || dishes.length > 0 || restaurants.length > 0);
+  const isGrocery = storeType === "GROCERY";
+  const itemsLabel = isGrocery ? "Items" : "Dishes";
+  const storesLabel = isGrocery ? "Stores" : "Restaurants";
   const defaultCategoryImage = useAppAssetSource(CX.search.default);
   const categoryImageUrl = category ? searchCategoryImageUrl(category.slug) : null;
   const categoryImageSource = categoryImageUrl
     ? { uri: categoryImageUrl }
     : defaultCategoryImage;
 
+  const typoBanner =
+    results.searchInsteadOriginal && results.correctedQuery ? (
+      <View style={styles.typoBanner}>
+        <AppText style={styles.typoBannerText}>
+          Showing results for{" "}
+          <AppText style={styles.typoBannerEmph}>{results.correctedQuery}</AppText>
+        </AppText>
+        <TouchableOpacity
+          onPress={() => onDidYouMeanPress?.(results.searchInsteadOriginal!)}
+          hitSlop={8}
+        >
+          <AppText style={styles.typoBannerLink}>
+            Search instead for {results.searchInsteadOriginal}
+          </AppText>
+        </TouchableOpacity>
+      </View>
+    ) : results.didYouMean ? (
+      <View style={styles.typoBanner}>
+        <TouchableOpacity onPress={() => onDidYouMeanPress?.(results.didYouMean!)} hitSlop={8}>
+          <AppText style={styles.typoBannerText}>
+            Did you mean{" "}
+            <AppText style={styles.typoBannerEmph}>{results.didYouMean}</AppText>?
+          </AppText>
+        </TouchableOpacity>
+      </View>
+    ) : null;
+
   if (!hasAny) {
     return (
       <View style={styles.emptyStateOuter}>
+        {typoBanner}
+        {suggestions.length > 0 ? (
+          <View style={styles.suggestWrap}>
+            {suggestions.map((s) => (
+              <TouchableOpacity
+                key={`${s.type}:${s.text}`}
+                style={styles.suggestRow}
+                onPress={() => onSuggestionPress?.(s.text)}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="search-outline" size={16} color={GatiMitraColors.textSecondary} />
+                <AppText style={styles.suggestText}>{s.text}</AppText>
+              </TouchableOpacity>
+            ))}
+          </View>
+        ) : null}
         <SearchEmptyState
           variant="no-results"
           onExplorePopular={onExplorePopular}
@@ -492,9 +610,31 @@ function SearchResultsList({
     );
   }
 
+  const dishSection =
+    dishes.length > 0 ? (
+      <>
+        <AppText style={styles.resultSectionTitle}>{itemsLabel}</AppText>
+        {dishes.slice(0, 12).map((d) => (
+          <DishRow key={d.id} dish={d} onPress={onDishPress} />
+        ))}
+      </>
+    ) : null;
+
+  const storeSection =
+    restaurants.length > 0 ? (
+      <>
+        <AppText style={styles.resultSectionTitle}>
+          {isGrocery ? "Stores based on your search" : "Restaurants based on your search"}
+        </AppText>
+        {restaurants.map((r) => (
+          <SearchRestaurantCard key={r.id} restaurant={r} onPress={onRestaurantPress} />
+        ))}
+      </>
+    ) : null;
+
   return (
     <View style={styles.resultsWrap}>
-      {/* 1. Category result (if available) – fixed order */}
+      {typoBanner}
       {category && (
         <TouchableOpacity
           style={[styles.categoryCard, GatiMitraColors.searchShadow]}
@@ -509,40 +649,29 @@ function SearchResultsList({
           />
           <View style={styles.categoryCardContent}>
             <AppText style={styles.categoryCardName}>{category.name}</AppText>
-            <AppText style={styles.categoryCardCta}>See all restaurants</AppText>
+            <AppText style={styles.categoryCardCta}>
+              See all {storesLabel.toLowerCase()}
+            </AppText>
           </View>
           <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
         </TouchableOpacity>
       )}
-
-      {/* 2. Dish results – section always present for consistent layout */}
-      <AppText style={styles.resultSectionTitle}>Dishes</AppText>
-      {dishes.length > 0 ? (
-        dishes.map((d) => <DishRow key={d.id} dish={d} onPress={onDishPress} />)
-      ) : (
-        <AppText style={styles.resultSectionEmpty}>No dishes found</AppText>
-      )}
-
-      {/* 3. Restaurant results – section always present for consistent layout */}
-      <AppText style={styles.resultSectionTitle}>Restaurants</AppText>
       {restaurants.length > 0 ? (
-        restaurants.map((r) => (
-          <RestaurantRow key={r.id} restaurant={r} onPress={onRestaurantPress} />
-        ))
+        <>
+          {storeSection}
+          {dishSection}
+        </>
       ) : (
-        <AppText style={styles.resultSectionEmpty}>No restaurants found</AppText>
+        <>
+          {dishSection}
+          {storeSection}
+        </>
       )}
     </View>
   );
 }
 
-const EMPTY_IMAGE_HEIGHT = 268;
-const EMPTY_STATE_PAD = 24;
-const EMPTY_IMAGE_RADIUS = 22;
-const ENTRANCE_DURATION = 360;
 const EASE_OUT_CUBIC = Easing.bezier(0.33, 1, 0.68, 1);
-const FLOAT_AMPLITUDE = 6;
-const FLOAT_DURATION_MS = 2800;
 
 function SearchEmptyState({
   variant = "default",
@@ -551,45 +680,22 @@ function SearchEmptyState({
   variant?: "default" | "no-results";
   onExplorePopular?: () => void;
 }) {
-  const emptyImage = useAppAssetSource(CX.common.emptySearch);
-  const imageOpacity = useSharedValue(0);
-  const imageTranslateY = useSharedValue(24);
   const titleOpacity = useSharedValue(0);
   const titleTranslateY = useSharedValue(12);
   const subtitleOpacity = useSharedValue(0);
   const subtitleTranslateY = useSharedValue(10);
   const buttonScale = useSharedValue(0.92);
   const buttonOpacity = useSharedValue(0);
-  const floatOffset = useSharedValue(0);
   const buttonPressScale = useSharedValue(1);
 
   React.useEffect(() => {
-    imageOpacity.value = withTiming(1, { duration: ENTRANCE_DURATION, easing: EASE_OUT_CUBIC });
-    imageTranslateY.value = withTiming(0, { duration: ENTRANCE_DURATION, easing: EASE_OUT_CUBIC });
-    titleOpacity.value = withDelay(120, withTiming(1, { duration: 320, easing: EASE_OUT_CUBIC }));
-    titleTranslateY.value = withDelay(120, withTiming(0, { duration: 320, easing: EASE_OUT_CUBIC }));
-    subtitleOpacity.value = withDelay(200, withTiming(1, { duration: 320, easing: EASE_OUT_CUBIC }));
-    subtitleTranslateY.value = withDelay(200, withTiming(0, { duration: 320, easing: EASE_OUT_CUBIC }));
-    buttonOpacity.value = withDelay(280, withTiming(1, { duration: 320, easing: EASE_OUT_CUBIC }));
-    buttonScale.value = withDelay(280, withSpring(1, { damping: 16, stiffness: 200 }));
-
-    floatOffset.value = withRepeat(
-      withSequence(
-        withTiming(-FLOAT_AMPLITUDE, { duration: FLOAT_DURATION_MS / 2, easing: Easing.inOut(Easing.ease) }),
-        withTiming(0, { duration: FLOAT_DURATION_MS / 2, easing: Easing.inOut(Easing.ease) })
-      ),
-      -1,
-      true
-    );
+    titleOpacity.value = withDelay(40, withTiming(1, { duration: 320, easing: EASE_OUT_CUBIC }));
+    titleTranslateY.value = withDelay(40, withTiming(0, { duration: 320, easing: EASE_OUT_CUBIC }));
+    subtitleOpacity.value = withDelay(120, withTiming(1, { duration: 320, easing: EASE_OUT_CUBIC }));
+    subtitleTranslateY.value = withDelay(120, withTiming(0, { duration: 320, easing: EASE_OUT_CUBIC }));
+    buttonOpacity.value = withDelay(200, withTiming(1, { duration: 320, easing: EASE_OUT_CUBIC }));
+    buttonScale.value = withDelay(200, withSpring(1, { damping: 16, stiffness: 200 }));
   });
-
-  const imageAnimatedStyle = useAnimatedStyle(() => ({
-    opacity: imageOpacity.value,
-    transform: [
-      { translateY: imageTranslateY.value },
-      { translateY: floatOffset.value },
-    ],
-  }));
 
   const titleWrapAnimatedStyle = useAnimatedStyle(() => ({
     opacity: titleOpacity.value,
@@ -622,32 +728,7 @@ function SearchEmptyState({
 
   return (
     <View style={styles.emptyStateWrap}>
-      {/* Soft radial-style gradient glow behind illustration */}
-      <View style={styles.emptyStateGlowWrap} pointerEvents="none">
-        <LinearGradient
-          colors={["transparent", GatiMitraColors.mintSoft + "35", GatiMitraColors.mintSoft + "18", "transparent"]}
-          style={styles.emptyStateGlow}
-        />
-      </View>
-
-      {/* Very subtle floating food icons (5–8% opacity) */}
-      <View style={styles.emptyStateFloatingIcons} pointerEvents="none">
-        <Ionicons name="pizza-outline" size={28} color={GatiMitraColors.emerald} style={[styles.floatingIcon, styles.floatingIcon1]} />
-        <Ionicons name="ice-cream-outline" size={24} color={GatiMitraColors.emerald} style={[styles.floatingIcon, styles.floatingIcon2]} />
-        <Ionicons name="restaurant-outline" size={26} color={GatiMitraColors.emerald} style={[styles.floatingIcon, styles.floatingIcon3]} />
-      </View>
-
       <View style={styles.emptyStateContent}>
-        <Animated.View style={[styles.emptyStateImageWrap, imageAnimatedStyle]}>
-          {emptyImage ? (
-            <Image
-              source={emptyImage}
-              style={[styles.emptyStateImage, { height: EMPTY_IMAGE_HEIGHT }]}
-              contentFit="contain"
-            />
-          ) : null}
-        </Animated.View>
-
         <Animated.View style={[titleWrapAnimatedStyle, styles.emptyStateTitleWrap]}>
           <AppText style={styles.emptyStateTitle}>
             {variant === "no-results"
@@ -684,7 +765,6 @@ function SearchEmptyState({
           </Animated.View>
         )}
 
-        {/* Thin soft divider above branding */}
         <View style={styles.emptyStateDivider} />
       </View>
     </View>
@@ -724,33 +804,68 @@ const RestaurantRow = memo(function RestaurantRow({
   restaurant: MerchantSummary;
   onPress: (id: string) => void;
 }) {
+  return <SearchRestaurantCard restaurant={restaurant} onPress={onPress} />;
+});
+
+const SearchRestaurantCard = memo(function SearchRestaurantCard({
+  restaurant,
+  onPress,
+}: {
+  restaurant: MerchantSummary;
+  onPress: (id: string) => void;
+}) {
   const defaultImg = useAppAssetSource(CX.common.defaultImage);
-  const imageUrl = (restaurant as { imageUrl?: string }).imageUrl;
+  const imageUrl =
+    restaurant.displayImage ||
+    restaurant.banner_url ||
+    (restaurant as { imageUrl?: string }).imageUrl;
   const source = imageUrl ? { uri: imageUrl } : defaultImg;
+  const cuisine = restaurant.cuisines?.filter(Boolean).slice(0, 2).join(" • ");
+  const dist =
+    restaurant.distanceKm != null && Number.isFinite(restaurant.distanceKm)
+      ? `${restaurant.distanceKm < 10 ? restaurant.distanceKm.toFixed(1) : Math.round(restaurant.distanceKm)} km`
+      : null;
+  const rating =
+    restaurant.avgRating != null && Number(restaurant.avgRating) > 0
+      ? Number(restaurant.avgRating).toFixed(1)
+      : null;
+
   return (
     <TouchableOpacity
-      style={styles.resultRow}
+      style={styles.searchStoreCard}
       onPress={() => onPress(restaurant.id)}
-      activeOpacity={0.8}
+      activeOpacity={0.88}
     >
-        {source ? (
+      {source ? (
         <Image
-        source={source}
-        style={styles.resultRowImage}
-        contentFit="cover"
-        cachePolicy="memory-disk"
-      />
-        ) : (
-        <View style={styles.resultRowImage} />
-        )}
-      <View style={styles.resultRowText}>
-        <AppText style={styles.resultRowTitle} numberOfLines={1}>{restaurant.name}</AppText>
-        {(restaurant.avgRating != null || (restaurant as { rating?: number }).rating != null) && (
-          <View style={styles.ratingRow}>
-            <Ionicons name="star" size={14} color={GatiMitraColors.emerald} />
-            <AppText style={styles.ratingText}>{restaurant.avgRating ?? (restaurant as { rating?: number }).rating}</AppText>
-          </View>
-        )}
+          source={source}
+          style={styles.searchStoreImage}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+        />
+      ) : (
+        <View style={styles.searchStoreImage} />
+      )}
+      <View style={styles.searchStoreBody}>
+        <AppText style={styles.searchStoreName} numberOfLines={1}>
+          {restaurant.name}
+        </AppText>
+        {cuisine ? (
+          <AppText style={styles.searchStoreMeta} numberOfLines={1}>
+            {cuisine}
+          </AppText>
+        ) : null}
+        <View style={styles.searchStoreMetaRow}>
+          {rating ? (
+            <View style={styles.searchStoreRating}>
+              <Ionicons name="star" size={11} color="#fff" />
+              <AppText style={styles.searchStoreRatingText}>{rating}</AppText>
+            </View>
+          ) : null}
+          {dist ? (
+            <AppText style={styles.searchStoreMeta}>{dist}</AppText>
+          ) : null}
+        </View>
       </View>
       <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
     </TouchableOpacity>
@@ -954,6 +1069,61 @@ const styles = StyleSheet.create({
     paddingHorizontal: PAD,
     paddingTop: 16,
   },
+  typoBanner: {
+    marginBottom: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    gap: 4,
+  },
+  typoBannerText: {
+    fontSize: 14,
+    color: "#475569",
+  },
+  typoBannerEmph: {
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+  },
+  typoBannerLink: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: ACCENT_RED,
+    marginTop: 2,
+  },
+  suggestWrap: {
+    marginBottom: 14,
+    gap: 2,
+  },
+  suggestRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E5E7EB",
+  },
+  suggestText: {
+    fontSize: 15,
+    color: GatiMitraColors.textPrimary,
+    flex: 1,
+  },
+  retryBtn: {
+    marginTop: 16,
+    alignSelf: "center",
+    backgroundColor: ACCENT_RED,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 999,
+  },
+  retryBtnText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 14,
+  },
   categoryCard: {
     flexDirection: "row",
     alignItems: "center",
@@ -1001,66 +1171,17 @@ const styles = StyleSheet.create({
   },
   emptyStateWrap: {
     flex: 1,
-    minHeight: height * 0.72,
+    minHeight: height * 0.55,
     backgroundColor: GatiMitraColors.background,
     justifyContent: "center",
     alignItems: "center",
     paddingVertical: 48,
     paddingHorizontal: 24,
-    overflow: "visible",
   },
-  emptyStateGlowWrap: {
-    position: "absolute",
-    top: "50%",
-    left: "50%",
-    marginLeft: -width * 0.65,
-    marginTop: -height * 0.38,
-    width: width * 1.3,
-    height: height * 0.55,
-  },
-  emptyStateGlow: {
-    flex: 1,
-    opacity: 0.7,
-    borderRadius: width,
-  },
-  emptyStateFloatingIcons: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    opacity: 0.065,
-  },
-  floatingIcon: { position: "absolute" },
-  floatingIcon1: { top: "20%", left: "6%" },
-  floatingIcon2: { top: "26%", right: "8%" },
-  floatingIcon3: { bottom: "36%", left: "10%" },
   emptyStateContent: {
     width: "100%",
     maxWidth: 340,
     alignItems: "center",
-    zIndex: 1,
-  },
-  emptyStateImageWrap: {
-    width: "100%",
-    alignSelf: "stretch",
-    borderRadius: EMPTY_IMAGE_RADIUS,
-    overflow: "hidden",
-    marginBottom: 32,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.06,
-        shadowRadius: 20,
-      },
-      android: { elevation: 6 },
-      default: {},
-    }),
-  },
-  emptyStateImage: {
-    width: "100%",
-    backgroundColor: GatiMitraColors.cardBg,
   },
   emptyStateTitleWrap: {
     marginBottom: 12,
@@ -1138,6 +1259,58 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: GatiMitraColors.border,
     ...GatiMitraColors.searchShadow,
+  },
+  searchStoreCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: GatiMitraColors.cardBg,
+    borderRadius: 16,
+    padding: 10,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: GatiMitraColors.border,
+    ...GatiMitraColors.searchShadow,
+  },
+  searchStoreImage: {
+    width: 88,
+    height: 88,
+    borderRadius: 12,
+    backgroundColor: "#F0F0F0",
+  },
+  searchStoreBody: {
+    flex: 1,
+    marginLeft: 12,
+    marginRight: 6,
+    gap: 4,
+  },
+  searchStoreName: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+  },
+  searchStoreMeta: {
+    fontSize: 13,
+    color: GatiMitraColors.textSecondary,
+  },
+  searchStoreMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 2,
+  },
+  searchStoreRating: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "#16A34A",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  searchStoreRatingText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#fff",
   },
   resultRowImage: {
     width: 56,

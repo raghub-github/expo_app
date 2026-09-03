@@ -108,8 +108,10 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   const foodBlocked = Boolean(accountBlocks.food);
   const bottomPad = resolveTabBarBottomInset(rawBottom);
 
+  // Always render the food tab so the bar never reflows when the async
+  // geo-availability check resolves.  Disabled food tab is styled but not tappable.
   const visibleRoutes = state.routes.filter(
-    (route) => route.name !== "offers" && (route.name !== "food" || foodEnabled)
+    (route) => route.name !== "offers"
   );
 
   useEffect(() => {
@@ -131,6 +133,7 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
           const focused = state.routes[state.index]?.name === route.name;
           const tab = getTabConfig(route.name);
           const onPress = () => {
+            if (route.name === "food" && !foodEnabled) return;
             if (route.name === "food") {
               if (foodBlocked) {
                 openBlockSheet({
@@ -156,7 +159,7 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
             navigation.emit({ type: "tabLongPress", target: route.key });
           };
 
-          const foodTabDisabled = route.name === "food" && foodBlocked;
+          const foodTabDisabled = route.name === "food" && (foodBlocked || !foodEnabled);
 
           return (
             <Pressable

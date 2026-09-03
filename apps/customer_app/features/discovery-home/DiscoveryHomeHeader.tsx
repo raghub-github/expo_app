@@ -8,12 +8,14 @@ import { View, TouchableOpacity, StyleSheet, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
+  cancelAnimation,
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
   withSequence,
   withTiming,
 } from "react-native-reanimated";
+import { useIsFocused } from "@react-navigation/native";
 import { useRouter } from "expo-router";
 import { AppText } from "@/components/AppText";
 import { useWalletBalance } from "@/hooks/useWalletBalance";
@@ -63,6 +65,7 @@ export function DiscoveryHomeHeader({
   const balanceQ = useWalletBalance();
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
   const micScale = useSharedValue(1);
+  const isScreenFocused = useIsFocused();
 
   const balance =
     balanceQ.data?.available_balance ??
@@ -71,19 +74,31 @@ export function DiscoveryHomeHeader({
   const displayAmount = formatPillBalance(balance);
 
   useEffect(() => {
+    if (!isScreenFocused) return;
     const id = setInterval(() => {
       setPlaceholderIndex((i) => (i + 1) % PLACEHOLDERS.length);
     }, 3500);
     return () => clearInterval(id);
-  }, []);
+  }, [isScreenFocused]);
 
   useEffect(() => {
+    if (!isScreenFocused) {
+      cancelAnimation(micScale);
+      micScale.value = 1;
+      return;
+    }
+
     micScale.value = withRepeat(
       withSequence(withTiming(1.08, { duration: 800 }), withTiming(1, { duration: 800 })),
       -1,
       true
     );
-  }, [micScale]);
+
+    return () => {
+      cancelAnimation(micScale);
+      micScale.value = 1;
+    };
+  }, [micScale, isScreenFocused]);
 
   const micStyle = useAnimatedStyle(() => ({
     transform: [{ scale: micScale.value }],

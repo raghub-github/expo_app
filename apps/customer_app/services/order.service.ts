@@ -585,7 +585,7 @@ export const orderService = {
 
   async cancelFoodOrder(
     orderId: string,
-    payload: { reasonCode: string; reasonText: string }
+    payload: { reasonCode: string; reasonText: string; expectedRefundAmount?: number }
   ): Promise<{ orderId: string; status: string }> {
     const { data } = await api.post<{ orderId: string; status: string }>(
       `${ORDERS_PREFIX}/${orderId}/cancel`,

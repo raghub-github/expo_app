@@ -5,12 +5,14 @@
 import PDFDocument from "pdfkit";
 import {
   buildCustomerInvoiceNumber,
+  readOrderInvoiceGstComponent,
   type CustomerOrderInvoiceInput,
 } from "./customer-order-tax-invoice.js";
 import {
   getInvoiceSignatureSource,
   type InvoiceSignatureSource,
 } from "./invoice-signature-source.js";
+import { readStoreTypeFromBillingSnapshot } from "./store-type-display.js";
 
 type GstLine = {
   taxable: number;
@@ -24,11 +26,6 @@ const DEFAULT_GSTIN = "10AAMCG7962L1Z7";
 const DEFAULT_CIN = "U62099BR2026PTC082614";
 const DEFAULT_PAN = "AAMCG7962L";
 
-function num(v: unknown): number {
-  const n = typeof v === "number" ? v : typeof v === "string" ? parseFloat(v) : NaN;
-  return Number.isFinite(n) ? Math.max(0, n) : 0;
-}
-
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
@@ -37,25 +34,25 @@ function fmtInr(n: number): string {
   return round2(n).toFixed(2);
 }
 
-function readGstComponent(
-  snap: Record<string, unknown>,
-  key: "platform" | "delivery",
-  feeKey: "platform_fee" | "delivery_fee"
-): GstLine {
-  const gc =
-    snap.gst_components && typeof snap.gst_components === "object"
-      ? (snap.gst_components as Record<string, unknown>)
-      : null;
-  const raw =
-    gc?.[key] && typeof gc[key] === "object"
-      ? (gc[key] as Record<string, unknown>)
-      : null;
-  const taxable = num(raw?.taxable_value) || num(snap[feeKey]);
-  let gst = num(raw?.gst);
-  if (gst <= 0 && taxable > 0) gst = round2(taxable * 0.18);
-  const cgst = round2(gst / 2);
-  const sgst = round2(gst - cgst);
-  return { taxable: round2(taxable), gst: round2(gst), cgst, sgst, total: round2(taxable + gst) };
+function resolveInvoiceHsn(input: CustomerOrderInvoiceInput): string | null {
+  const explicit = input.hsnCode?.trim();
+  if (explicit) return explicit;
+  const snap = input.billingSnapshot;
+  if (!snap) return null;
+  const fromSnap =
+    (typeof snap.platform_fee_hsn === "string" && snap.platform_fee_hsn.trim()) ||
+    (typeof snap.platformFeeHsn === "string" && snap.platformFeeHsn.trim()) ||
+    (typeof snap.hsn_code === "string" && snap.hsn_code.trim()) ||
+    (typeof snap.hsnCode === "string" && snap.hsnCode.trim()) ||
+    null;
+  if (fromSnap) return fromSnap;
+  return process.env.PLATFORM_INVOICE_HSN?.trim() || null;
+}
+
+function resolveInvoiceStoreTypeLabel(input: CustomerOrderInvoiceInput): string | null {
+  const explicit = input.storeTypeLabel?.trim();
+  if (explicit) return explicit;
+  return readStoreTypeFromBillingSnapshot(input.billingSnapshot).label;
 }
 
 function formatInvoiceDate(iso: string): string {
@@ -121,13 +118,21 @@ function drawPlatformPage(
   y += 18;
   y = drawRow(doc, "Name", input.customerName, y);
   if (input.deliveryAddress) y = drawRow(doc, "Delivery Address", input.deliveryAddress, y);
-  y = drawRow(doc, "Place of Supply", input.placeOfSupply, y);
+  if (input.placeOfSupply?.trim()) y = drawRow(doc, "Place of Supply", input.placeOfSupply.trim(), y);
 
+  const storeTypeLabel = resolveInvoiceStoreTypeLabel(input);
+  const hsn = resolveInvoiceHsn(input);
   y += 8;
   doc.fontSize(11).text("Service Details", 40, y);
   y += 18;
-  y = drawRow(doc, "HSN Code", "999799", y);
-  y = drawRow(doc, "Supply Description", "Other Services N.E.C. (Platform fee)", y);
+  if (storeTypeLabel) y = drawRow(doc, "Store / Service Type", storeTypeLabel, y);
+  if (hsn) y = drawRow(doc, "HSN / SAC", hsn, y);
+  y = drawRow(
+    doc,
+    "Supply Description",
+    storeTypeLabel ? `Platform fee (${storeTypeLabel})` : "Platform fee",
+    y
+  );
 
   y += 10;
   doc.fontSize(10).text(
@@ -177,7 +182,7 @@ function drawDeliveryPage(
   y = drawRow(doc, "Invoice Date", invoiceDate, y);
   y = drawRow(doc, "Customer", input.customerName, y);
   if (input.deliveryAddress) y = drawRow(doc, "Delivery Address", input.deliveryAddress, y);
-  y = drawRow(doc, "Place of Supply", input.placeOfSupply, y);
+  if (input.placeOfSupply?.trim()) y = drawRow(doc, "Place of Supply", input.placeOfSupply.trim(), y);
   y += 8;
   y = drawRow(doc, "Service Description", "Local delivery service", y);
 
@@ -216,8 +221,8 @@ export async function buildCustomerOrderTaxInvoicePdfBuffer(
   input: CustomerOrderInvoiceInput
 ): Promise<Buffer> {
   const snap = input.billingSnapshot ?? {};
-  const platformLine = readGstComponent(snap, "platform", "platform_fee");
-  const deliveryLine = readGstComponent(snap, "delivery", "delivery_fee");
+  const platformLine = readOrderInvoiceGstComponent(snap, "platform", "platform_fee");
+  const deliveryLine = readOrderInvoiceGstComponent(snap, "delivery", "delivery_fee");
   const signature = await getInvoiceSignatureSource();
 
   const platformInvoiceNo = buildCustomerInvoiceNumber({

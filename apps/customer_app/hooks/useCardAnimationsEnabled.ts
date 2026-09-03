@@ -24,6 +24,7 @@
 
 import { useEffect, useState } from "react";
 import { AppState, type AppStateStatus } from "react-native";
+import { useIsFocused } from "@react-navigation/native";
 
 type Listener = (enabled: boolean) => void;
 
@@ -77,6 +78,7 @@ export function markCardAnimationsSettled() {
 
 export function useCardAnimationsEnabled(): boolean {
   const [enabled, setEnabled] = useState(lastEnabled);
+  const isFocused = useIsFocused();
 
   useEffect(() => {
     const listener: Listener = (next) => setEnabled(next);
@@ -87,5 +89,5 @@ export function useCardAnimationsEnabled(): boolean {
     };
   }, []);
 
-  return enabled;
+  return enabled && isFocused;
 }

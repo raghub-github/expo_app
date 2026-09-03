@@ -156,4 +156,4 @@ export const HEADER_VERTICAL_PADDING = 12;
 export const HEADER_PADDING_TOP = 0;
 
 /** Gap below root status-bar strip before screen header content (root already reserves insets.top). */
-export const STATUS_BAR_TO_HEADER_GAP = 2;
+export const STATUS_BAR_TO_HEADER_GAP = 8;

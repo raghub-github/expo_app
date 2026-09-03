@@ -109,7 +109,9 @@ module.exports = ({ config }) => ({
           // White "GM" monogram — status bar / shade small icon (Zomato-Z style).
           icon: "./assets/notification-icon.png",
           color: "#3EB489",
-          sounds: [],
+          // Bundled into android/app/src/main/res/raw/notification — required for
+          // killed-app new-order channel sound (JS payload sound alone is not enough).
+          sounds: ["./assets/sounds/notification.wav"],
           defaultChannel: "merchant_default",
           enableBackgroundRemoteNotifications: true,
         },
@@ -118,6 +120,13 @@ module.exports = ({ config }) => ({
         "../../packages/expo-push-kit/plugin/withAndroidPushChannels.js",
         {
           channels: [
+            // Versioned id: Android channel sound is immutable after first create.
+            {
+              id: "merchant_new_orders_alert",
+              name: "New order alerts",
+              importance: 5,
+              sound: "notification",
+            },
             { id: "merchant_new_orders", name: "New orders", importance: 5 },
             { id: "merchant_complaints", name: "Complaints", importance: 5 },
             { id: "merchant_order_lifecycle", name: "Order updates", importance: 4 },

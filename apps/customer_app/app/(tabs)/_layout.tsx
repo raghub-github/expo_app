@@ -9,6 +9,7 @@ export default function TabsLayout() {
       <AndroidBackHandler />
       <Tabs
         tabBar={(props) => <CustomerTabBar {...props} />}
+        sceneContainerStyle={{ backgroundColor: GatiMitraColors.softBackground }}
         screenOptions={{
           headerShown: true,
           headerStyle: { backgroundColor: GatiMitraColors.softBackground },

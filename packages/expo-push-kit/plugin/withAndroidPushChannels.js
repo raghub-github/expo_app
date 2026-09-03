@@ -2,8 +2,10 @@
  * Creates Android notification channels at install / process start so FCM
  * can display tray notifications while the JS bundle is not running.
  *
- * Props.channels: [{ id, name, importance? }]
+ * Props.channels: [{ id, name, importance?, sound? }]
  *   importance: 3=DEFAULT, 4=HIGH, 5=MAX
+ *   sound: Android res/raw name without extension (must be packaged via
+ *          expo-notifications `sounds` and present before first channel create)
  */
 const {
   withDangerousMod,
@@ -18,7 +20,12 @@ function javaSource(packageName, channels) {
       const id = String(ch.id || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
       const name = String(ch.name || ch.id || "Alerts").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
       const importance = Number(ch.importance) === 5 ? 5 : Number(ch.importance) === 3 ? 3 : 4;
-      return `    create(manager, "${id}", "${name}", ${importance});`;
+      const sound = ch.sound != null && String(ch.sound).trim()
+        ? String(ch.sound).trim().replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+        : "";
+      return `    create(context, manager, "${id}", "${name}", ${importance}, ${
+        sound ? `"${sound}"` : "null"
+      });`;
     })
     .join("\n");
 
@@ -28,6 +35,8 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
+import android.media.AudioAttributes;
+import android.net.Uri;
 import android.os.Build;
 
 /** Install-time FCM channels — must exist before the first background push. */
@@ -41,12 +50,27 @@ public final class PushChannelBootstrap {
 ${creates}
   }
 
-  private static void create(NotificationManager manager, String id, String name, int importance) {
+  private static void create(
+      Context context,
+      NotificationManager manager,
+      String id,
+      String name,
+      int importance,
+      String soundRaw
+  ) {
     if (manager.getNotificationChannel(id) != null) return;
     NotificationChannel channel = new NotificationChannel(id, name, importance);
     channel.enableVibration(true);
     channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
     channel.setShowBadge(true);
+    if (soundRaw != null && !soundRaw.isEmpty()) {
+      Uri soundUri = Uri.parse("android.resource://" + context.getPackageName() + "/raw/" + soundRaw);
+      AudioAttributes attrs = new AudioAttributes.Builder()
+          .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+          .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+          .build();
+      channel.setSound(soundUri, attrs);
+    }
     manager.createNotificationChannel(channel);
   }
 }

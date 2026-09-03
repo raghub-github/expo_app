@@ -46,9 +46,15 @@ export async function ensureAndroidChannel(opts: AndroidChannelOptions): Promise
   if (Platform.OS !== "android") return;
   const Notifications = await loadNotificationsModule({ allowExpoGo: true });
   if (!Notifications) return;
+  const importance =
+    opts.importance === 5
+      ? Notifications.AndroidImportance.MAX
+      : opts.importance === 3
+        ? Notifications.AndroidImportance.DEFAULT
+        : (opts.importance ?? Notifications.AndroidImportance.HIGH);
   await Notifications.setNotificationChannelAsync(opts.channelId, {
     name: opts.name,
-    importance: opts.importance ?? Notifications.AndroidImportance.HIGH,
+    importance,
     vibrationPattern: opts.vibrationPattern ?? [0, 250, 250, 250],
     lightColor: opts.lightColor ?? "#14b8a6",
     ...(opts.sound ? { sound: opts.sound } : {}),

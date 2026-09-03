@@ -26,6 +26,7 @@ import { CX } from "@/lib/appAssetKeys";
 import { AppText } from "@/components/AppText";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { useQueryClient } from "@tanstack/react-query";
+import { useIsFocused } from "@react-navigation/native";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -328,6 +329,7 @@ export function HomePromoCarousel({
   const scrollRef = useRef<ScrollView>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   useAppAssetsStore((s) => s.assets);
+  const isScreenFocused = useIsFocused();
 
   const slides: Slide[] = useMemo(() => {
     const picked = pickOffersForCarousel(offers, mode);
@@ -343,6 +345,7 @@ export function HomePromoCarousel({
   }, [slides.length]);
 
   useEffect(() => {
+    if (!isScreenFocused) return;
     if (slides.length < 2) return;
     const timer = setInterval(() => {
       setActiveIndex((prev) => {
@@ -355,7 +358,7 @@ export function HomePromoCarousel({
       });
     }, PROMO_AUTO_MS);
     return () => clearInterval(timer);
-  }, [slides.length]);
+  }, [slides.length, isScreenFocused]);
 
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {

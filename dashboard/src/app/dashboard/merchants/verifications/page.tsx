@@ -30,15 +30,7 @@ export default async function MerchantVerificationsPage({
           />
         </Suspense>
       ) : (
-        <div className="space-y-6 rounded-lg border border-gray-200 bg-white p-6">
-          <h1 className="mb-2 text-lg font-semibold text-gray-900">
-            Store Verifications
-          </h1>
-          <p className="mb-4 text-gray-500">
-            Go to Merchants, select a store, and click Verify to open verification for that store. No data is shown here until you do that.
-          </p>
-          <MerchantVerificationsClient />
-        </div>
+        <MerchantVerificationsClient />
       )}
     </div>
   );

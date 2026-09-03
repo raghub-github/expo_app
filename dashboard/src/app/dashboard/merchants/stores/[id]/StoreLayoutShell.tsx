@@ -20,6 +20,7 @@ import {
   storePageSuffix,
   writeLastMerchantStoreId,
 } from "@/lib/merchants/effective-store-id";
+import { writeStoredMerchantStoreReturnTo } from "@/lib/merchants/merchant-store-return";
 
 const EMPTY_ORDER_KEYS = [
   MX_ASSET.ordersEmptyNew,
@@ -195,27 +196,18 @@ export function StoreLayoutShell({
   const router = useRouter();
   const pathname = useAppPathname();
   const searchParams = useAppSearchParams();
-  const fromAdmin = searchParams.get("fromAdmin") === "1";
-  const [showAdminPopup, setShowAdminPopup] = useState(false);
+  const returnToParam = (searchParams.get("returnTo") || "").trim();
 
   useEffect(() => {
-    if (fromAdmin) setShowAdminPopup(true);
-  }, [fromAdmin]);
+    if (!returnToParam) return;
+    writeStoredMerchantStoreReturnTo(storeId, returnToParam);
+  }, [storeId, returnToParam]);
 
   useEffect(() => {
     void loadMerchantAppAssets()
       .then(() => prefetchEmptyOrderImages())
       .catch(() => undefined);
   }, []);
-
-  const closeAdminPopup = () => {
-    setShowAdminPopup(false);
-    const next = new URLSearchParams(searchParams.toString());
-    next.delete("fromAdmin");
-    next.set("portal", "merchant");
-    const qs = next.toString();
-    router.replace(qs ? `${pathname}?${qs}` : pathname);
-  };
 
   const isOrdersPage = pathname.includes("/orders");
   const isFullHeightScrollPage =
@@ -246,24 +238,6 @@ export function StoreLayoutShell({
     <StoreProvider storeId={storeId} store={store as StoreContextStore}>
       <div className="flex min-h-0 flex-1 flex-col w-full max-w-full overflow-hidden">
         <StoreQueryHydrator storeId={storeId} store={store as StoreProfile} />
-        {/* Popup when entering store from Admin dashboard */}
-        {showAdminPopup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" aria-modal="true" role="dialog">
-          <div className="w-full max-w-sm rounded-xl border border-gray-200 bg-white p-6 shadow-xl">
-            <p className="text-center text-sm font-medium text-gray-900">
-              You are shifting from Admin to Merchant portal.
-            </p>
-            <button
-              type="button"
-              onClick={closeAdminPopup}
-              className="mt-4 w-full cursor-pointer rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
-            >
-              OK
-            </button>
-          </div>
-        </div>
-      )}
-
         <MerchantOrderEmptyAssetsWarmup />
         <MerchantIncomingOrderModal />
         <MerchantAcceptanceTimeoutSync />

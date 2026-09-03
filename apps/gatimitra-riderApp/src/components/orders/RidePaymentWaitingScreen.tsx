@@ -17,7 +17,6 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
-import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@gatimitra/sdk";
@@ -492,7 +491,6 @@ export function RidePaymentWaitingScreen() {
 
   return (
     <View style={styles.root}>
-      <StatusBar style="dark" />
       <SafeAreaView edges={["top"]} style={styles.headerSafe}>
         <View style={styles.headerTopRow}>
           <TouchableOpacity

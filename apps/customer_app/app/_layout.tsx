@@ -165,7 +165,7 @@ void (async () => {
     NativeStatusBar.setBarStyle("light-content", true);
     const { applyAndroidNavigationChrome } = await import("@/lib/androidEdgeToEdgeChrome");
     await applyAndroidNavigationChrome({
-      buttonStyle: "light",
+      buttonStyle: "dark",
       backgroundColor: SPLASH_CHROME_COLOR,
     });
   } catch {
@@ -359,7 +359,9 @@ export default function RootLayout() {
           <View
             style={{
               flex: 1,
-              backgroundColor: splashExited ? colors.background.light : SPLASH_CHROME_COLOR,
+              backgroundColor: splashExited
+                  ? GatiMitraColors.softBackground
+                  : SPLASH_CHROME_COLOR,
             }}
           >
             <AppAssetsPrefetch />
@@ -890,7 +892,7 @@ function RootStack({
             statusBarBackgroundColor: splashChromeActive
               ? "transparent"
               : resolvedStatusBarBackground === "transparent"
-                ? "#FFFFFF"
+                ? GatiMitraColors.softBackground
                 : resolvedStatusBarBackground,
             statusBarTranslucent:
               splashChromeActive ||
@@ -901,7 +903,7 @@ function RootStack({
                 ? SPLASH_CHROME_COLOR
                 : inAuthStack
                   ? "#F0F4F3"
-                  : colors.background.light,
+                  : GatiMitraColors.softBackground,
             },
             animation: "slide_from_right",
             /**

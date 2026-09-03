@@ -120,6 +120,8 @@ type FoodLiveTrackingScreenProps = {
   onOpenHelp: () => void;
   onOpenMerchant: () => void;
   onOrderCancelled?: () => void;
+  /** Keep this screen mounted while cancel + ack run (avoids Mapbox crash). */
+  onCancelFlowChange?: (active: boolean) => void;
 };
 
 function getCompactAddressLine(address: string | null | undefined) {
@@ -217,6 +219,7 @@ export function FoodLiveTrackingScreen({
   onOpenHelp,
   onOpenMerchant,
   onOrderCancelled,
+  onCancelFlowChange,
 }: FoodLiveTrackingScreenProps) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -1355,6 +1358,7 @@ export function FoodLiveTrackingScreen({
         onOpenHelp={onOpenHelp}
         onOpenChat={handleMessageRider}
         onCancelled={onOrderCancelled}
+        onCancelFlowChange={onCancelFlowChange}
         chatEnabled={hasRider}
         showPartnerChat={!isSelfPickup}
       />

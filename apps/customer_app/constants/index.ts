@@ -48,6 +48,14 @@ export const STORAGE_KEYS = {
   DISMISSED_NOTIFICATIONS: "gm_customer_dismissed_notifications_v1",
   /** Stores opened from discovery home — auto-clears after 24h */
   RECENTLY_VIEWED_STORES: "gm_customer_recently_viewed_stores_v1",
+  /**
+   * Notification (FCM) permission sheet — device-local only.
+   * `1` after token register succeeds; skip-until is a unix-ms timestamp string.
+   */
+  PUSH_PROMPT_SATISFIED: "gm_customer_push_prompt_satisfied_v1",
+  PUSH_PROMPT_SKIP_UNTIL: "gm_customer_push_prompt_skip_until_v1",
+  /** Last-good category rail image URIs by stable cacheKey (All / category ids). */
+  CATEGORY_IMAGE_LAST_GOOD: "gm_customer_category_image_last_good_v1",
 } as const;
 
 export const API_TIMEOUT_MS = 30000;

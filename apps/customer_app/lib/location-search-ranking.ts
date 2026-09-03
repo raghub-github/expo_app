@@ -129,8 +129,9 @@ export function finalizeRapidoSuggestions(
     : deduped;
 
   filtered.sort((a, b) => {
-    const textA = primaryMatchScore(a.primary, trimmed);
-    const textB = primaryMatchScore(b.primary, trimmed);
+    // Sort by best field match (not primary-only) so address/locality hits rank correctly.
+    const textA = bestMatchScore(a, trimmed);
+    const textB = bestMatchScore(b, trimmed);
     if (textA !== textB) return textB - textA;
 
     const featA = featureRank(a);

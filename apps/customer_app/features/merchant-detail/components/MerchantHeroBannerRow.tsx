@@ -2,13 +2,24 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { View, StyleSheet } from "react-native";
 import { Image } from "expo-image";
 import { Audio, Video, ResizeMode, type AVPlaybackStatus } from "expo-av";
+import {
+  runOnJS,
+  useAnimatedReaction,
+  type SharedValue,
+} from "react-native-reanimated";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   HEADER_IMAGE_HEIGHT,
   SCREEN_WIDTH_EXPORT,
   merchantHeroMediaVisibleHeight,
 } from "../constants/layout";
-import { prefetchMerchantHeroImageUri } from "@/lib/merchantHeroWarmCache";
+import { prefetchMerchantHeroImageUri, getWarmMerchantHeroUri } from "@/lib/merchantHeroWarmCache";
+import {
+  markHeroMediaSessionReady,
+} from "@/lib/prefetchGridFirstHeroMedia";
+
+/** Same soft/white shell as grocery & food grid-first before hero media paints. */
+const HERO_SHELL = GatiMitraColors.softBackground;
 
 type Props = {
   /** Banner image — fallback hero and video poster. */
@@ -22,6 +33,9 @@ type Props = {
   onHeroHeightChange?: (height: number) => void;
   /** Pause looped video once the hero scrolls off screen. */
   shouldPlayVideo?: boolean;
+  /** Optional: pause video on UI thread when scroll passes this Y (no parent re-render). */
+  scrollY?: SharedValue<number>;
+  pauseVideoAfterY?: number;
 };
 
 function normalizeAspect(value: number): number | null {
@@ -38,18 +52,41 @@ export const MerchantHeroBannerRow = React.memo(
     statusBarInset = 0,
     onHeroHeightChange,
     shouldPlayVideo = true,
+    scrollY,
+    pauseVideoAfterY,
   }: Props) {
     const videoRef = useRef<Video>(null);
     const videoReadyRef = useRef(false);
+    const [videoReady, setVideoReady] = useState(false);
+    const [scrollAllowsPlay, setScrollAllowsPlay] = useState(true);
 
-    useLayoutEffect(() => {
-      if (!uri) return;
-      prefetchMerchantHeroImageUri(uri);
-    }, [uri]);
+    useAnimatedReaction(
+      () => {
+        if (!scrollY || pauseVideoAfterY == null) return true;
+        return scrollY.value < pauseVideoAfterY;
+      },
+      (allowed, prev) => {
+        if (allowed === prev) return;
+        runOnJS(setScrollAllowsPlay)(allowed);
+      },
+      [scrollY, pauseVideoAfterY]
+    );
 
+    const playVideo = shouldPlayVideo && scrollAllowsPlay;
     const bleed = Math.max(0, statusBarInset);
     const video = (videoUri ?? "").trim();
     const showVideo = video.length > 0;
+    const posterUri = uri || getWarmMerchantHeroUri(merchantId);
+
+    useLayoutEffect(() => {
+      if (!posterUri) return;
+      prefetchMerchantHeroImageUri(posterUri);
+    }, [posterUri]);
+
+    useEffect(() => {
+      setVideoReady(false);
+      videoReadyRef.current = false;
+    }, [video, merchantId]);
 
     useEffect(() => {
       if (!showVideo) return;
@@ -92,7 +129,7 @@ export const MerchantHeroBannerRow = React.memo(
       try {
         await player.setIsMutedAsync(true);
         await player.setVolumeAsync(0);
-        if (shouldPlayVideo) {
+        if (playVideo) {
           await player.playAsync();
         } else {
           await player.pauseAsync();
@@ -100,7 +137,7 @@ export const MerchantHeroBannerRow = React.memo(
       } catch {
         // Player may be unloading between hero/video swaps.
       }
-    }, [shouldPlayVideo]);
+    }, [playVideo]);
 
     useEffect(() => {
       void syncVideoPlayback();
@@ -111,13 +148,21 @@ export const MerchantHeroBannerRow = React.memo(
         if (!status.isLoaded) return;
         if (!videoReadyRef.current) {
           videoReadyRef.current = true;
+          setVideoReady(true);
           void syncVideoPlayback();
         }
       },
       [syncVideoPlayback]
     );
 
+    const onImageLoad = useCallback(() => {
+      if (posterUri) markHeroMediaSessionReady(posterUri);
+    }, [posterUri]);
+
     const totalHeight = mediaHeight + bleed;
+    const showPoster = Boolean(posterUri);
+    // Banner image always visible (cache-friendly). Video fades in over it when ready.
+    const videoOpacity = videoReady ? 1 : 0;
 
     return (
       <View
@@ -125,28 +170,32 @@ export const MerchantHeroBannerRow = React.memo(
         collapsable={false}
         pointerEvents="none"
       >
+        <View style={styles.shell} />
+
         {showVideo ? (
           <>
-            {uri ? (
+            {showPoster ? (
               <Image
-                source={{ uri }}
+                source={{ uri: posterUri! }}
                 style={[styles.image, { height: totalHeight }]}
                 contentFit="cover"
                 cachePolicy="memory-disk"
                 transition={0}
-                recyclingKey={uri}
+                recyclingKey={`merchant-hero-${merchantId}`}
                 priority="high"
                 allowDownscaling
+                onLoad={onImageLoad}
               />
-            ) : (
-              <View style={styles.placeholder} />
-            )}
+            ) : null}
             <Video
               ref={videoRef}
               source={{ uri: video }}
-              style={[StyleSheet.absoluteFill, { height: totalHeight }]}
+              style={[
+                StyleSheet.absoluteFill,
+                { height: totalHeight, opacity: videoOpacity },
+              ]}
               resizeMode={ResizeMode.COVER}
-              shouldPlay={shouldPlayVideo}
+              shouldPlay={playVideo}
               isLooping
               isMuted
               volume={0}
@@ -154,27 +203,29 @@ export const MerchantHeroBannerRow = React.memo(
               progressUpdateIntervalMillis={500}
               onPlaybackStatusUpdate={onVideoStatus}
               onReadyForDisplay={(ev) => {
+                setVideoReady(true);
+                videoReadyRef.current = true;
                 const nat = ev.naturalSize;
                 if (nat?.width && nat?.height) {
                   applyAspectRatio(nat.width, nat.height);
                 }
+                void syncVideoPlayback();
               }}
             />
           </>
-        ) : uri ? (
+        ) : showPoster ? (
           <Image
-            source={{ uri }}
+            source={{ uri: posterUri! }}
             style={[styles.image, { height: totalHeight }]}
             contentFit="cover"
             cachePolicy="memory-disk"
             transition={0}
-            recyclingKey={uri}
+            recyclingKey={`merchant-hero-${merchantId}`}
             priority="high"
             allowDownscaling
+            onLoad={onImageLoad}
           />
-        ) : (
-          <View style={styles.placeholder} />
-        )}
+        ) : null}
       </View>
     );
   },
@@ -184,6 +235,8 @@ export const MerchantHeroBannerRow = React.memo(
     prev.merchantId === next.merchantId &&
     prev.statusBarInset === next.statusBarInset &&
     prev.shouldPlayVideo === next.shouldPlayVideo &&
+    prev.scrollY === next.scrollY &&
+    prev.pauseVideoAfterY === next.pauseVideoAfterY &&
     prev.onHeroHeightChange === next.onHeroHeightChange
 );
 
@@ -191,13 +244,13 @@ const styles = StyleSheet.create({
   wrap: {
     width: SCREEN_WIDTH_EXPORT,
     overflow: "hidden",
-    backgroundColor: GatiMitraColors.mintSoft,
+    backgroundColor: HERO_SHELL,
+  },
+  shell: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: HERO_SHELL,
   },
   image: {
     width: SCREEN_WIDTH_EXPORT,
-  },
-  placeholder: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: GatiMitraColors.mintSoft,
   },
 });

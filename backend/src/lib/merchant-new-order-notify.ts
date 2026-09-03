@@ -9,14 +9,6 @@ import { merchantAppHomeNewOrdersHref } from "./merchant-app-deeplink.js";
 
 export { merchantAppOrderHref, merchantAppOrdersTabHref, merchantAppHomeNewOrdersHref } from "./merchant-app-deeplink.js";
 
-function formatExactMerchantInr(amount: number): string {
-  const n = Math.round(amount * 100) / 100;
-  return n.toLocaleString("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
 export async function lookupFoodOrderIdByCoreOrderText(
   sql: Sql,
   args: { orderIdText: string; merchantStoreId?: number | null }
@@ -98,11 +90,8 @@ export async function notifyMerchantStoreNewOrder(
     /* omit amount rather than show customer grand_total */
   }
 
-  const title = "New Order Received! 🔔";
-  const body =
-    total != null && total > 0
-      ? `You have a new order waiting for confirmation. ${displayId} · ₹${formatExactMerchantInr(total)}`
-      : "You have a new order waiting for confirmation.";
+  const title = "🔔 New Order Received";
+  const body = `Order #${displayId} is waiting for your acceptance.`;
 
   // Legacy in-app inbox row (kept for backward compat with the merchant app's
   // existing notifications tab reading merchant_store_notifications).
@@ -131,6 +120,10 @@ export async function notifyMerchantStoreNewOrder(
     target: { store_id: merchantStoreId },
     priority: "critical",
     idempotencyKey: `MERCHANT_NEW_ORDER:${orderIdText}:${merchantStoreId}`,
+    overrides: {
+      title,
+      body,
+    },
     metadata: {
       type: "merchant_new_order",
       orderId: orderIdText,

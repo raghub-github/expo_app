@@ -99,7 +99,31 @@ export function buildBillHtml(payload: BillPrintPayload): string {
 <body>
   <div class="invoice-header">
     <p class="company">GATIMITRA ON DEMAND SERVICES PRIVATE LIMITED</p>
-    <p class="company-sub">Restaurant Partner · Tax Invoice</p>
+    <p class="company-sub">${escapeHtml(
+      (() => {
+        const st = String(store.storeType ?? "").trim().toUpperCase();
+        const label =
+          st === "GROCERY"
+            ? "Grocery"
+            : st === "PHARMA"
+              ? "Pharma"
+              : st === "CAFE"
+                ? "Cafe"
+                : st === "BAKERY"
+                  ? "Bakery"
+                  : st === "CLOUD_KITCHEN"
+                    ? "Cloud Kitchen"
+                    : st === "FASHION"
+                      ? "Fashion"
+                      : st
+                        ? st
+                            .toLowerCase()
+                            .replace(/_/g, " ")
+                            .replace(/\b\w/g, (c) => c.toUpperCase())
+                        : "Merchant";
+        return `${label} Partner · Tax Invoice`;
+      })()
+    )}</p>
     <span class="order-badge">Order ${escapeHtml(orderIdDisplay)}</span>
   </div>
   <p class="store">${escapeHtml(store.storeName)}</p>
@@ -127,7 +151,7 @@ export function buildBillHtml(payload: BillPrintPayload): string {
   <p class="section-title">Summary</p>
   <table><tbody>${itemRows || "<tr><td colspan=\"3\">No items</td></tr>"}</tbody></table>
   <div class="summary">
-    ${bill.packaging > 0.005 ? `<div><span>Restaurant Packaging Charges</span><span>${formatOrderRs(bill.packaging)}</span></div>` : ""}
+    ${bill.packaging > 0.005 ? `<div><span>Packaging Charges</span><span>${formatOrderRs(bill.packaging)}</span></div>` : ""}
     ${bill.discount > 0 ? `<div class="discount"><span>Discount</span><span>−${formatOrderRs(bill.discount)}</span></div>` : ""}
   </div>
   <div class="total-row"><span>Total</span><span>${formatOrderRs(bill.total)}</span></div>

@@ -26,6 +26,10 @@ export type MerchantMenuItemRow = {
   has_customizations?: boolean | null;
   has_addons?: boolean | null;
   has_variants?: boolean | null;
+  /** Distinct non-cancelled orders that included this item at this store. */
+  order_count?: number | null;
+  category_image_url?: string | null;
+  category_display_order?: number | null;
 };
 
 export type MenuItemVariantRow = {

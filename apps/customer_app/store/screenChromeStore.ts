@@ -1,6 +1,8 @@
 import { create } from "zustand";
+import { GatiMitraColors } from "@/constants/gatimitra";
 
-const DEFAULT_STATUS_BAR_BG = "#FFFFFF";
+/** Match Customer Home / tabs page fill so status strip never seams against content. */
+const DEFAULT_STATUS_BAR_BG = GatiMitraColors.softBackground;
 const DEFAULT_STATUS_BAR_STYLE = "dark" as const;
 const SPLASH_BOOTSTRAP_BG = "#5eead4";
 

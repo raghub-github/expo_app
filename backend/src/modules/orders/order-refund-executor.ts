@@ -194,17 +194,47 @@ function extractRazorpayPaymentId(
   transactionId: string,
   gatewayResponse: unknown
 ): string | null {
-  if (/^pay_/.test(transactionId)) return transactionId;
-  if (!gatewayResponse || typeof gatewayResponse !== "object") return null;
-  const root = gatewayResponse as Record<string, unknown>;
-  const candidates = [
-    root.razorpayPaymentId,
-    root.razorpay_payment_id,
-    (root.payment as Record<string, unknown> | undefined)?.id,
-  ];
-  for (const candidate of candidates) {
-    const id = typeof candidate === "string" ? candidate.trim() : "";
-    if (/^pay_/.test(id)) return id;
+  if (/^pay_[A-Za-z0-9]+$/.test(transactionId) || /^pay_/.test(transactionId)) {
+    const t = transactionId.trim();
+    if (t.startsWith("pay_")) return t;
+  }
+  const found = findPayIdInUnknown(gatewayResponse, 0);
+  return found;
+}
+
+function findPayIdInUnknown(value: unknown, depth: number): string | null {
+  if (depth > 6 || value == null) return null;
+  if (typeof value === "string") {
+    const t = value.trim();
+    if (/^pay_[A-Za-z0-9]+$/.test(t)) return t;
+    const m = t.match(/\b(pay_[A-Za-z0-9]+)\b/);
+    return m ? m[1]! : null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const hit = findPayIdInUnknown(item, depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    for (const key of [
+      "razorpayPaymentId",
+      "razorpay_payment_id",
+      "payment_id",
+      "id",
+    ]) {
+      const hit = findPayIdInUnknown(rec[key], depth + 1);
+      if (hit) return hit;
+    }
+    const nestedPay = rec.payment;
+    const fromPay = findPayIdInUnknown(nestedPay, depth + 1);
+    if (fromPay) return fromPay;
+    for (const v of Object.values(rec)) {
+      const hit = findPayIdInUnknown(v, depth + 1);
+      if (hit) return hit;
+    }
   }
   return null;
 }
@@ -270,23 +300,44 @@ async function loadOrderPaymentSnapshot(
       p.transaction_id                  AS transaction_id,
       p.amount                          AS payment_amount,
       p.gateway_response                AS gateway_response,
-      po.gati_cash_applied              AS pending_gati_cash
+      po.gati_cash_applied              AS pending_gati_cash,
+      po.razorpay_payment_id            AS pending_razorpay_payment_id,
+      ev.razorpay_payment_id            AS event_razorpay_payment_id
     FROM orders_core c
     LEFT JOIN LATERAL (
       SELECT *
       FROM orders_core_payments op
       WHERE op.order_id = c.order_id
-        AND COALESCE(UPPER(op.payment_status), '') IN ('PAID','CAPTURED','SUCCESS','COMPLETED')
-      ORDER BY op.paid_at DESC NULLS LAST, op.id DESC
+        AND (
+          COALESCE(UPPER(op.payment_status), '') IN (
+            'PAID','CAPTURED','SUCCESS','COMPLETED','AUTHORIZED','CAPTURE'
+          )
+          OR COALESCE(op.transaction_id, '') LIKE 'pay_%'
+        )
+      ORDER BY
+        CASE
+          WHEN COALESCE(UPPER(op.payment_status), '') IN ('PAID','CAPTURED','SUCCESS','COMPLETED') THEN 0
+          ELSE 1
+        END,
+        op.paid_at DESC NULLS LAST,
+        op.id DESC
       LIMIT 1
     ) p ON true
     LEFT JOIN LATERAL (
-      SELECT gati_cash_applied
+      SELECT gati_cash_applied, razorpay_payment_id
       FROM pending_orders po
       WHERE po.finalized_order_id = c.order_id
       ORDER BY po.finalized_at DESC NULLS LAST
       LIMIT 1
     ) po ON true
+    LEFT JOIN LATERAL (
+      SELECT pe.razorpay_payment_id
+      FROM payment_events pe
+      WHERE pe.order_id = c.order_id
+        AND COALESCE(pe.razorpay_payment_id, '') LIKE 'pay_%'
+      ORDER BY pe.id DESC
+      LIMIT 1
+    ) ev ON true
     WHERE c.id = ${orderCoreId}
     LIMIT 1
   `;
@@ -306,7 +357,18 @@ async function loadOrderPaymentSnapshot(
   // (pay_…) lives on orders_core_payments.transaction_id.
   const txn =
     typeof r.transaction_id === "string" ? String(r.transaction_id).trim() : "";
-  const razorpayPaymentId = extractRazorpayPaymentId(txn, r.gateway_response);
+  const pendingPay =
+    typeof r.pending_razorpay_payment_id === "string"
+      ? String(r.pending_razorpay_payment_id).trim()
+      : "";
+  const eventPay =
+    typeof r.event_razorpay_payment_id === "string"
+      ? String(r.event_razorpay_payment_id).trim()
+      : "";
+  const razorpayPaymentId =
+    extractRazorpayPaymentId(txn, r.gateway_response) ||
+    extractRazorpayPaymentId(pendingPay, null) ||
+    extractRazorpayPaymentId(eventPay, null);
 
   const fromBreakdown = parseBreakdownAmounts(r.gateway_response);
   const pendingGati = Math.max(0, round2(numOrZero(r.pending_gati_cash)));

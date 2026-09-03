@@ -8,11 +8,50 @@ function asString(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
+const SERVICE_ROUTES: Record<string, string> = {
+  food: "/home",
+  ride: "/home/service/ride",
+  parcels: "/home/service/parcels",
+  grocery: "/home/grocery",
+  ecom: "/home/shop",
+  "near-me": "/home/service/near-me",
+};
+
 /**
- * Uses `screen` (expo-router path), then `deepLink` (opens URL or pushes if path-only).
+ * Structured CUSTOMER_ANNOUNCEMENT targets (service / category / store).
+ * Category filters are path/query context only — not persisted preferences.
+ */
+function resolveStructuredAnnouncementHref(data: Record<string, unknown>): string | null {
+  const targetType = asString(data.target_type || data.targetType).trim().toUpperCase();
+  if (!targetType || targetType === "NONE") return null;
+  const serviceId = asString(data.target_service_id || data.targetServiceId).trim().toLowerCase();
+  const categoryId = asString(data.target_category_id || data.targetCategoryId).trim();
+  const storeId = asString(data.target_store_id || data.targetStoreId).trim();
+
+  if (targetType === "SERVICE" && serviceId) {
+    return SERVICE_ROUTES[serviceId] ?? null;
+  }
+  if (targetType === "CATEGORY" && categoryId) {
+    const st = serviceId === "grocery" ? "GROCERY" : "FOOD";
+    return `/home/category/${encodeURIComponent(categoryId)}?storeType=${encodeURIComponent(st)}`;
+  }
+  if (targetType === "STORE" && storeId) {
+    return `/home/merchant/${encodeURIComponent(storeId)}`;
+  }
+  return null;
+}
+
+/**
+ * Uses structured announcement targets first, then `screen` / `deepLink`.
  */
 export function navigateFromPushData(router: RouterLike, data: Record<string, unknown>): void {
   try {
+    const structured = resolveStructuredAnnouncementHref(data);
+    if (structured) {
+      router.push(structured);
+      return;
+    }
+
     const screen = asString(data.screen).trim();
     if (screen) {
       const normalized = screen.startsWith("/") ? screen : `/${screen}`;
@@ -38,7 +77,6 @@ export function navigateFromPushData(router: RouterLike, data: Record<string, un
     }
 
     if (data.orderId != null) {
-      // Customer app uses /orders/[id]; merchant/rider may remap via onNotificationOpen.
       const orderPath =
         asString(data.orderPath).trim() ||
         (asString(data.appRole) === "merchant" || asString(data.appRole) === "rider"

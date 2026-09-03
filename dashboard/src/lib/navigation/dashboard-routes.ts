@@ -98,6 +98,12 @@ export const riderDashboardRoutes: DashboardSubRoute[] = [
     description: "Wallet credit requests to approve or reject",
   },
   {
+    name: "Pending Onboarding",
+    href: "/dashboard/riders/pending-onboarding",
+    icon: ListChecks,
+    description: "Riders with incomplete onboarding steps — call to help them finish",
+  },
+  {
     name: "Blacklist/Whitelist Status",
     href: "/dashboard/riders/blacklist",
     icon: Ban,

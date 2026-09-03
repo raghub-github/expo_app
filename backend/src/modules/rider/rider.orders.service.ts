@@ -29,7 +29,7 @@ import {
   recordRiderPickedUpTimelineTx,
 } from "../../lib/order-food-status-timeline.js";
 import { finalizeMerchantOrderDelivered } from "../../lib/merchant-order-delivered-wallet.js";
-import { notifyMerchantRiderReachedPickup } from "../../lib/merchant-push-notify.js";
+import { notifyMerchantRiderReachedPickup, notifyMerchantRiderAssigned } from "../../lib/merchant-push-notify.js";
 import {
   notifyCustomerFoodLifecycle,
   notifyCustomerParcelLifecycle,
@@ -2716,6 +2716,46 @@ async function acceptFoodOrderForRider(
         riderName,
         merchantName,
       });
+    }
+  })();
+
+  void (async () => {
+    try {
+      const sql = getSql();
+      const rows = await sql`
+        SELECT
+          f.id AS food_id,
+          f.merchant_store_id,
+          COALESCE(f.formatted_order_id, c.formatted_order_id, c.order_id) AS display_id
+        FROM orders_food f
+        INNER JOIN orders_core c ON c.id = f.order_id
+        WHERE c.id = ${preCheck.id}
+        LIMIT 1
+      `;
+      const meta = rows[0] as
+        | {
+            food_id?: number | string;
+            merchant_store_id?: number;
+            display_id?: string | null;
+          }
+        | undefined;
+      const storeId = Number(meta?.merchant_store_id);
+      if (!Number.isFinite(storeId) || storeId < 1) return;
+      const foodOrderId =
+        meta?.food_id != null && /^\d+$/.test(String(meta.food_id))
+          ? Number(meta.food_id)
+          : null;
+      await notifyMerchantRiderAssigned(sql, {
+        storeId,
+        displayOrderId: String(meta?.display_id ?? orderIdText).trim() || orderIdText,
+        riderName: String(riderProfile?.name ?? "").trim() || "Rider",
+        foodOrderId,
+      });
+    } catch (err) {
+      console.warn(
+        "[acceptFoodOrderForRider] merchant rider-assigned notify failed",
+        (err as Error).message
+      );
     }
   })();
 

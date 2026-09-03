@@ -18,7 +18,6 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { StatusBar } from "expo-status-bar";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -375,7 +374,6 @@ export function OrderPartnerChatScreen() {
 
   return (
     <>
-      <StatusBar style="dark" />
       <Root style={shellStyle} {...rootProps}>
         <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
           <TouchableOpacity onPress={() => router.back()} hitSlop={12} style={styles.headerSide}>

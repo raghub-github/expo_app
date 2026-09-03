@@ -13,6 +13,7 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { resolveMerchantBannerUri } from "@/lib/merchantBanner";
 import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
+import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
 import { useScrollSafePress } from "@/hooks/useScrollSafePress";
 import { formatGridOfferBadge, gridDeliveryLabel } from "@/lib/merchantOfferBadge";
 import {
@@ -110,16 +111,25 @@ function MerchantGridCardInner({
                 contentFit="cover"
                 cachePolicy="memory-disk"
                 transition={0}
+                priority="high"
+                recyclingKey={bannerUri}
+                onLoad={() => {
+                  markHeroMediaSessionReady(bannerUri);
+                }}
               />
             ) : (
               <View style={styles.bannerPlaceholder}>
                 <LinearGradient
-                  colors={["#FFF4E8", "#FFE8D1", "#F5D5B8"]}
+                  colors={[
+                    GatiMitraColors.softBackground,
+                    "#FFFFFF",
+                    GatiMitraColors.surfaceWarm,
+                  ]}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
                   style={StyleSheet.absoluteFill}
                 />
-                <Ionicons name="restaurant" size={28} color="rgba(180,120,60,0.35)" />
+                <Ionicons name="restaurant" size={28} color="rgba(100,116,139,0.28)" />
               </View>
             )}
             {foodLocked ? (
@@ -205,7 +215,7 @@ const styles = StyleSheet.create({
     borderRadius: CARD_RADIUS,
     borderBottomLeftRadius: 0,
     overflow: "hidden",
-    backgroundColor: "#FFF4E8",
+    backgroundColor: GatiMitraColors.softBackground,
   },
   bannerDimmed: {
     opacity: 0.55,
@@ -246,7 +256,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#FFF4E8",
+    backgroundColor: GatiMitraColors.softBackground,
     overflow: "hidden",
   },
   offerImageTag: {

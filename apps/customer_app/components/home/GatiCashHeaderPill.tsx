@@ -8,7 +8,6 @@ import { AppText } from "@/components/AppText";
 import { markWalletEntrySource } from "@/store/walletChromeStore";
 
 const TITLE_DARK = "#1F2937";
-const ICON_CIRCLE_BG = "#F3F4F6";
 
 function formatPillBalance(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
@@ -72,10 +71,8 @@ export function GatiCashHeaderPill({ variant = "default", fromFoodHome = false }
       accessibilityRole="button"
       accessibilityLabel={`GatiCash wallet, balance ${displayAmount} rupees`}
     >
-      <View style={styles.iconCircle}>
-        <Ionicons name="wallet-outline" size={13} color={TITLE_DARK} />
-      </View>
-      <AppText style={styles.amount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+      <Ionicons name="wallet-outline" size={15} color={TITLE_DARK} />
+      <AppText style={styles.amount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
         ₹{displayAmount}
       </AppText>
     </TouchableOpacity>
@@ -84,19 +81,19 @@ export function GatiCashHeaderPill({ variant = "default", fromFoodHome = false }
 
 const styles = StyleSheet.create({
   pill: {
-    width: 36,
+    width: 40,
     height: 40,
-    borderRadius: 10,
-    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.55)",
     alignItems: "center",
     justifyContent: "center",
-    paddingTop: 3,
-    paddingBottom: 2,
-    shadowColor: "#0f172a",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 3,
-    elevation: 2,
+    paddingTop: 4,
+    paddingBottom: 3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(15, 23, 42, 0.12)",
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   gridPill: {
     flexDirection: "row",
@@ -130,14 +127,6 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
     maxWidth: 52,
   },
-  iconCircle: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: ICON_CIRCLE_BG,
-    alignItems: "center",
-    justifyContent: "center",
-  },
   amount: {
     marginTop: 1,
     fontSize: 8,
@@ -145,7 +134,7 @@ const styles = StyleSheet.create({
     color: TITLE_DARK,
     letterSpacing: -0.1,
     lineHeight: 10,
-    maxWidth: 32,
+    maxWidth: 34,
     textAlign: "center",
   },
 });

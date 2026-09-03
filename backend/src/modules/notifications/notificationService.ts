@@ -30,6 +30,7 @@ import {
   resolveTarget,
 } from "./targetResolver.js";
 import { sendFcmV1 } from "./fcmProvider.js";
+import { isFirebaseAdminConfigured } from "../../config/firebase.js";
 import {
   loadTemplate,
   bulkInsertQueuedLogs,
@@ -121,6 +122,13 @@ function customerLiveOrderCollapseKey(row: {
   return orderId ? `customer-live-order-${orderId}` : null;
 }
 
+/**
+ * Customer live-order progress used to be data-only so the app could paint a
+ * sticky local notification. That fails when the process is force-killed
+ * (JS never wakes). Always send a visible tray notification so Customer /
+ * killed-state delivery works; the CX app suppresses the OS alert and updates
+ * the sticky when it is already running (`gmLiveProgress` handler).
+ */
 function customerLiveOrderDeliveryOpts(row: CreateLogRow, templateSilent: boolean): {
   silent: boolean;
   collapseKey: string | null;
@@ -130,10 +138,30 @@ function customerLiveOrderDeliveryOpts(row: CreateLogRow, templateSilent: boolea
     return { silent: templateSilent, collapseKey: null, dataOnly: false };
   }
   return {
-    silent: true,
+    silent: false,
     collapseKey: customerLiveOrderCollapseKey(row),
-    dataOnly: true,
+    // Visible title/body required for force-killed Android/iOS delivery.
+    dataOnly: false,
   };
+}
+
+/** Critical user-facing templates must never strip the FCM/Expo notification block. */
+function mustShowWhenKilled(row: {
+  templateCode: string;
+  metadata?: Record<string, unknown> | null;
+}): boolean {
+  const code = String(row.templateCode ?? "").toUpperCase();
+  if (
+    code === "MERCHANT_NEW_ORDER" ||
+    code === "RIDER_DISPATCH_OFFER" ||
+    code === "CUSTOMER_ANNOUNCEMENT" ||
+    code === "MERCHANT_ANNOUNCEMENT" ||
+    code === "RIDER_ANNOUNCEMENT"
+  ) {
+    return true;
+  }
+  const metaType = String(row.metadata?.type ?? "").toLowerCase();
+  return metaType === "merchant_new_order" || metaType === "rider_dispatch_offer";
 }
 
 function buildFcmV1InputForRow(
@@ -148,6 +176,9 @@ function buildFcmV1InputForRow(
   } = {},
 ) {
   const live = customerLiveOrderDeliveryOpts(row, templateSilent);
+  // Force-killed apps only show a tray item when the carrier includes a
+  // notification block. Never strip it for critical / announcement templates.
+  const silent = mustShowWhenKilled(row) ? false : live.silent;
   return {
     notificationId: row.notificationId,
     ...(args.token ? { token: args.token } : {}),
@@ -158,10 +189,11 @@ function buildFcmV1InputForRow(
     deepLink: args.deepLink ?? resolvedDeepLinkForRow(row),
     webLink: args.webLink,
     channelId: channelIdForRecipient(row.recipient, row.priority, row),
+    sound: silent ? null : soundForRecipient(row.recipient, row),
     appRole: row.recipient.role,
     data: args.data ?? fcmDataForRow(row),
     priority: row.priority as never,
-    silent: live.silent,
+    silent,
     collapseKey: live.collapseKey,
   };
 }
@@ -172,7 +204,13 @@ function channelIdForRecipient(
   row?: { templateCode: string; metadata?: Record<string, unknown> | null },
 ): string {
   if (recipient.role === "merchant") {
-    // Critical / high new-order alerts use MAX heads-up channel (auto-wake path).
+    const code = String(row?.templateCode ?? "").toUpperCase();
+    const metaType = String(row?.metadata?.type ?? "").toLowerCase();
+    // Dedicated MAX + custom sound channel (immutable after Android create).
+    if (code === "MERCHANT_NEW_ORDER" || metaType === "merchant_new_order") {
+      return "merchant_new_orders_alert";
+    }
+    // Other critical / high merchant alerts use heads-up without new-order chime.
     if (priority === "critical" || priority === "high") return "merchant_new_orders";
     return "merchant_default";
   }
@@ -189,6 +227,14 @@ function soundForRecipient(
 ): string {
   if (recipient.role === "customer" && row && isRideCustomerPush(row)) {
     return "cx_notification.mp3";
+  }
+  if (recipient.role === "merchant") {
+    const code = String(row?.templateCode ?? "").toUpperCase();
+    const metaType = String(row?.metadata?.type ?? "").toLowerCase();
+    if (code === "MERCHANT_NEW_ORDER" || metaType === "merchant_new_order") {
+      // Matches apps/merchant_app assets/sounds/notification.wav → res/raw/notification
+      return "notification";
+    }
   }
   return "default";
 }
@@ -259,12 +305,26 @@ function deepLinkForWebRecipient(
   return `${partnersiteOrigin()}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+function isAnnouncementTemplateCode(code: string | null | undefined): boolean {
+  const c = String(code ?? "").toUpperCase();
+  return (
+    c === "CUSTOMER_ANNOUNCEMENT" ||
+    c === "MERCHANT_ANNOUNCEMENT" ||
+    c === "RIDER_ANNOUNCEMENT" ||
+    c.endsWith("_ANNOUNCEMENT")
+  );
+}
+
 function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
   const metadata = { ...(row.metadata ?? {}) };
   if (isCustomerLiveOrderProgressRow(row)) {
     metadata.skip_in_app_banner = true;
   }
   if (row.recipient.role === "merchant") {
+    metadata.skip_in_app_banner = true;
+  }
+  // Announcements must land in the system tray, not the floating in-app pill.
+  if (isAnnouncementTemplateCode(row.templateCode)) {
     metadata.skip_in_app_banner = true;
   }
   const metaScreen = typeof metadata.screen === "string" ? metadata.screen.trim() : "";
@@ -277,6 +337,11 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
       ? metadata.url.trim()
       : undefined;
   const deepLink = urlFromMeta || (row.deepLink ?? undefined);
+  const imageUrl =
+    (typeof metadata.imageUrl === "string" && metadata.imageUrl.trim()) ||
+    (typeof metadata.image_url === "string" && metadata.image_url.trim()) ||
+    (row.imageUrl && String(row.imageUrl).trim()) ||
+    "";
   return {
     notification_id: row.notificationId,
     campaign_id: row.campaignId ?? undefined,
@@ -288,6 +353,26 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
     gmTitle: row.title,
     gmMessage: row.body,
     gmBanner: row.recipient.role !== "merchant",
+    ...(imageUrl
+      ? {
+          imageUrl,
+          image_url: imageUrl,
+        }
+      : {}),
+    ...(typeof metadata.target_type === "string" && metadata.target_type
+      ? {
+          target_type: String(metadata.target_type),
+          ...(metadata.target_service_id != null
+            ? { target_service_id: String(metadata.target_service_id) }
+            : {}),
+          ...(metadata.target_category_id != null
+            ? { target_category_id: String(metadata.target_category_id) }
+            : {}),
+          ...(metadata.target_store_id != null
+            ? { target_store_id: String(metadata.target_store_id) }
+            : {}),
+        }
+      : {}),
     ...(deepLink
       ? {
           screen: deepLink,
@@ -327,23 +412,65 @@ function fcmDataForRow(row: CreateLogRow): Record<string, string> {
   return out;
 }
 
+async function dispatchViaNativeFcm(
+  row: CreateLogRow,
+  nativeToken: string,
+  opts?: { maxRetries?: number; templateSilent?: boolean; reason?: string },
+): Promise<boolean> {
+  console.warn(
+    `[notifications] fcm_prefer nid=${row.notificationId} reason=${opts?.reason ?? "native"} token_fp=${nativeToken.slice(0, 12)}…`,
+  );
+  const res = await sendFcmV1(
+    buildFcmV1InputForRow(row, opts?.templateSilent === true, {
+      token: nativeToken,
+    }),
+  );
+  return finalizeFcmDelivery(row.notificationId, nativeToken, res, {
+    maxRetries: opts?.maxRetries,
+  });
+}
+
 async function dispatchExpoRow(
   row: CreateLogRow,
   opts?: { maxRetries?: number; attempt?: number; forceInline?: boolean; templateSilent?: boolean },
 ): Promise<boolean> {
   const liveDelivery = customerLiveOrderDeliveryOpts(row, opts?.templateSilent === true);
+  const forceVisible = mustShowWhenKilled(row) || !liveDelivery.dataOnly;
+
+  // Prefer direct FCM when Admin is configured — Expo Push often returns
+  // InvalidCredentials if the EAS project is missing an FCM V1 key.
+  if (
+    isFirebaseAdminConfigured() &&
+    row.recipient.platform === "android" &&
+    row.recipient.userId &&
+    !row.recipient.userId.startsWith("__")
+  ) {
+    const nativeFirst = await lookupNativeFcmToken(
+      row.recipient.userId,
+      row.recipient.role,
+    );
+    if (nativeFirst) {
+      return dispatchViaNativeFcm(row, nativeFirst, {
+        maxRetries: opts?.maxRetries,
+        templateSilent: opts?.templateSilent,
+        reason: "prefer_native_over_expo",
+      });
+    }
+  }
+
   console.info(
-    `[notifications] expo_dispatch start nid=${row.notificationId} role=${row.recipient.role} platform=${row.recipient.platform} forceInline=${Boolean(opts?.forceInline)} liveDataOnly=${liveDelivery.dataOnly}`,
+    `[notifications] expo_dispatch start nid=${row.notificationId} role=${row.recipient.role} platform=${row.recipient.platform} forceInline=${Boolean(opts?.forceInline)} liveDataOnly=${liveDelivery.dataOnly} visible=${forceVisible}`,
   );
   const result = await deliverExpoPush({
     to: row.recipient.deviceToken,
-    title: liveDelivery.dataOnly ? undefined : row.title,
-    body: liveDelivery.dataOnly ? undefined : row.body,
+    // Always attach title/body for killed-app OS tray (unless truly data-only).
+    title: forceVisible ? row.title : undefined,
+    body: forceVisible ? row.body : undefined,
     data: pushDataForRow(row),
     screen: resolvedDeepLinkForRow(row) ?? undefined,
     imageUrl: row.imageUrl ?? undefined,
     channelId: channelIdForRecipient(row.recipient, row.priority, row),
-    sound: liveDelivery.dataOnly ? null : soundForRecipient(row.recipient, row),
+    sound: forceVisible ? soundForRecipient(row.recipient, row) : null,
     dispatchLogId: row.notificationId,
     templateCode: row.templateCode,
     attempt: opts?.attempt ?? 0,
@@ -364,17 +491,16 @@ async function dispatchExpoRow(
         row.recipient.role,
       );
       if (nativeToken) {
-        console.warn(
-          `[notifications] expo_dispatch fallback_fcm nid=${row.notificationId} reason=${result.error ?? "expo_failed"} token_fp=${nativeToken.slice(0, 12)}…`,
-        );
-        const res = await sendFcmV1(
-          buildFcmV1InputForRow(row, opts?.templateSilent === true, {
-            token: nativeToken,
-          }),
-        );
-        return finalizeFcmDelivery(row.notificationId, nativeToken, res, {
+        return dispatchViaNativeFcm(row, nativeToken, {
           maxRetries: opts?.maxRetries,
+          templateSilent: opts?.templateSilent,
+          reason: result.error ?? "expo_failed",
         });
+      }
+      if (expoCredsMissing) {
+        console.error(
+          `[notifications] expo_InvalidCredentials nid=${row.notificationId} user=${row.recipient.userId} — Expo project missing FCM V1 service account (eas credentials → Android → FCM V1). No native FCM token to fall back to; OS tray will stay empty (in-app inbox only).`,
+        );
       }
     }
     console.warn(
@@ -414,16 +540,24 @@ async function lookupNativeFcmToken(
   if (!userId || userId.startsWith("__")) return null;
   try {
     const sql = getSql();
+    // Prefer app Android tokens; allow any FCM token for this user if source/platform
+    // were never set (older register rows) so Expo InvalidCredentials can still fall back.
     const rows = (await sql`
       SELECT native_token
       FROM public.native_device_push_tokens
       WHERE user_id = ${userId}
         AND token_type = 'fcm'
-        AND lower(coalesce(platform,'')) = 'android'
-        AND lower(coalesce(source,'app')) = 'app'
         AND (last_seen_at IS NULL OR last_seen_at >= now() - interval '90 days')
+        AND (
+          lower(coalesce(platform, 'android')) = 'android'
+          OR platform IS NULL
+          OR trim(platform) = ''
+        )
+        AND lower(coalesce(source, 'app')) <> 'web'
         ${role && role !== "all" ? sql`AND lower(role) = ${role.toLowerCase()}` : sql``}
-      ORDER BY updated_at DESC NULLS LAST
+      ORDER BY
+        CASE WHEN lower(coalesce(source, 'app')) = 'app' THEN 0 ELSE 1 END,
+        updated_at DESC NULLS LAST
       LIMIT 1
     `) as unknown as Array<{ native_token: string }>;
     return rows[0]?.native_token ?? null;
@@ -547,6 +681,29 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     console.warn(`[notifications] template ${template.code} missing vars:`, missing.join(","));
   }
   const rendered = applyOverrides(renderTemplate(template, vars), intent.overrides);
+
+  // CUSTOMER_ANNOUNCEMENT: copy structured target + image into metadata so
+  // push data / deep-link resolver work for scheduled + immediate sends.
+  if (String(template.code).toUpperCase() === "CUSTOMER_ANNOUNCEMENT") {
+    const meta = { ...(intent.metadata ?? {}) };
+    const pick = (k: string) => {
+      const fromMeta = meta[k];
+      if (fromMeta != null && String(fromMeta).trim()) return String(fromMeta).trim();
+      const fromVar = (vars as Record<string, unknown>)[k];
+      if (fromVar != null && String(fromVar).trim()) return String(fromVar).trim();
+      return null;
+    };
+    const targetType = pick("target_type");
+    if (targetType) meta.target_type = targetType;
+    const sid = pick("target_service_id");
+    if (sid) meta.target_service_id = sid;
+    const cid = pick("target_category_id");
+    if (cid) meta.target_category_id = cid;
+    const stid = pick("target_store_id");
+    if (stid) meta.target_store_id = stid;
+    if (rendered.imageUrl) meta.imageUrl = rendered.imageUrl;
+    intent.metadata = meta;
+  }
 
   // 3. Resolve recipients
   let recipients = await resolveTarget(intent.target);
@@ -715,6 +872,11 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         if (tok && pushEmittedForToken.has(tok)) continue;
         if (tok) pushEmittedForToken.add(tok);
       }
+      const rowMeta: Record<string, unknown> = { ...(intent.metadata ?? {}) };
+      if (intent.idempotencyKey) rowMeta.idempotency_key = intent.idempotencyKey;
+      if (isAnnouncementTemplateCode(template.code)) {
+        rowMeta.skip_in_app_banner = true;
+      }
       logRows.push({
         notificationId: randomUUID(),
         campaignId: intent.campaignId ?? null,
@@ -726,9 +888,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         imageUrl: rendered.imageUrl,
         deepLink: rendered.deepLink,
         priority: intent.priority ?? template.priority,
-        metadata: intent.idempotencyKey
-          ? { ...(intent.metadata ?? {}), idempotency_key: intent.idempotencyKey }
-          : intent.metadata,
+        metadata: rowMeta,
       });
     }
   }
@@ -785,6 +945,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         console.info(
           `[notifications] fcm_topic nid=${row.notificationId} topic=${topic} role=${row.recipient.role}`,
         );
+        const topicSilent = mustShowWhenKilled(row) ? false : Boolean(template.silent);
         const res = await sendFcmV1({
           notificationId: row.notificationId,
           topic,
@@ -795,6 +956,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           deepLink: row.deepLink ?? null,
           webLink,
           channelId: channelIdForRecipient(row.recipient, row.priority, row),
+          sound: topicSilent ? null : soundForRecipient(row.recipient, row),
           appRole: row.recipient.role,
           data: {
             template_code: row.templateCode,
@@ -802,7 +964,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
             ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
           },
           priority: row.priority as never,
-          silent: template.silent,
+          silent: topicSilent,
         });
         if (await finalizeFcmDelivery(row.notificationId, undefined, res, { maxRetries })) {
           queued++;

@@ -56,7 +56,55 @@ import {
   softSkipWarningForTarget,
   templateRoleMatchesTarget,
 } from "./campaignTarget.js";
+import { validateAnnouncementTarget } from "./announcementTarget.js";
 import type { NotificationRole, TargetFilter, TemplateVariables } from "./types.js";
+
+async function enrichCustomerAnnouncementCampaign(b: {
+  templateCode: string;
+  variables?: TemplateVariables;
+  overrideDeepLink?: string | null;
+  overrideImage?: string | null;
+}): Promise<
+  | {
+      ok: true;
+      variables: TemplateVariables;
+      overrideDeepLink: string | null;
+      metadataExtra: Record<string, unknown>;
+    }
+  | { ok: false; error: string }
+> {
+  if (String(b.templateCode).toUpperCase() !== "CUSTOMER_ANNOUNCEMENT") {
+    return {
+      ok: true,
+      variables: (b.variables ?? {}) as TemplateVariables,
+      overrideDeepLink: b.overrideDeepLink ?? null,
+      metadataExtra: {},
+    };
+  }
+  const vars = { ...(b.variables ?? {}) } as Record<string, unknown>;
+  const validated = await validateAnnouncementTarget(vars);
+  if (!validated.ok) return { ok: false, error: validated.error };
+  const r = validated.resolved;
+  vars.deepLink = r.deepLink;
+  vars.target_type = r.target_type;
+  vars.target_service_id = r.target_service_id;
+  vars.target_category_id = r.target_category_id;
+  vars.target_store_id = r.target_store_id;
+  const overrideDeepLink =
+    (b.overrideDeepLink && String(b.overrideDeepLink).trim()) || r.deepLink;
+  return {
+    ok: true,
+    variables: vars as TemplateVariables,
+    overrideDeepLink,
+    metadataExtra: {
+      target_type: r.target_type,
+      ...(r.target_service_id ? { target_service_id: r.target_service_id } : {}),
+      ...(r.target_category_id ? { target_category_id: r.target_category_id } : {}),
+      ...(r.target_store_id ? { target_store_id: r.target_store_id } : {}),
+      ...(b.overrideImage ? { imageUrl: b.overrideImage } : {}),
+    },
+  };
+}
 
 /**
  * `revoked_at` arrives with migration 0482. Probe once so an un-migrated
@@ -158,6 +206,21 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         return reply.send(result);
       },
     );
+
+    // Canonical Customer Home services for CUSTOMER_ANNOUNCEMENT targeting.
+    admin.get("/customer-home-services", async (_req, reply) => {
+      const { CUSTOMER_HOME_SERVICES } = await import("../../lib/customer-home-services.js");
+      return reply.send({
+        items: CUSTOMER_HOME_SERVICES.map((s) => ({
+          id: s.id,
+          label: s.label,
+          deepLink: s.deepLink,
+          storeType: s.storeType,
+          supportsCategory: s.supportsCategory,
+          supportsStore: s.supportsStore,
+        })),
+      });
+    });
 
     // --- templates: list ---
     admin.get<{ Querystring: { category?: string; role?: string; enabled?: string } }>(
@@ -311,6 +374,13 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
+      const enriched = await enrichCustomerAnnouncementCampaign(b);
+      if (!enriched.ok) {
+        return reply.code(400).send({ error: "invalid_announcement_target", message: enriched.error });
+      }
+      b.variables = enriched.variables;
+      b.overrideDeepLink = enriched.overrideDeepLink ?? undefined;
+
       // Immediate send path — create as running, send synchronously, then finalize status.
       if (b.status === "running") {
         const tmpl = tmplCheck;
@@ -356,6 +426,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
             metadata: {
               gmType: b.templateCode,
               campaign: true,
+              ...enriched.metadataExtra,
             },
           });
           // Missing push tokens / quiet hours are soft outcomes — never 400.

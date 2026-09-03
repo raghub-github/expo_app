@@ -10,7 +10,6 @@ import {
   AppState,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { StatusBar } from "expo-status-bar";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import {
@@ -2105,7 +2104,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   if (cancelSuccess) {
     return (
       <View style={styles.centered}>
-        <StatusBar style="dark" />
         <RiderCancelSuccessSheet
           visible
           orderIdLabel={order?.formattedOrderId?.trim() || orderId}
@@ -2126,7 +2124,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   if (shouldShowAdminCancelSheet) {
     return (
       <View style={styles.centered}>
-        <StatusBar style="dark" />
         <RiderAdminOrderCancelledSheet
           visible
           orderIdLabel={order?.formattedOrderId?.trim() || orderId}
@@ -2205,7 +2202,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
   return (
     <View style={styles.container}>
-      <StatusBar style="dark" />
 
       <View style={styles.mainColumn}>
       <View style={styles.mapStageFlex}>

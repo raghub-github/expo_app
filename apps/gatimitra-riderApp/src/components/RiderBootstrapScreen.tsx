@@ -11,7 +11,6 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -53,7 +52,6 @@ export function RiderBootstrapScreen({ statusMessage = null, onSplashReady }: Pr
       accessibilityLabel="GatiMitra Rider loading"
       onLayout={handleSplashLayout}
     >
-      <StatusBar hidden={false} style="dark" backgroundColor={RIDER_SPLASH_BG} translucent />
       <View
         pointerEvents="none"
         style={[styles.statusFill, { height: topBleed, backgroundColor: RIDER_SPLASH_BG }]}

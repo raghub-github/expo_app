@@ -295,7 +295,7 @@ export default function FreePackagingStoresScreen() {
         <TouchableOpacity
           style={styles.searchBar}
           activeOpacity={0.92}
-          onPress={() => router.push("/search")}
+          onPress={() => router.push({ pathname: "/search", params: { storeType: "FOOD" } })}
           accessibilityRole="search"
           accessibilityLabel="Search restaurants"
         >

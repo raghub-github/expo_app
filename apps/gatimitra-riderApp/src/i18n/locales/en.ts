@@ -1070,8 +1070,9 @@ export const en = {
       liveCapture: "Live capture only",
       title: "Update profile photo",
       subtitle:
-        "Live selfie with blink verification — gallery photos are not allowed.",
-      hint: "Blink your eyes when prompted — selfie captures automatically",
+        "Look at the camera and tap Capture selfie. Gallery photos are not allowed.",
+      hint: "Align your face, then tap Capture selfie",
+      upload: "Upload selfie",
       save: "Save profile photo",
       success: "Profile photo updated successfully.",
       uploadError: "Failed to update selfie. Please try again.",

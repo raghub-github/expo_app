@@ -426,7 +426,7 @@ function drawRideTaxInvoicePage(
 ): void {
   const invoiceNo = buildRideInvoiceNumber("ride", input);
   const invoiceDate = formatTaxInvoiceDate(input.rideDateIso);
-  const state = input.placeOfSupply?.trim() || "Bihar";
+  const state = input.placeOfSupply?.trim() || "";
   const captain = input.riderName?.trim() || "Ride Partner";
   const vehicle = input.vehicleNumber?.trim() || "—";
 
@@ -446,16 +446,17 @@ function drawRideTaxInvoicePage(
   y += 52;
   y = drawTaxField(doc, x, y, "Invoice No.", invoiceNo, colW);
   y = Math.max(y, drawTaxField(doc, x + colW, y - 34, "Invoice Date", invoiceDate, colW));
-  y = drawTaxField(doc, x, y, "State", state, colW);
-  y = drawTaxField(
-    doc,
-    x + colW,
-    y - 34,
-    "Tax Category",
-    "Other local transportation services of passengers n.e.c. (996419)",
-    colW
-  );
-  y = drawTaxField(doc, x, y, "Place of Supply", state, colW);
+  y = drawTaxField(doc, x, y, "State", state || "—", colW);
+  const rideHsn = process.env.RIDE_INVOICE_HSN?.trim() || process.env.PLATFORM_INVOICE_HSN?.trim() || "";
+  if (rideHsn) {
+    y = Math.max(
+      y,
+      drawTaxField(doc, x + colW, y - 34, "HSN / SAC", rideHsn, colW)
+    );
+  }
+  if (state) {
+    y = drawTaxField(doc, x, y, "Place of Supply", state, colW);
+  }
   y = drawTaxField(doc, x + colW, y - 34, "GST Number", platformGstin(), colW);
   y = drawTaxField(doc, x, y, "Vehicle Number", vehicle, colW);
   y = drawTaxField(doc, x + colW, y - 34, "Captain Name", captain, colW);
@@ -468,9 +469,8 @@ function drawRideTaxInvoicePage(
 
   const rows: Array<[string, number, boolean]> = [
     ["Ride Fare Charge", amounts.captainFee, false],
-    ["CGST (2.5%)", amounts.rideCgst, false],
-    ["SGST (2.5%)", amounts.rideSgst, false],
-    ["IGST (0%)", 0, false],
+    ["CGST", amounts.rideCgst, false],
+    ["SGST", amounts.rideSgst, false],
     ["Ride Charge", amounts.rideCharge, true],
   ];
   for (const [label, amount, bold] of rows) {
@@ -501,7 +501,7 @@ function drawPlatformTaxInvoicePage(
 ): void {
   const invoiceNo = buildRideInvoiceNumber("platform", input);
   const invoiceDate = formatTaxInvoiceDate(input.rideDateIso);
-  const state = input.placeOfSupply?.trim() || "Bihar";
+  const state = input.placeOfSupply?.trim() || "";
   const subTotal = round2(amounts.platformBookingFee + amounts.platformConvenienceFee);
 
   doc.addPage({ size: "A4", margin: 0 });
@@ -532,8 +532,13 @@ function drawPlatformTaxInvoicePage(
   y = Math.max(y, drawTaxField(doc, x + colW, y - 34, "Invoice Date", invoiceDate, colW));
   y = drawTaxField(doc, x, y, "Customer Name", input.customerName, colW);
   y = drawTaxField(doc, x, y, "Customer Pick Up Address", input.pickupAddress, colW * 2);
-  y = drawTaxField(doc, x, y, "Tax Category", "Other services n.e.c. (999799)", colW);
-  y = drawTaxField(doc, x + colW, y - 34, "Place of Supply", state, colW);
+  const platformHsn = process.env.PLATFORM_INVOICE_HSN?.trim() || "";
+  if (platformHsn) {
+    y = drawTaxField(doc, x, y, "HSN / SAC", platformHsn, colW);
+  }
+  if (state) {
+    y = drawTaxField(doc, x + (platformHsn ? colW : 0), y - (platformHsn ? 34 : 0), "Place of Supply", state, colW);
+  }
   y = drawTaxField(doc, x, y, "GST", platformGstin(), colW);
 
   y += 8;
@@ -544,9 +549,8 @@ function drawPlatformTaxInvoicePage(
     ["Booking Fee", amounts.platformBookingFee, false],
     ["Convenience Charges", amounts.platformConvenienceFee, false],
     ["Sub Total", subTotal, false],
-    ["CGST (9%)", amounts.platformGstCgst, false],
-    ["SGST (9%)", amounts.platformGstSgst, false],
-    ["IGST (0%)", 0, false],
+    ["CGST", amounts.platformGstCgst, false],
+    ["SGST", amounts.platformGstSgst, false],
     ["Final Amount", amounts.platformFinalAmount, true],
   ];
   for (const [label, amount, bold] of rows) {

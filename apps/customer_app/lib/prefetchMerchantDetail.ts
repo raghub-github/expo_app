@@ -36,13 +36,18 @@ export function findMerchantSummaryInCache(
 ): MerchantSummary | null {
   if (!merchantId) return null;
 
-  const listQueries = queryClient.getQueriesData<MerchantSummary[]>({
+  const listQueries = queryClient.getQueriesData<unknown>({
     queryKey: ["merchants"],
   });
-  for (const [, list] of listQueries) {
-    if (!Array.isArray(list)) continue;
-    const hit = list.find((m) => m.id === merchantId);
-    if (hit) return hit;
+  for (const [, payload] of listQueries) {
+    const list = Array.isArray(payload)
+      ? payload
+      : payload && typeof payload === "object" && Array.isArray((payload as { items?: unknown }).items)
+        ? (payload as { items: MerchantSummary[] }).items
+        : null;
+    if (!list) continue;
+    const hit = list.find((m) => m && typeof m === "object" && (m as MerchantSummary).id === merchantId);
+    if (hit) return hit as MerchantSummary;
   }
 
   const searchQueries = queryClient.getQueriesData<{ stores?: MerchantSummary[] }>({
@@ -131,23 +136,16 @@ export function prefetchMerchantDetail(
 
   prefetchStoreOffersFromLocationStore(queryClient, merchantId, { force: true });
 
-  const placeholder = getMerchantDetailPlaceholder(queryClient, merchantId);
-  if (placeholder && !queryClient.getQueryData(MERCHANT_DETAIL_QUERY_KEY(merchantId))) {
-    queryClient.setQueryData(MERCHANT_DETAIL_QUERY_KEY(merchantId), placeholder);
-  }
-
-  prefetchMerchantHeroImage(
-    placeholder ?? queryClient.getQueryData<MerchantDetail>(MERCHANT_DETAIL_QUERY_KEY(merchantId))
-  );
-
   const summary = findMerchantSummaryInCache(queryClient, merchantId);
   if (summary) {
     warmMerchantHeroImage(merchantId, resolveMerchantCarouselBannerUri(summary));
+    prefetchMerchantHeroImage(summary);
   }
 
   const cachedMenu = readSyncMerchantMenu(merchantId);
   if (cachedMenu?.menu?.length) {
     void prefetchMenuItemImagesForMenu(cachedMenu.menu);
+    prefetchMerchantHeroImage(cachedMenu);
   }
 
   void syncMerchantMenuInBackground(queryClient, merchantId);

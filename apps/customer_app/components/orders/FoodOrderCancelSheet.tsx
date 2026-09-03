@@ -35,6 +35,7 @@ type FoodOrderCancelSheetProps = {
   onOpenHelp: () => void;
   onOpenChat: () => void;
   onCancelled?: () => void;
+  onCancelFlowChange?: (active: boolean) => void;
   /** When false, "Chat with delivery partner" is disabled (no rider assigned yet). */
   chatEnabled?: boolean;
   /** Hide rider chat entirely (self-pickup / takeaway). Default true. */
@@ -102,6 +103,7 @@ export function FoodOrderCancelSheet({
   onOpenHelp,
   onOpenChat,
   onCancelled,
+  onCancelFlowChange,
   chatEnabled = false,
   showPartnerChat = true,
 }: FoodOrderCancelSheetProps) {
@@ -124,15 +126,15 @@ export function FoodOrderCancelSheet({
 
   const handleReasonSelected = async (reason: FoodCancelReason) => {
     setCancelling(true);
+    onCancelFlowChange?.(true);
     try {
       await orderService.cancelFoodOrder(order.orderId, {
         reasonCode: reason.id,
         reasonText: reason.label,
+        expectedRefundAmount: refund,
       });
       setReasonSheetVisible(false);
       onClose();
-      onCancelled?.();
-      // Refund credit is applied server-side before cancel returns — refresh now.
       void refreshCustomerWallet(queryClient);
       setAckMessage(
         preAccept
@@ -141,6 +143,7 @@ export function FoodOrderCancelSheet({
       );
       setAckVisible(true);
     } catch (err: unknown) {
+      onCancelFlowChange?.(false);
       const message =
         err instanceof Error && err.message.trim()
           ? err.message
@@ -152,6 +155,16 @@ export function FoodOrderCancelSheet({
     } finally {
       setCancelling(false);
     }
+  };
+
+  const handleAckDismiss = () => {
+    setAckVisible(false);
+    // Invalidate only after the ack is gone so live tracking (Mapbox) is not
+    // torn down mid-sheet. That unmount was crashing Expo Go on cancel.
+    requestAnimationFrame(() => {
+      onCancelled?.();
+      onCancelFlowChange?.(false);
+    });
   };
 
   return (
@@ -265,7 +278,7 @@ export function FoodOrderCancelSheet({
     <FoodOrderCancelledAckSheet
       visible={ackVisible}
       message={ackMessage}
-      onDismiss={() => setAckVisible(false)}
+      onDismiss={handleAckDismiss}
     />
     </>
   );

@@ -1,11 +1,8 @@
 import type { Router } from "expo-router";
 import type { QueryClient } from "@tanstack/react-query";
-import type { MerchantDetail, MerchantSummary } from "@/services/merchant.service";
+import type { MerchantSummary } from "@/services/merchant.service";
 import { buildMerchantDetailParams } from "@/lib/merchantHeroWarmCache";
 import {
-  getMerchantDetailPlaceholder,
-  MERCHANT_DETAIL_QUERY_KEY,
-  merchantSummaryToDetailPlaceholder,
   prefetchMerchantDetail,
 } from "@/lib/prefetchMerchantDetail";
 import { seedMerchantMenuQueryIfCached } from "@/lib/merchantMenuCache";
@@ -13,20 +10,35 @@ import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStore";
 import { peekCachedFoodHomeLayoutKey } from "@/lib/foodHomeLayoutCache";
 
+let navigateLockUntil = 0;
+
+export type NavigateToMerchantOptions = {
+  /**
+   * Replace the current merchant screen instead of stacking another.
+   * Use for "similar restaurants" so Back returns to food home, not the prior store.
+   */
+  replace?: boolean;
+};
+
 /**
  * Open restaurant detail with an instant full-screen shutter Modal.
- * show() first → one frame for Modal to present → then push + prefetch.
+ * show() first → one frame for Modal to present → then push/replace + prefetch.
  */
 export function navigateToMerchant(
   router: Router,
   queryClient: QueryClient,
   merchantId: string,
-  merchant?: MerchantSummary
+  merchant?: MerchantSummary,
+  options?: NavigateToMerchantOptions
 ): void {
   if (!merchantId) return;
+  const now = Date.now();
+  if (now < navigateLockUntil) return;
+  navigateLockUntil = now + 700;
 
   const isGrocery = (merchant?.storeType ?? "").trim().toUpperCase() === "GROCERY";
   const discovery = !isGrocery && peekCachedFoodHomeLayoutKey() === "discovery";
+  const replace = options?.replace === true;
 
   // 1) Shutter Modal first — must beat the native stack paint.
   useMerchantNavTransitionStore.getState().show(merchantId, { dark: discovery });
@@ -36,25 +48,22 @@ export function navigateToMerchant(
     hideStatusBarSpacer: false,
   });
 
-  // 2) Seed shell data for first merchant paint (under the Modal).
-  const key = MERCHANT_DETAIL_QUERY_KEY(merchantId);
+  // 2) Seed cached menu if we already have one. Never write an empty-menu
+  // shell as query *data* — that marks the query successful, skips the fetch,
+  // and the inner page paints a white blank instead of menu rows.
   seedMerchantMenuQueryIfCached(queryClient, merchantId);
-  const existing = queryClient.getQueryData<MerchantDetail>(key);
-  if (!existing?.menu?.length) {
-    const placeholder = merchant
-      ? merchantSummaryToDetailPlaceholder(merchant)
-      : getMerchantDetailPlaceholder(queryClient, merchantId);
-    if (placeholder) {
-      queryClient.setQueryData(key, placeholder);
-    }
-  }
 
-  // 3) Push after Modal can present this frame.
+  // 3) Navigate after Modal can present this frame.
   requestAnimationFrame(() => {
-    router.push({
-      pathname: "/home/merchant/[id]",
+    const route = {
+      pathname: "/home/merchant/[id]" as const,
       params: buildMerchantDetailParams(merchantId, merchant),
-    });
+    };
+    if (replace) {
+      router.replace(route);
+    } else {
+      router.push(route);
+    }
     prefetchMerchantDetail(queryClient, merchantId);
   });
 }

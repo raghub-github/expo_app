@@ -222,6 +222,15 @@ export function isSystemShadeOnlyPush(data: Record<string, unknown> | undefined 
   const code = template.toUpperCase();
   if (code.startsWith("ADMIN_CX_")) return true;
   if (code.startsWith("MERCHANT_")) return true;
+  // Campaign announcements belong in the OS shade only — never the floating pill.
+  if (
+    code === "CUSTOMER_ANNOUNCEMENT" ||
+    code === "MERCHANT_ANNOUNCEMENT" ||
+    code === "RIDER_ANNOUNCEMENT" ||
+    code.endsWith("_ANNOUNCEMENT")
+  ) {
+    return true;
+  }
   return false;
 }
 

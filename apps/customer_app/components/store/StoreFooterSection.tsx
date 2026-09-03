@@ -1,18 +1,22 @@
-import React, { useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TouchableOpacity, StyleSheet, Image, useWindowDimensions, Platform } from "react-native";
+import { View, TouchableOpacity, StyleSheet, useWindowDimensions, Platform } from "react-native";
+import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
-import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
+import { resolveMerchantCarouselBannerUri } from "@/lib/merchantBanner";
+import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
+import { navigateToMerchant } from "@/lib/navigateToMerchant";
 
 export type StoreFooterSectionProps = {
   similarMerchants: MerchantSummary[];
@@ -50,8 +54,8 @@ function SimilarRestaurantCard({
   width: number;
   onPress: () => void;
 }) {
-  const img = merchant.displayImage ?? merchant.banner_url;
-  const uri = img ? toAbsoluteImageUrl(img) : null;
+  // Same banner resolver as list/store cards — never a different blank field.
+  const uri = useMemo(() => resolveMerchantCarouselBannerUri(merchant), [merchant]);
   const offer = merchant.offerText?.trim();
   const [line1, line2] = offer ? splitOfferLines(offer) : [""];
   const eta =
@@ -70,7 +74,14 @@ function SimilarRestaurantCard({
     >
       <View style={[styles.restImageWrap, { width: imageSize, height: imageSize }]}>
         {uri ? (
-          <Image source={{ uri }} style={styles.restImage} resizeMode="cover" />
+          <Image
+            source={{ uri }}
+            style={styles.restImage}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            recyclingKey={`similar-${merchant.id}`}
+            transition={0}
+          />
         ) : (
           <View style={styles.restImagePlaceholder}>
             <MenuItemImagePlaceholder size="md" />
@@ -116,10 +127,27 @@ export function StoreFooterSection({
   fssaiNumber,
 }: StoreFooterSectionProps) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const dark = useMerchantUiDark();
   const { width } = useWindowDimensions();
   const [expanded, setExpanded] = useState(true);
   const cardW = (width - 16 * 2 - 10) / 2;
+  const openingRef = useRef(false);
+
+  const openSimilarMerchant = useCallback(
+    (merchant: MerchantSummary) => {
+      if (!merchant?.id || openingRef.current) return;
+      openingRef.current = true;
+      const banner = resolveMerchantCarouselBannerUri(merchant);
+      warmMerchantHeroImage(merchant.id, banner);
+      // replace — Back goes to food home, not the restaurant user came from.
+      navigateToMerchant(router, queryClient, merchant.id, merchant, { replace: true });
+      setTimeout(() => {
+        openingRef.current = false;
+      }, 900);
+    },
+    [router, queryClient]
+  );
 
   return (
     <View style={[styles.wrap, dark && styles.wrapDark, bottomPadding > 0 ? { paddingBottom: bottomPadding } : null]}>
@@ -155,7 +183,7 @@ export function StoreFooterSection({
                     key={m.id}
                     merchant={m}
                     width={cardW}
-                    onPress={() => router.push(`/home/merchant/${m.id}`)}
+                    onPress={() => openSimilarMerchant(m)}
                   />
                 ))}
               </View>

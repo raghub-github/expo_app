@@ -21,7 +21,7 @@
       "ios": {
         "image": "./assets/images/splash-brand.png",
         "resizeMode": "cover",
-        "backgroundColor": "#5eead4"
+        "backgroundColor": "#14b8a6"
       }
     },
     "assetBundlePatterns": [
@@ -35,7 +35,7 @@
     },
     "androidNavigationBar": {
       "backgroundColor": "#14b8a6",
-      "barStyle": "light-content",
+      "barStyle": "dark-content",
       "visible": "visible"
     },
     "ios": {

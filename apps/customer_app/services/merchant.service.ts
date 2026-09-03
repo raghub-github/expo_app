@@ -9,7 +9,6 @@ import {
   setCachedMenuItemFullConfig,
 } from "@/lib/menu-item-config-cache";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
-import { isFoodHeroImageUrl, isMerchantBrandOrPlaceholderImageUrl } from "@/lib/merchantHeroMedia";
 
 const MERCHANTS_PREFIX = "/v1/merchants";
 
@@ -89,6 +88,15 @@ export type MenuItem = {
   category?: string;
   categoryId?: number | null;
   categoryName?: string | null;
+  /** Merchant category tile image when configured. */
+  categoryImageUrl?: string | null;
+  /** Merchant category display_order from DB. */
+  categoryDisplayOrder?: number | null;
+  /**
+   * Distinct non-cancelled customer orders that included this item at this store.
+   * Used to rank frequently ordered dishes to the top of the inner menu.
+   */
+  orderCount?: number;
   isPopular?: boolean;
   isRecommended?: boolean;
   prepTimeMinutes?: number;
@@ -241,7 +249,15 @@ export type SearchApiResponse = {
     name: string;
     imageUrl?: string | null;
     cuisines?: string[];
+    storeType?: string | null;
+    distanceKm?: number;
   }>;
+  correctedQuery?: string | null;
+  didYouMean?: string | null;
+  searchInsteadOriginal?: string | null;
+  preferStores?: boolean;
+  /** Client-only: set when the request failed (vs empty hits). */
+  error?: string | null;
 };
 
 function pickFirstString(...candidates: unknown[]): string | null {
@@ -268,34 +284,31 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
   );
   const bannerAbs = toAbsoluteImageUrl(bannerRaw) ?? bannerRaw;
   const displayAbs = toAbsoluteImageUrl(item.displayImage);
-  const pickCardPhoto = (...candidates: (string | null | undefined)[]): string | null => {
-    for (const raw of candidates) {
-      const abs = toAbsoluteImageUrl(raw) ?? (typeof raw === "string" ? raw.trim() : null);
-      if (abs && !isMerchantBrandOrPlaceholderImageUrl(abs)) return abs;
-    }
-    return null;
-  };
-  const heroBanner =
-    bannerAbs && isFoodHeroImageUrl(bannerAbs)
-      ? bannerAbs
-      : displayAbs && isFoodHeroImageUrl(displayAbs)
-        ? displayAbs
-        : null;
   const rawGallery = Array.isArray(item.galleryImages)
     ? item.galleryImages
     : Array.isArray(item.gallery_images)
       ? (item.gallery_images as string[])
       : [];
+  const pickCardPhoto = (...candidates: (string | null | undefined)[]): string | null => {
+    for (const raw of candidates) {
+      const abs = toAbsoluteImageUrl(raw) ?? (typeof raw === "string" ? raw.trim() : null);
+      if (abs) return abs;
+    }
+    return null;
+  };
+  const cardPhoto = pickCardPhoto(
+    bannerAbs,
+    displayAbs,
+    ...rawGallery,
+    logoRaw
+  );
   const galleryImages = rawGallery
     .map((u) => (typeof u === "string" ? toAbsoluteImageUrl(u) ?? u.trim() : null))
-    .filter((u): u is string => Boolean(u && isFoodHeroImageUrl(u)))
-    .filter((u) => u !== heroBanner);
-  const cardPhoto =
-    heroBanner ??
-    pickCardPhoto(bannerAbs, displayAbs, ...rawGallery, logoRaw);
+    .filter((u): u is string => Boolean(u))
+    .filter((u) => u !== cardPhoto);
   return {
     ...item,
-    banner_url: cardPhoto ?? heroBanner ?? bannerAbs ?? bannerRaw,
+    banner_url: cardPhoto ?? bannerAbs ?? bannerRaw,
     displayImage: cardPhoto ?? displayAbs ?? toAbsoluteImageUrl(logoRaw),
     galleryImages: galleryImages.length > 0 ? galleryImages : undefined,
     nextOpenAt: pickOpenAtValue(
@@ -423,6 +436,24 @@ function normalizeMenuItem(raw: MenuItem & Record<string, unknown>): MenuItem {
     basePrice: resolvedBase,
     discountPercentage,
     imageUrl: toAbsoluteImageUrl(raw.imageUrl ?? null) ?? raw.imageUrl,
+    categoryImageUrl:
+      toAbsoluteImageUrl(
+        (raw.categoryImageUrl as string | null | undefined) ??
+          (raw.category_image_url as string | null | undefined) ??
+          null
+      ) ??
+      (raw.categoryImageUrl as string | null | undefined) ??
+      undefined,
+    categoryDisplayOrder: (() => {
+      const n = Number(
+        raw.categoryDisplayOrder ?? (raw as Record<string, unknown>).category_display_order
+      );
+      return Number.isFinite(n) ? Math.trunc(n) : raw.categoryDisplayOrder;
+    })(),
+    orderCount: (() => {
+      const n = Number(raw.orderCount ?? (raw as Record<string, unknown>).order_count);
+      return Number.isFinite(n) && n > 0 ? Math.trunc(n) : raw.orderCount ?? 0;
+    })(),
     canonicalPricing:
       raw.canonicalPricing ??
       (typeof raw.canonical_pricing === "object" && raw.canonical_pricing != null
@@ -833,6 +864,7 @@ export const merchantService = {
     lat?: number;
     lng?: number;
     vegOnly?: boolean;
+    storeType?: string;
     signal?: AbortSignal;
   }): Promise<SearchApiResponse> {
     try {
@@ -842,18 +874,55 @@ export const merchantService = {
           limit: params.limit ?? 30,
           offset: params.offset ?? 0,
           veg: params.vegOnly === true ? "true" : undefined,
+          storeType: (params.storeType ?? "FOOD").toString().trim().toUpperCase() || "FOOD",
           ...(params.lat != null && params.lng != null ? { lat: params.lat, lng: params.lng } : {}),
         },
         signal: params.signal,
       });
       return data ?? { dishes: [], stores: [] };
+    } catch (err) {
+      if ((err as { name?: string; code?: string })?.name === "CanceledError" ||
+          (err as { code?: string })?.code === "ERR_CANCELED") {
+        return { dishes: [], stores: [] };
+      }
+      return {
+        dishes: [],
+        stores: [],
+        error: err instanceof Error ? err.message : "Search failed",
+      };
+    }
+  },
+
+  /** Lightweight autocomplete suggestions (≤8). */
+  async searchSuggest(params: {
+    q: string;
+    limit?: number;
+    lat?: number;
+    lng?: number;
+    storeType?: string;
+    signal?: AbortSignal;
+  }): Promise<{ suggestions: Array<{ type: "query" | "store" | "item"; text: string; storeId?: string; itemId?: string }> }> {
+    try {
+      const { data } = await api.get<{
+        suggestions: Array<{ type: "query" | "store" | "item"; text: string; storeId?: string; itemId?: string }>;
+      }>("/v1/search/suggest", {
+        params: {
+          q: params.q.trim(),
+          limit: params.limit ?? 8,
+          storeType: (params.storeType ?? "FOOD").toString().trim().toUpperCase() || "FOOD",
+          ...(params.lat != null && params.lng != null ? { lat: params.lat, lng: params.lng } : {}),
+        },
+        signal: params.signal,
+      });
+      return data ?? { suggestions: [] };
     } catch {
-      return { dishes: [], stores: [] };
+      return { suggestions: [] };
     }
   },
 
   /**
    * Category chip browse: stores with a matching menu item name OR menu section/category name.
+   * Pass storeType (FOOD | GROCERY) so restaurants cannot leak into grocery (and vice versa).
    */
   async listStoresByDishCategory(params: {
     q: string;
@@ -862,6 +931,7 @@ export const merchantService = {
     lng?: number;
     maxDistanceKm?: number;
     vegOnly?: boolean;
+    storeType?: "FOOD" | "GROCERY" | string;
     signal?: AbortSignal;
   }): Promise<{
     stores: Array<{
@@ -871,6 +941,7 @@ export const merchantService = {
       cuisines?: string[] | null;
       distanceKm?: number | null;
       matchVia: "item" | "menu_category" | "both";
+      storeType?: string | null;
     }>;
   }> {
     try {
@@ -882,6 +953,7 @@ export const merchantService = {
           cuisines?: string[] | null;
           distanceKm?: number | null;
           matchVia: "item" | "menu_category" | "both";
+          storeType?: string | null;
         }>;
       }>("/v1/merchants/by-dish-category", {
         params: {
@@ -889,6 +961,7 @@ export const merchantService = {
           limit: params.limit ?? 40,
           maxDistanceKm: params.maxDistanceKm ?? 15,
           veg: params.vegOnly === true ? "true" : undefined,
+          storeType: (params.storeType ?? "FOOD").toString().trim().toUpperCase() || "FOOD",
           ...(params.lat != null && params.lng != null ? { lat: params.lat, lng: params.lng } : {}),
         },
         signal: params.signal,

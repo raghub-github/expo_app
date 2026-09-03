@@ -21,7 +21,7 @@ import {
 } from "./StoreMenuCartControls";
 import { getBasePrice, getItemDiet, getSellingPrice } from "./storeMenuUtils";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
-import { isMenuItemImagePrefetched } from "@/lib/prefetchMenuItemImages";
+import { ensureMenuItemImageWarm } from "@/lib/prefetchMenuItemImages";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { formatOfferRupee, computeCatalogDiscountPercent, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { MENU_MASONRY_CARD_RADIUS } from "@/features/merchant-detail/constants/layout";
@@ -82,7 +82,6 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
     [item.imageUrl]
   );
   const skipRemoteImage = !imageUri;
-  const imageWasPrefetched = imageUri && !skipRemoteImage ? isMenuItemImagePrefetched(imageUri) : false;
   const [imageFailed, setImageFailed] = useState(false);
   const photoPx = Math.max(1, Math.round(imageSize));
 
@@ -92,6 +91,7 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
 
   useEffect(() => {
     setImageFailed(false);
+    if (imageUri) ensureMenuItemImageWarm(imageUri);
   }, [imageUri]);
 
   const handleAdd = useCallback(() => {
@@ -201,10 +201,13 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
                 }}
                 contentFit="cover"
                 cachePolicy="memory-disk"
-                recyclingKey={item.id}
+                recyclingKey={String(item.listRowKey ?? item.id)}
                 transition={0}
-                priority={imageWasPrefetched ? "high" : "normal"}
+                priority="normal"
                 allowDownscaling
+                onLoad={() => {
+                  if (imageUri) ensureMenuItemImageWarm(imageUri);
+                }}
                 onError={() => setImageFailed(true)}
               />
             ) : (

@@ -64,6 +64,11 @@ import {
   buildCustomerOrderTaxInvoicePdfBuffer,
   invoicePdfFilename,
 } from "../../lib/customer-order-tax-invoice-pdf.js";
+import { resolvePlaceOfSupply } from "../../lib/gst-place-of-supply.js";
+import {
+  readStoreTypeFromBillingSnapshot,
+  storeTypeDisplayLabel,
+} from "../../lib/store-type-display.js";
 import { buildCustomerOrderSummaryReceiptHtml } from "../../lib/customer-order-summary-receipt.js";
 import { loadOrderRefundSummariesByCorePks, loadOrderPaymentSettlementsByCorePks } from "../../lib/order-refund-status.js";
 import {
@@ -4135,6 +4140,7 @@ export async function orderRoutes(app: FastifyInstance) {
           createdAt: ordersCore.createdAt,
           placedAt: ordersCore.placedAt,
           riderId: ordersCore.riderId,
+          merchantStoreId: ordersCore.merchantStoreId,
           alternateContactName: ordersCore.alternateContactName,
           alternateContactPhone: ordersCore.alternateContactPhone,
           deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
@@ -4200,8 +4206,25 @@ export async function orderRoutes(app: FastifyInstance) {
         "Customer";
       const orderIdDisplay = coreRow.formattedOrderId ?? coreRow.orderId ?? String(coreRow.id);
       const createdAt = coreRow.placedAt ?? coreRow.createdAt;
+      const checkoutMeta =
+        coreRow.checkoutMetadata && typeof coreRow.checkoutMetadata === "object"
+          ? (coreRow.checkoutMetadata as Record<string, unknown>)
+          : null;
       const placeOfSupply =
-        process.env.PLATFORM_INVOICE_PLACE_OF_SUPPLY?.trim() || "Bihar(10)";
+        resolvePlaceOfSupply({
+          envOverride: process.env.PLATFORM_INVOICE_PLACE_OF_SUPPLY,
+          pincode:
+            (typeof billingSnap?.dropPostalCode === "string" && billingSnap.dropPostalCode) ||
+            null,
+          deliveryAddress: coreRow.deliveryAddress ?? null,
+          checkoutMetadata: checkoutMeta,
+        }) ?? "";
+
+      let storeTypeLabel = readStoreTypeFromBillingSnapshot(billingSnap).label;
+      if (!storeTypeLabel && coreRow.merchantStoreId != null) {
+        const store = await getStoreByIdForOrder(Number(coreRow.merchantStoreId));
+        storeTypeLabel = storeTypeDisplayLabel(store?.storeType ?? null);
+      }
 
       const html = await buildCustomerOrderTaxInvoiceHtml({
         orderId: coreRow.orderId ?? String(coreRow.id),
@@ -4216,6 +4239,7 @@ export async function orderRoutes(app: FastifyInstance) {
         billingSnapshot: billingSnap,
         riderName,
         paymentMethod: coreRow.paymentMethod ?? null,
+        storeTypeLabel,
       });
 
       return reply.send({
@@ -4265,6 +4289,7 @@ export async function orderRoutes(app: FastifyInstance) {
           createdAt: ordersCore.createdAt,
           placedAt: ordersCore.placedAt,
           riderId: ordersCore.riderId,
+          merchantStoreId: ordersCore.merchantStoreId,
           alternateContactName: ordersCore.alternateContactName,
           alternateContactPhone: ordersCore.alternateContactPhone,
           deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
@@ -4330,8 +4355,25 @@ export async function orderRoutes(app: FastifyInstance) {
         "Customer";
       const orderIdDisplay = coreRow.formattedOrderId ?? coreRow.orderId ?? String(coreRow.id);
       const createdAt = coreRow.placedAt ?? coreRow.createdAt;
+      const checkoutMeta =
+        coreRow.checkoutMetadata && typeof coreRow.checkoutMetadata === "object"
+          ? (coreRow.checkoutMetadata as Record<string, unknown>)
+          : null;
       const placeOfSupply =
-        process.env.PLATFORM_INVOICE_PLACE_OF_SUPPLY?.trim() || "Bihar(10)";
+        resolvePlaceOfSupply({
+          envOverride: process.env.PLATFORM_INVOICE_PLACE_OF_SUPPLY,
+          pincode:
+            (typeof billingSnap?.dropPostalCode === "string" && billingSnap.dropPostalCode) ||
+            null,
+          deliveryAddress: coreRow.deliveryAddress ?? null,
+          checkoutMetadata: checkoutMeta,
+        }) ?? "";
+
+      let storeTypeLabel = readStoreTypeFromBillingSnapshot(billingSnap).label;
+      if (!storeTypeLabel && coreRow.merchantStoreId != null) {
+        const store = await getStoreByIdForOrder(Number(coreRow.merchantStoreId));
+        storeTypeLabel = storeTypeDisplayLabel(store?.storeType ?? null);
+      }
 
       const pdfBuffer = await buildCustomerOrderTaxInvoicePdfBuffer({
         orderId: coreRow.orderId ?? String(coreRow.id),
@@ -4346,6 +4388,7 @@ export async function orderRoutes(app: FastifyInstance) {
         billingSnapshot: billingSnap,
         riderName,
         paymentMethod: coreRow.paymentMethod ?? null,
+        storeTypeLabel,
       });
 
       const filename = invoicePdfFilename(orderIdDisplay);
@@ -4474,9 +4517,13 @@ export async function orderRoutes(app: FastifyInstance) {
       const orderDateIso =
         createdAt instanceof Date ? createdAt.toISOString() : new Date(createdAt).toISOString();
 
-      let restaurantName = foodRow?.restaurantName?.trim() || "Restaurant";
+      let restaurantName = foodRow?.restaurantName?.trim() || "";
       let restaurantAddress: string | null = null;
       let restaurantFssai: string | null = null;
+      let storeTypeLabel =
+        readStoreTypeFromBillingSnapshot(
+          (coreRow.billingSnapshot as Record<string, unknown> | null) ?? null
+        ).label;
 
       if (coreRow.merchantStoreId != null) {
         const store = await getStoreByIdForOrder(Number(coreRow.merchantStoreId));
@@ -4484,11 +4531,17 @@ export async function orderRoutes(app: FastifyInstance) {
           restaurantName =
             store.storeDisplayName?.trim() || store.storeName?.trim() || restaurantName;
           restaurantAddress = store.fullAddress?.trim() || null;
+          if (!storeTypeLabel) {
+            storeTypeLabel = storeTypeDisplayLabel(store.storeType ?? null);
+          }
           if (store.storeId) {
             const about = await getMerchantAboutPayload(store.storeId);
             restaurantFssai = about?.fssai_number?.trim() || null;
           }
         }
+      }
+      if (!restaurantName) {
+        restaurantName = storeTypeLabel?.trim() || "Store";
       }
 
       const coreItems = await db
@@ -4540,6 +4593,7 @@ export async function orderRoutes(app: FastifyInstance) {
         restaurantName,
         restaurantAddress,
         restaurantFssai,
+        storeTypeLabel,
         riderName,
         paymentMethod: coreRow.paymentMethod ?? null,
         orderType: coreRow.orderType ?? null,
@@ -4900,6 +4954,7 @@ export async function orderRoutes(app: FastifyInstance) {
   const cancelFoodOrderBodySchema = z.object({
     reasonCode: z.string().min(1).max(120),
     reasonText: z.string().min(1).max(500),
+    expectedRefundAmount: z.number().nonnegative().max(1_000_000).optional(),
   });
 
   app.post(
@@ -4937,6 +4992,7 @@ export async function orderRoutes(app: FastifyInstance) {
           orderRef: id,
           reasonCode: body.reasonCode,
           reasonText: body.reasonText,
+          expectedRefundAmount: body.expectedRefundAmount,
         });
       } catch (e) {
         const err = e as Error & { statusCode?: number };

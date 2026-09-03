@@ -562,7 +562,22 @@ export function registerDomainEventHandlers(): void {
             e.merchantStoreId != null && e.merchantStoreId > 0
               ? { store_id: e.merchantStoreId }
               : { user_id: e.merchantUserId },
-          idempotencyKey: `${map.merchant}:${e.orderId}:${e.toStatus}`,
+          // Align with notifyMerchantStoreNewOrder so placement + status_changed
+          // retries cannot twin-push the same CREATED order.
+          idempotencyKey:
+            map.merchant === "MERCHANT_NEW_ORDER" &&
+            e.merchantStoreId != null &&
+            e.merchantStoreId > 0
+              ? `MERCHANT_NEW_ORDER:${e.orderId}:${e.merchantStoreId}`
+              : `${map.merchant}:${e.orderId}:${e.toStatus}`,
+          ...(map.merchant === "MERCHANT_NEW_ORDER"
+            ? {
+                overrides: {
+                  title: "🔔 New Order Received",
+                  body: `Order #${e.orderShortId ?? e.orderId} is waiting for your acceptance.`,
+                },
+              }
+            : {}),
           metadata: {
             type: map.merchant === "MERCHANT_NEW_ORDER" ? "merchant_new_order" : "merchant_order",
             orderId: e.orderId,

@@ -1,10 +1,13 @@
 /**
  * Customer tax invoices (platform fee + delivery fee) — HTML for in-app WebView / print.
+ * All fee/tax/place-of-supply/store-type values come from the order billing snapshot —
+ * never invent GST rates, HSN codes, or location defaults.
  */
 
 import { createHash } from "crypto";
 import { getInvoiceSignatureDataUri } from "./invoice-signature-source.js";
 import { resolveCustomerDeliveryFeeFromBilling } from "./customer-delivery-fee.js";
+import { readStoreTypeFromBillingSnapshot } from "./store-type-display.js";
 
 type GstLine = {
   taxable: number;
@@ -22,10 +25,15 @@ export type CustomerOrderInvoiceInput = {
   orderDateIso: string;
   customerName: string;
   deliveryAddress: string | null;
+  /** Empty when unknown — do not fabricate a state. */
   placeOfSupply: string;
   billingSnapshot: Record<string, unknown> | null;
   riderName: string | null;
   paymentMethod: string | null;
+  /** Authoritative store/service type label from order snapshot (e.g. Grocery). */
+  storeTypeLabel?: string | null;
+  /** SAC/HSN from billing/tax config when present; omit when blank. */
+  hsnCode?: string | null;
 };
 
 const DEFAULT_GSTIN = "10AAMCG7962L1Z7";
@@ -57,7 +65,51 @@ function fmtInr(n: number): string {
   return round2(n).toFixed(2);
 }
 
-function readGstComponent(
+function applicableBasesForFee(key: "platform" | "delivery"): string[] {
+  return key === "platform" ? ["PLATFORM_FEE"] : ["DELIVERY_FEE"];
+}
+
+/** Prefer CGST/SGST tax lines from the finalized snapshot; never invent a default %. */
+function readGstSplitFromTaxes(
+  snap: Record<string, unknown>,
+  bases: string[]
+): { cgst: number; sgst: number; gst: number; taxableFromLines: number } | null {
+  const taxes = Array.isArray(snap.taxes) ? snap.taxes : [];
+  let cgst = 0;
+  let sgst = 0;
+  let other = 0;
+  let taxableFromLines = 0;
+  let matched = false;
+  for (const t of taxes) {
+    if (!t || typeof t !== "object") continue;
+    const row = t as Record<string, unknown>;
+    const meta =
+      row.meta && typeof row.meta === "object"
+        ? (row.meta as Record<string, unknown>)
+        : null;
+    const ab = String(meta?.applicableBase ?? meta?.applicable_base ?? "").trim().toUpperCase();
+    if (!bases.includes(ab)) continue;
+    const amount = num(row.amount ?? row.tax);
+    if (amount <= 0.005) continue;
+    matched = true;
+    const base = num(meta?.base);
+    if (base > taxableFromLines) taxableFromLines = base;
+    const taxGroup = String(meta?.taxGroup ?? meta?.tax_group ?? row.tax_group ?? "").trim().toLowerCase();
+    const label = String(row.label ?? row.name ?? "").trim().toLowerCase();
+    if (taxGroup === "cgst" || label.includes("cgst")) cgst = round2(cgst + amount);
+    else if (taxGroup === "sgst" || label.includes("sgst")) sgst = round2(sgst + amount);
+    else other = round2(other + amount);
+  }
+  if (!matched) return null;
+  const gst = round2(cgst + sgst + other);
+  if (cgst <= 0.005 && sgst <= 0.005 && other > 0.005) {
+    cgst = round2(other / 2);
+    sgst = round2(other - cgst);
+  }
+  return { cgst, sgst, gst, taxableFromLines: round2(taxableFromLines) };
+}
+
+export function readOrderInvoiceGstComponent(
   snap: Record<string, unknown>,
   key: "platform" | "delivery",
   feeKey: "platform_fee" | "delivery_fee"
@@ -70,12 +122,56 @@ function readGstComponent(
     gc?.[key] && typeof gc[key] === "object"
       ? (gc[key] as Record<string, unknown>)
       : null;
-  const taxable = num(raw?.taxable_value) || (key === "delivery" ? resolveCustomerDeliveryFeeFromBilling(snap) : num(snap[feeKey]));
-  let gst = num(raw?.gst);
-  if (gst <= 0 && taxable > 0) gst = round2(taxable * 0.18);
-  const cgst = round2(gst / 2);
-  const sgst = round2(gst - cgst);
-  return { taxable: round2(taxable), gst: round2(gst), cgst, sgst, total: round2(taxable + gst) };
+  const feeFallback =
+    key === "delivery" ? resolveCustomerDeliveryFeeFromBilling(snap) : num(snap[feeKey]);
+  const fromTaxes = readGstSplitFromTaxes(snap, applicableBasesForFee(key));
+  const taxable = round2(
+    num(raw?.taxable_value) || fromTaxes?.taxableFromLines || feeFallback
+  );
+  // Snapshot only — never invent 18% (or any default rate).
+  let gst = round2(num(raw?.gst) || fromTaxes?.gst || 0);
+  let cgst: number;
+  let sgst: number;
+  if (fromTaxes && (fromTaxes.cgst > 0.005 || fromTaxes.sgst > 0.005)) {
+    cgst = fromTaxes.cgst;
+    sgst = fromTaxes.sgst;
+    if (gst <= 0.005) gst = round2(cgst + sgst);
+  } else if (gst > 0.005) {
+    cgst = round2(gst / 2);
+    sgst = round2(gst - cgst);
+  } else {
+    cgst = 0;
+    sgst = 0;
+  }
+  return {
+    taxable,
+    gst: round2(gst),
+    cgst: round2(cgst),
+    sgst: round2(sgst),
+    total: round2(taxable + gst),
+  };
+}
+
+function resolveInvoiceHsn(input: CustomerOrderInvoiceInput): string | null {
+  const explicit = input.hsnCode?.trim();
+  if (explicit) return explicit;
+  const snap = input.billingSnapshot;
+  if (!snap) return null;
+  const fromSnap =
+    (typeof snap.platform_fee_hsn === "string" && snap.platform_fee_hsn.trim()) ||
+    (typeof snap.platformFeeHsn === "string" && snap.platformFeeHsn.trim()) ||
+    (typeof snap.hsn_code === "string" && snap.hsn_code.trim()) ||
+    (typeof snap.hsnCode === "string" && snap.hsnCode.trim()) ||
+    null;
+  if (fromSnap) return fromSnap;
+  const envHsn = process.env.PLATFORM_INVOICE_HSN?.trim();
+  return envHsn || null;
+}
+
+function resolveInvoiceStoreTypeLabel(input: CustomerOrderInvoiceInput): string | null {
+  const explicit = input.storeTypeLabel?.trim();
+  if (explicit) return explicit;
+  return readStoreTypeFromBillingSnapshot(input.billingSnapshot).label;
 }
 
 function formatInvoiceDate(iso: string): string {
@@ -193,6 +289,9 @@ function renderPlatformInvoice(
     "";
   const email = process.env.PLATFORM_CONTACT_EMAIL?.trim() || "order@gatimitra.com";
   const invoiceDate = formatInvoiceDate(input.orderDateIso);
+  const hsn = resolveInvoiceHsn(input);
+  const storeTypeLabel = resolveInvoiceStoreTypeLabel(input);
+  const placeOfSupply = input.placeOfSupply?.trim() || "";
 
   return `
     <div class="page">
@@ -213,11 +312,12 @@ function renderPlatformInvoice(
       <div class="row"><span class="label">Name</span><span>${escapeHtml(input.customerName)}</span></div>
       ${input.deliveryAddress ? `<div class="row"><span class="label">Delivery Address</span><span>${escapeHtml(input.deliveryAddress)}</span></div>` : ""}
       <div class="row"><span class="label">GSTIN</span><span>UNREGISTERED</span></div>
-      <div class="row"><span class="label">Place of Supply</span><span>${escapeHtml(input.placeOfSupply)}</span></div>
+      ${placeOfSupply ? `<div class="row"><span class="label">Place of Supply</span><span>${escapeHtml(placeOfSupply)}</span></div>` : ""}
 
       <div class="section-h">Service Details</div>
-      <div class="row"><span class="label">HSN Code</span><span>999799</span></div>
-      <div class="row"><span class="label">Supply Description</span><span>Other Services N.E.C. (Platform fee)</span></div>
+      ${storeTypeLabel ? `<div class="row"><span class="label">Store / Service Type</span><span>${escapeHtml(storeTypeLabel)}</span></div>` : ""}
+      ${hsn ? `<div class="row"><span class="label">HSN / SAC</span><span>${escapeHtml(hsn)}</span></div>` : ""}
+      <div class="row"><span class="label">Supply Description</span><span>Platform fee${storeTypeLabel ? ` (${escapeHtml(storeTypeLabel)})` : ""}</span></div>
 
       <table>
         <thead>
@@ -269,6 +369,8 @@ function renderDeliveryInvoice(
   const platformFssai = process.env.PLATFORM_FSSAI?.trim() || "";
   const partnerName = input.riderName?.trim() || "Delivery Partner";
   const invoiceDate = formatInvoiceDate(input.orderDateIso);
+  const placeOfSupply = input.placeOfSupply?.trim() || "";
+  const partnerState = placeOfSupply.replace(/\(\d+\)$/, "").trim();
 
   return `
     <div class="page">
@@ -280,12 +382,12 @@ function renderDeliveryInvoice(
       <div class="section-h">Invoice Details</div>
       <div class="row"><span class="label">Invoice No.</span><span>${escapeHtml(invoiceNo)}</span></div>
       <div class="row"><span class="label">Invoice Date</span><span>${escapeHtml(invoiceDate)}</span></div>
-      <div class="row"><span class="label">Partner State</span><span>${escapeHtml(input.placeOfSupply.replace(/\(\d+\)$/, "").trim() || "—")}</span></div>
+      ${partnerState ? `<div class="row"><span class="label">Partner State</span><span>${escapeHtml(partnerState)}</span></div>` : ""}
 
       <div class="section-h">Customer Details</div>
       <div class="row"><span class="label">Name</span><span>${escapeHtml(input.customerName)}</span></div>
       ${input.deliveryAddress ? `<div class="row"><span class="label">Delivery Address</span><span>${escapeHtml(input.deliveryAddress)}</span></div>` : ""}
-      <div class="row"><span class="label">Place of Supply</span><span>${escapeHtml(input.placeOfSupply)}</span></div>
+      ${placeOfSupply ? `<div class="row"><span class="label">Place of Supply</span><span>${escapeHtml(placeOfSupply)}</span></div>` : ""}
 
       <div class="section-h">Service Details</div>
       <div class="row"><span class="label">Service Description</span><span>Local delivery service</span></div>
@@ -294,7 +396,7 @@ function renderDeliveryInvoice(
         <thead>
           <tr>
             <th>Particulars</th><th class="num">Gross value</th><th class="num">Discount</th><th class="num">Net value</th>
-            <th class="num">CGST (9%)</th><th class="num">SGST (9%)</th><th class="num">Total</th>
+            <th class="num">CGST</th><th class="num">SGST</th><th class="num">Total</th>
           </tr>
         </thead>
         <tbody>
@@ -334,8 +436,8 @@ export async function buildCustomerOrderTaxInvoiceHtml(
   input: CustomerOrderInvoiceInput
 ): Promise<string> {
   const snap = input.billingSnapshot ?? {};
-  const platformLine = readGstComponent(snap, "platform", "platform_fee");
-  const deliveryLine = readGstComponent(snap, "delivery", "delivery_fee");
+  const platformLine = readOrderInvoiceGstComponent(snap, "platform", "platform_fee");
+  const deliveryLine = readOrderInvoiceGstComponent(snap, "delivery", "delivery_fee");
   const signatureDataUri = await getInvoiceSignatureDataUri();
 
   const platformInvoiceNo = buildCustomerInvoiceNumber({

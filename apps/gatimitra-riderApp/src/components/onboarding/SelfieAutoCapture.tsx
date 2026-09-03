@@ -23,7 +23,7 @@ import { colors } from "@/src/theme";
 const ACCENT = "#39d353";
 const ACCENT_DARK = "#22a745";
 const RING_SIZE = 200;
-const BLINK_PROBE_INTERVAL_MS = 800;
+const BLINK_PROBE_INTERVAL_MS = 1400;
 /** Manual capture fallback — Expo Go only; never shown in dev-client or production builds. */
 const ALLOW_EXPO_GO_MANUAL_CAPTURE = isExpoGo();
 
@@ -44,6 +44,8 @@ export function SelfieAutoCapture({
   onRejected,
   hint,
   tips,
+  liveProbe = true,
+  capturedAction,
 }: {
   uri: string | null;
   active: boolean;
@@ -53,6 +55,10 @@ export function SelfieAutoCapture({
   onRejected?: (message: string) => void;
   hint: string;
   tips: readonly string[];
+  /** Continuous still-frame blink probes. Off for profile — those snapshots blink the preview. */
+  liveProbe?: boolean;
+  /** Rendered after a successful capture (e.g. Upload selfie). */
+  capturedAction?: React.ReactNode;
 }) {
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
@@ -71,8 +77,9 @@ export function SelfieAutoCapture({
 
   const captureFinal = useCallback(async (devManual = false) => {
     if (capturingRef.current || disabled || uri) return;
-    const devBypass = devManual && ALLOW_EXPO_GO_MANUAL_CAPTURE;
-    if (!devBypass && !facePresentRef.current) return;
+    const expoGoBypass = devManual && ALLOW_EXPO_GO_MANUAL_CAPTURE;
+    const tapCapture = !liveProbe || expoGoBypass;
+    if (!tapCapture && !facePresentRef.current) return;
     capturingRef.current = true;
     setStatus("capturing");
     try {
@@ -82,7 +89,7 @@ export function SelfieAutoCapture({
         shutterSound: false,
       });
       if (photo?.uri) {
-        if (devBypass) {
+        if (expoGoBypass) {
           setRejection(null);
           await onCaptured(photo.uri);
           setStatus("done");
@@ -119,7 +126,7 @@ export function SelfieAutoCapture({
     } finally {
       capturingRef.current = false;
     }
-  }, [disabled, onCaptured, onRejected, uri]);
+  }, [disabled, liveProbe, onCaptured, onRejected, uri]);
 
   useEffect(() => {
     if (!active || uri || disabled) return;
@@ -135,15 +142,13 @@ export function SelfieAutoCapture({
       setDetectorUnavailable(true);
     }
 
-    setRejection(null);
-    setFacePresent(false);
-    facePresentRef.current = false;
-    blinkTrackerRef.current.reset();
-    setBlinkPhase("align");
-    setStatus(cameraReady ? "searching" : "starting");
-  }, [active, uri, disabled, permission, requestPermission, cameraReady]);
+    setStatus((prev) =>
+      prev === "capturing" || prev === "done" ? prev : cameraReady ? "searching" : "starting"
+    );
+  }, [active, uri, disabled, permission?.granted, requestPermission, cameraReady]);
 
   useEffect(() => {
+    if (!liveProbe) return;
     if (!active || uri || disabled || !permission?.granted || !cameraReady) return;
     if (detectorUnavailable) return;
 
@@ -153,7 +158,7 @@ export function SelfieAutoCapture({
         probingRef.current = true;
         try {
           const preview = await cameraRef.current?.takePictureAsync({
-            quality: 0.35,
+            quality: 0.25,
             skipProcessing: true,
             shutterSound: false,
           });
@@ -172,7 +177,9 @@ export function SelfieAutoCapture({
           }
 
           const hasFace = probeIndicatesFacePresent(probe);
-          setFacePresent(hasFace);
+          if (hasFace !== facePresentRef.current) {
+            setFacePresent(hasFace);
+          }
           facePresentRef.current = hasFace;
 
           if (!hasFace) {
@@ -180,7 +187,7 @@ export function SelfieAutoCapture({
             setEyesObscured(false);
             blinkTrackerRef.current.reset();
             setBlinkPhase("align");
-            setStatus("searching");
+            setStatus((prev) => (prev === "searching" ? prev : "searching"));
             return;
           }
 
@@ -189,15 +196,16 @@ export function SelfieAutoCapture({
             if (eyesUnknownStreakRef.current >= 3) {
               setEyesObscured(true);
             }
-          } else {
+          } else if (eyesUnknownStreakRef.current !== 0) {
             eyesUnknownStreakRef.current = 0;
             setEyesObscured(false);
           }
 
           const action = blinkTrackerRef.current.consume(probe);
           const phase = blinkTrackerRef.current.getPhase();
-          setBlinkPhase(phase);
-          setStatus(phase === "blink" ? "waiting_blink" : "searching");
+          setBlinkPhase((prev) => (prev === phase ? prev : phase));
+          const nextStatus = phase === "blink" ? "waiting_blink" : "searching";
+          setStatus((prev) => (prev === nextStatus ? prev : nextStatus));
 
           if (action === "capture") {
             clearInterval(interval);
@@ -218,23 +226,24 @@ export function SelfieAutoCapture({
     cameraReady,
     captureFinal,
     detectorUnavailable,
+    liveProbe,
   ]);
 
   useEffect(() => {
-    if (uri) return;
+    if (uri) {
+      setStatus("done");
+      capturingRef.current = false;
+      return;
+    }
     blinkTrackerRef.current.reset();
     setBlinkPhase("align");
     setFacePresent(false);
     facePresentRef.current = false;
-    setDetectorUnavailable(false);
     setRejection(null);
     setEyesObscured(false);
     eyesUnknownStreakRef.current = 0;
-    // CameraView remounts after clear — wait for onCameraReady again.
-    setCameraReady(false);
-    setStatus(active ? "starting" : "starting");
     capturingRef.current = false;
-  }, [uri, active]);
+  }, [uri]);
 
   const statusLabel =
     status === "permission"
@@ -245,7 +254,9 @@ export function SelfieAutoCapture({
           ? ALLOW_EXPO_GO_MANUAL_CAPTURE
             ? "Dev mode — tap Capture below to test onboarding"
             : "Align your face inside the circle"
-          : eyesObscured
+          : !liveProbe
+            ? "Align your face, then tap Capture selfie"
+            : eyesObscured
             ? "Eyes not visible — remove sunglasses or goggles"
             : status === "waiting_blink"
               ? "Face detected — blink your eyes to capture"
@@ -295,27 +306,30 @@ export function SelfieAutoCapture({
       ) : null}
 
       <View style={styles.ringWrap}>
-        <View style={[styles.ring, ringBorderStyle]}>
-          {uri ? (
-            <Image source={{ uri }} style={styles.preview} resizeMode="cover" />
-          ) : permission?.granted ? (
+        <View style={styles.ringShell}>
+          {permission?.granted ? (
             <>
               <CameraView
                 ref={cameraRef}
                 facing="front"
                 mode="picture"
                 mirror
-                style={styles.camera}
+                animateShutter={false}
+                style={[styles.camera, uri ? styles.cameraParked : null]}
                 onCameraReady={() => setCameraReady(true)}
               />
-              <View style={styles.ringOverlay} pointerEvents="none">
-                <View style={[styles.ringGuide, ringGuideStyle]} />
-                {status === "waiting_blink" && facePresent ? (
-                  <View style={styles.blinkBadge}>
-                    <Ionicons name="eye-outline" size={22} color="#ffffff" />
-                  </View>
-                ) : null}
-              </View>
+              {uri ? (
+                <Image source={{ uri }} style={styles.preview} resizeMode="cover" />
+              ) : (
+                <View style={styles.ringOverlay} pointerEvents="none">
+                  <View style={[styles.ringGuide, ringGuideStyle]} />
+                  {status === "waiting_blink" && facePresent ? (
+                    <View style={styles.blinkBadge}>
+                      <Ionicons name="eye-outline" size={22} color="#ffffff" />
+                    </View>
+                  ) : null}
+                </View>
+              )}
             </>
           ) : (
             <View style={styles.permissionFallback}>
@@ -329,6 +343,7 @@ export function SelfieAutoCapture({
               )}
             </View>
           )}
+          <View style={[styles.ringBorder, ringBorderStyle]} pointerEvents="none" />
         </View>
 
         {!uri && permission?.granted ? (
@@ -353,7 +368,10 @@ export function SelfieAutoCapture({
           </View>
         ) : null}
 
-        {ALLOW_EXPO_GO_MANUAL_CAPTURE && !uri && permission?.granted && status !== "capturing" ? (
+        {!uri &&
+        permission?.granted &&
+        status !== "capturing" &&
+        (!liveProbe || ALLOW_EXPO_GO_MANUAL_CAPTURE) ? (
           <Pressable
             onPress={() => void captureFinal(true)}
             disabled={disabled || !cameraReady}
@@ -364,7 +382,7 @@ export function SelfieAutoCapture({
             ]}
           >
             <Ionicons name="camera-outline" size={18} color="#ffffff" />
-            <Text style={styles.devCaptureBtnText}>Capture</Text>
+            <Text style={styles.devCaptureBtnText}>{liveProbe ? "Capture" : "Capture selfie"}</Text>
           </Pressable>
         ) : null}
 
@@ -410,20 +428,28 @@ export function SelfieAutoCapture({
         </Pressable>
       ) : null}
 
-      <View style={styles.tipsCard}>
-        {tips.map((tip) => (
-          <View key={tip} style={styles.tipRow}>
-            <Ionicons name="checkmark-circle" size={14} color={ACCENT_DARK} />
-            <Text style={styles.tipText}>{tip}</Text>
-          </View>
-        ))}
-      </View>
+      {uri && capturedAction ? (
+        <View style={styles.capturedActionWrap} collapsable={false}>
+          {capturedAction}
+        </View>
+      ) : (
+        <View style={styles.tipsCard}>
+          {tips.map((tip) => (
+            <View key={tip} style={styles.tipRow}>
+              <Ionicons name="checkmark-circle" size={14} color={ACCENT_DARK} />
+              <Text style={styles.tipText}>{tip}</Text>
+            </View>
+          ))}
+        </View>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   section: {
+    alignSelf: "stretch",
+    width: "100%",
     alignItems: "center",
     gap: 14,
   },
@@ -477,6 +503,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
   },
+  ringShell: {
+    width: RING_SIZE,
+    height: RING_SIZE,
+    borderRadius: RING_SIZE / 2,
+    overflow: "hidden",
+    backgroundColor: colors.gray[100],
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ringBorder: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: RING_SIZE / 2,
+    borderWidth: 3,
+  },
   ring: {
     width: RING_SIZE,
     height: RING_SIZE,
@@ -491,26 +531,27 @@ const styles = StyleSheet.create({
   ringNoFace: {
     borderColor: colors.error[500],
     borderStyle: "solid",
-    backgroundColor: "#fff5f5",
   },
   ringFaceDetected: {
     borderColor: ACCENT_DARK,
     borderStyle: "solid",
-    backgroundColor: "#f0fdf4",
   },
   ringBlinkReady: {
     borderColor: ACCENT,
     borderStyle: "solid",
-    backgroundColor: "#ecfdf3",
   },
   ringCaptured: {
     borderColor: ACCENT,
     borderStyle: "solid",
-    backgroundColor: "#ffffff",
   },
   camera: {
-    width: RING_SIZE,
-    height: RING_SIZE,
+    ...StyleSheet.absoluteFillObject,
+  },
+  cameraParked: {
+    opacity: 0,
+  },
+  preview: {
+    ...StyleSheet.absoluteFillObject,
   },
   ringOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -553,10 +594,6 @@ const styles = StyleSheet.create({
       },
       android: { elevation: 4 },
     }),
-  },
-  preview: {
-    width: "100%",
-    height: "100%",
   },
   permissionFallback: {
     flex: 1,
@@ -685,6 +722,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: ACCENT_DARK,
+  },
+  capturedActionWrap: {
+    alignSelf: "stretch",
+    width: "100%",
+    minHeight: 56,
   },
   tipsCard: {
     width: "100%",

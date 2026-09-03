@@ -60,6 +60,8 @@ async function sendInline(
       sound: (payload.sound as string | null | undefined) ?? "default",
       priority: "high",
       channelId: payload.channelId,
+      // Android tray replace when progress updates for the same order.
+      ...(payload.collapseKey ? { collapseId: payload.collapseKey } : {}),
       ...(payload.contentAvailable ? { _contentAvailable: true } : {}),
       ...(payload.imageUrl
         ? { mutableContent: true, richContent: { image: payload.imageUrl } }

@@ -27,6 +27,11 @@ import {
 } from "lucide-react";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { toast } from "sonner";
+import {
+  CustomerAnnouncementExtras,
+  type AnnouncementExtrasValue,
+} from "@/components/notifications/CustomerAnnouncementExtras";
+import { buildAnnouncementDeepLink } from "@/lib/notifications/customer-home-services";
 
 type Campaign = {
   id: number;
@@ -944,6 +949,28 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   const [scheduledAt, setScheduledAt] = useState("");
   const [preview, setPreview] = useState<{ title: string; body: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [announcementExtras, setAnnouncementExtras] = useState<AnnouncementExtrasValue>({
+    targetType: "NONE",
+    serviceId: "",
+    categoryId: "",
+    storeId: "",
+    imageUrl: null,
+  });
+
+  const isCustomerAnnouncement =
+    templateCode.trim().toUpperCase() === "CUSTOMER_ANNOUNCEMENT";
+
+  useEffect(() => {
+    if (!isCustomerAnnouncement) {
+      setAnnouncementExtras({
+        targetType: "NONE",
+        serviceId: "",
+        categoryId: "",
+        storeId: "",
+        imageUrl: null,
+      });
+    }
+  }, [isCustomerAnnouncement]);
 
   const target = useMemo(() => {
     if (!targetMode) return null;
@@ -1021,13 +1048,42 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   const varsPayload = useMemo(() => {
     const out: Record<string, string | number> = {};
     for (const k of templateVars) {
+      if (isCustomerAnnouncement && k === "deepLink") continue;
       const v = varValues[k] ?? "";
       const kind = inputKindFor(k);
       if (kind === "number" && v !== "" && !Number.isNaN(Number(v))) out[k] = Number(v);
       else if (v !== "") out[k] = v;
     }
+    if (isCustomerAnnouncement) {
+      try {
+        const resolved = buildAnnouncementDeepLink({
+          targetType: announcementExtras.targetType,
+          serviceId: announcementExtras.serviceId || null,
+          categoryId: announcementExtras.categoryId || null,
+          storeId: announcementExtras.storeId || null,
+        });
+        out.deepLink = resolved.deepLink;
+        out.target_type = resolved.target_type;
+        if (resolved.target_service_id) out.target_service_id = resolved.target_service_id;
+        if (resolved.target_category_id) out.target_category_id = resolved.target_category_id;
+        if (resolved.target_store_id) out.target_store_id = resolved.target_store_id;
+      } catch {
+        out.deepLink = "/notifications";
+        out.target_type = "NONE";
+      }
+    }
     return out;
-  }, [templateVars, varValues]);
+  }, [templateVars, varValues, isCustomerAnnouncement, announcementExtras]);
+
+  const announcementTargetValid = useMemo(() => {
+    if (!isCustomerAnnouncement) return true;
+    const t = announcementExtras.targetType;
+    if (t === "NONE") return true;
+    if (!announcementExtras.serviceId) return false;
+    if (t === "CATEGORY" && !announcementExtras.categoryId) return false;
+    if (t === "STORE" && !announcementExtras.storeId) return false;
+    return true;
+  }, [isCustomerAnnouncement, announcementExtras]);
 
   const targetValid = useMemo(() => {
     if (!targetMode) return false;
@@ -1285,18 +1341,24 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   const save = async (status: "draft" | "running" | "scheduled") => {
     setBusy(true);
     try {
+      const payload: Record<string, unknown> = {
+        name,
+        description: description || null,
+        templateCode,
+        target,
+        variables: varsPayload,
+        status: status === "scheduled" ? undefined : status,
+        scheduledAt: status === "scheduled" ? new Date(scheduledAt).toISOString() : undefined,
+      };
+      if (isCustomerAnnouncement) {
+        payload.overrideImage = announcementExtras.imageUrl || null;
+        payload.overrideDeepLink =
+          typeof varsPayload.deepLink === "string" ? varsPayload.deepLink : "/notifications";
+      }
       const res = await fetch("/api/super-admin/notifications/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          description: description || null,
-          templateCode,
-          target,
-          variables: varsPayload,
-          status: status === "scheduled" ? undefined : status,
-          scheduledAt: status === "scheduled" ? new Date(scheduledAt).toISOString() : undefined,
-        }),
+        body: JSON.stringify(payload),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -1335,7 +1397,7 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     }
   };
 
-  const canSubmit = !!name && !!templateCode && targetValid && !busy;
+  const canSubmit = !!name && !!templateCode && targetValid && announcementTargetValid && !busy;
 
   /** Why the submit buttons are disabled — otherwise a valid-looking form looks broken. */
   const blockedReason = useMemo(() => {
@@ -1362,6 +1424,16 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
       if (targetMode === "topic") return "Enter an FCM topic name.";
       return "Complete the target details.";
     }
+    if (!announcementTargetValid) {
+      if (announcementExtras.targetType === "SERVICE") return "Select a service for the tap destination.";
+      if (announcementExtras.targetType === "CATEGORY") {
+        return "Select service and category for the tap destination.";
+      }
+      if (announcementExtras.targetType === "STORE") {
+        return "Select service and store for the tap destination.";
+      }
+      return "Complete the announcement tap destination.";
+    }
     if (when === "later" && !scheduledAt) return "Pick a date and time to schedule.";
     return null;
   }, [
@@ -1370,6 +1442,8 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     templateCode,
     targetMode,
     targetValid,
+    announcementTargetValid,
+    announcementExtras.targetType,
     targetLookupLoading,
     targetLookupError,
     when,
@@ -1473,11 +1547,13 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
           {/* Variables — typed inputs derived from template */}
           {templateCode && templateVars.length > 0 ? (
             <Section
-              title={`Variables (${templateVars.length})`}
+              title={`Variables (${templateVars.filter((v) => !(isCustomerAnnouncement && v === "deepLink")).length})`}
               desc="These fill the {{placeholders}} in the template."
             >
               <div className="grid grid-cols-1 gap-3">
-                {templateVars.map((v) => {
+                {templateVars
+                  .filter((v) => !(isCustomerAnnouncement && v === "deepLink"))
+                  .map((v) => {
                   const kind = inputKindFor(v);
                   return (
                     <Field key={v} label={v} mono>
@@ -1509,6 +1585,18 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
                 <Info className="mr-1 -mt-0.5 inline h-3.5 w-3.5" />
                 Ready to send as-is.
               </div>
+            </Section>
+          ) : null}
+
+          {isCustomerAnnouncement ? (
+            <Section
+              title="Announcement extras"
+              desc="Tap destination and optional rich-push image — only for CUSTOMER_ANNOUNCEMENT."
+            >
+              <CustomerAnnouncementExtras
+                value={announcementExtras}
+                onChange={setAnnouncementExtras}
+              />
             </Section>
           ) : null}
 

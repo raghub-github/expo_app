@@ -254,7 +254,23 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
       <form onSubmit={async (e) => {
         e.preventDefault();
         const value = localSearchValue.trim();
-        if (!value) return;
+        const onRiderPendingOnboarding =
+          dashboardType === "RIDER" &&
+          pathname.startsWith("/dashboard/riders/pending-onboarding");
+
+        if (!value) {
+          if (onRiderPendingOnboarding) {
+            const keep = new URLSearchParams(searchParams.toString());
+            keep.delete("search");
+            const qs = keep.toString();
+            router.push(
+              qs
+                ? `/dashboard/riders/pending-onboarding?${qs}`
+                : "/dashboard/riders/pending-onboarding"
+            );
+          }
+          return;
+        }
 
         if (dashboardType === "CUSTOMER") {
           try {
@@ -266,6 +282,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
 
         // For customer dashboard, route directly to /all with search params
         // For area manager stores, keep search on stores page
+        // For rider pending onboarding, keep search on that page (filters the table)
         const params = new URLSearchParams(searchParams.toString());
         const searchForNav =
           dashboardType === "CUSTOMER" ? value.toUpperCase() : value;
@@ -285,6 +302,8 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
           targetPath = "/dashboard/customers/all";
         } else if (dashboardType === "AREA_MANAGER" && pathname.includes("/stores")) {
           targetPath = pathname;
+        } else if (onRiderPendingOnboarding) {
+          targetPath = "/dashboard/riders/pending-onboarding";
         } else {
           targetPath = currentDashboard?.href || "/dashboard";
         }
@@ -304,6 +323,21 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
               value = value.toUpperCase();
             }
             setLocalSearchValue(value);
+            // Pending onboarding: clearing the bar clears the table filter.
+            if (
+              dashboardType === "RIDER" &&
+              pathname.startsWith("/dashboard/riders/pending-onboarding") &&
+              !value.trim()
+            ) {
+              const keep = new URLSearchParams(searchParams.toString());
+              keep.delete("search");
+              const qs = keep.toString();
+              router.replace(
+                qs
+                  ? `/dashboard/riders/pending-onboarding?${qs}`
+                  : "/dashboard/riders/pending-onboarding"
+              );
+            }
           }}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}

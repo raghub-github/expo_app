@@ -1,7 +1,7 @@
 import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { resolveTopSafeInset } from "@/constants/layout";
+import { resolveTopSafeInset, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { CustomerWeatherContext } from "@/services/weather.service";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
@@ -126,18 +126,21 @@ export function HomeLocationHeader({
 >) {
   const insets = useSafeAreaInsets();
   const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
-  // Root spacer usually owns safe-top; if immersive left it off, pad here so we never overlap.
+  const bootstrapActive = useScreenChromeStore((s) => s.bootstrapActive);
+  // Root spacer owns safe-top in normal tabs. During splash / immersive chrome the
+  // spacer is 0 — pad here so the header never sits under the status bar on first paint.
   const safeTop = resolveTopSafeInset(insets.top);
-  const topPad = hideStatusBarSpacer ? safeTop : 0;
+  const topPad =
+    hideStatusBarSpacer || bootstrapActive
+      ? safeTop + STATUS_BAR_TO_HEADER_GAP
+      : STATUS_BAR_TO_HEADER_GAP;
   const showBadge = notificationBadgeCount != null && notificationBadgeCount > 0;
 
   return (
     <View style={styles.headerBlock}>
       <View style={[styles.topRow, { paddingTop: topPad }]}>
         <TouchableOpacity style={styles.locationBlock} activeOpacity={0.82} onPress={onLocationPress}>
-          <View style={styles.locationPinCircle}>
-            <Ionicons name="location" size={17} color="#FFFFFF" />
-          </View>
+          <Ionicons name="location" size={20} color={GREEN} style={styles.locationPin} />
 
           <View style={styles.locationTextBlock}>
             <View style={styles.locationTitleRow}>
@@ -218,7 +221,10 @@ export function HomeWeatherBanner({
     );
   }
 
-  if (!loading) return null;
+  if (!loading) {
+    // Reserve space so the layout below never shifts when weather arrives.
+    return <View style={styles.weatherShell} />;
+  }
 
   return (
     <View style={styles.weatherShell}>
@@ -276,6 +282,7 @@ const styles = StyleSheet.create({
   },
   weatherShell: {
     width: "100%",
+    minHeight: 34,
     backgroundColor: PAGE_BG,
   },
   weatherWrap: {
@@ -297,17 +304,12 @@ const styles = StyleSheet.create({
     marginRight: 10,
     minWidth: 0,
   },
-  locationPinCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: "center",
-    justifyContent: "center",
+  locationPin: {
     flexShrink: 0,
-    backgroundColor: GREEN,
+    marginTop: 1,
   },
   locationTextBlock: {
-    marginLeft: 10,
+    marginLeft: 8,
     flex: 1,
     minWidth: 0,
     justifyContent: "center",
@@ -356,18 +358,17 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   iconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 0,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.55)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(15, 23, 42, 0.12)",
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#0f172a",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 3,
-    elevation: 2,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   badge: {
     position: "absolute",

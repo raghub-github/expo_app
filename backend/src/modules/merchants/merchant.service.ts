@@ -1101,7 +1101,7 @@ export async function getMenuByStoreId(
   const [categoriesRes, itemRows] = await Promise.all([
     supabase
       .from("merchant_menu_categories")
-      .select("id, category_name, display_order")
+      .select("id, category_name, display_order, category_image_url")
       .eq("store_id", store.id)
       .eq("is_active", true)
       .order("display_order", { ascending: true }),
@@ -1130,12 +1130,23 @@ export async function getMenuByStoreId(
             m.has_customizations,
             m.has_addons,
             m.has_variants,
-            c.category_name
+            c.category_name,
+            NULLIF(trim(c.category_image_url), '') AS category_image_url,
+            c.display_order AS category_display_order,
+            COALESCE(oc_cnt.order_count, 0)::int AS order_count
           FROM merchant_menu_items m
           LEFT JOIN merchant_menu_categories c
             ON c.id = m.category_id
             AND c.store_id = ${storePk}
             AND COALESCE(c.is_deleted, FALSE) = FALSE
+          LEFT JOIN (
+            SELECT oci.menu_item_id, COUNT(DISTINCT oci.order_id)::int AS order_count
+            FROM orders_core_items oci
+            INNER JOIN orders_core oc ON oc.order_id = oci.order_id
+            WHERE oc.merchant_store_id = ${storePk}
+              AND oc.status IS DISTINCT FROM 'cancelled'
+            GROUP BY oci.menu_item_id
+          ) oc_cnt ON oc_cnt.menu_item_id = m.id
           WHERE m.store_id = ${storePk}
             AND COALESCE(m.is_deleted, FALSE) = FALSE
             AND m.is_active = TRUE
@@ -1144,7 +1155,13 @@ export async function getMenuByStoreId(
             AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
             AND ${effectiveInStock} = TRUE
             AND m.item_name ILIKE ${"%" + trimmedSearch + "%"}
-          ORDER BY m.item_name ASC
+          ORDER BY
+            COALESCE(oc_cnt.order_count, 0) DESC,
+            CASE WHEN ${customerImage} IS NOT NULL THEN 1 ELSE 0 END DESC,
+            m.is_popular DESC NULLS LAST,
+            m.is_recommended DESC NULLS LAST,
+            c.display_order ASC NULLS LAST,
+            m.item_name ASC
         `
       : pg`
           SELECT
@@ -1170,12 +1187,23 @@ export async function getMenuByStoreId(
             m.has_customizations,
             m.has_addons,
             m.has_variants,
-            c.category_name
+            c.category_name,
+            NULLIF(trim(c.category_image_url), '') AS category_image_url,
+            c.display_order AS category_display_order,
+            COALESCE(oc_cnt.order_count, 0)::int AS order_count
           FROM merchant_menu_items m
           LEFT JOIN merchant_menu_categories c
             ON c.id = m.category_id
             AND c.store_id = ${storePk}
             AND COALESCE(c.is_deleted, FALSE) = FALSE
+          LEFT JOIN (
+            SELECT oci.menu_item_id, COUNT(DISTINCT oci.order_id)::int AS order_count
+            FROM orders_core_items oci
+            INNER JOIN orders_core oc ON oc.order_id = oci.order_id
+            WHERE oc.merchant_store_id = ${storePk}
+              AND oc.status IS DISTINCT FROM 'cancelled'
+            GROUP BY oci.menu_item_id
+          ) oc_cnt ON oc_cnt.menu_item_id = m.id
           WHERE m.store_id = ${storePk}
             AND COALESCE(m.is_deleted, FALSE) = FALSE
             AND m.is_active = TRUE
@@ -1183,19 +1211,59 @@ export async function getMenuByStoreId(
             -- Entitlement gate: items locked by the merchant's plan limit are hidden from customers.
             AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
             AND ${effectiveInStock} = TRUE
-          ORDER BY m.item_name ASC
+          ORDER BY
+            COALESCE(oc_cnt.order_count, 0) DESC,
+            CASE WHEN ${customerImage} IS NOT NULL THEN 1 ELSE 0 END DESC,
+            m.is_popular DESC NULLS LAST,
+            m.is_recommended DESC NULLS LAST,
+            c.display_order ASC NULLS LAST,
+            m.item_name ASC
         `,
   ]);
 
-  const categories = (categoriesRes.data ?? []) as { id: number; category_name: string; display_order: number | null }[];
+  const categories = (categoriesRes.data ?? []) as {
+    id: number;
+    category_name: string;
+    display_order: number | null;
+    category_image_url?: string | null;
+  }[];
   const categoryMap = new Map(categories.map((c) => [c.id, c.category_name]));
-  const items = itemRows as unknown as (MerchantMenuItemRow & { category_name?: string | null })[];
+  const categoryMetaById = new Map(
+    categories.map((c) => [
+      c.id,
+      {
+        imageUrl: typeof c.category_image_url === "string" ? c.category_image_url.trim() || null : null,
+        displayOrder:
+          c.display_order != null && Number.isFinite(Number(c.display_order))
+            ? Number(c.display_order)
+            : null,
+      },
+    ])
+  );
+  const items = itemRows as unknown as (MerchantMenuItemRow & {
+    category_name?: string | null;
+    category_image_url?: string | null;
+    category_display_order?: number | null;
+    order_count?: number | null;
+  })[];
 
-  const itemsWithCategory = items.map((m) => ({
-    ...m,
-    category_name:
-      m.category_name ?? (m.category_id != null ? categoryMap.get(m.category_id) ?? null : null),
-  }));
+  const itemsWithCategory = items.map((m) => {
+    const meta = m.category_id != null ? categoryMetaById.get(m.category_id) : undefined;
+    return {
+      ...m,
+      category_name:
+        m.category_name ?? (m.category_id != null ? categoryMap.get(m.category_id) ?? null : null),
+      category_image_url: m.category_image_url ?? meta?.imageUrl ?? null,
+      category_display_order:
+        m.category_display_order != null && Number.isFinite(Number(m.category_display_order))
+          ? Number(m.category_display_order)
+          : meta?.displayOrder ?? null,
+      order_count:
+        m.order_count != null && Number.isFinite(Number(m.order_count))
+          ? Math.max(0, Math.trunc(Number(m.order_count)))
+          : 0,
+    };
+  });
 
   const commission = await resolveStoreCommission(store.id);
   await applyCanonicalCustomerMenuPrices(store.id, itemsWithCategory);
@@ -2296,10 +2364,23 @@ export async function getMenuItemFullConfig(
   };
 }
 
+export type CatalogSearchResult = {
+  dishes: MerchantMenuItemRow[];
+  stores: MerchantStoreRow[];
+  /** Applied correction used for the result set (when confidence-gated typo applied). */
+  correctedQuery?: string | null;
+  /** Suggestion shown when original had hits but a better query exists, or when empty. */
+  didYouMean?: string | null;
+  /** Original query when results were produced from a correction ("Search instead for…"). */
+  searchInsteadOriginal?: string | null;
+  preferStores?: boolean;
+};
+
 /**
- * Search menu items and stores. When lat/lng provided, uses scored nearby RPCs (15km, approval_status).
- * Otherwise uses FTS search_menu_items + store fetch (no location filter).
- * Also matches merchant_menu_categories.category_name so dish-style chips (e.g. Rasgulla) surface kitchens.
+ * Search menu items and stores. When lat/lng provided, uses scored nearby RPCs
+ * then haversine ≤ min(MAX_RADIUS_KM, delivery_radius_km) serviceability gate.
+ * No-geo path is degraded (no delivery gate). Also matches menu category names.
+ * App-layer re-rank + confidence-gated typo retry. storeType scoped early + post-filter.
  */
 export async function search(params: {
   q: string;
@@ -2308,23 +2389,209 @@ export async function search(params: {
   lat?: number;
   lng?: number;
   veg_mode?: boolean;
+  storeType?: string | null;
+}): Promise<CatalogSearchResult> {
+  const { normalizeSearchQuery } = await import("./searchNormalize.js");
+  const { suggestTypoCorrection } = await import("./searchTypo.js");
+  const { rankSearchResults } = await import("./searchRank.js");
+
+  const originalQ = (params.q ?? "").trim();
+  const { normalized } = normalizeSearchQuery(originalQ);
+  if (!normalized) {
+    return { dishes: [], stores: [], correctedQuery: null, didYouMean: null };
+  }
+
+  const runOnce = async (q: string) => {
+    const raw = await searchUnfiltered({ ...params, q });
+    const typed = await filterSearchResultByStoreType(raw, params.storeType ?? "FOOD");
+    const ranked = rankSearchResults(q, typed.stores, typed.dishes);
+    return {
+      dishes: ranked.dishes,
+      stores: ranked.stores,
+      preferStores: ranked.preferStores,
+    };
+  };
+
+  let primary = await runOnce(originalQ);
+  const typo = suggestTypoCorrection(originalQ);
+  let correctedQuery: string | null = null;
+  let didYouMean: string | null = null;
+  let searchInsteadOriginal: string | null = null;
+
+  const empty =
+    primary.dishes.length === 0 && primary.stores.length === 0;
+
+  if (empty && typo?.applied) {
+    const retry = await runOnce(typo.correctedQuery);
+    if (retry.dishes.length > 0 || retry.stores.length > 0) {
+      primary = retry;
+      correctedQuery = typo.correctedQuery;
+      searchInsteadOriginal = originalQ;
+    } else {
+      didYouMean = typo.didYouMean;
+    }
+  } else if (!empty && typo?.applied && typo.correctedQuery !== normalized) {
+    // Soft suggestion only — do not force-replace successful original results.
+    didYouMean = typo.didYouMean;
+  }
+
+  return {
+    ...primary,
+    correctedQuery,
+    didYouMean,
+    searchInsteadOriginal,
+  };
+}
+
+async function filterSearchResultByStoreType(
+  result: { dishes: MerchantMenuItemRow[]; stores: MerchantStoreRow[] },
+  storeType: string | null | undefined
+): Promise<{ dishes: MerchantMenuItemRow[]; stores: MerchantStoreRow[] }> {
+  const { customerListStoreTypesForSql } = await import("./merchantStoreTypeFilters.js");
+  const allowed = customerListStoreTypesForSql(storeType ?? "FOOD");
+  if (allowed == null) return result;
+  const ids = [
+    ...new Set([
+      ...result.stores.map((s) => Number(s.id)),
+      ...result.dishes.map((d) => Number(d.store_id)),
+    ]),
+  ].filter((id) => Number.isFinite(id) && id > 0);
+  if (ids.length === 0) return result;
+  try {
+    const pg = getSql();
+    const rows = await pg`
+      SELECT id, upper(trim(store_type::text)) AS store_type
+      FROM merchant_stores
+      WHERE id = ANY(${ids}::int[])
+        AND upper(trim(store_type::text)) = ANY(${allowed}::text[])
+    `;
+    const typedRows = (rows ?? []) as unknown as Array<{
+      id: number | string;
+      store_type?: string | null;
+    }>;
+    const ok = new Set(typedRows.map((r) => Number(r.id)));
+    const typeById = new Map(
+      typedRows.map((r) => [
+        Number(r.id),
+        String(r.store_type ?? "").trim().toUpperCase() || null,
+      ])
+    );
+    const stores = result.stores
+      .filter((s) => ok.has(Number(s.id)))
+      .map((s) => ({
+        ...s,
+        store_type: typeById.get(Number(s.id)) ?? (s as { store_type?: string | null }).store_type ?? null,
+      }));
+    return {
+      stores,
+      dishes: result.dishes.filter((d) => ok.has(Number(d.store_id))),
+    };
+  } catch (err) {
+    console.warn("[filterSearchResultByStoreType] failed", err);
+    return result;
+  }
+}
+
+async function searchUnfiltered(params: {
+  q: string;
+  limit?: number;
+  offset?: number;
+  lat?: number;
+  lng?: number;
+  veg_mode?: boolean;
+  storeType?: string | null;
 }): Promise<{
   dishes: MerchantMenuItemRow[];
   stores: MerchantStoreRow[];
 }> {
   const supabase = getSupabase();
-  const q = (params.q ?? "").trim();
+  const { normalizeSearchQuery } = await import("./searchNormalize.js");
+  const { filterServiceableStoreIds } = await import("./searchServiceability.js");
+  const { customerListStoreTypesForSql } = await import("./merchantStoreTypeFilters.js");
+
+  const q = normalizeSearchQuery(params.q).normalized || (params.q ?? "").trim();
   const limit = clampLimit(params.limit ?? SEARCH_LIMIT);
   const offset = Math.max(0, params.offset ?? 0);
+  /** Oversample so storeType + serviceability post-filters still fill a page. */
+  const fetchLim = Math.min(MAX_LIMIT, Math.max(limit + offset, limit) * 2);
   const vegMode = params.veg_mode === true;
   const useNearby = validCoord(params.lat ?? 0, params.lng ?? 0);
+  const allowedTypes = customerListStoreTypesForSql(params.storeType ?? "FOOD");
 
   if (!q) {
     return { dishes: [], stores: [] };
   }
 
-  /** Stores whose menu section name matches q (independent of item titles). */
+  /** Stores whose menu section name matches q (geo-gated + storeType when possible). */
   async function storesMatchingMenuCategory(): Promise<MerchantStoreRow[]> {
+    try {
+      const pg = getSql();
+      const pattern = `%${q}%`;
+      const lat = params.lat;
+      const lng = params.lng;
+      const geo = useNearby && lat != null && lng != null;
+      const rows = await pg`
+        SELECT
+          s.id,
+          s.store_id,
+          s.store_name,
+          s.store_display_name,
+          s.store_description,
+          s.banner_url,
+          s.cuisine_types,
+          s.city,
+          s.latitude,
+          s.longitude,
+          s.delivery_radius_km,
+          s.is_active,
+          s.is_accepting_orders,
+          s.is_available,
+          s.status,
+          s.has_customer_visible_menu,
+          upper(trim(s.store_type::text)) AS store_type
+        FROM merchant_menu_categories c
+        INNER JOIN merchant_stores s ON s.id = c.store_id
+        WHERE c.is_active = true
+          AND c.category_name ILIKE ${pattern}
+          AND s.is_active = true
+          AND s.has_customer_visible_menu = true
+          ${vegMode ? pg`AND s.is_pure_veg = true` : pg``}
+          ${
+            allowedTypes == null
+              ? pg``
+              : pg`AND upper(trim(s.store_type::text)) = ANY(${allowedTypes}::text[])`
+          }
+        ORDER BY c.category_name ASC
+        LIMIT ${Math.min(fetchLim, 40)}
+      `;
+      let list = (rows ?? []) as unknown as MerchantStoreRow[];
+      if (geo) {
+        const serviceable = filterServiceableStoreIds(
+          list as unknown as Array<{
+            id: number;
+            latitude: number | string | null;
+            longitude: number | string | null;
+            delivery_radius_km?: number | string | null;
+            is_active?: boolean | null;
+            has_customer_visible_menu?: boolean | null;
+          }>,
+          lat!,
+          lng!,
+          MAX_RADIUS_KM
+        );
+        list = list.filter((s) => serviceable.has(Number(s.id)));
+      }
+      return list;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Name / cuisine / item-title hits — kitchens that sell "pizza" even if the
+   * store name does not contain the word. Bounded LIMIT; same storeType/veg gates.
+   */
+  async function storesMatchingNameCuisineOrItems(): Promise<MerchantStoreRow[]> {
     try {
       const pg = getSql();
       const pattern = `%${q}%`;
@@ -2338,21 +2605,66 @@ export async function search(params: {
           s.banner_url,
           s.cuisine_types,
           s.city,
+          s.latitude,
+          s.longitude,
+          s.delivery_radius_km,
           s.is_active,
           s.is_accepting_orders,
+          s.is_available,
           s.status,
-          s.has_customer_visible_menu
-        FROM merchant_menu_categories c
-        INNER JOIN merchant_stores s ON s.id = c.store_id
-        WHERE c.is_active = true
-          AND c.category_name ILIKE ${pattern}
-          AND s.is_active = true
+          s.has_customer_visible_menu,
+          upper(trim(s.store_type::text)) AS store_type
+        FROM merchant_stores s
+        WHERE s.is_active = true
           AND s.has_customer_visible_menu = true
           ${vegMode ? pg`AND s.is_pure_veg = true` : pg``}
-        ORDER BY c.category_name ASC
-        LIMIT ${Math.min(limit, 30)}
+          ${
+            allowedTypes == null
+              ? pg``
+              : pg`AND upper(trim(s.store_type::text)) = ANY(${allowedTypes}::text[])`
+          }
+          AND (
+            s.store_name ILIKE ${pattern}
+            OR COALESCE(s.store_display_name, '') ILIKE ${pattern}
+            OR (
+              s.cuisine_types IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                FROM unnest(s.cuisine_types) AS ct
+                WHERE ct ILIKE ${pattern}
+              )
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM merchant_menu_items m
+              WHERE m.store_id = s.id
+                AND m.is_active = true
+                AND COALESCE(m.in_stock, true) = true
+                AND m.item_name ILIKE ${pattern}
+            )
+          )
+        LIMIT ${Math.min(fetchLim, 40)}
       `;
-      return (rows ?? []) as unknown as MerchantStoreRow[];
+      let list = (rows ?? []) as unknown as Array<MerchantStoreRow & { matchedViaItem?: boolean }>;
+      const lat = params.lat;
+      const lng = params.lng;
+      if (useNearby && lat != null && lng != null) {
+        const serviceable = filterServiceableStoreIds(
+          list as unknown as Array<{
+            id: number;
+            latitude: number | string | null;
+            longitude: number | string | null;
+            delivery_radius_km?: number | string | null;
+            is_active?: boolean | null;
+            has_customer_visible_menu?: boolean | null;
+          }>,
+          lat,
+          lng,
+          MAX_RADIUS_KM
+        );
+        list = list.filter((s) => serviceable.has(Number(s.id)));
+      }
+      return list.map((s) => ({ ...s, matchedViaItem: true }));
     } catch {
       return [];
     }
@@ -2370,23 +2682,154 @@ export async function search(params: {
     return out;
   }
 
+  function slicePage<T>(rows: T[]): T[] {
+    return rows.slice(offset, offset + limit);
+  }
+
+  /**
+   * Enrich + gate by delivery_radius haversine; attach distance onto rows when possible.
+   */
+  async function applyServiceabilityGate(
+    stores: MerchantStoreRow[],
+    dishes: MerchantMenuItemRow[],
+    lat: number,
+    lng: number
+  ): Promise<{ stores: MerchantStoreRow[]; dishes: MerchantMenuItemRow[] }> {
+    const ids = [
+      ...new Set([
+        ...stores.map((s) => Number(s.id)),
+        ...dishes.map((d) => Number(d.store_id)),
+      ]),
+    ].filter((id) => Number.isFinite(id) && id > 0);
+    if (ids.length === 0) return { stores: [], dishes: [] };
+
+    const pg = getSql();
+    const geoRows = await pg`
+      SELECT
+        id,
+        store_id,
+        store_name,
+        store_display_name,
+        banner_url,
+        cuisine_types,
+        latitude,
+        longitude,
+        delivery_radius_km,
+        is_active,
+        has_customer_visible_menu,
+        is_accepting_orders,
+        is_available,
+        upper(trim(store_type::text)) AS store_type
+      FROM merchant_stores
+      WHERE id = ANY(${ids}::int[])
+        AND is_active = true
+        AND has_customer_visible_menu = true
+        ${vegMode ? pg`AND is_pure_veg = true` : pg``}
+        ${
+          allowedTypes == null
+            ? pg``
+            : pg`AND upper(trim(store_type::text)) = ANY(${allowedTypes}::text[])`
+        }
+    `;
+    const typed = (geoRows ?? []) as unknown as Array<{
+      id: number;
+      store_id: string;
+      store_name: string;
+      store_display_name: string | null;
+      banner_url: string | null;
+      cuisine_types: string[] | null;
+      latitude: number | string | null;
+      longitude: number | string | null;
+      delivery_radius_km: number | string | null;
+      is_active: boolean | null;
+      has_customer_visible_menu: boolean | null;
+      is_accepting_orders: boolean | null;
+      is_available: boolean | null;
+      store_type: string | null;
+    }>;
+    const serviceable = filterServiceableStoreIds(typed, lat, lng, MAX_RADIUS_KM);
+    const metaById = new Map(typed.map((r) => [Number(r.id), r]));
+    const dishStoreIds = new Set(
+      dishes.map((d) => Number(d.store_id)).filter((id) => Number.isFinite(id) && id > 0)
+    );
+
+    const storeById = new Map(stores.map((s) => [Number(s.id), s]));
+    for (const meta of typed) {
+      const id = Number(meta.id);
+      if (!serviceable.has(id) || storeById.has(id)) continue;
+      storeById.set(id, {
+        id,
+        store_id: meta.store_id,
+        store_name: meta.store_name,
+        store_display_name: meta.store_display_name,
+        store_description: null,
+        banner_url: meta.banner_url,
+        cuisine_types: meta.cuisine_types,
+        city: null,
+        latitude: meta.latitude != null ? Number(meta.latitude) : null,
+        longitude: meta.longitude != null ? Number(meta.longitude) : null,
+        operational_status: null,
+        avg_preparation_time_minutes: null,
+        is_active: true,
+        is_accepting_orders: meta.is_accepting_orders,
+        is_available: meta.is_available,
+        status: null,
+        store_type: meta.store_type,
+        matchedViaItem: dishStoreIds.has(id),
+      } as MerchantStoreRow);
+    }
+
+    const gatedStores = [...storeById.values()]
+      .filter((s) => serviceable.has(Number(s.id)))
+      .map((s) => {
+        const meta = metaById.get(Number(s.id));
+        return {
+          ...s,
+          latitude: meta?.latitude != null ? Number(meta.latitude) : s.latitude,
+          longitude: meta?.longitude != null ? Number(meta.longitude) : s.longitude,
+          is_accepting_orders: meta?.is_accepting_orders ?? s.is_accepting_orders,
+          is_available: meta?.is_available ?? s.is_available,
+          store_type: meta?.store_type ?? (s as { store_type?: string | null }).store_type,
+          banner_url: s.banner_url ?? meta?.banner_url ?? null,
+          cuisine_types: s.cuisine_types ?? meta?.cuisine_types ?? null,
+          store_name: s.store_name || meta?.store_name || s.store_name,
+          store_display_name: s.store_display_name ?? meta?.store_display_name ?? null,
+          store_id: s.store_id || meta?.store_id || s.store_id,
+          distance_km: serviceable.get(Number(s.id)) ?? null,
+          matchedViaItem:
+            (s as { matchedViaItem?: boolean }).matchedViaItem === true ||
+            dishStoreIds.has(Number(s.id)),
+        } as MerchantStoreRow & { distance_km?: number | null; matchedViaItem?: boolean };
+      });
+
+    const gatedDishes = dishes
+      .filter((d) => serviceable.has(Number(d.store_id)))
+      .map((d) => ({
+        ...d,
+        distance_km: serviceable.get(Number(d.store_id)) ?? null,
+      })) as MerchantMenuItemRow[] & Array<{ distance_km?: number | null }>;
+
+    return { stores: gatedStores, dishes: gatedDishes };
+  }
+
   if (useNearby) {
     const lat = params.lat!;
     const lng = params.lng!;
-    const [storesRes, dishesRes, categoryStores] = await Promise.all([
+    const [storesRes, dishesRes, categoryStores, sqlStores] = await Promise.all([
       supabase.rpc("search_stores_nearby", {
         query_text: q,
         user_lat: lat,
         user_lng: lng,
-        lim: Math.min(limit, 20),
+        lim: Math.min(fetchLim, 40),
       }),
       supabase.rpc("search_dishes_nearby", {
         query_text: q,
         user_lat: lat,
         user_lng: lng,
-        lim: limit,
+        lim: fetchLim,
       }),
       storesMatchingMenuCategory(),
+      storesMatchingNameCuisineOrItems(),
     ]);
 
     const storeRows = (storesRes.data ?? []) as Array<{
@@ -2415,7 +2858,7 @@ export async function search(params: {
       is_recommended: boolean | null;
     }>;
 
-    let stores: MerchantStoreRow[] = storeRows.map((s) => ({
+    let stores: MerchantStoreRow[] = storeRows.map((s, i) => ({
       id: s.id,
       store_id: s.store_id,
       store_name: s.store_name,
@@ -2432,10 +2875,13 @@ export async function search(params: {
       is_accepting_orders: true,
       is_available: null,
       status: null,
-    }));
+      distance_km: s.distance_km,
+      _rpcIndex: i,
+    })) as MerchantStoreRow[];
     stores = mergeStores(stores, categoryStores);
+    stores = mergeStores(stores, sqlStores);
 
-    const items: MerchantMenuItemRow[] = dishRows.map((d) => ({
+    const items: MerchantMenuItemRow[] = dishRows.map((d, i) => ({
       id: 0,
       store_id: d.store_id,
       category_id: null,
@@ -2454,56 +2900,25 @@ export async function search(params: {
       is_popular: d.is_popular ?? false,
       is_recommended: d.is_recommended ?? false,
       preparation_time_minutes: null,
-    }));
+      distance_km: d.distance_km,
+      _rpcIndex: i,
+      store_public_id: d.store_public_id,
+      restaurant_name: d.store_name,
+    })) as MerchantMenuItemRow[];
 
-    if (!vegMode) {
-      const ids = stores
-        .map((s) => Number(s.id))
-        .filter((id) => Number.isFinite(id) && id > 0);
-      if (ids.length === 0) return { dishes: items, stores };
-      const { data: visRows } = await supabase
-        .from("merchant_stores")
-        .select("id, has_customer_visible_menu")
-        .in("id", ids)
-        .eq("has_customer_visible_menu", true);
-      const visibleIds = new Set(
-        ((visRows ?? []) as Array<{ id: number }>).map((r) => Number(r.id)),
-      );
-      if ((visRows ?? []).length > 0 || ids.length > 0) {
-        return {
-          stores: stores.filter((s) => visibleIds.has(Number(s.id))),
-          dishes: items.filter((d) => visibleIds.has(Number(d.store_id))),
-        };
-      }
-      return { dishes: items, stores };
-    }
-    const storeIds = stores
-      .map((s) => Number(s.id))
-      .filter((id) => Number.isFinite(id) && id > 0);
-    if (storeIds.length === 0) return { dishes: [], stores: [] };
-    const { data: pureRows, error: pureErr } = await supabase
-      .from("merchant_stores")
-      .select("id, is_pure_veg, has_customer_visible_menu")
-      .in("id", storeIds)
-      .eq("is_pure_veg", true)
-      .eq("has_customer_visible_menu", true);
-    if (pureErr) throw pureErr;
-    const pureStoreIds = new Set(
-      ((pureRows ?? []) as Array<{ id: number; is_pure_veg?: boolean | null }>)
-        .filter((r) => r.is_pure_veg === true)
-        .map((r) => Number(r.id))
-    );
+    const gated = await applyServiceabilityGate(stores, items, lat, lng);
     return {
-      stores: stores.filter((s) => pureStoreIds.has(Number(s.id))),
-      dishes: items.filter((d) => pureStoreIds.has(Number(d.store_id))),
+      stores: slicePage(gated.stores),
+      dishes: slicePage(gated.dishes),
     };
   }
 
+  // Degraded no-geo path — document: prefer client always sending lat/lng when hydrated.
   let items: MerchantMenuItemRow[] = [];
   const { data: rpcData, error: rpcError } = await supabase.rpc("search_menu_items", {
     query_text: q,
-    lim: limit,
-    off: offset,
+    lim: fetchLim,
+    off: 0,
   });
 
   if (!rpcError && Array.isArray(rpcData) && rpcData.length >= 0) {
@@ -2515,42 +2930,53 @@ export async function search(params: {
       .eq("is_active", true)
       .eq("in_stock", true)
       .or(`item_name.ilike.%${q}%,item_description.ilike.%${q}%,cuisine_type.ilike.%${q}%`)
-      .limit(limit)
-      .range(offset, offset + limit - 1);
+      .limit(fetchLim)
+      .range(0, fetchLim - 1);
 
     if (ilikeError) throw ilikeError;
     items = (ilikeData ?? []) as MerchantMenuItemRow[];
   }
 
   const categoryStores = await storesMatchingMenuCategory();
+  const sqlStores = await storesMatchingNameCuisineOrItems();
   const storeIds = [
     ...new Set([
       ...items.map((i) => i.store_id),
       ...categoryStores.map((s) => Number(s.id)),
+      ...sqlStores.map((s) => Number(s.id)),
     ]),
   ].filter((id) => Number.isFinite(Number(id)) && Number(id) > 0);
 
   if (storeIds.length === 0) {
-    return { dishes: items, stores: [] };
+    return { dishes: slicePage(items), stores: [] };
   }
 
-  let storesQuery = supabase
-    .from("merchant_stores")
-    .select("id, store_id, store_name, store_display_name, store_description, banner_url, cuisine_types, city, is_active, is_accepting_orders, status, has_customer_visible_menu")
-    .in("id", storeIds)
-    .eq("is_active", true)
-    .eq("has_customer_visible_menu", true);
-  if (vegMode) storesQuery = storesQuery.eq("is_pure_veg", true);
-  const { data: storeRows, error: storeError } = await storesQuery;
-
-  if (storeError) throw storeError;
+  const pg = getSql();
+  const storeRows = await pg`
+    SELECT
+      id, store_id, store_name, store_display_name, store_description,
+      banner_url, cuisine_types, city, is_active, is_accepting_orders,
+      is_available, status, has_customer_visible_menu,
+      upper(trim(store_type::text)) AS store_type
+    FROM merchant_stores
+    WHERE id = ANY(${storeIds}::int[])
+      AND is_active = true
+      AND has_customer_visible_menu = true
+      ${vegMode ? pg`AND is_pure_veg = true` : pg``}
+      ${
+        allowedTypes == null
+          ? pg``
+          : pg`AND upper(trim(store_type::text)) = ANY(${allowedTypes}::text[])`
+      }
+  `;
   let stores = (storeRows ?? []) as unknown as MerchantStoreRow[];
   stores = mergeStores(stores, categoryStores);
-  if (!vegMode) return { dishes: items, stores };
-  const pureStoreIdSet = new Set(stores.map((s) => Number(s.id)));
+  stores = mergeStores(stores, sqlStores);
+  const okIds = new Set(stores.map((s) => Number(s.id)));
+  items = items.filter((d) => okIds.has(Number(d.store_id)));
   return {
-    dishes: items.filter((d) => pureStoreIdSet.has(Number(d.store_id))),
-    stores,
+    dishes: slicePage(items),
+    stores: slicePage(stores),
   };
 }
 
@@ -2561,11 +2987,13 @@ export type DishCategoryStoreMatch = {
   cuisines: string[] | null;
   distanceKm: number | null;
   matchVia: "item" | "menu_category" | "both";
+  storeType: string | null;
 };
 
 /**
  * Category-chip browse: stores that sell an item named like `q` OR have a menu
  * section/category named like `q`. Lightweight ILIKE — not FTS RPCs.
+ * Always scoped by authoritative merchant_stores.store_type when storeType is set.
  */
 export async function listStoresForDishCategoryLabel(params: {
   q: string;
@@ -2574,6 +3002,8 @@ export async function listStoresForDishCategoryLabel(params: {
   maxDistanceKm?: number;
   limit?: number;
   vegMode?: boolean;
+  /** Customer vertical: FOOD | GROCERY | ALL | exact store_type. Default FOOD. */
+  storeType?: string | null;
 }): Promise<DishCategoryStoreMatch[]> {
   const q = (params.q ?? "").trim();
   if (!q) return [];
@@ -2584,6 +3014,8 @@ export async function listStoresForDishCategoryLabel(params: {
   const hasGeo = validCoord(params.lat ?? 0, params.lng ?? 0);
   const lat = hasGeo ? params.lat! : null;
   const lng = hasGeo ? params.lng! : null;
+  const { customerListStoreTypesForSql } = await import("./merchantStoreTypeFilters.js");
+  const allowedTypes = customerListStoreTypesForSql(params.storeType ?? "FOOD");
 
   const pg = getSql();
   const approval = getCustomerVisibleApprovalExpr(pg, "m");
@@ -2626,6 +3058,7 @@ export async function listStoresForDishCategoryLabel(params: {
         s.cuisine_types,
         s.latitude,
         s.longitude,
+        upper(trim(s.store_type::text)) AS store_type,
         r.via_item,
         r.via_cat
       FROM rolled r
@@ -2633,6 +3066,11 @@ export async function listStoresForDishCategoryLabel(params: {
       WHERE s.is_active = true
         AND s.has_customer_visible_menu = true
         ${vegMode ? pg`AND s.is_pure_veg = true` : pg``}
+        ${
+          allowedTypes == null
+            ? pg``
+            : pg`AND upper(trim(s.store_type::text)) = ANY(${allowedTypes}::text[])`
+        }
       LIMIT ${limit * 3}
     `;
 
@@ -2643,6 +3081,7 @@ export async function listStoresForDishCategoryLabel(params: {
       cuisine_types: string[] | null;
       latitude: number | string | null;
       longitude: number | string | null;
+      store_type: string | null;
       via_item: boolean;
       via_cat: boolean;
     };
@@ -2669,6 +3108,7 @@ export async function listStoresForDishCategoryLabel(params: {
         cuisines: Array.isArray(raw.cuisine_types) ? raw.cuisine_types : null,
         distanceKm: distanceKm != null ? Math.round(distanceKm * 100) / 100 : null,
         matchVia: viaItem && viaCat ? "both" : viaCat ? "menu_category" : "item",
+        storeType: raw.store_type?.trim() || null,
       });
     }
 

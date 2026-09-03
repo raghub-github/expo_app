@@ -17,9 +17,21 @@ function isExpoGo() {
   }
 }
 
+function isMerchantNewOrderData(data) {
+  const t = String(data?.type ?? data?.event ?? data?.gmType ?? data?.template_code ?? "").toLowerCase();
+  return (
+    t === "merchant_new_order" ||
+    t === "new_order" ||
+    data?.screen === "new_order" ||
+    String(data?.template_code ?? "").toUpperCase() === "MERCHANT_NEW_ORDER" ||
+    String(data?.gmType ?? "").toUpperCase() === "MERCHANT_NEW_ORDER"
+  );
+}
+
 if (!isExpoGo()) {
   try {
     const Notifications = require("expo-notifications");
+    const { AppState } = require("react-native");
     Notifications.setNotificationHandler({
       handleNotification: async (notification) => {
         const data = notification?.request?.content?.data ?? {};
@@ -36,9 +48,13 @@ if (!isExpoGo()) {
             shouldShowList: false,
           };
         }
+        const isNewOrder = isMerchantNewOrderData(data);
+        const appActive = AppState.currentState === "active";
+        // Active: in-app alert owns the chime. Background: allow OS/channel sound.
+        // Killed: OS uses merchant_new_orders_alert channel sound from FCM.
         return {
           shouldShowAlert: true,
-          shouldPlaySound: true,
+          shouldPlaySound: !(isNewOrder && appActive),
           shouldSetBadge: true,
           shouldShowBanner: true,
           shouldShowList: true,

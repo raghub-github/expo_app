@@ -58,8 +58,8 @@ export default function HomeLayout() {
         options={{
           statusBarTranslucent: true,
           statusBarHidden: false,
-          statusBarStyle: barStyle,
-          statusBarBackgroundColor: barBg,
+          statusBarStyle: "dark",
+          statusBarBackgroundColor: "transparent",
           contentStyle: { backgroundColor: barBg },
         }}
       />
@@ -94,6 +94,16 @@ export default function HomeLayout() {
         }}
       />
       <Stack.Screen name="service/[slug]" />
+      <Stack.Screen
+        name="service/near-me"
+        options={{
+          statusBarTranslucent: true,
+          statusBarHidden: false,
+          statusBarStyle: "dark",
+          statusBarBackgroundColor: "transparent",
+          contentStyle: { backgroundColor: "#F6F8F7" },
+        }}
+      />
       <Stack.Screen name="service/ride" />
       <Stack.Screen name="service/ride-pickup" />
       <Stack.Screen name="service/ride-map" />

@@ -3,6 +3,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useIsFocused } from "@react-navigation/native";
 import { AppText } from "@/components/AppText";
 
 import { View, ScrollView, TouchableOpacity, StyleSheet, NativeSyntheticEvent, NativeScrollEvent, Dimensions } from "react-native";
@@ -170,6 +171,7 @@ export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
   const activeIndexRef = useRef(0);
   const loopResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const assets = useAppAssetsStore((s) => s.assets);
+  const isScreenFocused = useIsFocused();
 
   const slides = useMemo(() => {
     const bannerKeys = filledRideHomeBannerKeys();
@@ -226,6 +228,7 @@ export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
   }, [slides.length]);
 
   useEffect(() => {
+    if (!isScreenFocused) return;
     if (slides.length < 2) return;
     const timer = setInterval(() => {
       const current = activeIndexRef.current >= slides.length ? 0 : activeIndexRef.current;
@@ -250,7 +253,7 @@ export function RideHomePromoBanner({ offers = [], onBookNow }: PromoProps) {
       setActiveIndex(next);
     }, AUTO_MS);
     return () => clearInterval(timer);
-  }, [slides.length, scheduleLoopReset]);
+  }, [slides.length, scheduleLoopReset, isScreenFocused]);
 
   const onMomentumScrollEnd = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {

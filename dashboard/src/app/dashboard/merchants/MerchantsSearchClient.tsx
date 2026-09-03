@@ -1,10 +1,9 @@
 "use client";
 
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
-import { Store, ChevronRight, CheckCircle, Clock, XCircle, Sparkles, Ban, Pencil, Building2 } from "lucide-react";
-import { DashboardCenterSpinner } from "@/components/ui/DashboardPageLoader";
+import { Store, CheckCircle, Clock, XCircle, Pencil } from "lucide-react";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
 import { useMerchantStoresStatsQuery } from "@/hooks/queries/useMerchantStoreQueries";
 import {
@@ -13,6 +12,13 @@ import {
   resolveMerchantsPortal,
 } from "@/lib/merchants/portal-preference";
 import { MerchantsAdminHome, type AdminStoreRow } from "@/components/merchants/MerchantsAdminHome";
+import {
+  MerchantAdminListShell,
+  MerchantAdminPartnerListSkeleton,
+  MerchantAdminStoreListSkeleton,
+} from "@/components/merchants/MerchantAdminListShell";
+import { StoreDashboardSkeleton } from "./stores/[id]/StoreDashboardSkeleton";
+import { MerchantParentSkeleton } from "./MerchantParentSkeleton";
 import { EXPIRED_RESUBMITTED_DOCS_LABEL } from "@/lib/merchants/expired-resubmitted-docs-label";
 import { dispatchMerchantResubmittedDocsRefresh } from "@/lib/merchants/merchant-resubmitted-docs-refresh";
 import { useStoreVerificationSheetOptional } from "@/context/StoreVerificationSheetContext";
@@ -347,69 +353,6 @@ function ChildStoreRow({
 
 type CategoryKey = "total" | "verified" | "pending" | "rejected" | "drafted" | "new" | "resubmitted" | "partners";
 
-interface StatCardConfig {
-  key: CategoryKey;
-  label: string;
-  count: number;
-  icon: React.ReactNode;
-  bg: string;
-  border: string;
-}
-
-const CARD_MIN_HEIGHT = "min-h-[80px]";
-
-const StatCardsRow = React.memo(function StatCardsRow({
-  cards,
-  category,
-  onCategoryClick,
-}: {
-  cards: StatCardConfig[];
-  category: CategoryKey | null;
-  onCategoryClick: (key: CategoryKey) => void;
-}) {
-  if (cards.length === 0) return null;
-
-  return (
-    <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-7">
-      {cards.map(({ key, label, count, icon, bg, border }) => {
-        const isActive = category === key;
-        return (
-          <button
-            key={key}
-            type="button"
-            onClick={() => onCategoryClick(key)}
-            className={`relative cursor-pointer rounded-lg border p-1.5 text-left transition-all duration-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 ${CARD_MIN_HEIGHT} ${
-              isActive
-                ? `ring-2 ring-indigo-600 ring-offset-2 ${bg} ${border}`
-                : `${bg} ${border} hover:border-gray-300`
-            }`}
-            aria-pressed={isActive}
-          >
-            {/* Icon top-left corner */}
-            <span className={`absolute top-1.5 left-1.5 flex items-center ${isActive ? "text-gray-800" : "text-gray-600"}`}>
-              {icon}
-            </span>
-
-            {/* Count exact center */}
-            <span className="absolute inset-0 flex items-center justify-center text-[21px] font-semibold leading-tight text-gray-900">
-              {count}
-            </span>
-
-            {/* Label bottom-right */}
-            <span
-              className={`absolute bottom-1.5 right-1.5 text-[8.5px] font-medium ${
-                isActive ? "text-gray-700" : "text-gray-500"
-              }`}
-            >
-              {label}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-});
-
 function buildChildStoreTargetUrl(args: {
   child: ChildRow;
   returnTo: string;
@@ -437,7 +380,6 @@ function buildChildStoreTargetUrl(args: {
     const params = new URLSearchParams();
     params.set("returnTo", returnTo);
     params.set("portal", "merchant");
-    if (portal === "admin") params.set("fromAdmin", "1");
     return `/dashboard/merchants/stores/${storePk}?${params.toString()}`;
   }
 
@@ -854,71 +796,6 @@ export function MerchantsSearchClient({
     router.push(`/dashboard/merchants?${next.toString()}`);
   };
 
-  const statCards: StatCardConfig[] = useMemo(
-    () =>
-      stats
-        ? [
-            {
-              key: "total",
-              label: "Total stores",
-              count: stats.total,
-              icon: <Store className="h-4 w-4" />,
-              bg: "bg-slate-50",
-              border: "border-slate-200 hover:border-slate-300",
-            },
-            {
-              key: "verified",
-              label: "Verified",
-              count: stats.verified,
-              icon: <CheckCircle className="h-4 w-4 text-emerald-600" />,
-              bg: "bg-emerald-50",
-              border: "border-emerald-200 hover:border-emerald-300",
-            },
-            {
-              key: "pending",
-              label: "Pending verification",
-              count: stats.pending,
-              icon: <Clock className="h-4 w-4 text-amber-600" />,
-              bg: "bg-amber-50",
-              border: "border-amber-200 hover:border-amber-300",
-            },
-            {
-              key: "drafted",
-              label: "Drafted Store",
-              count: stats.drafted,
-              icon: <Pencil className="h-4 w-4 text-sky-600" />,
-              bg: "bg-sky-50",
-              border: "border-sky-200 hover:border-sky-300",
-            },
-            {
-              key: "new",
-              label: "New (30d)",
-              count: stats.new,
-              icon: <Sparkles className="h-4 w-4 text-indigo-600" />,
-              bg: "bg-indigo-50",
-              border: "border-indigo-200 hover:border-indigo-300",
-            },
-            {
-              key: "rejected",
-              label: "Rejected",
-              count: stats.rejected,
-              icon: <Ban className="h-4 w-4 text-red-600" />,
-              bg: "bg-red-50",
-              border: "border-red-200 hover:border-red-300",
-            },
-            {
-              key: "partners",
-              label: "Partners",
-              count: stats.partners,
-              icon: <Building2 className="h-4 w-4 text-violet-600" />,
-              bg: "bg-violet-50",
-              border: "border-violet-200 hover:border-violet-300",
-            },
-          ]
-        : [],
-    [stats]
-  );
-
   return (
     <div className="space-y-3">
       {showAdminHome ? (
@@ -943,86 +820,18 @@ export function MerchantsSearchClient({
         />
       ) : (
         <>
-      {/* Merchant portal + list search: show skeleton only while loading; no border, no "Not Found" until API completes */}
       {showSkeleton ? (
-        <DashboardCenterSpinner className="min-h-[calc(100dvh-8rem)]" />
-      ) : (
-        <div className="rounded-lg border border-gray-200 bg-white p-4">
-        <>
-      {/* Main-area toggle removed: Admin/Merchant toggle stays only in header. Merchant portal: no sticky bar in main area. */}
-      {effectivePortal === "admin" && hasAdminMerchantAccess && !isExpiredResubmittedView && (
-        <div className="sticky top-0 z-10 -mx-2 bg-white px-2 pb-2 pt-0.5 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
-          {/* Top row: Merchants / Assign AM title (left) + Date filter (right top, just above Rejected card area) - no bg, no shadow */}
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h1 className="text-sm font-semibold text-gray-900">
-              {typeof window !== "undefined" && window.location.pathname.startsWith("/dashboard/merchants/assign-am")
-                ? "Assign AM to Stores"
-                : "Merchants"}
-            </h1>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-medium uppercase text-gray-500">Date filter</span>
-              <input
-                type="date"
-                value={dateFromInput}
-                onChange={(e) => setDateFromInput(e.target.value)}
-                className="rounded border border-gray-300 px-2 py-1 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                aria-label="From date"
-              />
-              <span className="text-xs text-gray-500">to</span>
-              <input
-                type="date"
-                value={dateToInput}
-                onChange={(e) => setDateToInput(e.target.value)}
-                className="rounded border border-gray-300 px-2 py-1 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                aria-label="To date"
-              />
-              <span className="ml-1 text-[10px] font-medium uppercase text-gray-500">Store type</span>
-              <select
-                value={storeTypeFilter ?? ""}
-                onChange={(e) => handleStoreTypeChange(e.target.value)}
-                className="rounded border border-gray-300 px-2 py-1 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                aria-label="Store type"
-              >
-                <option value="">All types</option>
-                <option value="RESTAURANT">Restaurant</option>
-                <option value="CAFE">Cafe</option>
-                <option value="BAKERY">Bakery</option>
-                <option value="CLOUD_KITCHEN">Cloud Kitchen</option>
-                <option value="GROCERY">Grocery</option>
-                <option value="PHARMA">Pharma</option>
-                <option value="STATIONERY">Stationery</option>
-                <option value="ELECTRONICS_ECOMMERCE">Electronics & E-commerce</option>
-                <option value="OTHERS">Others</option>
-              </select>
-              <button
-                type="button"
-                onClick={fromDate || toDate ? clearDateFilter : applyDateFilter}
-                className={
-                  fromDate || toDate
-                    ? "rounded border border-gray-300 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    : "rounded bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                }
-              >
-                {fromDate || toDate ? "Clear" : "Apply"}
-              </button>
-            </div>
-          </div>
-          {/* Stats cards row - below the filter */}
-          <>
-            {statsLoading ? (
-              <DashboardCenterSpinner className="mt-2 min-h-[120px]" />
-            ) : (
-              <StatCardsRow cards={statCards} category={category} onCategoryClick={handleCategoryClick} />
-            )}
-
-            {error ? (
-              <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
-                <p className="text-xs font-medium text-red-800">{error}</p>
-              </div>
-            ) : null}
-          </>
+        <div className="rounded-lg min-w-0 border-0 border-none shadow-none outline-none ring-0">
+          {filter === "child" ? <StoreDashboardSkeleton /> : <MerchantParentSkeleton />}
         </div>
-      )}
+      ) : (
+        <div className={effectivePortal === "admin" && hasAdminMerchantAccess ? "" : "rounded-lg border border-gray-200 bg-white p-4"}>
+        <>
+      {error && !(effectivePortal === "admin" && hasAdminMerchantAccess) ? (
+        <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+          <p className="text-xs font-medium text-red-800">{error}</p>
+        </div>
+      ) : null}
 
       {/* Merchant portal: no card; plain tagline when no search, direct results when search. Admin: empty state or results. */}
       {portal === "merchant" && !hasSearchParams && !hasCategory && filter !== "parent" ? (
@@ -1040,33 +849,36 @@ export function MerchantsSearchClient({
         </div>
       ) : hasCategory && filter === "child" ? (
         loading || !hasSearched ? (
-          <div className="rounded-lg border-0 bg-white py-6 text-center">
-            <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" />
-            <p className="mt-2 text-xs text-gray-500">Loading...</p>
-          </div>
+          <MerchantAdminStoreListSkeleton />
         ) : (
-          <div className="space-y-2">
-            <p className="text-[10px] font-medium uppercase tracking-wide text-gray-500">
-              {category === "total"
+          <MerchantAdminListShell
+            description={
+              isExpiredResubmittedView
+                ? "Stores that re-submitted expired documents. Review docs to continue verification."
+                : undefined
+            }
+            countLabel={`${
+              category === "total"
                 ? "All stores"
                 : category === "verified"
                   ? "Verified"
                   : category === "pending"
                     ? "Pending"
                     : category === "drafted"
-                      ? "Drafted Store"
+                      ? "Drafted stores"
                       : category === "resubmitted"
                         ? EXPIRED_RESUBMITTED_DOCS_LABEL
-                      : category === "new"
-                        ? "New (30d)"
-                        : "Rejected"} ({childItems?.length ?? 0})
-            </p>
+                        : category === "new"
+                          ? "New (30d)"
+                          : "Rejected"
+            } · ${childItems?.length ?? 0}`}
+          >
             {hasSearched && !loading && childItems != null && childItems.length === 0 ? (
-              <div className="rounded-lg border border-gray-200 bg-gray-50/80 py-4 text-center">
-                <p className="text-xs text-gray-600">No stores in this category.</p>
+              <div className="px-4 py-10 text-center">
+                <p className="text-sm text-[#121212]/55">No stores in this list.</p>
               </div>
-              ) : childItems != null && childItems.length > 0 ? (
-              <div className="rounded-lg border border-gray-200 bg-white max-h-[520px] overflow-y-auto">
+            ) : childItems != null && childItems.length > 0 ? (
+              <div className="max-h-[min(70vh,640px)] overflow-y-auto">
                 {childItems.map((child) => (
                   <ChildStoreRow
                     key={child.id}
@@ -1082,17 +894,18 @@ export function MerchantsSearchClient({
                 ))}
               </div>
             ) : null}
-          </div>
+          </MerchantAdminListShell>
         )
       ) : !hasSearchParams && filter !== "parent" ? (
         <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-4 text-center">
           <Store className="mx-auto h-8 w-8 text-gray-400" />
         </div>
       ) : hasActiveListSearch && (loading || !hasSearched) ? (
-        <div className="rounded-lg border-0 bg-white py-6 text-center">
-          <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" />
-          <p className="mt-2 text-xs text-gray-500">Loading...</p>
-        </div>
+        filter === "parent" ? (
+          <MerchantAdminPartnerListSkeleton />
+        ) : (
+          <MerchantAdminStoreListSkeleton />
+        )
       ) : filter === "parent" ? (
         hasSearched && !loading && parentItems != null && parentItems.length === 0 ? (
           <div className="rounded-lg border border-gray-200 bg-gray-50/80 py-4 text-center">
@@ -1103,46 +916,43 @@ export function MerchantsSearchClient({
             )}
           </div>
         ) : (
-          <div className="space-y-3">
-            <p className="text-[10px] font-medium uppercase tracking-wide text-gray-500">
-              Partners ({parentItems?.length ?? 0})
-            </p>
+          <MerchantAdminListShell
+            description="Parent accounts and their child stores."
+            countLabel={`Partners · ${parentItems?.length ?? 0}`}
+          >
+            <div className="divide-y divide-[#121212]/08">
             {(parentItems ?? []).map((parent) => (
-              <div
-                key={`parent-${parent.id}`}
-                className="overflow-hidden rounded-lg border border-gray-200 bg-white"
-              >
-                <div className="border-b border-gray-100 bg-gray-50/50 px-3 py-2">
+              <div key={`parent-${parent.id}`} className="bg-white">
+                <div className="border-b border-[#121212]/06 bg-[#F3F7FA]/80 px-3 py-2.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-md bg-indigo-100">
-                        <Store className="h-4 w-4 text-indigo-600" />
+                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#121212] text-white">
+                        <Store className="h-4 w-4" />
                       </div>
                       <div>
                         <div className="flex items-center gap-1.5">
-                          <p className="text-sm font-semibold text-gray-900">{parent.name}</p>
-                          <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700">
+                          <p className="text-sm font-semibold text-[#121212]">{parent.name}</p>
+                          <span className="rounded-full bg-[#121212]/08 px-1.5 py-0.5 text-[10px] font-medium text-[#121212]/70">
                             {parent.children.length} store{parent.children.length !== 1 ? "s" : ""}
                           </span>
                         </div>
-                        <p className="text-[10px] text-gray-500">
+                        <p className="text-[10px] text-[#121212]/45">
                           {parent.merchant_id}
                           {parent.city ? ` · ${parent.city}` : ""}
                         </p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      {parent.phone ? <span className="text-[10px] text-gray-600">{parent.phone}</span> : null}
+                      {parent.phone ? <span className="text-[10px] text-[#121212]/55">{parent.phone}</span> : null}
                       <StatusBadge status={parent.approval_status} />
                     </div>
                   </div>
                 </div>
-                <div className="px-3 py-2">
-                  <p className="mb-1.5 text-[10px] font-medium uppercase text-gray-500">Child stores ({parent.children.length})</p>
+                <div className="px-1 py-1">
                   {parent.children.length === 0 ? (
-                    <p className="rounded bg-gray-50 py-2 text-center text-[10px] text-gray-500">No child stores yet</p>
+                    <p className="rounded px-3 py-2 text-center text-[10px] text-[#121212]/45">No child stores yet</p>
                   ) : (
-                    <ul className="border-t border-gray-100">
+                    <ul>
                       {parent.children.map((child) => (
                         <li key={child.id} className="list-none">
                           <ChildStoreRow
@@ -1161,7 +971,8 @@ export function MerchantsSearchClient({
                 </div>
               </div>
             ))}
-          </div>
+            </div>
+          </MerchantAdminListShell>
         )
       ) : portal === "merchant" && filter === "child" && hasSearched && !loading && childItems != null && childItems.length === 0 ? (
         // Merchant portal + child: API confirmed no results (never show before loading finishes)

@@ -4,6 +4,9 @@ import { Image } from "expo-image";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { HEADER_IMAGE_HEIGHT, SCREEN_WIDTH_EXPORT } from "../constants/layout";
 import { prefetchMerchantHeroImageUri } from "@/lib/merchantHeroWarmCache";
+import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
+
+const HERO_SHELL = GatiMitraColors.softBackground;
 
 type Props = {
   uri: string | null;
@@ -12,6 +15,7 @@ type Props = {
 
 /**
  * Pinned store hero — sibling of FlashList (never in ListHeader) so scroll never remounts it.
+ * Soft/white shell under an always-visible banner (cache hits must not wait on onLoad).
  */
 export const MerchantFixedHeroLayer = React.memo(
   function MerchantFixedHeroLayer({ uri, merchantId }: Props) {
@@ -22,6 +26,7 @@ export const MerchantFixedHeroLayer = React.memo(
 
     return (
       <View style={styles.layer} pointerEvents="none" collapsable={false}>
+        <View style={styles.shell} />
         {uri ? (
           <Image
             source={{ uri }}
@@ -32,10 +37,9 @@ export const MerchantFixedHeroLayer = React.memo(
             recyclingKey={`merchant-hero-${merchantId}`}
             priority="high"
             allowDownscaling
+            onLoad={() => markHeroMediaSessionReady(uri)}
           />
-        ) : (
-          <View style={styles.placeholder} />
-        )}
+        ) : null}
       </View>
     );
   },
@@ -47,14 +51,15 @@ const styles = StyleSheet.create({
     height: HEADER_IMAGE_HEIGHT,
     width: SCREEN_WIDTH_EXPORT,
     overflow: "hidden",
+    backgroundColor: HERO_SHELL,
     ...(Platform.OS === "android" ? { elevation: 0 } : {}),
+  },
+  shell: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: HERO_SHELL,
   },
   image: {
     width: SCREEN_WIDTH_EXPORT,
     height: HEADER_IMAGE_HEIGHT,
-  },
-  placeholder: {
-    flex: 1,
-    backgroundColor: GatiMitraColors.mintSoft,
   },
 });

@@ -480,6 +480,7 @@ function OrderHistoryInner() {
           city: store.city,
           cuisineLabel: store.cuisine_types?.[0] ?? null,
           fssaiNumber: store.fssai_number ?? null,
+          storeType: (store as { store_type?: string | null }).store_type ?? null,
         }
       : { storeName: selected.restaurant_name ?? 'Store' };
     printOrderBill(

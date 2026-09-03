@@ -530,13 +530,23 @@ export async function resolveInboxOnlyRecipients(
   }
 
   // Geo customer/rider: resolve audience ids even without tokens.
-  if ("geo" in target && target.geo === true && hasGeoFields(target)) {
+  if (
+    (("geo" in target && target.geo === true) || ("role" in target && hasGeoFields(target as never))) &&
+    hasGeoFields(target as never)
+  ) {
+    const t = target as {
+      city?: string;
+      lat?: number;
+      lng?: number;
+      radius_km?: number;
+      role?: NotificationRole | null;
+    };
     const audience = await resolveGeoAudience({
-      city: target.city,
-      lat: target.lat,
-      lng: target.lng,
-      radius_km: target.radius_km,
-      role: target.role ?? roleHint === "all" ? null : roleHint,
+      city: t.city,
+      lat: t.lat,
+      lng: t.lng,
+      radius_km: t.radius_km,
+      role: t.role ?? (roleHint === "all" ? null : roleHint),
     });
     const pairs: Array<{ userId: string; role: NotificationRole }> = [];
     for (const userId of audience.customerIds) pairs.push({ userId, role: "customer" });
@@ -576,7 +586,7 @@ function hasGeoFields(target: {
 
 /**
  * Resolve user ids (customers / riders / merchant parent + store ids) for a geo filter.
- * City-only, lat/lng-only, or both (city AND radius when coords exist).
+ * City-only, lat/lng-only, or both (city OR radius when coords exist — same as stores).
  */
 async function resolveGeoAudience(opts: {
   city?: string;
@@ -649,6 +659,11 @@ async function resolveGeoAudience(opts: {
 
   if (!role || role === "customer") {
     try {
+      // When both city + coords are set: match EITHER (city soft-match OR inside
+      // radius). Exact AND was dropping users whose address city text differs
+      // from the map label (e.g. "Panipat Taraf Rajputan" vs "Panipat") even
+      // though they sit inside the selected radius.
+      const cityLike = hasCity ? `%${city}%` : "";
       const rows = (await sql`
         SELECT DISTINCT c.customer_id AS user_id
         FROM public.customers c
@@ -663,16 +678,13 @@ async function resolveGeoAudience(opts: {
             ${
               hasCity && hasCoords
                 ? sql`(
-                    lower(coalesce(ca.city, c.city, '')) = lower(${city})
-                    AND (
-                      (ca.latitude IS NOT NULL AND ca.longitude IS NOT NULL AND ${withinRadius("ca")})
-                      OR (cal.latitude IS NOT NULL AND cal.longitude IS NOT NULL AND ${withinRadius("cal")})
-                      OR (c.latitude IS NOT NULL AND c.longitude IS NOT NULL AND ${withinRadius("c")})
-                      OR (ca.latitude IS NULL AND cal.latitude IS NULL AND c.latitude IS NULL)
-                    )
+                    lower(coalesce(ca.city, c.city, '')) LIKE lower(${cityLike})
+                    OR (ca.latitude IS NOT NULL AND ca.longitude IS NOT NULL AND ${withinRadius("ca")})
+                    OR (cal.latitude IS NOT NULL AND cal.longitude IS NOT NULL AND ${withinRadius("cal")})
+                    OR (c.latitude IS NOT NULL AND c.longitude IS NOT NULL AND ${withinRadius("c")})
                   )`
                 : hasCity
-                  ? sql`lower(coalesce(ca.city, c.city, '')) = lower(${city})`
+                  ? sql`lower(coalesce(ca.city, c.city, '')) LIKE lower(${cityLike})`
                   : sql`(
                       (ca.latitude IS NOT NULL AND ca.longitude IS NOT NULL AND ${withinRadius("ca")})
                       OR (cal.latitude IS NOT NULL AND cal.longitude IS NOT NULL AND ${withinRadius("cal")})
@@ -689,6 +701,7 @@ async function resolveGeoAudience(opts: {
 
   if (!role || role === "rider") {
     try {
+      const cityLike = hasCity ? `%${city}%` : "";
       const rows = (await sql`
         SELECT DISTINCT ('usr_' || r.id::text) AS user_id
         FROM public.riders r
@@ -700,17 +713,12 @@ async function resolveGeoAudience(opts: {
             ${
               hasCity && hasCoords
                 ? sql`(
-                    (
-                      lower(coalesce(r.city, ci.name, '')) = lower(${city})
-                    )
-                    AND (
-                      (r.lat IS NOT NULL AND r.lon IS NOT NULL AND ${withinRadius("r")})
-                      OR (ra.latitude IS NOT NULL AND ra.longitude IS NOT NULL AND ${withinRadius("ra")})
-                      OR (r.lat IS NULL AND ra.latitude IS NULL)
-                    )
+                    lower(coalesce(r.city, ci.name, '')) LIKE lower(${cityLike})
+                    OR (r.lat IS NOT NULL AND r.lon IS NOT NULL AND ${withinRadius("r")})
+                    OR (ra.latitude IS NOT NULL AND ra.longitude IS NOT NULL AND ${withinRadius("ra")})
                   )`
                 : hasCity
-                  ? sql`lower(coalesce(r.city, ci.name, '')) = lower(${city})`
+                  ? sql`lower(coalesce(r.city, ci.name, '')) LIKE lower(${cityLike})`
                   : sql`(
                       (r.lat IS NOT NULL AND r.lon IS NOT NULL AND ${withinRadius("r")})
                       OR (ra.latitude IS NOT NULL AND ra.longitude IS NOT NULL AND ${withinRadius("ra")})

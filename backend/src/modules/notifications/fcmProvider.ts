@@ -29,6 +29,8 @@ type FcmSendInput = {
   webLink?: string | null;
   /** Android notification channel (merchant_default, customer_default, …). */
   channelId?: string | null;
+  /** Android res/raw sound name (no extension) or "default". Channel sound wins on O+. */
+  sound?: string | null;
   priority?: NotificationPriority;
   collapseKey?: string | null;
   silent?: boolean;
@@ -114,6 +116,10 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
   const androidPriority = mapPriorityAndroid(input.priority);
   const notifPriority: "min" | "low" | "default" | "high" | "max" =
     input.priority === "critical" ? "max" : androidPriority === "high" ? "high" : "default";
+  const soundName =
+    input.sound && String(input.sound).trim() && String(input.sound).trim() !== "default"
+      ? String(input.sound).trim().replace(/\.(mp3|wav|ogg)$/i, "")
+      : null;
 
   const baseMessage = {
     data,
@@ -131,7 +137,10 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
                 ? input.deepLink
                 : undefined,
             channelId: input.channelId?.trim() || "default",
-            defaultSound: true,
+            // Channel sound is authoritative on Android O+; still set for pre-O / FCM fallback.
+            ...(soundName
+              ? { sound: soundName, defaultSound: false }
+              : { defaultSound: true }),
             defaultVibrateTimings: true,
             visibility: "public",
             priority: notifPriority,
@@ -147,7 +156,7 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
         aps: wantsNotificationBlock
           ? {
               alert: { title: input.title, body: input.body },
-              sound: "default",
+              sound: soundName ? `${soundName}.caf` : "default",
               "mutable-content": input.imageUrl ? 1 : 0,
               "content-available": 1,
             }

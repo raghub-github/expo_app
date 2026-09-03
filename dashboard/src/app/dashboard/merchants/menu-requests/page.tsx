@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, Loader2, RefreshCw, ImageIcon } from "lucide-react";
+import { Loader2, RefreshCw, ImageIcon } from "lucide-react";
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { R2Image } from "@/components/ui/R2Image";
 import { MenuItemPhotoCustomerPreview } from "@/components/merchant/MenuItemPhotoCustomerPreview";
@@ -250,34 +250,25 @@ export default function MenuRequestsPage() {
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50">
-      <div className="w-full px-4 py-4 sm:px-6">
-        <Link
-          href="/dashboard/merchants?portal=admin"
-          className="mb-3 inline-flex items-center gap-1 text-xs font-medium text-gray-600 hover:text-gray-900"
-        >
-          <ChevronLeft className="h-3.5 w-3.5" />
-          Back to Merchants
-        </Link>
-        <h1 className="text-lg font-bold text-gray-900 sm:text-xl">Menu item change requests</h1>
-        <p className="mt-0.5 text-xs text-gray-500 sm:text-sm">
+    <div className="space-y-4">
+        <p className="text-xs text-[#121212]/55">
           Review merchant edit/delete requests and pending item photo uploads across all stores.
         </p>
         {reviewSummary ? (
-          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-            <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-900">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
               {reviewSummary.total_pending} total pending
             </span>
-            <span className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-gray-700">
+            <span className="rounded-full bg-[#F3F7FA] px-2 py-0.5 text-[11px] font-semibold text-[#121212]/70">
               {reviewSummary.pending_change_requests} change requests
             </span>
-            <span className="rounded-full border border-purple-200 bg-purple-50 px-2 py-0.5 text-[11px] font-semibold text-purple-800">
+            <span className="rounded-full bg-purple-50 px-2 py-0.5 text-[11px] font-semibold text-purple-800">
               {reviewSummary.pending_photo_reviews} photo reviews
             </span>
           </div>
         ) : null}
 
-        <section className="mt-5">
+        <section>
           <div className="flex items-center gap-1.5 text-sm font-bold text-gray-900">
             <ImageIcon className="h-4 w-4 text-purple-600" aria-hidden />
             Photo reviews
@@ -525,7 +516,6 @@ export default function MenuRequestsPage() {
             </p>
           ) : null}
         </section>
-      </div>
 
       {photoReviewItem &&
         typeof document !== "undefined" &&

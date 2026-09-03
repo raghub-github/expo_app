@@ -2,7 +2,6 @@
 import React, { useEffect, useRef } from 'react';
 import { Redirect, Tabs, router, useSegments } from 'expo-router';
 import { View, ActivityIndicator } from 'react-native';
-import { StatusBar } from 'expo-status-bar';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { useTranslation } from 'react-i18next';
@@ -80,7 +79,6 @@ export default function TabLayout() {
 
   return (
     <View style={{ flex: 1 }}>
-      <StatusBar style="dark" backgroundColor="#ffffff" />
       <RiderHomeLocationPrompt />
       {!onOrdersHome ? <GlobalTopBar /> : null}
         <Tabs

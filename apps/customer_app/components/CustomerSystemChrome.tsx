@@ -5,7 +5,7 @@ import { CUSTOMER_SYSTEM_NAV_MINT } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 /**
- * Android system navigation bar: mint background + light icons.
+ * Android system navigation bar: mint background + dark (black) icons for visibility.
  * Gesture nav (bottom inset 0) gets no in-app filler — see AndroidSystemNavigationFill.
  */
 
@@ -14,7 +14,7 @@ function assertStatusBarVisible() {
 }
 
 /**
- * Dark Android system navigation bar with light icons; kept in sync on resume.
+ * Mint Android system navigation bar with dark icons; kept in sync on resume.
  * Always re-asserts that the status bar itself stays visible.
  */
 export function CustomerSystemChrome() {
@@ -26,7 +26,7 @@ export function CustomerSystemChrome() {
     if (Platform.OS !== "android" || bootstrapActive) return;
 
     void applyAndroidNavigationChrome({
-      buttonStyle: "light",
+      buttonStyle: "dark",
       backgroundColor: CUSTOMER_SYSTEM_NAV_MINT,
     }).catch(() => {});
 
@@ -35,7 +35,7 @@ export function CustomerSystemChrome() {
       assertStatusBarVisible();
       if (useScreenChromeStore.getState().bootstrapActive) return;
       void applyAndroidNavigationChrome({
-        buttonStyle: "light",
+        buttonStyle: "dark",
         backgroundColor: CUSTOMER_SYSTEM_NAV_MINT,
       }).catch(() => {});
     };

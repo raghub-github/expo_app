@@ -443,10 +443,10 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
       />
 
       <div className="flex flex-1 flex-col min-h-0 w-full overflow-hidden bg-[#f8fafc]">
-        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain px-4 sm:px-6 lg:px-8 pt-5 pb-4">
-          <div className="max-w-[1600px] mx-auto space-y-5">
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain px-4 sm:px-5 lg:px-6 pt-3 pb-3">
+          <div className="max-w-[1600px] mx-auto space-y-3">
             {/* Store status | Delivery | Store overview — exact partnersite order & layout */}
-            <div className="grid grid-cols-1 xl:grid-cols-12 gap-3 items-stretch pb-1">
+            <div className="grid grid-cols-1 xl:grid-cols-12 gap-2.5 items-stretch">
               <section className={PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS}>
                 {showTopCardSkeletons ? (
                   <PartnerDashboardStoreStatusSkeleton />
@@ -553,7 +553,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
             </div>
 
             {/* Insights — Live preview / Business reports (partnersite order) */}
-            <div className="mt-8 sm:mt-10 pt-6 sm:pt-8 border-t border-slate-200/90">
+            <div className="mt-5 pt-4 border-t border-slate-200/90">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between lg:gap-6">
                 <div className="flex flex-col gap-3 min-w-0">
                   <div className="inline-flex rounded-lg border border-slate-200/90 p-0.5 bg-slate-100/40 w-fit" role="tablist" aria-label="Dashboard view">

@@ -11,6 +11,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
+import { getCategoryImageLastGood } from "@/lib/categoryImageLastGood";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { FoodHomeCategoryItem } from "@/components/home/FoodHomeCategoryVariants";
 import { AppText } from "@/components/AppText";
@@ -84,28 +85,41 @@ type Props = {
   underPriceImageUrl?: string | null;
   onUnderPricePress?: () => void;
   layout?: FoodHomeCategoryTabLayout;
+  /** Food home uses circles; grocery category rail uses rounded rectangles. */
+  imageShape?: "circle" | "roundedRect";
 };
 
 function CategoryPhoto({
   imageUrl,
   cacheKey,
   layout,
+  imageShape = "circle",
   fallbackIcon = "restaurant-outline",
 }: {
   imageUrl?: string | null;
   cacheKey?: string;
   layout: FoodHomeCategoryTabLayout;
+  imageShape?: "circle" | "roundedRect";
   fallbackIcon?: keyof typeof Ionicons.glyphMap;
 }) {
   const { circle } = layout;
-  const hasImage = !!imageUrl?.trim();
+  const lastGood = cacheKey ? getCategoryImageLastGood(cacheKey) : null;
+  const resolvedUrl = imageUrl?.trim() || lastGood || null;
+  const hasImage = !!resolvedUrl;
   const dark = useMerchantUiDark();
+  const photoW = circle;
+  const photoH =
+    imageShape === "roundedRect" ? Math.round(circle * 1.22) : circle;
+  const borderRadius =
+    imageShape === "roundedRect"
+      ? Math.max(10, Math.round(circle * 0.22))
+      : circle / 2;
 
   return (
     <View
       style={{
-        width: circle,
-        height: circle,
+        width: photoW,
+        height: photoH,
         marginBottom: 6,
         alignItems: "center",
         justifyContent: "center",
@@ -113,27 +127,27 @@ function CategoryPhoto({
     >
       <View
         style={[
-          styles.circleClip,
-          dark && styles.circleClipDark,
+          styles.photoClip,
+          dark && styles.photoClipDark,
           {
-            width: circle,
-            height: circle,
-            borderRadius: circle / 2,
+            width: photoW,
+            height: photoH,
+            borderRadius,
           },
         ]}
       >
         {hasImage ? (
           <UserAppCategoryImage
-            imageUrl={imageUrl ?? null}
+            imageUrl={resolvedUrl}
             cacheKey={cacheKey}
             contentFit="cover"
-            style={{ width: circle, height: circle }}
+            style={{ width: photoW, height: photoH }}
           />
         ) : (
           <View style={[styles.photoFallback, dark && styles.photoFallbackDark, StyleSheet.absoluteFillObject]}>
             <Ionicons
               name={fallbackIcon}
-              size={Math.max(20, Math.round(circle * 0.38))}
+              size={Math.max(20, Math.round(Math.min(photoW, photoH) * 0.38))}
               color={dark ? MerchantDarkPalette.textMuted : "#94A3B8"}
             />
           </View>
@@ -285,6 +299,7 @@ export function FoodHomeCategoryTabs({
   underPriceImageUrl,
   onUnderPricePress,
   layout: layoutProp,
+  imageShape = "circle",
 }: Props) {
   const { width: windowWidth } = useWindowDimensions();
   const layout = layoutProp ?? computeGridFirstCategoryTabMetrics(windowWidth);
@@ -297,7 +312,9 @@ export function FoodHomeCategoryTabs({
 
   const { itemW, columnGap, circle, pagePadLeft, pagePadRight } = layout;
   const mealsCardH = Math.round(circle * 1.34);
-  const tabMinHeight = circle + 38;
+  const photoH =
+    imageShape === "roundedRect" ? Math.round(circle * 1.22) : circle;
+  const tabMinHeight = photoH + 38;
   const dark = useMerchantUiDark();
   const resolvedMaxPrice = useMemo(() => {
     if (Number.isFinite(underPriceMaxPrice) && underPriceMaxPrice > 0) {
@@ -343,6 +360,7 @@ export function FoodHomeCategoryTabs({
             imageUrl={allTabImageUrl}
             cacheKey="tab-category-all"
             layout={layout}
+            imageShape={imageShape}
             fallbackIcon="apps-outline"
           />
           <AppText
@@ -381,6 +399,7 @@ export function FoodHomeCategoryTabs({
           imageUrl={cat.imageUrl}
           cacheKey={`tab-category-${cat.id}`}
           layout={layout}
+          imageShape={imageShape}
         />
         <AppText
           style={[
@@ -514,16 +533,13 @@ const styles = StyleSheet.create({
   },
   photoClip: {
     overflow: "hidden",
-  },
-  circleClip: {
-    overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#F8FAFC",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(15,23,42,0.06)",
   },
-  circleClipDark: {
+  photoClipDark: {
     backgroundColor: MerchantDarkPalette.elevated,
     borderColor: "rgba(255,255,255,0.08)",
   },

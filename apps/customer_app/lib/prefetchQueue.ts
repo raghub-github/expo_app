@@ -16,8 +16,9 @@
  */
 
 import { Image } from "expo-image";
+import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
 
-const MAX_IN_FLIGHT = 4;
+const MAX_IN_FLIGHT = 3;
 
 /**
  * Cap on the dedupe set. Without this, a long browsing session accumulates every
@@ -26,6 +27,7 @@ const MAX_IN_FLIGHT = 4;
 const MAX_TRACKED_URIS = 600;
 
 const requested = new Set<string>();
+const completed = new Set<string>();
 const queue: string[] = [];
 let inFlight = 0;
 
@@ -38,6 +40,7 @@ function trackRequested(uri: string): boolean {
     let n = 0;
     for (const old of requested) {
       requested.delete(old);
+      completed.delete(old);
       if (++n >= drop) break;
     }
   }
@@ -50,6 +53,10 @@ function pump(): void {
     const uri = queue.shift()!;
     inFlight += 1;
     Image.prefetch(uri, { cachePolicy: "memory-disk" })
+      .then(() => {
+        completed.add(uri);
+        markHeroMediaSessionReady(uri);
+      })
       .catch(() => undefined)
       .finally(() => {
         inFlight -= 1;
@@ -82,19 +89,49 @@ export function isImagePrefetchRequested(uri: string | null | undefined): boolea
   return trimmed ? requested.has(trimmed) : false;
 }
 
+/** True when prefetch finished successfully (disk/memory warm). */
+export function isImagePrefetchCompleted(uri: string | null | undefined): boolean {
+  const trimmed = uri?.trim();
+  return trimmed ? completed.has(trimmed) : false;
+}
+
 /** Awaits a small, explicitly-sized batch — for genuinely above-the-fold media. */
 export async function prefetchImagesNow(uris: readonly string[], limit: number): Promise<void> {
   const batch: string[] = [];
   for (const raw of uris) {
     if (batch.length >= limit) break;
     const uri = raw?.trim();
-    if (!uri || !trackRequested(uri)) continue;
+    if (!uri) continue;
+    if (completed.has(uri)) continue;
+    trackRequested(uri);
     batch.push(uri);
   }
   if (batch.length === 0) return;
   await Promise.all(
-    batch.map((uri) => Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => undefined))
+    batch.map((uri) =>
+      Image.prefetch(uri, { cachePolicy: "memory-disk" })
+        .then(() => {
+          completed.add(uri);
+          markHeroMediaSessionReady(uri);
+        })
+        .catch(() => undefined)
+    )
   );
+}
+
+/** Immediate single-URI warm for an on-screen menu/category row. */
+export async function prefetchImageUriNow(uri: string | null | undefined): Promise<void> {
+  const trimmed = uri?.trim();
+  if (!trimmed) return;
+  if (completed.has(trimmed)) return;
+  trackRequested(trimmed);
+  try {
+    await Image.prefetch(trimmed, { cachePolicy: "memory-disk" });
+    completed.add(trimmed);
+    markHeroMediaSessionReady(trimmed);
+  } catch {
+    // non-blocking
+  }
 }
 
 /** Drops queued work — call when leaving a surface whose prefetches no longer matter. */

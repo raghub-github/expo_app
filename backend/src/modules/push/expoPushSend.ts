@@ -12,6 +12,8 @@ export type ExpoPushMessage = {
   richContent?: { image?: string };
   /** Expo: silent/data-only background delivery. */
   _contentAvailable?: boolean;
+  /** Android notification collapse / replace key. */
+  collapseId?: string;
 };
 
 export type ExpoPushTicket = {

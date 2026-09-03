@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { useIsFocused } from "@react-navigation/native";
 import { AppText } from "@/components/AppText";
 
 import { View, ScrollView, TouchableOpacity, StyleSheet, Dimensions, NativeSyntheticEvent, NativeScrollEvent, ActivityIndicator } from "react-native";
@@ -55,6 +56,7 @@ export function ShopPromoBanner() {
   const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
   const [index, setIndex] = useState(0);
+  const isScreenFocused = useIsFocused();
   const locationAddress = useLocationStore((s) => s.address);
   const coords = useLocationStore((s) => s.coords);
   const pincode = locationAddress?.pincode ?? undefined;
@@ -88,6 +90,7 @@ export function ShopPromoBanner() {
   }, [slides.length]);
 
   useEffect(() => {
+    if (!isScreenFocused) return;
     if (slides.length < 2) return;
     const t = setInterval(() => {
       setIndex((i) => {
@@ -100,7 +103,7 @@ export function ShopPromoBanner() {
       });
     }, AUTO_INTERVAL_MS);
     return () => clearInterval(t);
-  }, [slides.length]);
+  }, [slides.length, isScreenFocused]);
 
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;

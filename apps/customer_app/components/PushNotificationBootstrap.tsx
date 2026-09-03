@@ -48,6 +48,8 @@ import {
 } from "@/lib/refreshCustomerWallet";
 import { useQueryClient } from "@tanstack/react-query";
 import { setCustomerPushUnregister } from "@/lib/customerPushUnregister";
+import { setNotificationPushAllowHandler } from "@/lib/notificationPushAllow";
+import { useNotificationPushPromptStore } from "@/store/notificationPushPromptStore";
 
 /**
  * Ride-only CX chime channel (sound is immutable after first Android create).
@@ -119,8 +121,15 @@ function PushNotificationBootstrapInner() {
       navigateFromPushData(router, payload.data);
       const gmType = typeof payload.data.gmType === "string" ? payload.data.gmType : "";
       const imageUrl =
-        typeof payload.data.imageUrl === "string" ? payload.data.imageUrl.trim() : "";
-      if (gmType === "RICH" && imageUrl.length > 0) {
+        typeof payload.data.imageUrl === "string"
+          ? payload.data.imageUrl.trim()
+          : typeof payload.data.image_url === "string"
+            ? payload.data.image_url.trim()
+            : "";
+      const showRich =
+        imageUrl.length > 0 &&
+        (gmType === "RICH" || gmType === "CUSTOMER_ANNOUNCEMENT");
+      if (showRich) {
         setRichModal({
           title: typeof payload.data.gmTitle === "string" ? payload.data.gmTitle : "",
           body: typeof payload.data.gmMessage === "string" ? payload.data.gmMessage : "",
@@ -145,8 +154,15 @@ function PushNotificationBootstrapInner() {
       enqueueInAppBannerFromPush(payload);
       const gmType = typeof payload.data.gmType === "string" ? payload.data.gmType : "";
       const imageUrl =
-        typeof payload.data.imageUrl === "string" ? payload.data.imageUrl.trim() : "";
-      if (gmType === "RICH" && imageUrl.length > 0) {
+        typeof payload.data.imageUrl === "string"
+          ? payload.data.imageUrl.trim()
+          : typeof payload.data.image_url === "string"
+            ? payload.data.image_url.trim()
+            : "";
+      const showRich =
+        imageUrl.length > 0 &&
+        (gmType === "RICH" || gmType === "CUSTOMER_ANNOUNCEMENT");
+      if (showRich) {
         setRichModal({
           title: typeof payload.data.gmTitle === "string" ? payload.data.gmTitle : "",
           body: typeof payload.data.gmMessage === "string" ? payload.data.gmMessage : "",
@@ -160,8 +176,35 @@ function PushNotificationBootstrapInner() {
   const { apiBaseUrl } = getConfig();
   const authRef = useRef({ session, hydrated });
   authRef.current = { session, hydrated };
-  const permissionPromptedRef = useRef(false);
+  const foregroundSyncAtRef = useRef(0);
   const expoGo = Constants.appOwnership === "expo";
+
+  const evaluatePushPrompt = useCallback(
+    async (snap: {
+      expoPushToken?: string | null;
+      nativePushToken?: string | null;
+      lastBackendSyncOk?: boolean;
+      osStatus?: string;
+    }) => {
+      const hasPushToken = Boolean(
+        (snap.expoPushToken && snap.expoPushToken.length > 8) ||
+          (snap.nativePushToken && snap.nativePushToken.length > 8)
+      );
+      const store = useNotificationPushPromptStore.getState();
+      if (hasPushToken) {
+        // Token present — never show the sheet. Backend sync may still retry.
+        if (snap.lastBackendSyncOk !== false) {
+          await store.markTokenRegistered();
+        } else {
+          store.setShowSheet(false);
+        }
+        return;
+      }
+      await store.markTokenMissing();
+      await store.promptIfNeeded({ hasPushToken: false, expoGo });
+    },
+    [expoGo]
+  );
 
   const pushOptions = useMemo(
     () => ({
@@ -206,8 +249,39 @@ function PushNotificationBootstrapInner() {
     setCustomerPushUnregister((opts) =>
       controller.unregisterCurrent({ ...opts, role: "customer" })
     );
-    return () => setCustomerPushUnregister(null);
-  }, [controller]);
+    setNotificationPushAllowHandler(async () => {
+      const store = useNotificationPushPromptStore.getState();
+      store.beginAllow();
+      try {
+        const result = await controller.requestOrOpenSettings();
+        let snap = result.snapshot;
+        if (result.granted || snap.osStatus === "granted") {
+          snap = await controller.syncTokens();
+          if (!expoGo && !snap.nativePushToken) {
+            await new Promise((r) => setTimeout(r, 1200));
+            snap = await controller.syncTokens();
+          }
+        }
+        const hasPushToken = Boolean(
+          (snap.expoPushToken && snap.expoPushToken.length > 8) ||
+            (snap.nativePushToken && snap.nativePushToken.length > 8)
+        );
+        if (hasPushToken && snap.lastBackendSyncOk !== false) {
+          await store.markTokenRegistered();
+          return true;
+        }
+        // Technical register failure — leave sheet dismissible; background sync continues.
+        store.setShowSheet(false);
+        return false;
+      } finally {
+        store.endAllow();
+      }
+    });
+    return () => {
+      setCustomerPushUnregister(null);
+      setNotificationPushAllowHandler(null);
+    };
+  }, [controller, expoGo]);
 
   // Foreground: we play CX sound ourselves — skip OS default chime (avoids double play).
   // Never import expo-notifications in Expo Go (SDK 53+ logs a hard error on import).
@@ -243,18 +317,22 @@ function PushNotificationBootstrapInner() {
     };
   }, [expoGo]);
 
-  // Re-sync tokens once auth hydrates / session appears (lifecycle may have
-  // run earlier with getAuth() === null and skipped registration).
-  // Returning users skip onboarding permissions — request OS permission here
-  // when still undetermined/denied (same outcome as Merchant post-login gate).
+  // Sync tokens when auth is ready. Permission OS dialog is owned by the
+  // notification sheet (Skip = 7-day cooldown) — do not auto-prompt here.
   useEffect(() => {
     if (!hydrated || !session?.accessToken || session.role !== "customer") {
-      permissionPromptedRef.current = false;
       return;
     }
     controller.startLifecycle();
+    // Remount storms (Fast Refresh / Expo Go) were re-running refresh every few
+    // seconds and heating the device — throttle hard syncs.
+    const now = Date.now();
+    if (now - (foregroundSyncAtRef.current || 0) < 12_000) {
+      return;
+    }
+    foregroundSyncAtRef.current = now;
     void (async () => {
-      let snap = await controller.refresh({ syncIfGranted: !expoGo });
+      let snap = await controller.refresh({ syncIfGranted: true });
       console.log("[push:customer] post-login refresh", {
         osStatus: snap.osStatus,
         syncStatus: snap.syncStatus,
@@ -264,34 +342,41 @@ function PushNotificationBootstrapInner() {
         error: snap.error,
         expoGo,
       });
-      if (expoGo) return;
-      if (snap.osStatus === "granted") return;
-      if (permissionPromptedRef.current) return;
-      permissionPromptedRef.current = true;
-      console.log("[push:customer] requesting notification permission after login");
-      const result = await controller.requestOrOpenSettings();
-      snap = result.snapshot;
-      console.log("[push:customer] post-login permission result", {
-        granted: result.granted,
-        openedSettings: result.openedSettings,
-        osStatus: snap.osStatus,
-        syncStatus: snap.syncStatus,
-        lastBackendSyncOk: snap.lastBackendSyncOk,
-        hasExpo: !!snap.expoPushToken,
-        hasNative: !!snap.nativePushToken,
-        error: snap.error,
-      });
+      if (snap.osStatus === "granted") {
+        if (!expoGo && !snap.nativePushToken) {
+          snap = await controller.syncTokens();
+          console.log("[push:customer] native-retry sync", {
+            syncStatus: snap.syncStatus,
+            hasNative: !!snap.nativePushToken,
+            error: snap.error,
+          });
+        }
+      }
+      await evaluatePushPrompt(snap);
     })();
-  }, [hydrated, session?.accessToken, session?.role, controller, expoGo]);
+  }, [hydrated, session?.accessToken, session?.role, controller, expoGo, evaluatePushPrompt]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (s: AppStateStatus) => {
       if (s !== "active") return;
       if (!hydrated || !session?.accessToken || session.role !== "customer") return;
-      void controller.refresh({ syncIfGranted: !expoGo });
+      // Throttle foreground sync — remount storms were heating the device.
+      const now = Date.now();
+      if (now - (foregroundSyncAtRef.current || 0) < 15_000) return;
+      foregroundSyncAtRef.current = now;
+      void (async () => {
+        const snap = await controller.refresh({ syncIfGranted: true });
+        const hasPushToken = Boolean(
+          (snap.expoPushToken && snap.expoPushToken.length > 8) ||
+            (snap.nativePushToken && snap.nativePushToken.length > 8)
+        );
+        if (hasPushToken && snap.lastBackendSyncOk !== false) {
+          await useNotificationPushPromptStore.getState().markTokenRegistered();
+        }
+      })();
     });
     return () => sub.remove();
-  }, [hydrated, session?.accessToken, session?.role, controller, expoGo]);
+  }, [hydrated, session?.accessToken, session?.role, controller]);
   // In-app campaign delivery: when no Expo/FCM token is registered (Expo Go /
   // permission denied), admin sends still land in notification_dispatch_logs.
   // Poll the inbox and surface new rows as floating banners so announcements

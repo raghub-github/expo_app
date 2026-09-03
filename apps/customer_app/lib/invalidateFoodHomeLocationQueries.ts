@@ -44,7 +44,8 @@ export function invalidateFoodHomeLocationQueries(queryClient: QueryClient) {
     queryClient.invalidateQueries({ queryKey: ["addresses"] }),
     queryClient.invalidateQueries({ queryKey: ["food-home-layout"] }),
     queryClient.invalidateQueries({ queryKey: ["weather"] }),
-    queryClient.invalidateQueries({ queryKey: ["search"] }),
+    queryClient.invalidateQueries({ queryKey: ["food-search"] }),
+    queryClient.invalidateQueries({ queryKey: ["food-search-suggest"] }),
     queryClient.invalidateQueries({ queryKey: ["cuisines"] }),
   ]);
 }

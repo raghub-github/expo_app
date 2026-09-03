@@ -15,7 +15,11 @@ import {
 import { refundFieldsFromEngineResult } from "../../lib/order-cancellation-refund.js";
 import { applyPaymentCancellationPayment } from "../../lib/apply-cancellation-payment.js";
 import { applyMerchantOrderCancellationLedger } from "../../lib/apply-merchant-cancellation-ledger.js";
-import { autoRefundOnCancellation } from "../../lib/auto-refund-on-cancellation.js";
+import {
+  resolveCustomerShownRefundAmount,
+  resolveOrderPaidAmountForAutoRefund,
+} from "../../lib/auto-refund-on-cancellation.js";
+import { queueCustomerShownRefundAfterCancel } from "../../lib/trigger-order-auto-refund.js";
 import { completeOrderDispatch } from "../../lib/order-dispatch.service.js";
 import { clearMerchantStoreOrderNotifications } from "../../lib/clear-merchant-order-notifications.js";
 import { emitEvent } from "../notifications/eventBus.js";
@@ -61,6 +65,8 @@ export type CancelFoodOrderInput = {
   orderRef: string;
   reasonCode: string;
   reasonText: string;
+  /** Amount shown on the cancel sheet as "Your refund" (UPI + GatiCash). */
+  expectedRefundAmount?: number | null;
 };
 
 export async function cancelFoodOrderForCustomer(
@@ -105,6 +111,22 @@ export async function cancelFoodOrderForCustomer(
 
   const foodStatus = normalizeFoodStatus(row.foodStatus);
   if (foodStatus === "CANCELLED") {
+    try {
+      const paid = await resolveOrderPaidAmountForAutoRefund(sql, row.coreId);
+      const amount = resolveCustomerShownRefundAmount({
+        promisedRefund: false,
+        shownAmount: input.expectedRefundAmount,
+        paidAmount: paid,
+      });
+      queueCustomerShownRefundAfterCancel({
+        orderCoreId: row.coreId,
+        reason: reasonText || "Cancelled by customer",
+        amount,
+        actorRole: "customer",
+      });
+    } catch {
+      /* already cancelled — refund retry is best-effort */
+    }
     return { orderId: row.orderId, status: "CANCELLED" };
   }
   if (foodStatus === "DELIVERED" || foodStatus === "RTO" || foodStatus === "OUT_FOR_DELIVERY") {
@@ -205,39 +227,67 @@ export async function cancelFoodOrderForCustomer(
     /* non-fatal */
   }
 
-  const orderCtx = await lookupOrderContext(row.coreId, sql);
-  const engineResult = await executeOrderCancellationFinancials(
-    {
-      orderCoreId: row.coreId,
-      ordersFoodId: row.ordersFoodId,
-      coreOrderId: orderCtx.coreOrderId,
-      merchantStoreId: orderCtx.merchantStoreId ?? row.merchantStoreId,
-      previousStatus,
-      cancelledByType: "customer",
-      orderGross: num(row.grandTotal ?? orderCtx.grandTotal),
-      serviceType: orderCtx.serviceType,
-      cancellationReasonId: null,
-    },
-    sql
-  );
+  let orderCtx: Awaited<ReturnType<typeof lookupOrderContext>> = {
+    coreOrderId: orderIdText,
+    grandTotal: num(row.grandTotal),
+    serviceType: "FOOD",
+    ordersFoodId: row.ordersFoodId ?? null,
+    merchantStoreId: row.merchantStoreId ?? null,
+  };
+  let engineResult: Awaited<ReturnType<typeof executeOrderCancellationFinancials>> = {
+    applied: false,
+  };
+  try {
+    orderCtx = await lookupOrderContext(row.coreId, sql);
+    engineResult = await executeOrderCancellationFinancials(
+      {
+        orderCoreId: row.coreId,
+        ordersFoodId: row.ordersFoodId,
+        coreOrderId: orderCtx.coreOrderId,
+        merchantStoreId: orderCtx.merchantStoreId ?? row.merchantStoreId,
+        previousStatus,
+        cancelledByType: "customer",
+        orderGross: num(row.grandTotal ?? orderCtx.grandTotal),
+        serviceType: orderCtx.serviceType,
+        cancellationReasonId: null,
+      },
+      sql
+    );
+  } catch (financialErr) {
+    console.warn(
+      "[cancelFoodOrderForCustomer] financial engine failed (order stays cancelled):",
+      financialErr
+    );
+  }
   const refund = refundFieldsFromEngineResult(engineResult.raw);
   const preAccept = isPreMerchantAccept(previousStatus, row.foodAcceptedAt);
-  // Pre-accept customer cancel: always full refund of what was paid (policy),
-  // even if the rule engine returned no_refund / 0.
-  const refundStatus = preAccept
-    ? refund.refundAmount != null && refund.refundAmount > 0.005
-      ? refund.refundStatus === "no_refund"
-        ? "pending"
-        : refund.refundStatus
-      : "pending"
-    : refund.refundStatus;
-  const refundAmount = preAccept
-    ? refund.refundAmount != null && refund.refundAmount > 0.005
-      ? refund.refundAmount
-      : num(row.grandTotal ?? orderCtx.grandTotal)
-    : refund.refundAmount;
+  let refundStatus = refund.refundStatus;
+  let refundAmount =
+    refund.refundAmount != null && Number.isFinite(Number(refund.refundAmount))
+      ? Number(refund.refundAmount)
+      : null;
 
-  await recordOrderCancellation(sql, {
+  let paidAmount = 0;
+  try {
+    paidAmount = await resolveOrderPaidAmountForAutoRefund(sql, row.coreId);
+  } catch (paidErr) {
+    console.warn("[cancelFoodOrderForCustomer] paid-amount lookup failed:", paidErr);
+  }
+
+  // Match the cancel sheet: if a refund amount is shown (pre-accept food/grocery),
+  // move that money — GatiCash and/or UPI — even when the rule engine said no_refund.
+  let refundableAmount = resolveCustomerShownRefundAmount({
+    promisedRefund: preAccept,
+    shownAmount: input.expectedRefundAmount,
+    paidAmount,
+  });
+  if (refundableAmount > 0.005) {
+    refundAmount = refundableAmount;
+    if (refundStatus === "no_refund") refundStatus = "pending";
+  }
+
+  try {
+    await recordOrderCancellation(sql, {
     orderCorePk: row.coreId,
     cancelledBy: "customer",
     cancelledById: input.customerPk,
@@ -253,8 +303,8 @@ export async function cancelFoodOrderForCustomer(
     previousStatus,
     acceptedAt: row.foodAcceptedAt?.toISOString?.() ?? null,
     grandTotal: row.grandTotal ?? 0,
-    refundStatus,
-    refundAmount,
+    refundStatus: refundableAmount > 0.005 ? (refundStatus === "no_refund" ? "pending" : refundStatus) : refundStatus,
+    refundAmount: refundableAmount > 0.005 ? refundableAmount : refundAmount,
     metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
     cancellationDetails: {
       version: 1,
@@ -266,7 +316,10 @@ export async function cancelFoodOrderForCustomer(
       cancel_mode: "manual",
       pre_merchant_accept: preAccept,
     },
-  });
+    });
+  } catch (recordErr) {
+    console.warn("[cancelFoodOrderForCustomer] cancellation record failed:", recordErr);
+  }
 
   try {
     await applyMerchantOrderCancellationLedger(
@@ -297,25 +350,16 @@ export async function cancelFoodOrderForCustomer(
     }
   }
 
-  // Move money: before restaurant accept, customer cancel = full auto-refund.
-  if (preAccept) {
-    try {
-      const engineAmount = Number(refundAmount);
-      await autoRefundOnCancellation(
-        {
-          orderCoreId: row.coreId,
-          reason: displayReason || "Cancelled by customer before restaurant accepted",
-          actorRole: "customer",
-          amount: Number.isFinite(engineAmount) && engineAmount > 0 ? engineAmount : null,
-        },
-        sql
-      );
-    } catch (refundErr) {
-      console.warn(
-        "[cancelFoodOrderForCustomer] pre-accept auto-refund failed:",
-        refundErr
-      );
-    }
+  // Move money after the HTTP cancel succeeds. Awaiting Razorpay here made the
+  // customer app hang / time out / crash on cancel even though the order was
+  // already CANCELLED in the DB.
+  if (refundableAmount > 0.005) {
+    queueCustomerShownRefundAfterCancel({
+      orderCoreId: row.coreId,
+      reason: displayReason,
+      amount: refundableAmount,
+      actorRole: "customer",
+    });
   }
 
   // Drop stale "New order!" inbox rows (customer cancel may happen while still CREATED).
@@ -348,9 +392,9 @@ export async function cancelFoodOrderForCustomer(
       customerId: customerRows[0]?.customer_id ?? null,
       merchantStoreId: orderCtx.merchantStoreId ?? row.merchantStoreId ?? null,
       reason: reasonText || "Cancelled by customer",
-      refundEligible: preAccept || (Number(refundAmount) > 0.005),
+      refundEligible: Number(refundableAmount) > 0.005,
       refundStatus,
-      refundAmount,
+      refundAmount: refundableAmount > 0.005 ? refundableAmount : refundAmount,
     });
   } catch { /* tolerated */ }
 

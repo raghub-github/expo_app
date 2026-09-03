@@ -76,9 +76,9 @@ export type TemplateVariables = Record<string, string | number | boolean | null 
  */
 /**
  * Optional geo overlay. Any of city / lat+lng may be set:
- *  - city only → match by city name
+ *  - city only → soft-match by city name (ILIKE)
  *  - lat+lng only → match within radius_km of the point
- *  - both → must match city AND (when coords exist) fall inside the radius
+ *  - both → city soft-match OR inside the radius (not AND)
  */
 export type TargetGeoFilter = {
   city?: string;
