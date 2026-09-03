@@ -20,6 +20,7 @@ import { ElectronicVerifyPanel } from "@/components/verification/ElectronicVerif
 import { DocAutoVerificationDetailsView } from "@/components/verification/DocAutoVerificationDetails";
 import { getRiderDocAutoVerificationDisplay } from "@/lib/rider-doc-auto-verification";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
+import { RiderEligibilitySummaryCard } from "./RiderEligibilitySummaryCard";
 import {
   ElectronicVerifyReviewModal,
   type ElectronicVerifyPending,
@@ -1224,6 +1225,10 @@ export default function RiderOnboardingClient() {
           })()}
         </div>
       </div>
+
+      {/* Backend-authoritative service eligibility (§41) — which services this rider can
+          actually receive, and the documents gating the rest. */}
+      <RiderEligibilitySummaryCard riderId={riderId} />
 
       {/* Identity Documents */}
       <div className="rounded-xl border border-gray-200/90 bg-white p-6 shadow-sm">
