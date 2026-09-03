@@ -433,6 +433,7 @@ export function RiderEligibilityPolicyPanel(props: { level: string; refId: strin
         )}
 
         <EligibilitySimulator level={level} refId={refId} service={service} />
+        <OnboardingSimulator level={level} refId={refId} />
       </div>
     </div>
   );
@@ -641,6 +642,191 @@ function RuleFormCard(props: {
           {props.busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Save
         </button>
       </div>
+    </div>
+  );
+}
+
+type OnboardingSimResult = {
+  onboarding: {
+    status: string;
+    paymentEligible: boolean;
+    eligibleServices: EligibilityService[];
+    blockedServices: { service: EligibilityService; missingDocuments: string[]; reasons: string[] }[];
+    allEligible: boolean;
+    nextAction: string;
+  };
+  services: Record<EligibilityService, EligibilityDecision>;
+  resolvedGeo?: { level: string; refId: string } | null;
+};
+
+function OnboardingSimulator(props: { level: string; refId: string }) {
+  const [vehicleClass, setVehicleClass] = useState<VehicleClass | "">("2_wheeler");
+  const [fuelKind, setFuelKind] = useState<string>("petrol");
+  const [ownership, setOwnership] = useState<OwnershipType>("non_commercial");
+  const [dl, setDl] = useState<DocState>("missing");
+  const [rc, setRc] = useState<DocState>("verified");
+  const [identityVerified, setIdentityVerified] = useState(true);
+  const [paymentCompleted, setPaymentCompleted] = useState(false);
+  const [allowZero, setAllowZero] = useState(true);
+  const [result, setResult] = useState<OnboardingSimResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const body = useMemo(
+    () => ({
+      geoLevel: props.level,
+      geoRefId: props.refId,
+      vehicleClass: vehicleClass || null,
+      fuelKind,
+      ownership,
+      dl,
+      rc,
+      identityVerified,
+      identitySubmitted: true,
+      paymentCompleted,
+      allowZeroServiceEligibility: allowZero,
+    }),
+    [props.level, props.refId, vehicleClass, fuelKind, ownership, dl, rc, identityVerified, paymentCompleted, allowZero]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch("/api/super-admin/geo/rider-eligibility/simulate-onboarding", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const json = await res.json();
+        if (cancelled) return;
+        if (!res.ok) {
+          setResult(null);
+          setError(json?.error || json?.message || "Simulation failed");
+        } else {
+          setResult(json as OnboardingSimResult);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setResult(null);
+          setError(e instanceof Error ? e.message : "Backend unreachable");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [body]);
+
+  const ob = result?.onboarding;
+  const statusTone =
+    ob?.status === "COMPLETE_FULL"
+      ? "green"
+      : ob?.status === "COMPLETE_LIMITED" || ob?.status === "READY_FOR_PAYMENT"
+        ? "amber"
+        : "rose";
+
+  return (
+    <div className="mt-6 rounded-xl border border-violet-200 bg-gradient-to-r from-violet-50/80 to-fuchsia-50/40 px-5 py-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-bold uppercase tracking-wide text-violet-800">
+          Onboarding requirement simulator — backend engine (authoritative)
+        </p>
+        {loading ? (
+          <span className="flex items-center gap-1 text-xs text-violet-600">
+            <Loader2 className="h-3 w-3 animate-spin" /> resolving…
+          </span>
+        ) : null}
+      </div>
+      <p className="mt-0.5 text-[11px] text-violet-700">
+        Simulates the WHOLE onboarding decision (all services + status + missing docs) via the same
+        resolver production uses. Document verification ≠ onboarding completion ≠ service eligibility.
+      </p>
+
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-5">
+        <Field label="Vehicle class">
+          <select className={inputCls} value={vehicleClass} onChange={(e) => setVehicleClass(e.target.value as VehicleClass | "")}>
+            <option value="">None (no vehicle)</option>
+            {VEHICLE_CLASSES.map((v) => (
+              <option key={v.value} value={v.value}>{v.label}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Fuel">
+          <select className={inputCls} value={fuelKind} onChange={(e) => setFuelKind(e.target.value)}>
+            {FUEL_KINDS.map((f) => (<option key={f.value} value={f.value}>{f.label}</option>))}
+          </select>
+        </Field>
+        <Field label="Ownership">
+          <select className={inputCls} value={ownership} onChange={(e) => setOwnership(e.target.value as OwnershipType)}>
+            {OWNERSHIP.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
+          </select>
+        </Field>
+        <Field label="DL state">
+          <select className={inputCls} value={dl} onChange={(e) => setDl(e.target.value as DocState)}>
+            {DOC_STATES.map((s) => (<option key={s.value} value={s.value}>{s.label}</option>))}
+          </select>
+        </Field>
+        <Field label="RC state">
+          <select className={inputCls} value={rc} onChange={(e) => setRc(e.target.value as DocState)}>
+            {DOC_STATES.map((s) => (<option key={s.value} value={s.value}>{s.label}</option>))}
+          </select>
+        </Field>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-4">
+        <ToggleRow checked={identityVerified} onChange={setIdentityVerified} label="Identity verified (aadhaar + selfie)" />
+        <ToggleRow checked={paymentCompleted} onChange={setPaymentCompleted} label="Onboarding fee paid" />
+        <ToggleRow checked={allowZero} onChange={setAllowZero} label="Allow zero-eligibility onboarding" />
+      </div>
+
+      {error ? (
+        <p className="mt-3 text-sm font-semibold text-amber-700">{error}</p>
+      ) : ob ? (
+        <div className="mt-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={statusTone as "green" | "amber" | "rose"}>{ob.status.replaceAll("_", " ")}</Badge>
+            <span className="text-xs text-slate-600">
+              Payment {ob.paymentEligible ? "allowed" : "blocked"} · next: <b>{ob.nextAction.replaceAll("_", " ").toLowerCase()}</b>
+            </span>
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-lg border border-emerald-100 bg-white px-3 py-2">
+              <p className="text-[11px] font-semibold uppercase text-emerald-700">Eligible services</p>
+              {ob.eligibleServices.length ? (
+                <ul className="mt-1 text-sm text-slate-700">
+                  {ob.eligibleServices.map((s) => (<li key={s}>✓ {SERVICES.find((x) => x.value === s)?.label ?? s}</li>))}
+                </ul>
+              ) : (
+                <p className="mt-1 text-sm text-slate-400">none</p>
+              )}
+            </div>
+            <div className="rounded-lg border border-rose-100 bg-white px-3 py-2">
+              <p className="text-[11px] font-semibold uppercase text-rose-700">Blocked services</p>
+              {ob.blockedServices.length ? (
+                <ul className="mt-1 space-y-1 text-sm text-slate-700">
+                  {ob.blockedServices.map((b) => (
+                    <li key={b.service}>
+                      ✕ {SERVICES.find((x) => x.value === b.service)?.label ?? b.service}
+                      {b.missingDocuments.length ? (
+                        <span className="text-slate-500"> — needs {b.missingDocuments.map((m) => m.replaceAll("_", " ").toLowerCase()).join(", ")}</span>
+                      ) : b.reasons[0] ? (
+                        <span className="text-slate-500"> — {b.reasons[0]}</span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-1 text-sm text-slate-400">none</p>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

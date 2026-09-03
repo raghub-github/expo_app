@@ -5,12 +5,17 @@
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { resolveRiderServiceEligibility } from "./eligibilityEngine.js";
+import {
+  resolveRiderServiceEligibility,
+  type EligibilityDecision,
+  type EligibilityService,
+} from "./eligibilityEngine.js";
 import { resolveEffectiveEligibilityPolicy } from "./riderEligibility.repository.js";
 import { defaultPolicyForService } from "./serviceEligibilityDefaults.js";
-import { normalizeFuelKind } from "./serviceEligibilityDefaults.js";
+import { normalizeFuelKind, ALL_ELIGIBILITY_SERVICES } from "./serviceEligibilityDefaults.js";
 import { resolveGeoLocation } from "../billing/geoLocationResolver.js";
 import { pickMostSpecificGeoAnchor } from "../ride-state-config/rideStateConfig.repository.js";
+import { resolveOnboardingDecision } from "./onboardingEligibility.js";
 
 function requireInternalSecret(headers: Record<string, string | string[] | undefined>): boolean {
   const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
@@ -34,6 +39,26 @@ const simulateSchema = z.object({
   ownership: z.enum(["commercial", "non_commercial"]).optional(),
   dl: z.enum(["verified", "pending", "failed", "expired", "missing"]).optional(),
   rc: z.enum(["verified", "pending", "failed", "expired", "missing"]).optional(),
+});
+
+const onboardingSimulateSchema = z.object({
+  geoLevel: z.enum(["state", "region", "district", "division", "post_office", "pincode"]).optional(),
+  geoRefId: z.string().uuid().optional(),
+  pincode: z.string().optional(),
+  state: z.string().optional(),
+  lat: z.number().optional(),
+  lng: z.number().optional(),
+  vehicleClass: z.enum(["2_wheeler", "3_wheeler", "4_wheeler"]).nullable().optional(),
+  vehicleType: z.string().optional().nullable(),
+  fuelKind: z.string().optional().nullable(),
+  ownership: z.enum(["commercial", "non_commercial"]).optional(),
+  dl: z.enum(["verified", "pending", "failed", "expired", "missing"]).optional(),
+  rc: z.enum(["verified", "pending", "failed", "expired", "missing"]).optional(),
+  identityVerified: z.boolean().optional(),
+  identitySubmitted: z.boolean().optional(),
+  identityInManualReview: z.boolean().optional(),
+  paymentCompleted: z.boolean().optional(),
+  allowZeroServiceEligibility: z.boolean().optional(),
 });
 
 export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void> {
@@ -88,5 +113,70 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
     );
 
     return reply.send({ decision, policy });
+  });
+
+  /**
+   * POST /v1/rider-eligibility/simulate-onboarding (§40) — simulate the FULL onboarding
+   * outcome for a hypothetical rider: runs the engine for ALL services at a location and the
+   * SAME onboarding-decision resolver used in production, so an admin can verify onboarding
+   * allowed/blocked + eligible/blocked services + missing docs before it ever hits a rider.
+   */
+  app.post("/simulate-onboarding", async (req, reply) => {
+    if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const parsed = onboardingSimulateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_request", details: parsed.error.flatten() });
+    }
+    const b = parsed.data;
+
+    // Resolve the geo node once (explicit node → coords/pincode/state → default).
+    let resolvedGeo: { level: string; refId: string } | null = null;
+    if (b.geoLevel && b.geoRefId) {
+      resolvedGeo = { level: b.geoLevel, refId: b.geoRefId };
+    } else if (b.lat != null || b.lng != null || b.pincode || b.state) {
+      try {
+        const geo = await resolveGeoLocation({
+          latitude: b.lat,
+          longitude: b.lng,
+          livePincode: b.pincode,
+          liveState: b.state,
+        });
+        const anchor = pickMostSpecificGeoAnchor(geo.refs);
+        if (anchor) resolvedGeo = { level: anchor.level, refId: anchor.refId };
+      } catch {
+        /* default */
+      }
+    }
+
+    const input = {
+      vehicleClass: b.vehicleClass ?? null,
+      vehicleType: b.vehicleType ?? null,
+      fuelKind: normalizeFuelKind(b.fuelKind ?? null),
+      ownership: b.ownership ?? "non_commercial",
+      dl: b.dl ?? "missing",
+      rc: b.rc ?? "missing",
+    };
+
+    const services = {} as Record<EligibilityService, EligibilityDecision>;
+    for (const service of ALL_ELIGIBILITY_SERVICES) {
+      const policy = resolvedGeo
+        ? await resolveEffectiveEligibilityPolicy({ level: resolvedGeo.level, refId: resolvedGeo.refId, service })
+        : defaultPolicyForService(service);
+      services[service] = resolveRiderServiceEligibility(input, policy);
+    }
+
+    const onboarding = resolveOnboardingDecision({
+      identityVerified: b.identityVerified ?? true,
+      identitySubmitted: b.identitySubmitted ?? true,
+      identityInManualReview: b.identityInManualReview ?? false,
+      hasVehicle: b.vehicleClass != null,
+      paymentCompleted: b.paymentCompleted ?? false,
+      services,
+      allowZeroServiceEligibility: b.allowZeroServiceEligibility ?? true,
+    });
+
+    return reply.send({ onboarding, services, resolvedGeo });
   });
 }
