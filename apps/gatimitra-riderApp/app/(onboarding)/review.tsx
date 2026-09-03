@@ -8,12 +8,15 @@ import { useSubmitOnboarding } from "@/src/hooks/useOnboarding";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
+import { useRiderOnboardingSummary } from "@/src/hooks/useRiderOnboardingSummary";
+import { ServiceEligibilityNotice } from "@/src/components/onboarding/ServiceEligibilityNotice";
 
 export default function ReviewScreen() {
   const { t } = useTranslation();
   const session = useSessionStore((s) => s.session);
   const { data, hydrate, clear } = useOnboardingStore();
   const submitOnboarding = useSubmitOnboarding();
+  const { summary: onboardingSummary } = useRiderOnboardingSummary();
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -117,6 +120,14 @@ export default function ReviewScreen() {
             Please review all your information before submitting
           </Text>
         </View>
+
+        {/* Backend-authoritative service impact — what you'll be able to do, and which
+            documents unlock the rest (§16, §32). */}
+        {onboardingSummary ? (
+          <View style={{ marginBottom: 20 }}>
+            <ServiceEligibilityNotice summary={onboardingSummary} />
+          </View>
+        ) : null}
 
         {/* Review Sections */}
         <View style={{ flex: 1 }}>

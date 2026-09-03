@@ -30,6 +30,8 @@ import {
   useRecordPaymentAttempt,
 } from "@/src/hooks/usePayment";
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
+import { useRiderOnboardingSummary } from "@/src/hooks/useRiderOnboardingSummary";
+import { ServiceEligibilityNotice } from "@/src/components/onboarding/ServiceEligibilityNotice";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
 import {
   onboardingStepToRoute,
@@ -125,6 +127,9 @@ export default function PaymentScreen() {
   const recordPaymentAttempt = useRecordPaymentAttempt();
   const feeConfigQuery = useOnboardingFeeConfig();
   const feeConfig = feeConfigQuery.data;
+  // Backend-authoritative service impact for the payment gate (§7): which services will be
+  // available after paying, and which stay blocked until documents are verified.
+  const { summary: onboardingSummary } = useRiderOnboardingSummary();
   const { data: riderStatus } = useRiderStatus(data.riderId);
   useOnboardingEstablishedRedirect(riderStatus);
 
@@ -472,6 +477,12 @@ export default function PaymentScreen() {
                 {feeConfig?.infoMessage ?? "This fee covers document verification and account setup"}
               </Text>
             </View>
+
+            {onboardingSummary ? (
+              <View style={{ marginTop: 4 }}>
+                <ServiceEligibilityNotice summary={onboardingSummary} />
+              </View>
+            ) : null}
 
             {feeConfig?.alertNotice ? (
               <View style={styles.alertBox}>

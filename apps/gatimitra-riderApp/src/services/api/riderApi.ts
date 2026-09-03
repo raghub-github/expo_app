@@ -128,6 +128,52 @@ export const RiderEligibilityStatusSchema = z.object({
   /** True only when RIDER_ELIGIBILITY_MODE=enforce — the app hard-gates online toggling. */
   enforced: z.boolean().optional().default(false),
 });
+
+const ServiceDecisionWithMissingSchema = z.object({
+  eligible: z.boolean(),
+  blocking: z.array(EligibilityReasonSchema),
+  missingDocuments: z.array(z.string()).optional().default([]),
+});
+export const RiderOnboardingSummarySchema = z.object({
+  riderId: z.number().optional(),
+  vehicle: z
+    .object({
+      vehicleClass: z.string().nullable().optional(),
+      fuelKind: z.string().nullable().optional(),
+      ownership: z.string().optional(),
+      vehicleType: z.string().nullable().optional(),
+    })
+    .nullable(),
+  documents: z.array(
+    z.object({
+      code: z.string(),
+      requiredForSomeService: z.boolean(),
+      state: z.string(),
+    })
+  ),
+  services: z.object({
+    food: ServiceDecisionWithMissingSchema,
+    parcel: ServiceDecisionWithMissingSchema,
+    person_ride: ServiceDecisionWithMissingSchema,
+  }),
+  resolvedGeo: z.object({ level: z.string(), refId: z.string() }).nullable(),
+  onboarding: z.object({
+    status: z.string(),
+    paymentEligible: z.boolean(),
+    eligibleServices: z.array(z.string()),
+    blockedServices: z.array(
+      z.object({
+        service: z.string(),
+        missingDocuments: z.array(z.string()),
+        reasons: z.array(z.string()),
+      })
+    ),
+    allEligible: z.boolean(),
+    nextAction: z.string(),
+  }),
+  enforced: z.boolean().optional().default(false),
+});
+export type RiderOnboardingSummary = z.infer<typeof RiderOnboardingSummarySchema>;
 export type RiderEligibilityStatus = z.infer<typeof RiderEligibilityStatusSchema>;
 
 const RiderBankAddGateSchema = z.object({
@@ -1245,6 +1291,18 @@ export const riderApi = {
         body: JSON.stringify(body),
         responseSchema: RiderEligibilityStatusSchema,
       }
+    );
+  },
+
+  /**
+   * Backend-authoritative onboarding + eligibility summary (§25, §26). The onboarding UI,
+   * payment gate, and Profile → Documents render this — never a client formula.
+   */
+  async getOnboardingSummary() {
+    const client = createApiClient();
+    return client.request<z.infer<typeof RiderOnboardingSummarySchema>>(
+      "/v1/rider/eligibility/onboarding-summary",
+      { method: "GET", responseSchema: RiderOnboardingSummarySchema }
     );
   },
 
