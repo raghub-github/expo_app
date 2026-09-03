@@ -11,6 +11,7 @@ import {
   eligibilityEnforcementMode,
   resolveRiderAllServiceEligibilityAtLocation,
 } from "./riderEligibility.service.js";
+import { resolveRiderOnboardingSummary } from "./onboardingEligibility.service.js";
 
 const bodySchema = z.object({
   lat: z.number().optional(),
@@ -45,4 +46,15 @@ export function registerRiderEligibilityStatusRoutes(
       return reply.send({ ...result, enforced: eligibilityEnforcementMode() === "enforce" });
     }
   );
+
+  // GET /eligibility/onboarding-summary — the authoritative onboarding + eligibility
+  // payload for the app onboarding UI, payment gate, and Profile → Documents (§25, §26).
+  app.get("/eligibility/onboarding-summary", async (req, reply) => {
+    const riderId = parseRiderIdFromAuth(req.auth!.sub);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (riderId == null) return (reply as any).status(403).send({ error: "Invalid rider session" });
+    const summary = await resolveRiderOnboardingSummary(riderId);
+    if (!summary) return reply.code(404).send({ error: "rider_not_found" });
+    return reply.send(summary);
+  });
 }
