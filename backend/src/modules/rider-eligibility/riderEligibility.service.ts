@@ -11,10 +11,12 @@ import { resolveGeoLocation } from "../billing/geoLocationResolver.js";
 import { pickMostSpecificGeoAnchor } from "../ride-state-config/rideStateConfig.repository.js";
 import {
   resolveRiderServiceEligibility,
+  applyEligibilityOverride,
   type EligibilityDecision,
   type EligibilityService,
   type RiderEligibilityInput,
 } from "./eligibilityEngine.js";
+import { loadActiveOverridesForRider } from "./riderEligibilityOverrides.repository.js";
 import {
   docStateFrom,
   ownershipFromVehicle,
@@ -126,7 +128,9 @@ export async function resolveRiderServiceEligibilityForGeo(args: {
     refId: args.geoRefId,
     service: args.service,
   });
-  return resolveRiderServiceEligibility(attributes, policy);
+  const decision = resolveRiderServiceEligibility(attributes, policy);
+  const overrides = await loadActiveOverridesForRider(args.riderId);
+  return applyEligibilityOverride(decision, overrides[args.service]);
 }
 
 /**
@@ -168,7 +172,9 @@ export async function resolveRiderServiceEligibilityAtPickup(args: {
       ? await resolveEffectiveEligibilityPolicy({ level: geoLevel, refId: geoRefId, service: args.service })
       : defaultPolicyForService(args.service);
 
-  return resolveRiderServiceEligibility(attributes, policy);
+  const decision = resolveRiderServiceEligibility(attributes, policy);
+  const overrides = await loadActiveOverridesForRider(args.riderId);
+  return applyEligibilityOverride(decision, overrides[args.service]);
 }
 
 /** All rider-facing services, in display order. */
@@ -193,6 +199,7 @@ export async function resolveRiderAllServiceEligibilityAtLocation(args: {
   services: Record<EligibilityService, EligibilityDecision>;
 }> {
   const attributes = await loadRiderEligibilityAttributes(args.riderId);
+  const overrides = await loadActiveOverridesForRider(args.riderId);
 
   let resolvedGeo: { level: string; refId: string } | null = null;
   try {
@@ -217,7 +224,8 @@ export async function resolveRiderAllServiceEligibilityAtLocation(args: {
           service,
         })
       : defaultPolicyForService(service);
-    services[service] = resolveRiderServiceEligibility(attributes, policy);
+    const decision = resolveRiderServiceEligibility(attributes, policy);
+    services[service] = applyEligibilityOverride(decision, overrides[service]);
   }
 
   return { attributes, resolvedGeo, services };

@@ -13,6 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   resolveRiderServiceEligibility,
+  applyEligibilityOverride,
   type EligibilityService,
   type ServiceEligibilityPolicy,
   type RiderEligibilityInput,
@@ -335,6 +336,41 @@ test("SCENARIO: a rejected DL is treated as failed (not merely missing) and bloc
   );
   assert.equal(food.dlState, "failed");
   assert.equal(food.eligible, true);
+});
+
+/* ── Admin ELIGIBILITY_OVERRIDE (§31) ───────────────────────────────────────────────── */
+
+test("SCENARIO: override GRANTS a blocked service (clears blocks) but records the exception", () => {
+  const blocked = resolveRiderServiceEligibility(
+    buildInput({ vehicleCategory: "2_wheeler", vehicleType: "bike" }), // no docs
+    policy("parcel")
+  );
+  assert.equal(blocked.eligible, false);
+  const granted = applyEligibilityOverride(blocked, { reason: "VIP pilot", approvedBy: "42" });
+  assert.equal(granted.eligible, true);
+  assert.deepEqual(granted.blocking, []);
+  assert.deepEqual(granted.missingDocuments, []);
+  assert.equal(granted.overridden?.reason, "VIP pilot");
+  assert.equal(granted.overridden?.approvedBy, "42");
+});
+
+test("SCENARIO: override does NOT apply outside its validity window; never revokes eligible", () => {
+  const now = new Date("2026-06-15T00:00:00Z");
+  const blocked = resolveRiderServiceEligibility(
+    buildInput({ vehicleCategory: "2_wheeler", vehicleType: "bike" }),
+    policy("parcel")
+  );
+  const expired = applyEligibilityOverride(blocked, { reason: "x", effectiveTo: "2026-01-01T00:00:00Z" }, now);
+  assert.equal(expired.eligible, false);
+  const future = applyEligibilityOverride(blocked, { reason: "x", effectiveFrom: "2026-12-01T00:00:00Z" }, now);
+  assert.equal(future.eligible, false);
+  const eligible = resolveRiderServiceEligibility(
+    buildInput({ vehicleCategory: "2_wheeler", vehicleType: "bike", dl: MANUAL_APPROVED, rc: MANUAL_APPROVED }),
+    policy("parcel")
+  );
+  const unchanged = applyEligibilityOverride(eligible, { reason: "x" }, now);
+  assert.equal(unchanged.eligible, true);
+  assert.equal(unchanged.overridden ?? null, null);
 });
 
 /* ── A realistic mixed rider evaluated across ALL THREE services at once ────────────── */
