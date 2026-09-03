@@ -98,6 +98,36 @@ const OrderSummarySchema = z.object({
   cancelledByType: z.string().nullable().optional(),
 });
 
+const EligibilityReasonSchema = z.object({
+  code: z.string(),
+  reason: z.string(),
+  requiredAction: z.string().optional(),
+});
+const ServiceEligibilityDecisionSchema = z.object({
+  eligible: z.boolean(),
+  blocking: z.array(EligibilityReasonSchema),
+});
+export const RiderEligibilityStatusSchema = z.object({
+  attributes: z
+    .object({
+      vehicleClass: z.string().nullable().optional(),
+      fuelKind: z.string().nullable().optional(),
+      ownership: z.string().optional(),
+      dl: z.string().optional(),
+      rc: z.string().optional(),
+    })
+    .passthrough(),
+  resolvedGeo: z
+    .object({ level: z.string(), refId: z.string() })
+    .nullable(),
+  services: z.object({
+    food: ServiceEligibilityDecisionSchema,
+    parcel: ServiceEligibilityDecisionSchema,
+    person_ride: ServiceEligibilityDecisionSchema,
+  }),
+});
+export type RiderEligibilityStatus = z.infer<typeof RiderEligibilityStatusSchema>;
+
 const RiderBankAddGateSchema = z.object({
   locked: z.boolean(),
   unlockAt: z.string().nullable(),
@@ -1191,6 +1221,27 @@ export const riderApi = {
         },
         body: JSON.stringify(body),
         responseSchema: DutyStatusSchema,
+      }
+    );
+  },
+
+  /**
+   * Backend-authoritative per-service eligibility for the logged-in rider at a location.
+   * Powers the "preference != eligibility" dropdown surface — the app displays this
+   * decision (with reasons), it never computes eligibility itself.
+   */
+  async getServiceEligibilityStatus(coords?: { lat?: number; lng?: number } | null) {
+    const client = createApiClient();
+    const body: { lat?: number; lng?: number } = {};
+    if (coords?.lat != null && Number.isFinite(coords.lat)) body.lat = coords.lat;
+    if (coords?.lng != null && Number.isFinite(coords.lng)) body.lng = coords.lng;
+    return client.request<z.infer<typeof RiderEligibilityStatusSchema>>(
+      "/v1/rider/eligibility/status",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        responseSchema: RiderEligibilityStatusSchema,
       }
     );
   },
