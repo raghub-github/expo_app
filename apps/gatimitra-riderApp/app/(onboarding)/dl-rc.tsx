@@ -610,7 +610,6 @@ export default function DlRcScreen() {
     setData,
   ]);
 
-  const needsBackPhoto = currentDocDef ? docRequiresBackPhoto(currentDocDef) : false;
   const docTextMinLength = Math.max(currentDocDef?.minTextLength ?? 1, 1);
   /** Length floor from catalog — used for duplicate checks only. */
   const docTextLengthOk =
@@ -644,10 +643,6 @@ export default function DlRcScreen() {
     Boolean(currentDocDef?.requiresTextField) &&
     docTextValid &&
     Boolean(docDuplicateCheckQuery?.isFetching || docDuplicateCheckQuery?.isLoading);
-  const docFrontPhotoValid = Boolean(docDraftUri);
-  const docBackPhotoValid = !needsBackPhoto || Boolean(docDraftBackUri);
-  const docPhotoValid = docFrontPhotoValid && docBackPhotoValid;
-
   // ── Electronic verification (Policy Center modes for rider DL / RC) ──────
   const { data: evModesData } = useVerificationModes();
   const verifyDocument = useVerifyDocument();
@@ -670,6 +665,19 @@ export default function DlRcScreen() {
     const m = raw.match(/^(\d{4}-\d{2}-\d{2})/);
     if (m?.[1]) setDlVerifyDob(m[1]);
   }, [data.dob]);
+
+  // Backend-authoritative: when the document has been electronically verified
+  // (Cashfree auto/hybrid — the "Driving License is Valid" state, docEv.phase
+  // "verified"), NO image is required. The front/back photo requirement applies
+  // ONLY on the manual path. This is what fixes "auto-verified DL still asks for
+  // the back photo": the image requirement now follows the verification result
+  // instead of a static per-document flag.
+  const docVerifiedElectronically = docEv.phase === "verified";
+  const needsBackPhoto =
+    (currentDocDef ? docRequiresBackPhoto(currentDocDef) : false) && !docVerifiedElectronically;
+  const docFrontPhotoValid = docVerifiedElectronically || Boolean(docDraftUri);
+  const docBackPhotoValid = !needsBackPhoto || Boolean(docDraftBackUri);
+  const docPhotoValid = docFrontPhotoValid && docBackPhotoValid;
 
   // Last successfully verified numbers + details this session (also seeded from server).
   // Editing shows Verify again; typing the same verified number back restores details
