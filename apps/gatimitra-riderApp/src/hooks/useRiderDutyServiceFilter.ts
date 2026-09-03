@@ -30,6 +30,8 @@ import {
 } from "@/src/lib/rider-category-service-assignments";
 import { useOnboardingVehicleTypes } from "@/src/hooks/useOnboardingVehicleTypes";
 import type { OnboardingVehicleType } from "@/src/lib/onboarding-vehicle-types";
+import { useRiderServiceEligibilityStatus } from "@/src/hooks/useRiderServiceEligibilityStatus";
+import { resolveSelectableServices } from "@/src/lib/rider-service-eligibility-rows";
 
 export function useRiderDutyServiceFilter() {
   const queryClient = useQueryClient();
@@ -76,7 +78,7 @@ export function useRiderDutyServiceFilter() {
   const categoryServiceByCode = assignmentsQuery.data?.byCategory;
   const vehicleServiceByMapsToType = assignmentsQuery.data?.byMapsToVehicleType;
 
-  const eligibleServices = useMemo(
+  const rawEligibleServices = useMemo(
     () =>
       buildEligibleServicePool({
         geoEnabled,
@@ -96,6 +98,23 @@ export function useRiderDutyServiceFilter() {
       categoryServiceByCode,
       vehicleServiceByMapsToType,
     ],
+  );
+
+  // Backend-authoritative document + location eligibility. When enforcement is ACTIVE,
+  // a service the engine says the rider isn't eligible for (docs/vehicle/geo) is removed
+  // from the selectable pool, so it cannot be turned on / go online. Fail-open: with
+  // enforcement off or the decision unavailable, the pool is unchanged (never lock a rider
+  // offline on a network blip). Enforcement is the same one switch that gates dispatch.
+  const { backend: eligibilityBackend, enforced: eligibilityEnforced } =
+    useRiderServiceEligibilityStatus();
+  const eligibleServices = useMemo(
+    () =>
+      resolveSelectableServices({
+        clientPool: rawEligibleServices,
+        backend: eligibilityBackend,
+        enforced: eligibilityEnforced,
+      }),
+    [rawEligibleServices, eligibilityBackend, eligibilityEnforced],
   );
 
   const activeSelection = useMemo(

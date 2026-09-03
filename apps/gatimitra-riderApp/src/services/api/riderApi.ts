@@ -125,6 +125,8 @@ export const RiderEligibilityStatusSchema = z.object({
     parcel: ServiceEligibilityDecisionSchema,
     person_ride: ServiceEligibilityDecisionSchema,
   }),
+  /** True only when RIDER_ELIGIBILITY_MODE=enforce — the app hard-gates online toggling. */
+  enforced: z.boolean().optional().default(false),
 });
 export type RiderEligibilityStatus = z.infer<typeof RiderEligibilityStatusSchema>;
 

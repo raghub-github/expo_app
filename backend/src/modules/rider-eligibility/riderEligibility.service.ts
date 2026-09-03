@@ -23,8 +23,9 @@ import {
 import { resolveEffectiveEligibilityPolicy } from "./riderEligibility.repository.js";
 import { defaultPolicyForService } from "./serviceEligibilityDefaults.js";
 
-/** A rider document is verified when the backend/provider says so (never the app). */
-function docVerified(row: {
+/** A rider document is verified when the backend/provider says so (never the app).
+ * Exported for scenario testing — encodes the Cashfree/manual verification contract. */
+export function docVerified(row: {
   verified: boolean | null;
   verificationMethod: string | null;
   verificationStatus: string | null;
