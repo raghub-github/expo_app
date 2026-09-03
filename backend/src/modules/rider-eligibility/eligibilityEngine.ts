@@ -112,9 +112,42 @@ export type EligibilityDecision = {
   blocking: EligibilityBlock[];
   /** Concrete documents the rider must submit/verify to clear the blocks (subset of blocking). */
   missingDocuments: MissingDocumentCode[];
+  /** Set when an admin ELIGIBILITY_OVERRIDE granted this decision despite failing checks. */
+  overridden?: { reason: string; approvedBy?: string | null } | null;
   resolvedGeo?: { level: string; refId: string } | null;
   ruleVersion?: string | null;
 };
+
+/** An explicit admin exception that grants a service to a rider (§31). */
+export type EligibilityOverride = {
+  reason: string;
+  approvedBy?: string | null;
+  effectiveFrom?: Date | string | null;
+  effectiveTo?: Date | string | null;
+};
+
+/**
+ * Layer an admin override on top of an engine decision. It only GRANTS (never revokes) and
+ * only when currently within its validity window; it clears the blocks and records the
+ * override for audit — it does NOT touch document verification state (§31, §34).
+ */
+export function applyEligibilityOverride(
+  decision: EligibilityDecision,
+  override: EligibilityOverride | null | undefined,
+  now: Date = new Date()
+): EligibilityDecision {
+  if (!override || decision.eligible) return decision;
+  if (override.effectiveFrom && new Date(override.effectiveFrom).getTime() > now.getTime()) return decision;
+  if (override.effectiveTo && new Date(override.effectiveTo).getTime() < now.getTime()) return decision;
+  return {
+    ...decision,
+    eligible: true,
+    blocking: [],
+    missingDocuments: [],
+    overridden: { reason: override.reason, approvedBy: override.approvedBy ?? null },
+    ruleVersion: `override:${override.reason}`,
+  };
+}
 
 function docSatisfies(requirement: DocRequirement, state: DocState): {
   ok: boolean;
