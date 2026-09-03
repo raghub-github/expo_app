@@ -114,7 +114,7 @@ export async function resolveRiderOnboardingSummary(riderId: number): Promise<Ri
       verified: riderDocuments.verified,
       verificationStatus: riderDocuments.verificationStatus,
       requiresManualReview: riderDocuments.requiresManualReview,
-      metadata: riderDocuments.metadata,
+      expiryDate: riderDocuments.expiryDate,
     })
     .from(riderDocuments)
     .where(eq(riderDocuments.riderId, riderId));
@@ -133,7 +133,7 @@ export async function resolveRiderOnboardingSummary(riderId: number): Promise<Ri
           verificationStatus: row.verificationStatus,
           requiresManualReview: row.requiresManualReview,
           submitted: true,
-          expiresAt: (row.metadata as { expiresAt?: string } | null)?.expiresAt ?? null,
+          expiresAt: row.expiryDate ?? null,
         }
       : null;
     return { code, requiredForSomeService, state: resolveDocumentLifecycleState(r, requirement) };
