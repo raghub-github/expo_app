@@ -85,6 +85,7 @@ import { registerRiderSubscriptionRoutes } from "./rider-subscription.routes.js"
 import { registerRiderIncentiveRoutes } from "./rider-incentive.routes.js";
 import { registerRiderPenaltyPaymentRoutes } from "./rider-penalty-payment.routes.js";
 import { registerRiderHotZonesRoutes } from "./rider-hot-zones.routes.js";
+import { registerRiderEligibilityStatusRoutes } from "../rider-eligibility/riderEligibilityStatus.routes.js";
 import { listRiderAppCancellationReasons } from "../../lib/rider-cancellation-reason-catalog.js";
 import { speedMpsToKmh, upsertRiderCurrentLocation } from "../../lib/rider-current-location.js";
 
@@ -102,6 +103,7 @@ export async function riderRoutes(app: FastifyInstance) {
   registerRiderPenaltyPaymentRoutes(app);
   registerRiderHotZonesRoutes(app);
   registerRiderDeviceSessionRoutes(app, parseRiderIdFromAuth);
+  registerRiderEligibilityStatusRoutes(app, parseRiderIdFromAuth);
 
   // ── Pickup verification (backend-only validation for BOTH QR token + OTP) ──────
   // Either method, when all validations pass, marks the order Picked Up, consumes

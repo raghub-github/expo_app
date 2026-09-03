@@ -155,6 +155,58 @@ export async function resolveRiderServiceEligibilityAtPickup(args: {
   return resolveRiderServiceEligibility(attributes, policy);
 }
 
+/** All rider-facing services, in display order. */
+export const ALL_ELIGIBILITY_SERVICES: EligibilityService[] = ["food", "parcel", "person_ride"];
+
+/**
+ * Rider-facing "my eligibility for every service, here" — loads the rider's real
+ * attributes ONCE, resolves the geo ONCE, then runs the SAME engine per service. Powers
+ * the rider-app surface that shows WHY a service is (in)eligible so PREFERENCE is never
+ * confused with ELIGIBILITY. Falls back to the code-default policy (no geo block) when the
+ * location can't be resolved, so the rider still sees a document/vehicle-based decision.
+ */
+export async function resolveRiderAllServiceEligibilityAtLocation(args: {
+  riderId: number;
+  lat?: number | null;
+  lng?: number | null;
+  pincode?: string | null;
+  state?: string | null;
+}): Promise<{
+  attributes: RiderEligibilityInput;
+  resolvedGeo: { level: string; refId: string } | null;
+  services: Record<EligibilityService, EligibilityDecision>;
+}> {
+  const attributes = await loadRiderEligibilityAttributes(args.riderId);
+
+  let resolvedGeo: { level: string; refId: string } | null = null;
+  try {
+    const geo = await resolveGeoLocation({
+      latitude: args.lat ?? undefined,
+      longitude: args.lng ?? undefined,
+      livePincode: args.pincode ?? undefined,
+      liveState: args.state ?? undefined,
+    });
+    const anchor = pickMostSpecificGeoAnchor(geo.refs);
+    if (anchor) resolvedGeo = { level: anchor.level, refId: anchor.refId };
+  } catch {
+    /* fall through to default policy per service */
+  }
+
+  const services = {} as Record<EligibilityService, EligibilityDecision>;
+  for (const service of ALL_ELIGIBILITY_SERVICES) {
+    const policy = resolvedGeo
+      ? await resolveEffectiveEligibilityPolicy({
+          level: resolvedGeo.level,
+          refId: resolvedGeo.refId,
+          service,
+        })
+      : defaultPolicyForService(service);
+    services[service] = resolveRiderServiceEligibility(attributes, policy);
+  }
+
+  return { attributes, resolvedGeo, services };
+}
+
 /* ─────────────────────────── Enforcement (accept/assign) ─────────────────────── */
 
 /**
