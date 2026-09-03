@@ -446,6 +446,47 @@ async function projectOutcomeToDocuments(
         }
       }
 
+      // Document validity → rider_documents.expiry_date (drives eligibility EXPIRED state,
+      // §30). Best-effort extraction from the provider payload; unknown fields are ignored.
+      const parseProviderDate = (raw: unknown): string | null => {
+        const s = String(raw ?? "").trim();
+        if (!s) return null;
+        const ymd = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (ymd) return `${ymd[1]}-${ymd[2]}-${ymd[3]}`;
+        const dmy = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+        if (dmy) return `${dmy[3]}-${dmy[2]!.padStart(2, "0")}-${dmy[1]!.padStart(2, "0")}`;
+        return null;
+      };
+      let expiryIso: string | null = null;
+      if (outcome.documentKind === "driving_licence") {
+        // A DL can hold separate transport / non-transport validity — the LATEST governs.
+        const candidates = [
+          verifiedData.doe,
+          verifiedData.date_of_expiry,
+          verifiedData.valid_upto,
+          verifiedData.dl_validity,
+          verifiedData.nt_validity_to,
+          verifiedData.t_validity_to,
+        ]
+          .map(parseProviderDate)
+          .filter((d): d is string => d != null)
+          .sort();
+        if (candidates.length) expiryIso = candidates[candidates.length - 1]!;
+      } else if (isVehicleRc) {
+        // RC: take the EARLIEST (most conservative) of the registration/fitness validity.
+        const candidates = [
+          verifiedData.fitness_upto,
+          verifiedData.rc_expiry_date,
+          verifiedData.registration_upto,
+          verifiedData.reg_upto,
+          verifiedData.expiry_date,
+        ]
+          .map(parseProviderDate)
+          .filter((d): d is string => d != null)
+          .sort();
+        if (candidates.length) expiryIso = candidates[0]!;
+      }
+
       // Keep rider_documents.doc_number + riders.* in sync with provider payload
       // (same fields the rider-app onboarding save-step writes).
       const businessId = String(outcome.businessIdentifier ?? "").trim();
@@ -571,6 +612,7 @@ async function projectOutcomeToDocuments(
                  ELSE COALESCE(${holderName || null}, extracted_name)
                END,
                extracted_dob = COALESCE(${dobIso}::date, extracted_dob),
+               expiry_date = COALESCE(${expiryIso}::date, expiry_date),
                doc_number = CASE
                  WHEN ${(isVehicleRc || isBankAccount) && Boolean(projectedDocNumber)}::boolean
                    THEN ${projectedDocNumber}

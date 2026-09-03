@@ -86,16 +86,16 @@ export async function loadRiderEligibilityAttributes(
       verified: riderDocuments.verified,
       verificationMethod: riderDocuments.verificationMethod,
       verificationStatus: riderDocuments.verificationStatus,
-      metadata: riderDocuments.metadata,
+      expiryDate: riderDocuments.expiryDate,
     })
     .from(riderDocuments)
     .where(eq(riderDocuments.riderId, riderId));
 
   const now = Date.now();
   const isDocExpired = (row: (typeof docs)[number] | undefined): boolean => {
-    const raw = (row?.metadata as { expiresAt?: string } | null | undefined)?.expiresAt;
+    const raw = row?.expiryDate;
     if (!raw) return false;
-    const t = new Date(raw).getTime();
+    const t = new Date(String(raw)).getTime();
     return Number.isFinite(t) && t < now;
   };
 
