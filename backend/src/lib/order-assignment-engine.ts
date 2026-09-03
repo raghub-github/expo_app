@@ -711,6 +711,46 @@ export async function evaluateRiderDispatchEligibility(
     return reject("blacklisted_for_service", { riderLat: ctx.lat, riderLng: ctx.lng });
   }
 
+  // Backend-authoritative document + geo service eligibility (verified DL/RC, vehicle
+  // class, commercial requirement, fuel/ownership — all geo-configurable at the order's
+  // pickup). Gated by RIDER_ELIGIBILITY_MODE: enforce rejects, shadow only logs, off
+  // skips. NEVER blocks dispatch on an infra error — eligibility must not wedge assignment.
+  {
+    const { eligibilityEnforcementMode, resolveRiderServiceEligibilityAtPickup } = await import(
+      "../modules/rider-eligibility/riderEligibility.service.js"
+    );
+    const mode = eligibilityEnforcementMode();
+    if (mode !== "off") {
+      try {
+        const decision = await resolveRiderServiceEligibilityAtPickup({
+          riderId,
+          service: target.serviceType,
+          pickupLat: target.pickup.latitude,
+          pickupLng: target.pickup.longitude,
+        });
+        if (!decision.eligible) {
+          const code = decision.blocking[0]?.code?.toLowerCase() ?? "blocked";
+          if (mode === "enforce") {
+            return reject(`ineligible_${code}`, { riderLat: ctx.lat, riderLng: ctx.lng });
+          }
+          console.info("[rider-eligibility][shadow] dispatch would reject", {
+            riderId,
+            service: target.serviceType,
+            orderId: target.orderId,
+            reasons: decision.blocking.map((b) => b.code),
+            geo: decision.resolvedGeo,
+          });
+        }
+      } catch (err) {
+        console.warn(
+          "[rider-eligibility] dispatch check skipped (infra):",
+          riderId,
+          (err as Error)?.message ?? err
+        );
+      }
+    }
+  }
+
   const distanceMeters = haversineDistanceMeters(
     ctx.lat,
     ctx.lng,

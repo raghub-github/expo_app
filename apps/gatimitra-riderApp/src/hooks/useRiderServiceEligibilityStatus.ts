@@ -48,6 +48,8 @@ export function useRiderServiceEligibilityStatus() {
 
   return {
     backend,
+    /** True only when the backend is actually enforcing eligibility (enforce mode). */
+    enforced: query.data?.enforced === true,
     resolvedGeo: query.data?.resolvedGeo ?? null,
     isLoading: query.isLoading,
     refetch: query.refetch,

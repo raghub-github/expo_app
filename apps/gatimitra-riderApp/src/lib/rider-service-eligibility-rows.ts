@@ -62,3 +62,22 @@ export function buildServiceEligibilityRows(args: {
 export function hasBlockedService(rows: ServiceEligibilityRow[]): boolean {
   return rows.some((r) => r.state === "blocked");
 }
+
+/**
+ * Which services the rider may actually turn ON (go online for). Starts from the existing
+ * client pool (duty/vehicle/coverage) and, ONLY when eligibility enforcement is active,
+ * removes services the backend engine says are ineligible (documents + location). This is
+ * what makes "only allowed services can go online" real — but it is FAIL-OPEN: when
+ * enforcement is off, or the backend decision is unavailable/missing for a service, that
+ * service is NOT restricted, so a network blip or a shadow rollout can never lock a rider
+ * offline. A service is removed only on an explicit `eligible === false` from the engine.
+ */
+export function resolveSelectableServices(args: {
+  clientPool: RiderServiceTypeValue[];
+  backend?: BackendEligibilityByService | null;
+  enforced: boolean;
+}): RiderServiceTypeValue[] {
+  if (!args.enforced || !args.backend) return args.clientPool;
+  const backend = args.backend;
+  return args.clientPool.filter((service) => backend[service]?.eligible !== false);
+}

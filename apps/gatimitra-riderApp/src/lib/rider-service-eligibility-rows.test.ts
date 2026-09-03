@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildServiceEligibilityRows,
   hasBlockedService,
+  resolveSelectableServices,
   GENERIC_SERVICE_BLOCK,
   RIDER_SERVICE_DISPLAY_ORDER,
 } from "./rider-service-eligibility-rows";
@@ -74,6 +75,62 @@ test("selectability wins over a shadow backend block (no UI regression before en
   const food = rows.find((r) => r.service === "food")!;
   assert.equal(food.state, "selectable");
   assert.equal(food.reasons.length, 0);
+});
+
+test("resolveSelectableServices: enforcement OFF never restricts the client pool", () => {
+  const pool = ["food", "parcel", "person_ride"] as const;
+  const backend = {
+    person_ride: { eligible: false, blocking: [{ code: "DL_REQUIRED_NOT_VERIFIED", reason: "x" }] },
+  };
+  assert.deepEqual(
+    resolveSelectableServices({ clientPool: [...pool], backend, enforced: false }),
+    [...pool]
+  );
+});
+
+test("resolveSelectableServices: enforced removes only explicitly-ineligible services", () => {
+  const selectable = resolveSelectableServices({
+    clientPool: ["food", "parcel", "person_ride"],
+    backend: {
+      food: { eligible: true, blocking: [] },
+      parcel: { eligible: true, blocking: [] },
+      person_ride: {
+        eligible: false,
+        blocking: [{ code: "COMMERCIAL_VEHICLE_REQUIRED", reason: "x" }],
+      },
+    },
+    enforced: true,
+  });
+  assert.deepEqual(selectable, ["food", "parcel"]);
+});
+
+test("resolveSelectableServices: enforced but missing backend data is fail-open (no lockout)", () => {
+  // Backend unreachable → null → keep the whole pool.
+  assert.deepEqual(
+    resolveSelectableServices({ clientPool: ["food"], backend: null, enforced: true }),
+    ["food"]
+  );
+  // Enforced, backend present but no entry for a pooled service → keep it (fail-open).
+  assert.deepEqual(
+    resolveSelectableServices({
+      clientPool: ["food", "parcel"],
+      backend: { food: { eligible: true, blocking: [] } },
+      enforced: true,
+    }),
+    ["food", "parcel"]
+  );
+});
+
+test("resolveSelectableServices: a service outside the pool is never added back", () => {
+  // Backend eligible for person_ride, but it's not in the client pool → stays out.
+  assert.deepEqual(
+    resolveSelectableServices({
+      clientPool: ["food"],
+      backend: { person_ride: { eligible: true, blocking: [] } },
+      enforced: true,
+    }),
+    ["food"]
+  );
 });
 
 test("a custom order is honoured", () => {

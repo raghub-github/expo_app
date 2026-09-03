@@ -7,7 +7,10 @@
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { resolveRiderAllServiceEligibilityAtLocation } from "./riderEligibility.service.js";
+import {
+  eligibilityEnforcementMode,
+  resolveRiderAllServiceEligibilityAtLocation,
+} from "./riderEligibility.service.js";
 
 const bodySchema = z.object({
   lat: z.number().optional(),
@@ -36,7 +39,10 @@ export function registerRiderEligibilityStatusRoutes(
         pincode: b.pincode ?? null,
         state: b.state ?? null,
       });
-      return reply.send(result);
+      // `enforced` tells the app whether eligibility is actually gating (enforce mode) vs
+      // merely advisory (shadow). The app only HARD-restricts which services can go online
+      // when enforced; in shadow it shows reasons but never blocks selection.
+      return reply.send({ ...result, enforced: eligibilityEnforcementMode() === "enforce" });
     }
   );
 }
