@@ -5,6 +5,75 @@
 import { getSql } from "../../db/client.js";
 import type { EligibilityOverride, EligibilityService } from "./eligibilityEngine.js";
 
+export type OverrideRow = {
+  id: number;
+  riderId: number;
+  serviceType: EligibilityService;
+  reason: string;
+  createdByLabel: string | null;
+  isActive: boolean;
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+  createdAt: string;
+};
+
+function mapRow(r: Record<string, unknown>): OverrideRow {
+  return {
+    id: Number(r.id),
+    riderId: Number(r.rider_id),
+    serviceType: String(r.service_type) as EligibilityService,
+    reason: String(r.reason ?? ""),
+    createdByLabel: r.created_by_label == null ? null : String(r.created_by_label),
+    isActive: r.is_active === true,
+    effectiveFrom: r.effective_from == null ? null : String(r.effective_from),
+    effectiveTo: r.effective_to == null ? null : String(r.effective_to),
+    createdAt: String(r.created_at ?? ""),
+  };
+}
+
+/** All non-deleted overrides for a rider (active + inactive), newest first — for the admin UI. */
+export async function listOverridesForRider(riderId: number): Promise<OverrideRow[]> {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT id, rider_id, service_type, reason, created_by_label, is_active,
+           effective_from, effective_to, created_at
+    FROM rider_eligibility_overrides
+    WHERE rider_id = ${riderId} AND deleted_at IS NULL
+    ORDER BY created_at DESC
+  `) as Record<string, unknown>[];
+  return (Array.isArray(rows) ? rows : []).map(mapRow);
+}
+
+export async function insertOverride(args: {
+  riderId: number;
+  service: EligibilityService;
+  reason: string;
+  createdByLabel: string | null;
+  effectiveTo: string | null;
+}): Promise<OverrideRow> {
+  const sql = getSql();
+  const rows = (await sql`
+    INSERT INTO rider_eligibility_overrides
+      (rider_id, service_type, reason, created_by_label, is_active, effective_from, effective_to)
+    VALUES (${args.riderId}, ${args.service}, ${args.reason}, ${args.createdByLabel}, true, now(), ${args.effectiveTo})
+    RETURNING id, rider_id, service_type, reason, created_by_label, is_active,
+              effective_from, effective_to, created_at
+  `) as Record<string, unknown>[];
+  return mapRow((Array.isArray(rows) ? rows : [])[0] as Record<string, unknown>);
+}
+
+/** Revoke (soft-delete + deactivate) an override. Returns true if a row was affected. */
+export async function revokeOverride(id: number, riderId: number): Promise<boolean> {
+  const sql = getSql();
+  const rows = (await sql`
+    UPDATE rider_eligibility_overrides
+    SET is_active = false, deleted_at = now(), updated_at = now()
+    WHERE id = ${id} AND rider_id = ${riderId} AND deleted_at IS NULL
+    RETURNING id
+  `) as Record<string, unknown>[];
+  return (Array.isArray(rows) ? rows : []).length > 0;
+}
+
 export async function loadActiveOverridesForRider(
   riderId: number
 ): Promise<Partial<Record<EligibilityService, EligibilityOverride>>> {
