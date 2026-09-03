@@ -99,6 +99,10 @@ export async function loadRiderEligibilityAttributes(
     return Number.isFinite(t) && t < now;
   };
 
+  const stateFor = (docType: string) => {
+    const row = docs.find((d) => d.docType === docType);
+    return docStateFrom({ ...docVerified(row), expired: isDocExpired(row) });
+  };
   const dlRow = docs.find((d) => d.docType === "dl");
   const rcRow = docs.find((d) => d.docType === "rc");
   const dl = docVerified(dlRow);
@@ -111,6 +115,9 @@ export async function loadRiderEligibilityAttributes(
     ownership: ownershipFromVehicle(vehicle?.isCommercial ?? false),
     dl: docStateFrom({ ...dl, expired: isDocExpired(dlRow) }),
     rc: docStateFrom({ ...rc, expired: isDocExpired(rcRow) }),
+    evProof: stateFor("ev_proof"),
+    ownershipProof: stateFor("ownership_proof"),
+    commercialProof: stateFor("commercial_proof"),
   };
 }
 

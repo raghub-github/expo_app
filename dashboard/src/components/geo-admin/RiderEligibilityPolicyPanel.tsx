@@ -32,6 +32,9 @@ type RuleRow = {
   serviceEnabled: boolean;
   dlRequirement: DocRequirement;
   rcRequirement: DocRequirement;
+  evProofRequirement: DocRequirement;
+  ownershipProofRequirement: DocRequirement;
+  commercialProofRequirement: DocRequirement;
   commercialRequired: boolean;
   allowedVehicleClasses: VehicleClass[];
   allowedFuelKinds: string[];
@@ -108,6 +111,9 @@ function defaultsForService(service: EligibilityService) {
     serviceEnabled: true,
     dlRequirement: (service === "food" ? "optional" : "required") as DocRequirement,
     rcRequirement: (service === "food" ? "optional" : "required") as DocRequirement,
+    evProofRequirement: "exempt" as DocRequirement,
+    ownershipProofRequirement: "exempt" as DocRequirement,
+    commercialProofRequirement: "exempt" as DocRequirement,
     commercialRequired: service === "person_ride",
     allowedVehicleClasses: (service === "food"
       ? ["2_wheeler"]
@@ -126,6 +132,9 @@ function ruleToForm(r: RuleRow): RuleForm {
     serviceEnabled: r.serviceEnabled,
     dlRequirement: r.dlRequirement,
     rcRequirement: r.rcRequirement,
+    evProofRequirement: r.evProofRequirement,
+    ownershipProofRequirement: r.ownershipProofRequirement,
+    commercialProofRequirement: r.commercialProofRequirement,
     commercialRequired: r.commercialRequired,
     allowedVehicleClasses: r.allowedVehicleClasses,
     allowedFuelKinds: r.allowedFuelKinds,
@@ -146,6 +155,9 @@ function mapRuleFromApi(r: Record<string, unknown>): RuleRow {
     serviceEnabled: r.serviceEnabled !== false,
     dlRequirement: (String(r.dlRequirement ?? "required") as DocRequirement),
     rcRequirement: (String(r.rcRequirement ?? "required") as DocRequirement),
+    evProofRequirement: (String(r.evProofRequirement ?? "exempt") as DocRequirement),
+    ownershipProofRequirement: (String(r.ownershipProofRequirement ?? "exempt") as DocRequirement),
+    commercialProofRequirement: (String(r.commercialProofRequirement ?? "exempt") as DocRequirement),
     commercialRequired: r.commercialRequired === true,
     allowedVehicleClasses: arr(r.allowedVehicleClasses) as VehicleClass[],
     allowedFuelKinds: arr(r.allowedFuelKinds),
@@ -593,6 +605,42 @@ function RuleFormCard(props: {
                 <option key={r} value={r}>
                   {r}
                 </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        <div className="mt-3 grid grid-cols-3 gap-3">
+          <Field label="EV proof (EVs only)">
+            <select
+              className={inputCls}
+              value={form.evProofRequirement}
+              onChange={(e) => setForm((f) => ({ ...f, evProofRequirement: e.target.value as DocRequirement }))}
+            >
+              {REQUIREMENTS.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Ownership proof">
+            <select
+              className={inputCls}
+              value={form.ownershipProofRequirement}
+              onChange={(e) => setForm((f) => ({ ...f, ownershipProofRequirement: e.target.value as DocRequirement }))}
+            >
+              {REQUIREMENTS.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Commercial proof (commercial only)">
+            <select
+              className={inputCls}
+              value={form.commercialProofRequirement}
+              onChange={(e) => setForm((f) => ({ ...f, commercialProofRequirement: e.target.value as DocRequirement }))}
+            >
+              {REQUIREMENTS.map((r) => (
+                <option key={r} value={r}>{r}</option>
               ))}
             </select>
           </Field>

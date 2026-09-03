@@ -51,6 +51,12 @@ export type ServiceEligibilityPolicy = {
   allowedFuelKinds: string[];
   /** Ownership types allowed (empty = all). */
   allowedOwnership: OwnershipType[];
+  /** EV-evidence gate — applies ONLY to EV vehicles (default exempt). Never implies "no RC". */
+  evProofRequirement?: DocRequirement;
+  /** Vehicle-ownership-proof gate (default exempt). */
+  ownershipProofRequirement?: DocRequirement;
+  /** Commercial-permit/proof gate — applies ONLY to commercial vehicles (default exempt). */
+  commercialProofRequirement?: DocRequirement;
   /** Provenance for audit: which geo node the effective value came from. */
   resolvedGeo?: { level: string; refId: string } | null;
   ruleVersion?: string | null;
@@ -64,6 +70,10 @@ export type RiderEligibilityInput = {
   ownership: OwnershipType;
   dl: DocState;
   rc: DocState;
+  /** Optional additional vehicle-evidence documents (default missing). */
+  evProof?: DocState;
+  ownershipProof?: DocState;
+  commercialProof?: DocState;
 };
 
 export type EligibilityBlockCode =
@@ -76,6 +86,9 @@ export type EligibilityBlockCode =
   | "RC_REQUIRED_NOT_VERIFIED"
   | "RC_EXPIRED"
   | "COMMERCIAL_VEHICLE_REQUIRED"
+  | "EV_PROOF_REQUIRED_NOT_VERIFIED"
+  | "OWNERSHIP_PROOF_REQUIRED_NOT_VERIFIED"
+  | "COMMERCIAL_PROOF_REQUIRED_NOT_VERIFIED"
   | "NO_VEHICLE";
 
 export type EligibilityBlock = {
@@ -87,7 +100,12 @@ export type EligibilityBlock = {
 };
 
 /** Canonical document identifiers a rider can be asked to submit/verify. */
-export type MissingDocumentCode = "DRIVING_LICENSE" | "REGISTRATION_CERTIFICATE";
+export type MissingDocumentCode =
+  | "DRIVING_LICENSE"
+  | "REGISTRATION_CERTIFICATE"
+  | "EV_PROOF"
+  | "OWNERSHIP_PROOF"
+  | "COMMERCIAL_PROOF";
 
 /** Which blocking codes correspond to a concrete missing/invalid document. */
 function missingDocsFromBlocking(blocking: EligibilityBlock[]): MissingDocumentCode[] {
@@ -95,6 +113,9 @@ function missingDocsFromBlocking(blocking: EligibilityBlock[]): MissingDocumentC
   for (const b of blocking) {
     if (b.code === "DL_REQUIRED_NOT_VERIFIED" || b.code === "DL_EXPIRED") out.add("DRIVING_LICENSE");
     if (b.code === "RC_REQUIRED_NOT_VERIFIED" || b.code === "RC_EXPIRED") out.add("REGISTRATION_CERTIFICATE");
+    if (b.code === "EV_PROOF_REQUIRED_NOT_VERIFIED") out.add("EV_PROOF");
+    if (b.code === "OWNERSHIP_PROOF_REQUIRED_NOT_VERIFIED") out.add("OWNERSHIP_PROOF");
+    if (b.code === "COMMERCIAL_PROOF_REQUIRED_NOT_VERIFIED") out.add("COMMERCIAL_PROOF");
   }
   return [...out];
 }
@@ -266,6 +287,39 @@ export function resolveRiderServiceEligibility(
         policy.service
       )} at this location.`,
     });
+  }
+
+  // 6. Additional vehicle-evidence documents (all default exempt = no gate). Each applies
+  //    only in its relevant context and never implies anything about DL/RC (§4, §13).
+  if (fuelKind === "ev" && (policy.evProofRequirement ?? "exempt") === "required") {
+    const ev = docSatisfies("required", input.evProof ?? "missing");
+    if (!ev.ok) {
+      blocking.push({
+        code: "EV_PROOF_REQUIRED_NOT_VERIFIED",
+        reason: "EV proof verification is required for this electric vehicle.",
+        requiredAction: "Submit your EV / vehicle proof.",
+      });
+    }
+  }
+  if ((policy.ownershipProofRequirement ?? "exempt") === "required") {
+    const op = docSatisfies("required", input.ownershipProof ?? "missing");
+    if (!op.ok) {
+      blocking.push({
+        code: "OWNERSHIP_PROOF_REQUIRED_NOT_VERIFIED",
+        reason: "Vehicle ownership proof verification is required.",
+        requiredAction: "Submit proof of vehicle ownership.",
+      });
+    }
+  }
+  if (input.ownership === "commercial" && (policy.commercialProofRequirement ?? "exempt") === "required") {
+    const cp = docSatisfies("required", input.commercialProof ?? "missing");
+    if (!cp.ok) {
+      blocking.push({
+        code: "COMMERCIAL_PROOF_REQUIRED_NOT_VERIFIED",
+        reason: "Commercial permit / proof verification is required.",
+        requiredAction: "Submit your commercial permit / proof.",
+      });
+    }
   }
 
   return {
