@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   mapOrderTypeToEligibilityService,
   eligibilityEnforcementMode,
+  ALL_ELIGIBILITY_SERVICES,
 } from "./riderEligibility.service.ts";
 
 test("order type maps to eligibility service", () => {
@@ -11,6 +12,11 @@ test("order type maps to eligibility service", () => {
   assert.equal(mapOrderTypeToEligibilityService("person_ride"), "person_ride");
   assert.equal(mapOrderTypeToEligibilityService("ride"), "person_ride");
   assert.equal(mapOrderTypeToEligibilityService("unknown"), null);
+});
+
+test("rider-facing services cover exactly the three services, in display order", () => {
+  // The rider-app eligibility surface iterates this list; it must stay complete + ordered.
+  assert.deepEqual(ALL_ELIGIBILITY_SERVICES, ["food", "parcel", "person_ride"]);
 });
 
 test("enforcement mode defaults to shadow and honors the env override", () => {
