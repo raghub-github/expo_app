@@ -830,6 +830,10 @@ await app.register(trackingAdminRoutes, { prefix: "/v1/admin/tracking" });
 await app.register(offersRoutes, { prefix: "/v1/offers" });
 const { pricingRoutes } = await import("./modules/pricing/pricing.routes.js");
 await app.register(pricingRoutes, { prefix: "/v1/pricing" });
+const { riderEligibilityRoutes } = await import(
+  "./modules/rider-eligibility/riderEligibility.routes.js"
+);
+await app.register(riderEligibilityRoutes, { prefix: "/v1/rider-eligibility" });
 await app.register(customerSubscriptionModule, { prefix: "/v1" });
 
 // Internal routes for in-cluster workers (payment-worker etc). Guarded by
