@@ -17,6 +17,7 @@ import { resolveGeoLocation } from "../billing/geoLocationResolver.js";
 import { pickMostSpecificGeoAnchor } from "../ride-state-config/rideStateConfig.repository.js";
 import { resolveOnboardingDecision } from "./onboardingEligibility.js";
 import { resolveRiderOnboardingSummary } from "./onboardingEligibility.service.js";
+import { processDlExpiryNotifications } from "./dlExpiryNotifications.service.js";
 import {
   insertOverride,
   listOverridesForRider,
@@ -238,6 +239,16 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
       effectiveTo: d.effectiveTo ?? null,
     });
     return reply.send({ override: row });
+  });
+
+  /** POST /v1/rider-eligibility/dl-expiry-tick — run the DL-expiry warning job (§19). Cron/
+   * internal-secret gated; idempotent, so safe to call repeatedly (e.g. daily). */
+  app.post("/dl-expiry-tick", async (req, reply) => {
+    if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const result = await processDlExpiryNotifications();
+    return reply.send({ ok: true, ...result });
   });
 
   app.post("/rider-overrides/revoke", async (req, reply) => {

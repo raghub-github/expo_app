@@ -179,6 +179,15 @@ export type DomainEventMap = {
     penaltyId?: string | number | null;
   };
 
+  /** Rider Driving Licence approaching expiry (pre-expiry warning window). */
+  "rider.dl_expiring": {
+    userId: string;
+    role?: string;
+    daysRemaining: number;
+    expiryDate: string;
+    window: number;
+  };
+
   /** Rider bank account rejected by agent. */
   "rider.bank_rejected": {
     userId: string;
@@ -836,6 +845,25 @@ export function registerDomainEventHandlers(): void {
         orderId: e.orderId ?? null,
         penaltyId: e.penaltyId ?? null,
         url: "/(tabs)/earnings",
+      },
+    });
+  });
+
+  on("rider.dl_expiring", async (e) => {
+    await sendNotification({
+      templateCode: "RIDER_DL_EXPIRING",
+      variables: {
+        daysRemaining: String(e.daysRemaining),
+        expiryDate: e.expiryDate,
+      },
+      target: { user_id: e.userId },
+      priority: "high",
+      // Idempotent per (rider, expiry, window) — never double-sends a window's warning.
+      idempotencyKey: `RIDER_DL_EXPIRING:${e.userId}:${e.expiryDate}:${e.window}`,
+      metadata: {
+        daysRemaining: e.daysRemaining,
+        expiryDate: e.expiryDate,
+        url: "/vehicles",
       },
     });
   });
