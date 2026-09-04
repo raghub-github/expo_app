@@ -584,6 +584,8 @@ const ridersTable = pgTable(
     address: text("address"),
     lat: doublePrecision("lat"),
     lon: doublePrecision("lon"),
+    /** The rider's currently-operating vehicle (rider_vehicles.id) — single active vehicle. */
+    activeVehicleId: bigint("active_vehicle_id", { mode: "number" }),
     referralCode: text("referral_code").unique(),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     referredBy: integer("referred_by").references((): any => (ridersTable as any).id),
@@ -1134,6 +1136,8 @@ export const riderVehicles = pgTable(
     fitnessExpiry: date("fitness_expiry"),
     pucExpiry: date("puc_expiry"),
     rcOwnerName: text("rc_owner_name"),
+    /** Safe RC-replacement lineage: a retired vehicle points at its replacement. */
+    replacedByVehicleId: bigint("replaced_by_vehicle_id", { mode: "number" }),
     cashfreeRcPayload: jsonb("cashfree_rc_payload").notNull().default({}),
     verified: boolean("verified").default(false),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
