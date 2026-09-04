@@ -12,6 +12,10 @@ import {
   resolveRiderAllServiceEligibilityAtLocation,
 } from "./riderEligibility.service.js";
 import { resolveRiderOnboardingSummary } from "./onboardingEligibility.service.js";
+import {
+  listRiderVehiclesWithEligibility,
+  setRiderActiveVehicle,
+} from "./riderVehicles.service.js";
 
 const bodySchema = z.object({
   lat: z.number().optional(),
@@ -56,5 +60,26 @@ export function registerRiderEligibilityStatusRoutes(
     const summary = await resolveRiderOnboardingSummary(riderId);
     if (!summary) return reply.code(404).send({ error: "rider_not_found" });
     return reply.send(summary);
+  });
+
+  // GET /eligibility/vehicles — the rider's vehicles, each with per-vehicle service
+  // eligibility, + which one is active (multi-vehicle Phase 1).
+  app.get("/eligibility/vehicles", async (req, reply) => {
+    const riderId = parseRiderIdFromAuth(req.auth!.sub);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (riderId == null) return (reply as any).status(403).send({ error: "Invalid rider session" });
+    return reply.send(await listRiderVehiclesWithEligibility({ riderId }));
+  });
+
+  // POST /eligibility/active-vehicle — select the active vehicle (validated ownership +
+  // verified + not retired). Live-order guard is applied by the online/dispatch layer.
+  app.post("/eligibility/active-vehicle", { schema: { body: z.object({ vehicleId: z.number().int().positive() }) } }, async (req, reply) => {
+    const riderId = parseRiderIdFromAuth(req.auth!.sub);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (riderId == null) return (reply as any).status(403).send({ error: "Invalid rider session" });
+    const { vehicleId } = req.body as { vehicleId: number };
+    const result = await setRiderActiveVehicle(riderId, vehicleId);
+    if (!result.ok) return reply.code(400).send(result);
+    return reply.send(result);
   });
 }

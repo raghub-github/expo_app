@@ -37,6 +37,29 @@ export function ownershipFromVehicle(isCommercial: boolean | null | undefined): 
 }
 
 /**
+ * Per-vehicle RC DocState from the vehicle row itself (multi-vehicle: each vehicle carries
+ * its own RC verification + fitness/permit validity). A vehicle row always has a
+ * registration number, so the floor is "pending" (submitted, awaiting), never "missing".
+ */
+export function rcDocStateFromVehicle(
+  v: {
+    verified?: boolean | null;
+    fitnessExpiry?: string | Date | null;
+    permitExpiry?: string | Date | null;
+  },
+  now: Date = new Date()
+): DocState {
+  const verified = v.verified === true;
+  const isExpired = (d: string | Date | null | undefined): boolean => {
+    if (!d) return false;
+    const t = d instanceof Date ? d.getTime() : new Date(String(d)).getTime();
+    return Number.isFinite(t) && t < now.getTime();
+  };
+  const expired = isExpired(v.fitnessExpiry) || isExpired(v.permitExpiry);
+  return docStateFrom({ verified, submitted: true, expired });
+}
+
+/**
  * Resolve a document's DocState from backend verification signals. `verified` is the
  * authoritative flag (Cashfree auto or manual approval). Priority: expired > verified >
  * submitted(pending) > rejected(failed) > missing.

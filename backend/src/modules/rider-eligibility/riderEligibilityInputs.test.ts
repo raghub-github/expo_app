@@ -4,6 +4,7 @@ import {
   vehicleClassFromCategory,
   ownershipFromVehicle,
   docStateFrom,
+  rcDocStateFromVehicle,
 } from "./riderEligibilityInputs.ts";
 
 test("vehicleClassFromCategory maps normalised + legacy categories", () => {
@@ -24,6 +25,29 @@ test("ownershipFromVehicle maps the commercial flag", () => {
   assert.equal(ownershipFromVehicle(true), "commercial");
   assert.equal(ownershipFromVehicle(false), "non_commercial");
   assert.equal(ownershipFromVehicle(null), "non_commercial");
+});
+
+test("rcDocStateFromVehicle: per-vehicle RC state from verified + fitness/permit validity", () => {
+  const now = new Date("2026-06-15T00:00:00Z");
+  // Unverified vehicle row (RC submitted, awaiting) → pending, never missing.
+  assert.equal(rcDocStateFromVehicle({ verified: false }, now), "pending");
+  // Verified, no expiry → verified.
+  assert.equal(rcDocStateFromVehicle({ verified: true }, now), "verified");
+  // Verified but fitness expired → expired.
+  assert.equal(
+    rcDocStateFromVehicle({ verified: true, fitnessExpiry: "2026-01-01" }, now),
+    "expired"
+  );
+  // Verified, permit expired → expired.
+  assert.equal(
+    rcDocStateFromVehicle({ verified: true, permitExpiry: "2025-12-31" }, now),
+    "expired"
+  );
+  // Verified, expiries in the future → verified.
+  assert.equal(
+    rcDocStateFromVehicle({ verified: true, fitnessExpiry: "2027-01-01", permitExpiry: "2027-01-01" }, now),
+    "verified"
+  );
 });
 
 test("docStateFrom prioritises expired > verified > rejected > pending > missing", () => {
