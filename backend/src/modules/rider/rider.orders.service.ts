@@ -2350,13 +2350,33 @@ export async function acceptOrderForRider(
 
   const db = getDb();
   const [meta] = await db
-    .select({ orderType: ordersCore.orderType })
+    .select({
+      orderType: ordersCore.orderType,
+      pickupLat: ordersCore.pickupLat,
+      pickupLon: ordersCore.pickupLon,
+    })
     .from(ordersCore)
     .where(orderRefWhere(orderRef))
     .limit(1);
 
   if (!meta?.orderType) {
     throw Object.assign(new Error("Order not found"), { statusCode: 404 });
+  }
+
+  // Backend-authoritative service-eligibility gate (document verification + vehicle
+  // class/fuel/commercial + geo policy). Rollout-gated (RIDER_ELIGIBILITY_MODE:
+  // shadow by default → logs only; enforce → throws 403). Never trusts the app's
+  // service toggle, and never blocks on an infra error.
+  {
+    const { assertRiderEligibleForOrderAccept } = await import(
+      "../rider-eligibility/riderEligibility.service.js"
+    );
+    await assertRiderEligibleForOrderAccept({
+      riderId,
+      orderType: meta.orderType,
+      pickupLat: meta.pickupLat != null ? Number(meta.pickupLat) : null,
+      pickupLng: meta.pickupLon != null ? Number(meta.pickupLon) : null,
+    });
   }
 
   let summary: RiderOrderSummary;

@@ -156,11 +156,53 @@ export async function tryActivateRiderIfEligible(riderId: number): Promise<boole
     .where(eq(riderVehicles.riderId, riderId))
     .limit(1);
 
+  // Identity (aadhaar + selfie) is ALWAYS required — it is KYC, not a service gate.
   const identityVerified = checkIdentityDocsVerified(allDocs, filesByDocId);
-  const vehicleDocsVerified = checkVehicleDocsVerified(allDocs, vehicle?.vehicleType, filesByDocId);
-  const allRequiredDocsVerified = identityVerified && vehicleDocsVerified;
+  if (!identityVerified) return false;
 
-  if (!allRequiredDocsVerified) return false;
+  // Onboarding gate.
+  //
+  // Policy-driven mode (§1, §6, §33): a rider may complete onboarding once they are eligible
+  // for AT LEAST ONE service (which implies they hold that service's required docs) or the
+  // zero-eligibility policy allows it — optional documents (e.g. DL for food) never block.
+  //
+  // This loosening is deliberately coupled to eligibility ENFORCEMENT (RIDER_ELIGIBILITY_MODE
+  // = enforce): only then are ineligible services actually blocked at online/dispatch/accept,
+  // so an under-documented rider onboarded here can never receive a service they aren't
+  // eligible for. While enforcement is shadow/off we keep the LEGACY hard doc gate, so deploy
+  // is a behavioural no-op and the whole system flips on one switch. Infra errors also fall
+  // back to the legacy gate (never activate more permissively than before during an outage).
+  let onboardingGateMet: boolean;
+  try {
+    const { eligibilityEnforcementMode, resolveRiderAllServiceEligibilityAtLocation } = await import(
+      "../modules/rider-eligibility/riderEligibility.service.js"
+    );
+    if (eligibilityEnforcementMode() !== "enforce") {
+      onboardingGateMet = checkVehicleDocsVerified(allDocs, vehicle?.vehicleType, filesByDocId);
+    } else {
+      const { allowOnboardingWithZeroEligibility } = await import(
+        "../modules/rider-eligibility/onboardingEligibility.service.js"
+      );
+      const [loc] = await db
+        .select({ state: riders.state, pincode: riders.pincode, lat: riders.lat, lon: riders.lon })
+        .from(riders)
+        .where(eq(riders.id, riderId))
+        .limit(1);
+      const { services } = await resolveRiderAllServiceEligibilityAtLocation({
+        riderId,
+        lat: loc?.lat ?? null,
+        lng: loc?.lon ?? null,
+        pincode: loc?.pincode ?? null,
+        state: loc?.state ?? null,
+      });
+      const eligibleCount = Object.values(services).filter((s) => s.eligible).length;
+      onboardingGateMet = eligibleCount > 0 || allowOnboardingWithZeroEligibility();
+    }
+  } catch {
+    onboardingGateMet = checkVehicleDocsVerified(allDocs, vehicle?.vehicleType, filesByDocId);
+  }
+
+  if (!onboardingGateMet) return false;
 
   const paymentCompleted = await checkOnboardingPaymentCompleted(riderId);
   if (!paymentCompleted) {

@@ -246,6 +246,47 @@ export async function recordRiderAssignmentAccepted(
   // Use caller-provided distances only; post-commit jobs can backfill.
   const distance = hasDistanceValues(input.distance) ? input.distance : undefined;
 
+  // Vehicle SNAPSHOT at assignment (§29/§30): capture the rider's active vehicle + its
+  // attributes at THIS moment so historical orders never recompute from the rider's CURRENT
+  // vehicle. Stored in the existing assignment_metadata jsonb (no migration). Best-effort —
+  // a single indexed lookup; never blocks the accept.
+  let vehicleSnapshot: Record<string, unknown> | null = null;
+  try {
+    const vrows = await tx.execute<{
+      id: number;
+      vehicle_category: string | null;
+      vehicle_type: string | null;
+      fuel_type: string | null;
+      is_commercial: boolean | null;
+      verified: boolean | null;
+    }>(sql`
+      SELECT rv.id, rv.vehicle_category, rv.vehicle_type, rv.fuel_type, rv.is_commercial, rv.verified
+      FROM riders r JOIN rider_vehicles rv ON rv.id = r.active_vehicle_id
+      WHERE r.id = ${input.riderId}
+      LIMIT 1
+    `);
+    const vr = (vrows as { id: number; vehicle_category: string | null; vehicle_type: string | null; fuel_type: string | null; is_commercial: boolean | null; verified: boolean | null }[])[0];
+    if (vr) {
+      const { vehicleClassFromCategory } = await import(
+        "../modules/rider-eligibility/riderEligibilityInputs.js"
+      );
+      vehicleSnapshot = {
+        vehicleId: Number(vr.id),
+        vehicleClass: vehicleClassFromCategory(vr.vehicle_category ?? null, vr.vehicle_type ?? null),
+        vehicleType: vr.vehicle_type ?? null,
+        fuelType: vr.fuel_type ?? null,
+        commercial: vr.is_commercial === true,
+        verified: vr.verified === true,
+        capturedAt: now.toISOString(),
+      };
+    }
+  } catch {
+    /* snapshot is best-effort */
+  }
+  const assignmentMeta: Record<string, unknown> = vehicleSnapshot
+    ? { serviceType, vehicleSnapshot }
+    : { serviceType };
+
   // Only one is_active row per order — clear all active assignments (any rider).
   await tx.execute(sql`
     UPDATE order_rider_assignments
@@ -295,7 +336,7 @@ export async function recordRiderAssignmentAccepted(
         pickup_acknowledged_by = NULL,
         distance_to_merchant_km = COALESCE(${distance?.merchantDistanceKm ?? null}, distance_to_merchant_km),
         distance_to_customer_km = COALESCE(${distance?.customerDistanceKm ?? null}, distance_to_customer_km),
-        assignment_metadata = assignment_metadata || ${JSON.stringify({ serviceType })}::jsonb,
+        assignment_metadata = assignment_metadata || ${JSON.stringify(assignmentMeta)}::jsonb,
         updated_at = ${toTs(now)}::timestamptz
       WHERE id = ${existingId}
     `);
@@ -343,7 +384,7 @@ export async function recordRiderAssignmentAccepted(
         ${toTs(now)}::timestamptz,
         ${distance?.merchantDistanceKm ?? null},
         ${distance?.customerDistanceKm ?? null},
-        ${JSON.stringify({ serviceType })}::jsonb,
+        ${JSON.stringify(assignmentMeta)}::jsonb,
         ${toTs(now)}::timestamptz,
         ${toTs(now)}::timestamptz
       )

@@ -312,27 +312,38 @@ export async function getRiderActiveVehicleTypeCodes(riderId: number): Promise<s
   return [...types];
 }
 
-/** Active verified vehicle profile for dispatch service rules (e.g. food vs 3/4-wheeler). */
+/** Active verified vehicle profile for dispatch service rules (e.g. food vs 3/4-wheeler).
+ * Keys on the rider's chosen ACTIVE vehicle (riders.active_vehicle_id) when set — so a
+ * two-vehicle rider is dispatched only for their active vehicle, not the union of both.
+ * Falls back to the union of all active+verified vehicles for legacy/unset riders. */
 export async function getRiderActiveVehicleProfile(riderId: number): Promise<{
   vehicleTypes: string[];
   vehicleCategories: string[];
 }> {
   const db = getDb();
+  const [riderRow] = await db
+    .select({ activeVehicleId: riders.activeVehicleId })
+    .from(riders)
+    .where(eq(riders.id, riderId))
+    .limit(1);
+
+  const conditions = [
+    eq(riderVehicles.riderId, riderId),
+    eq(riderVehicles.isActive, true),
+    eq(riderVehicles.verified, true),
+    isNull(riderVehicles.deletedAt),
+    sql`COALESCE(${riderVehicles.vehicleActiveStatus}, 'active') = 'active'`,
+  ];
+  if (riderRow?.activeVehicleId != null) {
+    conditions.push(eq(riderVehicles.id, riderRow.activeVehicleId));
+  }
   const rows = await db
     .select({
       vehicleType: riderVehicles.vehicleType,
       vehicleCategory: riderVehicles.vehicleCategory,
     })
     .from(riderVehicles)
-    .where(
-      and(
-        eq(riderVehicles.riderId, riderId),
-        eq(riderVehicles.isActive, true),
-        eq(riderVehicles.verified, true),
-        isNull(riderVehicles.deletedAt),
-        sql`COALESCE(${riderVehicles.vehicleActiveStatus}, 'active') = 'active'`
-      )
-    );
+    .where(and(...conditions));
 
   const vehicleTypes = new Set<string>();
   const vehicleCategories = new Set<string>();
@@ -709,6 +720,46 @@ export async function evaluateRiderDispatchEligibility(
   if (!ctx.eligibleServices.includes(target.serviceType)) return reject("service_not_in_duty");
   if (await isRiderBlacklistedForService(riderId, target.serviceType)) {
     return reject("blacklisted_for_service", { riderLat: ctx.lat, riderLng: ctx.lng });
+  }
+
+  // Backend-authoritative document + geo service eligibility (verified DL/RC, vehicle
+  // class, commercial requirement, fuel/ownership — all geo-configurable at the order's
+  // pickup). Gated by RIDER_ELIGIBILITY_MODE: enforce rejects, shadow only logs, off
+  // skips. NEVER blocks dispatch on an infra error — eligibility must not wedge assignment.
+  {
+    const { eligibilityEnforcementMode, resolveRiderServiceEligibilityAtPickup } = await import(
+      "../modules/rider-eligibility/riderEligibility.service.js"
+    );
+    const mode = eligibilityEnforcementMode();
+    if (mode !== "off") {
+      try {
+        const decision = await resolveRiderServiceEligibilityAtPickup({
+          riderId,
+          service: target.serviceType,
+          pickupLat: target.pickup.latitude,
+          pickupLng: target.pickup.longitude,
+        });
+        if (!decision.eligible) {
+          const code = decision.blocking[0]?.code?.toLowerCase() ?? "blocked";
+          if (mode === "enforce") {
+            return reject(`ineligible_${code}`, { riderLat: ctx.lat, riderLng: ctx.lng });
+          }
+          console.info("[rider-eligibility][shadow] dispatch would reject", {
+            riderId,
+            service: target.serviceType,
+            orderId: target.orderId,
+            reasons: decision.blocking.map((b) => b.code),
+            geo: decision.resolvedGeo,
+          });
+        }
+      } catch (err) {
+        console.warn(
+          "[rider-eligibility] dispatch check skipped (infra):",
+          riderId,
+          (err as Error)?.message ?? err
+        );
+      }
+    }
   }
 
   const distanceMeters = haversineDistanceMeters(

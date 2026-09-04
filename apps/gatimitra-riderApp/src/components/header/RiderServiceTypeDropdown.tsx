@@ -14,6 +14,12 @@ import { useTranslation } from "react-i18next";
 import { useRiderDutyServiceFilter } from "@/src/hooks/useRiderDutyServiceFilter";
 import { selectionMatchesPool } from "@/src/lib/rider-duty-service-types";
 import type { RiderServiceTypeValue } from "@/src/lib/rider-vehicle-form";
+import { useRiderServiceEligibilityStatus } from "@/src/hooks/useRiderServiceEligibilityStatus";
+import {
+  buildServiceEligibilityRows,
+  type EligibilityReason,
+} from "@/src/lib/rider-service-eligibility-rows";
+import { ServiceEligibilityReasonSheet } from "@/src/components/header/ServiceEligibilityReasonSheet";
 
 const GREEN = "#16A34A";
 const POPOVER_WIDTH = 188;
@@ -137,9 +143,21 @@ export function RiderServiceTypeDropdown({
     isUpdating,
     visible,
   } = useRiderDutyServiceFilter();
+  const { backend } = useRiderServiceEligibilityStatus();
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
+  const [reasonSheet, setReasonSheet] = useState<{
+    service: RiderServiceTypeValue;
+    reasons: EligibilityReason[];
+  } | null>(null);
   const triggerRef = useRef<View>(null);
+
+  // All three services, each tagged selectable (checkbox) or blocked (with backend reasons).
+  // Blocked services are shown — never silently hidden — so preference != eligibility.
+  const serviceRows = useMemo(
+    () => buildServiceEligibilityRows({ selectableServices: eligibleServices, backend }),
+    [eligibleServices, backend],
+  );
 
   const allServicesLabel = t("topbar.allServices", "All Services");
 
@@ -162,11 +180,6 @@ export function RiderServiceTypeDropdown({
     }
     return allServicesLabel;
   }, [allSelected, eligibleServices.length, selectedServices, allServicesLabel, t]);
-
-  const menuServices = useMemo(
-    () => SERVICE_ORDER.filter((s) => eligibleServices.includes(s)),
-    [eligibleServices],
-  );
 
   const measureAndAnchor = useCallback(() => {
     return new Promise<MenuAnchor | null>((resolve) => {
@@ -227,8 +240,10 @@ export function RiderServiceTypeDropdown({
     );
   }
 
+  const hasBlocked = serviceRows.some((r) => r.state === "blocked");
   const canOpen = eligibleServices.length > 0 && !isUpdating;
   const showAllRow = eligibleServices.length > 1;
+  const showChevron = eligibleServices.length > 1 || hasBlocked;
 
   const beakLeft = anchor
     ? Math.min(
@@ -266,7 +281,7 @@ export function RiderServiceTypeDropdown({
               <Text style={styles.triggerText} numberOfLines={1}>
                 {triggerLabel}
               </Text>
-              {eligibleServices.length > 1 ? (
+              {showChevron ? (
                 <Ionicons
                   name={open ? "chevron-up" : "chevron-down"}
                   size={13}
@@ -348,10 +363,39 @@ export function RiderServiceTypeDropdown({
                   </>
                 ) : null}
 
-                {menuServices.map((service, index) => {
+                {serviceRows.map((row, index) => {
+                  const service = row.service;
                   const meta = SERVICE_META[service];
+                  const isLast = index === serviceRows.length - 1;
+
+                  if (row.state === "blocked") {
+                    // Shown, not hidden: greyed + lock, tap reveals WHY (backend reasons).
+                    return (
+                      <React.Fragment key={service}>
+                        <TouchableOpacity
+                          activeOpacity={0.85}
+                          onPress={() => {
+                            closeMenu();
+                            setReasonSheet({ service, reasons: row.reasons });
+                          }}
+                          style={styles.menuRow}
+                          accessibilityRole="button"
+                          accessibilityLabel={`${serviceLabel(service, t)} not available — see why`}
+                        >
+                          <View style={[styles.leadingCircle, styles.leadingCircleBlocked]}>
+                            <Ionicons name={meta.icon} size={15} color="#94A3B8" />
+                          </View>
+                          <Text style={[styles.menuText, styles.menuTextBlocked]}>
+                            {serviceLabel(service, t)}
+                          </Text>
+                          <Ionicons name="lock-closed" size={14} color="#94A3B8" />
+                        </TouchableOpacity>
+                        {!isLast ? <View style={styles.divider} /> : null}
+                      </React.Fragment>
+                    );
+                  }
+
                   const isChecked = selectedServices.includes(service);
-                  const isLast = index === menuServices.length - 1;
                   return (
                     <React.Fragment key={service}>
                       <TouchableOpacity
@@ -381,6 +425,13 @@ export function RiderServiceTypeDropdown({
           ) : null}
         </TouchableOpacity>
       </Modal>
+
+      <ServiceEligibilityReasonSheet
+        visible={reasonSheet != null}
+        serviceLabel={reasonSheet ? serviceLabel(reasonSheet.service, t) : ""}
+        reasons={reasonSheet?.reasons ?? []}
+        onClose={() => setReasonSheet(null)}
+      />
     </View>
   );
 }
@@ -469,6 +520,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  leadingCircleBlocked: {
+    backgroundColor: "#F1F5F9",
+  },
   menuText: {
     flex: 1,
     fontSize: 14,
@@ -481,6 +535,10 @@ const styles = StyleSheet.create({
   },
   menuTextDefault: {
     color: "#111827",
+    fontWeight: "500",
+  },
+  menuTextBlocked: {
+    color: "#94A3B8",
     fontWeight: "500",
   },
   divider: {

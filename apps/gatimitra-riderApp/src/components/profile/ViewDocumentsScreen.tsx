@@ -14,6 +14,8 @@ import { Ionicons } from "@expo/vector-icons";
 import type { ComponentProps } from "react";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
+import { useRiderOnboardingSummary } from "@/src/hooks/useRiderOnboardingSummary";
+import { ServiceEligibilityNotice } from "@/src/components/onboarding/ServiceEligibilityNotice";
 import {
   useRiderDocuments,
   type RiderKycDocStatus,
@@ -159,6 +161,9 @@ function DocumentRow({ doc }: { doc: RiderKycDocumentItem }) {
 export function ViewDocumentsScreen() {
   const { t } = useTranslation();
   const { data, isLoading, isError, refetch, isRefetching } = useRiderDocuments();
+  // Backend-authoritative eligibility so the rider sees, on the documents screen, which
+  // services a newly-submitted document will unlock (§20, §42). Refetched with the docs.
+  const { summary: onboardingSummary, refetch: refetchSummary } = useRiderOnboardingSummary();
 
   const verifiedCount = data?.verifiedCount ?? 0;
   const totalCount = data?.totalCount ?? 0;
@@ -208,7 +213,14 @@ export function ViewDocumentsScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={() => refetch()} tintColor={TEAL} />
+            <RefreshControl
+              refreshing={isRefetching}
+              onRefresh={() => {
+                void refetch();
+                void refetchSummary();
+              }}
+              tintColor={TEAL}
+            />
           }
         >
           <View style={[styles.summaryCard, kycCompleted && styles.summaryCardCompleted]}>
@@ -238,6 +250,12 @@ export function ViewDocumentsScreen() {
               </Text>
             </View>
           </View>
+
+          {onboardingSummary ? (
+            <View style={{ marginBottom: 16 }}>
+              <ServiceEligibilityNotice summary={onboardingSummary} />
+            </View>
+          ) : null}
 
           <Text style={styles.sectionLabel}>
             {t("profile.kycDocuments.allDocuments", "All documents")}

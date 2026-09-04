@@ -98,6 +98,110 @@ const OrderSummarySchema = z.object({
   cancelledByType: z.string().nullable().optional(),
 });
 
+const EligibilityReasonSchema = z.object({
+  code: z.string(),
+  reason: z.string(),
+  requiredAction: z.string().optional(),
+});
+const ServiceEligibilityDecisionSchema = z.object({
+  eligible: z.boolean(),
+  blocking: z.array(EligibilityReasonSchema),
+});
+export const RiderEligibilityStatusSchema = z.object({
+  attributes: z
+    .object({
+      vehicleClass: z.string().nullable().optional(),
+      fuelKind: z.string().nullable().optional(),
+      ownership: z.string().optional(),
+      dl: z.string().optional(),
+      rc: z.string().optional(),
+    })
+    .passthrough(),
+  resolvedGeo: z
+    .object({ level: z.string(), refId: z.string() })
+    .nullable(),
+  services: z.object({
+    food: ServiceEligibilityDecisionSchema,
+    parcel: ServiceEligibilityDecisionSchema,
+    person_ride: ServiceEligibilityDecisionSchema,
+  }),
+  /** True only when RIDER_ELIGIBILITY_MODE=enforce — the app hard-gates online toggling. */
+  enforced: z.boolean().optional().default(false),
+});
+
+const ServiceDecisionWithMissingSchema = z.object({
+  eligible: z.boolean(),
+  blocking: z.array(EligibilityReasonSchema),
+  missingDocuments: z.array(z.string()).optional().default([]),
+});
+
+const RiderVehicleViewSchema = z.object({
+  id: z.number(),
+  registrationNumber: z.string(),
+  registrationMasked: z.string(),
+  vehicleClass: z.string().nullable(),
+  vehicleType: z.string().nullable(),
+  fuelKind: z.string().nullable(),
+  ownership: z.string(),
+  commercial: z.boolean(),
+  verified: z.boolean(),
+  status: z.string(),
+  isActiveVehicle: z.boolean(),
+  services: z.object({
+    food: ServiceDecisionWithMissingSchema,
+    parcel: ServiceDecisionWithMissingSchema,
+    person_ride: ServiceDecisionWithMissingSchema,
+  }),
+});
+export const RiderVehiclesResponseSchema = z.object({
+  vehicles: z.array(RiderVehicleViewSchema),
+  activeVehicleId: z.number().nullable(),
+  resolvedGeo: z.object({ level: z.string(), refId: z.string() }).nullable(),
+});
+export type RiderVehicleView = z.infer<typeof RiderVehicleViewSchema>;
+export type RiderVehiclesResponse = z.infer<typeof RiderVehiclesResponseSchema>;
+export const RiderOnboardingSummarySchema = z.object({
+  riderId: z.number().optional(),
+  vehicle: z
+    .object({
+      vehicleClass: z.string().nullable().optional(),
+      fuelKind: z.string().nullable().optional(),
+      ownership: z.string().optional(),
+      vehicleType: z.string().nullable().optional(),
+    })
+    .nullable(),
+  documents: z.array(
+    z.object({
+      code: z.string(),
+      requiredForSomeService: z.boolean(),
+      state: z.string(),
+    })
+  ),
+  services: z.object({
+    food: ServiceDecisionWithMissingSchema,
+    parcel: ServiceDecisionWithMissingSchema,
+    person_ride: ServiceDecisionWithMissingSchema,
+  }),
+  resolvedGeo: z.object({ level: z.string(), refId: z.string() }).nullable(),
+  onboarding: z.object({
+    status: z.string(),
+    paymentEligible: z.boolean(),
+    eligibleServices: z.array(z.string()),
+    blockedServices: z.array(
+      z.object({
+        service: z.string(),
+        missingDocuments: z.array(z.string()),
+        reasons: z.array(z.string()),
+      })
+    ),
+    allEligible: z.boolean(),
+    nextAction: z.string(),
+  }),
+  enforced: z.boolean().optional().default(false),
+});
+export type RiderOnboardingSummary = z.infer<typeof RiderOnboardingSummarySchema>;
+export type RiderEligibilityStatus = z.infer<typeof RiderEligibilityStatusSchema>;
+
 const RiderBankAddGateSchema = z.object({
   locked: z.boolean(),
   unlockAt: z.string().nullable(),
@@ -1191,6 +1295,61 @@ export const riderApi = {
         },
         body: JSON.stringify(body),
         responseSchema: DutyStatusSchema,
+      }
+    );
+  },
+
+  /**
+   * Backend-authoritative per-service eligibility for the logged-in rider at a location.
+   * Powers the "preference != eligibility" dropdown surface — the app displays this
+   * decision (with reasons), it never computes eligibility itself.
+   */
+  async getServiceEligibilityStatus(coords?: { lat?: number; lng?: number } | null) {
+    const client = createApiClient();
+    const body: { lat?: number; lng?: number } = {};
+    if (coords?.lat != null && Number.isFinite(coords.lat)) body.lat = coords.lat;
+    if (coords?.lng != null && Number.isFinite(coords.lng)) body.lng = coords.lng;
+    return client.request<z.infer<typeof RiderEligibilityStatusSchema>>(
+      "/v1/rider/eligibility/status",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        responseSchema: RiderEligibilityStatusSchema,
+      }
+    );
+  },
+
+  /**
+   * Backend-authoritative onboarding + eligibility summary (§25, §26). The onboarding UI,
+   * payment gate, and Profile → Documents render this — never a client formula.
+   */
+  async getOnboardingSummary() {
+    const client = createApiClient();
+    return client.request<z.infer<typeof RiderOnboardingSummarySchema>>(
+      "/v1/rider/eligibility/onboarding-summary",
+      { method: "GET", responseSchema: RiderOnboardingSummarySchema }
+    );
+  },
+
+  /** The rider's vehicles with per-vehicle service eligibility + which one is active (§34/§38). */
+  async getVehicles() {
+    const client = createApiClient();
+    return client.request<z.infer<typeof RiderVehiclesResponseSchema>>(
+      "/v1/rider/eligibility/vehicles",
+      { method: "GET", responseSchema: RiderVehiclesResponseSchema }
+    );
+  },
+
+  /** Select the active vehicle. Backend validates ownership/verified/not-retired + live-order guard. */
+  async setActiveVehicle(vehicleId: number) {
+    const client = createApiClient();
+    return client.request<{ ok: boolean; activeVehicleId?: number; code?: string; reason?: string }>(
+      "/v1/rider/eligibility/active-vehicle",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ vehicleId }),
       }
     );
   },
