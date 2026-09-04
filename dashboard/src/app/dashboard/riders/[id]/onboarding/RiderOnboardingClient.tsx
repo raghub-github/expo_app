@@ -21,6 +21,7 @@ import { DocAutoVerificationDetailsView } from "@/components/verification/DocAut
 import { getRiderDocAutoVerificationDisplay } from "@/lib/rider-doc-auto-verification";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { RiderEligibilitySummaryCard } from "./RiderEligibilitySummaryCard";
+import { RiderVehiclesCard } from "./RiderVehiclesCard";
 import {
   ElectronicVerifyReviewModal,
   type ElectronicVerifyPending,
@@ -1229,6 +1230,9 @@ export default function RiderOnboardingClient() {
       {/* Backend-authoritative service eligibility (§41) — which services this rider can
           actually receive, and the documents gating the rest. */}
       <RiderEligibilitySummaryCard riderId={riderId} />
+
+      {/* Per-vehicle eligibility + verification history (§46). */}
+      <RiderVehiclesCard riderId={riderId} />
 
       {/* Identity Documents */}
       <div className="rounded-xl border border-gray-200/90 bg-white p-6 shadow-sm">

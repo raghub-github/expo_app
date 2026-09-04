@@ -18,6 +18,7 @@ import { pickMostSpecificGeoAnchor } from "../ride-state-config/rideStateConfig.
 import { resolveOnboardingDecision } from "./onboardingEligibility.js";
 import { resolveRiderOnboardingSummary } from "./onboardingEligibility.service.js";
 import { processDlExpiryNotifications } from "./dlExpiryNotifications.service.js";
+import { listRiderVehiclesWithEligibility } from "./riderVehicles.service.js";
 import {
   insertOverride,
   listOverridesForRider,
@@ -203,6 +204,36 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
     const summary = await resolveRiderOnboardingSummary(parsed.data.riderId);
     if (!summary) return reply.code(404).send({ error: "rider_not_found" });
     return reply.send(summary);
+  });
+
+  /** POST /v1/rider-eligibility/rider-vehicles (§46) — a rider's vehicles with per-vehicle
+   * service eligibility, for the agent/super-admin dashboard. Internal-secret gated. */
+  app.post("/rider-vehicles", async (req, reply) => {
+    if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
+      return reply.code(403).send({ error: "forbidden" });
+    }
+    const parsed = z.object({ riderId: z.number().int().positive() }).safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_request" });
+    const riderId = parsed.data.riderId;
+    const result = await listRiderVehiclesWithEligibility({ riderId });
+
+    // Compact DL/RC verification attempt history (§45) for the agent view.
+    let verificationHistory: Array<Record<string, unknown>> = [];
+    try {
+      const { getSql } = await import("../../db/client.js");
+      const rows = (await getSql()`
+        SELECT document_kind, status, status_reason, attempt_number, created_at
+        FROM verification_requests
+        WHERE subject_type = 'rider' AND subject_id = ${riderId}
+          AND document_kind IN ('driving_licence', 'vehicle_rc')
+        ORDER BY created_at DESC
+        LIMIT 20
+      `) as Array<Record<string, unknown>>;
+      verificationHistory = Array.isArray(rows) ? rows : [];
+    } catch {
+      /* history is best-effort */
+    }
+    return reply.send({ ...result, verificationHistory });
   });
 
   /* ── Admin ELIGIBILITY_OVERRIDE management (§31) — internal-secret gated ───────────── */
