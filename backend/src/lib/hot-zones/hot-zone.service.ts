@@ -1,41 +1,22 @@
 /**
- * Rider hot-zone engine — backend-authoritative demand/supply pressure over H3 cells.
+ * Rider hot-zone READ — serves the rider app from the persisted, city-wide state that the
+ * background reconciler (`hot-zone-reconciler.ts`) computes. The rider app never computes
+ * hotness (Part 32/57); the heavy demand/supply/pressure work happens once per tick in the
+ * reconciler, and this just returns the elevated cells within the rider's visibility radius
+ * (default 20km) for the rider's enabled services.
  *
- * Reuses the CANONICAL engines (Part 44): supply comes from
- * `queryRiderAvailabilityCandidates` (the same freshness/service/vehicle/capacity logic
- * dispatch uses), demand comes from recent `orders_core` at pickup. Both are bucketed
- * into H3 cells; the pure `pressure-model` classifies each cell per service. The rider
- * app receives the result — it never computes hotness (Part 32/57).
- *
- * Scope of THIS phase: on-demand computation for the rider's H3 neighbourhood, filtered
- * to the rider's enabled services. Hysteresis (Part 28) and persisted expiry (Part 29)
- * are wired for once the event-driven persistence layer lands — `classifyZone` already
- * accepts a prevStatus; here prevStatus is NORMAL (strict enter thresholds).
+ * This replaced the old on-demand per-rider computation: recomputing per request left
+ * hysteresis dormant and only looked at a ~1.4km neighbourhood. Now the rider sees the whole
+ * demand picture around them, and flicker is controlled by the reconciler's persisted state.
  */
-import { latLngToCell, cellToBoundary, cellToLatLng, gridDisk, gridDistance } from "h3-js";
+import { cellToBoundary } from "h3-js";
 import type { Sql } from "postgres";
 import { getSql } from "../../db/client.js";
-import {
-  queryRiderAvailabilityCandidates,
-  type DispatchServiceType,
-} from "@gatimitra/rider-availability";
-import { classifyZone, demandWeight, supplyContribution, type ZoneStatus } from "./pressure-model.js";
+import type { DispatchServiceType } from "@gatimitra/rider-availability";
+import type { ZoneStatus } from "./pressure-model.js";
 import { loadHotZoneConfig, type HotZoneEngineConfig } from "./hot-zone-config.js";
 
 export type ServiceType = DispatchServiceType; // "food" | "parcel" | "person_ride"
-
-/** Orders in these states are no longer demand (delivered is realized; the rest are dead). */
-const TERMINAL_STATUSES = [
-  "delivered",
-  "cancelled",
-  "failed",
-  "rejected",
-  "reached_user",
-  "rto_initiated",
-  "rto_in_transit",
-  "rto_delivered",
-  "rto_lost",
-];
 
 export type HotZoneServiceCell = {
   service: ServiceType;
@@ -56,7 +37,7 @@ export type HotZoneCell = {
   validUntil: string;
 };
 
-function orderTypeToService(t: string | null | undefined): ServiceType | null {
+function serviceFromDbType(t: string | null | undefined): ServiceType | null {
   const x = String(t ?? "").toLowerCase().trim();
   if (x === "food") return "food";
   if (x === "parcel") return "parcel";
@@ -66,6 +47,21 @@ function orderTypeToService(t: string | null | undefined): ServiceType | null {
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
+function haversineMeters(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const R = 6371008.8;
+  const dLat = ((bLat - aLat) * Math.PI) / 180;
+  const dLng = ((bLng - aLng) * Math.PI) / 180;
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((aLat * Math.PI) / 180) * Math.cos((bLat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.asin(Math.sqrt(s));
+}
+
+/**
+ * Elevated hot zones within the rider's visibility radius, for the rider's enabled services.
+ * A bounding-box prefilter narrows the row scan, then an exact haversine trims to the circle.
+ * Returns the same `HotZoneCell[]` shape the app already renders — the API is unchanged.
+ */
 export async function computeHotZonesForRider(args: {
   riderLat: number;
   riderLng: number;
@@ -85,111 +81,81 @@ export async function computeHotZonesForRider(args: {
     return { zones: [], config: cfg };
   }
 
-  const res = cfg.h3Resolution;
-  const originCell = latLngToCell(args.riderLat, args.riderLng, res);
-  const neighborhood = gridDisk(originCell, cfg.neighborhoodRings);
-  const neighborhoodSet = new Set(neighborhood);
-  const serviceSet = new Set(args.services);
+  const radiusM = cfg.visibilityRadiusMeters;
+  const latDelta = radiusM / 111_320;
+  const cosLat = Math.max(0.01, Math.cos((args.riderLat * Math.PI) / 180));
+  const lngDelta = radiusM / (111_320 * cosLat);
+  const serviceDbTypes = args.services; // 'food'|'parcel'|'person_ride' == order_type enum labels
 
-  // ---- DEMAND: recent, non-terminal orders at pickup → H3 cell, per service, time-decayed
-  const demand = new Map<string, Map<ServiceType, number>>();
-  const orders = (await db`
-    SELECT order_type, pickup_lat, pickup_lon, created_at
-    FROM orders_core
-    WHERE created_at > now() - (${cfg.demandWindowSeconds}::int * interval '1 second')
-      AND status::text <> ALL (${TERMINAL_STATUSES})
-      AND pickup_lat IS NOT NULL AND pickup_lon IS NOT NULL
+  const rows = (await db`
+    SELECT h3_index, resolution, service_type::text AS service_type, status,
+           center_lat, center_lng, weighted_demand, effective_supply, pressure,
+           computed_at, valid_until
+    FROM rider_hot_zone_state
+    WHERE valid_until > now()
+      AND service_type::text = ANY (${serviceDbTypes})
+      AND center_lat BETWEEN ${args.riderLat - latDelta} AND ${args.riderLat + latDelta}
+      AND center_lng BETWEEN ${args.riderLng - lngDelta} AND ${args.riderLng + lngDelta}
   `) as unknown as Array<{
-    order_type: string;
-    pickup_lat: number | string;
-    pickup_lon: number | string;
-    created_at: string | Date;
+    h3_index: string;
+    resolution: number;
+    service_type: string;
+    status: string;
+    center_lat: number | string;
+    center_lng: number | string;
+    weighted_demand: number | string;
+    effective_supply: number | string;
+    pressure: number | string;
+    computed_at: string | Date;
+    valid_until: string | Date;
   }>;
-  const now = Date.now();
-  for (const o of orders) {
-    const svc = orderTypeToService(o.order_type);
-    if (!svc || !serviceSet.has(svc)) continue;
-    const lat = Number(o.pickup_lat);
-    const lng = Number(o.pickup_lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-    const cell = latLngToCell(lat, lng, res);
-    if (!neighborhoodSet.has(cell)) continue;
-    const ageSec = Math.max(0, (now - new Date(o.created_at).getTime()) / 1000);
-    const w = demandWeight(ageSec, cfg);
-    let m = demand.get(cell);
-    if (!m) {
-      m = new Map();
-      demand.set(cell, m);
-    }
-    m.set(svc, (m.get(svc) ?? 0) + w);
-  }
 
-  // ---- SUPPLY: eligible riders (canonical engine) → H3 cell, capacity + ring-decay
-  const supply = new Map<string, Map<ServiceType, number>>();
-  for (const svc of args.services) {
-    const candidates = await queryRiderAvailabilityCandidates(db, {
+  // Group rows by cell → one HotZoneCell with a services[] array; trim to the exact circle.
+  const byCell = new Map<
+    string,
+    { resolution: number; lat: number; lng: number; validUntil: string; calculatedAt: string; services: HotZoneServiceCell[] }
+  >();
+  for (const r of rows) {
+    const svc = serviceFromDbType(r.service_type);
+    if (!svc) continue;
+    const clat = Number(r.center_lat);
+    const clng = Number(r.center_lng);
+    if (!Number.isFinite(clat) || !Number.isFinite(clng)) continue;
+    if (haversineMeters(args.riderLat, args.riderLng, clat, clng) > radiusM) continue;
+
+    let entry = byCell.get(r.h3_index);
+    if (!entry) {
+      entry = {
+        resolution: Number(r.resolution),
+        lat: clat,
+        lng: clng,
+        validUntil: new Date(r.valid_until).toISOString(),
+        calculatedAt: new Date(r.computed_at).toISOString(),
+        services: [],
+      };
+      byCell.set(r.h3_index, entry);
+    }
+    entry.services.push({
       service: svc,
-      lat: args.riderLat,
-      lng: args.riderLng,
-      radiusMeters: cfg.supplyRadiusMeters,
-      freshnessMaxAgeMinutes: cfg.locationFreshnessMaxAgeMinutes,
+      status: r.status as ZoneStatus,
+      demandScore: round2(Number(r.weighted_demand)),
+      supplyScore: round2(Number(r.effective_supply)),
+      pressure: round2(Number(r.pressure)),
     });
-    for (const c of candidates) {
-      if (!c.eligible) continue; // duty/service/vehicle/freshness already enforced
-      const cap = Math.max(0, Number(c.remainingCapacity) || 0);
-      if (cap <= 0) continue; // at capacity → no supply contribution
-      if (!Number.isFinite(c.lat) || !Number.isFinite(c.lng)) continue;
-      const riderCell = latLngToCell(c.lat, c.lng, res);
-      for (const cell of neighborhood) {
-        let ring: number;
-        try {
-          ring = gridDistance(riderCell, cell);
-        } catch {
-          continue; // non-adjacent across an icosahedron boundary — skip
-        }
-        if (ring < 0) continue;
-        const contrib = supplyContribution(cap, ring, cfg);
-        if (contrib <= 0) continue;
-        let m = supply.get(cell);
-        if (!m) {
-          m = new Map();
-          supply.set(cell, m);
-        }
-        m.set(svc, (m.get(svc) ?? 0) + contrib);
-      }
-    }
   }
 
-  // ---- CLASSIFY per cell per service; surface only cells with an elevated service
-  const calculatedAt = new Date();
-  const validUntil = new Date(calculatedAt.getTime() + cfg.validitySeconds * 1000);
   const zones: HotZoneCell[] = [];
-  for (const cell of neighborhood) {
-    const cellServices: HotZoneServiceCell[] = [];
-    for (const svc of args.services) {
-      const d = demand.get(cell)?.get(svc) ?? 0;
-      const s = supply.get(cell)?.get(svc) ?? 0;
-      const { status, pressure } = classifyZone({ weightedDemand: d, effectiveSupply: s, cfg });
-      if (status === "NORMAL") continue;
-      cellServices.push({
-        service: svc,
-        status,
-        demandScore: round2(d),
-        supplyScore: round2(s),
-        pressure: round2(pressure),
-      });
-    }
-    if (cellServices.length === 0) continue;
-    const [clat, clng] = cellToLatLng(cell);
-    const boundary = cellToBoundary(cell, true) as [number, number][]; // GeoJSON [lng,lat]
+  for (const [h3Index, e] of byCell) {
+    if (e.services.length === 0) continue;
+    const boundary = cellToBoundary(h3Index, true) as [number, number][]; // GeoJSON [lng,lat]
     zones.push({
-      h3Index: cell,
-      resolution: res,
-      center: { lat: clat, lng: clng },
+      h3Index,
+      resolution: e.resolution,
+      center: { lat: e.lat, lng: e.lng },
       boundary,
-      services: cellServices,
-      calculatedAt: calculatedAt.toISOString(),
-      validUntil: validUntil.toISOString(),
+      services: e.services,
+      calculatedAt: e.calculatedAt,
+      validUntil: e.validUntil,
     });
   }
 

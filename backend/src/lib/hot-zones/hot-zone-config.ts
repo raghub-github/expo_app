@@ -15,6 +15,12 @@ export type HotZoneEngineConfig = HotZoneConfig & {
   demandWindowSeconds: number;
   locationFreshnessMaxAgeMinutes: number;
   validitySeconds: number;
+  /** How far around the rider elevated zones are returned (metres). Default 20km. */
+  visibilityRadiusMeters: number;
+  /** Background reconciler cadence (seconds). */
+  reconcileIntervalSeconds: number;
+  /** Weight of an already-assigned order as demand (0 = only unassigned backlog counts). */
+  demandAssignedWeight: number;
 };
 
 export const DEFAULT_ENGINE_CONFIG: HotZoneEngineConfig = {
@@ -26,6 +32,9 @@ export const DEFAULT_ENGINE_CONFIG: HotZoneEngineConfig = {
   demandWindowSeconds: 900,
   locationFreshnessMaxAgeMinutes: 10,
   validitySeconds: 120,
+  visibilityRadiusMeters: 20000,
+  reconcileIntervalSeconds: 45,
+  demandAssignedWeight: 0,
 };
 
 const num = (v: unknown, d: number): number => {
@@ -61,8 +70,74 @@ export async function loadHotZoneConfig(sql?: Sql): Promise<HotZoneEngineConfig>
       criticalAt: num(r.critical_at, d.criticalAt),
       hysteresisMargin: num(r.hysteresis_margin, d.hysteresisMargin),
       validitySeconds: num(r.validity_seconds, d.validitySeconds),
+      visibilityRadiusMeters: num(r.visibility_radius_meters, d.visibilityRadiusMeters),
+      reconcileIntervalSeconds: num(r.reconcile_interval_seconds, d.reconcileIntervalSeconds),
+      demandAssignedWeight: num(r.demand_assigned_weight, d.demandAssignedWeight),
     };
   } catch {
     return DEFAULT_ENGINE_CONFIG;
   }
+}
+
+/** Whitelisted, admin-editable config fields (camelCase → the singleton row). */
+export type HotZoneConfigPatch = Partial<{
+  enabled: boolean;
+  h3Resolution: number;
+  neighborhoodRings: number;
+  supplyRadiusMeters: number;
+  demandWindowSeconds: number;
+  demandHalfLifeSeconds: number;
+  minWeightedDemand: number;
+  supplyRingDecay: number;
+  minSupplyFloor: number;
+  locationFreshnessMaxAgeMinutes: number;
+  warmAt: number;
+  hotAt: number;
+  criticalAt: number;
+  hysteresisMargin: number;
+  validitySeconds: number;
+  visibilityRadiusMeters: number;
+  reconcileIntervalSeconds: number;
+  demandAssignedWeight: number;
+}>;
+
+/**
+ * Update the single config row (id=1), COALESCE-merging only the provided fields so an
+ * admin can change any subset. Returns the freshly-loaded, fully-typed config.
+ */
+export async function updateHotZoneConfig(
+  patch: HotZoneConfigPatch,
+  sql?: Sql
+): Promise<HotZoneEngineConfig> {
+  const db = sql ?? getSql();
+  const p = patch;
+  const orNull = <T>(v: T | undefined): T | null => (v === undefined ? null : v);
+  await db`
+    INSERT INTO rider_hot_zone_config (id) VALUES (1)
+    ON CONFLICT (id) DO NOTHING
+  `;
+  await db`
+    UPDATE rider_hot_zone_config SET
+      enabled = COALESCE(${orNull(p.enabled)}, enabled),
+      h3_resolution = COALESCE(${orNull(p.h3Resolution)}, h3_resolution),
+      neighborhood_rings = COALESCE(${orNull(p.neighborhoodRings)}, neighborhood_rings),
+      supply_radius_meters = COALESCE(${orNull(p.supplyRadiusMeters)}, supply_radius_meters),
+      demand_window_seconds = COALESCE(${orNull(p.demandWindowSeconds)}, demand_window_seconds),
+      demand_half_life_seconds = COALESCE(${orNull(p.demandHalfLifeSeconds)}, demand_half_life_seconds),
+      min_weighted_demand = COALESCE(${orNull(p.minWeightedDemand)}, min_weighted_demand),
+      supply_ring_decay = COALESCE(${orNull(p.supplyRingDecay)}, supply_ring_decay),
+      min_supply_floor = COALESCE(${orNull(p.minSupplyFloor)}, min_supply_floor),
+      location_freshness_max_age_minutes = COALESCE(${orNull(p.locationFreshnessMaxAgeMinutes)}, location_freshness_max_age_minutes),
+      warm_at = COALESCE(${orNull(p.warmAt)}, warm_at),
+      hot_at = COALESCE(${orNull(p.hotAt)}, hot_at),
+      critical_at = COALESCE(${orNull(p.criticalAt)}, critical_at),
+      hysteresis_margin = COALESCE(${orNull(p.hysteresisMargin)}, hysteresis_margin),
+      validity_seconds = COALESCE(${orNull(p.validitySeconds)}, validity_seconds),
+      visibility_radius_meters = COALESCE(${orNull(p.visibilityRadiusMeters)}, visibility_radius_meters),
+      reconcile_interval_seconds = COALESCE(${orNull(p.reconcileIntervalSeconds)}, reconcile_interval_seconds),
+      demand_assigned_weight = COALESCE(${orNull(p.demandAssignedWeight)}, demand_assigned_weight),
+      updated_at = now()
+    WHERE id = 1
+  `;
+  return loadHotZoneConfig(db);
 }
