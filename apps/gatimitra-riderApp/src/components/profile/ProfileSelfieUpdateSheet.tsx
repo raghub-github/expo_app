@@ -4,13 +4,13 @@ import {
   Text,
   Modal,
   Pressable,
+  TouchableOpacity,
   ScrollView,
   StyleSheet,
   ActivityIndicator,
   Platform,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
@@ -21,12 +21,13 @@ import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { uploadRiderSelfieDocument } from "@/src/lib/upload-rider-selfie";
 import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
 import { colors } from "@/src/theme";
+import { useProfileSelfieSheetStore } from "@/src/stores/profileSelfieSheetStore";
 
 const SELFIE_TIPS = [
   "Face the camera directly",
   "Use good lighting",
   "Remove sunglasses, goggles, or mask",
-  "Blink once when the prompt appears",
+  "Tap Capture selfie when you are ready",
 ] as const;
 
 type Props = {
@@ -55,6 +56,12 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
       setSelfieUri(null);
       setUploading(false);
     }
+  }, [visible]);
+
+  useEffect(() => {
+    if (visible) useProfileSelfieSheetStore.getState().open();
+    else useProfileSelfieSheetStore.getState().close();
+    return () => useProfileSelfieSheetStore.getState().close();
   }, [visible]);
 
   const handleClose = useCallback(() => {
@@ -122,16 +129,44 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
   if (!visible) return null;
 
   const topInset = Math.max(insets.top, Platform.OS === "android" ? 28 : 0);
+  const uploadLabel = t("profile.selfieUpdate.upload", "Upload selfie");
+
+  function renderUploadButton() {
+    return (
+      <View
+        collapsable={false}
+        style={[styles.saveBtnShell, uploading && styles.saveBtnShellDisabled]}
+      >
+        <TouchableOpacity
+          activeOpacity={uploading ? 1 : 0.85}
+          onPress={() => {
+            if (!uploading) void handleSave();
+          }}
+          disabled={uploading}
+          accessibilityRole="button"
+          accessibilityLabel={uploadLabel}
+          style={styles.saveBtnHit}
+        >
+          {uploading ? (
+            <ActivityIndicator color="#FFFFFF" />
+          ) : (
+            <View style={styles.saveBtnRow}>
+              <Ionicons name="cloud-upload-outline" size={22} color="#FFFFFF" />
+              <Text style={styles.saveBtnText}>{uploadLabel}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <Modal
       visible
       animationType="slide"
       presentationStyle="fullScreen"
-      statusBarTranslucent
       onRequestClose={handleClose}
     >
-      <StatusBar style="light" translucent backgroundColor="transparent" />
       <View style={styles.root}>
         <LinearGradient
           colors={["#0F766E", "#0D9488", "#14B8A6"]}
@@ -156,7 +191,7 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
               <Text style={styles.subtitle}>
                 {t(
                   "profile.selfieUpdate.subtitle",
-                  "Live selfie with blink verification — gallery photos are not allowed."
+                  "Look at the camera and tap Capture selfie. Gallery photos are not allowed."
                 )}
               </Text>
             </View>
@@ -168,7 +203,7 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
           style={styles.scroll}
           contentContainerStyle={[
             styles.scrollContent,
-            { paddingBottom: Math.max(insets.bottom, 16) + 88 },
+            { paddingBottom: Math.max(insets.bottom, 24) + 16 },
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
@@ -185,40 +220,19 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
               uri={selfieUri}
               active={visible}
               disabled={uploading}
+              liveProbe={false}
               onCaptured={async (uri) => setSelfieUri(uri)}
               onRemove={() => setSelfieUri(null)}
               onRejected={(message) => notifyOnboardingToast(message)}
               hint={t(
                 "profile.selfieUpdate.hint",
-                "Blink your eyes when prompted — selfie captures automatically"
+                "Align your face, then tap Capture selfie"
               )}
               tips={SELFIE_TIPS}
+              capturedAction={renderUploadButton()}
             />
           </View>
         </ScrollView>
-
-        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-          <Pressable
-            onPress={() => void handleSave()}
-            disabled={!selfieUri || uploading}
-            style={({ pressed }) => [
-              styles.saveBtn,
-              (!selfieUri || uploading) && styles.saveBtnDisabled,
-              pressed && selfieUri && !uploading && styles.saveBtnPressed,
-            ]}
-          >
-            {uploading ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <>
-                <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" />
-                <Text style={styles.saveBtnText}>
-                  {t("profile.selfieUpdate.save", "Save profile photo")}
-                </Text>
-              </>
-            )}
-          </Pressable>
-        </View>
       </View>
     </Modal>
   );
@@ -283,17 +297,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     borderRadius: 20,
     padding: 20,
+    overflow: "visible",
     borderWidth: 1,
     borderColor: "#E2E8F0",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0F766E",
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.08,
-        shadowRadius: 12,
-      },
-      android: { elevation: 3 },
-    }),
   },
   stepPill: {
     alignSelf: "center",
@@ -313,34 +319,31 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: colors.primary[700],
   },
-  footer: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    backgroundColor: "rgba(244, 246, 248, 0.96)",
-    borderTopWidth: 1,
-    borderTopColor: "#E2E8F0",
+  saveBtnShell: {
+    alignSelf: "stretch",
+    width: "100%",
+    minHeight: 56,
+    borderRadius: 14,
+    backgroundColor: "#0D9488",
+    overflow: "hidden",
   },
-  saveBtn: {
+  saveBtnShellDisabled: {
+    backgroundColor: "#94A3B8",
+  },
+  saveBtnHit: {
+    minHeight: 56,
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+  },
+  saveBtnRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    backgroundColor: colors.primary[500],
-    borderRadius: 14,
-    minHeight: 52,
-    paddingVertical: 14,
-  },
-  saveBtnDisabled: {
-    backgroundColor: "#CBD5E1",
-  },
-  saveBtnPressed: {
-    backgroundColor: colors.primary[600],
   },
   saveBtnText: {
+    marginLeft: 8,
     fontSize: 16,
     fontWeight: "700",
     color: "#FFFFFF",

@@ -8,6 +8,8 @@ import {
   type UserAppCategoriesResponse,
 } from "@/services/userAppCategory.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
+import { rememberCategoryImageLastGood } from "@/lib/categoryImageLastGood";
 
 export const USER_APP_CATEGORIES_QUERY_ROOT = "userAppCategories";
 
@@ -34,9 +36,9 @@ const prefetchedImageUris = new Set<string>();
 /** In-flight prefetch promises so callers can await without double-fetch. */
 const prefetchInFlight = new Map<string, Promise<boolean>>();
 
-const PREFETCH_CONCURRENCY = 8;
-/** First screen of grid-first tabs (under + all + ~4 categories). */
-export const VISIBLE_CATEGORY_IMAGE_PREFETCH_COUNT = 8;
+const PREFETCH_CONCURRENCY = 10;
+/** Warm every visible chip (All + under-price + full rail) before paint when possible. */
+export const VISIBLE_CATEGORY_IMAGE_PREFETCH_COUNT = 24;
 
 async function prefetchOneUri(uri: string): Promise<boolean> {
   if (prefetchedImageUris.has(uri)) return true;
@@ -46,6 +48,7 @@ async function prefetchOneUri(uri: string): Promise<boolean> {
   const task = Image.prefetch(uri, { cachePolicy: "memory-disk" })
     .then(() => {
       prefetchedImageUris.add(uri);
+      markHeroMediaSessionReady(uri);
       prefetchInFlight.delete(uri);
       return true;
     })
@@ -128,6 +131,14 @@ export async function hydrateUserAppCategoriesMemoryFromStorage(): Promise<void>
   for (const [storeType, entry] of Object.entries(blob)) {
     if (entry?.response?.items?.length || entry?.response?.allTab) {
       memoryByStoreType.set(storeType, entry);
+      if (entry.response.allTab?.imageUrl) {
+        rememberCategoryImageLastGood("tab-category-all", entry.response.allTab.imageUrl);
+      }
+      for (const item of entry.response.items ?? []) {
+        if (item.imageUrl) {
+          rememberCategoryImageLastGood(`tab-category-${item.id}`, item.imageUrl);
+        }
+      }
       void prefetchUserAppCategoryImagesAwait(
         entry.response.items,
         entry.response.allTab?.imageUrl
@@ -142,8 +153,42 @@ export async function writeCachedUserAppCategories(
   storeType: string,
   response: UserAppCategoriesResponse
 ): Promise<void> {
-  const entry: CachedUserAppCategoriesEntry = { response, cachedAt: Date.now() };
+  // Preserve All-tab artwork when a refresh briefly omits imageUrl.
+  const prev = memoryByStoreType.get(storeType)?.response;
+  const mergedAllTab = {
+    label: response.allTab?.label?.trim() || prev?.allTab?.label || "All",
+    imageUrl:
+      response.allTab?.imageUrl?.trim() ||
+      prev?.allTab?.imageUrl?.trim() ||
+      null,
+  };
+  const mergedItems = response.items.map((item) => {
+    const prior = prev?.items?.find((p) => p.id === item.id);
+    return {
+      ...item,
+      imageUrl: item.imageUrl?.trim() || prior?.imageUrl?.trim() || null,
+    };
+  });
+  const merged: UserAppCategoriesResponse = {
+    ...response,
+    allTab: mergedAllTab,
+    items: mergedItems,
+  };
+
+  if (mergedAllTab.imageUrl) {
+    rememberCategoryImageLastGood("tab-category-all", mergedAllTab.imageUrl);
+  }
+  for (const item of mergedItems) {
+    if (item.imageUrl) {
+      rememberCategoryImageLastGood(`tab-category-${item.id}`, item.imageUrl);
+    }
+  }
+
+  const entry: CachedUserAppCategoriesEntry = { response: merged, cachedAt: Date.now() };
   memoryByStoreType.set(storeType, entry);
+  // Do not persist an empty rail — Super Admin may add GROCERY/FOOD tiles next,
+  // and a 24h disk cache of [] would hide them.
+  if (!merged.items.length) return;
   const blob = await readPersistedBlob();
   blob[storeType] = entry;
   await writePersistedBlob(blob);

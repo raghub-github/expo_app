@@ -4,7 +4,7 @@ import "@/src/utils/setup";
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
+import { DefaultTheme, ThemeProvider } from "@react-navigation/native";
 import { useFonts } from "expo-font";
 import { Lora_400Regular, Lora_600SemiBold, Lora_700Bold } from "@expo-google-fonts/lora";
 import {
@@ -18,7 +18,6 @@ import { View, Text, Platform } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import "react-native-reanimated";
 
-import { useColorScheme } from "@/components/useColorScheme";
 import { AppProviders } from "@/src/providers/AppProviders";
 import { usePermissionStore } from "@/src/stores/permissionStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
@@ -122,7 +121,6 @@ export default function RootLayout() {
 }
 
 function RootLayoutNav() {
-  const colorScheme = useColorScheme();
   const hydratePermissions = usePermissionStore((s) => s.hydrate);
   const hydrateSession = useSessionStore((s) => s.hydrate);
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
@@ -137,13 +135,13 @@ function RootLayoutNav() {
   try {
     return (
       <AppProviders>
-        <StatusBar style="dark" />
-        <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
+        <StatusBar style="dark" backgroundColor="#ffffff" translucent={false} animated={false} />
+        <ThemeProvider value={DefaultTheme}>
           <RiderPushSetup />
           <RiderPendingReferralResume />
           <RiderDutyLocationPing />
           <ActiveOrderResumeBootstrap />
-          {/* Keep the screen awake ONLY while an active order (Food/Parcel/Ride) exists. */}
+          {/* Keep the screen awake while the rider app is in the foreground. */}
           <ActiveOrderKeepAwakeGate />
           <RiderDispatchKeepAlive />
           <PreventServicesRealtime />
@@ -154,6 +152,9 @@ function RootLayoutNav() {
             screenOptions={{
               headerShown: false,
               contentStyle: { backgroundColor: "#ffffff" },
+              statusBarStyle: "dark",
+              statusBarAnimation: "none",
+              statusBarTranslucent: false,
             }}
           >
             <Stack.Screen

@@ -5,6 +5,9 @@
  * (empty path) when an order notification is tapped. Without this rewriter
  * Expo Router lands on the Unmatched Route screen.
  *
+ * New-order pushes deep-link to `/(tabs)?orderTab=New`. Lifecycle / rider /
+ * rating pushes deep-link to `/order/{foodId}` — preserve that path.
+ *
  * See: https://docs.expo.dev/router/advanced/native-intent/
  */
 
@@ -41,8 +44,15 @@ export function redirectSystemPath({
 }): string {
   try {
     const p = stripScheme(path ?? "");
+
+    // Preserve explicit New-tab deep links from MERCHANT_NEW_ORDER pushes.
+    if (/orderTab=New/i.test(p) || /(^|\/)new_order(\/|\?|$)/i.test(p)) {
+      return "/(tabs)?orderTab=New";
+    }
+
+    // Lifecycle / rider / rating: keep numeric order detail routes.
     const foodId = foodOrderIdFromPath(p);
-    if (foodId) return "/(tabs)?orderTab=New";
+    if (foodId) return `/order/${foodId}`;
 
     const empty =
       !p ||
@@ -51,9 +61,9 @@ export function redirectSystemPath({
       p === "/index" ||
       /^\/?\?/.test(p) ||
       /^\/+$/.test(p);
+    // Empty launcher URL: land on home; NotificationSetup still drains
+    // getLastNotificationResponseAsync for typed deep links.
     if (empty) return "/(tabs)";
-
-    if (/(^|\/)new_order(\/|\?|$)/i.test(p)) return "/(tabs)?orderTab=New";
 
     const ordersList = p.match(/^\/+orders\/?(?:\?(.*))?$/i);
     if (ordersList) {

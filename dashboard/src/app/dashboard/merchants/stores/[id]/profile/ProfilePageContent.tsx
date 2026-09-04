@@ -106,6 +106,8 @@ export type ProfilePageContentProps = {
    * blur legal docs + agreement (API already redacts payloads).
    */
   legalDocsRestricted?: boolean;
+  /** Super admin: unmask bank account number + copy actions. */
+  revealFullBankAccount?: boolean;
   openDocumentsVerification: () => void;
   openBankVerification: () => void;
   openProfileMediaVerification: () => void;
@@ -146,6 +148,7 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
     canManageBannerVideo = false,
     canEditBank = false,
     legalDocsRestricted = false,
+    revealFullBankAccount = false,
     openDocumentsVerification,
     openBankVerification,
     openProfileMediaVerification,
@@ -613,6 +616,7 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                           canStoreVerify={!legalDocsRestricted && canStoreVerify}
                           canEditBank={!legalDocsRestricted && canEditBank}
                           readOnlyRestricted={legalDocsRestricted}
+                          revealFullAccount={revealFullBankAccount}
                           storeName={
                             (displayStore.store_display_name as string | undefined) ||
                             (displayStore.store_name as string | undefined) ||

@@ -4,7 +4,7 @@
  * Recommended For You grid, All Restaurants section.
  */
 
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, TextInput, ScrollView, TouchableOpacity, StyleSheet, Dimensions, Image, Modal, Pressable, ActivityIndicator, useWindowDimensions, Platform, StatusBar as RNStatusBar, type ImageSourcePropType, type ImageStyle } from "react-native";
@@ -15,6 +15,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { merchantService, type MerchantSummary } from "@/services/merchant.service";
+import { prefetchMerchantCardImages } from "@/lib/imageEngine";
+import { prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
 import { type UserAppCategoryItem } from "@/services/userAppCategory.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useLocationStore } from "@/store/locationStore";
@@ -352,6 +354,14 @@ export default function CategoryBrowseScreen() {
     },
   });
 
+  useLayoutEffect(() => {
+    const list = Array.isArray(data) ? data : [];
+    if (list.length > 0) {
+      prefetchMerchantCardImages(list);
+      prefetchMerchantBanners(list);
+    }
+  }, [data]);
+
   useEffect(() => {
     void hydrateDietaryPreferences();
   }, [hydrateDietaryPreferences]);
@@ -474,12 +484,14 @@ export default function CategoryBrowseScreen() {
       debouncedCoords?.latitude,
       debouncedCoords?.longitude,
       effectiveVegOnly,
+      sheetStoreType,
     ],
     queryFn: () =>
       merchantService.listStoresByDishCategory({
         q: selectedCategoryLabel!,
         limit: 50,
         maxDistanceKm: 15,
+        storeType: sheetStoreType,
         ...(debouncedCoords?.latitude != null && debouncedCoords?.longitude != null
           ? { lat: debouncedCoords.latitude, lng: debouncedCoords.longitude }
           : {}),
@@ -500,24 +512,34 @@ export default function CategoryBrowseScreen() {
 
     // Primary: stores that sell this dish OR have a matching menu section.
     if (fromApi.length > 0) {
-      return fromApi.map((s) => {
-        const existing = nearbyById.get(s.id);
-        if (existing) {
+      return fromApi
+        .filter((s) => {
+          const st = (s.storeType ?? "").trim().toUpperCase();
+          if (!st) return true;
+          if (sheetStoreType === "GROCERY") return st === "GROCERY";
+          return st !== "GROCERY";
+        })
+        .map((s) => {
+          const existing = nearbyById.get(s.id);
+          if (existing) {
+            return {
+              ...existing,
+              distanceKm: existing.distanceKm ?? s.distanceKm ?? undefined,
+              storeType: existing.storeType ?? s.storeType ?? undefined,
+            };
+          }
           return {
-            ...existing,
-            distanceKm: existing.distanceKm ?? s.distanceKm ?? undefined,
-          };
-        }
-        return {
-          id: s.id,
-          name: s.name || s.id,
-          displayImage: s.bannerUrl ?? null,
-          banner_url: s.bannerUrl ?? null,
-          cuisines: s.cuisines ?? undefined,
-          distanceKm: s.distanceKm ?? undefined,
-          isOpen: true,
-        } as MerchantSummary;
-      });
+            id: s.id,
+            name: s.name || s.id,
+            displayImage: s.bannerUrl ?? null,
+            banner_url: s.bannerUrl ?? null,
+            galleryImages: undefined,
+            cuisines: s.cuisines ?? undefined,
+            distanceKm: s.distanceKm ?? undefined,
+            isOpen: true,
+            storeType: s.storeType ?? sheetStoreType,
+          } as MerchantSummary;
+        });
     }
 
     // Fallback while API empty: soft cuisine / name match on nearby list.
@@ -533,6 +555,7 @@ export default function CategoryBrowseScreen() {
     activeCategory,
     selectedCategoryLabel,
     categoryDishSearch?.stores,
+    sheetStoreType,
   ]);
 
   const displayMerchants = useMemo(
@@ -557,6 +580,12 @@ export default function CategoryBrowseScreen() {
       nearFast,
     ]
   );
+
+  useLayoutEffect(() => {
+    if (displayMerchants.length > 0) {
+      prefetchMerchantCardImages(displayMerchants);
+    }
+  }, [displayMerchants]);
 
   const isCategoryFocus = activeCategory !== "all";
   const recommended = displayMerchants.slice(0, 6);
@@ -592,8 +621,8 @@ export default function CategoryBrowseScreen() {
 
   const openFullSearch = useCallback(() => {
     const q = searchQuery.trim();
-    if (q) router.push({ pathname: "/search", params: { q } });
-    else router.push("/search");
+    if (q) router.push({ pathname: "/search", params: { q, storeType: "FOOD" } });
+    else router.push({ pathname: "/search", params: { storeType: "FOOD" } });
   }, [router, searchQuery]);
 
   // ── Virtualised restaurant list ────────────────────────────────────────────
@@ -808,7 +837,7 @@ export default function CategoryBrowseScreen() {
           <TouchableOpacity
             style={styles.micBtn}
             hitSlop={8}
-            onPress={() => router.push({ pathname: "/search", params: { voice: "1" } })}
+            onPress={() => router.push({ pathname: "/search", params: { voice: "1", storeType: "FOOD" } })}
             accessibilityLabel="Voice search"
           >
             <Ionicons name="mic-outline" size={22} color={accent} />

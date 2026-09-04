@@ -33,7 +33,7 @@ import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { useCustomerServiceBlockSheetStore } from "@/store/customerServiceBlockSheetStore";
 
 const PAGE_BG = GatiMitraColors.softBackground;
-const TEAL = GatiMitraColors.splashMint;
+const STATUS_CHROME = GatiMitraColors.softBackground;
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -151,14 +151,19 @@ export default function HomeScreen() {
     useCallback(() => {
       NativeStatusBar.setHidden(false, "none");
       if (Platform.OS === "android") {
-        NativeStatusBar.setBackgroundColor(PAGE_BG, true);
+        NativeStatusBar.setTranslucent(false);
+        NativeStatusBar.setBackgroundColor(STATUS_CHROME, true);
         NativeStatusBar.setBarStyle("dark-content", true);
       }
-      useScreenChromeStore.setState({
-        statusBarBackground: PAGE_BG,
-        statusBarStyle: "dark",
-        hideStatusBarSpacer: false,
-      });
+      // Don't clear immersive spacer while splash bootstrap is still fading —
+      // root spacer is 0 then and the header would slide under the status bar.
+      if (!useScreenChromeStore.getState().bootstrapActive) {
+        useScreenChromeStore.setState({
+          statusBarBackground: STATUS_CHROME,
+          statusBarStyle: "dark",
+          hideStatusBarSpacer: false,
+        });
+      }
       const now = Date.now();
       if (now - lastBlocksRefetchRef.current > 60_000) {
         lastBlocksRefetchRef.current = now;
@@ -195,7 +200,12 @@ export default function HomeScreen() {
         bounces={false}
         showsVerticalScrollIndicator={false}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={TEAL} colors={[TEAL]} />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={GatiMitraColors.splashMint}
+            colors={[GatiMitraColors.splashMint]}
+          />
         }
       >
         <HomePromoCarousel

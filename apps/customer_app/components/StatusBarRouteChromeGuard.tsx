@@ -2,11 +2,14 @@ import { useEffect } from "react";
 import { useSegments } from "expo-router";
 import {
   AppState,
+  Platform,
   StatusBar as NativeStatusBar,
   type AppStateStatus,
 } from "react-native";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
+import { GatiMitraColors } from "@/constants/gatimitra";
 
+const DEFAULT_SOLID_BAR = GatiMitraColors.softBackground;
 function barStyleFromChrome(
   style: "light" | "dark" | undefined,
   backgroundColor?: string
@@ -36,7 +39,12 @@ function assertStatusBarVisible(opts?: {
   backgroundColor?: string;
   barStyle?: "light" | "dark";
 }) {
-  applyBarVisibility(barStyleFromChrome(opts?.barStyle, opts?.backgroundColor));
+  const bg = opts?.backgroundColor ?? (opts?.solidWhite ? DEFAULT_SOLID_BAR : undefined);
+  applyBarVisibility(barStyleFromChrome(opts?.barStyle, bg));
+  if (Platform.OS === "android" && bg && bg !== "transparent") {
+    NativeStatusBar.setTranslucent(false);
+    NativeStatusBar.setBackgroundColor(bg, true);
+  }
 }
 
 /**
@@ -64,6 +72,8 @@ function routeAllowsImmersiveStatusBar(
   if (root === "home" && leaf === "meals-under-price") return true;
   // Category browse pads its own header — avoid root spacer + header insets.top double gap.
   if (root === "home" && leaf === "category") return true;
+  // Near Me is a native stack screen that draws under the status bar and pads itself.
+  if (root === "home" && leaf === "service" && (segments[2] ?? "") === "near-me") return true;
   // Payment success — green hero must paint under the status bar (never force white).
   // Live route is /orders/payment-success; /checkout/success is the legacy alias.
   if (root === "checkout" && leaf === "success") return true;
@@ -111,7 +121,7 @@ export function StatusBarRouteChromeGuard() {
       const bg =
         chrome.statusBarBackground && chrome.statusBarBackground !== "transparent"
           ? chrome.statusBarBackground
-          : "#FFFFFF";
+          : DEFAULT_SOLID_BAR;
       assertStatusBarVisible({
         backgroundColor: bg,
         barStyle: chrome.statusBarStyle,
@@ -139,7 +149,7 @@ export function StatusBarRouteChromeGuard() {
       const bg =
         chrome.statusBarBackground && chrome.statusBarBackground !== "transparent"
           ? chrome.statusBarBackground
-          : "#FFFFFF";
+          : DEFAULT_SOLID_BAR;
       assertStatusBarVisible({
         backgroundColor: bg,
         barStyle: chrome.statusBarStyle,
@@ -169,7 +179,7 @@ export function StatusBarRouteChromeGuard() {
     // set a solid dark bar (discovery wallet / store).
     const chrome = useScreenChromeStore.getState();
     const authChrome = (segments[0] ?? "") === "(auth)";
-    const desiredBar = authChrome ? "#F0F4F3" : "#FFFFFF";
+    const desiredBar = authChrome ? "#F0F4F3" : DEFAULT_SOLID_BAR;
     const hasSolidDarkChrome =
       chrome.statusBarStyle === "light" &&
       chrome.statusBarBackground !== "transparent" &&

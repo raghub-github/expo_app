@@ -1,6 +1,6 @@
 /**
  * Post-onboarding permission sheets — one at a time.
- * Priority: SMS (only when READ_SMS is applicable) → Location.
+ * Priority: SMS (only when READ_SMS is applicable) → Notifications (FCM) → Location.
  *
  * Does not push live GPS as Current Location. Signed-in bootstrap / resume
  * reconcile owns the active pin (saved address vs current).
@@ -12,8 +12,10 @@ import { useSegments } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
 import { SmsPermissionBottomSheet } from "@/components/SmsPermissionBottomSheet";
+import { PermissionPromptBottomSheet } from "@/components/permissions/PermissionPromptBottomSheet";
 import { useLocationStore } from "@/store/locationStore";
 import { useSmsPermissionStore } from "@/store/smsPermissionStore";
+import { useNotificationPushPromptStore } from "@/store/notificationPushPromptStore";
 import { useAuthStore } from "@/store/authStore";
 import { reconcileActiveLocationFromGps } from "@/lib/reconcileActiveLocationFromGps";
 import {
@@ -21,6 +23,7 @@ import {
   runExclusiveActiveLocationReconcile,
 } from "@/lib/activeLocationReconcileGate";
 import { getDeviceLocationReadiness } from "@gatimitra/expo-location-kit";
+import { runNotificationPushAllow } from "@/lib/notificationPushAllow";
 
 export function CustomerPermissionSheetsHost() {
   const segments = useSegments() as string[];
@@ -39,6 +42,10 @@ export function CustomerPermissionSheetsHost() {
   const promptSmsPermissionIfNeeded = useSmsPermissionStore((s) => s.promptSmsPermissionIfNeeded);
   const recheckAfterAppActive = useSmsPermissionStore((s) => s.recheckAfterAppActive);
 
+  const showNotificationSheet = useNotificationPushPromptStore((s) => s.showSheet);
+  const notificationAllowInFlight = useNotificationPushPromptStore((s) => s.allowInFlight);
+  const handleSkipNotification = useNotificationPushPromptStore((s) => s.handleSkip);
+
   const accessToken = useAuthStore((s) => s.session?.accessToken ?? null);
   const isAuth = segments[0] === "(auth)";
   const isOnboarding = segments[0] === "(onboarding)";
@@ -46,6 +53,7 @@ export function CustomerPermissionSheetsHost() {
 
   const finishActiveLocationBootstrap = useCallback(async () => {
     if (useSmsPermissionStore.getState().blocksLocation) return;
+    if (useNotificationPushPromptStore.getState().showSheet) return;
     await runExclusiveActiveLocationReconcile(async () => {
       await promptLocationPermissionIfNeeded({ force: true, skipDeviceFetch: true });
       const readiness = await getDeviceLocationReadiness();
@@ -94,6 +102,7 @@ export function CustomerPermissionSheetsHost() {
       void (async () => {
         await new Promise((r) => setTimeout(r, 800));
         if (useSmsPermissionStore.getState().allowInFlight) return;
+        if (useNotificationPushPromptStore.getState().allowInFlight) return;
         // Fresh OS revalidation after Settings / dialog — never use stale cache.
         await recheckAfterAppActive();
         if (!useSmsPermissionStore.getState().blocksLocation) {
@@ -107,16 +116,41 @@ export function CustomerPermissionSheetsHost() {
 
   useEffect(() => {
     if (!canShow || blocksLocation || allowInFlight) return;
+    if (showNotificationSheet || notificationAllowInFlight) return;
     void finishActiveLocationBootstrap();
-  }, [canShow, blocksLocation, allowInFlight, finishActiveLocationBootstrap]);
+  }, [
+    canShow,
+    blocksLocation,
+    allowInFlight,
+    showNotificationSheet,
+    notificationAllowInFlight,
+    finishActiveLocationBootstrap,
+  ]);
 
   const onAllowSms = useCallback(async () => {
     await handleAllowSmsPermission();
   }, [handleAllowSmsPermission]);
 
+  const onAllowNotifications = useCallback(async () => {
+    await runNotificationPushAllow();
+  }, []);
+
+  const onSkipNotifications = useCallback(() => {
+    void handleSkipNotification().then(() => {
+      void finishActiveLocationBootstrap();
+    });
+  }, [handleSkipNotification, finishActiveLocationBootstrap]);
+
   const smsVisible = canShow && showSmsSheet && !allowInFlight;
+  const notificationVisible =
+    canShow && showNotificationSheet && !smsVisible && !allowInFlight;
   const locationVisible =
-    canShow && showLocationModal && !blocksLocation && !allowInFlight && !smsVisible;
+    canShow &&
+    showLocationModal &&
+    !blocksLocation &&
+    !allowInFlight &&
+    !smsVisible &&
+    !notificationVisible;
 
   return (
     <>
@@ -128,6 +162,19 @@ export function CustomerPermissionSheetsHost() {
           onSkip={dismissSmsPermissionSheet}
         />
       ) : null}
+      <PermissionPromptBottomSheet
+        visible={notificationVisible}
+        icon="notifications-outline"
+        title="Turn on notifications"
+        message="Get order updates, delivery alerts, and important offers as system notifications — even when the app is closed."
+        note="You can change this anytime in your phone Settings. Skipping won't limit browsing or ordering."
+        noteTitle="Why we ask"
+        allowLabel="Allow notifications"
+        skipLabel="Skip for now"
+        loading={notificationAllowInFlight}
+        onAllow={() => void onAllowNotifications()}
+        onSkip={onSkipNotifications}
+      />
       <LocationPermissionModal
         visible={locationVisible}
         onDismiss={() => setShowLocationModal(false)}

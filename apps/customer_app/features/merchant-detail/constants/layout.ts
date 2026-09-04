@@ -1,7 +1,7 @@
 import { Dimensions } from "react-native";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+export const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
 /** Hero banner — transform-only collapse; never animate height. */
 export const HEADER_IMAGE_HEIGHT = 196;

@@ -5,12 +5,12 @@
  */
 
 import React, { useCallback, useState, useEffect, useMemo } from "react";
-import { View, TouchableOpacity, Pressable, StyleSheet, Dimensions, ActivityIndicator } from "react-native";
+import { View, TouchableOpacity, Pressable, StyleSheet, useWindowDimensions, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
-import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
+import { warmMerchantHeroImage, prefetchMerchantHeroImageUri } from "@/lib/merchantHeroWarmCache";
 import { useScrollSafePress } from "@/hooks/useScrollSafePress";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { setStoreBookmark } from "@/services/merchant.service";
@@ -34,9 +34,7 @@ import { AppText } from "@/components/AppText";
 import { usePreventServicesAtPin } from "@/hooks/usePreventServicesAtPin";
 import { useStoreMembershipFreeDelivery } from "@/hooks/useStoreMembershipFreeDelivery";
 
-const { width } = Dimensions.get("window");
 const PAGE_PAD = 16;
-const CARD_WIDTH = width - PAGE_PAD * 2;
 const IMAGE_HEIGHT = 220;
 const CARD_RADIUS = 20;
 const CARD_GAP = 18;
@@ -60,6 +58,8 @@ function GMRestaurantCardV2Inner({
 }: GMRestaurantCardV2Props) {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { width: windowWidth } = useWindowDimensions();
+  const cardWidth = Math.max(1, windowWidth - PAGE_PAD * 2);
   const { bookmarkSet } = useStoreBookmarks();
   const { syncBookmark } = useStoreBookmarkMutations();
   const { foodLocked } = usePreventServicesAtPin();
@@ -81,14 +81,28 @@ function GMRestaurantCardV2Inner({
 
   const bannerUri = useMemo(
     () => resolveMerchantCarouselBannerUri(merchant) ?? resolveMerchantBannerUri(merchant),
-    [merchant]
+    [
+      merchant.id,
+      merchant.banner_url,
+      merchant.displayImage,
+      merchant.galleryImages,
+      (merchant as { bannerUrl?: string | null }).bannerUrl,
+      (merchant as { imageUrl?: string | null }).imageUrl,
+    ]
+  );
+
+  const galleryUris = useMemo(
+    () => resolveMerchantCarouselGalleryUris(merchant),
+    [merchant.id, merchant.banner_url, merchant.displayImage, merchant.galleryImages]
   );
 
   useEffect(() => {
     warmMerchantHeroImage(merchant.id, bannerUri);
-  }, [merchant.id, bannerUri]);
+    const firstGallery = galleryUris[0];
+    if (firstGallery) prefetchMerchantHeroImageUri(firstGallery);
+  }, [merchant.id, bannerUri, galleryUris]);
 
-  const galleryUris = useMemo(() => resolveMerchantCarouselGalleryUris(merchant), [merchant]);
+  const hasCarouselGallery = galleryUris.length > 0;
 
   const deliveryTimeLabel = useMemo(
     () =>
@@ -130,6 +144,8 @@ function GMRestaurantCardV2Inner({
     onPressIn: () => {
       if (listingBlocked) return;
       warmMerchantHeroImage(merchant.id, bannerUri);
+      const firstGallery = galleryUris[0];
+      if (firstGallery) prefetchMerchantHeroImageUri(firstGallery);
     },
   });
 
@@ -145,7 +161,7 @@ function GMRestaurantCardV2Inner({
   return (
     <>
     <Pressable
-      style={[styles.card, { marginBottom: bottomSpacing }, listingBlocked && styles.cardBlocked]}
+      style={[styles.card, { width: cardWidth, marginBottom: bottomSpacing }, listingBlocked && styles.cardBlocked]}
       onPress={cardPress.onPress}
       onPressIn={cardPress.onPressIn}
       onPressOut={cardPress.onPressOut}
@@ -157,15 +173,18 @@ function GMRestaurantCardV2Inner({
         <StoreBannerCarousel
           bannerUri={bannerUri}
           galleryUris={galleryUris}
-          width={CARD_WIDTH}
+          width={cardWidth}
           height={IMAGE_HEIGHT}
           borderRadius={CARD_RADIUS}
           holdMs={LIST_CARD_CAROUSEL_HOLD_MS}
           slideMs={LIST_CARD_CAROUSEL_SLIDE_MS}
           dimmed={!isOpen || listingBlocked}
-          showDots={galleryUris.length > 0 && !listingBlocked}
+          showDots={hasCarouselGallery && !listingBlocked}
           hidePlaceholderIcon
-          enableSwipe={!listingBlocked}
+          enableKenBurns={false}
+          enableSwipe={!listingBlocked && hasCarouselGallery}
+          enableAutoRotate={hasCarouselGallery}
+          enableInfiniteLoop={hasCarouselGallery}
           deferTapToParent
           onSwipeGesture={onCarouselSwipe}
           onGestureComplete={onCarouselGestureComplete}
@@ -269,6 +288,8 @@ function GMRestaurantCardV2Inner({
 export const GMRestaurantCardV2 = React.memo(GMRestaurantCardV2Inner, (prev, next) => {
   const a = prev.merchant;
   const b = next.merchant;
+  const galleryEqual =
+    (a.galleryImages?.join("|") ?? "") === (b.galleryImages?.join("|") ?? "");
   return (
     prev.initialSaved === next.initialSaved &&
     prev.weatherDelayMinutes === next.weatherDelayMinutes &&
@@ -280,6 +301,7 @@ export const GMRestaurantCardV2 = React.memo(GMRestaurantCardV2Inner, (prev, nex
     a.nextCloseAt === b.nextCloseAt &&
     a.displayImage === b.displayImage &&
     a.banner_url === b.banner_url &&
+    galleryEqual &&
     a.offerText === b.offerText &&
     a.avgRating === b.avgRating &&
     a.forYouRating === b.forYouRating &&
@@ -294,7 +316,6 @@ export const GMRestaurantCardV2 = React.memo(GMRestaurantCardV2Inner, (prev, nex
 
 const styles = StyleSheet.create({
   card: {
-    width: CARD_WIDTH,
     alignSelf: "center",
     backgroundColor: GatiMitraColors.cardSurface,
     borderRadius: CARD_RADIUS,
@@ -313,6 +334,7 @@ const styles = StyleSheet.create({
     height: IMAGE_HEIGHT,
     position: "relative" as const,
     overflow: "hidden",
+    backgroundColor: GatiMitraColors.softBackground,
     borderTopLeftRadius: CARD_RADIUS,
     borderTopRightRadius: CARD_RADIUS,
   },

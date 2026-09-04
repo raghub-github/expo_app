@@ -35,6 +35,11 @@ import * as SecureStore from "expo-secure-store";
 import { useMerchantWalletFreezeLive } from "@/hooks/useMerchantWalletFreezeLive";
 import { useMerchantStoreDelistLive } from "@/hooks/useMerchantStoreDelistLive";
 import { installMerchantForegroundNotificationHandler } from "@/lib/merchantNotificationHandler";
+import {
+  MERCHANT_NEW_ORDER_CHANNEL_ID,
+  MERCHANT_NEW_ORDER_SOUND,
+  isMerchantNewOrderPushData,
+} from "@/lib/merchantNewOrderChannel";
 
 const LORA = "Lora_400Regular";
 const LORA_BOLD = "Lora_700Bold";
@@ -52,13 +57,7 @@ function isMerchantComplaintPush(data: Record<string, unknown>): boolean {
 }
 
 function isMerchantNewOrderPush(data: Record<string, unknown>): boolean {
-  const t = String(data.type ?? data.event ?? data.gmType ?? data.template_code ?? "").toLowerCase();
-  return (
-    t === "merchant_new_order" ||
-    t === "new_order" ||
-    data.screen === "new_order" ||
-    String(data.template_code ?? "").toUpperCase() === "MERCHANT_NEW_ORDER"
-  );
+  return isMerchantNewOrderPushData(data);
 }
 
 /**
@@ -238,12 +237,21 @@ export default function NotificationSetup() {
     () => ({
       apiBaseUrl,
       androidPackageName: "com.gatimitra.partner",
+      // Partner installs its own foreground handler (new-order sound rules).
+      skipDefaultNotificationHandler: true,
       androidChannels: [
+        {
+          channelId: MERCHANT_NEW_ORDER_CHANNEL_ID,
+          name: "New order alerts",
+          lightColor: "#3EB489",
+          // AndroidImportance.MAX — heads-up + lockscreen for killed-app new orders.
+          importance: 5,
+          sound: MERCHANT_NEW_ORDER_SOUND,
+        },
         {
           channelId: "merchant_new_orders",
           name: "New orders",
           lightColor: "#3EB489",
-          // AndroidImportance.MAX
           importance: 5,
         },
         {

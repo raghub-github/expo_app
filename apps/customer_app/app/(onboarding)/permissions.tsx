@@ -409,6 +409,16 @@ export default function OnboardingPermissionsScreen() {
           if (snap.osStatus === "granted") {
             next = { ...status, notifications: "granted" };
             setStatus(next);
+            const hasPushToken = Boolean(
+              (snap.expoPushToken && snap.expoPushToken.length > 8) ||
+                (snap.nativePushToken && snap.nativePushToken.length > 8)
+            );
+            if (hasPushToken || snap.lastBackendSyncOk) {
+              const { useNotificationPushPromptStore } = await import(
+                "@/store/notificationPushPromptStore"
+              );
+              await useNotificationPushPromptStore.getState().markTokenRegistered();
+            }
             goNext();
           } else {
             next = { ...status, notifications: "denied" };

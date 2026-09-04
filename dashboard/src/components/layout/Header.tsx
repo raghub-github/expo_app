@@ -78,8 +78,13 @@ import {
   writeStoredMerchantsPortal,
   resolveMerchantsPortal,
   isAdminOnlyMerchantsPath,
+  isMerchantAdminInnerPage,
+  merchantAdminInnerPageTitle,
+  MERCHANT_ADMIN_HOME_HREF,
   type MerchantsPortal,
 } from "@/lib/merchants/portal-preference";
+import { storeIdFromPathname } from "@/lib/merchants/effective-store-id";
+import { resolveMerchantStoreBackHref } from "@/lib/merchants/merchant-store-return";
 import {
   PERSON_RIDE_SEARCH_TYPES,
   normalizePersonRideSearchType,
@@ -631,6 +636,8 @@ function HeaderComponent() {
       if (step != null) return storeVerificationStepLabel(step);
       return "Verifications";
     }
+    const adminInnerTitle = merchantAdminInnerPageTitle(clean, searchParams);
+    if (adminInnerTitle) return adminInnerTitle;
     if (clean.startsWith("/dashboard/tickets/queue")) {
       return resolveTicketsQueueHeaderTitle(clean, searchParams.get("section"));
     }
@@ -697,6 +704,16 @@ function HeaderComponent() {
   const leftSidebarMobile = useLeftSidebarMobile();
   const rightSidebar = useRightSidebar();
   const cleanPathname = useMemo(() => effectivePathname.split("?")[0].split("#")[0], [effectivePathname]);
+  const isMerchantStorePage = /^\/dashboard\/merchants\/stores\/\d+(\/|$)/.test(cleanPathname);
+  const isMerchantAdminInnerPageView = isMerchantAdminInnerPage(cleanPathname, searchParams);
+  const merchantStoreBackHref = useMemo(
+    () =>
+      resolveMerchantStoreBackHref({
+        storeId: storeIdFromPathname(cleanPathname),
+        returnToParam: searchParams.get("returnTo"),
+      }),
+    [cleanPathname, searchParams]
+  );
   const isGeoRiderAvailabilityPage =
     cleanPathname === "/dashboard/rx" ||
     cleanPathname.startsWith("/dashboard/rx/") ||
@@ -1418,6 +1435,28 @@ function HeaderComponent() {
               </nav>
             </div>
           </div>
+        ) : isMerchantStorePage ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <HeaderBackButton
+              href={merchantStoreBackHref}
+              ariaLabel="Back to Merchants"
+              title="Back to Merchants"
+            />
+            <h2 className="min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg">
+              {pageName}
+            </h2>
+          </div>
+        ) : isMerchantAdminInnerPageView ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <HeaderBackButton
+              href={MERCHANT_ADMIN_HOME_HREF}
+              ariaLabel="Back to Merchants"
+              title="Back to Merchants"
+            />
+            <h2 className="min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg">
+              {pageName}
+            </h2>
+          </div>
         ) : isGeoRiderAvailabilityPage ? (
           <div className="min-w-0 flex flex-col justify-center">
             <h2 className="min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg leading-tight">
@@ -1543,6 +1582,7 @@ function HeaderComponent() {
         !isGeoRiderAvailabilityPage &&
         !isAmOnboardingFailedPage &&
         !isParentOnboardingPage &&
+        !isMerchantStorePage &&
         !effectivePathname.startsWith("/dashboard/merchants/verifications") ? (
         <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4 min-w-0">
           <DashboardSearch compact={true} />
@@ -1554,7 +1594,8 @@ function HeaderComponent() {
         {isMerchantsAreaForDisplay &&
           portalToggleMounted &&
           canUseMerchantPortalToggle &&
-          !isStoreVerificationDetail && (
+          !isStoreVerificationDetail &&
+          !isMerchantStorePage && (
           <div className="flex rounded-[10px] border border-[#121212]/10 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Admin or Merchant portal">
             <button
               type="button"

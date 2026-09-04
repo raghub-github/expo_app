@@ -10,7 +10,6 @@ import {
   Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { StatusBar } from "expo-status-bar";
 import { useTranslation } from "react-i18next";
 import * as Location from "expo-location";
 import { useSessionStore } from "@/src/stores/sessionStore";
@@ -655,11 +654,6 @@ export default function OrdersScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar
-        style="dark"
-        backgroundColor={ORDERS_HEADER_BG}
-        translucent={false}
-      />
       {/* Header owns status-bar padding — avoids translucent leftover from splash. */}
       <View style={styles.chrome}>
         <HomeMapHeader />

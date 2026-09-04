@@ -1,14 +1,12 @@
 /**
  * Six service cards in a 2-column grid — height adapts to fill one-screen home layout.
  *
- * Order (default when parcel + grocery both active):
- * 1 Food, 2 Ride, 3 Parcel, 4 Grocery, 5 E-Commerce, 6 Nearby
- * When parcel is inactive and grocery is active, Grocery shifts to slot 3.
+ * Base order: Food, Ride, Parcel/Grocery mid, Ecom.
+ * Explore Nearby is inserted just after the last currently-active card.
  */
 
 import { useLayoutEffect, useMemo, useEffect, useRef, useState, useCallback } from "react";
 import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
@@ -19,6 +17,7 @@ import { FrozenServiceIconCircle } from "@/components/FrozenServiceIconCircle";
 import type { CustomerHomeServiceId } from "@/lib/customerHomeServiceMeta";
 import { prefetchCriticalHomeAssetImagesSync } from "@/lib/homeCriticalAssets";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
+import { useServiceCardOfferPills } from "@/hooks/useServiceCardOfferPills";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -26,32 +25,48 @@ const GAP = 8;
 const COLS = 2;
 const CARD_W = Math.floor((SCREEN_W - PAD * 2 - GAP * (COLS - 1)) / COLS);
 const DEFAULT_CARD_H = 118;
+const CARD_RADIUS = 14;
+const CORNER_PILL_PAD_V = 5;
+const CORNER_PILL_PAD_H = 9;
+const CORNER_PILL_INNER_R = 14;
+const CORNER_PILL_FONT = 9;
+const CORNER_PILL_LINE = 12;
+/** Solid forest green — matches reference offer corner badge. */
+const OFFER_PILL_GREEN = "#15803D";
+/** Alias kept so Metro HMR never throws if a prior gradient paint still reads this name. */
+const OFFER_PILL_GREEN_TOP = OFFER_PILL_GREEN;
+/** Uniform illustration box for every service tile (prevents grocery art looking larger). */
+const SERVICE_IMAGE_BOX = 52;
 /** Only show image skeleton if load takes longer than this (avoids flash on cache hit). */
 const SERVICE_IMAGE_SKELETON_DELAY_MS = 220;
 
 function ServiceCardImage({
   assetKey,
-  imageSize,
-  iconWrap,
+  imageScale = 1,
 }: {
   assetKey: string;
-  imageSize: number;
-  iconWrap: number;
+  imageScale?: number;
 }) {
   const assetUrl = useAppAssetsStore((s) => s.assets[assetKey]?.url ?? s.assets[assetKey]?.proxyUrl ?? null);
-  const imageReadyRef = useRef(false);
+  const hasCachedUrl = Boolean(assetUrl?.trim());
+  const imageReadyRef = useRef(hasCachedUrl);
   const [showSkeleton, setShowSkeleton] = useState(false);
-  const [imageVisible, setImageVisible] = useState(false);
+  // Keep image visible once painted — never hide on URL refresh (stale-while-revalidate).
+  const [imageVisible, setImageVisible] = useState(hasCachedUrl);
 
   useEffect(() => {
-    imageReadyRef.current = false;
+    // Only reset skeleton timer when switching to a different asset key.
+    // URL churn (signed URL rotate / CMS refresh) must not blank the tile.
+    if (imageReadyRef.current || imageVisible) {
+      setShowSkeleton(false);
+      return;
+    }
     setShowSkeleton(false);
-    setImageVisible(false);
     const timer = setTimeout(() => {
       if (!imageReadyRef.current) setShowSkeleton(true);
     }, SERVICE_IMAGE_SKELETON_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [assetKey, assetUrl]);
+  }, [assetKey, imageVisible]);
 
   const handleImageLoad = useCallback(() => {
     imageReadyRef.current = true;
@@ -59,22 +74,25 @@ function ServiceCardImage({
     setImageVisible(true);
   }, []);
 
+  const drawSize = Math.round(SERVICE_IMAGE_BOX * Math.min(1, Math.max(0.5, imageScale)));
+
   return (
-    <View style={[styles.imageWrap, { width: iconWrap, height: iconWrap }]}>
-      {showSkeleton ? (
+    <View style={[styles.imageWrap, { width: SERVICE_IMAGE_BOX, height: SERVICE_IMAGE_BOX }]}>
+      {showSkeleton && !imageVisible ? (
         <GMSkeleton
           style={[
             styles.imageSkeleton,
-            { width: imageSize, height: imageSize, borderRadius: Math.round(imageSize * 0.22) },
+            {
+              width: SERVICE_IMAGE_BOX,
+              height: SERVICE_IMAGE_BOX,
+              borderRadius: Math.round(SERVICE_IMAGE_BOX * 0.22),
+            },
           ]}
         />
       ) : null}
       <AppAssetImage
         assetKey={assetKey}
-        style={[
-          { width: imageSize, height: imageSize },
-          !imageVisible && styles.imageLoadingHidden,
-        ]}
+        style={{ width: drawSize, height: drawSize }}
         contentFit="contain"
         onLoad={handleImageLoad}
       />
@@ -85,65 +103,76 @@ function ServiceCardImage({
 type ServiceItem = {
   id: CustomerHomeServiceId;
   title: string;
+  description: string;
   pill?: string;
-  arrowColor: string;
+  /** Theme accent — drives active pill fill/text. */
+  accentColor: string;
+  /** Scale down assets that optically fill more of the box (e.g. grocery cart). */
+  imageScale?: number;
   assetKey: string;
   route: string;
 };
 
-const ALWAYS_DISABLED_IDS = new Set<string>(["ecom", "near-me"]);
+const ALWAYS_DISABLED_IDS = new Set<string>(["ecom"]);
 
 const FOOD: ServiceItem = {
   id: "food",
   title: "Order Food",
+  description: "Delicious meals, delivered hot & fast to your door.",
   pill: "Fresh & Fast Delivery",
-  arrowColor: "#7C3AED",
+  accentColor: "#7C3AED",
   assetKey: CX.home.serviceFood,
   route: "/home",
 };
 const RIDE: ServiceItem = {
   id: "ride",
   title: "Book a Ride",
+  description: "Safe, comfortable & affordable rides anytime.",
   pill: "Going Out",
-  arrowColor: "#16A34A",
+  accentColor: "#16A34A",
   assetKey: CX.home.serviceRide,
   route: "/home/service/ride",
 };
 const PARCELS: ServiceItem = {
   id: "parcels",
   title: "Courier Service",
+  description: "Send anything, anywhere with speed & care.",
   pill: "Send Parcels",
-  arrowColor: "#EA580C",
+  accentColor: "#EA580C",
   assetKey: CX.home.serviceParcel,
   route: "/home/service/parcels",
 };
 const GROCERY: ServiceItem = {
   id: "grocery",
   title: "Grocery",
+  description: "Get daily essentials delivered to your home.",
   pill: "Fresh Daily",
-  arrowColor: "#EA580C",
-  // Reuse former Online Vouchers artwork for Grocery.
+  accentColor: "#EA580C",
+  // Cart art fills more of the canvas — match visual size of other tiles.
+  imageScale: 0.82,
   assetKey: CX.home.serviceVoucher,
   route: "/home/grocery",
 };
 const ECOM: ServiceItem = {
   id: "ecom",
   title: "E-Commerce",
+  description: "Shop your favorite products from trusted stores.",
   pill: "Elect & Ecom",
-  arrowColor: "#2563EB",
+  accentColor: "#2563EB",
   assetKey: CX.home.serviceEcommerce,
   route: "/home/shop",
 };
 const NEAR_ME: ServiceItem = {
   id: "near-me",
   title: "Explore Nearby",
+  description: "Find top places, restaurants & services around you.",
   pill: "Near Me",
-  arrowColor: "#DB2777",
+  accentColor: "#DB2777",
   assetKey: CX.home.serviceLocation,
   route: "/home/service/near-me",
 };
 
-/** Parcel inactive + grocery active → grocery takes slot 3; otherwise parcel stays at 3. */
+/** Parcel inactive + grocery active → grocery takes mid slot before parcel. */
 export function orderHomeServices(opts: {
   parcelEnabled: boolean;
   groceryEnabled: boolean;
@@ -153,9 +182,32 @@ export function orderHomeServices(opts: {
   return [FOOD, RIDE, ...mid, ECOM, NEAR_ME];
 }
 
+/**
+ * Keep Explore Nearby immediately after the last active card (before inactive tiles).
+ */
+export function orderHomeServicesWithNearbyPlacement(
+  opts: {
+    parcelEnabled: boolean;
+    groceryEnabled: boolean;
+  },
+  isEnabled: (id: CustomerHomeServiceId) => boolean
+): ServiceItem[] {
+  const base = orderHomeServices(opts).filter((s) => s.id !== "near-me");
+  let lastActive = -1;
+  for (let i = 0; i < base.length; i++) {
+    if (isEnabled(base[i]!.id)) lastActive = i;
+  }
+  const insertAt = lastActive >= 0 ? lastActive + 1 : 0;
+  const next = [...base];
+  next.splice(insertAt, 0, NEAR_ME);
+  return next;
+}
+
 type ServiceTileProps = {
   item: ServiceItem;
   cardHeight: number;
+  /** Top-right offer pill — only when a live geo offer exists. */
+  offerPillLabel?: string | null;
 };
 
 type Props = {
@@ -185,6 +237,8 @@ function isServiceEnabled(
   if (id === "ride") return enabledServices.ride;
   if (id === "parcels") return enabledServices.parcels;
   if (id === "grocery") return enabledServices.grocery === true;
+  // Explore Nearby lists food + grocery stores — active when either vertical is on.
+  if (id === "near-me") return enabledServices.food === true || enabledServices.grocery === true;
   return false;
 }
 
@@ -204,6 +258,7 @@ function accountBlockReasonFor(
 function ServiceTile({
   item,
   cardHeight,
+  offerPillLabel,
   enabled,
   accountBlockReason,
   onAccountBlockedPress,
@@ -218,14 +273,16 @@ function ServiceTile({
   ) => void;
 }) {
   const router = useRouter();
-  const imageSize = Math.round(cardHeight * 0.48);
-  const iconWrap = Math.round(imageSize * 1.12);
   const isAccountBlocked = Boolean(accountBlockReason);
   const overlayIconSize = Math.round(cardHeight * 0.26);
 
   return (
     <TouchableOpacity
-      style={[styles.card, { height: cardHeight }]}
+      style={[
+        styles.card,
+        { height: cardHeight },
+        offerPillLabel ? styles.cardWithOffer : null,
+      ]}
       activeOpacity={enabled || isAccountBlocked ? 0.88 : 1}
       disabled={!enabled && !isAccountBlocked}
       onPress={() => {
@@ -241,30 +298,55 @@ function ServiceTile({
         if (enabled) router.push(item.route as never);
       }}
     >
-      {item.pill ? (
-        <View style={styles.pill}>
-          <AppText style={[styles.pillText, !enabled && styles.textMuted]} numberOfLines={1}>
-            {item.pill}
-          </AppText>
+      {offerPillLabel ? (
+        <View style={styles.offerCornerPill} pointerEvents="none">
+          <View style={styles.offerCornerPillFill}>
+            <AppText style={styles.offerCornerPillText} numberOfLines={1}>
+              {offerPillLabel}
+            </AppText>
+          </View>
         </View>
       ) : null}
 
-      <AppText style={[styles.title, !enabled && styles.textMuted]} numberOfLines={1}>
+      <AppText
+        style={[
+          styles.title,
+          !enabled && styles.textMuted,
+          offerPillLabel ? styles.titleWithOffer : null,
+        ]}
+        numberOfLines={1}
+      >
         {item.title}
       </AppText>
-
-      <View
+      <AppText
         style={[
-          styles.arrowBtn,
-          { backgroundColor: item.arrowColor },
-          !enabled && styles.arrowBtnMuted,
+          styles.description,
+          !enabled && styles.textMuted,
+          offerPillLabel ? styles.descriptionWithOffer : null,
         ]}
+        numberOfLines={3}
       >
-        <Ionicons name="chevron-forward" size={13} color="#fff" />
-      </View>
+        {item.description}
+      </AppText>
 
-      {/* Images stay at full opacity — parent opacity < 1 blanks expo-image on Android. */}
-      <ServiceCardImage assetKey={item.assetKey} imageSize={imageSize} iconWrap={iconWrap} />
+      {item.pill ? (
+        <View style={styles.tagCornerPill} pointerEvents="none">
+          <View
+            style={[
+              styles.tagCornerPillFill,
+              { backgroundColor: enabled ? item.accentColor : "#9CA3AF" },
+            ]}
+          >
+            <AppText style={styles.tagCornerPillText} numberOfLines={1} maxFontSizeMultiplier={1}>
+              {item.pill}
+            </AppText>
+          </View>
+        </View>
+      ) : null}
+
+      <View style={styles.mediaCol} pointerEvents="none">
+        <ServiceCardImage assetKey={item.assetKey} imageScale={item.imageScale ?? 1} />
+      </View>
 
       {!enabled && !isAccountBlocked ? <View style={styles.disabledWash} pointerEvents="none" /> : null}
       {isAccountBlocked ? (
@@ -284,17 +366,21 @@ export function HomeServicesRow({
   onAccountBlockedPress,
 }: Props) {
   const assets = useAppAssetsStore((s) => s.assets);
+  const offerPills = useServiceCardOfferPills(true);
   useLayoutEffect(() => {
     prefetchCriticalHomeAssetImagesSync(assets);
   }, [assets]);
 
   const services = useMemo(
     () =>
-      orderHomeServices({
-        parcelEnabled: enabledServices?.parcels === true,
-        groceryEnabled: enabledServices?.grocery === true,
-      }),
-    [enabledServices?.parcels, enabledServices?.grocery]
+      orderHomeServicesWithNearbyPlacement(
+        {
+          parcelEnabled: enabledServices?.parcels === true,
+          groceryEnabled: enabledServices?.grocery === true,
+        },
+        (id) => isServiceEnabled(id, enabledServices)
+      ),
+    [enabledServices]
   );
 
   return (
@@ -304,6 +390,7 @@ export function HomeServicesRow({
           key={s.id}
           item={s}
           cardHeight={cardHeight}
+          offerPillLabel={offerPills[s.id] ?? null}
           enabled={isServiceEnabled(s.id, enabledServices)}
           accountBlockReason={accountBlockReasonFor(s.id, accountBlocks)}
           onAccountBlockedPress={onAccountBlockedPress}
@@ -324,13 +411,12 @@ const styles = StyleSheet.create({
   card: {
     width: CARD_W,
     backgroundColor: "#FFFFFF",
-    borderRadius: 14,
+    borderRadius: CARD_RADIUS,
     borderWidth: 1,
     borderColor: "#F0F0F0",
     paddingTop: 9,
-    paddingBottom: 8,
+    paddingBottom: 28,
     paddingHorizontal: 9,
-    // Match offer + brand banners: no elevation (white cards show even light shadows heavily).
     shadowColor: "transparent",
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0,
@@ -338,16 +424,51 @@ const styles = StyleSheet.create({
     elevation: 0,
     overflow: "hidden",
   },
+  cardWithOffer: {
+    paddingTop: 22,
+  },
+  /**
+   * Reference corner badge (mirrored to top-right):
+   * outer corner matches the card radius; inner free corner is the soft curve.
+   */
+  offerCornerPill: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    zIndex: 8,
+    maxWidth: "58%",
+  },
+  offerCornerPillFill: {
+    paddingLeft: CORNER_PILL_PAD_H,
+    paddingRight: CORNER_PILL_PAD_H,
+    paddingTop: CORNER_PILL_PAD_V,
+    paddingBottom: CORNER_PILL_PAD_V,
+    backgroundColor: OFFER_PILL_GREEN_TOP,
+    borderTopRightRadius: CARD_RADIUS,
+    borderBottomRightRadius: 0,
+    borderTopLeftRadius: 0,
+    borderBottomLeftRadius: CORNER_PILL_INNER_R,
+    overflow: "hidden",
+  },
+  offerCornerPillText: {
+    color: "#FFFFFF",
+    fontSize: CORNER_PILL_FONT,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+    lineHeight: CORNER_PILL_LINE,
+    includeFontPadding: false,
+    textTransform: "uppercase",
+  },
   disabledWash: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(255,255,255,0.52)",
-    borderRadius: 14,
+    borderRadius: CARD_RADIUS,
     zIndex: 4,
   },
   blockedOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(255,255,255,0.78)",
-    borderRadius: 14,
+    borderRadius: CARD_RADIUS,
     zIndex: 6,
     alignItems: "center",
     justifyContent: "center",
@@ -365,20 +486,6 @@ const styles = StyleSheet.create({
   textMuted: {
     color: "#9CA3AF",
   },
-  pill: {
-    alignSelf: "flex-start",
-    backgroundColor: "#F3F4F6",
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 6,
-    maxWidth: "90%",
-    marginBottom: 3,
-  },
-  pillText: {
-    fontSize: 8,
-    fontWeight: "700",
-    color: "#6B7280",
-  },
   title: {
     fontSize: 14,
     fontWeight: "800",
@@ -386,31 +493,67 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     marginRight: 58,
   },
-  arrowBtn: {
+  titleWithOffer: {
+    marginRight: 78,
+  },
+  description: {
+    marginTop: 8,
+    marginRight: 58,
+    paddingBottom: 4,
+    fontSize: 10,
+    fontWeight: "500",
+    color: "#9CA3AF",
+    lineHeight: 14,
+  },
+  descriptionWithOffer: {
+    marginRight: 58,
+  },
+  /**
+   * Bottom-left mirror of the top-right offer ribbon:
+   * flush to the card corner; soft curve on the free inner corner.
+   */
+  tagCornerPill: {
     position: "absolute",
-    left: 9,
-    bottom: 9,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    left: 0,
+    bottom: 0,
+    zIndex: 5,
+    maxWidth: "72%",
+  },
+  tagCornerPillFill: {
+    paddingLeft: CORNER_PILL_PAD_H,
+    paddingRight: CORNER_PILL_PAD_H,
+    paddingTop: CORNER_PILL_PAD_V,
+    paddingBottom: CORNER_PILL_PAD_V,
+    borderBottomLeftRadius: CARD_RADIUS,
+    borderTopLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    borderTopRightRadius: CORNER_PILL_INNER_R,
+    overflow: "hidden",
+  },
+  tagCornerPillText: {
+    color: "#FFFFFF",
+    fontSize: CORNER_PILL_FONT,
+    fontWeight: "800",
+    letterSpacing: 0.15,
+    lineHeight: CORNER_PILL_LINE,
+    includeFontPadding: false,
+  },
+  mediaCol: {
+    position: "absolute",
+    right: 6,
+    bottom: 8,
+    width: SERVICE_IMAGE_BOX,
+    height: SERVICE_IMAGE_BOX,
     alignItems: "center",
     justifyContent: "center",
-    zIndex: 5,
-  },
-  arrowBtnMuted: {
-    opacity: 0.45,
+    zIndex: 2,
   },
   imageWrap: {
-    position: "absolute",
-    right: 5,
-    bottom: 5,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
   },
   imageSkeleton: {
     position: "absolute",
-  },
-  imageLoadingHidden: {
-    opacity: 0,
   },
 });

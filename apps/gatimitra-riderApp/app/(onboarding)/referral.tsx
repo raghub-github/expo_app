@@ -20,7 +20,6 @@ import {
   TouchableOpacity,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -229,7 +228,6 @@ export default function OnboardingReferralScreen() {
   if (phase === "loading") {
     return (
       <View style={[styles.root, styles.centered]}>
-        <StatusBar style="dark" backgroundColor={BG} translucent={false} />
         <ActivityIndicator size="large" color={ACCENT_DARK} />
       </View>
     );
@@ -237,7 +235,6 @@ export default function OnboardingReferralScreen() {
 
   return (
     <View style={styles.root}>
-      <StatusBar style="dark" backgroundColor={BG} translucent={false} />
       <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : undefined}

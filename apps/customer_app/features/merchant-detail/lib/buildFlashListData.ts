@@ -55,7 +55,9 @@ export function buildCategoryChips(catalogSections: MenuSection[]): MerchantCate
     .map((sec, idx) => {
       const categoryId = sec.data[0]?.categoryId ?? null;
       const imageUrl =
-        sec.data.find((item) => item.imageUrl?.trim())?.imageUrl?.trim() ?? null;
+        sec.data[0]?.categoryImageUrl?.trim() ||
+        sec.data.find((item) => item.imageUrl?.trim())?.imageUrl?.trim() ||
+        null;
       return {
         id: `cat-${categoryId ?? sec.title}-${idx}`,
         title: sec.title,

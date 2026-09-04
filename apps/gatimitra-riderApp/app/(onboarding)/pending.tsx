@@ -11,7 +11,6 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -112,7 +111,6 @@ export default function PendingScreen() {
   if (!data.riderId || !isFetched || (!approved && !isLegitPending)) {
     return (
       <View style={[form.root, styles.bootWrap]}>
-        <StatusBar style="dark" backgroundColor={BG} translucent={false} />
         <ActivityIndicator size="large" color={ACCENT_DARK} />
       </View>
     );
@@ -120,8 +118,6 @@ export default function PendingScreen() {
 
   return (
     <View style={form.root}>
-      <StatusBar style="dark" backgroundColor={BG} translucent={false} />
-
       <SafeAreaView style={form.safeArea} edges={["top", "bottom"]}>
         <ScrollView
           style={styles.scroll}

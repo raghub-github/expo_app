@@ -15,12 +15,13 @@ const GRID_TOP_MARGIN = 10;
 const BRAND_TOP_GAP = 16;
 
 /** Sizes promo + service grid + brand banner to fill one screen without scroll. */
-export function useHomeScreenLayout(showWeather: boolean) {
+export function useHomeScreenLayout(_showWeather: boolean) {
   const { height: screenH } = useWindowDimensions();
   const insets = useSafeAreaInsets();
 
   return useMemo(() => {
-    const weatherBlock = showWeather ? WEATHER_H : 0;
+    // Always reserve weather height so the layout never shifts when weather loads.
+    const weatherBlock = WEATHER_H;
     // Root stack already renders the status-bar strip — home only needs header chrome below it.
     const topBlock = HEADER_H + STATUS_BAR_TO_HEADER_GAP;
     const bottomNavH = resolveCustomerBottomNavHeight(insets.bottom);
@@ -48,5 +49,5 @@ export function useHomeScreenLayout(showWeather: boolean) {
       serviceCardH,
       brandH,
     };
-  }, [screenH, insets.top, insets.bottom, showWeather]);
+  }, [screenH, insets.top, insets.bottom]);
 }

@@ -49,6 +49,7 @@ import {
   resolveActiveOrderPath,
   siblingNotificationIds,
 } from "@/lib/notificationDedupe";
+import { resolveNotificationDeepLink } from "@/lib/notificationDeepLinkResolver";
 
 const LORA = StoreFonts.loraRegular;
 const LORA_BOLD = StoreFonts.loraBold;
@@ -380,6 +381,21 @@ export default function NotificationsScreen() {
     if (orderPath) {
       try {
         router.push(orderPath as never);
+        return;
+      } catch {
+        /* fall through */
+      }
+    }
+
+    const metaHref = resolveNotificationDeepLink({
+      ...(typeof item.metadata === "object" && item.metadata ? item.metadata : {}),
+      deepLink: item.deep_link,
+      deep_link: item.deep_link,
+      screen: item.deep_link,
+    });
+    if (metaHref && isValidAppDeepLink(metaHref) && !metaHref.startsWith("http")) {
+      try {
+        router.push(metaHref as never);
         return;
       } catch {
         /* fall through */

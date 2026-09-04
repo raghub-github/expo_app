@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { useIsFocused } from "@react-navigation/native";
 import { AppText } from "@/components/AppText";
 
 import { View, ScrollView, TouchableOpacity, StyleSheet, Dimensions, NativeSyntheticEvent, NativeScrollEvent } from "react-native";
@@ -39,8 +40,10 @@ type PromoCarouselProps = {
 export function PromoCarousel({ onBookNow }: PromoCarouselProps) {
   const scrollRef = useRef<ScrollView>(null);
   const [index, setIndex] = useState(0);
+  const isScreenFocused = useIsFocused();
 
   useEffect(() => {
+    if (!isScreenFocused) return;
     const t = setInterval(() => {
       setIndex((i) => {
         const next = (i + 1) % PROMO_SLIDES.length;
@@ -52,7 +55,7 @@ export function PromoCarousel({ onBookNow }: PromoCarouselProps) {
       });
     }, AUTO_SCROLL_INTERVAL_MS);
     return () => clearInterval(t);
-  }, []);
+  }, [isScreenFocused]);
 
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;

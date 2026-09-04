@@ -111,6 +111,18 @@ export function RightSidebar({
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
 
+  const pushSidebarHref = useCallback(
+    (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const target = href.split("?")[0].split("#")[0];
+      if (isDashboardNavAlreadyAtTarget(cleanPathname, target)) return;
+      // Imperative push so a layout re-render cannot swallow the first Link click.
+      event.preventDefault();
+      router.push(href);
+    },
+    [cleanPathname, router]
+  );
+
   const handleSidebarNavClickCapture = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
       if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -120,16 +132,12 @@ export function RightSidebar({
       if (!rawHref || rawHref.startsWith("http") || rawHref.startsWith("#")) return;
       const target = rawHref.split("?")[0].split("#")[0];
 
-      // Store tab nav: overlay is off — never startNavigation (re-render drops first Link click).
+      // Store portal tabs: Link onClick owns navigation. Do not prefetch or
+      // startNavigation here — both re-render the rail and drop the first click.
       const onStoreTab =
         /^\/dashboard\/merchants\/stores\/\d+(\/|$)/.test(cleanPathname) &&
         /^\/dashboard\/merchants\/stores\/\d+(\/|$)/.test(target);
-      if (onStoreTab) {
-        if (!isDashboardNavAlreadyAtTarget(cleanPathname, target)) {
-          prefetchDashboardSection(getQueryClient(), rawHref);
-        }
-        return;
-      }
+      if (onStoreTab) return;
 
       if (isDashboardNavAlreadyAtTarget(cleanPathname, target)) return;
       window.setTimeout(() => {
@@ -194,6 +202,7 @@ export function RightSidebar({
   const [pendingMenuRequestsCount, setPendingMenuRequestsCount] = useState<number>(0);
   const [storeMenuReviewPendingCount, setStoreMenuReviewPendingCount] = useState<number>(0);
   const [resubmittedDocsCount, setResubmittedDocsCount] = useState<number>(0);
+  const [pendingOnboardingCount, setPendingOnboardingCount] = useState<number>(0);
 
   const refreshResubmittedDocsCount = useCallback(() => {
     fetch("/api/merchant/stores/stats")
@@ -205,6 +214,33 @@ export function RightSidebar({
       })
       .catch(() => setResubmittedDocsCount(0));
   }, []);
+
+  const refreshPendingOnboardingCount = useCallback(() => {
+    fetch("/api/riders/pending-onboarding?limit=1&offset=0", { credentials: "include" })
+      .then((res) => res.json())
+      .then((body) => {
+        if (!body?.success) return;
+        const total = Number(body.total ?? 0);
+        setPendingOnboardingCount(Number.isFinite(total) ? total : 0);
+      })
+      .catch(() => setPendingOnboardingCount(0));
+  }, []);
+
+  useEffect(() => {
+    const onRiders =
+      cleanPathname === "/dashboard/riders" ||
+      cleanPathname.startsWith("/dashboard/riders/");
+    if (!onRiders) {
+      setPendingOnboardingCount(0);
+      return;
+    }
+    refreshPendingOnboardingCount();
+    const onRefresh = () => refreshPendingOnboardingCount();
+    window.addEventListener("gm-rider-pending-onboarding-refresh", onRefresh);
+    return () => {
+      window.removeEventListener("gm-rider-pending-onboarding-refresh", onRefresh);
+    };
+  }, [cleanPathname, refreshPendingOnboardingCount]);
 
   useEffect(() => {
     if (!isAreaManagerDashboard) return;
@@ -492,10 +528,10 @@ export function RightSidebar({
       Boolean(showMerchantSearchSkeleton));
 
   // Don't show right sidebar if not in a specific dashboard.
-  // Riders: only after search. Merchants: only when admin CTAs, store nav, or search card exist.
+  // Riders: always show (nav includes tools that don't need a selected rider).
+  // Merchants: only when admin CTAs, store nav, or search card exist.
   if (
     !isInSpecificDashboard ||
-    (isRiderDashboard && !selectedRiderSearch) ||
     (isMerchantsDashboard && !merchantsRailHasContent) ||
     (!isRiderDashboard && !isMerchantsDashboard && !currentSubRoutes.length)
   ) {
@@ -928,17 +964,32 @@ export function RightSidebar({
                 const linkEl = (route: DashboardSubRoute) => {
                   const isAllMerchantsRoute = route.href === "/dashboard/merchants";
                   const isMenuChangeRequestsRoute = route.href.endsWith("/menu-change-requests");
-                  const menuReviewBadgeCount = isMenuChangeRequestsRoute ? storeMenuReviewPendingCount : 0;
-                  const showMenuReviewBadge = menuReviewBadgeCount > 0;
+                  const isPendingOnboardingRoute =
+                    route.href === "/dashboard/riders/pending-onboarding";
+                  const menuReviewBadgeCount = isMenuChangeRequestsRoute
+                    ? storeMenuReviewPendingCount
+                    : 0;
+                  const routeBadgeCount = isPendingOnboardingRoute
+                    ? pendingOnboardingCount
+                    : menuReviewBadgeCount;
+                  const showRouteBadge = routeBadgeCount > 0;
                   const isActive =
                     activeHref === route.href &&
                     !(isResubmittedActive && isAllMerchantsRoute);
                   const Icon = route.icon;
+                  const badgeTitle = showRouteBadge
+                    ? `${route.name} (${routeBadgeCount} pending)`
+                    : route.name;
                   return (
                     <Link
                       key={route.href}
                       href={appendMerchantPortal(appendRiderSearch(route.href))}
                       prefetch
+                      scroll={false}
+                      onClick={(event) => {
+                        const href = appendMerchantPortal(appendRiderSearch(route.href));
+                        pushSidebarHref(event, href);
+                      }}
                       onMouseEnter={() => {
                         const href = appendMerchantPortal(appendRiderSearch(route.href));
                         prefetchDashboardSection(getQueryClient(), href);
@@ -946,7 +997,7 @@ export function RightSidebar({
                       className={`group relative cursor-pointer rounded-[10px] transition-colors duration-200 ${
                         isOpen
                           ? `grid min-h-10 w-full min-w-0 ${
-                              showMenuReviewBadge
+                              showRouteBadge
                                 ? "grid-cols-[1.25rem_minmax(0,1fr)_auto]"
                                 : "grid-cols-[1.25rem_minmax(0,1fr)]"
                             } items-center gap-x-2.5 px-3 py-2.5 text-xs font-medium ${
@@ -956,13 +1007,7 @@ export function RightSidebar({
                               isActive ? rsbNavActive : rsbNavIdle
                             }`
                       }`}
-                      title={
-                        !isOpen
-                          ? showMenuReviewBadge
-                            ? `${route.name} (${menuReviewBadgeCount} pending)`
-                            : route.name
-                          : route.description
-                      }
+                      title={!isOpen ? badgeTitle : route.description}
                     >
                       {isOpen ? (
                         <>
@@ -972,31 +1017,29 @@ export function RightSidebar({
                           <span className="relative min-w-0 truncate text-left">
                             {route.name}
                           </span>
-                          {showMenuReviewBadge ? (
+                          {showRouteBadge ? (
                             <span
                               className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
                                 isActive ? "bg-[#121212]/10 text-[#121212]" : "bg-amber-100 text-amber-800"
                               }`}
                             >
-                              {menuReviewBadgeCount}
+                              {routeBadgeCount}
                             </span>
                           ) : null}
                         </>
                       ) : (
                         <>
                           <Icon className="h-5 w-5 shrink-0" aria-hidden />
-                          {showMenuReviewBadge ? (
+                          {showRouteBadge ? (
                             <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-bold text-white">
-                              {menuReviewBadgeCount > 9 ? "9+" : menuReviewBadgeCount}
+                              {routeBadgeCount > 9 ? "9+" : routeBadgeCount}
                             </span>
                           ) : null}
                         </>
                       )}
                       {!isOpen && (
                         <div className="absolute right-full mr-2 px-2 py-1 bg-[#121212] text-white text-xs rounded-[10px] opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
-                          {showMenuReviewBadge
-                            ? `${route.name} (${menuReviewBadgeCount} pending)`
-                            : route.name}
+                          {badgeTitle}
                           <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-[#121212]"></div>
                         </div>
                       )}

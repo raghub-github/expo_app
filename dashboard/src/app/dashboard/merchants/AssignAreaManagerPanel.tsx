@@ -449,26 +449,24 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
   if (!isOpen || !canAssign) return null;
 
   const content = (
-    <div className="w-full rounded-2xl bg-white/95 border border-slate-200/80 shadow-md">
-      {/* Accent top bar */}
-      <div className="h-1 w-full rounded-t-2xl bg-gradient-to-r from-indigo-500 via-sky-500 to-emerald-500" />
+    <div className="w-full rounded-xl border border-[#121212]/10 bg-white shadow-[0_1px_2px_rgba(18,18,18,0.04)]">
+      {!asModal ? null : <div className="h-1 w-full rounded-t-xl bg-[#121212]" />}
 
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+      <div className="flex items-center justify-between border-b border-[#121212]/08 px-4 py-3">
         <div className="flex items-center gap-2">
-          <div className="rounded-lg bg-indigo-50 p-1.5 shadow-xs">
-            <Users className="w-4 h-4 text-indigo-600" />
+          <div className="rounded-lg bg-[#F3F7FA] p-1.5">
+            <Users className="w-4 h-4 text-[#121212]" />
           </div>
           <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-semibold text-slate-900">Assign AM to Stores</h2>
-              <div className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
-                <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
-                Step 1: Search · Step 2: Assign
-              </div>
-            </div>
-            <p className="text-[11px] text-slate-500 mt-0.5">
-              Use the global search above to find a Parent or Child Store, then assign Area Managers here.
+            {asModal ? (
+              <h2 className="text-sm font-semibold text-[#121212]">Assign AM to Stores</h2>
+            ) : (
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-[#121212]/45">
+                Search a parent or child store, then assign area managers
+              </p>
+            )}
+            <p className="text-[11px] text-[#121212]/50 mt-0.5">
+              Step 1: Search · Step 2: Assign
             </p>
           </div>
         </div>

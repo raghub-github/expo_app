@@ -122,7 +122,7 @@ function buildPrintHtml(
   </style>
 </head>
 <body>
-  <p class="brand">GatiMitra — Restaurant Partner</p>
+  <p class="brand">GatiMitra — Partner</p>
   <h1>GatiMitra order:</h1>
   <p class="order-id">${escapeHtml(formatOrderIdForPrint(order))}</p>
   <p class="store">${escapeHtml(store.storeName)}</p>
@@ -230,7 +230,7 @@ export function GatiMitraOrderPrintBill({
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 text-sm text-gray-800 hide-scrollbar">
-          <p className="text-xs text-violet-700 font-bold mb-2">GatiMitra — Restaurant Partner</p>
+          <p className="text-xs text-violet-700 font-bold mb-2">GatiMitra — Partner</p>
           <p className="text-xs text-gray-500 mb-1">GatiMitra order:</p>
           <p className="text-2xl font-extrabold tracking-tight mb-3">{formatOrderIdForPrint(order)}</p>
           <p className="font-bold text-base">{store.storeName}</p>

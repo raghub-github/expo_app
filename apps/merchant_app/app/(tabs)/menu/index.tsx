@@ -365,7 +365,8 @@ const CatalogCategoryHeader = memo(function CatalogCategoryHeader({
 }) {
   const oosLabel = `${title.toUpperCase()} (${count})`;
   return (
-    <View style={styles.treeGroupHeader}>
+    <View collapsable={false} style={styles.treeGroupHeader}>
+      <View pointerEvents="none" style={styles.treeGroupHeaderRoundBg} />
       <View style={styles.treeGroupTopRow}>
         <View style={styles.treeGroupTitleWrap}>
           <Text style={styles.treeGroupTitle} numberOfLines={1}>
@@ -407,12 +408,14 @@ const CatalogCategoryHeader = memo(function CatalogCategoryHeader({
             </Text>
           ) : null}
         </View>
-        <CatalogStockToggle
-          value={allInStock}
-          onValueChange={onToggleStock}
-          size="md"
-          accessibilityLabel="Category in stock"
-        />
+        <View style={styles.treeGroupOosToggleWrap}>
+          <CatalogStockToggle
+            value={allInStock}
+            onValueChange={onToggleStock}
+            size="md"
+            accessibilityLabel="Category in stock"
+          />
+        </View>
       </View>
     </View>
   );
@@ -2499,7 +2502,9 @@ export default function MenuScreen() {
       }
       sections={kindFilter === "ADDONS" ? [] : catalogSections}
       keyExtractor={(item) => String(item.id)}
-      extraData={`${viewMode}|${nowTick}|${kindFilter}`}
+      extraData={`${viewMode}|${nowTick}|${kindFilter}|${catalogSections
+        .map((s) => `${s.key}:${s.allInStock ? 1 : 0}:${s.outOfStockCount}:${s.totalItems}`)
+        .join("|")}`}
       onScrollToIndexFailed={() => {
         /* jump-to-section can fire before rows are measured */
       }}
@@ -2508,6 +2513,7 @@ export default function MenuScreen() {
         const isOpen = openTreeGroups[section.key] ?? true;
         return (
           <View
+            collapsable={false}
             style={[
               styles.treeGroupCard,
               styles.treeGroupCardHeaderOnly,
@@ -3777,7 +3783,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
     borderRadius: CARD_RADIUS,
-    overflow: "hidden",
     backgroundColor: "#FFFFFF",
     ...GatiMitraMerchant.shadowSm,
   },
@@ -3786,8 +3791,16 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0,
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
+    borderTopLeftRadius: CARD_RADIUS,
+    borderTopRightRadius: CARD_RADIUS,
+    overflow: "visible",
+    backgroundColor: "transparent",
+    shadowColor: "transparent",
     shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
     elevation: 0,
+    minHeight: 104,
   },
   treeGroupBody: {
     backgroundColor: "#FFFFFF",
@@ -3815,11 +3828,19 @@ const styles = StyleSheet.create({
     borderLeftColor: GatiMitraMerchant.error,
   },
   treeGroupHeader: {
+    position: "relative",
+    backgroundColor: "transparent",
+    overflow: "visible",
+    minHeight: 104,
+  },
+  treeGroupHeaderRoundBg: {
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "#FFFFFF",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: GatiMitraMerchant.border,
+    borderTopLeftRadius: CARD_RADIUS,
+    borderTopRightRadius: CARD_RADIUS,
   },
   treeGroupTopRow: {
+    zIndex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -3827,11 +3848,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingBottom: 2,
     gap: 10,
+    minHeight: 44,
   },
   treeGroupTopActions: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
+    flexShrink: 0,
   },
   treeHeaderIconBtn: {
     width: 32,
@@ -3842,16 +3865,18 @@ const styles = StyleSheet.create({
     backgroundColor: "#F9FAFB",
   },
   treeGroupOosRow: {
+    zIndex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingTop: 4,
-    paddingBottom: 8,
+    paddingTop: 8,
+    paddingBottom: 10,
     paddingHorizontal: 14,
     backgroundColor: "#F9FAFB",
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: GatiMitraMerchant.border,
     gap: 10,
+    minHeight: 48,
   },
   treeGroupOosRowOff: {
     backgroundColor: "#FEF2F2",
@@ -3859,6 +3884,11 @@ const styles = StyleSheet.create({
   treeGroupOosLeft: {
     flex: 1,
     minWidth: 0,
+  },
+  treeGroupOosToggleWrap: {
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
   },
   treeGroupOosLabel: {
     fontSize: 12,

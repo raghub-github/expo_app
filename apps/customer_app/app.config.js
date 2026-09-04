@@ -46,7 +46,7 @@ module.exports = {
         ...(appJson.expo.splash?.ios || {}),
         image: LAUNCHER_SPLASH_IMAGE,
         resizeMode: "cover",
-        backgroundColor: "#5eead4",
+        backgroundColor: LAUNCHER_SPLASH_BG,
       },
     },
     ios: {
@@ -118,7 +118,7 @@ module.exports = {
           },
           ios: {
             image: LAUNCHER_SPLASH_IMAGE,
-            backgroundColor: "#5eead4",
+            backgroundColor: LAUNCHER_SPLASH_BG,
             enableFullScreenImage_legacy: true,
           },
           dark: {
@@ -160,7 +160,7 @@ module.exports = {
         "expo-navigation-bar",
         {
           backgroundColor: LAUNCHER_SPLASH_BG,
-          barStyle: "light",
+          barStyle: "dark",
           visibility: "visible",
           position: "relative",
         },

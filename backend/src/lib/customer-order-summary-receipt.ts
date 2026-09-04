@@ -20,6 +20,8 @@ export type CustomerOrderSummaryReceiptInput = {
   restaurantName: string;
   restaurantAddress: string | null;
   restaurantFssai: string | null;
+  /** Authoritative store/service type label (Grocery, Restaurant, …). */
+  storeTypeLabel?: string | null;
   riderName: string | null;
   paymentMethod: string | null;
   orderType: string | null;
@@ -259,6 +261,7 @@ export function buildCustomerOrderSummaryReceiptHtml(input: CustomerOrderSummary
   }
 
   const paidAmount = bill.paid > 0.005 ? bill.paid : bill.grandTotal;
+  const storeLabel = input.storeTypeLabel?.trim() || "Store";
 
   const footerFssai =
     input.restaurantFssai?.trim() && !isRide
@@ -287,8 +290,8 @@ export function buildCustomerOrderSummaryReceiptHtml(input: CustomerOrderSummary
     ${metaRow("Order Time", formatOrderDateTime(input.orderDateIso))}
     ${metaRow("Customer Name", input.customerName)}
     ${metaRow("Delivery Address", input.deliveryAddress)}
-    ${metaRow("Restaurant Name", isRide ? null : input.restaurantName)}
-    ${metaRow("Restaurant Address", isRide ? null : input.restaurantAddress)}
+    ${isRide ? "" : metaRow(`${storeLabel} Name`, input.restaurantName)}
+    ${isRide ? "" : metaRow(`${storeLabel} Address`, input.restaurantAddress)}
     ${metaRow("Delivery partner's Name", input.riderName)}
     ${input.paymentMethod ? metaRow("Payment", input.paymentMethod.replace(/_/g, " ").toUpperCase()) : ""}
   </div>

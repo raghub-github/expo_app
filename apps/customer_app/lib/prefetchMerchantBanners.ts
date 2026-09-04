@@ -1,21 +1,28 @@
 import type { MerchantSummary } from "@/services/merchant.service";
-import { collectMerchantBannerUris } from "@/lib/merchantBanner";
 import { enqueueImagePrefetch } from "@/lib/prefetchQueue";
+import { prefetchMerchantPrimaryBanners } from "@/lib/imageEngine";
+import { resolveMerchantGalleryUris } from "@/lib/merchantBanner";
 
 /**
- * Only the first screenful or two of cards is worth warming — everything below
- * is paid for on scroll, by which time the queue has drained. This previously
- * fanned out every banner of every merchant in the response (50 merchants x 3-5
- * banners) as simultaneous downloads, spiking both the image memory cache and
- * the connection right as the home screen was trying to paint.
+ * Banner-first warm for list screens.
+ * Primary banners go through the high-priority image engine; gallery queues later.
  */
-const MAX_MERCHANTS = 8;
-const MAX_URIS = 16;
+const MAX_GALLERY_MERCHANTS = 12;
+const MAX_GALLERY_URIS = 24;
 
 export function prefetchMerchantBanners(merchants: MerchantSummary[]) {
-  const uris: string[] = [];
-  for (const m of merchants.slice(0, MAX_MERCHANTS)) {
-    uris.push(...collectMerchantBannerUris(m));
+  prefetchMerchantPrimaryBanners(merchants, { limit: 60 });
+
+  const gallery: string[] = [];
+  for (const m of merchants.slice(0, MAX_GALLERY_MERCHANTS)) {
+    gallery.push(...resolveMerchantGalleryUris(m));
   }
-  enqueueImagePrefetch(uris, MAX_URIS);
+  if (gallery.length === 0) return;
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => {
+      setTimeout(() => enqueueImagePrefetch(gallery, MAX_GALLERY_URIS), 400);
+    });
+  } else {
+    setTimeout(() => enqueueImagePrefetch(gallery, MAX_GALLERY_URIS), 400);
+  }
 }

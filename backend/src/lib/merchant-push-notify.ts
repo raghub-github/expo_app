@@ -52,7 +52,7 @@ async function sendMerchantExpoPush(tokens: string[], payload: PushPayload): Pro
   if (!tokens.length) return;
   const messages = tokens.map((to) => ({
     to,
-    sound: "default",
+    sound: payload.channelId === "merchant_new_orders_alert" ? "notification" : "default",
     title: payload.title,
     body: payload.body,
     data: {
@@ -393,6 +393,45 @@ export async function notifyMerchantNewComplaint(
       type: "merchant_complaint",
       url: "/(tabs)/complaints",
       screen: "complaints",
+    },
+  });
+}
+
+/** Rider accepted the delivery — merchant gets a lifecycle heads-up. */
+export async function notifyMerchantRiderAssigned(
+  sql: Sql,
+  args: {
+    storeId: number;
+    displayOrderId: string;
+    riderName: string;
+    foodOrderId: number | null;
+  }
+): Promise<void> {
+  if (!Number.isInteger(args.storeId) || args.storeId < 1) return;
+  const rider = args.riderName.trim() || "Rider";
+  const id = args.displayOrderId.startsWith("#")
+    ? args.displayOrderId
+    : `#${args.displayOrderId}`;
+  const title = `Rider assigned · Order ${id}`;
+  const body = `${rider} is on the way to your store for pickup.`;
+  const actionUrl =
+    args.foodOrderId != null ? `/order/${args.foodOrderId}` : "/(tabs)/orders";
+  await notifyMerchantStore(sql, {
+    storeId: args.storeId,
+    type: "order",
+    title,
+    body,
+    orderId: args.foodOrderId,
+    actionUrl,
+    channelId: "merchant_order_lifecycle",
+    skipInbox: true,
+    pushData: {
+      type: "merchant_rider_assigned",
+      stage: "RIDER_ASSIGNED",
+      refreshLiveOrders: true,
+      orderId: args.displayOrderId,
+      foodOrderId: args.foodOrderId,
+      url: actionUrl,
     },
   });
 }

@@ -22,8 +22,9 @@ import {
 } from "./StoreMenuCartControls";
 import { getBasePrice, getItemDiet, getSellingPrice, isItemSpicy } from "./storeMenuUtils";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
-import { isMenuItemImagePrefetched } from "@/lib/prefetchMenuItemImages";
+import { isMenuItemImagePrefetched, isMenuItemImageReady, ensureMenuItemImageWarm } from "@/lib/prefetchMenuItemImages";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { isHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
 import { formatOfferRupee, computeCatalogDiscountPercent, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { MENU_ITEM_ROW_HEIGHT } from "@/features/merchant-detail/constants/layout";
 
@@ -93,13 +94,32 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
     () => (item.imageUrl?.trim() ? (toAbsoluteImageUrl(item.imageUrl) ?? item.imageUrl) : null),
     [item.imageUrl]
   );
-  const imageWasPrefetched = imageUri ? isMenuItemImagePrefetched(imageUri) : false;
   const [imageFailed, setImageFailed] = useState(false);
+  /** Once painted, never show shimmer again — prevents scroll recycle flicker. */
+  const [imagePainted, setImagePainted] = useState(() =>
+    !!(
+      imageUri &&
+      (isMenuItemImageReady(imageUri) || isHeroMediaSessionReady(imageUri))
+    )
+  );
+  const warmedRef = useRef<string | null>(null);
 
   const isCustomisable = !!(item.hasVariants || item.hasAddons || item.hasCustomizations);
 
   useEffect(() => {
     setImageFailed(false);
+    if (!imageUri) return;
+    if (
+      isMenuItemImageReady(imageUri) ||
+      isHeroMediaSessionReady(imageUri) ||
+      isMenuItemImagePrefetched(imageUri)
+    ) {
+      setImagePainted(true);
+    }
+    // Warm once per URI — avoid re-prefetch storms while scrolling full-mount lists.
+    if (warmedRef.current === imageUri) return;
+    warmedRef.current = imageUri;
+    ensureMenuItemImageWarm(imageUri);
   }, [imageUri]);
 
   const handleAdd = useCallback(() => {
@@ -330,16 +350,17 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
             <View style={styles.imageWrap} pointerEvents="none">
               {showRemoteImage ? (
                 <>
-                  {!imageWasPrefetched ? <View style={styles.imageShimmer} /> : null}
+                  {!imagePainted ? <View style={styles.imageShimmer} /> : null}
                   <Image
                     source={{ uri: imageUri! }}
                     style={styles.image}
                     contentFit="cover"
                     cachePolicy="memory-disk"
-                    recyclingKey={item.id}
+                    recyclingKey={String(item.listRowKey ?? item.id)}
                     transition={0}
-                    priority={imageWasPrefetched ? "normal" : "low"}
+                    priority="normal"
                     allowDownscaling
+                    onLoad={() => setImagePainted(true)}
                     onError={() => setImageFailed(true)}
                   />
                 </>
@@ -394,7 +415,7 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
     minHeight: MENU_ITEM_ROW_HEIGHT,
     width: "100%",
-    overflow: "hidden",
+    overflow: "visible",
   },
   wrapHighlighted: {
     backgroundColor: StoreTheme.accentMintSoft,

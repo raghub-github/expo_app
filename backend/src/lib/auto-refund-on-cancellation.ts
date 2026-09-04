@@ -40,6 +40,13 @@ export interface AutoRefundArgs {
   actorRole?: string | null;
   /** Optional override; when omitted the customer's captured/paid amount is used. */
   amount?: number | null;
+  /**
+   * When true, allow auto-refund even if actorRole is customer/cx.
+   * Only for policy paths where the authoritative cancellation engine already
+   * finalized a refundable amount (e.g. pre-accept customer cancel).
+   * Does not invent amounts — still requires amount/paid > 0.
+   */
+  allowCustomerPreAcceptRefund?: boolean;
 }
 
 export interface AutoRefundOutcome {
@@ -64,14 +71,12 @@ async function sumSettledRefundAmount(sql: Sql, orderCoreId: number): Promise<nu
       CASE
         WHEN UPPER(COALESCE(execution_status, '')) = 'FAILED' THEN 0
         WHEN LOWER(COALESCE(refund_status, '')) IN ('failed', 'cancelled', 'rejected') THEN 0
-        WHEN UPPER(COALESCE(execution_status, '')) IN ('COMPLETED', 'NOOP')
-          THEN COALESCE(net_refund_amount, refund_amount, 0)
         WHEN customer_wallet_ledger_id IS NOT NULL AND customer_wallet_ledger_id > 0
           THEN COALESCE(net_refund_amount, refund_amount, 0)
         WHEN NULLIF(TRIM(COALESCE(razorpay_refund_id, '')), '') IS NOT NULL
           THEN COALESCE(net_refund_amount, refund_amount, 0)
-        WHEN LOWER(COALESCE(refund_status, '')) IN ('completed', 'refunded')
-          THEN COALESCE(net_refund_amount, refund_amount, 0)
+        -- COMPLETED / refunded without a payment-source id is hollow — do not
+        -- treat it as money already returned (that blocked Razorpay/wallet retries).
         ELSE 0
       END
     ), 0) AS total
@@ -116,6 +121,29 @@ export function refundInitiatedByFromCancelActor(actorRole?: string | null): str
   if (role === "admin" || role === "agent" || role === "dashboard") return "agent";
   if (role === "customer" || role === "cx") return "customer";
   return "system";
+}
+
+/**
+ * Amount that must move when the customer cancel UI promised a refund.
+ * Shown amount is the contract; captured paid is the ceiling when known.
+ */
+export function resolveCustomerShownRefundAmount(input: {
+  /** True when the cancel sheet promised a full refund (pre-accept / search). */
+  promisedRefund: boolean;
+  /** What the app displayed as "Your refund". */
+  shownAmount?: number | null;
+  /** Wallet + UPI/card actually captured. */
+  paidAmount: number;
+}): number {
+  const shown = Number(input.shownAmount);
+  const paid = Number(input.paidAmount);
+  const shownOk = Number.isFinite(shown) && shown > 0.005;
+  const paidOk = Number.isFinite(paid) && paid > 0.005;
+  if (!input.promisedRefund && !shownOk) return 0;
+  let amount = shownOk ? round2(shown) : paidOk ? round2(paid) : 0;
+  if (amount <= 0.005 && paidOk) amount = round2(paid);
+  if (paidOk && amount > paid) amount = round2(paid);
+  return amount > 0.005 ? amount : 0;
 }
 
 type RefundProbeRow = {
@@ -264,7 +292,12 @@ async function resolvePaidAmount(sql: Sql, orderCoreId: number): Promise<number>
       SELECT op.amount, op.payment_gateway, op.gateway_response, op.payment_method
       FROM orders_core_payments op
       WHERE op.order_id = c.order_id
-        AND UPPER(COALESCE(op.payment_status, '')) IN ('PAID','CAPTURED','SUCCESS','COMPLETED')
+        AND (
+          UPPER(COALESCE(op.payment_status, '')) IN (
+            'PAID','CAPTURED','SUCCESS','COMPLETED','AUTHORIZED','CAPTURE'
+          )
+          OR COALESCE(op.transaction_id, '') LIKE 'pay_%'
+        )
       ORDER BY op.paid_at DESC NULLS LAST, op.id DESC
       LIMIT 1
     ) p ON TRUE
@@ -370,6 +403,13 @@ async function resolvePaidAmount(sql: Sql, orderCoreId: number): Promise<number>
   return gross > 0.005 ? round2(gross) : 0;
 }
 
+export async function resolveOrderPaidAmountForAutoRefund(
+  sql: Sql,
+  orderCoreId: number
+): Promise<number> {
+  return resolvePaidAmount(sql, orderCoreId);
+}
+
 /**
  * Clear the execution lock on a known hollow row so executeOrderRefund can
  * restore funds. Updates by primary key only — never scans created_at.
@@ -398,7 +438,10 @@ export async function autoRefundOnCancellation(
   args: AutoRefundArgs,
   sql: Sql = getSql()
 ): Promise<AutoRefundOutcome> {
-  if (!shouldAutoRefundForCancellationActor(args.actorRole)) {
+  if (
+    !shouldAutoRefundForCancellationActor(args.actorRole) &&
+    args.allowCustomerPreAcceptRefund !== true
+  ) {
     return { triggered: false, skippedReason: "customer_cancellation" };
   }
 
@@ -409,22 +452,17 @@ export async function autoRefundOnCancellation(
 
   const paidAmount = await resolvePaidAmount(sql, orderCoreId);
   if (paidAmount < 0) return { triggered: false, skippedReason: "order_not_found" };
-  const alreadyRefunded = await sumSettledRefundAmount(sql, orderCoreId);
-  const remainingCap =
-    paidAmount > 0.005 ? Math.max(0, round2(paidAmount - alreadyRefunded)) : 0;
-  if (paidAmount > 0.005 && remainingCap <= 0.005) {
-    return { triggered: false, skippedReason: "already_refunded" };
-  }
 
-  // One index probe for the latest row. Do not walk created_at or seq-scan
-  // order_refunds — that was the Disk I/O storm on duplicate FAILED rows.
   const latest = await loadLatestRefund(sql, orderCoreId);
   if (latest && isHollowRefundRow(latest)) {
     const hollowId = await resetHollowRefundRow(sql, Number(latest.id));
     if (hollowId == null) {
       return { triggered: false, skippedReason: "order_not_found" };
     }
-    let amount = resolveRefundAmount(args, paidAmount, remainingCap);
+    const alreadyRefundedHollow = await sumSettledRefundAmount(sql, orderCoreId);
+    const remainingCapHollow =
+      paidAmount > 0.005 ? Math.max(0, round2(paidAmount - alreadyRefundedHollow)) : 0;
+    let amount = resolveRefundAmount(args, paidAmount, remainingCapHollow);
     if (amount === 0) return { triggered: false, skippedReason: "nothing_paid" };
     await sql`
       UPDATE order_refunds
@@ -450,6 +488,13 @@ export async function autoRefundOnCancellation(
     return { triggered: true, refundId: hollowId, result };
   }
 
+  const alreadyRefunded = await sumSettledRefundAmount(sql, orderCoreId);
+  const remainingCap =
+    paidAmount > 0.005 ? Math.max(0, round2(paidAmount - alreadyRefunded)) : 0;
+  if (paidAmount > 0.005 && remainingCap <= 0.005) {
+    return { triggered: false, skippedReason: "already_refunded", refundId: latest ? Number(latest.id) : undefined };
+  }
+
   if (latest && isActiveRefundRow(latest)) {
     await syncSubscriptionRevokeForExistingRefund(sql, orderCoreId, latest);
     if (remainingCap <= 0.005) {
@@ -468,10 +513,13 @@ export async function autoRefundOnCancellation(
     const isFailed = exec === "FAILED" || status === "failed";
     const actor = String(args.actorRole ?? "").toLowerCase();
     const merchantCancel = shouldAutoRefundForCancellationActor(actor);
-    const staleWithoutMovement = merchantCancel && !refundRowHasMoneyMovement(latest);
+    // Same retry path when customer pre-accept cancel is allowed to auto-refund.
+    const canRetry =
+      merchantCancel || args.allowCustomerPreAcceptRefund === true;
+    const staleWithoutMovement = canRetry && !refundRowHasMoneyMovement(latest);
     const zeroAmountStale =
-      merchantCancel && Number(latest.refund_amount ?? 0) <= 0.005 && !refundRowHasMoneyMovement(latest);
-    if ((isFailed || staleWithoutMovement || zeroAmountStale) && merchantCancel) {
+      canRetry && Number(latest.refund_amount ?? 0) <= 0.005 && !refundRowHasMoneyMovement(latest);
+    if ((isFailed || staleWithoutMovement || zeroAmountStale) && canRetry) {
       let amount = resolveRefundAmount(args, paidAmount, remainingCap);
       if (amount === 0) return { triggered: false, skippedReason: "nothing_paid" };
       const refundId = Number(latest.id);

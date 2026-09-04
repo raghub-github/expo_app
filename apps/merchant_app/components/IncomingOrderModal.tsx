@@ -41,6 +41,7 @@ import {
   playIncomingOrderAlert,
   stopOrderAlertSound,
 } from "@/lib/playOrderAlertSound";
+import { claimNewOrderAlertSound } from "@/lib/newOrderAlertSoundDedupe";
 import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
 import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/RejectFollowUpHost";
 import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
@@ -569,7 +570,10 @@ export default function IncomingOrderModal() {
       const target = queue[0] ?? order;
       setSheetOrder(target);
 
-      if (soundPlayedForOrderRef.current !== target.id) {
+      if (
+        soundPlayedForOrderRef.current !== target.id &&
+        claimNewOrderAlertSound(target.id)
+      ) {
         soundPlayedForOrderRef.current = target.id;
         const dev = await readDeviceOrderAlertsAsync(storeId);
         if (dev.orderAlertsEnabled && dev.soundAlertsEnabled) {
@@ -671,11 +675,16 @@ export default function IncomingOrderModal() {
   useEffect(() => {
     if (!sheetOrder || !storeId) return;
     if (soundPlayedForOrderRef.current === sheetOrder.id) return;
+    if (!claimNewOrderAlertSound(sheetOrder.id)) {
+      soundPlayedForOrderRef.current = sheetOrder.id;
+      return;
+    }
     soundPlayedForOrderRef.current = sheetOrder.id;
     let cancelled = false;
     void (async () => {
       const dev = await readDeviceOrderAlertsAsync(storeId);
       if (cancelled) return;
+      if (!dev.orderAlertsEnabled || !dev.soundAlertsEnabled) return;
       await playIncomingOrderAlert(acceptanceSettings, dev);
     })();
     return () => {

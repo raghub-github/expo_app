@@ -30,6 +30,8 @@ import {
 import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
 import { getSyncFoodHomeLayoutFromQueryClient } from "@/lib/foodHomeLayoutCache";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
+import { prefetchMerchantCardImages } from "@/lib/imageEngine";
+import { prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
 import {
   applyMenuPricesToStores,
   loadStoreMenuPriceMaps,
@@ -76,6 +78,19 @@ import { filterVegSafeCategories, isMerchantPureVeg, textLooksNonVeg } from "@/l
 
 const STORE_TYPE = "FOOD";
 const PAD = 16;
+const FOOD_PAGE_STORE_TYPES = new Set([
+  "FOOD",
+  "RESTAURANT",
+  "CLOUD_KITCHEN",
+  "BAKERY",
+  "CAFE",
+]);
+
+function isFoodPageStoreType(storeType: string | null | undefined): boolean {
+  const st = String(storeType ?? "").trim().toUpperCase();
+  if (!st) return true;
+  return FOOD_PAGE_STORE_TYPES.has(st);
+}
 
 function dedupeCategories(rows: UserAppCategoryItem[]): UserAppCategoryItem[] {
   const byId = new Map<number, UserAppCategoryItem>();
@@ -239,6 +254,17 @@ export default function MealsUnderPriceScreen() {
   // 2× inset + gap to land below the status bar on screen.
   const heroTopBarOffset = statusBarInset * 2 + 14;
 
+  const [scrollY, setScrollY] = useState(0);
+  const [filterAnchorY, setFilterAnchorY] = useState(0);
+  const stickyTitleTop = insets.top;
+  const filterStickAt = Math.max(
+    0,
+    filterAnchorY - stickyTitleTop - MEALS_UNDER_PRICE_TITLE_BAR_HEIGHT
+  );
+  const stickyFiltersVisible = filterAnchorY > 0 && scrollY >= filterStickAt - 1;
+  const statusBarIconsLight =
+    isDiscoveryDark || (Boolean(heroImageUri) && !stickyFiltersVisible);
+
   useLayoutEffect(() => {
     prefetchMealsUnder250HeroMedia(syncLayout);
     if (heroImageUri) {
@@ -246,17 +272,18 @@ export default function MealsUnderPriceScreen() {
     }
   }, [syncLayout, heroImageUri]);
 
-  const applyImmersiveStatusBar = useCallback(() => {
-    useScreenChromeStore.setState({
-      statusBarBackground: isDiscoveryDark && !heroImageUri ? MerchantDarkPalette.bg : "transparent",
-      statusBarStyle: isDiscoveryDark || heroImageUri ? "light" : "dark",
-      hideStatusBarSpacer: true,
-    });
-  }, [heroImageUri, isDiscoveryDark]);
+  const checkoutSheetVisible = useCheckoutSheetStore((s) => s.visible);
 
   useFocusEffect(
     useCallback(() => {
-      applyImmersiveStatusBar();
+      RNStatusBar.setHidden(false, "none");
+      if (Platform.OS === "android") {
+        RNStatusBar.setTranslucent(true);
+        RNStatusBar.setBackgroundColor("transparent", true);
+      }
+      useScreenChromeStore.setState({
+        hideStatusBarSpacer: true,
+      });
       // Meals-under owns in-card View cart → checkout sheet; never the global dock.
       useMealsUnderPriceCartUiStore.getState().setSuppressFloatingCart(true);
       return () => {
@@ -268,20 +295,27 @@ export default function MealsUnderPriceScreen() {
           useMealsUnderPriceCartUiStore.getState().setSuppressFloatingCart(false);
         }
       };
-    }, [applyImmersiveStatusBar])
+    }, [])
   );
 
-  const checkoutSheetVisible = useCheckoutSheetStore((s) => s.visible);
   useEffect(() => {
-    applyImmersiveStatusBar();
-  }, [checkoutSheetVisible, applyImmersiveStatusBar]);
+    RNStatusBar.setHidden(false, "none");
+    if (Platform.OS === "android") {
+      RNStatusBar.setTranslucent(true);
+      RNStatusBar.setBackgroundColor("transparent", true);
+      RNStatusBar.setBarStyle(statusBarIconsLight ? "light-content" : "dark-content", true);
+    }
+    useScreenChromeStore.setState({
+      statusBarBackground: isDiscoveryDark && !heroImageUri ? MerchantDarkPalette.bg : "transparent",
+      statusBarStyle: statusBarIconsLight ? "light" : "dark",
+      hideStatusBarSpacer: true,
+    });
+  }, [heroImageUri, isDiscoveryDark, statusBarIconsLight, checkoutSheetVisible]);
 
   const [categoryTabId, setCategoryTabId] = useState("all");
   const [sortBy, setSortBy] = useState<SortMode>("relevance");
   const [nearFast, setNearFast] = useState(false);
   const [sortSheetVisible, setSortSheetVisible] = useState(false);
-  const [scrollY, setScrollY] = useState(0);
-  const [filterAnchorY, setFilterAnchorY] = useState(0);
   const [customizationItem, setCustomizationItem] = useState<MenuItem | null>(null);
   const [customizationStore, setCustomizationStore] = useState<StoreFoodItemsUnderPrice | null>(null);
   const [customizationVisible, setCustomizationVisible] = useState(false);
@@ -342,6 +376,7 @@ export default function MealsUnderPriceScreen() {
   } = useQuery({
     queryKey: [
       "meals-under-price-grouped",
+      "food-only",
       merchantsAnchorCoords?.latitude,
       merchantsAnchorCoords?.longitude,
       maxPrice,
@@ -387,6 +422,14 @@ export default function MealsUnderPriceScreen() {
     staleTime: 60_000,
   });
 
+  useLayoutEffect(() => {
+    const list = merchantsData ?? [];
+    if (list.length > 0) {
+      prefetchMerchantCardImages(list);
+      prefetchMerchantBanners(list);
+    }
+  }, [merchantsData]);
+
   const merchantById = useMemo(() => {
     const map = new Map<string, MerchantSummary>();
     for (const m of merchantsData ?? []) map.set(m.id, m);
@@ -412,7 +455,19 @@ export default function MealsUnderPriceScreen() {
   }, [groupedStores, merchantById]);
 
   const filteredStores = useMemo(() => {
-    let list = enrichedStores;
+    const foodMerchantIds = new Set(
+      (merchantsData ?? [])
+        .filter((m) => isFoodPageStoreType(m.storeType))
+        .map((m) => m.id)
+    );
+    let list = enrichedStores.filter((store) => {
+      const merchant = merchantById.get(store.storePublicId);
+      const st = String(merchant?.storeType ?? "").trim().toUpperCase();
+      if (st === "GROCERY") return false;
+      if (merchant && !isFoodPageStoreType(merchant.storeType)) return false;
+      if (foodMerchantIds.size > 0 && !foodMerchantIds.has(store.storePublicId)) return false;
+      return true;
+    });
     if (vegOnly) {
       list = list.filter((store) => {
         const merchant = merchantById.get(store.storePublicId);
@@ -448,7 +503,15 @@ export default function MealsUnderPriceScreen() {
       );
     }
     return list;
-  }, [enrichedStores, selectedCategoryName, merchantById, nearFast, sortBy, vegOnly]);
+  }, [
+    enrichedStores,
+    selectedCategoryName,
+    merchantById,
+    merchantsData,
+    nearFast,
+    sortBy,
+    vegOnly,
+  ]);
 
   const storeIdsKey = useMemo(
     () => enrichedStores.map((s) => s.storePublicId).join("|"),
@@ -607,11 +670,8 @@ export default function MealsUnderPriceScreen() {
   const showEmpty =
     hasAnchor && !isPending && !isFetching && priceSyncedStores.length === 0;
 
-  const stickyTitleTop = insets.top;
   const stickyChromeHeight =
     stickyTitleTop + MEALS_UNDER_PRICE_TITLE_BAR_HEIGHT + MEALS_UNDER_PRICE_FILTER_BAR_HEIGHT;
-  const filterStickAt = Math.max(0, filterAnchorY - stickyTitleTop - MEALS_UNDER_PRICE_TITLE_BAR_HEIGHT);
-  const stickyFiltersVisible = filterAnchorY > 0 && scrollY >= filterStickAt - 1;
 
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     setScrollY(e.nativeEvent.contentOffset.y);
@@ -628,7 +688,8 @@ export default function MealsUnderPriceScreen() {
     <MerchantUiThemeProvider dark={isDiscoveryDark}>
     <View style={[styles.screen, isDiscoveryDark && styles.screenDark]}>
       <StatusBar
-        style={isDiscoveryDark || heroImageUri ? "light" : stickyFiltersVisible ? "dark" : "light"}
+        hidden={false}
+        style={statusBarIconsLight ? "light" : "dark"}
         translucent
       />
 

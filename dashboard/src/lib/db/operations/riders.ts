@@ -5,7 +5,7 @@
 
 import { getDb } from "../client";
 import { riders, riderDocuments, riderVehicles, riderAddresses, riderDocumentFiles, riderPaymentMethods, onboardingPayments } from "../schema";
-import { eq, and, desc, inArray, isNull, sql } from "drizzle-orm";
+import { eq, and, desc, inArray, isNull, ne, notInArray, sql, count } from "drizzle-orm";
 import { getSystemUserById } from "./users";
 import {
   areAllRequiredSidesApproved,
@@ -1344,6 +1344,117 @@ export async function isRiderEligibleForApprovalQueue(riderId: number): Promise<
     vehicleReady,
     onboardingStage: rider.onboardingStage,
   });
+}
+
+export type PendingOnboardingRider = {
+  id: number;
+  name: string | null;
+  mobile: string;
+  countryCode: string;
+  city: string | null;
+  state: string | null;
+  status: string;
+  onboardingStage: string;
+  kycStatus: string;
+  nextRequiredStep: string | null;
+  onboardingProgressPct: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+/**
+ * Riders who have not finished onboarding (stage ≠ ACTIVE).
+ * Used by control-dashboard "Pending Onboarding" so ops can call and unblock them.
+ */
+export async function listRidersPendingOnboarding(options?: {
+  limit?: number;
+  offset?: number;
+  stage?: string | null;
+  search?: string | null;
+}): Promise<{ riders: PendingOnboardingRider[]; total: number }> {
+  const db = getDb();
+  const limit = Math.min(200, Math.max(1, options?.limit ?? 50));
+  const offset = Math.max(0, options?.offset ?? 0);
+  const stageFilter = (options?.stage || "").trim().toUpperCase();
+  const search = (options?.search || "").trim();
+
+  const conditions = [
+    isNull(riders.deletedAt),
+    ne(riders.onboardingStage, "ACTIVE" as any),
+    notInArray(riders.status, ["BLOCKED", "BANNED"] as any),
+  ];
+
+  if (
+    stageFilter &&
+    stageFilter !== "ACTIVE" &&
+    ["MOBILE_VERIFIED", "KYC", "PAYMENT", "APPROVAL"].includes(stageFilter)
+  ) {
+    conditions.push(eq(riders.onboardingStage, stageFilter as any));
+  }
+
+  if (search) {
+    const digits = search.replace(/\D/g, "");
+    const gmrMatch = /^GMR(\d+)$/i.exec(search);
+    if (gmrMatch) {
+      conditions.push(eq(riders.id, Number(gmrMatch[1])));
+    } else if (/^\d+$/.test(search) && digits.length <= 6) {
+      conditions.push(eq(riders.id, Number(search)));
+    } else if (digits.length >= 8) {
+      conditions.push(sql`${riders.mobile} LIKE ${"%" + digits.slice(-10)}`);
+    } else {
+      conditions.push(
+        sql`(COALESCE(${riders.name}, '') ILIKE ${"%" + search + "%"} OR ${riders.mobile} ILIKE ${"%" + search + "%"})`
+      );
+    }
+  }
+
+  const whereClause = and(...conditions);
+
+  const [totalRow] = await db
+    .select({ total: count() })
+    .from(riders)
+    .where(whereClause);
+
+  const rows = await db
+    .select({
+      id: riders.id,
+      name: riders.name,
+      mobile: riders.mobile,
+      countryCode: riders.countryCode,
+      city: riders.city,
+      state: riders.state,
+      status: riders.status,
+      onboardingStage: riders.onboardingStage,
+      kycStatus: riders.kycStatus,
+      nextRequiredStep: riders.nextRequiredStep,
+      onboardingProgressPct: riders.onboardingProgressPct,
+      createdAt: riders.createdAt,
+      updatedAt: riders.updatedAt,
+    })
+    .from(riders)
+    .where(whereClause)
+    .orderBy(desc(riders.updatedAt), desc(riders.id))
+    .limit(limit)
+    .offset(offset);
+
+  return {
+    total: Number(totalRow?.total ?? 0),
+    riders: rows.map((r) => ({
+      id: r.id,
+      name: r.name ?? null,
+      mobile: String(r.mobile ?? ""),
+      countryCode: String(r.countryCode ?? "+91"),
+      city: r.city ?? null,
+      state: r.state ?? null,
+      status: String(r.status ?? ""),
+      onboardingStage: String(r.onboardingStage ?? ""),
+      kycStatus: String(r.kycStatus ?? ""),
+      nextRequiredStep: r.nextRequiredStep ?? null,
+      onboardingProgressPct: Number(r.onboardingProgressPct ?? 0),
+      createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
+      updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
+    })),
+  };
 }
 
 /**

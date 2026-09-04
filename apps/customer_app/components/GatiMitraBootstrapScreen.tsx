@@ -10,7 +10,6 @@ import {
   View,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
-import { LinearGradient } from "expo-linear-gradient";
 import { applyAndroidNavigationChrome } from "@/lib/androidEdgeToEdgeChrome";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
@@ -23,29 +22,27 @@ import Animated, {
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 
-const GRADIENT_TOP = "#5eead4";
-const GRADIENT_BOTTOM = "#0d9488";
-const DOOR_COLOR = "#0f766e";
-/** Match gradient top so status bar blends with splash (never white). */
-export const SPLASH_STATUS_BAR = GRADIENT_TOP;
+/** Solid brand fill — matches native splash / system chrome. */
+export const SPLASH_STATUS_BAR = GatiMitraColors.splashMint;
 /** Extra space above the system gesture / nav inset so the spinner never clips. */
 const SPINNER_BOTTOM_GAP = 28;
+const EXIT_MS = 420;
 
 function applySplashStatusBarChrome() {
   NativeStatusBar.setHidden(false, "none");
   if (Platform.OS === "android") {
     NativeStatusBar.setBarStyle("light-content", true);
-    void applyAndroidNavigationChrome({ buttonStyle: "light" }).catch(() => {});
+    void applyAndroidNavigationChrome({ buttonStyle: "dark" }).catch(() => {});
   }
 }
 
 export type GatiMitraBootstrapScreenProps = {
   /**
-   * `root` — overlay on top of app; plays door exit when `appReady` becomes true.
-   * `index` — inline full screen while resolving session (no door animation).
+   * `root` — overlay on top of app; fades out when `appReady` becomes true.
+   * `index` — inline full screen while resolving session (no exit animation).
    */
   variant?: "root" | "index";
-  /** When true (root only), door panels slide apart then `onExitComplete` runs. */
+  /** When true (root only), brand layer fades then `onExitComplete` runs. */
   appReady?: boolean;
   onExitComplete?: () => void;
   statusMessage?: string | null;
@@ -61,9 +58,9 @@ export function GatiMitraBootstrapScreen({
   onSplashReady,
 }: GatiMitraBootstrapScreenProps) {
   const insets = useSafeAreaInsets();
-  const { width, height } = useWindowDimensions();
-  const leftX = useSharedValue(0);
-  const rightX = useSharedValue(0);
+  const { height } = useWindowDimensions();
+  const opacity = useSharedValue(1);
+  const brandScale = useSharedValue(1);
   const exitStartedRef = useRef(false);
   const completedRef = useRef(false);
   const splashReadyFiredRef = useRef(false);
@@ -100,102 +97,61 @@ export function GatiMitraBootstrapScreen({
   useEffect(() => {
     if (variant !== "root" || !appReady || exitStartedRef.current) return;
     exitStartedRef.current = true;
-    const travel = width * 0.52;
     const easing = Easing.bezier(0.22, 0.94, 0.36, 1);
-    const duration = 820;
-    leftX.value = withTiming(-travel, { duration, easing });
-    rightX.value = withTiming(
-      travel,
-      { duration, easing },
-      (finished) => {
-        if (finished) {
-          runOnJS(finishExit)();
-        }
+    brandScale.value = withTiming(1.04, { duration: EXIT_MS, easing });
+    opacity.value = withTiming(0, { duration: EXIT_MS, easing }, (finished) => {
+      if (finished) {
+        runOnJS(finishExit)();
       }
-    );
-  }, [variant, appReady, width, leftX, rightX, finishExit]);
+    });
+  }, [variant, appReady, opacity, brandScale, finishExit]);
 
-  const doorLeftStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: leftX.value }],
-  }));
-  const doorRightStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: rightX.value }],
+  const exitStyle = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+    transform: [{ scale: brandScale.value }],
   }));
 
-  // Full-bleed under status / nav bars — never depend on a zero first-frame inset.
   const statusFallback =
     Platform.OS === "android" ? NativeStatusBar.currentHeight ?? 24 : 44;
   const topBleed = Math.max(insets.top, statusFallback);
   const bottomBleed = Math.max(insets.bottom, 16);
-  const bleedHeight = height + topBleed + bottomBleed;
-  const bleedTop = -topBleed;
   const spinnerBottom = bottomBleed + SPINNER_BOTTOM_GAP;
 
-  const showDoors = variant === "root";
-
-  const rootStyle =
-    variant === "root"
-      ? [StyleSheet.absoluteFillObject, styles.overlayRoot]
-      : [styles.inlineRoot, { minHeight: height }];
-
-  return (
-    <View
-      style={rootStyle}
-      accessibilityLabel="GatiMitra loading"
-      onLayout={handleSplashLayout}
-    >
+  const content = (
+    <>
       <StatusBar
         hidden={false}
         style="light"
         backgroundColor="transparent"
         translucent
       />
-      <LinearGradient
-        colors={[GRADIENT_TOP, GatiMitraColors.splashMint, GRADIENT_BOTTOM]}
-        locations={[0, 0.45, 1]}
-        start={{ x: 0.2, y: 0 }}
-        end={{ x: 0.8, y: 1 }}
-        style={[styles.gradient, { top: bleedTop, height: bleedHeight }]}
-      />
-      {/* Explicit mint strip under the status bar in case the OS paints an opaque bar. */}
       <View
         pointerEvents="none"
-        style={[styles.statusFill, { height: topBleed, backgroundColor: GRADIENT_TOP }]}
+        style={[styles.statusFill, { height: topBleed, backgroundColor: SPLASH_STATUS_BAR }]}
       />
-      {showDoors ? (
-        <>
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.door,
-              styles.doorLeft,
-              doorLeftStyle,
-              { top: bleedTop, height: bleedHeight, width: width * 0.51, backgroundColor: DOOR_COLOR },
-            ]}
-          />
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.door,
-              styles.doorRight,
-              doorRightStyle,
-              { top: bleedTop, height: bleedHeight, width: width * 0.51, backgroundColor: DOOR_COLOR },
-            ]}
-          />
-        </>
-      ) : null}
       <View style={styles.logoLayer} pointerEvents="none">
-        <AppText style={styles.title} bold>
+        <AppText
+          style={styles.title}
+          bold
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.7}
+        >
           GatiMitra
         </AppText>
-        <View style={styles.divider} />
-        <AppText style={styles.subtitle} bold>
+        <AppText
+          style={styles.subtitle}
+          bold
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.6}
+        >
           CRAFTED FOR CONVENIENCE
         </AppText>
         <ActivityIndicator
           style={[styles.spinner, { bottom: spinnerBottom }]}
           size="small"
-          color="rgba(255,255,255,0.9)"
+          color="rgba(255,255,255,0.88)"
         />
       </View>
       {statusMessage ? (
@@ -211,6 +167,29 @@ export function GatiMitraBootstrapScreen({
           </View>
         </View>
       ) : null}
+    </>
+  );
+
+  const rootStyle =
+    variant === "root"
+      ? [StyleSheet.absoluteFillObject, styles.overlayRoot]
+      : [styles.inlineRoot, { minHeight: height }];
+
+  return (
+    <View
+      style={rootStyle}
+      accessibilityLabel="GatiMitra loading"
+      onLayout={handleSplashLayout}
+    >
+      {variant === "root" ? (
+        <Animated.View
+          style={[StyleSheet.absoluteFillObject, styles.panel, exitStyle]}
+        >
+          {content}
+        </Animated.View>
+      ) : (
+        content
+      )}
     </View>
   );
 }
@@ -219,17 +198,15 @@ const styles = StyleSheet.create({
   overlayRoot: {
     zIndex: 10000,
     elevation: 10000,
-    backgroundColor: GatiMitraColors.splashMint,
+    backgroundColor: "transparent",
   },
   inlineRoot: {
     flex: 1,
     width: "100%",
     backgroundColor: GatiMitraColors.splashMint,
   },
-  gradient: {
-    position: "absolute",
-    left: 0,
-    right: 0,
+  panel: {
+    backgroundColor: GatiMitraColors.splashMint,
   },
   statusFill: {
     position: "absolute",
@@ -238,21 +215,11 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 1,
   },
-  door: {
-    position: "absolute",
-    top: 0,
-  },
-  doorLeft: {
-    left: 0,
-  },
-  doorRight: {
-    right: 0,
-  },
   logoLayer: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 28,
+    paddingHorizontal: 16,
     zIndex: 2,
   },
   spinner: {
@@ -269,7 +236,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: "rgba(13, 148, 136, 0.28)",
+    backgroundColor: "rgba(15, 118, 110, 0.28)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.18)",
   },
@@ -290,27 +257,23 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   title: {
-    fontSize: 40,
+    fontSize: 56,
+    lineHeight: 64,
     fontFamily: "Lora_700Bold",
     fontWeight: "700",
-    color: "#fff",
-    letterSpacing: 0.3,
+    color: "#FFFFFF",
+    letterSpacing: -0.8,
     textAlign: "center",
-  },
-  divider: {
-    width: "72%",
-    maxWidth: 220,
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.92)",
-    marginTop: 20,
-    marginBottom: 18,
+    width: "100%",
   },
   subtitle: {
+    marginTop: 14,
     fontSize: 11,
     fontFamily: "Lora_700Bold",
     fontWeight: "700",
-    color: "rgba(255,255,255,0.94)",
-    letterSpacing: 3.2,
+    color: "rgba(255,255,255,0.9)",
+    letterSpacing: 3.4,
     textAlign: "center",
+    width: "100%",
   },
 });

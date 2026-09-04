@@ -11,7 +11,6 @@ import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Path } from "react-native-svg";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { StatusBar } from "expo-status-bar";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -307,7 +306,6 @@ export function RiderDeliverySuccessLayout({
 
   return (
     <View style={styles.root}>
-      <StatusBar style="light" />
       <SafeAreaView style={styles.safe} edges={["bottom"]}>
         <ScrollView
           style={styles.scroll}

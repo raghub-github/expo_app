@@ -17,6 +17,7 @@ import {
   effectiveServiceRadiusKm,
   getStoreFssaiLicenseNumber,
 } from "./merchant.service.js";
+import { suggestCatalogSearch } from "./searchSuggest.js";
 import { listGroceryHomeMenuCategories } from "./groceryHomeMenuCategories.service.js";
 import { matchesCustomerMerchantListStoreType } from "./merchantStoreTypeFilters.js";
 import { listUserAppCategories } from "./userAppCategory.service.js";
@@ -136,6 +137,9 @@ function toFiniteNumber(v: unknown): number | undefined {
 function mapCustomerMenuItem(
   m: MerchantMenuItemRow & {
     category_name?: string | null;
+    category_image_url?: string | null;
+    category_display_order?: number | null;
+    order_count?: number | null;
     customer_strike_price?: string;
     canonical_pricing?: Record<string, unknown>;
   }
@@ -150,6 +154,8 @@ function mapCustomerMenuItem(
   const basePrice = strike != null && strike > price ? strike : mrp;
   const discountPercentage = toFiniteNumber(m.discount_percentage);
   const prepTimeMinutes = toFiniteInt(m.preparation_time_minutes);
+  const orderCount = toFiniteInt(m.order_count) ?? 0;
+  const categoryDisplayOrder = toFiniteInt(m.category_display_order);
 
   return {
     id: String(m.item_id ?? ""),
@@ -166,6 +172,9 @@ function mapCustomerMenuItem(
     category: m.cuisine_type ?? m.category_name ?? undefined,
     categoryId: categoryId ?? undefined,
     categoryName: m.category_name ?? undefined,
+    categoryImageUrl: toAbsoluteClientMediaUrl(m.category_image_url ?? null) ?? undefined,
+    categoryDisplayOrder: categoryDisplayOrder ?? undefined,
+    orderCount,
     isPopular: m.is_popular === true ? true : m.is_popular === false ? false : undefined,
     isRecommended:
       m.is_recommended === true ? true : m.is_recommended === false ? false : undefined,
@@ -216,6 +225,12 @@ const searchQuerySchema = z.object({
     .string()
     .optional()
     .transform((v) => v === "true" || v === "1"),
+  storeType: z
+    .string()
+    .trim()
+    .max(32)
+    .optional()
+    .transform((v) => (v ? v.toUpperCase() : undefined)),
 });
 
 const nearbyStoresQuerySchema = z.object({
@@ -515,20 +530,22 @@ export async function merchantRoutes(app: FastifyInstance) {
           : mediaGallery;
         const galleryImages = galleryRaw
           .map((u) => toAbsoluteClientMediaUrl(typeof u === "string" ? u : null))
-          .filter((u): u is string => Boolean(u))
-          .filter((u) => isFoodHeroMediaUrl(u));
+          .filter((u): u is string => Boolean(u));
         const menuHero =
           Number.isFinite(storeInternalId) && storeInternalId > 0
             ? menuHeroPhotos.get(storeInternalId) ?? null
             : null;
-        const displayImage =
-          (isFoodHeroMediaUrl(bannerAbs) ? bannerAbs : null) ??
-          galleryImages[0] ??
-          (isFoodHeroMediaUrl(displayImageRaw) ? toAbsoluteClientMediaUrl(displayImageRaw) : null) ??
-          menuHero ??
-          (bannerAbs && !isBrandOrPlaceholderHeroUrl(bannerAbs) ? bannerAbs : null);
-        const heroBanner = displayImage ?? null;
-        const galleryDeduped = galleryImages.filter((u) => u !== heroBanner);
+        const displayImageRawAbs = toAbsoluteClientMediaUrl(displayImageRaw);
+        const mediaSeen = new Set<string>();
+        const allCardMedia: string[] = [];
+        for (const u of [bannerAbs, displayImageRawAbs, ...galleryImages, menuHero]) {
+          if (!u || mediaSeen.has(u)) continue;
+          mediaSeen.add(u);
+          allCardMedia.push(u);
+        }
+        const displayImage = allCardMedia[0] ?? null;
+        const heroBanner = displayImage;
+        const galleryDeduped = allCardMedia.slice(1);
         const storeLevelPrep = nearby.avg_preparation_time_minutes ?? s.avg_preparation_time_minutes;
         const menuAvgPrep =
           Number.isFinite(storeInternalId) && storeInternalId > 0
@@ -654,6 +671,12 @@ export async function merchantRoutes(app: FastifyInstance) {
     maxDistanceKm: z.coerce.number().min(1).max(50).optional(),
     limit: z.coerce.number().min(1).max(50).optional(),
     veg: z.coerce.boolean().optional(),
+    storeType: z
+      .string()
+      .trim()
+      .max(32)
+      .optional()
+      .transform((v) => (v ? v.toUpperCase() : undefined)),
   });
 
   app.get(
@@ -671,6 +694,7 @@ export async function merchantRoutes(app: FastifyInstance) {
                 cuisines: z.array(z.string()).nullable().optional(),
                 distanceKm: z.number().nullable().optional(),
                 matchVia: z.enum(["item", "menu_category", "both"]),
+                storeType: z.string().nullable().optional(),
               })
             ),
           }),
@@ -686,6 +710,7 @@ export async function merchantRoutes(app: FastifyInstance) {
         maxDistanceKm: q.maxDistanceKm,
         limit: q.limit,
         vegMode: q.veg === true,
+        storeType: q.storeType ?? "FOOD",
       });
       return reply.send({
         stores: stores.map((s) => ({
@@ -695,6 +720,7 @@ export async function merchantRoutes(app: FastifyInstance) {
           cuisines: s.cuisines,
           distanceKm: s.distanceKm,
           matchVia: s.matchVia,
+          storeType: s.storeType,
         })),
       });
     }
@@ -1126,6 +1152,9 @@ export async function merchantRoutes(app: FastifyInstance) {
                 category: z.string().optional(),
                 categoryId: z.number().nullable().optional(),
                 categoryName: z.string().nullable().optional(),
+                categoryImageUrl: z.string().nullable().optional(),
+                categoryDisplayOrder: z.number().nullable().optional(),
+                orderCount: z.number().optional(),
                 isPopular: z.boolean().optional(),
                 isRecommended: z.boolean().optional(),
                 prepTimeMinutes: z.number().optional(),
@@ -1133,6 +1162,7 @@ export async function merchantRoutes(app: FastifyInstance) {
                 hasCustomizations: z.boolean().optional(),
                 hasAddons: z.boolean().optional(),
                 hasVariants: z.boolean().optional(),
+                inStock: z.boolean().optional(),
               })
             ),
             cuisines: z.array(z.string()).optional(),
@@ -1295,32 +1325,51 @@ export async function merchantRoutes(app: FastifyInstance) {
                 name: z.string(),
                 imageUrl: z.string().nullable().optional(),
                 cuisines: z.array(z.string()).optional(),
+                distanceKm: z.number().optional(),
+                storeType: z.string().nullable().optional(),
               })
             ),
+            correctedQuery: z.string().nullable().optional(),
+            didYouMean: z.string().nullable().optional(),
+            searchInsteadOriginal: z.string().nullable().optional(),
+            preferStores: z.boolean().optional(),
           }),
         },
       },
     },
     async (request, reply) => {
       const q = request.query as z.infer<typeof searchQuerySchema>;
-      const { dishes: items, stores } = await search({
+      const {
+        dishes: items,
+        stores,
+        correctedQuery,
+        didYouMean,
+        searchInsteadOriginal,
+        preferStores,
+      } = await search({
         q: (q.q ?? "").trim(),
         limit: q.limit,
         offset: q.offset,
         lat: q.lat,
         lng: q.lng,
         veg_mode: q.veg ?? false,
+        storeType: q.storeType ?? "FOOD",
       });
       const storeMap = new Map(stores.map((s) => [s.id, s]));
       const dishes = items.map((m) => {
         const store = storeMap.get(m.store_id);
+        const extra = m as MerchantMenuItemRow & {
+          store_public_id?: string;
+          restaurant_name?: string;
+        };
         return {
           id: m.item_id,
           menuItemId: m.id,
           name: m.item_name,
           imageKey: "default",
-          restaurantName: store?.store_display_name ?? store?.store_name,
-          storeId: store?.store_id,
+          restaurantName:
+            store?.store_display_name ?? store?.store_name ?? extra.restaurant_name,
+          storeId: store?.store_id ?? extra.store_public_id,
           price: parseFloat(m.selling_price),
           isVeg: foodTypeIsListedAsVeg(m.food_type),
         };
@@ -1330,8 +1379,69 @@ export async function merchantRoutes(app: FastifyInstance) {
         name: s.store_display_name ?? s.store_name,
         imageUrl: toAbsoluteClientMediaUrl(s.banner_url ?? null) ?? undefined,
         cuisines: s.cuisine_types ?? undefined,
+        distanceKm:
+          "distance_km" in s && typeof (s as NearbyStoreRow).distance_km === "number"
+            ? (s as NearbyStoreRow).distance_km
+            : undefined,
+        storeType:
+          typeof (s as { store_type?: string | null }).store_type === "string"
+            ? String((s as { store_type?: string | null }).store_type).trim().toUpperCase() || null
+            : null,
       }));
-      return reply.send({ dishes, stores: storeList });
+      return reply.send({
+        dishes,
+        stores: storeList,
+        correctedQuery: correctedQuery ?? null,
+        didYouMean: didYouMean ?? null,
+        searchInsteadOriginal: searchInsteadOriginal ?? null,
+        preferStores: preferStores === true,
+      });
+    }
+  );
+
+  const searchSuggestQuerySchema = z.object({
+    q: z.string().max(200).optional().default(""),
+    limit: z.coerce.number().int().min(1).max(8).optional().default(8),
+    lat: z.coerce.number().optional(),
+    lng: z.coerce.number().optional(),
+    storeType: z
+      .string()
+      .trim()
+      .max(32)
+      .optional()
+      .transform((v) => (v ? v.toUpperCase() : undefined)),
+  });
+
+  // GET /v1/search/suggest – lightweight autocomplete (≤8)
+  app.get(
+    "/search/suggest",
+    {
+      schema: {
+        querystring: searchSuggestQuerySchema,
+        response: {
+          200: z.object({
+            suggestions: z.array(
+              z.object({
+                type: z.enum(["query", "store", "item"]),
+                text: z.string(),
+                storeId: z.string().optional(),
+                itemId: z.string().optional(),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const q = request.query as z.infer<typeof searchSuggestQuerySchema>;
+      const suggestions = await suggestCatalogSearch({
+        q: (q.q ?? "").trim(),
+        limit: q.limit,
+        lat: q.lat,
+        lng: q.lng,
+        storeType: q.storeType ?? "FOOD",
+      });
+      return reply.send({ suggestions });
     }
   );
 

@@ -1,8 +1,8 @@
-"use client";
+﻿"use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Wallet, Loader2, Search, Filter, ChevronLeft, ChevronRight } from "lucide-react";
+import { Loader2, Search, ChevronRight } from "lucide-react";
 
 type RequestItem = {
   id: number;
@@ -103,53 +103,29 @@ export function WalletRequestsPageClient({ storeId }: { storeId: string | null }
   const canPrev = page > 1;
   const canNext = page < totalPages;
 
-  const header = useMemo(() => {
-    if (!storeId) return "Wallet adjustment requests";
-    return `Wallet adjustment requests (Store #${storeId})`;
-  }, [storeId]);
-
   return (
-    <div className="min-h-screen bg-[#f8fafc] px-4 sm:px-6 lg:px-8 py-6">
-      <div className="max-w-6xl mx-auto space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <Wallet className="h-5 w-5 text-indigo-600" />
-              <h1 className="text-lg sm:text-xl font-bold text-gray-900">{header}</h1>
-              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-700">
-                {total} total
-              </span>
-            </div>
-            <p className="text-xs text-gray-500 mt-1">
-              Use filters to quickly find pending/approved/rejected requests.
-            </p>
-          </div>
-          <Link
-            href={storeId ? `/dashboard/merchants/stores/${storeId}/payments` : "/dashboard/merchants"}
-            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
-          >
-            <ChevronLeft className="h-4 w-4" />
-            Back
-          </Link>
-        </div>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-[#121212]/55">
+          Credit and debit requests across stores. Filter by status, direction, or date.
+        </p>
+        <span className="rounded-full bg-[#F3F7FA] px-2 py-0.5 text-[10px] font-semibold text-[#121212]/70">
+          {total} total
+        </span>
+      </div>
 
-        <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-          <div className="border-b border-gray-100 px-4 py-3 bg-gray-50/60">
+      <div className="overflow-hidden rounded-xl border border-[#121212]/10 bg-white shadow-[0_1px_2px_rgba(18,18,18,0.04)]">
+          <div className="border-b border-[#121212]/08 bg-[#F3F7FA] px-3 py-2.5">
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-700">
-                  <Filter className="h-3.5 w-3.5" />
-                  Filters
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1">
+                  <div className="inline-flex rounded-lg border border-[#121212]/10 bg-white p-0.5">
                     {(["ALL", "PENDING", "APPROVED", "REJECTED"] as const).map((s) => (
                       <button
                         key={s}
                         type="button"
                         onClick={() => setStatus(s)}
-                        className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                          status === s ? "bg-indigo-600 text-white" : "text-gray-700 hover:bg-gray-100"
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                          status === s ? "bg-[#121212] text-white" : "text-[#121212]/70 hover:bg-[#F3F7FA]"
                         }`}
                       >
                         {s === "ALL" ? "All" : formatStatus(s)}
@@ -159,8 +135,8 @@ export function WalletRequestsPageClient({ storeId }: { storeId: string | null }
 
                   <select
                     value={direction}
-                    onChange={(e) => setDirection(e.target.value as any)}
-                    className="text-xs border border-gray-200 rounded-lg px-2.5 py-2 bg-white"
+                    onChange={(e) => setDirection(e.target.value as "ALL" | "CREDIT" | "DEBIT")}
+                    className="h-8 text-xs border border-[#121212]/12 rounded-lg px-2.5 bg-white"
                   >
                     <option value="ALL">All directions</option>
                     <option value="CREDIT">Credit</option>
@@ -168,12 +144,12 @@ export function WalletRequestsPageClient({ storeId }: { storeId: string | null }
                   </select>
 
                   <div className="relative">
-                    <Search className="h-4 w-4 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <Search className="h-3.5 w-3.5 text-[#121212]/35 absolute left-2.5 top-1/2 -translate-y-1/2" />
                     <input
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
-                      placeholder="Search store, order id, reason, email..."
-                      className="w-[min(520px,calc(100vw-6rem))] text-xs border border-gray-200 rounded-lg pl-8 pr-3 py-2 bg-white"
+                      placeholder="Store, order, reason, email"
+                      className="h-8 w-[min(420px,calc(100vw-6rem))] text-xs border border-[#121212]/12 rounded-lg pl-8 pr-3 bg-white"
                     />
                   </div>
 
@@ -182,19 +158,19 @@ export function WalletRequestsPageClient({ storeId }: { storeId: string | null }
                       type="date"
                       value={from}
                       onChange={(e) => setFrom(e.target.value)}
-                      className="text-xs border border-gray-200 rounded-lg px-2.5 py-2 bg-white"
+                      className="h-8 text-xs border border-[#121212]/12 rounded-lg px-2 bg-white"
                     />
-                    <span className="text-[10px] text-gray-500">to</span>
+                    <span className="text-[10px] text-[#121212]/40">to</span>
                     <input
                       type="date"
                       value={to}
                       onChange={(e) => setTo(e.target.value)}
-                      className="text-xs border border-gray-200 rounded-lg px-2.5 py-2 bg-white"
+                      className="h-8 text-xs border border-[#121212]/12 rounded-lg px-2 bg-white"
                     />
                     <button
                       type="button"
                       onClick={() => setApplied({ from, to, search })}
-                      className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-700"
+                      className="h-8 rounded-lg bg-[#121212] px-3 text-[11px] font-semibold text-white"
                     >
                       Apply
                     </button>
@@ -206,37 +182,33 @@ export function WalletRequestsPageClient({ storeId }: { storeId: string | null }
                         setSearch("");
                         setApplied({ from: "", to: "", search: "" });
                       }}
-                      className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                      className="h-8 rounded-lg border border-[#121212]/12 bg-white px-3 text-[11px] font-semibold text-[#121212]"
                     >
                       Clear
                     </button>
                   </div>
-                </div>
-              </div>
-              <div className="text-[10px] text-gray-500">
-                Tip: search supports store name/code, order id, reason, requester/approver names/emails.
               </div>
             </div>
           </div>
 
           <div className="max-h-[70vh] overflow-y-auto">
             {loading && requests.length === 0 ? (
-              <div className="flex items-center justify-center py-10 text-gray-500">
+              <div className="flex items-center justify-center py-10 text-[#121212]/45">
                 <Loader2 className="h-5 w-5 animate-spin mr-2" />
                 Loading...
               </div>
             ) : requests.length === 0 ? (
-              <div className="py-10 text-center text-sm text-gray-500">No requests found.</div>
+              <div className="py-10 text-center text-sm text-[#121212]/50">No requests found.</div>
             ) : (
-              <div className="divide-y divide-gray-100">
+              <div className="divide-y divide-[#121212]/06">
                 {requests.map((r) => (
-                  <div key={r.id} className="px-4 py-3 hover:bg-gray-50/50">
+                  <div key={r.id} className="px-4 py-3 hover:bg-[#F3F7FA]/80">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-xs font-semibold text-gray-900 truncate">{r.store_name}</span>
+                          <span className="text-xs font-semibold text-[#121212] truncate">{r.store_name}</span>
                           <span
-                            className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                            className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
                               r.status === "PENDING"
                                 ? "bg-amber-100 text-amber-800"
                                 : r.status === "APPROVED"
@@ -253,10 +225,10 @@ export function WalletRequestsPageClient({ storeId }: { storeId: string | null }
                           >
                             {r.direction === "CREDIT" ? "+" : "−"}₹{Number(r.amount).toLocaleString("en-IN")}
                           </span>
-                          {r.order_id ? <span className="text-[10px] text-gray-500">Order #{r.order_id}</span> : null}
+                          {r.order_id ? <span className="text-[10px] text-[#121212]/45">Order #{r.order_id}</span> : null}
                         </div>
-                        <p className="text-xs text-gray-700 mt-1 break-words">{r.reason}</p>
-                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-gray-500">
+                        <p className="text-xs text-[#121212]/80 mt-1 break-words">{r.reason}</p>
+                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[#121212]/45">
                           <span>
                             Requested by {r.requested_by_name || r.requested_by_email || "—"} ·{" "}
                             {r.requested_at ? new Date(r.requested_at).toLocaleString("en-IN") : "—"}
@@ -273,7 +245,7 @@ export function WalletRequestsPageClient({ storeId }: { storeId: string | null }
                       </div>
                       <Link
                         href={`/dashboard/merchants/stores/${r.merchant_store_id}/payments`}
-                        className="text-xs font-medium text-indigo-600 hover:text-indigo-700 whitespace-nowrap inline-flex items-center gap-1"
+                        className="text-xs font-semibold text-[#121212] hover:underline whitespace-nowrap inline-flex items-center gap-1"
                       >
                         Open store <ChevronRight className="h-4 w-4" />
                       </Link>
@@ -284,8 +256,8 @@ export function WalletRequestsPageClient({ storeId }: { storeId: string | null }
             )}
           </div>
 
-          <div className="border-t border-gray-100 px-4 py-3 flex items-center justify-between">
-            <div className="text-[10px] text-gray-500">
+          <div className="border-t border-[#121212]/08 px-4 py-2.5 flex items-center justify-between bg-[#F3F7FA]">
+            <div className="text-[10px] text-[#121212]/45">
               Page {page} of {totalPages} · Showing {requests.length} of {total}
             </div>
             <div className="flex items-center gap-2">
@@ -293,7 +265,7 @@ export function WalletRequestsPageClient({ storeId }: { storeId: string | null }
                 type="button"
                 onClick={() => fetchPage(page - 1)}
                 disabled={!canPrev || loading}
-                className="inline-flex items-center justify-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                className="inline-flex h-8 items-center justify-center rounded-lg border border-[#121212]/12 bg-white px-3 text-[11px] font-semibold text-[#121212] disabled:opacity-50"
               >
                 Prev
               </button>
@@ -301,15 +273,13 @@ export function WalletRequestsPageClient({ storeId }: { storeId: string | null }
                 type="button"
                 onClick={() => fetchPage(page + 1)}
                 disabled={!canNext || loading}
-                className="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                className="inline-flex h-8 items-center justify-center rounded-lg bg-[#121212] px-3 text-[11px] font-semibold text-white disabled:opacity-50"
               >
                 Next
               </button>
             </div>
           </div>
-        </div>
       </div>
     </div>
   );
 }
-

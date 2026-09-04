@@ -18,6 +18,7 @@ export type MerchantPrintStoreContext = {
   city?: string | null;
   cuisineLabel?: string | null;
   fssaiNumber?: string | null;
+  storeType?: string | null;
   storeId?: number | null;
   authToken?: string | null;
 };
@@ -56,6 +57,7 @@ export function buildBillStoreInfo(
     city: ctx?.city?.trim() || null,
     cuisineLabel: ctx?.cuisineLabel?.trim() || null,
     fssaiNumber: ctx?.fssaiNumber?.trim() || null,
+    storeType: ctx?.storeType?.trim() || null,
   };
 }
 
@@ -103,6 +105,10 @@ export function printContextFromSelectedStore(
     city: outlet?.city ?? null,
     cuisineLabel: outlet?.cuisine_types?.[0] ?? null,
     fssaiNumber: opts?.fssaiNumber ?? null,
+    storeType:
+      (outlet as { store_type?: string | null } | null | undefined)?.store_type ??
+      (store as { store_type?: string | null } | null | undefined)?.store_type ??
+      null,
     printerWidthMm: opts?.printerWidthMm ?? 80,
     storeId: store?.id != null ? Number(store.id) : null,
     authToken: opts?.authToken ?? null,

@@ -11,6 +11,8 @@ import { maybeStartOrderDispatch } from "../../lib/order-dispatch.service.js";
 import { generateFourDigitOtp } from "../../lib/food-order-otps.js";
 import { recordOrderCancellation } from "../../lib/record-order-cancellation.js";
 import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
+import { resolveOrderPaidAmountForAutoRefund } from "../../lib/auto-refund-on-cancellation.js";
+import { queueCustomerShownRefundAfterCancel } from "../../lib/trigger-order-auto-refund.js";
 import { quoteParcelVehicleFare } from "./parcelQuote.service.js";
 import { computeBillForParcel } from "../billing/parcelBilling.service.js";
 import type { RideVehiclePricingType } from "../rider-payout-pricing/types.js";
@@ -617,6 +619,18 @@ export async function cancelParcelOrder(input: CancelParcelOrderInput): Promise<
     occurredAt: now,
     metadata: { reasonCode, cancelMode, displayReason: reasonCode },
   });
+
+  try {
+    const paid = await resolveOrderPaidAmountForAutoRefund(sqlClient, row.id);
+    queueCustomerShownRefundAfterCancel({
+      orderCoreId: row.id,
+      reason: reasonText,
+      amount: paid,
+      actorRole: cancelledByType === "system" ? "system" : "customer",
+    });
+  } catch (refundErr) {
+    console.warn("[cancelParcelOrder] auto-refund queue failed:", refundErr);
+  }
 
   return { orderId: row.orderId, status: "CANCELLED" };
 }

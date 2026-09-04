@@ -1204,6 +1204,7 @@ export async function createPendingOrder(
   const expiresAt = new Date(Date.now() + PENDING_TTL_MS);
 
   const { enrichBillingSnapshotForPersistence } = await import("../../lib/food-order-payload.js");
+  const { storeTypeDisplayLabel } = await import("../../lib/store-type-display.js");
   billingSnapshot = enrichBillingSnapshotForPersistence(billingSnapshot, {
     deliveryType: input.deliveryType ?? "delivery",
     distanceKm,
@@ -1215,6 +1216,19 @@ export async function createPendingOrder(
           : true,
     storeKptMinutes: null,
   });
+  // Freeze authoritative store/service type on the billing snapshot for invoices.
+  if (billingSnapshot && typeof billingSnapshot === "object") {
+    const st = storeType?.trim() || null;
+    if (st && billingSnapshot.store_type == null && billingSnapshot.storeType == null) {
+      billingSnapshot.store_type = st;
+      billingSnapshot.storeType = st;
+      billingSnapshot.store_type_label = storeTypeDisplayLabel(st);
+      billingSnapshot.storeTypeLabel = billingSnapshot.store_type_label;
+    }
+    if (billingSnapshot.billing_service_type == null) {
+      billingSnapshot.billing_service_type = billingServiceType;
+    }
+  }
 
   const checkoutMetadataBase =
     input.checkoutMetadata && typeof input.checkoutMetadata === "object"

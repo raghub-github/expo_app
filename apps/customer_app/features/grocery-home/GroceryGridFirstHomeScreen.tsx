@@ -1,5 +1,6 @@
 /**
- * Grocery home — grid_first layout with grocery-specific CX App Home hero + store menu categories.
+ * Grocery home — grid_first layout with grocery-specific CX App Home hero +
+ * Super Admin GROCERY user-app categories (database-driven).
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -9,8 +10,6 @@ import {
   RefreshControl,
   useWindowDimensions,
   StatusBar as NativeStatusBar,
-  Animated as NativeAnimated,
-  Easing as NativeEasing,
 } from "react-native";
 import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
 import { FlashList, type FlashListRef, type ListRenderItem } from "@shopify/flash-list";
@@ -31,6 +30,8 @@ import Animated, {
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { merchantService } from "@/services/merchant.service";
+import { prefetchMerchantCardImages } from "@/lib/imageEngine";
+import { prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
 import {
   fetchAndCacheMerchantsList,
   MERCHANTS_LIST_GC_MS,
@@ -52,7 +53,6 @@ import {
   type MerchantListSort,
 } from "@/lib/merchantListing";
 import { useGroceryHomeLayout } from "@/hooks/useGroceryHomeLayout";
-import { getGroceryHomeMenuCategories } from "@/services/groceryHomeCategories.service";
 import { GMHeader } from "@/components/GMHeader";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import { GMEmptyState } from "@/components/GMEmptyState";
@@ -69,11 +69,10 @@ import {
 } from "@/constants/layout";
 import { useFloatingDockUiStore } from "@/store/floatingDockUiStore";
 import { foodHomeRouterBack } from "@/lib/safeRouterBack";
-import { prefetchMerchantCardImages } from "@/lib/imageEngine";
 import {
   FoodHomeHeroCarousel,
   GRID_FIRST_HEADER_OVERLAY_H,
-  gridFirstSkySectionHeight,
+  gridFirstSkyHeightForAspect,
 } from "@/components/home/FoodHomeHeroCarousel";
 import { FoodHomeGridFirstHeader, GROCERY_SEARCH_PLACEHOLDERS } from "@/components/home/FoodHomeGridFirstHeader";
 import { FoodHomeGridFirstStickyChrome } from "@/components/home/FoodHomeGridFirstStickyChrome";
@@ -82,9 +81,7 @@ import { FoodHomeFilterRow } from "@/components/home/FoodHomeFilterRow";
 import {
   defaultGridFirstStickyMetrics,
   GRID_FIRST_FILTER_ROW_H,
-  GRID_FIRST_STICK_HANDOFF_PX,
   GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
-  gridFirstCategoryBlockHeight,
   gridFirstCategoryStickScrollY,
   gridFirstDefaultHeaderBlockHeight,
   gridFirstFilterStickScrollY,
@@ -103,7 +100,6 @@ import {
   userAppCategoriesQueryKey,
 } from "@/lib/userAppCategoryCache";
 import type { UserAppCategoryItem } from "@/services/userAppCategory.service";
-import { parseGroceryMenuCategorySlug } from "@/lib/groceryMenuCategorySlug";
 
 const STORE_TYPE = "GROCERY" as const;
 const PAGE_PAD = 16;
@@ -131,7 +127,7 @@ function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryIt
 export default function GroceryGridFirstHomeScreen() {
   const router = useRouter();
   const insets = useAppSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const queryClient = useQueryClient();
   const coords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
@@ -281,63 +277,28 @@ export default function GroceryGridFirstHomeScreen() {
       const live = resolveMerchantLiveStatus(m, {});
       setStatusFromApi(m.id, live === "OPEN", live);
     }
-    if (list.length > 0) prefetchMerchantCardImages(list);
+    if (list.length > 0) {
+      prefetchMerchantCardImages(list);
+      prefetchMerchantBanners(list);
+    }
   }, [merchantsData, setStatusFromApi]);
 
   const merchants = Array.isArray(merchantsData) ? merchantsData : [];
 
-  const groceryStoreIds = useMemo(
-    () => merchants.map((m) => m.id).filter(Boolean),
-    [merchants]
-  );
-
-  const { data: groceryMenuCategories = [], isPending: groceryCategoriesPending } = useQuery({
-    queryKey: [
-      "grocery-home-menu-categories",
-      merchantsAnchorCoords?.latitude,
-      merchantsAnchorCoords?.longitude,
-      false,
-      groceryStoreIds.join(","),
-    ],
-    queryFn: async () => {
-      const fromStores = await getGroceryHomeMenuCategories({
-        lat: merchantsAnchorCoords?.latitude,
-        lng: merchantsAnchorCoords?.longitude,
-        vegOnly: false,
-        storeIds: groceryStoreIds.length > 0 ? groceryStoreIds : undefined,
-      });
-      if (fromStores.length > 0) return fromStores;
-      return getGroceryHomeMenuCategories({
-        lat: merchantsAnchorCoords?.latitude,
-        lng: merchantsAnchorCoords?.longitude,
-        vegOnly: false,
-      });
-    },
-    enabled:
-      merchantsAnchorCoords?.latitude != null &&
-      merchantsAnchorCoords?.longitude != null,
-    staleTime: 60_000,
-    gcTime: 5 * 60_000,
-  });
-
-  const { data: groceryAppCategoriesResponse, isPending: groceryAppCategoriesPending } = useQuery({
+  const { data: groceryAppCategoriesResponse } = useQuery({
     queryKey: userAppCategoriesQueryKey(STORE_TYPE),
     queryFn: () => fetchUserAppCategoriesWithCache(STORE_TYPE),
-    ...USER_APP_CATEGORIES_QUERY_OPTIONS,
+    staleTime: 15_000,
+    gcTime: USER_APP_CATEGORIES_QUERY_OPTIONS.gcTime,
+    retry: 1,
+    refetchOnMount: "always",
     initialData: () => readSyncUserAppCategories(STORE_TYPE),
     initialDataUpdatedAt: () => getUserAppCategoriesCachedAt(STORE_TYPE),
     placeholderData: (previousData) => previousData,
   });
 
+  // Super Admin GROCERY user_app_category only — never merchant menu categories.
   const homeCategoryRailItems = useMemo(() => {
-    if (groceryMenuCategories.length > 0) {
-      return groceryMenuCategories.map((r) => ({
-        id: r.id,
-        name: r.name,
-        slug: r.slug,
-        imageUrl: r.imageUrl,
-      }));
-    }
     const cms = dedupeUserAppCategories(groceryAppCategoriesResponse?.items ?? []);
     return cms.map((r) => ({
       id: String(r.id),
@@ -345,11 +306,7 @@ export default function GroceryGridFirstHomeScreen() {
       slug: String(r.id),
       imageUrl: r.imageUrl,
     }));
-  }, [groceryMenuCategories, groceryAppCategoriesResponse?.items]);
-
-  const categoryRailBootstrapping =
-    (groceryAppCategoriesPending || groceryCategoriesPending) &&
-    homeCategoryRailItems.length === 0;
+  }, [groceryAppCategoriesResponse?.items]);
 
   const gridFirstCategoryTabLayout = useMemo(
     () =>
@@ -373,9 +330,7 @@ export default function GroceryGridFirstHomeScreen() {
   const selectedGroceryCategoryLabel = useMemo(() => {
     if (gridFirstCategoryTabId === "all") return null;
     const row = homeCategoryRailItems.find((c) => c.id === gridFirstCategoryTabId);
-    if (!row) return null;
-    const fromSlug = parseGroceryMenuCategorySlug(row.slug);
-    return fromSlug ?? row.name?.trim() ?? null;
+    return row?.name?.trim() || null;
   }, [gridFirstCategoryTabId, homeCategoryRailItems]);
 
   const { data: categoryDishSearch } = useQuery({
@@ -384,12 +339,14 @@ export default function GroceryGridFirstHomeScreen() {
       selectedGroceryCategoryLabel,
       merchantsAnchorCoords?.latitude,
       merchantsAnchorCoords?.longitude,
+      STORE_TYPE,
     ],
     queryFn: () =>
       merchantService.listStoresByDishCategory({
         q: selectedGroceryCategoryLabel!,
         limit: 50,
         maxDistanceKm: 15,
+        storeType: STORE_TYPE,
         ...(merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null
           ? {
               lat: merchantsAnchorCoords.latitude,
@@ -411,24 +368,32 @@ export default function GroceryGridFirstHomeScreen() {
     const fromApi = categoryDishSearch?.stores ?? [];
 
     if (fromApi.length > 0) {
-      return fromApi.map((s) => {
-        const existing = nearbyById.get(s.id);
-        if (existing) {
+      return fromApi
+        .filter((s) => {
+          const st = (s.storeType ?? "").trim().toUpperCase();
+          // Backend filters by store_type; keep a defensive client guard.
+          return !st || st === "GROCERY";
+        })
+        .map((s) => {
+          const existing = nearbyById.get(s.id);
+          if (existing) {
+            return {
+              ...existing,
+              distanceKm: existing.distanceKm ?? s.distanceKm ?? undefined,
+              storeType: existing.storeType ?? s.storeType ?? "GROCERY",
+            };
+          }
           return {
-            ...existing,
-            distanceKm: existing.distanceKm ?? s.distanceKm ?? undefined,
-          };
-        }
-        return {
-          id: s.id,
-          name: s.name || s.id,
-          displayImage: s.bannerUrl ?? null,
-          banner_url: s.bannerUrl ?? null,
-          cuisines: s.cuisines ?? undefined,
-          distanceKm: s.distanceKm ?? undefined,
-          isOpen: true,
-        } as MerchantSummary;
-      });
+            id: s.id,
+            name: s.name || s.id,
+            displayImage: s.bannerUrl ?? null,
+            banner_url: s.bannerUrl ?? null,
+            cuisines: s.cuisines ?? undefined,
+            distanceKm: s.distanceKm ?? undefined,
+            isOpen: true,
+            storeType: s.storeType ?? "GROCERY",
+          } as MerchantSummary;
+        });
     }
 
     const needle = selectedGroceryCategoryLabel.toLowerCase();
@@ -443,6 +408,12 @@ export default function GroceryGridFirstHomeScreen() {
       return m.name.toLowerCase().includes(needle);
     });
   }, [filteredMerchants, selectedGroceryCategoryLabel, categoryDishSearch?.stores]);
+
+  useLayoutEffect(() => {
+    if (listMerchants.length > 0) {
+      prefetchMerchantCardImages(listMerchants);
+    }
+  }, [listMerchants]);
 
   const hasDeliveryCoords =
     merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null;
@@ -465,7 +436,10 @@ export default function GroceryGridFirstHomeScreen() {
     : "GROCERY STORES NEAR YOU";
 
   const handleBack = useCallback(() => foodHomeRouterBack(router), [router]);
-  const handleSearch = useCallback(() => router.push("/search"), [router]);
+  const handleSearch = useCallback(
+    () => router.push({ pathname: "/search", params: { storeType: "GROCERY" } }),
+    [router]
+  );
   const handleLocationPress = useCallback(() => router.push("/location"), [router]);
 
   const handleGridFirstCategoryChange = useCallback((id: string) => {
@@ -485,7 +459,6 @@ export default function GroceryGridFirstHomeScreen() {
     try {
       await Promise.all([
         refetch(),
-        queryClient.invalidateQueries({ queryKey: ["grocery-home-menu-categories"] }),
         queryClient.invalidateQueries({ queryKey: userAppCategoriesQueryKey(STORE_TYPE) }),
       ]);
     } finally {
@@ -495,21 +468,29 @@ export default function GroceryGridFirstHomeScreen() {
 
   const statusBarTopInset = resolveTopSafeInset(insets.top);
   const gridFirstSkyHeightDefault = useMemo(
-    () => gridFirstSkySectionHeight(statusBarTopInset),
-    [statusBarTopInset]
+    () =>
+      gridFirstSkyHeightForAspect(statusBarTopInset, windowWidth, windowHeight),
+    [statusBarTopInset, windowWidth, windowHeight]
   );
   const gridFirstCompactSkyHeight = statusBarTopInset + GRID_FIRST_HEADER_OVERLAY_H;
-  const [gridFirstMeasuredSkyHeight, setGridFirstMeasuredSkyHeight] = useState(gridFirstSkyHeightDefault);
+  const gridFirstHeroHasSlides = gridFirstHeroMedia.length > 0;
+  const [gridFirstMeasuredSkyHeight, setGridFirstMeasuredSkyHeight] = useState(gridFirstCompactSkyHeight);
   const [gridFirstHeroReady, setGridFirstHeroReady] = useState(false);
   const gridFirstSkyMeasuredFromHeroRef = useRef(false);
-  const gridFirstSkyHeight = gridFirstHeroReady
-    ? gridFirstMeasuredSkyHeight
-    : gridFirstCompactSkyHeight;
-  const gridFirstSkyAnimatedHeight = useSharedValue(gridFirstCompactSkyHeight);
+  // Collapse hero band until first image/video is decoded — no empty white gap.
+  const gridFirstSkyHeight =
+    gridFirstHeroHasSlides && gridFirstHeroReady
+      ? Math.max(
+          gridFirstSkyHeightDefault,
+          gridFirstMeasuredSkyHeight > gridFirstCompactSkyHeight + 1
+            ? gridFirstMeasuredSkyHeight
+            : gridFirstSkyHeightDefault
+        )
+      : gridFirstCompactSkyHeight;
+  const gridFirstSkyAnimatedHeight = useSharedValue(gridFirstSkyHeight);
   const gridFirstSkyAnimatedStyle = useAnimatedStyle(() => ({
     height: gridFirstSkyAnimatedHeight.value,
   }));
-  const gridFirstHeroReveal = useRef(new NativeAnimated.Value(0)).current;
   const prevSkyDefaultRef = useRef(gridFirstSkyHeightDefault);
 
   useEffect(() => {
@@ -518,12 +499,12 @@ export default function GroceryGridFirstHomeScreen() {
     const delta = gridFirstSkyHeightDefault - prevDefault;
     if (Math.abs(delta) < 1) return;
     setGridFirstMeasuredSkyHeight((prev) => {
-      if (!gridFirstSkyMeasuredFromHeroRef.current) {
-        return gridFirstSkyHeightDefault;
+      if (!gridFirstSkyMeasuredFromHeroRef.current || !gridFirstHeroReady) {
+        return gridFirstCompactSkyHeight;
       }
       return Math.max(gridFirstCompactSkyHeight, prev + delta);
     });
-  }, [gridFirstSkyHeightDefault, gridFirstCompactSkyHeight]);
+  }, [gridFirstSkyHeightDefault, gridFirstCompactSkyHeight, gridFirstHeroReady]);
 
   const onGridFirstHeroHeightChange = useCallback((h: number) => {
     if (!(h > 0)) return;
@@ -539,39 +520,32 @@ export default function GroceryGridFirstHomeScreen() {
     if (gridFirstHeroMedia.length === 0) {
       setGridFirstHeroReady(false);
       gridFirstSkyMeasuredFromHeroRef.current = false;
+      setGridFirstMeasuredSkyHeight(gridFirstCompactSkyHeight);
+      return;
     }
-  }, [gridFirstHeroMedia.length]);
+    if (!gridFirstHeroReady) {
+      setGridFirstMeasuredSkyHeight(gridFirstCompactSkyHeight);
+    }
+  }, [
+    gridFirstHeroMedia.length,
+    gridFirstHeroMedia.map((m) => m.id).join("|"),
+    gridFirstHeroReady,
+    gridFirstCompactSkyHeight,
+  ]);
 
   useEffect(() => {
     cancelAnimation(gridFirstSkyAnimatedHeight);
-    gridFirstHeroReveal.stopAnimation();
-    if (!gridFirstHeroReady) {
-      gridFirstSkyAnimatedHeight.value = gridFirstCompactSkyHeight;
-      gridFirstHeroReveal.setValue(0);
-      return;
-    }
     gridFirstSkyAnimatedHeight.value = withTiming(gridFirstSkyHeight, {
-      duration: 620,
+      duration: 280,
       easing: Easing.out(Easing.cubic),
     });
-    NativeAnimated.timing(gridFirstHeroReveal, {
-      toValue: 1,
-      duration: 500,
-      easing: NativeEasing.out(NativeEasing.cubic),
-      useNativeDriver: true,
-    }).start();
-  }, [
-    gridFirstHeroReady,
-    gridFirstSkyHeight,
-    gridFirstCompactSkyHeight,
-    gridFirstSkyAnimatedHeight,
-    gridFirstHeroReveal,
-  ]);
+  }, [gridFirstSkyHeight, gridFirstSkyAnimatedHeight]);
 
   const categoryCircle = gridFirstCategoryTabLayout.circle;
+  const categoryRailFallbackH = Math.round(categoryCircle * 1.22) + 38;
   const [gridFirstCategoryLayout, setGridFirstCategoryLayout] = useState({
     y: 0,
-    height: gridFirstCategoryBlockHeight(categoryCircle),
+    height: categoryRailFallbackH,
   });
   const [gridFirstFilterLayout, setGridFirstFilterLayout] = useState({
     y: 0,
@@ -589,12 +563,12 @@ export default function GroceryGridFirstHomeScreen() {
       headerBlockHeight: gridFirstHeaderBlockH,
       categoryBlockY:
         gridFirstCategoryLayout.y > 0 ? gridFirstCategoryLayout.y : gridFirstSkyHeight,
-      categoryBlockHeight: gridFirstCategoryLayout.height || gridFirstCategoryBlockHeight(categoryCircle),
+      categoryBlockHeight: gridFirstCategoryLayout.height || categoryRailFallbackH,
       filterBlockY:
         gridFirstFilterLayout.y > 0
           ? gridFirstFilterLayout.y
           : (gridFirstCategoryLayout.y > 0 ? gridFirstCategoryLayout.y : gridFirstSkyHeight) +
-            (gridFirstCategoryLayout.height || gridFirstCategoryBlockHeight(categoryCircle)),
+            (gridFirstCategoryLayout.height || categoryRailFallbackH),
       filterBlockHeight: gridFirstFilterLayout.height || GRID_FIRST_FILTER_ROW_H,
     };
   }, [
@@ -603,6 +577,7 @@ export default function GroceryGridFirstHomeScreen() {
     gridFirstCategoryLayout,
     gridFirstFilterLayout,
     categoryCircle,
+    categoryRailFallbackH,
     gridFirstHeaderBlockH,
   ]);
 
@@ -705,15 +680,7 @@ export default function GroceryGridFirstHomeScreen() {
     [filterRowProps]
   );
 
-  const gridFirstStickyFilterRowEl = useMemo(
-    () => <FoodHomeFilterRow variant="grid_first" compact {...filterRowProps} />,
-    [filterRowProps]
-  );
-
   const gridFirstCategoryTabsEl = useMemo(() => {
-    if (categoryRailBootstrapping || homeCategoryRailItems.length === 0) {
-      return null;
-    }
     return (
       <FoodHomeCategoryTabs
         items={homeCategoryRailItems}
@@ -728,10 +695,10 @@ export default function GroceryGridFirstHomeScreen() {
         underPriceImageUrl={null}
         onUnderPricePress={() => {}}
         layout={gridFirstCategoryTabLayout}
+        imageShape="roundedRect"
       />
     );
   }, [
-    categoryRailBootstrapping,
     homeCategoryRailItems,
     gridFirstCategoryTabLayout,
     gridFirstCategoryTabId,
@@ -742,9 +709,6 @@ export default function GroceryGridFirstHomeScreen() {
   ]);
 
   const gridFirstStickyCategoryTabsEl = useMemo(() => {
-    if (categoryRailBootstrapping || homeCategoryRailItems.length === 0) {
-      return null;
-    }
     return (
       <FoodHomeCategoryTabs
         items={homeCategoryRailItems}
@@ -759,10 +723,10 @@ export default function GroceryGridFirstHomeScreen() {
         underPriceImageUrl={null}
         onUnderPricePress={() => {}}
         layout={gridFirstCategoryTabLayout}
+        imageShape="roundedRect"
       />
     );
   }, [
-    categoryRailBootstrapping,
     homeCategoryRailItems,
     gridFirstCategoryTabLayout,
     gridFirstCategoryTabId,
@@ -772,45 +736,22 @@ export default function GroceryGridFirstHomeScreen() {
     groceryAppCategoriesResponse?.allTab?.imageUrl,
   ]);
 
-  const gridFirstCategoryFlowStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(
-      gridFirstScrollY.value,
-      [
-        gridFirstCategoryStickAtSv.value - GRID_FIRST_STICK_HANDOFF_PX,
-        gridFirstCategoryStickAtSv.value + GRID_FIRST_STICK_HANDOFF_PX,
-      ],
-      [1, 0],
-      Extrapolation.CLAMP
-    ),
-  }));
+  const gridFirstCategoryFlowStyle = useAnimatedStyle(() => {
+    const stickAt = gridFirstCategoryStickAtSv.value;
+    if (stickAt <= 1) return { opacity: 1 };
+    return {
+      opacity: interpolate(
+        gridFirstScrollY.value,
+        [stickAt + 8, stickAt + 28],
+        [1, 0],
+        Extrapolation.CLAMP
+      ),
+    };
+  });
 
   const gridFirstFilterFlowStyle = useAnimatedStyle(() => {
-    const y = gridFirstScrollY.value;
-    const stickyAt = gridFirstCategoryStickAtSv.value - GRID_FIRST_STICK_HANDOFF_PX;
-    const handoffAt = gridFirstFilterStickAtSv.value + GRID_FIRST_STICK_HANDOFF_PX;
-    if (
-      gridFirstCategoryStickAtSv.value > 1 &&
-      y >= stickyAt &&
-      y < handoffAt - GRID_FIRST_STICK_HANDOFF_PX
-    ) {
-      return {
-        opacity: 0,
-        maxHeight: 0,
-        marginBottom: 0,
-        marginTop: 0,
-        paddingTop: 0,
-        paddingBottom: 0,
-        overflow: "hidden" as const,
-        transform: [{ translateY: 0 }],
-      };
-    }
-    return {
-      opacity: 1,
-      maxHeight: GRID_FIRST_FILTER_ROW_H + 24,
-      marginBottom: SECTION_GAP_SM,
-      overflow: "visible" as const,
-      transform: [{ translateY: 0 }],
-    };
+    // Filter chips stay in the scroll flow — never pin or fade with sticky chrome.
+    return { opacity: 1 };
   });
 
   const renderItem = useCallback<ListRenderItem<MerchantSummary>>(
@@ -850,7 +791,9 @@ export default function GroceryGridFirstHomeScreen() {
           data={showMerchantsSkeleton ? EMPTY_MERCHANTS : listMerchants}
           keyExtractor={(m) => m.id}
           renderItem={renderItem}
-          drawDistance={480}
+          drawDistance={Math.max(2800, Math.round(windowHeight * 4))}
+          removeClippedSubviews={false}
+          overrideProps={{ initialDrawBatchSize: 24 }}
           contentInsetAdjustmentBehavior="never"
           overScrollMode="never"
           bounces={false}
@@ -865,7 +808,7 @@ export default function GroceryGridFirstHomeScreen() {
           delaysContentTouches={false}
           keyboardShouldPersistTaps="handled"
           onScroll={onGridFirstScroll}
-          scrollEventThrottle={16}
+          scrollEventThrottle={1}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -880,24 +823,17 @@ export default function GroceryGridFirstHomeScreen() {
                 <Animated.View
                   style={[
                     styles.gridFirstSkyInner,
-                    !gridFirstHeroReady && styles.gridFirstSkyInnerCompact,
                     gridFirstSkyAnimatedStyle,
+                    { overflow: "hidden" },
                   ]}
                 >
-                  <NativeAnimated.View
+                  {gridFirstHeroHasSlides ? (
+                  <View
                     style={[
                       StyleSheet.absoluteFillObject,
-                      !gridFirstHeroReady && styles.gridFirstHeroLoading,
-                      gridFirstHeroReady && {
-                        opacity: gridFirstHeroReveal,
-                        transform: [
-                          {
-                            translateY: gridFirstHeroReveal.interpolate({
-                              inputRange: [0, 1],
-                              outputRange: [-24, 0],
-                            }),
-                          },
-                        ],
+                      {
+                        height: gridFirstSkyHeightDefault,
+                        opacity: gridFirstHeroReady ? 1 : 0,
                       },
                     ]}
                     pointerEvents={gridFirstHeroReady ? "auto" : "none"}
@@ -912,7 +848,8 @@ export default function GroceryGridFirstHomeScreen() {
                       onHeroHeightChange={onGridFirstHeroHeightChange}
                       onHeroReadyChange={onGridFirstHeroReadyChange}
                     />
-                  </NativeAnimated.View>
+                  </View>
+                  ) : null}
                   <View
                     style={[
                       styles.gridFirstHeaderOverlay,
@@ -1004,9 +941,9 @@ export default function GroceryGridFirstHomeScreen() {
           showVegToggle={false}
           searchPlaceholders={GROCERY_SEARCH_PLACEHOLDERS}
           categories={gridFirstStickyCategoryTabsEl}
-          filters={gridFirstStickyFilterRowEl}
+          filters={undefined}
           enableCategorySticky
-          enableFilterSticky
+          enableFilterSticky={false}
         />
       </View>
     </View>
@@ -1036,13 +973,10 @@ const styles = StyleSheet.create({
   gridFirstSkyInner: {
     position: "relative",
     overflow: "hidden",
-    backgroundColor: "#F3E8D4",
+    backgroundColor: GatiMitraColors.softBackground,
   },
   gridFirstSkyInnerCompact: {
     backgroundColor: GatiMitraColors.softBackground,
-  },
-  gridFirstHeroLoading: {
-    opacity: 0,
   },
   gridFirstHeaderOverlay: {
     position: "absolute",

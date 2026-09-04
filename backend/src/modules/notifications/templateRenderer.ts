@@ -37,9 +37,12 @@ function substitute(template: string, vars: TemplateVariables): string {
  */
 function substituteDeepLink(template: string | null, vars: TemplateVariables): string | null {
   if (!template) return null;
-  return template.replace(VAR_PATTERN, (_match, name: string) =>
-    encodeURIComponent(coerce(vars[name])),
-  );
+  return template.replace(VAR_PATTERN, (_match, name: string) => {
+    const raw = coerce(vars[name]);
+    // Full app paths / absolute URLs must not be URI-encoded (breaks routing).
+    if (raw.startsWith("/") || /^https?:\/\//i.test(raw)) return raw;
+    return encodeURIComponent(raw);
+  });
 }
 
 export type RenderedNotification = {

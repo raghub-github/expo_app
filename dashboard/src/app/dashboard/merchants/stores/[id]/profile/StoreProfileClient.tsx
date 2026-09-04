@@ -280,6 +280,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
         canManageBannerVideo={canManageBannerVideo}
         canEditBank={canEditBank}
         legalDocsRestricted={legalDocsRestricted}
+        revealFullBankAccount={isSuperAdmin}
         openDocumentsVerification={openDocumentsVerification}
         openBankVerification={openBankVerification}
         openProfileMediaVerification={openProfileMediaVerification}

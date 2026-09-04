@@ -24,8 +24,7 @@ type GstBucket = {
 function readGstBucket(
   snap: Record<string, unknown>,
   key: string,
-  fallbackTaxable: number,
-  defaultRate = 0.18
+  fallbackTaxable: number
 ): GstBucket {
   const gc =
     snap.gst_components && typeof snap.gst_components === "object"
@@ -36,8 +35,8 @@ function readGstBucket(
       ? (gc[key] as Record<string, unknown>)
       : null;
   const taxable = round2(num(raw?.taxable_value) || fallbackTaxable);
-  let gst = round2(num(raw?.gst));
-  if (gst <= 0 && taxable > 0) gst = round2(taxable * defaultRate);
+  // Snapshot only — never invent a default GST %.
+  const gst = round2(num(raw?.gst));
   const cgst = round2(gst / 2);
   const sgst = round2(gst - cgst);
   return { taxable, gst, cgst, sgst, total: round2(taxable + gst) };
@@ -77,8 +76,8 @@ function resolvePlatformFees(snap: Record<string, unknown>): {
   let bookingFee = round2(num(snap.platform_fee));
   let convenienceFee = round2(num(snap.convenience_fee));
 
-  const platformGst = readGstBucket(snap, "platform", bookingFee, 0.18);
-  const convenienceGst = readGstBucket(snap, "convenience", convenienceFee, 0.18);
+  const platformGst = readGstBucket(snap, "platform", bookingFee);
+  const convenienceGst = readGstBucket(snap, "convenience", convenienceFee);
 
   const rawCharges = snap.charges;
   if (bookingFee <= 0.005 && convenienceFee <= 0.005 && Array.isArray(rawCharges)) {
@@ -102,11 +101,11 @@ function resolvePlatformFees(snap: Record<string, unknown>): {
     platformFinalAmount = round2(platformGst.total + convenienceGst.total);
   }
 
+  // If snapshot has no GST components, show fee only (do not invent 18%).
   if (platformFinalAmount <= 0.005 && subTotal > 0.005) {
-    const gstTotal = round2(subTotal * 0.18);
-    platformCgst = round2(gstTotal / 2);
-    platformSgst = round2(gstTotal - platformCgst);
-    platformFinalAmount = round2(subTotal + platformCgst + platformSgst);
+    platformCgst = 0;
+    platformSgst = 0;
+    platformFinalAmount = subTotal;
   }
 
   return { bookingFee, convenienceFee, platformCgst, platformSgst, platformFinalAmount };
@@ -199,17 +198,21 @@ export function resolveRapidoPaymentSummary(
   const discountTotal = round2(discounts.reduce((sum, row) => sum + row.amount, 0));
   const rideChargeGross = round2(rideCharge + discountTotal);
 
-  const rideGst = readGstBucket(snapObj, "items", rideCharge, 0.05);
-  let captainFee = rideGst.taxable;
+  const rideGst = readGstBucket(snapObj, "items", rideCharge);
+  let captainFee = rideGst.taxable > 0.005 ? rideGst.taxable : rideCharge;
   let rideCgst = rideGst.cgst;
   let rideSgst = rideGst.sgst;
 
+  // Prefer snapshot GST only — never invent an inclusive 5% split.
   const ridePartsSum = round2(captainFee + rideCgst + rideSgst);
-  if (rideCharge > 0 && Math.abs(ridePartsSum - rideCharge) > 0.05) {
-    captainFee = round2(rideCharge / 1.05);
-    const gstTotal = round2(rideCharge - captainFee);
-    rideCgst = round2(gstTotal / 2);
-    rideSgst = round2(gstTotal - rideCgst);
+  if (rideCharge > 0 && rideGst.gst <= 0.005) {
+    captainFee = rideCharge;
+    rideCgst = 0;
+    rideSgst = 0;
+  } else if (rideCharge > 0 && Math.abs(ridePartsSum - rideCharge) > 0.05 && rideGst.gst > 0.005) {
+    captainFee = rideGst.taxable;
+    rideCgst = rideGst.cgst;
+    rideSgst = rideGst.sgst;
   }
 
   return {

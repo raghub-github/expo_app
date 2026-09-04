@@ -32,6 +32,12 @@ module.exports = {
     icon: APP_ICON,
     scheme: "gatimitra-rider",
     userInterfaceStyle: "automatic",
+    androidStatusBar: {
+      barStyle: "dark-content",
+      backgroundColor: "#ffffff",
+      translucent: false,
+      hidden: false,
+    },
     newArchEnabled: true,
     splash: {
       resizeMode: "contain",

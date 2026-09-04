@@ -37,29 +37,29 @@ export function DashboardPartnerStoreOverviewCard({
 }: Props) {
   return (
     <div className={PARTNER_DASHBOARD_TOP_CARD_CLASS}>
-      <div className="flex items-center gap-2.5 mb-3 shrink-0">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-50 text-violet-600">
+      <div className="flex items-center gap-2 mb-2 shrink-0">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-50 text-violet-600">
           <LayoutGrid className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
         </span>
         <h2 className="text-sm font-bold text-slate-900 tracking-tight">Store overview</h2>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 mb-3 shrink-0">
+      <div className="grid grid-cols-3 gap-1.5 mb-2 shrink-0">
         <div className={PARTNER_DASHBOARD_METRIC_BOX_CLASS}>
           <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Total products</p>
-          <p className="mt-1 text-lg font-bold tabular-nums text-slate-900">{totalProducts}</p>
+          <p className="mt-0.5 text-base font-bold tabular-nums text-slate-900">{totalProducts}</p>
         </div>
         <div className={PARTNER_DASHBOARD_METRIC_BOX_CLASS}>
           <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Out of stock</p>
-          <p className="mt-1 text-lg font-bold tabular-nums text-orange-600">{outOfStock}</p>
+          <p className="mt-0.5 text-base font-bold tabular-nums text-orange-600">{outOfStock}</p>
         </div>
         <div className={PARTNER_DASHBOARD_METRIC_BOX_CLASS}>
           <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Pending orders</p>
-          <p className="mt-1 text-lg font-bold tabular-nums text-slate-900">{pendingOrders}</p>
+          <p className="mt-0.5 text-base font-bold tabular-nums text-slate-900">{pendingOrders}</p>
         </div>
       </div>
 
-      <div className="border-t border-slate-200/80 pt-3 shrink-0">
+      <div className="border-t border-slate-200/80 pt-2 shrink-0">
         <div className="flex items-center gap-2 mb-2.5">
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-600">
             <Wallet className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />

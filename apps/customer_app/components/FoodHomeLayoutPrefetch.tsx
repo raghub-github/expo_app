@@ -84,5 +84,26 @@ export function FoodHomeLayoutPrefetch() {
     };
   }, [locationHydrated, merchantsGeoKey, vegOnly, queryClient]);
 
+  // Grocery list + card banners — warm while still on Home, before Grocery opens.
+  useEffect(() => {
+    if (!locationHydrated || coords?.latitude == null || coords?.longitude == null) return;
+    const lat = coords.latitude;
+    const lng = coords.longitude;
+    let cancelled = false;
+    void (async () => {
+      await prefetchMerchantsList(queryClient, lat, lng, false, "GROCERY");
+      if (cancelled) return;
+      const list = readSyncMerchantsList(lat, lng, false, "GROCERY");
+      if (list?.length) {
+        prefetchMerchantCardImages(list);
+        prefetchMerchantBanners(list);
+      }
+    })();
+    void prefetchUserAppCategories(queryClient, "GROCERY");
+    return () => {
+      cancelled = true;
+    };
+  }, [locationHydrated, merchantsGeoKey, queryClient]);
+
   return null;
 }

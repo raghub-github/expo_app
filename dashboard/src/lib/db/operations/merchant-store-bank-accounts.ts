@@ -60,6 +60,7 @@ function mapRow(r: any): BankAccountDisplay {
     account_holder_name: r.account_holder_name ?? "",
     beneficiary_name: r.beneficiary_name ?? null,
     account_number_masked: maskAccountNumber(r.account_number),
+    account_number: r.account_number ?? undefined,
     ifsc_code: r.ifsc_code ?? "",
     bank_name: r.bank_name ?? "",
     branch_name: r.branch_name ?? null,

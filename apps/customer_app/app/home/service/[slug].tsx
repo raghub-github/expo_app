@@ -34,9 +34,12 @@ export default function ServicePlaceholderScreen() {
     .trim()
     .toLowerCase();
 
-  // Hard redirect so Coming Soon can never appear for parcel.
+  // Hard redirect so Coming Soon can never appear for parcel / explore nearby.
   if (slugNorm === "parcels" || slugNorm === "parcel") {
     return <Redirect href="/home/service/parcels" />;
+  }
+  if (slugNorm === "near-me" || slugNorm === "nearby") {
+    return <Redirect href="/home/service/near-me" />;
   }
 
   const title = (slug && SERVICE_TITLES[slug]) || "Service";

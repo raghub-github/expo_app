@@ -220,7 +220,12 @@ export function createPushPermissionController(
       }
 
       const expoToken = await getFreshExpoPushToken({ requestIfNeeded: false });
-      const native = await getFreshNativePushToken();
+      // FCM token can lag right after permission grant — retry once before giving up.
+      let native = await getFreshNativePushToken();
+      if (!native?.token && !isExpoGoRuntime()) {
+        await sleep(1200);
+        native = await getFreshNativePushToken();
+      }
 
       if (!expoToken && !native?.token) {
         emit({
@@ -239,6 +244,13 @@ export function createPushPermissionController(
         nativeTokenType: native?.type ?? null,
       });
 
+      if (!native?.token && !isExpoGoRuntime()) {
+        log("native FCM token missing — OS tray pushes may fail if Expo FCM credentials are unset", {
+          role: auth.role,
+          hasExpo: !!expoToken,
+        });
+      }
+
       const userPrefix = auth.accessToken.slice(0, 12);
       const key = syncKey({
         expo: expoToken,
@@ -247,7 +259,12 @@ export function createPushPermissionController(
         storeId: auth.storeId,
         userPrefix,
       });
-      if (key === lastSyncedKey && snapshot.lastBackendSyncOk) {
+      // Re-register when native was previously missing so backend can prefer FCM.
+      const previouslyMissingNative =
+        snapshot.lastBackendSyncOk &&
+        !snapshot.nativePushToken &&
+        !!native?.token;
+      if (key === lastSyncedKey && snapshot.lastBackendSyncOk && !previouslyMissingNative) {
         emit({ syncStatus: "ok" });
         return snapshot;
       }
@@ -330,7 +347,9 @@ export function createPushPermissionController(
 
   const requestOrOpenSettings = async () => {
     emit({ loading: true, error: null });
-    await setNotificationHandlerDefaults();
+    if (!options.skipDefaultNotificationHandler) {
+      await setNotificationHandlerDefaults();
+    }
 
     let perm = await readNotificationPermission();
     emit({
@@ -429,7 +448,9 @@ export function createPushPermissionController(
   const startLifecycle = () => {
     if (lifecycleStarted) return;
     lifecycleStarted = true;
-    void setNotificationHandlerDefaults();
+    if (!options.skipDefaultNotificationHandler) {
+      void setNotificationHandlerDefaults();
+    }
     if (options.androidChannels?.length) {
       void ensureAndroidChannels(options.androidChannels);
     }

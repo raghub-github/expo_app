@@ -4,15 +4,34 @@ import type { HomeBannerOffer } from "@/services/offers.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 const prefetched = new Set<string>();
+/** URLs that successfully decoded in this app session — never re-hide as skeleton. */
+const sessionReady = new Set<string>();
+
+function absoluteUri(uri: string | null | undefined): string | null {
+  const trimmed = uri?.trim();
+  if (!trimmed) return null;
+  return toAbsoluteImageUrl(trimmed) ?? trimmed;
+}
 
 /** Warm a single food-home visual into memory + disk before first paint. */
 export function prefetchFoodHomeImageUri(uri: string | null | undefined): void {
-  const trimmed = uri?.trim();
-  if (!trimmed) return;
-  const absolute = toAbsoluteImageUrl(trimmed) ?? trimmed;
+  const absolute = absoluteUri(uri);
+  if (!absolute) return;
   if (prefetched.has(absolute)) return;
   prefetched.add(absolute);
   void Image.prefetch(absolute, { cachePolicy: "memory-disk" });
+}
+
+export function markHeroMediaSessionReady(uri: string | null | undefined): void {
+  const absolute = absoluteUri(uri);
+  if (!absolute) return;
+  sessionReady.add(absolute);
+}
+
+export function isHeroMediaSessionReady(uri: string | null | undefined): boolean {
+  const absolute = absoluteUri(uri);
+  if (!absolute) return false;
+  return sessionReady.has(absolute);
 }
 
 export function prefetchGridFirstHeroMedia(items: GridFirstHeroMediaItem[] | undefined | null) {

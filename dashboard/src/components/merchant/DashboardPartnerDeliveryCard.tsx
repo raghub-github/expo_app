@@ -44,9 +44,9 @@ export function DashboardPartnerDeliveryCard({
 
   return (
     <div className={PARTNER_DASHBOARD_TOP_CARD_CLASS}>
-      <div className="flex flex-wrap items-start justify-between gap-2 mb-3 shrink-0">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-orange-50 text-orange-600">
+      <div className="flex flex-wrap items-start justify-between gap-2 mb-2 shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-orange-50 text-orange-600">
             <Truck className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
           </span>
           <div className="min-w-0">
@@ -107,46 +107,46 @@ export function DashboardPartnerDeliveryCard({
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 mb-3 shrink-0">
+      <div className="grid grid-cols-3 gap-1.5 mb-2 shrink-0">
         <div className={`relative ${PARTNER_DASHBOARD_METRIC_BOX_CLASS}`}>
           <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Active orders</p>
-          <p className="mt-1 text-lg font-bold tabular-nums text-slate-900">{activeOrders}</p>
+          <p className="mt-0.5 text-base font-bold tabular-nums text-slate-900">{activeOrders}</p>
           <span className="absolute bottom-2 right-2 text-[9px] font-semibold text-emerald-600 uppercase">
             Live
           </span>
         </div>
         <div className={PARTNER_DASHBOARD_METRIC_BOX_CLASS}>
           <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Avg prep time</p>
-          <p className="mt-1 text-lg font-bold tabular-nums text-slate-900">
+          <p className="mt-0.5 text-base font-bold tabular-nums text-slate-900">
             {avgPrep > 0 ? `${avgPrep} min` : "—"}
           </p>
         </div>
         <div className={PARTNER_DASHBOARD_METRIC_BOX_CLASS}>
           <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Completion</p>
-          <p className="mt-1 text-lg font-bold tabular-nums text-slate-900">{completion}%</p>
+          <p className="mt-0.5 text-base font-bold tabular-nums text-slate-900">{completion}%</p>
         </div>
       </div>
 
-      <div className="border-t border-slate-200/80 pt-3 shrink-0">
+      <div className="border-t border-slate-200/80 pt-2 shrink-0">
         <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
           Delivery performance
         </p>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-3 gap-1.5">
           <div className={PARTNER_DASHBOARD_METRIC_BOX_CLASS}>
             <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">
               Completed (today)
             </p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-emerald-600">{completed}</p>
+            <p className="mt-0.5 text-base font-bold tabular-nums text-emerald-600">{completed}</p>
           </div>
           <div className={PARTNER_DASHBOARD_METRIC_BOX_CLASS}>
             <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">
               Cancelled (today)
             </p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-red-600">{cancelled}</p>
+            <p className="mt-0.5 text-base font-bold tabular-nums text-red-600">{cancelled}</p>
           </div>
           <div className={PARTNER_DASHBOARD_METRIC_BOX_CLASS}>
             <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">RTO (today)</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-orange-600">{rto}</p>
+            <p className="mt-0.5 text-base font-bold tabular-nums text-orange-600">{rto}</p>
           </div>
         </div>
       </div>

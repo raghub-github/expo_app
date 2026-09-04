@@ -7,6 +7,7 @@ import { View, TouchableOpacity, StyleSheet, Platform } from "react-native";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
+  cancelAnimation,
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
@@ -17,6 +18,7 @@ import Animated, {
   type SharedValue,
 } from "react-native-reanimated";
 import { useRouter } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 import { useCurrentSubscription } from "@/hooks/useCustomerSubscription";
 import { useProfile } from "@/hooks/useProfile";
@@ -94,6 +96,7 @@ export function FoodHomeGridFirstHeader({
   fadeLocationOnSticky = false,
   heroReady = true,
 }: Props) {
+  const isScreenFocused = useIsFocused();
   const router = useRouter();
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);
@@ -136,6 +139,7 @@ export function FoodHomeGridFirstHeader({
   }, [avatarUri]);
 
   useEffect(() => {
+    if (!isScreenFocused) return;
     if (searchPlaceholders.length <= 1) return;
     const id = setInterval(() => {
       setPlaceholderIndex((i) => {
@@ -144,15 +148,26 @@ export function FoodHomeGridFirstHeader({
       });
     }, ROTATE_MS);
     return () => clearInterval(id);
-  }, [searchPlaceholders]);
+  }, [searchPlaceholders, isScreenFocused]);
 
   useEffect(() => {
+    if (!isScreenFocused) {
+      cancelAnimation(micScale);
+      micScale.value = 1;
+      return;
+    }
+
     micScale.value = withRepeat(
       withSequence(withTiming(1.08, { duration: 800 }), withTiming(1, { duration: 800 })),
       -1,
       true
     );
-  }, [micScale]);
+
+    return () => {
+      cancelAnimation(micScale);
+      micScale.value = 1;
+    };
+  }, [micScale, isScreenFocused]);
 
   const micStyle = useAnimatedStyle(() => ({
     transform: [{ scale: micScale.value }],
@@ -170,10 +185,11 @@ export function FoodHomeGridFirstHeader({
   const inFlowSearchFadeStyle = useAnimatedStyle(() => {
     if (!stickyEnabled) return { opacity: 1 };
     const stickAt = stickAtSv.value;
+    // Stay visible until sticky chrome has already snapped on (covers JS scroll lag).
     return {
       opacity: interpolate(
         scrollYSv.value,
-        [stickAt - 10, stickAt + 10],
+        [stickAt + 4, stickAt + 24],
         [1, 0],
         Extrapolation.CLAMP
       ),
@@ -187,25 +203,30 @@ export function FoodHomeGridFirstHeader({
           activeOpacity={0.85}
           onPress={onLocationPress}
         >
-          <View style={styles.locationTitleRow}>
-            <AppText
-              style={[styles.locationPrimary, !heroReady && styles.locationPrimaryCompact]}
-              numberOfLines={1}
-            >
-              {locationPrimary}
-            </AppText>
-            <Ionicons
-              name="chevron-down"
-              size={16}
-              color={heroReady ? "#FFFFFF" : "#334155"}
-            />
+          <View style={styles.locationLead}>
+            <Ionicons name="location" size={18} color={GatiMitraColors.splashMint} style={styles.locationPin} />
+            <View style={styles.locationTextCol}>
+              <View style={styles.locationTitleRow}>
+                <AppText
+                  style={[styles.locationPrimary, !heroReady && styles.locationPrimaryCompact]}
+                  numberOfLines={1}
+                >
+                  {locationPrimary}
+                </AppText>
+                <Ionicons
+                  name="chevron-down"
+                  size={16}
+                  color={heroReady ? "#FFFFFF" : "#334155"}
+                />
+              </View>
+              <AppText
+                style={[styles.locationSecondary, !heroReady && styles.locationSecondaryCompact]}
+                numberOfLines={1}
+              >
+                {locationSecondary}
+              </AppText>
+            </View>
           </View>
-          <AppText
-            style={[styles.locationSecondary, !heroReady && styles.locationSecondaryCompact]}
-            numberOfLines={1}
-          >
-            {locationSecondary}
-          </AppText>
         </TouchableOpacity>
 
         <View style={styles.topActions}>
@@ -323,6 +344,20 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     paddingTop: 2,
+  },
+  locationLead: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    minWidth: 0,
+  },
+  locationPin: {
+    flexShrink: 0,
+    marginTop: 2,
+    marginRight: 6,
+  },
+  locationTextCol: {
+    flex: 1,
+    minWidth: 0,
   },
   locationTitleRow: {
     flexDirection: "row",

@@ -3,8 +3,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useLocationStore } from "@/store/locationStore";
 import { prefetchFeaturedOffersHome } from "@/hooks/useFeaturedOffersHome";
 import { prefetchFeaturedOffersRide } from "@/hooks/useFeaturedOffersRide";
+import { prefetchServiceCardOfferPills } from "@/hooks/useServiceCardOfferPills";
 
-/** Warm home + ride promo offers as soon as location is hydrated — avoids banner/sheet loading flash. */
+/** Warm home + ride promo offers + service-card offer pills as soon as location is ready. */
 export function FeaturedOffersPrefetch() {
   const queryClient = useQueryClient();
   const locationHydrated = useLocationStore((s) => s.locationHydrated);
@@ -22,6 +23,7 @@ export function FeaturedOffersPrefetch() {
     };
     void prefetchFeaturedOffersHome(queryClient, params);
     void prefetchFeaturedOffersRide(queryClient, params);
+    void prefetchServiceCardOfferPills(queryClient, params);
   }, [
     locationHydrated,
     coords?.latitude,

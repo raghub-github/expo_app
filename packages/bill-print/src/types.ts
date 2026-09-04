@@ -46,6 +46,8 @@ export type BillStoreInfo = {
   city?: string | null;
   cuisineLabel?: string | null;
   fssaiNumber?: string | null;
+  /** Canonical merchant_stores.store_type (e.g. GROCERY, RESTAURANT). */
+  storeType?: string | null;
 };
 
 export type BillPrintPayload = {

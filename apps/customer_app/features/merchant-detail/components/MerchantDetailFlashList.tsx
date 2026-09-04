@@ -6,11 +6,19 @@ import React, {
   useMemo,
   useRef,
 } from "react";
-import { View, StyleSheet, Platform, ScrollView, RefreshControl } from "react-native";
+import {
+  View,
+  StyleSheet,
+  Platform,
+  RefreshControl,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from "react-native";
 import { AppText } from "@/components/AppText";
+import { FlashList, type FlashListRef, type ListRenderItem } from "@shopify/flash-list";
 import Animated, {
-  type ScrollHandlerProcessed,
   type SharedValue,
+  useAnimatedStyle,
 } from "react-native-reanimated";
 import { StoreInfoCard } from "@/components/store/StoreInfoCard";
 import { StoreFilterBar, type StoreFilterId } from "@/components/store/StoreFilterBar";
@@ -34,9 +42,11 @@ import type { MenuItem, MerchantSummary } from "@/services/merchant.service";
 import type { ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import {
   CATEGORY_RAIL_WIDTH,
+  HEADER_IMAGE_HEIGHT,
   MENU_ITEM_ROW_HEIGHT,
   MENU_LOADING_FILL_MIN_HEIGHT,
   MERCHANT_HERO_ACTIONS_TOP_PAD,
+  SCREEN_HEIGHT,
 } from "../constants/layout";
 import { MerchantHeroBannerRow } from "./MerchantHeroBannerRow";
 import {
@@ -48,11 +58,12 @@ import {
   markMerchantMenuScrollEnded,
 } from "@/lib/merchantMenuScrollGuard";
 
-const AnimatedScrollView = Animated.createAnimatedComponent(ScrollView);
-
 /**
- * Full-mount scroll list (not FlashList virtualization).
- * Fast fling must never show blank white gaps between menu rows.
+ * Virtualized merchant menu (FlashList). Full-mount ScrollView previously kept every
+ * menu row + image decoded — that heated devices and OOM-crashed Expo Go on large menus.
+ *
+ * Do NOT wrap FlashList with Animated.createAnimatedComponent — FlashList v2 + Reanimated
+ * crashes at module load (`Property 'ScrollView' doesn't exist`).
  */
 export type MerchantScrollListHandle = {
   scrollToOffset: (params: { offset: number; animated?: boolean }) => void;
@@ -64,7 +75,10 @@ export type MerchantDetailFlashListProps = {
   data: MerchantFlashListItem[];
   heroUri: string | null;
   heroVideoUri?: string | null;
-  scrollHandler: ScrollHandlerProcessed;
+  /** Plain JS onScroll — required for FlashList v2 (not useAnimatedScrollHandler). */
+  scrollHandler: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
+  onScrollBeginDragExtra?: () => void;
+  onScrollEndExtra?: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
   contentContainerStyle?: object;
   merchantLogoUri: string | null;
   merchant: MerchantSummary;
@@ -128,6 +142,8 @@ export type MerchantDetailFlashListProps = {
   onSelectCategory?: (chip: MerchantCategoryChip) => void;
   onVisibleCategoryChange?: (chipId: string | null) => void;
   scrollY?: SharedValue<number>;
+  /** Used with scrollY to fade hero CTAs without React re-renders mid-scroll. */
+  heroBannerHeight?: number;
   railStickyTop?: number;
   /** Persistent discovery header height — list/rail start below it. */
   chromeHeight?: number;
@@ -136,6 +152,11 @@ export type MerchantDetailFlashListProps = {
   refreshing?: boolean;
   onRefresh?: () => void;
 };
+
+/** Pre-render several screens so fast fling never shows empty cells. */
+const MENU_DRAW_DISTANCE = Math.max(2800, Math.round(SCREEN_HEIGHT * 4));
+/** FlashList v2 otherwise paints 1–2 rows first — fast scroll then hits white. */
+const MENU_INITIAL_DRAW_BATCH = 28;
 
 const MerchantDetailFlashListInner = forwardRef<
   MerchantScrollListHandle,
@@ -146,6 +167,8 @@ const MerchantDetailFlashListInner = forwardRef<
     heroUri,
     heroVideoUri,
     scrollHandler,
+    onScrollBeginDragExtra,
+    onScrollEndExtra,
     contentContainerStyle,
     merchantLogoUri,
     merchant,
@@ -202,6 +225,8 @@ const MerchantDetailFlashListInner = forwardRef<
     activeCategoryId = null,
     onSelectCategory,
     onVisibleCategoryChange,
+    scrollY,
+    heroBannerHeight = HEADER_IMAGE_HEIGHT,
     chromeHeight = 0,
     showCategoryRail: showCategoryRailProp = false,
     refreshing = false,
@@ -212,7 +237,16 @@ const MerchantDetailFlashListInner = forwardRef<
   const showCategoryRail = showCategoryRailProp && categoryChips.length > 0;
   const railInset = 0;
 
-  const scrollRef = useRef<ScrollView>(null);
+  const heroActionsFadeStyle = useAnimatedStyle(() => {
+    if (!scrollY) return { opacity: 1 };
+    const hideAt = Math.max(48, heroBannerHeight * 0.72);
+    const y = scrollY.value;
+    if (y <= hideAt * 0.55) return { opacity: 1 };
+    if (y >= hideAt) return { opacity: 0 };
+    return { opacity: 1 - (y - hideAt * 0.55) / (hideAt * 0.45) };
+  }, [scrollY, heroBannerHeight]);
+
+  const scrollRef = useRef<FlashListRef<MerchantFlashListItem>>(null);
   const rowHeightsRef = useRef<Map<string, number>>(new Map());
   const rowOffsetsRef = useRef<Map<string, number>>(new Map());
   const scrollGenerationRef = useRef(0);
@@ -262,29 +296,41 @@ const MerchantDetailFlashListInner = forwardRef<
       cancelPendingScroll,
       scrollToOffset: ({ offset, animated = true }) => {
         cancelPendingScroll();
-        scrollRef.current?.scrollTo({ y: offset, animated });
+        scrollRef.current?.scrollToOffset({ offset, animated });
       },
       scrollToIndex: ({ index, animated = true, viewOffset = 0 }) => {
-        const generation = ++scrollGenerationRef.current;
-        const attempt = (retriesLeft: number) => {
-          if (generation !== scrollGenerationRef.current) return;
-          const row = data[index];
-          if (!row) return;
-          let y = rowOffsetsRef.current.get(row.key);
-          if (y == null) {
-            // Rows below may have measured since the last rebuild.
-            rebuildRowOffsets();
-            y = rowOffsetsRef.current.get(row.key);
-          }
-          if (y != null) {
-            scrollRef.current?.scrollTo({ y: Math.max(0, y - viewOffset), animated });
-            return;
-          }
-          if (retriesLeft > 0) {
-            requestAnimationFrame(() => attempt(retriesLeft - 1));
-          }
-        };
-        attempt(20);
+        cancelPendingScroll();
+        try {
+          scrollRef.current?.scrollToIndex({
+            index,
+            animated,
+            viewOffset,
+          });
+        } catch {
+          // Layout may not be ready — fall back to measured offsets.
+          const generation = ++scrollGenerationRef.current;
+          const attempt = (retriesLeft: number) => {
+            if (generation !== scrollGenerationRef.current) return;
+            const row = data[index];
+            if (!row) return;
+            let y = rowOffsetsRef.current.get(row.key);
+            if (y == null) {
+              rebuildRowOffsets();
+              y = rowOffsetsRef.current.get(row.key);
+            }
+            if (y != null) {
+              scrollRef.current?.scrollToOffset({
+                offset: Math.max(0, y - viewOffset),
+                animated,
+              });
+              return;
+            }
+            if (retriesLeft > 0) {
+              requestAnimationFrame(() => attempt(retriesLeft - 1));
+            }
+          };
+          attempt(20);
+        }
       },
     }),
     [cancelPendingScroll, data, rebuildRowOffsets]
@@ -335,19 +381,22 @@ const MerchantDetailFlashListInner = forwardRef<
               statusBarInset={heroStatusBarInset}
               onHeroHeightChange={onHeroHeightChange}
               shouldPlayVideo={shouldPlayHeroVideo}
+              scrollY={scrollY}
+              pauseVideoAfterY={Math.max(48, heroBannerHeight * 0.85)}
             />
             {showHeroActions ? (
-              <View
+              <Animated.View
                 style={[
                   styles.heroActionsOverlay,
                   // `top` (not paddingTop) — absoluteFill + padding was still overlapping on Android.
                   { top: Math.max(8, heroActionsTopPad) },
+                  heroActionsFadeStyle,
                 ]}
                 pointerEvents="box-none"
                 collapsable={false}
               >
                 <MerchantHeroTopBarContent {...heroActions} />
-              </View>
+              </Animated.View>
             ) : null}
           </View>
         );
@@ -575,6 +624,56 @@ const MerchantDetailFlashListInner = forwardRef<
     }
   };
 
+  const renderItem = useCallback<ListRenderItem<MerchantFlashListItem>>(
+    ({ item }) => (
+      <View
+        collapsable={false}
+        style={[
+          styles.rowShell,
+          dark && styles.rowShellDark,
+          item.type === "menu_item" ? { height: MENU_ITEM_ROW_HEIGHT } : null,
+          item.type === "menu_masonry" ||
+          item.type === "empty_menu" ||
+          item.type === "menu_loading"
+            ? styles.masonryRowShell
+            : null,
+          item.type === "info" ? styles.infoRowShell : null,
+        ]}
+        onLayout={(event) => {
+          recordRowLayout(item.key, event.nativeEvent.layout.height);
+        }}
+      >
+        {renderRow(item)}
+      </View>
+    ),
+    // renderRow closes over many props — depend on data identity + chrome that affects cells.
+    [
+      dark,
+      recordRowLayout,
+      heroUri,
+      heroVideoUri,
+      shouldPlayHeroVideo,
+      showHeroActions,
+      heroActions,
+      heroActionsTopPad,
+      heroActionsFadeStyle,
+      scrollY,
+      heroBannerHeight,
+      merchant,
+      merchantId,
+      highlightedMenuItemKey,
+      highlightedOfferId,
+      highlyReorderedIds,
+      bookmarkMenuItemIdSet,
+      itemOfferById,
+      isStoreClosed,
+      showCategoryRail,
+    ]
+  );
+
+  const keyExtractor = useCallback((item: MerchantFlashListItem) => item.key, []);
+  const getItemType = useCallback((item: MerchantFlashListItem) => item.type, []);
+
   return (
     <View
       style={[styles.listHost, dark && styles.listHostDark, chromeHeight > 0 ? { paddingTop: chromeHeight } : null]}
@@ -592,19 +691,25 @@ const MerchantDetailFlashListInner = forwardRef<
             />
           </View>
         ) : null}
-        <AnimatedScrollView
+        <FlashList
           ref={scrollRef}
-          style={[styles.list, dark && styles.listDark]}
+          style={StyleSheet.flatten([styles.list, dark && styles.listDark])}
+          data={data}
+          keyExtractor={keyExtractor}
+          renderItem={renderItem}
+          getItemType={getItemType}
+          removeClippedSubviews={false}
+          drawDistance={MENU_DRAW_DISTANCE}
+          overrideProps={{ initialDrawBatchSize: MENU_INITIAL_DRAW_BATCH }}
           contentContainerStyle={[styles.listContent, dark && styles.listContentDark, contentContainerStyle]}
-          onScroll={scrollHandler as never}
+          onScroll={scrollHandler}
           scrollEventThrottle={16}
           keyboardShouldPersistTaps="always"
           nestedScrollEnabled
           showsVerticalScrollIndicator
-          removeClippedSubviews={false}
           bounces
           delaysContentTouches={false}
-          canCancelContentTouches={false}
+          overScrollMode="never"
           refreshControl={
             onRefresh ? (
               <RefreshControl
@@ -616,16 +721,21 @@ const MerchantDetailFlashListInner = forwardRef<
               />
             ) : undefined
           }
-          onScrollBeginDrag={markMerchantMenuScrollActive}
+          onScrollBeginDrag={() => {
+            markMerchantMenuScrollActive();
+            onScrollBeginDragExtra?.();
+          }}
           onMomentumScrollBegin={markMerchantMenuScrollActive}
           onScrollEndDrag={(event) => {
             markMerchantMenuScrollEnded();
+            onScrollEndExtra?.(event);
             onVisibleCategoryChange?.(
               resolveVisibleCategoryId(event.nativeEvent.contentOffset.y)
             );
           }}
           onMomentumScrollEnd={(event) => {
             markMerchantMenuScrollEnded();
+            onScrollEndExtra?.(event);
             onVisibleCategoryChange?.(
               resolveVisibleCategoryId(event.nativeEvent.contentOffset.y)
             );
@@ -633,44 +743,15 @@ const MerchantDetailFlashListInner = forwardRef<
           {...(Platform.OS === "android"
             ? { overScrollMode: onRefresh ? ("auto" as const) : ("never" as const), persistentScrollbar: false }
             : null)}
-        >
-          {data.map((item) => (
-            <View
-              key={item.key}
-              collapsable={false}
-              style={[
-                styles.rowShell,
-                dark && styles.rowShellDark,
-                item.type === "menu_item" ? { minHeight: MENU_ITEM_ROW_HEIGHT } : null,
-                item.type === "menu_masonry" ||
-                item.type === "empty_menu" ||
-                item.type === "menu_loading"
-                  ? styles.masonryRowShell
-                  : null,
-                item.type === "info" ? styles.infoRowShell : null,
-              ]}
-              onLayout={(event) => {
-                recordRowLayout(item.key, event.nativeEvent.layout.height);
-              }}
-            >
-              {renderRow(item)}
-            </View>
-          ))}
-        </AnimatedScrollView>
+        />
       </View>
     </View>
   );
 });
 
 /**
- * Full-mount menu host — every menu row is mounted (no virtualization), so a re-render of
- * this component reconciles ALL N rows on the JS thread. Individual rows already subscribe
- * to the cart directly (useMenuItemCartQty), so a cart tap must NOT re-render this list at
- * all — it only needs to re-render when its own props change (menu/filter/pairing/highlight).
- * Without this memo, every first-add re-rendered the parent screen (cartLineCount change),
- * which dragged the whole mounted menu through reconciliation in the SAME frame as the tap,
- * stalling the touch/paint pipeline on large menus + slower CPUs (dropped / delayed taps).
- * All props are kept referentially stable by the parent for exactly this reason.
+ * Virtualized menu host — only on-screen rows mount. Memo so cart qty updates do not
+ * reconcile the whole list (rows subscribe to cart themselves).
  */
 export const MerchantDetailFlashList = React.memo(MerchantDetailFlashListInner);
 
@@ -718,7 +799,7 @@ const styles = StyleSheet.create({
   },
   rowShell: {
     backgroundColor: GatiMitraColors.softBackground,
-    overflow: "hidden",
+    overflow: "visible",
     zIndex: 1,
   },
   rowShellDark: {
@@ -777,7 +858,7 @@ const styles = StyleSheet.create({
     backgroundColor: MerchantDarkPalette.bg,
   },
   masonryRowShell: {
-    overflow: "hidden",
+    overflow: "visible",
     alignSelf: "stretch",
     maxWidth: "100%",
   },

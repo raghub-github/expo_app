@@ -11,6 +11,8 @@ import { maybeStartOrderDispatch } from "../../lib/order-dispatch.service.js";
 import { generateFourDigitOtp } from "../../lib/food-order-otps.js";
 import { recordOrderCancellation } from "../../lib/record-order-cancellation.js";
 import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
+import { resolveOrderPaidAmountForAutoRefund } from "../../lib/auto-refund-on-cancellation.js";
+import { queueCustomerShownRefundAfterCancel } from "../../lib/trigger-order-auto-refund.js";
 import { getRoute } from "../distance/distance.service.js";
 import { getEnv } from "../../config/env.js";
 import { RIDE_TIP_AMOUNTS } from "./ride.tip-boost.service.js";
@@ -922,6 +924,7 @@ async function cancelRideOrderForRow(
   });
 
   // Pre-pickup compensation: customer cancel after rider reached pickup.
+  let riderAtPickup = false;
   if (cancelledByType === "customer" && row.riderId != null && row.riderId > 0) {
     try {
       const rideRows = await sqlClient<
@@ -937,8 +940,8 @@ async function cancelRideOrderForRow(
         LIMIT 1
       `;
       const ride = rideRows[0];
-      const atPickup = ride?.rider_reached_pickup_at != null;
-      if (atPickup) {
+      riderAtPickup = ride?.rider_reached_pickup_at != null;
+      if (riderAtPickup) {
         const waitSec = Number(ride?.pickup_wait_seconds ?? 0);
         const waitingMinutes =
           Number.isFinite(waitSec) && waitSec > 0 ? Math.ceil(waitSec / 60) : 0;
@@ -959,6 +962,20 @@ async function cancelRideOrderForRow(
       }
     } catch (err) {
       console.warn("[cancelRideOrder] pre-pickup compensation skipped:", err);
+    }
+  }
+
+  if (!riderAtPickup) {
+    try {
+      const paid = await resolveOrderPaidAmountForAutoRefund(sqlClient, row.id);
+      queueCustomerShownRefundAfterCancel({
+        orderCoreId: row.id,
+        reason: reasonText,
+        amount: paid,
+        actorRole: cancelledByType === "system" ? "system" : "customer",
+      });
+    } catch (refundErr) {
+      console.warn("[cancelRideOrder] auto-refund queue failed:", refundErr);
     }
   }
 

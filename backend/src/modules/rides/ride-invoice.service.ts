@@ -232,7 +232,7 @@ export async function sendRideInvoiceEmailForCustomer(
   const placeOfSupply =
     (typeof meta.pickupState === "string" && meta.pickupState.trim()) ||
     (typeof meta.state === "string" && meta.state.trim()) ||
-    "Bihar";
+    null;
 
   let riderName: string | null = null;
   let vehicleNumber: string | null = null;

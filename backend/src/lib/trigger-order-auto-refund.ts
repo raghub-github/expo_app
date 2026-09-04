@@ -117,3 +117,88 @@ export function refundStatusFromAutoRefundOutcome(
   if (outcome.skippedReason === "already_refunded") return "completed";
   return fallback;
 }
+
+/**
+ * Fire-and-forget money movement after a customer-visible refund promise.
+ * Does not block cancel HTTP. Executor splits GatiCash vs UPI/card.
+ */
+export function queueCustomerShownRefundAfterCancel(args: {
+  orderCoreId: number;
+  reason: string;
+  amount: number;
+  actorRole?: string | null;
+}): void {
+  const amount = Number(args.amount);
+  if (!Number.isFinite(amount) || amount <= 0.005) return;
+  const orderCoreId = Number(args.orderCoreId);
+  if (!Number.isInteger(orderCoreId) || orderCoreId < 1) return;
+  const actorRole = String(args.actorRole ?? "customer").trim() || "customer";
+  const sql = getSql();
+
+  void (async () => {
+    try {
+      const outcome = await autoRefundOnCancellation(
+        {
+          orderCoreId,
+          reason: String(args.reason ?? "").trim() || "Cancelled by customer",
+          actorRole,
+          amount,
+          allowCustomerPreAcceptRefund: true,
+        },
+        sql
+      );
+      if (outcome.triggered && outcome.refundId != null) {
+        const execStatus = String(outcome.result?.status ?? "").toUpperCase();
+        const kind =
+          execStatus === "COMPLETED" || execStatus === "NOOP"
+            ? ("completed" as const)
+            : execStatus === "FAILED"
+              ? ("failed" as const)
+              : ("processing" as const);
+        await syncOrderRefundCompletionMarkers(
+          {
+            orderCoreId,
+            refundId: outcome.refundId,
+            kind,
+            refundAmount: amount,
+          },
+          sql
+        );
+      }
+      console.info(
+        "[queue-customer-shown-refund]",
+        JSON.stringify({
+          orderCoreId,
+          amount,
+          actorRole,
+          triggered: outcome.triggered,
+          skipped: outcome.skippedReason ?? null,
+          refundId: outcome.refundId ?? null,
+          status: outcome.result?.status ?? null,
+        })
+      );
+    } catch (refundErr) {
+      console.warn(
+        "[queue-customer-shown-refund] failed (order stays cancelled; refund retryable):",
+        refundErr
+      );
+      try {
+        await sql`
+          UPDATE order_cancellation_reasons
+          SET refund_status = 'failed',
+              refund_amount = COALESCE(${amount}, refund_amount),
+              updated_at = NOW()
+          WHERE order_id = ${orderCoreId}
+            AND id = (
+              SELECT id FROM order_cancellation_reasons
+              WHERE order_id = ${orderCoreId}
+              ORDER BY created_at DESC
+              LIMIT 1
+            )
+        `;
+      } catch {
+        /* schema may lack columns */
+      }
+    }
+  })();
+}

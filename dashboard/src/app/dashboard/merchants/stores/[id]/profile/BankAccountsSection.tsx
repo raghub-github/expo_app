@@ -2,8 +2,45 @@
 
 import React from "react";
 import { createPortal } from "react-dom";
-import { Banknote, Check, Loader2, X } from "lucide-react";
+import { Banknote, Check, Copy, Loader2, X } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
+
+function CopyValueButton({
+  value,
+  label,
+}: {
+  value: string;
+  label: string;
+}) {
+  const { toast } = useToast();
+  const [copied, setCopied] = React.useState(false);
+  const text = value.trim();
+  if (!text) return null;
+
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      toast(`${label} copied`);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast(`Could not copy ${label.toLowerCase()}`);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={() => void onCopy()}
+      className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+      aria-label={`Copy ${label}`}
+      title={`Copy ${label}`}
+    >
+      {copied ? <Check size={11} className="text-emerald-600" /> : <Copy size={11} />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
 
 type PolicyMode = "manual" | "auto" | "hybrid" | "disabled";
 
@@ -15,6 +52,7 @@ export function BankAccountsSection({
   canEditBank = false,
   storeName,
   readOnlyRestricted = false,
+  revealFullAccount = false,
 }: {
   storeId: string;
   initialAccounts: any[];
@@ -24,6 +62,8 @@ export function BankAccountsSection({
   storeName?: string | null;
   /** View-only on unassigned store — no mutations / no clear reload. */
   readOnlyRestricted?: boolean;
+  /** Super admin: show full account number for payouts. */
+  revealFullAccount?: boolean;
 }) {
   const { toast } = useToast();
   const [accounts, setAccounts] = React.useState<any[]>(initialAccounts ?? []);
@@ -773,14 +813,24 @@ export function BankAccountsSection({
                   <span className="text-gray-500">Holder:</span>{" "}
                   <span className="font-semibold text-gray-900">{bank.account_holder_name}</span>
                 </div>
-                <div>
+                <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-gray-500">Account:</span>{" "}
-                  <span className="font-semibold text-gray-900">{bank.account_number_masked ?? "****"}</span>
+                  <span className="font-semibold font-mono text-gray-900">
+                    {revealFullAccount
+                      ? String(bank.account_number || bank.account_number_masked || "****")
+                      : String(bank.account_number_masked ?? "****")}
+                  </span>
+                  {revealFullAccount && bank.account_number ? (
+                    <CopyValueButton value={String(bank.account_number)} label="Account number" />
+                  ) : null}
                 </div>
                 {bank.ifsc_code && bank.ifsc_code !== "N/A" && (
-                  <div>
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-gray-500">IFSC:</span>{" "}
-                    <span className="font-semibold text-gray-900">{bank.ifsc_code}</span>
+                    <span className="font-semibold font-mono text-gray-900">{bank.ifsc_code}</span>
+                    {revealFullAccount ? (
+                      <CopyValueButton value={String(bank.ifsc_code)} label="IFSC" />
+                    ) : null}
                   </div>
                 )}
                 {bank.bank_name && bank.bank_name !== "UPI" && (

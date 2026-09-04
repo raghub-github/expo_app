@@ -11,6 +11,10 @@ import {
   getCustomerVisibleApprovalExpr,
   getCustomerVisibleItemImageExpr,
 } from "../../lib/customer-menu-item-visibility.js";
+import {
+  customerListStoreTypesForSql,
+  matchesCustomerMerchantListStoreType,
+} from "./merchantStoreTypeFilters.js";
 
 export type FoodItemUnderPriceDto = {
   itemId: string;
@@ -48,12 +52,32 @@ type ItemRow = {
   discount_percentage: string | number | null;
   store_public_id: string;
   store_name: string;
+  store_type: string | null;
   food_type: string | null;
   is_popular: boolean | null;
   item_tags: string[] | null;
 };
 
 const DEFAULT_COMMISSION_PERCENT = 15;
+
+/** Meals-under / food-home discovery — never include grocery (or other non-food) stores. */
+async function filterToFoodStoreIds(storeIds: number[]): Promise<number[]> {
+  if (storeIds.length === 0) return [];
+  const foodTypes = customerListStoreTypesForSql("FOOD");
+  if (!foodTypes?.length) return storeIds;
+  const sql = getSql();
+  const rows = await sql<{ id: number }[]>`
+    SELECT id
+    FROM merchant_stores
+    WHERE id = ANY(${storeIds}::bigint[])
+      AND deleted_at IS NULL
+      AND upper(trim(COALESCE(store_type::text, 'FOOD'))) = ANY(${foodTypes}::text[])
+      AND upper(trim(COALESCE(store_type::text, 'FOOD'))) <> 'GROCERY'
+  `;
+  return rows
+    .map((r) => Number(r.id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+}
 
 function normalizeStorePk(value: unknown): number {
   const n = typeof value === "bigint" ? Number(value) : Number(value);
@@ -150,16 +174,19 @@ export async function listFoodItemsUnderPrice(params: {
   const { items: stores } = await listStores({
     lat: params.lat,
     lng: params.lng,
-    limit: 40,
+    limit: 80,
     veg_mode: params.vegOnly,
     distanceMode: "road",
   });
-  const storeIds = stores.map((s) => Number(s.id)).filter((id) => Number.isFinite(id) && id > 0);
+  const storeIds = await filterToFoodStoreIds(
+    stores.map((s) => Number(s.id)).filter((id) => Number.isFinite(id) && id > 0)
+  );
   if (storeIds.length === 0) return [];
 
   const sql = getSql();
   const customerImage = getCustomerVisibleItemImageExpr(sql, "mmi");
   const customerApproval = getCustomerVisibleApprovalExpr(sql, "mmi");
+  const foodTypes = customerListStoreTypesForSql("FOOD") ?? [];
   const rows = await sql<ItemRow[]>`
     SELECT
       mmi.id,
@@ -172,12 +199,15 @@ export async function listFoodItemsUnderPrice(params: {
       mmi.discount_percentage,
       ms.store_id AS store_public_id,
       COALESCE(ms.store_display_name, ms.store_name) AS store_name,
+      upper(trim(COALESCE(ms.store_type::text, 'FOOD'))) AS store_type,
       mmi.food_type,
       mmi.is_popular,
       mmi.item_tags
     FROM merchant_menu_items mmi
     INNER JOIN merchant_stores ms ON ms.id = mmi.store_id AND ms.deleted_at IS NULL
       AND COALESCE(ms.has_customer_visible_menu, true) = true
+      AND upper(trim(COALESCE(ms.store_type::text, 'FOOD'))) = ANY(${foodTypes}::text[])
+      AND upper(trim(COALESCE(ms.store_type::text, 'FOOD'))) <> 'GROCERY'
     WHERE mmi.store_id = ANY(${storeIds}::bigint[])
       AND mmi.is_deleted = false
       -- Entitlement gate: plan-locked items are hidden from customer discovery surfaces.
@@ -202,6 +232,7 @@ export async function listFoodItemsUnderPrice(params: {
     if (!offerCache.has(storePk)) {
       offerCache.set(storePk, await loadMerchantOffersForPricing(storePk));
     }
+    if (!matchesCustomerMerchantListStoreType(row.store_type, "FOOD")) continue;
     const mapped = mapItemRow(row, percent, maxPrice, offerCache.get(storePk) ?? []);
     if (mapped) items.push(mapped);
     if (items.length >= limit) break;
@@ -224,17 +255,22 @@ export async function listFoodItemsUnderPriceGrouped(params: {
   const { items: stores } = await listStores({
     lat: params.lat,
     lng: params.lng,
-    limit: 40,
+    limit: 80,
     veg_mode: params.vegOnly,
     distanceMode: "road",
   });
-  const storeIds = stores
-    .map((s) => Number((s as { id: number }).id))
-    .filter((id) => Number.isFinite(id) && id > 0);
+  const storeIds = await filterToFoodStoreIds(
+    stores
+      .map((s) => Number((s as { id: number }).id))
+      .filter((id) => Number.isFinite(id) && id > 0)
+  );
   if (storeIds.length === 0) return [];
 
+  const foodIdSet = new Set(storeIds);
   const storeMetaByPublicId = new Map(
-    stores.map((s) => {
+    stores
+      .filter((s) => foodIdSet.has(Number((s as { id: number }).id)))
+      .map((s) => {
       const row = s as {
         store_id: string;
         store_name: string;
@@ -263,6 +299,7 @@ export async function listFoodItemsUnderPriceGrouped(params: {
   const sql = getSql();
   const customerImage = getCustomerVisibleItemImageExpr(sql, "mmi");
   const customerApproval = getCustomerVisibleApprovalExpr(sql, "mmi");
+  const foodTypes = customerListStoreTypesForSql("FOOD") ?? [];
   const rowLimit = maxStores * itemsPerStore * 4;
   const rows = await sql<ItemRow[]>`
     SELECT
@@ -276,12 +313,15 @@ export async function listFoodItemsUnderPriceGrouped(params: {
       mmi.discount_percentage,
       ms.store_id AS store_public_id,
       COALESCE(ms.store_display_name, ms.store_name) AS store_name,
+      upper(trim(COALESCE(ms.store_type::text, 'FOOD'))) AS store_type,
       mmi.food_type,
       mmi.is_popular,
       mmi.item_tags
     FROM merchant_menu_items mmi
     INNER JOIN merchant_stores ms ON ms.id = mmi.store_id AND ms.deleted_at IS NULL
       AND COALESCE(ms.has_customer_visible_menu, true) = true
+      AND upper(trim(COALESCE(ms.store_type::text, 'FOOD'))) = ANY(${foodTypes}::text[])
+      AND upper(trim(COALESCE(ms.store_type::text, 'FOOD'))) <> 'GROCERY'
     WHERE mmi.store_id = ANY(${storeIds}::bigint[])
       AND mmi.is_deleted = false
       -- Entitlement gate: plan-locked items are hidden from customer discovery surfaces.
@@ -312,6 +352,7 @@ export async function listFoodItemsUnderPriceGrouped(params: {
     }
     const mapped = mapItemRow(row, percent, maxPrice, offerCache.get(storePk) ?? []);
     if (!mapped) continue;
+    if (!matchesCustomerMerchantListStoreType(row.store_type, "FOOD")) continue;
     bucket.push(mapped);
     grouped.set(storePublicId, bucket);
   }

@@ -1,25 +1,21 @@
 /**
- * Plays configured alert chime when a new-order push arrives (foreground / background JS alive).
- * When the app is fully killed, the OS plays the push notification's default sound.
+ * Plays configured alert chime when a new-order push arrives while the app is
+ * foregrounded. Background/killed delivery uses the Android notification
+ * channel sound (merchant_new_orders_alert) — do not double-chime from JS.
  *
- * Uses the centralized push dispatcher + short-window dedupe so dual Expo/FCM
- * delivery cannot chime the same event twice.
+ * Uses the centralized push dispatcher + shared order-key dedupe so dual
+ * Expo/FCM delivery cannot chime the same event twice (also shares with modal).
  */
 import { useEffect, useRef } from "react";
+import { AppState } from "react-native";
 import Constants from "expo-constants";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { readDeviceOrderAlertsAsync } from "@/lib/deviceOrderAlerts";
 import { registerMerchantForegroundPushHandler } from "@/lib/merchantPushDispatch";
 import { playIncomingOrderAlert } from "@/lib/playOrderAlertSound";
-
-const DEDUPE_WINDOW_MS = 8000;
-const recentChimes = new Map<string, number>();
-
-function isNewOrderPush(data: Record<string, unknown>): boolean {
-  const t = String(data.type ?? data.event ?? "").toLowerCase();
-  return t === "merchant_new_order" || t === "new_order";
-}
+import { isMerchantNewOrderPushData } from "@/lib/merchantNewOrderChannel";
+import { claimNewOrderAlertSound } from "@/lib/newOrderAlertSoundDedupe";
 
 function chimeDedupeKey(data: Record<string, unknown>): string {
   const orderId =
@@ -30,17 +26,6 @@ function chimeDedupeKey(data: Record<string, unknown>): string {
     data.notificationId ??
     "";
   return String(orderId || "new_order");
-}
-
-function shouldChimeOnce(key: string): boolean {
-  const now = Date.now();
-  for (const [k, at] of recentChimes) {
-    if (now - at > DEDUPE_WINDOW_MS) recentChimes.delete(k);
-  }
-  const last = recentChimes.get(key);
-  if (last != null && now - last < DEDUPE_WINDOW_MS) return false;
-  recentChimes.set(key, now);
-  return true;
 }
 
 async function playNewOrderChime(
@@ -64,9 +49,11 @@ export default function OrderAlertPushHandler() {
   useEffect(() => {
     if (Constants.appOwnership === "expo") return;
     return registerMerchantForegroundPushHandler(({ data }) => {
+      // Killed/background: OS plays channel sound. Only chime from JS when active.
+      if (AppState.currentState !== "active") return;
       const sid = storeIdRef.current;
-      if (!isNewOrderPush(data) || !sid) return;
-      if (!shouldChimeOnce(chimeDedupeKey(data))) return;
+      if (!isMerchantNewOrderPushData(data) || !sid) return;
+      if (!claimNewOrderAlertSound(chimeDedupeKey(data))) return;
       void playNewOrderChime(sid, settingsRef.current);
     });
   }, []);

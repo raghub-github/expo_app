@@ -57,17 +57,17 @@ export function AppAssetImage({
         : null;
 
   useEffect(() => {
+    // Stale-while-revalidate: keep showing the previous URI while a new URL loads.
+    // Only clear failure flags so we can retry the new source without blanking.
     setPrimaryFailed(false);
     setUseBundled(false);
   }, [cacheUri]);
 
   const preferredUri = primaryFailed && altUri ? altUri : cacheUri;
 
-  if (preferredUri && !fresh) {
-    lastGoodUriRef.current = preferredUri;
-  }
-
-  const uri = fresh ? preferredUri : preferredUri ?? lastGoodUriRef.current;
+  // Prefer live URI; fall back to last-good so image area never collapses.
+  // Do not overwrite lastGood until onLoad — failed refresh must keep the old bitmap.
+  const uri = preferredUri ?? (!fresh ? lastGoodUriRef.current : null);
 
   const source: ImageSourcePropType | null = useBundled
     ? fallbackSource
@@ -75,27 +75,48 @@ export function AppAssetImage({
       ? { uri }
       : fallbackSource;
 
-  if (!source) return null;
+  // Always reserve layout: when no source yet, render a transparent placeholder Image
+  // so the card image area never disappears / collapses.
+  if (!source) {
+    return (
+      <Image
+        recyclingKey={assetKey}
+        source={{ uri: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" }}
+        style={[{ opacity: 0 }, style]}
+        contentFit={contentFit}
+        accessibilityLabel={accessibilityLabel}
+      />
+    );
+  }
 
   return (
     <Image
       // Stable key — remounting on every signed-URL change blanked all home tiles.
+      // When fresh=true (admin preview), include updatedAt so Change/Remove is visible.
       recyclingKey={
         fresh ? `${assetKey}:${updatedAt ?? ""}:${proxyUrl ?? ""}` : assetKey
       }
       source={source}
-      placeholder={!useBundled && uri && fallbackSource ? fallbackSource : undefined}
+      placeholder={
+        !useBundled && lastGoodUriRef.current && lastGoodUriRef.current !== uri
+          ? { uri: lastGoodUriRef.current }
+          : !useBundled && uri && fallbackSource
+            ? fallbackSource
+            : undefined
+      }
       placeholderContentFit={contentFit}
       style={style}
       contentFit={contentFit}
       cachePolicy={fresh ? "none" : "memory-disk"}
       priority="high"
-      transition={0}
+      transition={fresh ? 0 : 120}
       accessibilityLabel={accessibilityLabel}
       onLoad={() => {
+        if (uri) lastGoodUriRef.current = uri;
         onLoad?.();
       }}
       onDisplay={() => {
+        if (uri) lastGoodUriRef.current = uri;
         onLoad?.();
       }}
       onError={() => {
@@ -105,6 +126,13 @@ export function AppAssetImage({
         }
         if (fallbackSource) {
           setUseBundled(true);
+          onLoad?.();
+          return;
+        }
+        // Keep last-good URI visible — do not blank on failed refresh.
+        if (!fresh && lastGoodUriRef.current && preferredUri && lastGoodUriRef.current !== preferredUri) {
+          // Force render path back to last-good by marking primary failed with no alt.
+          setPrimaryFailed(true);
           return;
         }
         // eslint-disable-next-line no-console

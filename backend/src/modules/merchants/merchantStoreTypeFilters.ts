@@ -27,3 +27,23 @@ export function matchesCustomerMerchantListStoreType(
   if (req === "GROCERY") return st === "GROCERY";
   return st === req;
 }
+
+/** Normalize list API storeType query (default FOOD). */
+export function normalizeCustomerListStoreTypeRequest(
+  requested: string | null | undefined
+): string {
+  const req = String(requested ?? "FOOD").trim().toUpperCase();
+  if (!req) return "FOOD";
+  return req;
+}
+
+/** SQL-ready list of store_type values for a customer list request, or null for ALL. */
+export function customerListStoreTypesForSql(
+  requested: string | null | undefined
+): string[] | null {
+  const req = normalizeCustomerListStoreTypeRequest(requested);
+  if (req === "ALL") return null;
+  if (req === "FOOD") return [...CUSTOMER_FOOD_PAGE_STORE_TYPES];
+  if (req === "GROCERY") return ["GROCERY"];
+  return [req];
+}

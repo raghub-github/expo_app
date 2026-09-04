@@ -19,12 +19,14 @@ export type ExpoPushMessage = {
   title?: string;
   body?: string;
   data?: Record<string, unknown>;
-  sound?: "default" | null;
+  /** Android channel sound name (no extension) or "default". */
+  sound?: "default" | string | null;
   priority?: "default" | "normal" | "high";
   channelId?: string;
   mutableContent?: boolean;
   richContent?: { image?: string };
   _contentAvailable?: boolean;
+  collapseId?: string;
 };
 
 type Ticket = {
@@ -111,6 +113,7 @@ export async function sendPush(
     channelId?: string;
     imageUrl?: string;
     contentAvailable?: boolean;
+    collapseKey?: string;
   },
   log: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void },
 ): Promise<{ accepted: number; failed: number; chunks: number; deadTokens: string[] }> {
@@ -134,9 +137,10 @@ export async function sendPush(
       ...(payload.title != null && payload.title !== "" ? { title: payload.title } : {}),
       ...(payload.body != null && payload.body !== "" ? { body: payload.body } : {}),
       data: payload.data,
-      sound: (payload.sound as "default" | null | undefined) ?? "default",
+      sound: (payload.sound as string | null | undefined) ?? "default",
       priority: "high",
       channelId: payload.channelId,
+      ...(payload.collapseKey ? { collapseId: payload.collapseKey } : {}),
       ...(payload.contentAvailable ? { _contentAvailable: true } : {}),
       ...(payload.imageUrl ? { mutableContent: true, richContent: { image: payload.imageUrl } } : {}),
     };

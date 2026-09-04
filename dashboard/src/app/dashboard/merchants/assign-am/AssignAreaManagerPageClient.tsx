@@ -9,19 +9,19 @@ export default function AssignAreaManagerPageClient() {
   const router = useRouter();
 
   return (
-    <div className="w-full max-w-full px-4 sm:px-6 lg:px-8 py-6">
+    <div className="w-full">
       <Suspense
         fallback={
-          <div className="flex items-center justify-center gap-2 py-12">
-            <Loader2 className="h-6 w-6 animate-spin text-indigo-600" />
-            <span className="text-sm text-slate-500">Loading…</span>
+          <div className="flex items-center justify-center gap-2 py-16">
+            <Loader2 className="h-5 w-5 animate-spin text-[#121212]/40" />
+            <span className="text-sm text-[#121212]/50">Loading…</span>
           </div>
         }
       >
         <AssignAreaManagerPanel
           isOpen={true}
           asModal={false}
-          onClose={() => router.push("/dashboard/merchants")}
+          onClose={() => router.push("/dashboard/merchants?portal=admin")}
         />
       </Suspense>
     </div>

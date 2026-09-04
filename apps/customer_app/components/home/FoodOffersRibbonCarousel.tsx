@@ -21,6 +21,7 @@ import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { AppText } from "@/components/AppText";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { useQueryClient } from "@tanstack/react-query";
+import { useIsFocused } from "@react-navigation/native";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { formatCardOfferLine } from "@/lib/merchantOfferBadge";
 import { resolveMerchantBannerUri } from "@/lib/merchantBanner";
@@ -362,6 +363,7 @@ export function FoodOffersRibbonCarousel({
   const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
   const [, setActiveIndex] = useState(0);
+  const isScreenFocused = useIsFocused();
 
   const slides: Slide[] = useMemo(() => {
     const picked = pickOffersForCarousel(offers);
@@ -390,6 +392,7 @@ export function FoodOffersRibbonCarousel({
   }, [prefetchKey]);
 
   useEffect(() => {
+    if (!isScreenFocused) return;
     if (slides.length < 2) return;
     const timer = setInterval(() => {
       setActiveIndex((prev) => {
@@ -402,7 +405,7 @@ export function FoodOffersRibbonCarousel({
       });
     }, CAROUSEL_AUTO_MS);
     return () => clearInterval(timer);
-  }, [slides.length, cardW]);
+  }, [slides.length, cardW, isScreenFocused]);
 
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {

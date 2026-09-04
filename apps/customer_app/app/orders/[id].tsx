@@ -194,6 +194,8 @@ export default function OrderDetailsScreen() {
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
   const [invoiceDownloading, setInvoiceDownloading] = useState(false);
   const [receiptDownloading, setReceiptDownloading] = useState(false);
+  const [holdFoodLiveTracking, setHoldFoodLiveTracking] = useState(false);
+  const frozenFoodLiveOrderRef = useRef<OrderDetail | null>(null);
 
   const { data: order, isLoading } = useQuery({
     queryKey: ["order", orderId],
@@ -240,12 +242,32 @@ export default function OrderDetailsScreen() {
 
   const orderStatus = normalizeCustomerOrderStatus(order?.status);
   const isInProgress = !!order && !isTerminalOrderStatus(orderStatus);
+  const foodLiveOrder =
+    holdFoodLiveTracking && frozenFoodLiveOrderRef.current
+      ? frozenFoodLiveOrderRef.current
+      : order;
+  const showFoodLiveTracking =
+    !!foodLiveOrder &&
+    !isPersonRideOrder(foodLiveOrder) &&
+    (isInProgress || holdFoodLiveTracking);
   const isRideOrderEarly = !!order && isPersonRideOrder(order);
   const isParcelOrderEarly =
     !!order && (isParcelOrder(order) || openedFromParcelHome);
   /** FoodLiveTrackingScreen runs its own live ETA hook — avoid doubling 5s timers. */
   const needsParentLiveEta =
     isInProgress && !!orderId && (isRideOrderEarly || isParcelOrderEarly);
+
+  const handleFoodCancelFlowChange = useCallback((active: boolean) => {
+    if (active) {
+      if (!frozenFoodLiveOrderRef.current) {
+        frozenFoodLiveOrderRef.current = order ?? null;
+      }
+      setHoldFoodLiveTracking(true);
+      return;
+    }
+    setHoldFoodLiveTracking(false);
+    frozenFoodLiveOrderRef.current = null;
+  }, [order]);
 
   useEffect(() => {
     if (!order || !isPersonRideOrder(order)) return;
@@ -794,15 +816,15 @@ export default function OrderDetailsScreen() {
     );
   }
 
-  if (isInProgress && !isRideOrder) {
-    const storeId = order.merchantPublicStoreId;
+  if (showFoodLiveTracking && foodLiveOrder && !isPersonRideOrder(foodLiveOrder)) {
+    const storeId = foodLiveOrder.merchantPublicStoreId;
     return (
       <>
         <AndroidBackHandler fallback={liveTrackingHomeFallback} preferFallback />
         <LiveTrackingBackGuard fallback={liveTrackingHomeFallback} />
-        <AppErrorBoundary source="food-live-tracking" resetKey={order.orderId}>
+        <AppErrorBoundary source="food-live-tracking" resetKey={foodLiveOrder.orderId}>
           <FoodLiveTrackingScreen
-            order={order}
+            order={foodLiveOrder}
             tracking={tracking}
             eta={etaData}
             etaMinutes={liveEtaMins}
@@ -814,8 +836,10 @@ export default function OrderDetailsScreen() {
             onOpenMerchant={() => {
               openMerchantStore(storeId);
             }}
+            onCancelFlowChange={handleFoodCancelFlowChange}
             onOrderCancelled={() => {
               void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+              void queryClient.invalidateQueries({ queryKey: ["your-orders"] });
               void import("@/lib/refreshCustomerWallet").then(({ refreshCustomerWallet }) =>
                 refreshCustomerWallet(queryClient)
               );

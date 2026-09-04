@@ -70,6 +70,12 @@ export type PushControllerOptions = {
     expoPushToken: string;
     accessToken: string;
   }) => Promise<void>;
+  /**
+   * When true, startLifecycle skips the shared shade-on defaults so the host
+   * app can install its own setNotificationHandler (e.g. Partner new-order
+   * sound rules) without a race that briefly re-enables default OS sound.
+   */
+  skipDefaultNotificationHandler?: boolean;
   log?: (message: string, extra?: Record<string, unknown>) => void;
 };
 

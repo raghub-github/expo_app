@@ -68,7 +68,7 @@ function pathHasRightSidebar(pathname: string): boolean {
 
 /**
  * Whether the right rail is actually active (visible with content) for this URL.
- * Until then, the left sidebar must stay expanded — e.g. Riders before a search.
+ * Until then, the left sidebar must stay expanded — e.g. Merchants before a store is open.
  */
 function pathRightSidebarActive(
   pathname: string,
@@ -79,8 +79,9 @@ function pathRightSidebarActive(
   // Inside a store's verification flow — full-width content, no merchants right rail.
   if (isStoreVerificationDetailPath(clean, searchParams)) return false;
   if (clean.startsWith("/dashboard/area-managers/stores/register-parent")) return false;
+  // Riders: right rail is always available (Pending Onboarding and other team tools).
   if (clean === "/dashboard/riders" || clean.startsWith("/dashboard/riders/")) {
-    return Boolean((searchParams?.get("search") || "").trim());
+    return true;
   }
   if (clean.startsWith("/dashboard/merchants")) {
     // Dead / stub top-level pages — never reserve the rail.
@@ -97,15 +98,6 @@ function pathRightSidebarActive(
     }
     // Store-scoped pages always get the filtered store rail.
     if (/^\/dashboard\/merchants\/stores\/\d+(\/|$)/.test(clean)) return true;
-    // Admin-only merchant tools (always use the admin rail).
-    if (
-      clean.startsWith("/dashboard/merchants/verifications") ||
-      clean.startsWith("/dashboard/merchants/assign-am") ||
-      clean.startsWith("/dashboard/merchants/menu-requests") ||
-      clean.startsWith("/dashboard/merchants/wallet-requests")
-    ) {
-      return true;
-    }
     // Admin portal home / lists.
     if (searchParams?.get("portal") === "admin") return true;
     // Merchant portal home — full-width. Store rail appears after opening a store
@@ -296,6 +288,7 @@ function DashboardLayoutClientInner({
       searchParams.get("search"),
       searchParams.get("storeId"),
       searchParams.get("portal"),
+      searchParams.get("category"),
     ]
   );
 

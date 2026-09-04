@@ -5,18 +5,22 @@ import {
   seedUserAppCategoriesQueryIfCached,
 } from "@/lib/userAppCategoryCache";
 
-const FOOD_STORE_TYPE = "FOOD";
+const PREFETCH_STORE_TYPES = ["FOOD", "GROCERY"] as const;
 
 /** Warm category list + disk-cache icons at app start so home/search open instantly. */
 export function UserAppCategoriesPrefetch() {
   const queryClient = useQueryClient();
 
   useLayoutEffect(() => {
-    seedUserAppCategoriesQueryIfCached(queryClient, FOOD_STORE_TYPE);
+    for (const storeType of PREFETCH_STORE_TYPES) {
+      seedUserAppCategoriesQueryIfCached(queryClient, storeType);
+    }
   }, [queryClient]);
 
   useEffect(() => {
-    void prefetchUserAppCategories(queryClient, FOOD_STORE_TYPE);
+    for (const storeType of PREFETCH_STORE_TYPES) {
+      void prefetchUserAppCategories(queryClient, storeType);
+    }
   }, [queryClient]);
 
   return null;

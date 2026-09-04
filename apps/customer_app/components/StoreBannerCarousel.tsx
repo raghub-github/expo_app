@@ -13,10 +13,13 @@ import {
   type ViewStyle,
 } from "react-native";
 import { Image } from "expo-image";
-import { enqueueImagePrefetch } from "@/lib/prefetchQueue";
+import { prefetchImagesNow } from "@/lib/prefetchQueue";
 import { useCardAnimationsEnabled } from "@/hooks/useCardAnimationsEnabled";
-import { isFoodHeroImageUrl } from "@/lib/merchantHeroMedia";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import {
+  isHeroMediaSessionReady,
+  markHeroMediaSessionReady,
+} from "@/lib/prefetchGridFirstHeroMedia";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -30,6 +33,9 @@ import Animated, {
 } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraColors } from "@/constants/gatimitra";
+
+/** Soft white shell under list-card banners — matches grocery/food grid-first hero placeholder. */
+const CARD_BANNER_SHELL = GatiMitraColors.softBackground;
 
 export type StoreBannerCarouselProps = {
   bannerUri: string | null | undefined;
@@ -73,40 +79,72 @@ const BannerImage = React.memo(function BannerImage({
   uri,
   width,
   height,
+  onLoadOk,
+  onLoadFail,
 }: {
   uri: string;
   width: number;
   height: number;
+  onLoadOk?: (uri: string) => void;
+  onLoadFail?: (uri: string) => void;
 }) {
+  const lastGoodRef = useRef(uri);
+  const [paintUri, setPaintUri] = useState(uri);
+
+  useEffect(() => {
+    if (!uri) return;
+    setPaintUri(uri);
+    if (isHeroMediaSessionReady(uri)) {
+      lastGoodRef.current = uri;
+    }
+  }, [uri]);
+
   return (
-    <View style={{ width, height, backgroundColor: GatiMitraColors.mintSoft }}>
+    <View
+      style={{
+        width,
+        height,
+        flexGrow: 0,
+        flexShrink: 0,
+        overflow: "hidden",
+        backgroundColor: CARD_BANNER_SHELL,
+      }}
+      collapsable={false}
+    >
+      {/*
+        Always paint at opacity 1. Hiding until onLoad left many cards blank forever —
+        expo-image often skips onLoad for memory-disk cache hits.
+      */}
       <Image
-        source={{ uri }}
+        source={{ uri: paintUri }}
         style={{ width, height }}
         contentFit="cover"
         cachePolicy="memory-disk"
         transition={0}
-        recyclingKey={uri}
         priority="high"
         allowDownscaling
+        recyclingKey={paintUri}
+        placeholder={
+          lastGoodRef.current && lastGoodRef.current !== paintUri
+            ? { uri: lastGoodRef.current }
+            : undefined
+        }
+        placeholderContentFit="cover"
+        onLoad={() => {
+          lastGoodRef.current = paintUri;
+          markHeroMediaSessionReady(paintUri);
+          onLoadOk?.(paintUri);
+        }}
+        onError={() => {
+          if (lastGoodRef.current && lastGoodRef.current !== paintUri) {
+            setPaintUri(lastGoodRef.current);
+          }
+          onLoadFail?.(uri);
+        }}
       />
     </View>
   );
 });
-
-function buildSlides(banner: string | null | undefined, gallery: string[]) {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  const add = (raw: string | null | undefined) => {
-    const abs = toAbsoluteImageUrl(raw) ?? (typeof raw === "string" ? raw.trim() : "");
-    if (!abs || seen.has(abs) || !isFoodHeroImageUrl(abs)) return;
-    seen.add(abs);
-    out.push(abs);
-  };
-  for (const g of gallery) add(g);
-  add(banner ?? null);
-  return out;
-}
 
 function EmptyHero({
   width,
@@ -132,8 +170,8 @@ function EmptyHero({
       <LinearGradient
         colors={
           hidePlaceholderIcon
-            ? [GatiMitraColors.mintSoft, "#d1fae5", GatiMitraColors.surfaceWarm]
-            : [GatiMitraColors.mintSoft, "#ecfdf5", GatiMitraColors.surfaceWarm]
+            ? [CARD_BANNER_SHELL, CARD_BANNER_SHELL, GatiMitraColors.surfaceWarm]
+            : [CARD_BANNER_SHELL, "#FFFFFF", GatiMitraColors.surfaceWarm]
         }
         style={StyleSheet.absoluteFill}
       />
@@ -174,6 +212,7 @@ export function StoreBannerCarousel({
   const motionAllowed = useCardAnimationsEnabled();
 
   const [activeIndex, setActiveIndex] = useState(0);
+  const [failedUris, setFailedUris] = useState<Set<string>>(() => new Set());
 
   const activeIndexRef = useRef(0);
   const physicalIndexRef = useRef(0);
@@ -211,14 +250,69 @@ export function StoreBannerCarousel({
 
   const hasGallery = galleryOnly.length > 0;
 
+  const sourceKey = `${bannerAbs}|${galleryOnly.join("|")}`;
+  useEffect(() => {
+    setFailedUris(new Set());
+  }, [sourceKey]);
+
+  const onSlideLoadFail = useCallback(
+    (uri: string) => {
+      // Keep the primary banner slide even if decode fails (mint underlay stays);
+      // only drop broken gallery assets so the carousel never blanks mid-loop.
+      if (uri && uri === bannerAbs) return;
+      setFailedUris((prev) => {
+        if (prev.has(uri)) return prev;
+        const next = new Set(prev);
+        next.add(uri);
+        return next;
+      });
+    },
+    [bannerAbs]
+  );
+
   const slides = useMemo(() => {
-    if (!hasGallery) {
-      const single = bannerAbs || galleryOnly[0] || "";
-      return single ? [single] : [];
+    // Banner is never dropped — even if decode fails, keep it so the card never blanks.
+    const filterFailedGallery = (list: string[]) => list.filter((u) => !failedUris.has(u));
+    if (bannerAbs) {
+      if (!hasGallery) return [bannerAbs];
+      return [bannerAbs, ...filterFailedGallery(galleryOnly)];
     }
-    if (bannerAbs) return buildSlides(bannerAbs, galleryOnly);
-    return galleryOnly;
-  }, [bannerAbs, galleryOnly, hasGallery]);
+    const gallery = filterFailedGallery(galleryOnly);
+    return gallery.length > 0 ? gallery : [];
+  }, [bannerAbs, galleryOnly, hasGallery, failedUris]);
+
+  /** Gallery may rotate only after at least one gallery URI is warm — banner stays first. */
+  const [galleryReadyForSlideshow, setGalleryReadyForSlideshow] = useState(false);
+  const firstGalleryUri = galleryOnly[0] ?? "";
+
+  useEffect(() => {
+    setGalleryReadyForSlideshow(false);
+    if (!hasGallery || !firstGalleryUri) return;
+    if (isHeroMediaSessionReady(firstGalleryUri)) {
+      setGalleryReadyForSlideshow(true);
+      return;
+    }
+    let cancelled = false;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    void Image.prefetch(firstGalleryUri, { cachePolicy: "memory-disk" })
+      .then(() => {
+        if (cancelled) return;
+        markHeroMediaSessionReady(firstGalleryUri);
+        setGalleryReadyForSlideshow(true);
+      })
+      .catch(() => {
+        // Still allow slideshow after a short settle so a bad gallery URI
+        // does not block forever — banner underlay covers any blank frame.
+        if (cancelled) return;
+        fallbackTimer = setTimeout(() => {
+          if (!cancelled) setGalleryReadyForSlideshow(true);
+        }, 900);
+      });
+    return () => {
+      cancelled = true;
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+    };
+  }, [hasGallery, firstGalleryUri]);
 
   const loopSlides = useMemo(() => {
     if (slides.length <= 1) return slides;
@@ -264,8 +358,10 @@ export function StoreBannerCarousel({
   // Runs once per mounted card. Unbounded `Image.prefetch` here meant a list of
   // N cards issued N x slides downloads at once; the shared queue caps in-flight
   // work so on-screen images are not starved by off-screen ones.
+  // Prefetch the first slides immediately so the card paints from disk/memory cache.
   useEffect(() => {
-    enqueueImagePrefetch(slides, 3);
+    if (slides.length === 0) return;
+    void prefetchImagesNow(slides, Math.min(4, slides.length));
   }, [dataKey, slides]);
 
   useEffect(() => {
@@ -370,13 +466,21 @@ export function StoreBannerCarousel({
   }, [clearHoldTimer, runSlide]);
 
   useEffect(() => {
-    if (!showCarousel || !enableAutoRotate || !motionAllowed) {
+    if (!showCarousel || !enableAutoRotate || !motionAllowed || !galleryReadyForSlideshow) {
       clearHoldTimer();
       return;
     }
     startAutoLoop();
     return clearHoldTimer;
-  }, [showCarousel, enableAutoRotate, motionAllowed, dataKey, clearHoldTimer, startAutoLoop]);
+  }, [
+    showCarousel,
+    enableAutoRotate,
+    motionAllowed,
+    galleryReadyForSlideshow,
+    dataKey,
+    clearHoldTimer,
+    startAutoLoop,
+  ]);
 
   useEffect(() => {
     if (enableKenBurns && motionAllowed && !showCarousel && slides.length === 1) {
@@ -530,6 +634,17 @@ export function StoreBannerCarousel({
   };
 
   if (slides.length === 0) {
+    // Prefer painting the banner URI even if the slide list is empty (edge case).
+    if (bannerAbs) {
+      return (
+        <View style={[{ width, height }, radiusStyle, style]} collapsable={false}>
+          <View style={styles.clip}>
+            <BannerImage uri={bannerAbs} width={width} height={height} />
+          </View>
+          {dimmed ? <View style={[styles.dim, { borderRadius }]} pointerEvents="none" /> : null}
+        </View>
+      );
+    }
     return (
       <View style={[{ width, height }, radiusStyle, style]}>
         <EmptyHero
@@ -546,7 +661,12 @@ export function StoreBannerCarousel({
     const inner = (
       <>
         <Animated.View style={[styles.singleSlideMotion, singleSlideMotionStyle]}>
-          <BannerImage uri={slides[0]} width={width} height={height} />
+          <BannerImage
+            uri={slides[0]}
+            width={width}
+            height={height}
+            onLoadFail={onSlideLoadFail}
+          />
         </Animated.View>
         {dimmed ? <View style={[styles.dim, { borderRadius }]} pointerEvents="none" /> : null}
       </>
@@ -577,6 +697,12 @@ export function StoreBannerCarousel({
         style={[styles.clip, { width, height }]}
         {...panHandlers}
       >
+        {/* Permanent banner underlay — never blank while the strip recycles / slides. */}
+        {bannerAbs ? (
+          <View style={StyleSheet.absoluteFillObject} pointerEvents="none" collapsable={false}>
+            <BannerImage uri={bannerAbs} width={width} height={height} />
+          </View>
+        ) : null}
         <Animated.View
           style={[
             styles.strip,
@@ -585,7 +711,13 @@ export function StoreBannerCarousel({
           ]}
         >
           {stripSlides.map((uri, i) => (
-            <BannerImage key={`${uri}-${i}`} uri={uri} width={width} height={height} />
+            <BannerImage
+              key={`${uri}-${i}`}
+              uri={uri}
+              width={width}
+              height={height}
+              onLoadFail={onSlideLoadFail}
+            />
           ))}
         </Animated.View>
       </View>
@@ -607,6 +739,8 @@ const styles = StyleSheet.create({
   },
   strip: {
     flexDirection: "row",
+    flexWrap: "nowrap",
+    alignItems: "stretch",
   },
   singleSlideMotion: {
     ...StyleSheet.absoluteFillObject,

@@ -10,14 +10,14 @@ import Constants from "expo-constants";
 import { wakeMerchantAppForOrder } from "@/lib/androidBackgroundPermissions";
 import { merchantHomeNewOrdersHref } from "@/lib/merchantNavigation";
 import { registerMerchantForegroundPushHandler } from "@/lib/merchantPushDispatch";
+import {
+  MERCHANT_NEW_ORDER_CHANNEL_ID,
+  MERCHANT_NEW_ORDER_SOUND,
+  isMerchantNewOrderPushData,
+} from "@/lib/merchantNewOrderChannel";
 
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
-}
-
-function isNewOrderPush(data: Record<string, unknown>): boolean {
-  const t = String(data.type ?? data.event ?? "").toLowerCase();
-  return t === "merchant_new_order" || t === "new_order" || data.screen === "new_order";
 }
 
 function orderPathFromData(_data: Record<string, unknown>): string | null {
@@ -33,12 +33,22 @@ export default function NewOrderAutoOpenHandler() {
     void (async () => {
       try {
         const Notifications = await import("expo-notifications");
+        // Versioned channel — sound is immutable after first Android create.
+        await Notifications.setNotificationChannelAsync(MERCHANT_NEW_ORDER_CHANNEL_ID, {
+          name: "New order alerts",
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 400, 200, 400],
+          lightColor: "#3EB489",
+          sound: MERCHANT_NEW_ORDER_SOUND,
+          bypassDnd: false,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          enableVibrate: true,
+        });
         await Notifications.setNotificationChannelAsync("merchant_new_orders", {
           name: "New orders",
           importance: Notifications.AndroidImportance.MAX,
           vibrationPattern: [0, 400, 200, 400],
           lightColor: "#3EB489",
-          bypassDnd: true,
           lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
           enableVibrate: true,
         });
@@ -64,12 +74,12 @@ export default function NewOrderAutoOpenHandler() {
     })();
 
     return registerMerchantForegroundPushHandler(({ data }) => {
-      if (!isNewOrderPush(data)) return;
+      if (!isMerchantNewOrderPushData(data)) return;
 
       const path = orderPathFromData(data);
       if (!path) return;
 
-      const key = `${path}:${String(data.notification_id ?? "")}`;
+      const key = `${path}:${String(data.notification_id ?? data.foodOrderId ?? data.orderId ?? "")}`;
       if (lastWakeKeyRef.current === key) return;
       lastWakeKeyRef.current = key;
 

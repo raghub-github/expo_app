@@ -5,6 +5,7 @@ import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { resolveRiderTabBarBottomInset } from "@/src/hooks/useRiderBottomInset";
 import { useEarningsBankSheetStore } from "@/src/stores/earningsBankSheetStore";
+import { useProfileSelfieSheetStore } from "@/src/stores/profileSelfieSheetStore";
 import { colors } from "@/src/theme";
 import { TAB_LABEL_SIZE } from "@/src/theme/headerFonts";
 
@@ -29,8 +30,9 @@ export function RiderTabBar({ state, descriptors, navigation }: BottomTabBarProp
   const insets = useSafeAreaInsets();
   const bottomPad = resolveRiderTabBarBottomInset(insets.bottom);
   const bankSheetOpen = useEarningsBankSheetStore((s) => s.visible);
+  const selfieSheetOpen = useProfileSelfieSheetStore((s) => s.visible);
 
-  if (bankSheetOpen) return null;
+  if (bankSheetOpen || selfieSheetOpen) return null;
 
   return (
     <View style={[styles.shell, { paddingBottom: bottomPad }]}>
