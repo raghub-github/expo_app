@@ -134,6 +134,32 @@ const ServiceDecisionWithMissingSchema = z.object({
   blocking: z.array(EligibilityReasonSchema),
   missingDocuments: z.array(z.string()).optional().default([]),
 });
+
+const RiderVehicleViewSchema = z.object({
+  id: z.number(),
+  registrationNumber: z.string(),
+  registrationMasked: z.string(),
+  vehicleClass: z.string().nullable(),
+  vehicleType: z.string().nullable(),
+  fuelKind: z.string().nullable(),
+  ownership: z.string(),
+  commercial: z.boolean(),
+  verified: z.boolean(),
+  status: z.string(),
+  isActiveVehicle: z.boolean(),
+  services: z.object({
+    food: ServiceDecisionWithMissingSchema,
+    parcel: ServiceDecisionWithMissingSchema,
+    person_ride: ServiceDecisionWithMissingSchema,
+  }),
+});
+export const RiderVehiclesResponseSchema = z.object({
+  vehicles: z.array(RiderVehicleViewSchema),
+  activeVehicleId: z.number().nullable(),
+  resolvedGeo: z.object({ level: z.string(), refId: z.string() }).nullable(),
+});
+export type RiderVehicleView = z.infer<typeof RiderVehicleViewSchema>;
+export type RiderVehiclesResponse = z.infer<typeof RiderVehiclesResponseSchema>;
 export const RiderOnboardingSummarySchema = z.object({
   riderId: z.number().optional(),
   vehicle: z
@@ -1303,6 +1329,28 @@ export const riderApi = {
     return client.request<z.infer<typeof RiderOnboardingSummarySchema>>(
       "/v1/rider/eligibility/onboarding-summary",
       { method: "GET", responseSchema: RiderOnboardingSummarySchema }
+    );
+  },
+
+  /** The rider's vehicles with per-vehicle service eligibility + which one is active (§34/§38). */
+  async getVehicles() {
+    const client = createApiClient();
+    return client.request<z.infer<typeof RiderVehiclesResponseSchema>>(
+      "/v1/rider/eligibility/vehicles",
+      { method: "GET", responseSchema: RiderVehiclesResponseSchema }
+    );
+  },
+
+  /** Select the active vehicle. Backend validates ownership/verified/not-retired + live-order guard. */
+  async setActiveVehicle(vehicleId: number) {
+    const client = createApiClient();
+    return client.request<{ ok: boolean; activeVehicleId?: number; code?: string; reason?: string }>(
+      "/v1/rider/eligibility/active-vehicle",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ vehicleId }),
+      }
     );
   },
 
