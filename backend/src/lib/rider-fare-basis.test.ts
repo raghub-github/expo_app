@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import {
   resolveRideGrossFareForPayout,
   resolveRiderDeliveryFeeFromCore,
+  resolveDeliveryFarePaidToRider,
+  resolveCompleteOrderValuePaidByCustomer,
 } from "./rider-fare-basis.ts";
 
 test("ride: 50% discount does not touch the rider basis (uses gross estimate)", () => {
@@ -95,4 +97,93 @@ test("food/parcel: pre-migration order without gross falls back to net fee", () 
     billingSnapshot: { delivery_fee: 45 },
   });
   assert.equal(basis, 45);
+});
+
+test("food: frozen payout snapshot is the rider delivery fare when gross is missing", () => {
+  const basis = resolveDeliveryFarePaidToRider({
+    riderEarning: null,
+    fareAmount: 0,
+    billingSnapshot: {
+      delivery_fee: 42,
+      rider_payout_snapshot: { totalEarning: 42, baseEarning: 42 },
+    },
+  });
+  assert.equal(basis, 42);
+});
+
+test("food: payout snapshot wins over zero customer fee (free delivery)", () => {
+  const basis = resolveDeliveryFarePaidToRider({
+    riderEarning: null,
+    fareAmount: 0,
+    billingSnapshot: {
+      delivery_fee: 0,
+      rider_payout_snapshot: {
+        baseEarning: 55,
+        waitingEarning: 5,
+        surgeEarning: 0,
+        totalEarning: 60,
+      },
+    },
+  });
+  assert.equal(basis, 60);
+});
+
+test("complete order value: CTC = grand_total + gati cash", () => {
+  assert.equal(
+    resolveCompleteOrderValuePaidByCustomer({
+      grandTotal: 200,
+      billingSnapshot: { gati_cash_applied: 48.5, final_amount: 200 },
+    }),
+    248.5
+  );
+});
+
+test("complete order value: uses settlement CTC when present", () => {
+  assert.equal(
+    resolveCompleteOrderValuePaidByCustomer({
+      grandTotal: 248.5,
+      billingSnapshot: { final_amount: 1 },
+    }),
+    248.5
+  );
+});
+
+test("complete order value: falls back to billing final_amount", () => {
+  assert.equal(
+    resolveCompleteOrderValuePaidByCustomer({
+      grandTotal: 0,
+      billingSnapshot: { final_amount: 312 },
+    }),
+    312
+  );
+});
+
+test("complete order value: prefers composed bill when grand_total is delivery-fee-only", () => {
+  assert.equal(
+    resolveCompleteOrderValuePaidByCustomer({
+      grandTotal: 40,
+      billingSnapshot: {
+        item_total: 200,
+        delivery_fee: 40,
+        tax_total: 20,
+        discount_total: 10,
+      },
+    }),
+    250
+  );
+});
+
+test("complete order value: composes bill lines when totals missing", () => {
+  assert.equal(
+    resolveCompleteOrderValuePaidByCustomer({
+      grandTotal: null,
+      billingSnapshot: {
+        item_total: 200,
+        delivery_fee: 40,
+        tax_total: 20,
+        discount_total: 10,
+      },
+    }),
+    250
+  );
 });

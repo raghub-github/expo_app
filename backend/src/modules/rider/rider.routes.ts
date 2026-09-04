@@ -40,6 +40,51 @@ function toDutyIsoTimestamp(value: Date | string | null | undefined): string {
   const t = new Date(String(value)).getTime();
   return Number.isFinite(t) ? new Date(t).toISOString() : new Date().toISOString();
 }
+
+function clientSlideT0Ms(headers: Record<string, unknown>): number {
+  const raw = headers["x-slide-t0"] ?? headers["x-accept-t0"];
+  const n = Number(Array.isArray(raw) ? raw[0] : raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function logRiderSlideReceived(
+  req: { log: { info: (obj: object, msg: string) => void }; headers: Record<string, unknown> },
+  action: string,
+  riderId: number,
+  orderRef: string
+): number {
+  const receivedAt = Date.now();
+  const clientT0 = clientSlideT0Ms(req.headers);
+  req.log.info(
+    {
+      event: `${action}_request_received`,
+      riderId,
+      orderRef,
+      clientT0Ms: clientT0 || null,
+      clientToServerMs: clientT0 > 0 ? receivedAt - clientT0 : null,
+    },
+    `${action}_request_received`
+  );
+  return receivedAt;
+}
+
+function logRiderSlideSent(
+  req: { log: { info: (obj: object, msg: string) => void } },
+  action: string,
+  riderId: number,
+  orderRef: string,
+  receivedAt: number
+): void {
+  req.log.info(
+    {
+      event: `${action}_response_sent`,
+      riderId,
+      orderRef,
+      handlerMs: Date.now() - receivedAt,
+    },
+    `${action}_response_sent`
+  );
+}
 import { auth } from "../../plugins/auth.js";
 import { getDb, getSql } from "../../db/client.js";
 import {
@@ -2132,6 +2177,7 @@ export async function riderRoutes(app: FastifyInstance) {
           extractedName: z.string().optional(),
           extractedDob: z.string().optional(),
           metadata: z.record(z.string(), z.unknown()).optional(),
+          autoVerify: z.boolean().optional(),
           files: z
             .array(
               z.object({
@@ -2152,7 +2198,7 @@ export async function riderRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
-      const { riderId, docType, fileUrl, r2Key, extractedName, extractedDob, metadata, files } =
+      const { riderId, docType, fileUrl, r2Key, extractedName, extractedDob, metadata, files, autoVerify } =
         req.body as {
           riderId: number;
           docType: string;
@@ -2161,6 +2207,7 @@ export async function riderRoutes(app: FastifyInstance) {
           extractedName?: string;
           extractedDob?: string;
           metadata?: Record<string, unknown>;
+          autoVerify?: boolean;
           files?: {
             side: "front" | "back" | "single";
             fileUrl: string;
@@ -2516,12 +2563,16 @@ export async function riderRoutes(app: FastifyInstance) {
             })
             .where(eq(riders.id, riderId));
 
-          // If Aadhaar (+ PAN when present) already electronic, auto-verify selfie.
           try {
-            const { maybeAutoVerifyRiderSelfie } = await import(
-              "../../lib/rider-selfie-auto-verify.js"
-            );
-            await maybeAutoVerifyRiderSelfie(riderId);
+            const {
+              autoVerifyUploadedRiderSelfie,
+              maybeAutoVerifyRiderSelfie,
+            } = await import("../../lib/rider-selfie-auto-verify.js");
+            if (autoVerify === true) {
+              await autoVerifyUploadedRiderSelfie(riderId);
+            } else {
+              await maybeAutoVerifyRiderSelfie(riderId);
+            }
           } catch (selfieErr) {
             console.warn(
               "[save-document] selfie auto-verify failed:",
@@ -2758,6 +2809,8 @@ export async function riderRoutes(app: FastifyInstance) {
   adminRiderPaymentClearedAt: z.string().nullable().optional(),
   walletCreditPending: z.boolean().optional(),
   customerRating: z.number().nullable().optional(),
+  dropAddressImageUrl: z.string().nullable().optional(),
+  storeImageUrl: z.string().nullable().optional(),
   passengerRating: z.number().nullable().optional(),
   cancellationPenaltyApplied: z.boolean().optional(),
   cancellationPenaltyAmount: z.number().nullable().optional(),
@@ -2847,10 +2900,50 @@ export async function riderRoutes(app: FastifyInstance) {
         return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { getAvailableOrdersForRider } = await import("./rider.orders.service.js");
+      const started = Date.now();
+      req.log.info({ riderId }, "AVAILABLE_QUERY start");
       try {
-        return await getAvailableOrdersForRider(riderId);
+        const result = await getAvailableOrdersForRider(riderId);
+        req.log.info(
+          { riderId, count: result.length, ms: Date.now() - started },
+          "AVAILABLE_QUERY"
+        );
+        return result;
       } catch (err) {
-        req.log.warn({ err, riderId }, "getAvailableOrdersForRider failed");
+        req.log.warn({ err, riderId, ms: Date.now() - started }, "getAvailableOrdersForRider failed");
+        return [];
+      }
+    }
+  );
+
+  app.get(
+    "/orders/pending-offers",
+    {
+      schema: {
+        response: {
+          200: z.array(RiderOrderSummarySchema),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { getPendingOffersForRider } = await import("./rider.orders.service.js");
+      const started = Date.now();
+      req.log.info({ riderId }, "PENDING_QUERY start");
+      try {
+        const result = await getPendingOffersForRider(riderId);
+        req.log.info(
+          { riderId, count: result.length, ms: Date.now() - started },
+          "PENDING_QUERY"
+        );
+        return result;
+      } catch (err) {
+        req.log.warn({ err, riderId, ms: Date.now() - started }, "getPendingOffersForRider failed");
         return [];
       }
     }
@@ -2953,7 +3046,7 @@ export async function riderRoutes(app: FastifyInstance) {
         response: {
           200: RiderOrderSummarySchema,
           403: z.object({ error: z.string() }),
-          409: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
         },
       },
     },
@@ -2964,9 +3057,42 @@ export async function riderRoutes(app: FastifyInstance) {
         return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { id } = req.params as { id: string };
+      const receivedAt = Date.now();
+      const clientT0 = Number(req.headers["x-accept-t0"] ?? 0);
+      req.log.info(
+        {
+          event: "accept_request_received",
+          riderId,
+          orderRef: id,
+          clientT0Ms: Number.isFinite(clientT0) && clientT0 > 0 ? clientT0 : null,
+          clientToServerMs:
+            Number.isFinite(clientT0) && clientT0 > 0 ? receivedAt - clientT0 : null,
+        },
+        "accept_request_received"
+      );
       try {
         const { acceptOrderForRider } = await import("./rider.orders.service.js");
-        return await acceptOrderForRider(riderId, id);
+        const headerKey = req.headers["x-idempotency-key"];
+        const idempotencyKey = Array.isArray(headerKey)
+          ? headerKey[0]
+          : typeof headerKey === "string"
+            ? headerKey
+            : undefined;
+        const summary = await acceptOrderForRider(
+          riderId,
+          id,
+          idempotencyKey ? { idempotencyKey: String(idempotencyKey).trim() } : undefined
+        );
+        req.log.info(
+          {
+            event: "accept_response_sent",
+            riderId,
+            orderRef: id,
+            handlerMs: Date.now() - receivedAt,
+          },
+          "accept_response_sent"
+        );
+        return summary;
       } catch (e) {
         const err = e as Error & { statusCode?: number; code?: string };
         const status = err.statusCode ?? 500;
@@ -2979,7 +3105,10 @@ export async function riderRoutes(app: FastifyInstance) {
               ? "This order is no longer available."
               : "Could not assign rider to this order. Please try again."
             : raw;
-        return reply.status(status as 409).send({ error: safeMessage });
+        return reply.status(status as 409).send({
+          error: safeMessage,
+          ...(typeof err.code === "string" && err.code ? { code: err.code } : {}),
+        });
       }
     }
   );
@@ -3298,9 +3427,12 @@ export async function riderRoutes(app: FastifyInstance) {
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { lat?: number; lng?: number };
+      const receivedAt = logRiderSlideReceived(req, "reached_pickup", riderId, id);
       try {
         const { markReachedPickupForRider } = await import("./rider.orders.service.js");
-        return await markReachedPickupForRider(riderId, id, body);
+        const summary = await markReachedPickupForRider(riderId, id, body);
+        logRiderSlideSent(req, "reached_pickup", riderId, id, receivedAt);
+        return summary;
       } catch (e) {
         const err = e as Error & { statusCode?: number };
         const status = err.statusCode ?? 500;
@@ -3341,9 +3473,12 @@ export async function riderRoutes(app: FastifyInstance) {
         lng?: number;
         deviceTimestamp?: string;
       };
+      const receivedAt = logRiderSlideReceived(req, "verify_pickup_otp", riderId, id);
       try {
         const { verifyPickupOtpForRider } = await import("./rider.orders.service.js");
-        return await verifyPickupOtpForRider(riderId, id, body.otp, body);
+        const summary = await verifyPickupOtpForRider(riderId, id, body.otp, body);
+        logRiderSlideSent(req, "verify_pickup_otp", riderId, id, receivedAt);
+        return summary;
       } catch (e) {
         const err = e as Error & { statusCode?: number };
         const status = err.statusCode ?? 500;
@@ -3416,15 +3551,18 @@ export async function riderRoutes(app: FastifyInstance) {
         deviceTimestamp?: string;
       };
       try {
+        const receivedAt = logRiderSlideReceived(req, "mark_pickup", riderId, id);
         const { markFoodPickupWithoutVerificationForRider } = await import(
           "./rider.orders.service.js"
         );
-        return await markFoodPickupWithoutVerificationForRider(
+        const summary = await markFoodPickupWithoutVerificationForRider(
           riderId,
           id,
           body,
           body.deviceTimestamp
         );
+        logRiderSlideSent(req, "mark_pickup", riderId, id, receivedAt);
+        return summary;
       } catch (e) {
         const err = e as Error & { statusCode?: number };
         const status = err.statusCode ?? 500;
@@ -3506,9 +3644,12 @@ export async function riderRoutes(app: FastifyInstance) {
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { lat?: number; lng?: number };
+      const receivedAt = logRiderSlideReceived(req, "start_ride", riderId, id);
       try {
         const { startRideForRider } = await import("./rider.orders.service.js");
-        return await startRideForRider(riderId, id, body);
+        const summary = await startRideForRider(riderId, id, body);
+        logRiderSlideSent(req, "start_ride", riderId, id, receivedAt);
+        return summary;
       } catch (e) {
         const err = e as Error & { statusCode?: number };
         const status = err.statusCode ?? 500;
@@ -3538,9 +3679,12 @@ export async function riderRoutes(app: FastifyInstance) {
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { lat?: number; lng?: number };
+      const receivedAt = logRiderSlideReceived(req, "complete_ride", riderId, id);
       try {
         const { completePersonRideForRider } = await import("./rider.orders.service.js");
-        return await completePersonRideForRider(riderId, id, body);
+        const summary = await completePersonRideForRider(riderId, id, body);
+        logRiderSlideSent(req, "complete_ride", riderId, id, receivedAt);
+        return summary;
       } catch (e) {
         const err = e as Error & { statusCode?: number };
         const status = err.statusCode ?? 500;
@@ -3570,9 +3714,12 @@ export async function riderRoutes(app: FastifyInstance) {
       }
       const { id } = req.params as { id: string };
       const body = (req.body ?? {}) as { lat?: number; lng?: number };
+      const receivedAt = logRiderSlideReceived(req, "reached_drop", riderId, id);
       try {
         const { markReachedCustomerForRider } = await import("./rider.orders.service.js");
-        return await markReachedCustomerForRider(riderId, id, body);
+        const summary = await markReachedCustomerForRider(riderId, id, body);
+        logRiderSlideSent(req, "reached_drop", riderId, id, receivedAt);
+        return summary;
       } catch (e) {
         const err = e as Error & { statusCode?: number };
         const status = err.statusCode ?? 500;
@@ -3882,9 +4029,12 @@ export async function riderRoutes(app: FastifyInstance) {
         deliveryImageUrl: string;
         deliveryImageR2Key: string;
       };
+      const receivedAt = logRiderSlideReceived(req, "verify_delivery_otp", riderId, id);
       try {
         const { verifyDeliveryOtpForRider } = await import("./rider.orders.service.js");
-        return await verifyDeliveryOtpForRider(riderId, id, body.otp, body);
+        const summary = await verifyDeliveryOtpForRider(riderId, id, body.otp, body);
+        logRiderSlideSent(req, "verify_delivery_otp", riderId, id, receivedAt);
+        return summary;
       } catch (e) {
         req.log.error({ err: e, orderId: id, riderId }, "verify-delivery-otp failed");
         const err = e as Error & { statusCode?: number };

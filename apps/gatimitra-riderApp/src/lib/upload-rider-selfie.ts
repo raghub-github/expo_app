@@ -44,6 +44,7 @@ export async function uploadRiderSelfieDocument(opts: {
         fileUrl: upload.proxyUrl,
         r2Key: upload.key,
         files: documentFileEntry(upload),
+        autoVerify: true,
       },
       { headers: { authorization: `Bearer ${accessToken}` } }
     );

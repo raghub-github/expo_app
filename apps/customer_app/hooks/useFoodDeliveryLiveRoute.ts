@@ -14,6 +14,7 @@ import type { FoodDeliveryMapPhase } from "@/lib/food-delivery-map-phase";
 import {
   analyzeRiderOnRoute,
   rerouteDebounceMs,
+  shouldRequestReroute,
   trackDebug,
 } from "@gatimitra/map-tracking-engine";
 
@@ -76,6 +77,7 @@ export function useFoodDeliveryLiveRoute(args: {
   const requestIdRef = useRef(0);
   const rerouteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastDestKeyRef = useRef<string>("");
+  const lastRerouteAtRef = useRef(0);
 
   useEffect(() => {
     hasRouteRef.current = false;
@@ -143,12 +145,15 @@ export function useFoodDeliveryLiveRoute(args: {
       headingDeg: riderHeading ?? null,
     });
     if (!deviation?.shouldReroute) return;
+    if (!shouldRequestReroute(deviation, lastRerouteAtRef.current)) return;
 
     trackDebug("off_route_detected", {
       orderId,
       offRouteM: Math.round(deviation.offRouteM),
       wrongWay: deviation.wrongWay,
     });
+
+    lastRerouteAtRef.current = Date.now();
 
     if (rerouteTimerRef.current) clearTimeout(rerouteTimerRef.current);
     const debounceMs = rerouteDebounceMs(deviation);

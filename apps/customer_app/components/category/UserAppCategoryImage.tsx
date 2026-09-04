@@ -13,6 +13,10 @@ import {
   getCategoryImageLastGood,
   rememberCategoryImageLastGood,
 } from "@/lib/categoryImageLastGood";
+import {
+  ensureLocalCategoryImage,
+  getLocalCategoryImageUri,
+} from "@/lib/categoryImageFileCache";
 
 function defaultCategorySource() {
   const url = getAppAssetUrl(CX.common.defaultImage);
@@ -47,18 +51,36 @@ function UserAppCategoryImageInner({
     [imageUrl]
   );
   const persisted = getCategoryImageLastGood(cacheKey);
-  const sessionHit = isHeroMediaSessionReady(uri) || isHeroMediaSessionReady(persisted);
+  const localFile = getLocalCategoryImageUri(cacheKey, uri);
+  const sessionHit =
+    isHeroMediaSessionReady(localFile) ||
+    isHeroMediaSessionReady(uri) ||
+    isHeroMediaSessionReady(persisted);
   const lastGoodRef = useRef<string | null>(
-    (sessionHit && (uri || persisted)) || persisted || (uri && isHeroMediaSessionReady(uri) ? uri : null)
+    localFile ||
+      persisted ||
+      (sessionHit && uri ? uri : null) ||
+      null
   );
   const [failed, setFailed] = useState(false);
+  const [localUri, setLocalUri] = useState<string | null>(localFile);
   const [, bump] = useState(0);
 
   useEffect(() => {
     if (uri) {
       prefetchFoodHomeImageUri(uri);
-      if (isHeroMediaSessionReady(uri)) {
-        lastGoodRef.current = uri;
+      void ensureLocalCategoryImage(cacheKey, uri).then((local) => {
+        if (local) {
+          setLocalUri(local);
+          lastGoodRef.current = local;
+          markHeroMediaSessionReady(local);
+          rememberCategoryImageLastGood(cacheKey, uri);
+          setFailed(false);
+          bump((n) => n + 1);
+        }
+      });
+      if (isHeroMediaSessionReady(uri) || localFile) {
+        lastGoodRef.current = localFile || uri;
         rememberCategoryImageLastGood(cacheKey, uri);
         setFailed(false);
         bump((n) => n + 1);
@@ -66,15 +88,26 @@ function UserAppCategoryImageInner({
       return;
     }
     // URL briefly missing (API gap) — keep last-good paint, never blank the chip.
-    if (persisted) {
-      lastGoodRef.current = persisted;
+    if (localFile || persisted) {
+      lastGoodRef.current = localFile || persisted;
       setFailed(false);
       bump((n) => n + 1);
     }
-  }, [uri, cacheKey, persisted]);
+  }, [uri, cacheKey, persisted, localFile]);
 
   const displayUri =
-    (!failed && uri) || lastGoodRef.current || persisted || null;
+    localUri ||
+    (!failed && uri) ||
+    lastGoodRef.current ||
+    persisted ||
+    null;
+
+  const placeholderUri =
+    (localUri && localUri !== displayUri ? localUri : null) ||
+    (lastGoodRef.current && lastGoodRef.current !== displayUri
+      ? lastGoodRef.current
+      : null) ||
+    (persisted && persisted !== displayUri ? persisted : null);
 
   if (displayUri) {
     return (
@@ -86,20 +119,34 @@ function UserAppCategoryImageInner({
         recyclingKey={cacheKey ?? displayUri}
         priority="high"
         transition={0}
+        placeholder={placeholderUri ? { uri: placeholderUri } : undefined}
+        placeholderContentFit={contentFit}
         onLoad={() => {
           lastGoodRef.current = displayUri;
           markHeroMediaSessionReady(displayUri);
-          rememberCategoryImageLastGood(cacheKey, displayUri);
+          if (uri) rememberCategoryImageLastGood(cacheKey, uri);
+          setFailed(false);
+        }}
+        onDisplay={() => {
+          lastGoodRef.current = displayUri;
+          markHeroMediaSessionReady(displayUri);
+          if (uri) rememberCategoryImageLastGood(cacheKey, uri);
           setFailed(false);
         }}
         onError={() => {
-          // Keep last-good paint; only soft-fail when we have nothing cached.
-          if (lastGoodRef.current && lastGoodRef.current !== uri) {
+          // Stale/evicted local file — fall back to remote / last-good.
+          if (localUri && displayUri === localUri) {
+            setLocalUri(null);
+            setFailed(false);
+            bump((n) => n + 1);
+            return;
+          }
+          if (lastGoodRef.current && lastGoodRef.current !== uri && lastGoodRef.current !== displayUri) {
             setFailed(true);
             bump((n) => n + 1);
             return;
           }
-          if (persisted && persisted !== uri) {
+          if (persisted && persisted !== uri && persisted !== displayUri) {
             lastGoodRef.current = persisted;
             setFailed(false);
             bump((n) => n + 1);

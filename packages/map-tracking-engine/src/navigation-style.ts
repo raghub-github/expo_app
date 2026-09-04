@@ -20,12 +20,15 @@ export const NAV_CONNECTOR_WIDTH = 2.5;
 export const NAV_CONNECTOR_OPACITY = 0.55;
 export const NAV_JOIN_DOT_COLOR = "#94a3b8";
 /** Lower pitch keeps roads/labels visible while still feeling like navigation. */
-export const NAV_FOLLOW_PITCH = 38;
-export const NAV_FOLLOW_ZOOM = 16.2;
-export const NAV_LOOK_AHEAD_M = 60;
+export const NAV_FOLLOW_PITCH = 44;
+export const NAV_FOLLOW_ZOOM = 16.35;
+/** Look-ahead so rider sits in the lower ~30% with more road ahead. */
+export const NAV_LOOK_AHEAD_M = 95;
+/** Extra bottom padding in follow mode — pushes focal center up (rider lower). */
+export const NAV_FOLLOW_BOTTOM_BIAS_PX = 72;
 
-export const NAV_RIDER_DOT_SIZE = 18;
-export const NAV_RIDER_DOT_HALO_SIZE = 22;
+export const NAV_RIDER_DOT_SIZE = 20;
+export const NAV_RIDER_DOT_HALO_SIZE = 28;
 export const NAV_RIDER_DOT_FILL = NAV_ROUTE_BLUE;
 export const NAV_RIDER_DOT_HALO = NAV_ROUTE_GLOW;
 export const NAV_RIDER_DOT_BORDER = "#ffffff";
@@ -36,10 +39,17 @@ export function liveRiderDotMarkerHtml(): string {
   const dot = NAV_RIDER_DOT_SIZE;
   return (
     '<div style="width:' +
-    halo +
+    (halo + 8) +
     "px;height:" +
-    halo +
+    (halo + 8) +
     'px;display:flex;align-items:center;justify-content:center;pointer-events:none;position:relative;">' +
+    '<div style="position:absolute;width:' +
+    (dot + 4) +
+    "px;height:" +
+    (dot + 4) +
+    "px;border-radius:" +
+    (dot + 4) / 2 +
+    'px;background:rgba(15,23,42,0.22);box-shadow:0 3px 6px rgba(15,23,42,0.4);"></div>' +
     '<div style="position:absolute;width:' +
     halo +
     "px;height:" +
@@ -59,7 +69,9 @@ export function liveRiderDotMarkerHtml(): string {
     NAV_RIDER_DOT_FILL +
     ";border:3px solid " +
     NAV_RIDER_DOT_BORDER +
-    ';box-shadow:0 1px 3px rgba(20,184,166,0.35);"></div>' +
+    ';box-shadow:0 2px 4px rgba(15,23,42,0.35);display:flex;align-items:center;justify-content:center;">' +
+    '<div style="width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:9px solid #fff;margin-top:-1px;"></div>' +
+    "</div>" +
     "</div>"
   );
 }

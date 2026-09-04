@@ -1,10 +1,10 @@
 import { distanceMeters, type LatLng } from "./geo";
 
-export const NAV_CAMERA_MIN_INTERVAL_MS = 280;
-export const NAV_CAMERA_MIN_MOVE_M = 2.5;
-export const NAV_CAMERA_MIN_BEARING_DELTA = 7;
+export const NAV_CAMERA_MIN_INTERVAL_MS = 160;
+export const NAV_CAMERA_MIN_MOVE_M = 1.2;
+export const NAV_CAMERA_MIN_BEARING_DELTA = 3;
 /** Skip camera follow while the rider is effectively parked. */
-export const NAV_CAMERA_STATIONARY_SPEED_MPS = 0.4;
+export const NAV_CAMERA_STATIONARY_SPEED_MPS = 0.35;
 
 export function shouldThrottleNavigationCamera(
   last: { lat: number; lng: number; bearing: number; atMs: number } | null,

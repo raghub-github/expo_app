@@ -56,6 +56,8 @@ export const STORAGE_KEYS = {
   PUSH_PROMPT_SKIP_UNTIL: "gm_customer_push_prompt_skip_until_v1",
   /** Last-good category rail image URIs by stable cacheKey (All / category ids). */
   CATEGORY_IMAGE_LAST_GOOD: "gm_customer_category_image_last_good_v1",
+  /** Local file:// paths for category rail images (instant paint after first visit). */
+  CATEGORY_IMAGE_FILE_CACHE: "gm_customer_category_image_file_cache_v1",
 } as const;
 
 export const API_TIMEOUT_MS = 30000;

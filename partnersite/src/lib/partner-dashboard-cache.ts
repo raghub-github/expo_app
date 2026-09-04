@@ -1,4 +1,5 @@
 import type { WalletSummary } from '@/hooks/useMerchantApi';
+import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 
 const WALLET_SESSION_PREFIX = 'mx_dashboard_wallet_v3:';
 const WALLET_LOCAL_PREFIX = 'mx_dashboard_wallet_v3_ls:';
@@ -151,6 +152,8 @@ function parseStoreOverviewBody(body: Record<string, unknown>): DashboardStoreOv
 /** Fire-and-forget wallet warm — safe before React Query mounts. */
 export function warmDashboardWalletCache(storeId: string): void {
   if (typeof window === 'undefined' || !storeId.trim()) return;
+  // Avoid hammering APIs with demo/placeholder store ids (e.g. GMM0001).
+  if (!isValidPartnerStoreId(storeId)) return;
   if (readDashboardWalletCache(storeId)) return;
   void fetch(`/api/merchant/wallet?storeId=${encodeURIComponent(storeId)}&lite=1`, {
     credentials: 'include',

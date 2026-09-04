@@ -33,6 +33,6 @@ export function useOnboardingVehicleTypes() {
     },
     enabled: Boolean(session?.accessToken),
     staleTime: 60_000,
-    refetchOnMount: "always",
+    refetchOnMount: true,
   });
 }

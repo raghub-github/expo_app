@@ -81,7 +81,7 @@ export function FoodPickupVerificationScreen({
     <>
       <PermissionBottomSheetShell
         visible={visible}
-        maxHeightRatio={0.72}
+        maxHeightRatio={0.88}
         dismissible
         onDismiss={onBack}
       >
@@ -90,6 +90,8 @@ export function FoodPickupVerificationScreen({
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           bounces={false}
+          nestedScrollEnabled
+          keyboardShouldPersistTaps="handled"
         >
           <View style={styles.heroIconWrap}>
             <Ionicons name="shield-checkmark" size={30} color={colors.primary[700]} />
@@ -184,12 +186,13 @@ export function FoodPickupVerificationScreen({
 
 const styles = StyleSheet.create({
   scroll: {
-    maxHeight: "100%",
+    flexGrow: 0,
+    flexShrink: 1,
   },
   scrollContent: {
     paddingHorizontal: 24,
     paddingTop: 4,
-    paddingBottom: 4,
+    paddingBottom: 8,
     gap: 14,
   },
   heroIconWrap: {

@@ -19,6 +19,11 @@ const TITLE = "Service Restricted";
 const BODY =
   "Some nearby delivery areas have been temporarily disabled by GatiMitra Admin.\n\nYou will continue receiving delivery requests from all active areas.\n\nOnly requests originating from blocked areas will be hidden.";
 
+/** ~110m buckets — GPS jitter must not refetch impact on every store tick. */
+function roundCoord3(v: number): number {
+  return Math.round(v * 1000) / 1000;
+}
+
 type ImpactResponse = {
   ok?: boolean;
   affected?: boolean;
@@ -40,12 +45,20 @@ async function fetchRiderImpact(lat: number, lng: number): Promise<ImpactRespons
 }
 
 export function ServiceRestrictedSheet() {
-  const coords = useRiderLocationStore((s) => s.coords);
+  const lat = useRiderLocationStore((s) => {
+    const v = s.coords?.latitude;
+    return v != null && Number.isFinite(v) ? roundCoord3(v) : null;
+  });
+  const lng = useRiderLocationStore((s) => {
+    const v = s.coords?.longitude;
+    return v != null && Number.isFinite(v) ? roundCoord3(v) : null;
+  });
   const [visible, setVisible] = useState(false);
   const [signalVersion, setSignalVersion] = useState(0);
   const [ackedVersion, setAckedVersion] = useState<number | null>(null);
   const [affected, setAffected] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastFetchKeyRef = useRef("");
 
   useEffect(() => {
     void (async () => {
@@ -60,9 +73,7 @@ export function ServiceRestrictedSheet() {
   }, []);
 
   const refresh = useCallback(async () => {
-    const lat = coords?.latitude;
-    const lng = coords?.longitude;
-    if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    if (lat == null || lng == null) {
       setAffected(false);
       setVisible(false);
       return;
@@ -81,11 +92,30 @@ export function ServiceRestrictedSheet() {
       return;
     }
     setVisible(true);
-  }, [coords?.latitude, coords?.longitude, ackedVersion]);
+  }, [lat, lng, ackedVersion]);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (lat == null || lng == null) {
+      lastFetchKeyRef.current = "";
+      void refresh();
+      return;
+    }
+    const key = `${lat},${lng}`;
+    if (key === lastFetchKeyRef.current) {
+      void refresh();
+      return;
+    }
+    const first = lastFetchKeyRef.current === "";
+    lastFetchKeyRef.current = key;
+    if (first) {
+      void refresh();
+      return;
+    }
+    const t = setTimeout(() => {
+      void refresh();
+    }, 10_000);
+    return () => clearTimeout(t);
+  }, [lat, lng, refresh]);
 
   // Restriction cleared (or rider left the proximity) → hide immediately.
   useEffect(() => {

@@ -16,6 +16,7 @@ import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 import { DismissibleBottomSheetShell } from "@/src/components/language/DismissibleBottomSheetShell";
 import { RiderEmergencySosBottomSheet } from "@/src/components/orders/RiderEmergencySosBottomSheet";
 import { FoodSlideToReachStore } from "@/src/components/orders/FoodSlideToReachStore";
+import { OrderLocationPhotoBox } from "@/src/components/orders/OrderLocationPhotoBox";
 import { PartnerChatUnreadBadge } from "@/src/components/orders/PartnerChatUnreadBadge";
 import { colors } from "@/src/theme";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
@@ -43,10 +44,15 @@ type Props = {
   onOpenMaps: () => void;
   onDelivered: () => void;
   deliverLoading?: boolean;
+  /**
+   * In-flight camera / OTP lock — slider stays completed without a spinner.
+   */
+  deliverLocked?: boolean;
   /** Photo already captured + uploaded — slide reopens OTP, not camera. */
   deliverPhotoReady?: boolean;
   customerRating?: number | null;
   chatUnreadCount?: number;
+  children?: React.ReactNode;
 };
 
 type FoodItem = NonNullable<RiderOrderSummary["foodItems"]>[number];
@@ -146,9 +152,11 @@ export function FoodDropOrderScreen({
   onOpenMaps,
   onDelivered,
   deliverLoading = false,
+  deliverLocked = false,
   deliverPhotoReady = false,
   customerRating,
   chatUnreadCount = 0,
+  children,
 }: Props) {
   const { t } = useTranslation();
   const paymentLabel = formatRiderDropPaymentLabel(
@@ -288,6 +296,15 @@ export function FoodDropOrderScreen({
                   </View>
                 )}
               </View>
+              <Pressable
+                onPress={onCallCustomer}
+                disabled={!hasCallablePhone}
+                style={[styles.phoneFab, !hasCallablePhone && styles.phoneFabDisabled]}
+                accessibilityRole="button"
+                accessibilityLabel={t("orders.activeFood.call", "Call")}
+              >
+                <Ionicons name="call" size={20} color="#ffffff" />
+              </Pressable>
             </View>
           </View>
 
@@ -296,13 +313,11 @@ export function FoodDropOrderScreen({
               <Text style={styles.addressText} numberOfLines={4}>
                 {deliveryAddress}
               </Text>
-              <Pressable
-                onPress={onCallCustomer}
-                disabled={!hasCallablePhone}
-                style={[styles.phoneFab, !hasCallablePhone && styles.phoneFabDisabled]}
-              >
-                <Ionicons name="call" size={20} color="#ffffff" />
-              </Pressable>
+              <OrderLocationPhotoBox
+                inline
+                uri={order.dropAddressImageUrl}
+                label={t("orders.activeFood.addressPhoto", "Address photo")}
+              />
             </View>
             <View style={styles.verifiedRow}>
               <Ionicons name="checkmark-circle" size={16} color={REF_GREEN} />
@@ -364,7 +379,7 @@ export function FoodDropOrderScreen({
         <View
           style={[
             styles.footer,
-            { paddingBottom: Math.max(bottomInset, 12) },
+            { paddingBottom: Math.max(bottomInset, 8) + 2 },
           ]}
         >
           <FoodSlideToReachStore
@@ -375,8 +390,10 @@ export function FoodDropOrderScreen({
             }
             onComplete={onDelivered}
             loading={deliverLoading}
+            locked={deliverLocked}
             completed={false}
             completedLabel={t("orders.activeFood.deliveredDone", "Delivered ✓")}
+            actionName="delivered"
           />
         </View>
 
@@ -384,6 +401,7 @@ export function FoodDropOrderScreen({
           visible={sosSheetOpen}
           onDismiss={() => setSosSheetOpen(false)}
         />
+        {children}
       </View>
     </Modal>
   );
@@ -453,6 +471,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 16,
+    flexGrow: 0,
   },
   heroWrap: {
     backgroundColor: "#ffffff",
@@ -582,6 +601,7 @@ const styles = StyleSheet.create({
   },
   addressText: {
     flex: 1,
+    minWidth: 0,
     fontSize: 14,
     fontWeight: "500",
     color: "#3C4043",

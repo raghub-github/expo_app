@@ -4,6 +4,7 @@ export type PushNotificationOpenPayload = {
   title: string | null;
   body: string | null;
   data: Record<string, unknown>;
+  actionIdentifier?: string | null;
 };
 
 /**

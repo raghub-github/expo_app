@@ -399,8 +399,8 @@ interface OrderRecoveryRecordForDisplay {
   reason: string | null;
   amount: number;
   impact: 'debit' | 'credit' | 'info';
-  /** Whether the debit was partial or full. */
-  debitScope?: 'partial' | 'full' | null;
+  /** Whether the debit was partial or full (`none` = no merchant debit). */
+  debitScope?: 'partial' | 'full' | 'none' | null;
   status: string | null;
   createdAt: string | null;
 }
@@ -579,7 +579,7 @@ function DeliveryFeeAmount({
   return <span className={`orders-num ${className}`}>{formatCurrency(paidDisplay ?? chargedNum)}</span>;
 }
 
-function debitScopeBadge(scope: 'partial' | 'full' | null | undefined): {
+function debitScopeBadge(scope: 'partial' | 'full' | 'none' | null | undefined): {
   label: string;
   className: string;
 } | null {
@@ -588,6 +588,9 @@ function debitScopeBadge(scope: 'partial' | 'full' | null | undefined): {
   }
   if (scope === 'full') {
     return { label: 'Full', className: 'bg-indigo-100 text-indigo-800' };
+  }
+  if (scope === 'none') {
+    return { label: 'No debit', className: 'bg-slate-100 text-slate-700' };
   }
   return null;
 }

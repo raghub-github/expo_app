@@ -1,6 +1,6 @@
 import { useRiderDispatchRecovery } from "@/src/hooks/useRiderDispatchRecovery";
 
-/** Foreground/network/duty recovery for dispatch offer delivery. */
+/** Session-scoped dispatch lifecycle (WS + HTTP recovery). Not a Home keepalive. */
 export function RiderDispatchKeepAlive() {
   useRiderDispatchRecovery();
   return null;

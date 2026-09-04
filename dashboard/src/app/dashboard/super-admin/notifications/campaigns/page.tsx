@@ -29,9 +29,10 @@ import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { toast } from "sonner";
 import {
   CustomerAnnouncementExtras,
+  EMPTY_ANNOUNCEMENT_EXTRAS,
   type AnnouncementExtrasValue,
 } from "@/components/notifications/CustomerAnnouncementExtras";
-import { buildAnnouncementDeepLink } from "@/lib/notifications/customer-home-services";
+import { buildAnnouncementDeepLink, isAllowedGatimitraDeepLink } from "@/lib/notifications/customer-home-services";
 
 type Campaign = {
   id: number;
@@ -949,26 +950,16 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   const [scheduledAt, setScheduledAt] = useState("");
   const [preview, setPreview] = useState<{ title: string; body: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [announcementExtras, setAnnouncementExtras] = useState<AnnouncementExtrasValue>({
-    targetType: "NONE",
-    serviceId: "",
-    categoryId: "",
-    storeId: "",
-    imageUrl: null,
-  });
+  const [announcementExtras, setAnnouncementExtras] = useState<AnnouncementExtrasValue>(
+    EMPTY_ANNOUNCEMENT_EXTRAS,
+  );
 
   const isCustomerAnnouncement =
     templateCode.trim().toUpperCase() === "CUSTOMER_ANNOUNCEMENT";
 
   useEffect(() => {
     if (!isCustomerAnnouncement) {
-      setAnnouncementExtras({
-        targetType: "NONE",
-        serviceId: "",
-        categoryId: "",
-        storeId: "",
-        imageUrl: null,
-      });
+      setAnnouncementExtras(EMPTY_ANNOUNCEMENT_EXTRAS);
     }
   }, [isCustomerAnnouncement]);
 
@@ -1061,15 +1052,35 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
           serviceId: announcementExtras.serviceId || null,
           categoryId: announcementExtras.categoryId || null,
           storeId: announcementExtras.storeId || null,
+          orderId: announcementExtras.orderId || null,
+          customDeepLink: announcementExtras.customDeepLink || null,
         });
         out.deepLink = resolved.deepLink;
         out.target_type = resolved.target_type;
+        if (resolved.target_id) out.target_id = resolved.target_id;
         if (resolved.target_service_id) out.target_service_id = resolved.target_service_id;
         if (resolved.target_category_id) out.target_category_id = resolved.target_category_id;
         if (resolved.target_store_id) out.target_store_id = resolved.target_store_id;
       } catch {
         out.deepLink = "/notifications";
         out.target_type = "NONE";
+      }
+      const cta = announcementExtras.ctaLabel.replace(/\s+/g, " ").trim();
+      if (cta) out.cta_label = cta.slice(0, 32);
+      out.countdown_enabled = announcementExtras.countdownEnabled ? "true" : "false";
+      if (announcementExtras.countdownEnabled) {
+        if (announcementExtras.startsAt) {
+          const d = new Date(announcementExtras.startsAt);
+          if (!Number.isNaN(d.getTime())) out.starts_at = d.toISOString();
+        }
+        if (announcementExtras.endsAt) {
+          const d = new Date(announcementExtras.endsAt);
+          if (!Number.isNaN(d.getTime())) out.ends_at = d.toISOString();
+        }
+      }
+      if (announcementExtras.orderId.trim()) out.orderId = announcementExtras.orderId.trim();
+      if (announcementExtras.customDeepLink.trim()) {
+        out.customDeepLink = announcementExtras.customDeepLink.trim();
       }
     }
     return out;
@@ -1078,12 +1089,28 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   const announcementTargetValid = useMemo(() => {
     if (!isCustomerAnnouncement) return true;
     const t = announcementExtras.targetType;
-    if (t === "NONE") return true;
-    if (!announcementExtras.serviceId) return false;
+    const cta = announcementExtras.ctaLabel.replace(/\s+/g, " ").trim();
+    if (cta && t === "NONE") return false;
+    if (t === "SERVICE" || t === "CATEGORY" || t === "STORE") {
+      if (!announcementExtras.serviceId) return false;
+    }
     if (t === "CATEGORY" && !announcementExtras.categoryId) return false;
     if (t === "STORE" && !announcementExtras.storeId) return false;
+    if (t === "ORDER" && !announcementExtras.orderId.trim()) return false;
+    if (t === "CUSTOM_DEEP_LINK" && !isAllowedGatimitraDeepLink(announcementExtras.customDeepLink)) {
+      return false;
+    }
+    if (announcementExtras.countdownEnabled) {
+      if (!announcementExtras.startsAt || !announcementExtras.endsAt) return false;
+      const start = new Date(announcementExtras.startsAt).getTime();
+      const end = new Date(announcementExtras.endsAt).getTime();
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return false;
+    }
+    const title = String(varValues.title ?? "").trim();
+    const body = String(varValues.body ?? "").trim();
+    if (!title || !body) return false;
     return true;
-  }, [isCustomerAnnouncement, announcementExtras]);
+  }, [isCustomerAnnouncement, announcementExtras, varValues.title, varValues.body]);
 
   const targetValid = useMemo(() => {
     if (!targetMode) return false;
@@ -1425,12 +1452,27 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
       return "Complete the target details.";
     }
     if (!announcementTargetValid) {
+      if (announcementExtras.ctaLabel.trim() && announcementExtras.targetType === "NONE") {
+        return "Select a tap destination when a CTA label is set.";
+      }
+      if (!String(varValues.title ?? "").trim()) return "Enter an announcement title.";
+      if (!String(varValues.body ?? "").trim()) return "Enter an announcement message.";
       if (announcementExtras.targetType === "SERVICE") return "Select a service for the tap destination.";
       if (announcementExtras.targetType === "CATEGORY") {
         return "Select service and category for the tap destination.";
       }
       if (announcementExtras.targetType === "STORE") {
         return "Select service and store for the tap destination.";
+      }
+      if (announcementExtras.targetType === "ORDER") return "Enter the order id for the tap destination.";
+      if (announcementExtras.targetType === "CUSTOM_DEEP_LINK") {
+        return "Enter an approved GatiMitra route (must start with /home, /offers, /orders, …).";
+      }
+      if (announcementExtras.countdownEnabled) {
+        if (!announcementExtras.startsAt || !announcementExtras.endsAt) {
+          return "Countdown requires both start and till times.";
+        }
+        return "Till must be after start.";
       }
       return "Complete the announcement tap destination.";
     }
@@ -1443,7 +1485,9 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     targetMode,
     targetValid,
     announcementTargetValid,
-    announcementExtras.targetType,
+    announcementExtras,
+    varValues.title,
+    varValues.body,
     targetLookupLoading,
     targetLookupError,
     when,
@@ -1560,6 +1604,7 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
                       {kind === "textarea" ? (
                         <textarea
                           rows={3}
+                          maxLength={isCustomerAnnouncement && v === "body" ? 240 : undefined}
                           className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
                           value={varValues[v] ?? ""}
                           onChange={(e) => setVarValues((prev) => ({ ...prev, [v]: e.target.value }))}
@@ -1568,6 +1613,7 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
                       ) : (
                         <input
                           type={kind === "number" ? "number" : "text"}
+                          maxLength={isCustomerAnnouncement && v === "title" ? 80 : isCustomerAnnouncement && v === "body" ? 240 : undefined}
                           className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
                           value={varValues[v] ?? ""}
                           onChange={(e) => setVarValues((prev) => ({ ...prev, [v]: e.target.value }))}
@@ -1591,17 +1637,19 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
           {isCustomerAnnouncement ? (
             <Section
               title="Announcement extras"
-              desc="Tap destination and optional rich-push image — only for CUSTOMER_ANNOUNCEMENT."
+              desc="Tap destination, optional CTA, countdown, and image — renderer is automatic."
             >
               <CustomerAnnouncementExtras
                 value={announcementExtras}
                 onChange={setAnnouncementExtras}
+                title={String(varValues.title ?? "")}
+                body={String(varValues.body ?? "")}
               />
             </Section>
           ) : null}
 
           {/* Preview */}
-          {templateCode ? (
+          {templateCode && !isCustomerAnnouncement ? (
             <Section title="Preview" desc="Rendered with your inputs. Updates as you type.">
               {preview ? (
                 <div className="rounded-lg border border-teal-200 bg-teal-50/60 p-3">

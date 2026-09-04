@@ -18,7 +18,7 @@ import { useRiderProfile } from "@/src/hooks/useRiderProfile";
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { SUPPORTED_LANGUAGES } from "@/src/stores/languageStore";
-import { toAbsoluteImageUrl } from "@/src/utils/mediaUrl";
+import { resolveRiderSelfieDisplayUrl, withImageCacheBust } from "@/src/utils/mediaUrl";
 import { colors } from "@/src/theme";
 import { fetchRiderReferralConfig } from "@/src/services/referral.service";
 import { ProfileSelfieUpdateSheet } from "@/src/components/profile/ProfileSelfieUpdateSheet";
@@ -93,6 +93,8 @@ export function ViewProfileScreen() {
   const { data: profile, isLoading, isError, refetch, isRefetching } = useRiderProfile();
   const { data: riderStatus } = useRiderStatus(riderId);
   const [avatarError, setAvatarError] = useState(false);
+  const [localSelfieUrl, setLocalSelfieUrl] = useState<string | null>(null);
+  const [avatarBust, setAvatarBust] = useState(0);
   const [showReferralUi, setShowReferralUi] = useState(false);
   const [selfieSheetOpen, setSelfieSheetOpen] = useState(false);
 
@@ -114,7 +116,14 @@ export function ViewProfileScreen() {
           profile.referralCode?.trim() || riderStatus?.referralCode?.trim() || null,
         preferredLanguage:
           profile.preferredLanguage || riderStatus?.preferredLanguage || "en",
-        selfieUrl: profile.selfieUrl ?? riderStatus?.selfieUrl ?? null,
+        selfieUrl:
+          localSelfieUrl ??
+          resolveRiderSelfieDisplayUrl({
+            serverSelfieUrl: profile.selfieUrl ?? riderStatus?.selfieUrl ?? null,
+          }) ??
+          profile.selfieUrl ??
+          riderStatus?.selfieUrl ??
+          null,
         riderDisplayId:
           profile.riderDisplayId ??
           (riderId && /^\d+$/.test(String(riderId)) ? `GMR${riderId}` : "—"),
@@ -122,8 +131,8 @@ export function ViewProfileScreen() {
     : null;
 
   const avatarUri = useMemo(
-    () => (displayProfile?.selfieUrl ? toAbsoluteImageUrl(displayProfile.selfieUrl) : null),
-    [displayProfile?.selfieUrl],
+    () => withImageCacheBust(displayProfile?.selfieUrl, avatarBust || null),
+    [displayProfile?.selfieUrl, avatarBust],
   );
 
   useEffect(() => {
@@ -187,6 +196,7 @@ export function ViewProfileScreen() {
               <View style={styles.avatarCircle}>
                 {showAvatar && avatarUri ? (
                   <Image
+                    key={avatarUri}
                     source={{ uri: avatarUri }}
                     style={styles.avatarImg}
                     onError={() => setAvatarError(true)}
@@ -312,8 +322,10 @@ export function ViewProfileScreen() {
       <ProfileSelfieUpdateSheet
         visible={selfieSheetOpen}
         onClose={() => setSelfieSheetOpen(false)}
-        onSaved={() => {
+        onSaved={(url) => {
           setAvatarError(false);
+          setLocalSelfieUrl(url);
+          setAvatarBust(Date.now());
           void refetch();
         }}
       />

@@ -4,8 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useDutyStore } from "@/src/stores/dutyStore";
 import { getRiderAppConfig, resolveUrlForDevice } from "@/src/config/env";
-import { RIDER_AVAILABLE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
-import { showAcceptedByAnotherRiderToast } from "@/src/lib/riderDispatchTakenToast";
+import { ingestIncomingDispatchOffer, cancelIncomingDispatchOffer } from "@/src/lib/ingestIncomingDispatchOffer";
 import { riderDispatchLog, riderDispatchWarn } from "@/src/lib/rider-dispatch-log";
 import { acquireAndCommitRiderLocation } from "@/src/services/location/riderLocationController";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
@@ -49,8 +48,8 @@ function parseRiderIdFromSession(userId: string | undefined): string | null {
 
 /**
  * Subscribes to rider:{id} websocket events from ws-gateway.
- * Invalidates the available-orders query on dispatch_offer — same engine result
- * set as push notifications and the incoming order modal.
+ * Ingests dispatch_offer into the global offer store and refetches pending
+ * offers so IncomingRideOrderHost does not depend on Home or GET /available GPS.
  */
 export function RiderDispatchRealtime() {
   const queryClient = useQueryClient();
@@ -167,7 +166,7 @@ export function RiderDispatchRealtime() {
       const apiUrl = resolveUrlForDevice(apiBaseUrl);
       const wsOrigin = resolveUrlForDevice(wsBaseUrl);
 
-      riderDispatchLog(`ws connect attempt (${reason})`);
+      riderDispatchLog("WS CONNECTING", { reason, riderId });
 
       try {
         const gatewayUp = await isWsGatewayReachable(wsOrigin);
@@ -178,8 +177,8 @@ export function RiderDispatchRealtime() {
           if (now - lastGatewayDownLogRef.current >= GATEWAY_DOWN_LOG_COOLDOWN_MS) {
             lastGatewayDownLogRef.current = now;
             riderDispatchWarn(
-              "ws-gateway unreachable — start it with: npm run dev:ws-gateway (dispatch still works via polling)",
-              { wsOrigin }
+              "WS DISCONNECTED",
+              { reason: "gateway_down", wsOrigin }
             );
           }
           scheduleReconnect("gateway_down");
@@ -227,7 +226,7 @@ export function RiderDispatchRealtime() {
           useRiderWsStore.getState().setSocketConnected(true);
           touchActivity();
           startHeartbeat(ws);
-          riderDispatchLog("ws connected");
+          riderDispatchLog("WS CONNECTED", { riderId });
         };
 
         ws.onmessage = (event) => {
@@ -309,24 +308,43 @@ export function RiderDispatchRealtime() {
               }
               return;
             }
-            if (payload.type === "dispatch_offer" || payload.type === "incoming_order") {
-              riderDispatchLog("dispatch event received", {
+            if (
+              payload.type === "dispatch_offer" ||
+              payload.type === "incoming_order" ||
+              payload.type === "force_assignment_offer"
+            ) {
+              riderDispatchLog("REALTIME EVENT RECEIVED", {
                 type: payload.type,
                 orderId: payload.orderId,
                 estimatedEarning: payload.estimatedEarning,
                 pricingEngine: payload.pricingEngine,
               });
-              // Refetch so GET /orders/available applies the same Rider Fare Engine v3.0
-              // payout the push payload was built with.
-              void queryClient.invalidateQueries({ queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY });
+              ingestIncomingDispatchOffer(
+                queryClient,
+                payload.orderId,
+                payload.type ?? "dispatch_offer"
+              );
+              return;
             }
             if (
-              payload.type === "dispatch_offer_withdrawn" &&
-              payload.reason === "accepted_by_other_rider" &&
-              payload.orderId
+              payload.type === "dispatch_offer_cancelled" ||
+              payload.type === "dispatch_offer_withdrawn"
             ) {
-              void queryClient.invalidateQueries({ queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY });
-              showAcceptedByAnotherRiderToast(String(payload.orderId));
+              const oid = String(
+                payload.orderId ??
+                  payload.order_id ??
+                  payload.offerId ??
+                  payload.offer_id ??
+                  ""
+              ).trim();
+              riderDispatchLog("REALTIME EVENT RECEIVED", {
+                type: payload.type,
+                orderId: oid,
+                reason: payload.reason,
+              });
+              cancelIncomingDispatchOffer(queryClient, oid, String(payload.type), {
+                reason: String(payload.reason ?? payload.type ?? ""),
+              });
             }
           } catch {
             /* ignore malformed frames */
@@ -342,7 +360,7 @@ export function RiderDispatchRealtime() {
           clearHeartbeat();
           useRiderWsStore.getState().setSocketConnected(false);
           if (wsRef.current === ws) wsRef.current = null;
-          riderDispatchLog("ws closed", { code: event.code, reason: event.reason });
+          riderDispatchLog("WS DISCONNECTED", { code: event.code, reason: event.reason });
           if (!cancelledRef.current && gen === connectGenRef.current) {
             scheduleReconnect("closed");
           }
@@ -370,7 +388,6 @@ export function RiderDispatchRealtime() {
       } else {
         touchActivity();
       }
-      void queryClient.invalidateQueries({ queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY });
     };
     const sub = AppState.addEventListener("change", onAppState);
 

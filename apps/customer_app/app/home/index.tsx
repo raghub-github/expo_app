@@ -872,7 +872,7 @@ export default function FoodMerchantsScreen() {
                 >
                   <UserAppCategoryImage
                     imageUrl={cat.imageUrl}
-                    cacheKey={`category-${cat.id}`}
+                    cacheKey={`tab-category-${cat.id}`}
                     style={{ width: categoryRailLayout.imgSize, height: categoryRailLayout.imgSize }}
                   />
                 </View>

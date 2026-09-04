@@ -385,7 +385,7 @@ export function MyTicketsScreen() {
         )}
       </View>
 
-      {isLoading ? (
+      {isLoading && tickets.length === 0 ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={TEAL} />
         </View>

@@ -1,6 +1,7 @@
 /**
- * Canonical Customer App Home service registry (dashboard copy).
- * Keep in sync with backend/src/lib/customer-home-services.ts
+ * Canonical Customer App Home service registry.
+ * Single source of truth for notification targeting + deep links.
+ * Keep in sync with apps/customer_app home service cards (ids + routes).
  */
 
 export type CustomerHomeServiceId =
@@ -14,8 +15,11 @@ export type CustomerHomeServiceId =
 export type CustomerHomeServiceDef = {
   id: CustomerHomeServiceId;
   label: string;
+  /** Expo-router path opened when target_type=SERVICE */
   deepLink: string;
+  /** user_app_category.store_type for category targeting; null = categories N/A */
   storeType: string | null;
+  /** merchant_stores.store_type values allowed for store targeting */
   storeTypesForStores: string[] | null;
   supportsCategory: boolean;
   supportsStore: boolean;
@@ -85,88 +89,223 @@ export function getCustomerHomeService(
   return CUSTOMER_HOME_SERVICES.find((s) => s.id === key) ?? null;
 }
 
-export type AnnouncementTargetType = "NONE" | "SERVICE" | "CATEGORY" | "STORE";
+export const ANNOUNCEMENT_TARGET_TYPES = [
+  "NONE",
+  "HOME",
+  "SERVICE",
+  "FOOD_HOME",
+  "GROCERY_HOME",
+  "RIDES",
+  "PARCEL",
+  "STORE",
+  "RESTAURANT",
+  "MENU",
+  "PRODUCT",
+  "CATEGORY",
+  "OFFER",
+  "COUPON",
+  "ORDER",
+  "SUBSCRIPTION",
+  "GMITRA_PLUS",
+  "CUSTOM_DEEP_LINK",
+] as const;
+
+export type AnnouncementTargetType = (typeof ANNOUNCEMENT_TARGET_TYPES)[number];
+
+/** Types stored after alias folding. */
+export type CanonicalAnnouncementTargetType =
+  | "NONE"
+  | "HOME"
+  | "SERVICE"
+  | "CATEGORY"
+  | "STORE"
+  | "OFFER"
+  | "ORDER"
+  | "SUBSCRIPTION"
+  | "CUSTOM_DEEP_LINK";
+
+const SERVICE_ALIASES: Record<string, CustomerHomeServiceId> = {
+  FOOD_HOME: "food",
+  GROCERY_HOME: "grocery",
+  RIDES: "ride",
+  PARCEL: "parcels",
+};
+
+const TYPE_ALIASES: Record<string, CanonicalAnnouncementTargetType> = {
+  FOOD_HOME: "SERVICE",
+  GROCERY_HOME: "SERVICE",
+  RIDES: "SERVICE",
+  PARCEL: "SERVICE",
+  RESTAURANT: "STORE",
+  MENU: "STORE",
+  PRODUCT: "STORE",
+  COUPON: "OFFER",
+  GMITRA_PLUS: "SUBSCRIPTION",
+};
+
+export const ALLOWED_CUSTOM_DEEP_LINK_PREFIXES = [
+  "/home",
+  "/offers",
+  "/orders",
+  "/notifications",
+  "/profile",
+  "/wallet",
+  "/search",
+  "/checkout",
+  "/group",
+  "/support",
+  "/location",
+] as const;
+
+export function isAllowedGatimitraDeepLink(path: string): boolean {
+  const p = String(path ?? "").trim();
+  if (!p.startsWith("/")) return false;
+  if (p.startsWith("//")) return false;
+  if (p.includes("..")) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(p)) return false;
+  if (/\s/.test(p)) return false;
+  return ALLOWED_CUSTOM_DEEP_LINK_PREFIXES.some(
+    (prefix) => p === prefix || p.startsWith(`${prefix}/`) || p.startsWith(`${prefix}?`),
+  );
+}
 
 export type AnnouncementTargetInput = {
-  targetType: AnnouncementTargetType;
+  targetType: AnnouncementTargetType | string;
   serviceId?: string | null;
   categoryId?: string | null;
   storeId?: string | null;
+  orderId?: string | null;
+  customDeepLink?: string | null;
+  targetId?: string | null;
 };
 
 export type AnnouncementTargetResolved = {
-  target_type: AnnouncementTargetType;
+  target_type: CanonicalAnnouncementTargetType;
+  target_id: string | null;
   target_service_id: string | null;
   target_category_id: string | null;
   target_store_id: string | null;
+  target_payload: Record<string, unknown> | null;
   deepLink: string;
 };
 
+function emptyResolved(deepLink: string, type: CanonicalAnnouncementTargetType = "NONE"): AnnouncementTargetResolved {
+  return {
+    target_type: type,
+    target_id: null,
+    target_service_id: null,
+    target_category_id: null,
+    target_store_id: null,
+    target_payload: null,
+    deepLink,
+  };
+}
+
+/**
+ * Build deep-link + normalized target fields for CUSTOMER_ANNOUNCEMENT.
+ * Category filter is navigation context only (query/path) — never a persisted preference.
+ */
 export function buildAnnouncementDeepLink(
   input: AnnouncementTargetInput,
 ): AnnouncementTargetResolved {
-  const type = (input.targetType || "NONE").toUpperCase() as AnnouncementTargetType;
-  if (type === "NONE" || !type) {
+  const rawType = String(input.targetType || "NONE").trim().toUpperCase();
+  const canonical = (TYPE_ALIASES[rawType] ?? rawType) as CanonicalAnnouncementTargetType;
+  const targetId = String(input.targetId ?? "").trim() || null;
+  const aliasedService = SERVICE_ALIASES[rawType] ?? null;
+  const serviceId = aliasedService || input.serviceId;
+  const storeId = String(input.storeId ?? targetId ?? "").trim() || null;
+  const categoryId = String(input.categoryId ?? (canonical === "CATEGORY" ? targetId : "") ?? "").trim() || null;
+  const orderId = String(input.orderId ?? (canonical === "ORDER" ? targetId : "") ?? "").trim() || null;
+
+  if (canonical === "NONE" || !canonical) {
+    return emptyResolved("/notifications", "NONE");
+  }
+
+  if (canonical === "HOME") {
+    return emptyResolved("/home", "HOME");
+  }
+
+  if (canonical === "OFFER") {
     return {
-      target_type: "NONE",
-      target_service_id: null,
-      target_category_id: null,
-      target_store_id: null,
-      deepLink: "/notifications",
+      ...emptyResolved("/offers", "OFFER"),
+      target_id: targetId,
     };
   }
 
-  const service = getCustomerHomeService(input.serviceId);
-  if (!service) {
-    throw new Error(`Unknown service id: ${input.serviceId ?? ""}`);
+  if (canonical === "SUBSCRIPTION") {
+    return emptyResolved("/profile/subscription", "SUBSCRIPTION");
   }
 
-  if (type === "SERVICE") {
+  if (canonical === "ORDER") {
+    if (!orderId) throw new Error("orderId is required for ORDER target");
+    return {
+      ...emptyResolved(`/orders/${encodeURIComponent(orderId)}`, "ORDER"),
+      target_id: orderId,
+      target_payload: { orderId },
+    };
+  }
+
+  if (canonical === "CUSTOM_DEEP_LINK") {
+    const path = String(input.customDeepLink ?? targetId ?? "").trim();
+    if (!isAllowedGatimitraDeepLink(path)) {
+      throw new Error("Custom deep link is not an allowed GatiMitra route");
+    }
+    return {
+      ...emptyResolved(path, "CUSTOM_DEEP_LINK"),
+      target_id: path,
+      target_payload: { deepLink: path },
+    };
+  }
+
+  const service = getCustomerHomeService(serviceId);
+  if (!service) {
+    throw new Error(`Unknown service id: ${serviceId ?? ""}`);
+  }
+
+  if (canonical === "SERVICE") {
     return {
       target_type: "SERVICE",
+      target_id: service.id,
       target_service_id: service.id,
       target_category_id: null,
       target_store_id: null,
+      target_payload: null,
       deepLink: service.deepLink,
     };
   }
 
-  if (type === "CATEGORY") {
+  if (canonical === "CATEGORY") {
     if (!service.supportsCategory || !service.storeType) {
       throw new Error(`Service ${service.id} does not support category targeting`);
     }
-    const categoryId = String(input.categoryId ?? "").trim();
     if (!categoryId) throw new Error("categoryId is required for CATEGORY target");
     const qs = new URLSearchParams({ storeType: service.storeType });
     return {
       target_type: "CATEGORY",
+      target_id: categoryId,
       target_service_id: service.id,
       target_category_id: categoryId,
       target_store_id: null,
+      target_payload: { storeType: service.storeType },
       deepLink: `/home/category/${encodeURIComponent(categoryId)}?${qs.toString()}`,
     };
   }
 
-  if (type === "STORE") {
+  if (canonical === "STORE") {
     if (!service.supportsStore) {
       throw new Error(`Service ${service.id} does not support store targeting`);
     }
-    const storeId = String(input.storeId ?? "").trim();
     if (!storeId) throw new Error("storeId is required for STORE target");
     return {
       target_type: "STORE",
+      target_id: storeId,
       target_service_id: service.id,
       target_category_id: null,
       target_store_id: storeId,
+      target_payload: null,
       deepLink: `/home/merchant/${encodeURIComponent(storeId)}`,
     };
   }
 
-  return {
-    target_type: "NONE",
-    target_service_id: null,
-    target_category_id: null,
-    target_store_id: null,
-    deepLink: "/notifications",
-  };
+  return emptyResolved("/notifications", "NONE");
 }

@@ -1,5 +1,5 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
-import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback, useMemo } from "react";
+import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback, useMemo, memo } from "react";
 import { View, Text, StyleSheet, Platform } from "react-native";
 import { getMapboxModule, isMapboxAvailable } from "@/src/services/maps/mapbox";
 import { resolveMapboxPublicToken } from "@/src/lib/mapbox-env";
@@ -47,6 +47,8 @@ interface RiderMapViewProps {
   onOrderPress?: (orderId: string) => void;
   style?: object;
   showRadar?: boolean;
+  /** Unmount native Mapbox while another tab is showing — GL keeps compositing even if JS is frozen. */
+  paused?: boolean;
   /** Legacy restaurant-cluster zones (hexagons). Used when backend hot zones are empty. */
   demandZones?: DemandZone[];
   /** Backend-authoritative H3 hot zones (preferred over legacy demandZones). */
@@ -60,6 +62,47 @@ export type RiderMapViewHandle = {
 
 const formatCoordinate = (coord: number): number => parseFloat(coord.toFixed(7));
 
+function riderMapPropsAreEqual(prev: RiderMapViewProps, next: RiderMapViewProps): boolean {
+  if (prev.paused !== next.paused) return false;
+  if (prev.showRadar !== next.showRadar || prev.isOnDuty !== next.isOnDuty) return false;
+  if (prev.style !== next.style || prev.onOrderPress !== next.onOrderPress) return false;
+  const a = prev.riderLocation;
+  const b = next.riderLocation;
+  if (a?.lat !== b?.lat || a?.lng !== b?.lng || a?.heading !== b?.heading || a?.speedMps !== b?.speedMps) {
+    return false;
+  }
+  if (prev.orders.length !== next.orders.length) return false;
+  for (let i = 0; i < prev.orders.length; i++) {
+    const po = prev.orders[i];
+    const no = next.orders[i];
+    if (
+      po.id !== no.id ||
+      po.estimatedEarning !== no.estimatedEarning ||
+      po.pickupLat !== no.pickupLat ||
+      po.pickupLng !== no.pickupLng
+    ) {
+      return false;
+    }
+  }
+  const prevHot = prev.hotZones ?? [];
+  const nextHot = next.hotZones ?? [];
+  if (prevHot.length !== nextHot.length) return false;
+  for (let i = 0; i < prevHot.length; i++) {
+    if (prevHot[i].h3Index !== nextHot[i].h3Index || prevHot[i].validUntil !== nextHot[i].validUntil) {
+      return false;
+    }
+  }
+  const prevDemand = prev.demandZones ?? [];
+  const nextDemand = next.demandZones ?? [];
+  if (prevDemand.length !== nextDemand.length) return false;
+  for (let i = 0; i < prevDemand.length; i++) {
+    if (prevDemand[i].id !== nextDemand[i].id || prevDemand[i].storeCount !== nextDemand[i].storeCount) {
+      return false;
+    }
+  }
+  return true;
+}
+
 const OrderPin: React.FC<{ order: Order; onPress?: () => void }> = ({ order, onPress }) => (
   <View style={styles.orderMarkerContainer} onTouchEnd={onPress}>
     <View style={styles.orderMarkerInner}>
@@ -69,9 +112,19 @@ const OrderPin: React.FC<{ order: Order; onPress?: () => void }> = ({ order, onP
   </View>
 );
 
-export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(function RiderMapView(
-  { riderLocation, orders, onOrderPress, style, showRadar = false, demandZones = [], hotZones = [], isOnDuty = false },
-  ref
+const RiderMapViewInner = forwardRef(function RiderMapViewInner(
+  {
+    riderLocation,
+    orders,
+    onOrderPress,
+    style,
+    showRadar = false,
+    paused = false,
+    demandZones = [],
+    hotZones = [],
+    isOnDuty = false,
+  }: RiderMapViewProps,
+  ref: React.Ref<RiderMapViewHandle>
 ) {
   const cameraRef = useRef<{ setCamera: (opts: object) => void } | null>(null);
   const [mapReady, setMapReady] = useState(false);
@@ -151,6 +204,10 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
     return <View style={[styles.container, style, { backgroundColor: "#ECECEC" }]} />;
   }
 
+  if (paused) {
+    return <View style={[styles.container, style, { backgroundColor: "#ECECEC" }]} />;
+  }
+
   if (!resolveMapboxPublicToken()) {
     return (
       <View style={[styles.container, style]}>
@@ -204,8 +261,9 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
         scaleBarEnabled={false}
         scrollEnabled
         zoomEnabled
-        pitchEnabled
+        pitchEnabled={false}
         rotateEnabled
+        preferredFramesPerSecond={20}
         onDidFinishLoadingMap={() => setMapReady(true)}
       >
         <Mapbox.Camera
@@ -332,6 +390,8 @@ export const RiderMapView = forwardRef<RiderMapViewHandle, RiderMapViewProps>(fu
     </View>
   );
 });
+
+export const RiderMapView = memo(RiderMapViewInner, riderMapPropsAreEqual);
 
 const styles = StyleSheet.create({
   container: {

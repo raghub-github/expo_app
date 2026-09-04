@@ -36,6 +36,7 @@ import { usePastRidersEligibility } from '@/hooks/usePastRidersEligibility';
 import { resolveRiderStoreWaitState } from '@/lib/rider-store-wait-display';
 import { orderHasAssignedRider } from '@/lib/order-has-assigned-rider';
 import { isPartnerSelfPickupOrder } from '@/lib/partner-delivery-type';
+import { isPartnerOrderClosedForContact } from '@/lib/partner-orders-unify';
 
 /** Panel preview only — full list via sidesheet (+N more). No scroll on items. */
 const ITEMS_PREVIEW_MAX = 4;
@@ -268,7 +269,6 @@ export function OrderPanel({
   const items = order.items ?? [];
   const hasMoreItems = items.length > ITEMS_PREVIEW_MAX;
   const totalItemCount = computeOrderItemQuantityCount(order);
-  const [showPhone, setShowPhone] = useState(false);
   const [selectedItem, setSelectedItem] = useState<OrderLineItem | null>(null);
   const [riderSheetOpen, setRiderSheetOpen] = useState(false);
 
@@ -309,7 +309,8 @@ export function OrderPanel({
     order.rider_name ??
     order.rider_phone
   );
-  const terminalStatus = ['DELIVERED', 'CANCELLED', 'RTO'].includes(status);
+  const terminalStatus = isPartnerOrderClosedForContact(order.order_status) || Boolean(order.delivered_at) || Boolean(order.cancelled_at) || Boolean(order.is_rto);
+  const hideContact = terminalStatus || panelMode === 'history';
   const isSelfPickup = isPartnerSelfPickupOrder(order);
   const showPendingRiderAssign =
     panelMode === 'live' && !isSelfPickup && !riderAssigned && !terminalStatus;
@@ -361,7 +362,7 @@ export function OrderPanel({
 
   const riderCardProps: RiderDeliveryPartnerCardProps = {
     riderName: riderName ?? 'Delivery partner',
-    riderPhone: riderMobile,
+    riderPhone: hideContact ? null : riderMobile,
     riderSelfieUrl: riderPhoto,
     variant: riderCardVariant,
     arrivalSubtitle: riderEnRouteToMerchantFlag ? riderArrivalSubtitle : undefined,
@@ -476,15 +477,14 @@ export function OrderPanel({
                   <span className="truncate">{order.customer_name}</span>
                   <ChevronRight size={14} className="shrink-0" />
                 </button>
-                {order.customer_phone ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowPhone((v) => !v)}
-                    className="inline-flex items-center gap-1 text-sm font-semibold text-blue-600 hover:text-blue-800 shrink-0"
+                {order.customer_phone && !hideContact ? (
+                  <a
+                    href={`tel:${order.customer_phone}`}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white hover:bg-emerald-700"
+                    aria-label="Call customer"
                   >
-                    <Phone size={14} />
-                    {showPhone ? order.customer_phone : 'Call'}
-                  </button>
+                    <Phone size={14} aria-hidden />
+                  </a>
                 ) : null}
               </div>
               {storeOrdinalLabel ? (
@@ -679,16 +679,15 @@ export function OrderPanel({
                   <span className="truncate">{order.customer_name}</span>
                   <ChevronRight size={14} className="shrink-0" />
                 </button>
-                {order.customer_phone && (
-                  <button
-                    type="button"
-                    onClick={() => setShowPhone((v) => !v)}
-                    className="inline-flex items-center gap-1 text-sm font-semibold text-blue-600 hover:text-blue-800 shrink-0"
+                {order.customer_phone && !hideContact ? (
+                  <a
+                    href={`tel:${order.customer_phone}`}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white hover:bg-emerald-700"
+                    aria-label="Call customer"
                   >
-                    <Phone size={14} />
-                    {showPhone ? order.customer_phone : 'Call'}
-                  </button>
-                )}
+                    <Phone size={14} aria-hidden />
+                  </a>
+                ) : null}
               </div>
               {storeOrdinalLabel && (
                 <p className="text-xs text-gray-500">{storeOrdinalLabel}</p>

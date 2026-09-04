@@ -13,6 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme";
 import { FoodSlideToReachStore } from "@/src/components/orders/FoodSlideToReachStore";
+import { OrderLocationPhotoBox } from "@/src/components/orders/OrderLocationPhotoBox";
 import { NavBottomSheetChevron } from "@/src/components/orders/NavBottomSheetChevron";
 import { PartnerChatUnreadBadge } from "@/src/components/orders/PartnerChatUnreadBadge";
 import {
@@ -26,13 +27,7 @@ import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 import type { NavigatePickupRouteMeta } from "@/src/components/orders/NavigatePickupBottomSheet";
 import type { MilestoneGeoState } from "@/src/hooks/useMilestoneGeoFence";
 import { resolveMilestoneGeoUi } from "@/src/lib/milestone-geo-hint";
-import { useLiveSecondTicker } from "@/src/hooks/useLiveSecondTicker";
-import {
-  foodPrepCountdownFromOrder,
-  formatPrepDelayedLabel,
-  isFoodPrepDelayed,
-  prepOverdueSeconds,
-} from "@/src/lib/food-prep-delay";
+import { FoodPrepLiveStatus } from "@/src/components/orders/FoodPrepLiveStatus";
 import { NavSheetWaveShell, NAV_SHEET_WAVE_LOW_Y } from "@/src/components/orders/NavSheetWaveHeader";
 import { LORA_BOLD, POPPINS_BOLD } from "@/src/theme/headerFonts";
 
@@ -58,6 +53,13 @@ type Props = {
   orderDelivered?: boolean;
   reachedLoading: boolean;
   deliveryPhotoLoading?: boolean;
+  /** Camera/OTP in flight — lock slider without a spinner. */
+  deliveryActionLocked?: boolean;
+  reachStoreLocked?: boolean;
+  reachStoreBusyLabel?: string | null;
+  reachDropLocked?: boolean;
+  reachDropBusyLabel?: string | null;
+  deliverBusyLabel?: string | null;
   /** Photo already captured + uploaded — slide reopens OTP, not camera. */
   deliveryPhotoReady?: boolean;
   bottomInset: number;
@@ -139,7 +141,7 @@ function ActionIconButton({
   );
 }
 
-export function FoodNavigateBottomSheet({
+export function FoodNavigateBottomSheetInner({
   order,
   orderIdLabel,
   phase,
@@ -154,6 +156,12 @@ export function FoodNavigateBottomSheet({
   orderDelivered = false,
   reachedLoading,
   deliveryPhotoLoading = false,
+  deliveryActionLocked = false,
+  reachStoreLocked = false,
+  reachStoreBusyLabel = null,
+  reachDropLocked = false,
+  reachDropBusyLabel = null,
+  deliverBusyLabel = null,
   deliveryPhotoReady = false,
   bottomInset,
   onReachStore,
@@ -182,7 +190,6 @@ export function FoodNavigateBottomSheet({
   suppressDropDeliverSlider = false,
 }: Props) {
   const { t } = useTranslation();
-  const nowMs = useLiveSecondTicker(phase === "pickup" && !rideStarted);
   const [deliveryInfoOpen, setDeliveryInfoOpen] = useState(false);
 
   useEffect(() => {
@@ -193,10 +200,6 @@ export function FoodNavigateBottomSheet({
     ? "…"
     : formatNavSheetDistance(routeMeta.metersAway);
 
-  const merchantReady = order.merchantOrderReady === true;
-  const prepOrder = foodPrepCountdownFromOrder(order);
-  const prepDelayed = isFoodPrepDelayed(prepOrder, nowMs, merchantReady);
-  const overdueSec = prepDelayed ? prepOverdueSeconds(prepOrder, nowMs) : 0;
   const showCancel = !orderDelivered && !!onCancel;
 
   const showReachStore =
@@ -236,7 +239,7 @@ export function FoodNavigateBottomSheet({
     phase === "pickup" &&
     !rideStarted &&
     !showReachStore &&
-    (atStore || merchantReady);
+    (atStore || order.merchantOrderReady === true);
 
   const dropSliders = (
     <>
@@ -245,10 +248,13 @@ export function FoodNavigateBottomSheet({
           label={t("orders.activeFood.slideReachedDrop", "Reached drop")}
           onComplete={onReachCustomer}
           loading={reachedLoading}
+          locked={reachDropLocked}
+          busyLabel={reachDropBusyLabel}
           completed={atCustomer}
           completedLabel={t("orders.activeFood.reachedDrop", "Reached drop ✓")}
           geoLocked={reachCustomerGeo.locked}
           geoHint={reachCustomerGeo.hintText}
+          actionName="reached_drop"
         />
       ) : null}
 
@@ -261,10 +267,13 @@ export function FoodNavigateBottomSheet({
           }
           onComplete={onDelivered}
           loading={deliveryPhotoLoading}
+          locked={deliveryActionLocked}
+          busyLabel={deliverBusyLabel}
           completed={orderDelivered}
           completedLabel={t("orders.activeFood.deliveredDone", "Delivered ✓")}
           geoLocked={markDeliveredGeo.locked}
           geoHint={markDeliveredGeo.hintText}
+          actionName="delivered"
         />
       ) : null}
     </>
@@ -278,16 +287,19 @@ export function FoodNavigateBottomSheet({
           onComplete={onReachStore}
           disabled={reachSliderDone || pickupConfirmed}
           loading={reachedLoading && !pickupConfirmed}
+          locked={reachStoreLocked}
+          busyLabel={reachStoreBusyLabel}
           completed={pickupConfirmed}
           completedLabel={t("orders.activeFood.reachedStore", "Reached store ✓")}
           geoLocked={reachStoreGeo.locked}
           geoHint={reachStoreGeo.hintText}
+          actionName="reached_pickup"
         />
       ) : null}
 
       {showMarkPickup ? (
         <>
-          {!merchantReady ? (
+          {order.merchantOrderReady !== true ? (
             <Text style={styles.waitReadyHint}>
               {t(
                 "orders.activeFood.waitMerchantReady",
@@ -298,11 +310,12 @@ export function FoodNavigateBottomSheet({
           <FoodSlideToReachStore
             label={t("orders.activeFood.slideMarkPickup", "Mark Pickup")}
             onComplete={onMarkPickup}
-            disabled={!merchantReady}
+            disabled={order.merchantOrderReady !== true}
             completed={false}
             completedLabel={t("orders.activeFood.pickedUp", "Order picked up ✓")}
             geoLocked={markPickupGeo.locked}
             geoHint={markPickupGeo.hintText}
+            actionName="mark_pickup"
           />
         </>
       ) : null}
@@ -346,7 +359,7 @@ export function FoodNavigateBottomSheet({
 
       <NavSheetWaveShell
         style={[styles.sheetOuter, sheetShadow]}
-        bodyStyle={{ paddingBottom: Math.max(bottomInset, 12) }}
+        bodyStyle={{ paddingBottom: Math.max(bottomInset, 8) }}
       >
         <View style={styles.sheetHandleDock}>
           {onToggleSheetExpanded ? (
@@ -396,6 +409,11 @@ export function FoodNavigateBottomSheet({
                       </Text>
                       <Text style={styles.routeAddress}>{activeAddress}</Text>
                     </View>
+                    <OrderLocationPhotoBox
+                      inline
+                      uri={activeIsDrop ? order.dropAddressImageUrl : null}
+                      label={t("orders.activeFood.addressPhoto", "Address photo")}
+                    />
                     <Text style={styles.distanceLabel}>{distanceLabel}</Text>
                   </View>
                 </View>
@@ -423,100 +441,13 @@ export function FoodNavigateBottomSheet({
                 />
               </View>
 
-              {phase === "pickup" && prepDelayed ? (
-                <View style={styles.delayBannerWrap}>
-                  <View style={styles.delayBanner}>
-                    <Ionicons name="hourglass-outline" size={14} color="#ffffff" />
-                    <Text style={styles.delayBannerText}>{formatPrepDelayedLabel(overdueSec)}</Text>
-                  </View>
-                </View>
-              ) : null}
-
-              {phase === "pickup" && showPickOrderReopen && onOpenPickOrderSheet ? (
-                <TouchableOpacity
-                  activeOpacity={0.85}
-                  onPress={onOpenPickOrderSheet}
-                  style={[
-                    styles.pickOrderReopen,
-                    merchantReady ? styles.pickOrderReopenReady : styles.pickOrderReopenPreparing,
-                  ]}
-                >
-                  <Ionicons
-                    name={merchantReady ? "checkmark-circle-outline" : "restaurant-outline"}
-                    size={20}
-                    color={merchantReady ? colors.success[700] : colors.warning[700]}
-                  />
-                  <View style={styles.pickOrderReopenTextCol}>
-                    <Text style={styles.pickOrderReopenTitle}>
-                      {t("orders.activeFood.pickOrderTitle", "Pick order now!")}
-                    </Text>
-                    <Text style={styles.pickOrderReopenSub} numberOfLines={1}>
-                      {prepDelayed
-                        ? formatPrepDelayedLabel(overdueSec)
-                        : merchantReady
-                          ? t(
-                              "orders.activeFood.tapToPickOrder",
-                              "Tap to verify and pick up the order"
-                            )
-                          : t(
-                              "orders.activeFood.underPreparation",
-                              "Order is under preparation"
-                            )}
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color="#5F6368" />
-                </TouchableOpacity>
-              ) : null}
-
-              {phase === "pickup" && showPrepBanner ? (
-                <View
-                  style={[
-                    styles.prepBanner,
-                    prepDelayed
-                      ? styles.prepBannerDelayed
-                      : merchantReady
-                        ? styles.prepBannerReady
-                        : styles.prepBannerPreparing,
-                  ]}
-                >
-                  <Ionicons
-                    name={
-                      prepDelayed
-                        ? "hourglass-outline"
-                        : merchantReady
-                          ? "checkmark-circle"
-                          : "restaurant-outline"
-                    }
-                    size={16}
-                    color={
-                      prepDelayed
-                        ? "#ffffff"
-                        : merchantReady
-                          ? colors.success[700]
-                          : colors.warning[700]
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.prepBannerText,
-                      prepDelayed
-                        ? styles.prepBannerTextDelayed
-                        : merchantReady
-                          ? styles.prepBannerTextReady
-                          : styles.prepBannerTextPreparing,
-                    ]}
-                  >
-                    {prepDelayed
-                      ? formatPrepDelayedLabel(overdueSec)
-                      : merchantReady
-                        ? t("orders.activeFood.orderIsReady", "Order is ready")
-                        : t(
-                            "orders.activeFood.underPreparation",
-                            "Order is under preparation"
-                          )}
-                  </Text>
-                </View>
-              ) : null}
+              <FoodPrepLiveStatus
+                order={order}
+                active={phase === "pickup" && !rideStarted}
+                showPickOrderReopen={!!(showPickOrderReopen && onOpenPickOrderSheet)}
+                onOpenPickOrderSheet={onOpenPickOrderSheet}
+                showPrepBanner={showPrepBanner}
+              />
 
               {phase === "drop" && deliveryInfoOpen ? (
                 <View style={styles.deliveryInfoCard}>
@@ -572,6 +503,8 @@ export function FoodNavigateBottomSheet({
     </View>
   );
 }
+
+export const FoodNavigateBottomSheet = React.memo(FoodNavigateBottomSheetInner);
 
 const sheetShadow = Platform.select({
   ios: {
@@ -707,8 +640,8 @@ const styles = StyleSheet.create({
     color: "#202124",
     letterSpacing: -0.2,
     flexShrink: 0,
-    marginTop: 14,
-    paddingLeft: 8,
+    marginTop: 4,
+    paddingLeft: 4,
   },
   routeCard: {
     marginBottom: 10,
@@ -1076,7 +1009,7 @@ const styles = StyleSheet.create({
   actionsDock: {
     width: "100%",
     paddingTop: 0,
-    paddingBottom: 4,
+    paddingBottom: 0,
   },
   waitReadyHint: {
     fontSize: 13,

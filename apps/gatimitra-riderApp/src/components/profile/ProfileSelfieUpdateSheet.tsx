@@ -97,8 +97,7 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
         selfieSignedUrl: remoteUrl,
       });
 
-      await queryClient.invalidateQueries({ queryKey: ["rider", String(riderIdNum)] });
-      await queryClient.invalidateQueries({ queryKey: ["rider", "me"] });
+      await queryClient.invalidateQueries({ queryKey: ["rider"] });
 
       notifyOnboardingToast(
         t("profile.selfieUpdate.success", "Profile photo updated successfully.")

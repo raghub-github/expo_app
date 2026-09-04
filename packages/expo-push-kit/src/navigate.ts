@@ -17,8 +17,10 @@ const SERVICE_ROUTES: Record<string, string> = {
   "near-me": "/home/service/near-me",
 };
 
+const FALLBACK_HREF = "/home";
+
 /**
- * Structured CUSTOMER_ANNOUNCEMENT targets (service / category / store).
+ * Structured CUSTOMER_ANNOUNCEMENT targets (service / category / store / home / offers…).
  * Category filters are path/query context only — not persisted preferences.
  */
 function resolveStructuredAnnouncementHref(data: Record<string, unknown>): string | null {
@@ -26,16 +28,36 @@ function resolveStructuredAnnouncementHref(data: Record<string, unknown>): strin
   if (!targetType || targetType === "NONE") return null;
   const serviceId = asString(data.target_service_id || data.targetServiceId).trim().toLowerCase();
   const categoryId = asString(data.target_category_id || data.targetCategoryId).trim();
-  const storeId = asString(data.target_store_id || data.targetStoreId).trim();
+  const storeId = asString(data.target_store_id || data.targetStoreId || data.target_id).trim();
+  const targetId = asString(data.target_id || data.targetId).trim();
+
+  if (targetType === "HOME" || targetType === "FOOD_HOME") return "/home";
+  if (targetType === "GROCERY_HOME") return "/home/grocery";
+  if (targetType === "RIDES") return "/home/service/ride";
+  if (targetType === "PARCEL") return "/home/service/parcels";
+  if (targetType === "OFFER" || targetType === "COUPON") return "/offers";
+  if (targetType === "SUBSCRIPTION" || targetType === "GMITRA_PLUS") return "/profile/subscription";
+  if (targetType === "ORDER") {
+    const orderId = asString(data.orderId || data.target_order_id).trim() || targetId;
+    return orderId ? `/orders/${encodeURIComponent(orderId)}` : "/orders";
+  }
+  if (targetType === "CUSTOM_DEEP_LINK") {
+    const path = asString(data.customDeepLink || data.custom_deep_link).trim() || targetId;
+    if (path.startsWith("/") && !path.startsWith("//") && !path.includes("..")) return path;
+    return FALLBACK_HREF;
+  }
 
   if (targetType === "SERVICE" && serviceId) {
-    return SERVICE_ROUTES[serviceId] ?? null;
+    return SERVICE_ROUTES[serviceId] ?? FALLBACK_HREF;
   }
   if (targetType === "CATEGORY" && categoryId) {
     const st = serviceId === "grocery" ? "GROCERY" : "FOOD";
     return `/home/category/${encodeURIComponent(categoryId)}?storeType=${encodeURIComponent(st)}`;
   }
-  if (targetType === "STORE" && storeId) {
+  if (
+    (targetType === "STORE" || targetType === "RESTAURANT" || targetType === "MENU" || targetType === "PRODUCT") &&
+    storeId
+  ) {
     return `/home/merchant/${encodeURIComponent(storeId)}`;
   }
   return null;

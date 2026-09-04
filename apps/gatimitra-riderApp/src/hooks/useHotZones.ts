@@ -54,8 +54,9 @@ export function useHotZones({
     enabled: canFetch,
     staleTime: 60_000,
     refetchInterval: canFetch ? 60_000 : false,
-    refetchOnWindowFocus: canFetch,
-    refetchOnMount: canFetch,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 
   return {

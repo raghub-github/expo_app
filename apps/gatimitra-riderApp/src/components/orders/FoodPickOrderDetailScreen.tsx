@@ -13,6 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { DismissibleBottomSheetShell } from "@/src/components/language/DismissibleBottomSheetShell";
 import { FoodSlideToReachStore } from "@/src/components/orders/FoodSlideToReachStore";
+import { OrderLocationPhotoBox } from "@/src/components/orders/OrderLocationPhotoBox";
 import { useEffectivePickupTimerStart } from "@/src/hooks/useEffectivePickupTimerStart";
 import { useLiveSecondTicker } from "@/src/hooks/useLiveSecondTicker";
 import {
@@ -184,6 +185,7 @@ type ContactDetailSheetProps = {
   name: string;
   phone?: string;
   address?: string;
+  photoUri?: string | null;
   onDismiss: () => void;
   onCall?: () => void;
 };
@@ -195,6 +197,7 @@ function ContactDetailSheet({
   name,
   phone,
   address,
+  photoUri,
   onDismiss,
   onCall,
 }: ContactDetailSheetProps) {
@@ -240,11 +243,22 @@ function ContactDetailSheet({
           ) : null}
 
           {address ? (
-            <View style={styles.sheetField}>
-              <Text style={styles.sheetFieldLabel}>
-                {t("orders.activeFood.addressLabel", "Address")}
-              </Text>
-              <Text style={styles.sheetFieldValueMuted}>{address}</Text>
+            <View style={styles.sheetAddressRow}>
+              <View style={[styles.sheetField, { flex: 1, minWidth: 0 }]}>
+                <Text style={styles.sheetFieldLabel}>
+                  {t("orders.activeFood.addressLabel", "Address")}
+                </Text>
+                <Text style={styles.sheetFieldValueMuted}>{address}</Text>
+              </View>
+              <OrderLocationPhotoBox
+                inline
+                uri={photoUri}
+                label={
+                  kind === "merchant"
+                    ? t("orders.activeFood.storePhoto", "Store photo")
+                    : t("orders.activeFood.addressPhoto", "Address photo")
+                }
+              />
             </View>
           ) : null}
         </View>
@@ -550,7 +564,7 @@ export function FoodPickOrderDetailScreen({
           </Pressable>
         </ScrollView>
 
-        <View style={[styles.footer, { paddingBottom: bottomInset }]}>
+        <View style={[styles.footer, { paddingBottom: bottomInset + 2 }]}>
           <FoodSlideToReachStore
             label={t("orders.activeFood.slidePickedOrder", "Picked order")}
             onComplete={onPickedOrder}
@@ -558,6 +572,7 @@ export function FoodPickOrderDetailScreen({
             loading={pickUpLoading}
             completed={false}
             completedLabel={t("orders.activeFood.pickedUp", "Order picked up ✓")}
+            actionName="mark_pickup"
           />
         </View>
 
@@ -577,6 +592,7 @@ export function FoodPickOrderDetailScreen({
           name={customerName}
           phone={customerPhone}
           address={customerAddress}
+          photoUri={order.dropAddressImageUrl}
           onDismiss={() => setDetailSheet(null)}
           onCall={customerPhone ? (onCallCustomer ?? onCall) : undefined}
         />
@@ -964,6 +980,11 @@ const styles = StyleSheet.create({
   },
   sheetField: {
     gap: 4,
+  },
+  sheetAddressRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
   },
   sheetFieldLabel: {
     fontSize: 11,

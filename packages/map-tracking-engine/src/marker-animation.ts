@@ -60,8 +60,8 @@ export { easeOutCubic };
  * Matches the Rider App navigation screen.
  */
 export function resolveSmoothDurationMs(speedMps?: number | null): number {
-  if (speedMps == null || speedMps < 0.5) return 550;
-  if (speedMps < 3) return 420;
-  if (speedMps < 8) return 320;
-  return 240;
+  if (speedMps == null || speedMps < 0.5) return 620;
+  if (speedMps < 3) return 480;
+  if (speedMps < 8) return 360;
+  return 280;
 }

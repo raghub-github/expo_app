@@ -380,6 +380,10 @@ export function resolveCompensationPolicyAmounts(
   }
 
   const impact = String(meta.balance_impact ?? "").toLowerCase();
+  const debitMode = String(meta.merchant_debit_mode ?? "").toLowerCase();
+  if (debitMode === "no_debit") {
+    return null;
+  }
   const isPolicyRow =
     Boolean(meta.compensation_engine) ||
     impact === "none" ||

@@ -4,7 +4,8 @@
  * - icon.png: 1024×1024 full launcher icon (logo on pure black background)
  * - adaptive-icon.png: 1024×1024 transparent foreground (logo only, safe-zone sized)
  * - splash-logo.png: logo-only for login (not the launch splash)
- * - notification-icon.png: white "GatiMitra" wordmark for Android status-bar small icon
+ * - notification-icon.png: white stacked "GatiMitra" wordmark for Android status-bar small icon
+ *   (glyph fills ~80% of the 24dp slot — same visual weight as Zomato's status icon)
  *
  * Logo occupies ~40% of canvas for clear safe-zone padding inside
  * circle / squircle / teardrop launcher masks (avoids edge overlap).
@@ -63,22 +64,44 @@ async function buildLogoLayer() {
 
 async function generateGatiMitraNotificationIcon() {
   const c = NOTIFICATION_CANVAS;
+  // Render large, trim empty pixels, then fill ~92% of the 24dp slot (Zomato-like).
+  const src = 256;
   const svg = `
-<svg width="${c}" height="${c}" viewBox="0 0 ${c} ${c}" xmlns="http://www.w3.org/2000/svg">
-  <text
-    x="50%"
-    y="52%"
-    dominant-baseline="middle"
-    text-anchor="middle"
+<svg width="${src}" height="${src}" viewBox="0 0 ${src} ${src}" xmlns="http://www.w3.org/2000/svg">
+  <g
+    fill="#FFFFFF"
     font-family="Arial Black, Helvetica Neue, Helvetica, Arial, sans-serif"
     font-weight="900"
-    font-size="15"
-    letter-spacing="-0.6"
-    fill="#FFFFFF"
-  >GatiMitra</text>
+    font-size="92"
+    letter-spacing="-4"
+    text-anchor="middle"
+  >
+    <text x="50%" y="42%" dominant-baseline="middle">Gati</text>
+    <text x="50%" y="70%" dominant-baseline="middle">Mitra</text>
+  </g>
 </svg>`;
+  const trimmed = await sharp(Buffer.from(svg)).trim().png().toBuffer();
+  const pad = Math.round(c * 0.04);
+  const fit = c - pad * 2;
+  const resized = await sharp(trimmed)
+    .resize(fit, fit, {
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png()
+    .toBuffer();
   fs.mkdirSync(path.dirname(NOTIFICATION_ICON_OUT), { recursive: true });
-  await sharp(Buffer.from(svg)).png().toFile(NOTIFICATION_ICON_OUT);
+  await sharp({
+    create: {
+      width: c,
+      height: c,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  })
+    .composite([{ input: resized, left: pad, top: pad }])
+    .png()
+    .toFile(NOTIFICATION_ICON_OUT);
 }
 
 async function generateIcons() {

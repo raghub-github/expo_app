@@ -11,6 +11,8 @@ import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
 
 type Props = {
   order: ApiFoodOrder;
+  /** Live orders only — hide after delivered / cancelled / RTO. */
+  allowCall?: boolean;
 };
 
 function customerLocationLine(dropAddress: string | null | undefined): string {
@@ -41,7 +43,7 @@ function ordersWithYouLabel(order: ApiFoodOrder): string | null {
   return null;
 }
 
-export function OrderDetailCustomerSection({ order }: Props) {
+export function OrderDetailCustomerSection({ order, allowCall = false }: Props) {
   const name = (order.customer_name ?? "").trim() || "Customer";
   const ordersLabel = ordersWithYouLabel(order);
   const fullAddress = (order.drop_address ?? "").trim();
@@ -68,7 +70,7 @@ export function OrderDetailCustomerSection({ order }: Props) {
             </Text>
             {ordersLabel ? <Text style={styles.sub}>{ordersLabel}</Text> : null}
           </View>
-          {phone ? (
+          {allowCall && phone ? (
             <Pressable
               onPress={() => void callCustomer(order.customer_phone)}
               style={({ pressed }) => [styles.callBtn, pressed && { opacity: 0.85 }]}

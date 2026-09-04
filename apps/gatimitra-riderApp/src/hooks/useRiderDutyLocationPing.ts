@@ -7,12 +7,14 @@ import { useActiveOrders } from "@/src/hooks/useOrders";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import {
   createForegroundLocationTracker,
+  LOCATION_ENGINE_PROFILES,
   type LocationTrackerState,
 } from "@/src/services/location/locationTracker";
 import { pingLocation } from "@/src/services/location/locationPinger";
 import type { RiderLocationFix } from "@/src/services/location/types";
 import { useRiderLocationStore } from "@/src/stores/riderLocationStore";
 import { riderDispatchLog } from "@/src/lib/rider-dispatch-log";
+import { shouldSkipCoalescedFix, COALESCE_IDLE_HOME_MOVE_M, COALESCE_IDLE_HOME_HEADING_DEG, type CoalesceFixSnapshot } from "@/src/lib/coalesceLocationUi";
 
 /** Offline — no tracking (handled by isOnDuty guard). */
 const PING_INTERVAL_IDLE_MS = 30_000;
@@ -49,8 +51,14 @@ export function useRiderDutyLocationPing(): void {
   const hasActiveOrder = activeOrders.length > 0;
   const shouldTrack = isOnDuty || hasActiveOrder;
   const tracker = useMemo(
-    () => createForegroundLocationTracker({ profileId: "duty-ping" }),
-    []
+    () =>
+      createForegroundLocationTracker({
+        profileId: "duty-ping",
+        ...(hasActiveOrder
+          ? LOCATION_ENGINE_PROFILES.activeOrderBg
+          : LOCATION_ENGINE_PROFILES.dutyIdleBg),
+      }),
+    [hasActiveOrder]
   );
   const lastPingAtRef = useRef(0);
   const recommendedIntervalRef = useRef(PING_INTERVAL_IDLE_MS);
@@ -89,26 +97,38 @@ export function useRiderDutyLocationPing(): void {
   useEffect(() => {
     if (!shouldTrack || !session) return;
 
+    const lastUiFixRef: { current: CoalesceFixSnapshot | null } = { current: null };
     const pingFromState = (state: LocationTrackerState) => {
       if (state.status !== "tracking" || !state.lastFix) return;
       const fix = state.lastFix;
-      // Mirror live duty fix into global rider location state (no reverse-geocode spam).
-      useRiderLocationStore.setState({
-        coords: {
-          latitude: fix.lat,
-          longitude: fix.lng,
-          accuracy: fix.accuracyM ?? null,
-        },
-        permissionStatus: "granted",
-        servicesEnabled: true,
-        updatedAtMs: fix.tsMs,
-      });
+      const now = Date.now();
+      if (!shouldSkipCoalescedFix(lastUiFixRef.current, fix, now, hasActiveOrder
+        ? undefined
+        : { minMoveM: COALESCE_IDLE_HOME_MOVE_M, minHeadingDeg: COALESCE_IDLE_HOME_HEADING_DEG }
+      )) {
+        lastUiFixRef.current = {
+          lat: fix.lat,
+          lng: fix.lng,
+          heading: fix.headingDeg,
+          atMs: now,
+        };
+        // Mirror live duty fix into global rider location state (no reverse-geocode spam).
+        useRiderLocationStore.setState({
+          coords: {
+            latitude: fix.lat,
+            longitude: fix.lng,
+            accuracy: fix.accuracyM ?? null,
+          },
+          permissionStatus: "granted",
+          servicesEnabled: true,
+          updatedAtMs: fix.tsMs,
+        });
+      }
       const minIntervalMs = resolveClientPingIntervalMs({
         hasActiveOrder,
         speedMps: fix.speedMps,
         serverRecommendedMs: recommendedIntervalRef.current,
       });
-      const now = Date.now();
       if (now - lastPingAtRef.current < minIntervalMs) return;
       lastPingAtRef.current = now;
       void (async () => {
@@ -153,22 +173,15 @@ export function useRiderDutyLocationPing(): void {
     const state = tracker.getState();
     if (state.status === "tracking" && state.lastFix) {
       const ageMs = Date.now() - state.lastFix.tsMs;
-      if (ageMs <= 8_000) return state.lastFix;
+      if (ageMs <= 45_000) return state.lastFix;
     }
     try {
-      const perm = await Location.requestForegroundPermissionsAsync();
+      const perm = await Location.getForegroundPermissionsAsync();
       if (perm.status !== "granted") return null;
-      let loc =
-        (await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Highest,
-        }).catch(() => null)) ??
-        (await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        }).catch(() => null));
-      // Never seed the map/backend from a multi-minute cached OS fix.
-      if (!loc) {
-        loc = await Location.getLastKnownPositionAsync({ maxAge: 8_000 });
-      }
+      const loc = await Location.getLastKnownPositionAsync({
+        maxAge: 45_000,
+        requiredAccuracy: 200,
+      });
       if (!loc) return null;
       const c = loc.coords;
       return {
@@ -205,15 +218,14 @@ export function useRiderDutyLocationPing(): void {
     }, staleIntervalMs);
 
     const appStateSub = AppState.addEventListener("change", (next: AppStateStatus) => {
-      if (next !== "active" || !shouldTrack) return;
-      void (async () => {
-        await tracker.stop();
-        await tracker.start();
-        await import("@/src/services/location/riderBackgroundLocationTask").then((m) =>
-          m.startRiderBackgroundLocation(hasActiveOrder ? "active_order" : "duty")
-        );
-        await refreshLocation("app_foreground");
-      })();
+      if (!shouldTrack) return;
+      if (next === "active") {
+        void refreshLocation("app_foreground");
+        return;
+      }
+      void import("@/src/services/location/riderBackgroundLocationTask").then((m) =>
+        m.startRiderBackgroundLocation(hasActiveOrder ? "active_order" : "duty")
+      );
     });
 
     return () => {

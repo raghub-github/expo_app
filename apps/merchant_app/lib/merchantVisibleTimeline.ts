@@ -269,7 +269,11 @@ function pickMetaString(meta: Record<string, unknown>, keys: string[]): string {
 
 export function parseActorDetailFromAction(
   action: MerchantOrderActionForTimeline | null | undefined,
-  fallbackLabel?: string | null
+  fallbackLabel?: string | null,
+  cancelCtx?: {
+    cancelledByType?: string | null;
+    rejectedReason?: string | null;
+  }
 ): TimelineActorDetail {
   const meta = (action?.metadata && typeof action.metadata === "object" ? action.metadata : {}) as Record<
     string,
@@ -280,6 +284,40 @@ export function parseActorDetailFromAction(
   const labelText = (fallbackLabel || action?.actor_label || "").trim();
   const acceptedThrough =
     parseAcceptedThroughLabel(labelText) || defaultAcceptedThrough(source, mode);
+
+  // Cancel rows: derive Source from cancelled_by_type / label, not mis-logged action_source.
+  // Ops cancels often land with action_source=website while headline is "Cancelled by GatiMitra".
+  if (cancelCtx) {
+    const actor = resolveMerchantCancellationActor(
+      cancelCtx.cancelledByType,
+      labelText || cancelCtx.rejectedReason,
+      null,
+      cancelCtx.rejectedReason
+    );
+    if (actor.kind === "auto") {
+      return { variant: "admin", acceptedBy: "System", source: "System" };
+    }
+    if (actor.kind === "actor" && actor.label.toLowerCase() === "gatimitra") {
+      return { variant: "admin", acceptedBy: "GatiMitra Team", source: "GatiMitra Team" };
+    }
+    if (actor.kind === "actor" && actor.label.toLowerCase() === "customer") {
+      return {
+        variant: "merchant",
+        role: "Customer",
+        source: "Customer App",
+        acceptedThrough: labelText || "Cancelled by customer",
+      };
+    }
+    // Store cancel — keep channel from the action row (Merchant App vs Partner Site).
+    if (actor.kind === "actor" && actor.label.toLowerCase() === "store") {
+      return {
+        variant: "merchant",
+        role: "Owner",
+        source: SOURCE_DISPLAY[source === "admin" ? "website" : source],
+        acceptedThrough: labelText || "Cancelled by store",
+      };
+    }
+  }
 
   if (source === "admin") {
     return {

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useMemo } from "react";
 import { View, Text, StyleSheet, Image } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
@@ -14,13 +14,44 @@ type Props = {
   resetKey?: number;
   customerName?: string | null;
   bottomOffset?: number;
+  /** Render inside an existing Modal (drop-order screen) instead of stacking another Modal. */
   embedded?: boolean;
   onDismiss: () => void;
   onSubmit: (otp: string) => void;
   onClearError?: () => void;
 };
 
-export function FoodDeliveryConfirmBottomSheet({
+const DeliveryProofPhoto = React.memo(function DeliveryProofPhoto({
+  uri,
+  title,
+  capturedLabel,
+}: {
+  uri: string;
+  title: string;
+  capturedLabel: string;
+}) {
+  const source = useMemo(() => ({ uri }), [uri]);
+  return (
+    <>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.photoBox}>
+        <Image
+          source={source}
+          style={styles.photoPreview}
+          resizeMode="cover"
+          resizeMethod="resize"
+          fadeDuration={0}
+        />
+        <View style={styles.photoBadge}>
+          <Ionicons name="camera" size={16} color={colors.success[700]} />
+          <Text style={styles.photoBadgeText}>{capturedLabel}</Text>
+        </View>
+      </View>
+    </>
+  );
+});
+
+function FoodDeliveryConfirmBottomSheetInner({
   visible,
   proofImageUri,
   loading = false,
@@ -29,48 +60,19 @@ export function FoodDeliveryConfirmBottomSheet({
   customerName,
   onDismiss,
   onSubmit,
-  onClearError,
+  embedded = false,
 }: Props) {
   const { t } = useTranslation();
-  const [otp, setOtp] = useState("");
 
   const displayName =
     customerName?.trim() || t("orders.activeRide.customerFallback", "Customer");
 
-  useEffect(() => {
-    if (!visible) {
-      setOtp("");
-    }
-  }, [visible]);
-
-  // Invalid OTP → clear digits so rider can re-enter immediately.
-  useEffect(() => {
-    if (error?.trim()) {
-      setOtp("");
-    }
-  }, [error]);
-
-  useEffect(() => {
-    if (resetKey > 0) {
-      setOtp("");
-    }
-  }, [resetKey]);
-
   const photoSection = (
-    <>
-      <Text style={styles.sectionTitle}>
-        {t("orders.activeFood.deliveryPhotoCaptured", "Delivery photo")}
-      </Text>
-      <View style={styles.photoBox}>
-        <Image source={{ uri: proofImageUri }} style={styles.photoPreview} resizeMode="cover" />
-        <View style={styles.photoBadge}>
-          <Ionicons name="camera" size={16} color={colors.success[700]} />
-          <Text style={styles.photoBadgeText}>
-            {t("orders.activeFood.photoCaptured", "Captured")}
-          </Text>
-        </View>
-      </View>
-    </>
+    <DeliveryProofPhoto
+      uri={proofImageUri}
+      title={t("orders.activeFood.deliveryPhotoCaptured", "Delivery photo")}
+      capturedLabel={t("orders.activeFood.photoCaptured", "Captured")}
+    />
   );
 
   return (
@@ -83,25 +85,25 @@ export function FoodDeliveryConfirmBottomSheet({
         { name: displayName }
       )}
       otpLength={4}
-      value={otp}
-      onChange={(next) => {
-        if (error?.trim()) onClearError?.();
-        setOtp(next);
-      }}
       onVerify={onSubmit}
       onCancel={onDismiss}
       loading={loading}
       error={error}
+      resetKey={resetKey}
       autoSubmitOnComplete
       hideVerifyButton
       hideCancelButton
       dockToKeyboard
       dismissOnBackdropPress={false}
+      animationType="none"
+      embedded={embedded}
       theme={riderOtpVerifyTheme}
       prependContent={photoSection}
     />
   );
 }
+
+export const FoodDeliveryConfirmBottomSheet = React.memo(FoodDeliveryConfirmBottomSheetInner);
 
 const styles = StyleSheet.create({
   sectionTitle: {

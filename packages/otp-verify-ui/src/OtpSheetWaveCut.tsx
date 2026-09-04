@@ -1,3 +1,4 @@
+import React from "react";
 import Svg, { Path } from "react-native-svg";
 import { StyleSheet } from "react-native";
 
@@ -5,7 +6,7 @@ import { StyleSheet } from "react-native";
 export const OTP_WAVE_H = 56;
 export const OTP_WAVE_LOW_Y = 34;
 
-export function OtpSheetWaveCut({ width }: { width: number }) {
+export const OtpSheetWaveCut = React.memo(function OtpSheetWaveCut({ width }: { width: number }) {
   const w = Math.max(320, width);
   const low = OTP_WAVE_LOW_Y;
   const path = [
@@ -24,7 +25,7 @@ export function OtpSheetWaveCut({ width }: { width: number }) {
       <Path d={path} fill="#FFFFFF" />
     </Svg>
   );
-}
+});
 
 const styles = StyleSheet.create({
   otpWave: {

@@ -26,7 +26,7 @@ export function useRiderProfile() {
     },
     enabled: !!session?.accessToken,
     staleTime: 60_000,
-    refetchOnWindowFocus: true,
-    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+    refetchOnMount: true,
   });
 }

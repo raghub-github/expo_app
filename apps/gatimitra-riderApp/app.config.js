@@ -155,8 +155,8 @@ module.exports = {
         {
           icon: "./assets/images/rideraap.png",
           color: "#C4E8D1",
-          sounds: [],
-          defaultChannel: "default",
+          sounds: ["./assets/sounds/notification.wav"],
+          defaultChannel: "rider_default",
           enableBackgroundRemoteNotifications: true,
         }
       ],
@@ -164,6 +164,12 @@ module.exports = {
         "../../packages/expo-push-kit/plugin/withAndroidPushChannels.js",
         {
           channels: [
+            {
+              id: "rider_dispatch_offers_alert",
+              name: "Incoming order requests",
+              importance: 5,
+              sound: "notification",
+            },
             { id: "default", name: "Orders & alerts", importance: 4 },
             { id: "rider_default", name: "Orders & alerts", importance: 4 },
           ],

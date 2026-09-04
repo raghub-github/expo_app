@@ -43,4 +43,52 @@ export function itemRefundBalances(args: {
   };
 }
 
+/**
+ * Order-level refunds (full CTC / no item rows) often leave item totals lower than
+ * `orderAlreadyRefunded`. Spread the gap across item CTC caps so Remaining rows
+ * match the order banner remaining.
+ */
+export function mergeOrderAlreadyIntoItemTotals(args: {
+  itemCaps: Map<number, number>;
+  alreadyById: Map<number, number>;
+  orderAlreadyRefunded: number;
+}): Map<number, number> {
+  const result = new Map<number, number>();
+  for (const [id, cap] of args.itemCaps) {
+    if (!(cap > 0)) continue;
+    result.set(id, Math.min(cap, Math.max(0, round2(args.alreadyById.get(id) ?? 0))));
+  }
+
+  let attributed = 0;
+  for (const v of result.values()) attributed = round2(attributed + v);
+  const unattributed = round2(
+    Math.max(0, Math.max(0, round2(args.orderAlreadyRefunded)) - attributed)
+  );
+  if (unattributed <= MONEY_EPS) return result;
+
+  const rooms = [...result.entries()]
+    .map(([id, already]) => {
+      const cap = args.itemCaps.get(id) ?? 0;
+      return { id, room: Math.max(0, round2(cap - already)) };
+    })
+    .filter((r) => r.room > MONEY_EPS);
+
+  if (rooms.length === 0) return result;
+
+  const roomSum = rooms.reduce((s, r) => s + r.room, 0);
+  if (roomSum <= MONEY_EPS) return result;
+
+  let allocated = 0;
+  for (let i = 0; i < rooms.length; i++) {
+    const { id, room } = rooms[i];
+    const share =
+      i === rooms.length - 1
+        ? round2(Math.min(room, unattributed - allocated))
+        : round2(Math.min(room, unattributed * (room / roomSum)));
+    allocated = round2(allocated + share);
+    result.set(id, round2((result.get(id) ?? 0) + share));
+  }
+  return result;
+}
+
 export { MONEY_EPS as ITEM_REFUND_MONEY_EPS };

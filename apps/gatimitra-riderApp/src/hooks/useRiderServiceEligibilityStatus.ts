@@ -19,10 +19,8 @@ function roundCoord(v: number | null | undefined): number | null {
 export function useRiderServiceEligibilityStatus() {
   const session = useSessionStore((s) => s.session);
   const authed = Boolean(session?.accessToken);
-  const coords = useRiderLocationStore((s) => s.coords);
-
-  const lat = roundCoord(coords?.latitude);
-  const lng = roundCoord(coords?.longitude);
+  const lat = useRiderLocationStore((s) => roundCoord(s.coords?.latitude));
+  const lng = useRiderLocationStore((s) => roundCoord(s.coords?.longitude));
 
   const query = useQuery({
     queryKey: ["rider", "eligibility", "status", lat, lng] as const,
@@ -32,10 +30,10 @@ export function useRiderServiceEligibilityStatus() {
       );
     },
     enabled: authed,
-    staleTime: 60_000,
+    staleTime: 120_000,
     gcTime: 10 * 60_000,
     retry: 1,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
   });
 
   const backend: BackendEligibilityByService | null = query.data

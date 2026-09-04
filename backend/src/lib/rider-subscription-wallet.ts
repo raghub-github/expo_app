@@ -435,6 +435,14 @@ export async function isRiderSubscriptionDispatchBlocked(riderId: number): Promi
   return meta.dispatchBlocked;
 }
 
+/** Flag-only check for accept hot path — no wallet settle / block refresh. */
+export async function isRiderSubscriptionDispatchBlockedReadOnly(
+  riderId: number
+): Promise<boolean> {
+  const meta = await readRiderDuesMeta(riderId);
+  return meta.dispatchBlocked;
+}
+
 /** Ledger stores positive amounts; entry_type determines credit vs debit. */
 async function insertWalletEntry(input: {
   riderId: number;

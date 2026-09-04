@@ -11,12 +11,15 @@ import {
 } from "@/src/hooks/useOrders";
 import {
   getOrderTipBaseline,
+  hasRecentOrderTipBaseline,
   loadCelebratedTipLedgerIds,
   markTipLedgerEntryCelebrated,
   recordOrderTipBaseline,
+  subscribeTipBaselineRecorded,
 } from "@/src/lib/rider-tip-celebration-storage";
 
-const LEDGER_POLL_MS = 5000;
+const LEDGER_POLL_MS = 12_000;
+const TIP_WATCH_WINDOW_MS = 2 * 60 * 60 * 1000;
 const MAX_TIP_ENTRY_AGE_MS = 48 * 60 * 60 * 1000;
 
 type TipSheetContext = {
@@ -78,6 +81,22 @@ export function RiderPostDeliveryTipHost() {
   const [appActive, setAppActive] = useState(
     () => AppState.currentState === "active"
   );
+  const [watchTips, setWatchTips] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshWatch = () => {
+      void hasRecentOrderTipBaseline(TIP_WATCH_WINDOW_MS).then((watch) => {
+        if (!cancelled) setWatchTips(watch);
+      });
+    };
+    refreshWatch();
+    const unsub = subscribeTipBaselineRecorded(refreshWatch);
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -108,10 +127,10 @@ export function RiderPostDeliveryTipHost() {
         period: "this_month",
         limit: 40,
       }),
-    enabled: Boolean(session?.accessToken) && appActive,
-    refetchInterval: LEDGER_POLL_MS,
+    enabled: Boolean(session?.accessToken) && appActive && watchTips,
+    refetchInterval: watchTips ? LEDGER_POLL_MS : false,
     refetchIntervalInBackground: false,
-    staleTime: 2000,
+    staleTime: 10_000,
   });
 
   const evaluateLedger = useCallback(async () => {

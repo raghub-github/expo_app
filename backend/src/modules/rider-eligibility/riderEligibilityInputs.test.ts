@@ -5,6 +5,7 @@ import {
   ownershipFromVehicle,
   docStateFrom,
   rcDocStateFromVehicle,
+  resolveOwnershipProofState,
 } from "./riderEligibilityInputs.ts";
 
 test("vehicleClassFromCategory maps normalised + legacy categories", () => {
@@ -56,4 +57,20 @@ test("docStateFrom prioritises expired > verified > rejected > pending > missing
   assert.equal(docStateFrom({ rejected: true }), "failed");
   assert.equal(docStateFrom({ submitted: true }), "pending");
   assert.equal(docStateFrom({}), "missing");
+});
+
+test("resolveOwnershipProofState treats verified RC as ownership proof", () => {
+  assert.equal(
+    resolveOwnershipProofState({ dedicated: "missing", rcDocument: "verified", vehicleRc: "pending" }),
+    "verified"
+  );
+  assert.equal(
+    resolveOwnershipProofState({ dedicated: "missing", rcDocument: "pending", vehicleRc: "verified" }),
+    "verified"
+  );
+  assert.equal(
+    resolveOwnershipProofState({ dedicated: "missing", rcDocument: "missing", vehicleRc: "pending" }),
+    "pending"
+  );
+  assert.equal(resolveOwnershipProofState({ dedicated: "missing" }), "missing");
 });

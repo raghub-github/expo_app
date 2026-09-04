@@ -1,6 +1,6 @@
 /**
  * Universal floating in-app notification banner + sequential queue.
- * Reuses the Pickup Updated visual language (pill below safe area / above map).
+ * Standard toast card below the status bar.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -408,6 +408,11 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
   const body = item.body?.trim() || "";
   const a11y = body ? `${item.title}. ${body}` : item.title;
 
+  const progress =
+    item.progress != null && Number.isFinite(item.progress)
+      ? Math.max(0, Math.min(1, item.progress))
+      : null;
+
   return (
     <Animated.View
       pointerEvents="box-none"
@@ -420,15 +425,15 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
     >
       <Pressable
         onPress={() => onPressBanner?.(item)}
-        style={styles.pill}
+        style={styles.card}
         accessibilityRole="button"
         accessibilityLabel={a11y}
       >
-        <View style={styles.dotCol}>
-          <View style={styles.dot} />
+        <View style={styles.iconWrap}>
+          <Text style={styles.iconMark}>✓</Text>
         </View>
         <View style={styles.copy}>
-          <Text style={styles.title} numberOfLines={1}>
+          <Text style={styles.title} numberOfLines={2}>
             {item.title}
           </Text>
           {body ? (
@@ -437,14 +442,16 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
             </Text>
           ) : null}
         </View>
-        <View style={styles.progressTrack} pointerEvents="none">
-          <View
-            style={[
-              styles.progressFill,
-              { width: `${Math.round((item.progress ?? 1) * 100)}%` },
-            ]}
-          />
-        </View>
+        {progress != null ? (
+          <View style={styles.progressTrack} pointerEvents="none">
+            <View
+              style={[
+                styles.progressFill,
+                { width: `${Math.round(progress * 100)}%` },
+              ]}
+            />
+          </View>
+        ) : null}
       </Pressable>
     </Animated.View>
   );
@@ -459,40 +466,41 @@ const styles = StyleSheet.create({
     elevation: 1000,
     alignItems: "center",
   },
-  pill: {
+  card: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    backgroundColor: "#F0FDFA",
-    borderRadius: 20,
-    paddingVertical: 11,
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    paddingVertical: 12,
     paddingHorizontal: 14,
-    paddingBottom: 13,
-    borderWidth: 1,
-    borderColor: "#99F6E4",
     maxWidth: "100%",
-    minHeight: 48,
     width: "100%",
     overflow: "hidden",
     ...Platform.select({
       ios: {
-        shadowColor: "#0f766e",
+        shadowColor: "#000",
         shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.12,
+        shadowOpacity: 0.16,
         shadowRadius: 10,
       },
-      android: { elevation: 5 },
+      android: { elevation: 6 },
       default: {},
     }),
   },
-  dotCol: {
-    paddingTop: 5,
+  iconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#16A34A",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "#0D9488",
+  iconMark: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "800",
+    lineHeight: 16,
   },
   copy: {
     flex: 1,
@@ -500,30 +508,30 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   title: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#0F172A",
-    lineHeight: 18,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#111827",
+    lineHeight: 20,
   },
   body: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "500",
-    color: "#334155",
-    lineHeight: 16,
+    color: "#4B5563",
+    lineHeight: 18,
   },
   progressTrack: {
     position: "absolute",
     left: 14,
     right: 14,
-    bottom: 5,
-    height: 2,
+    bottom: 0,
+    height: 3,
     borderRadius: 999,
-    backgroundColor: "#CCFBF1",
+    backgroundColor: "#E5E7EB",
     overflow: "hidden",
   },
   progressFill: {
-    height: 2,
+    height: 3,
     borderRadius: 999,
-    backgroundColor: "#0D9488",
+    backgroundColor: "#16A34A",
   },
 });

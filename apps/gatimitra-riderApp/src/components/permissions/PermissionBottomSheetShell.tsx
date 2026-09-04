@@ -11,6 +11,7 @@ import {
 import Svg, { Path } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors } from "@/src/theme";
+import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 
 /** Same central-hump wave as Customer StoreMenuItemDetailSheet. */
 const WAVE_HEIGHT = 36;
@@ -70,6 +71,9 @@ export function PermissionBottomSheetShell({
   const insets = useSafeAreaInsets();
   const { height: winH, width: winW } = useWindowDimensions();
   const maxH = Math.round(winH * maxHeightRatio);
+  // Extra 16dp so the last button sits above 3-button nav, not flush with it.
+  const bottomPad = resolveRiderBottomInset(insets.bottom) + 16;
+  const bodyMaxH = Math.max(160, maxH - WAVE_SIDE_Y);
 
   return (
     <Modal
@@ -90,12 +94,12 @@ export function PermissionBottomSheetShell({
           accessibilityLabel={dismissible ? "Close" : undefined}
         />
         <View style={[styles.anchor, { maxHeight: maxH }]} pointerEvents="box-none">
-          <View style={styles.sheetOuter} pointerEvents="box-none">
+          <View style={[styles.sheetOuter, { maxHeight: maxH }]} pointerEvents="box-none">
             <WaveTopEdge width={winW} />
             <View
               style={[
                 styles.sheet,
-                { paddingBottom: Math.max(insets.bottom, 16) },
+                { paddingBottom: bottomPad, maxHeight: bodyMaxH },
                 sheetStyle,
               ]}
             >
@@ -140,5 +144,6 @@ const styles = StyleSheet.create({
     // Join body under the wave side plateau (same trick as customer item sheet).
     marginTop: -(WAVE_HEIGHT - WAVE_SIDE_Y),
     overflow: "hidden",
+    flexShrink: 1,
   },
 });

@@ -5,16 +5,19 @@ import { useRiderLocationStore } from "@/src/stores/riderLocationStore";
 import { useDutyStore } from "@/src/stores/dutyStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { getDeviceLocationReadiness } from "@gatimitra/expo-location-kit";
+import { getSharedLocationEngine } from "@/src/services/location/locationTracker";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { pingLocation } from "@/src/services/location/locationPinger";
 
-/** Do not paint the map with a fix older than this. */
-const FRESH_FIX_MS = 8_000;
+/** Drop a store marker only when it is truly stale — not on every 8s foreground. */
+const STALE_FIX_MS = 120_000;
+/** Prefer the shared watch over a parallel Highest getCurrentPosition. */
+const ENGINE_FRESH_MS = 45_000;
 
 /**
- * Root lifecycle: on cold start, warm start, and every return to foreground,
- * always request a fresh GPS fix before the map may show a rider position.
- * Stale / cached coordinates are cleared immediately when older than FRESH_FIX_MS.
+ * Root lifecycle: seed the global location store on cold start and foreground.
+ * Idle Home must not start a Highest-accuracy GPS burst — the shared duty watch
+ * (or a fast last-known) is enough. Navigation uses the High profile (not Highest).
  */
 export function RiderLocationLifecycle() {
   const hydrateReadiness = useRiderLocationStore((s) => s.hydrateReadiness);
@@ -38,17 +41,37 @@ export function RiderLocationLifecycle() {
           return;
         }
 
+        const engineState = getSharedLocationEngine().getState();
+        const engineFix = engineState.status === "tracking" ? engineState.lastFix : undefined;
+        const engineFresh =
+          !!engineFix && Number.isFinite(engineFix.tsMs) && Date.now() - engineFix.tsMs <= ENGINE_FRESH_MS;
+
         const { coords, updatedAtMs } = useRiderLocationStore.getState();
         const ageMs =
           coords && updatedAtMs != null ? Date.now() - updatedAtMs : Number.POSITIVE_INFINITY;
-        // Never keep a stale marker on screen while we wait for a fresh fix.
-        if (ageMs > FRESH_FIX_MS) {
+        if (ageMs > STALE_FIX_MS && !engineFresh) {
           clearFix();
+        }
+
+        if (engineFresh && engineFix) {
+          useRiderLocationStore.setState({
+            coords: {
+              latitude: engineFix.lat,
+              longitude: engineFix.lng,
+              accuracy: engineFix.accuracyM ?? null,
+            },
+            permissionStatus: "granted",
+            servicesEnabled: true,
+            updatedAtMs: engineFix.tsMs,
+            loading: false,
+            error: null,
+          });
+          return;
         }
 
         const result = await acquireAndCommitRiderLocation({
           assumeReady: true,
-          requireFresh: true,
+          preferFast: true,
         });
         if (!result.ok) return;
 

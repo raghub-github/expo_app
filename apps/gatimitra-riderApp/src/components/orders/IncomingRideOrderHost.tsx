@@ -1,12 +1,14 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert } from "react-native";
+import { Alert, InteractionManager } from "react-native";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { useDutyStore } from "@/src/stores/dutyStore";
+import { useSessionStore } from "@/src/stores/sessionStore";
 import {
   useAvailableOrders,
+  usePendingOffers,
   useAcceptOrder,
   useRejectOrder,
   useMissOrderOffer,
@@ -34,7 +36,6 @@ import {
   stopOrderAlertSound,
 } from "@/src/lib/playOrderAlertSound";
 import {
-  showAcceptedByAnotherRiderToast,
   subscribeDispatchOfferWithdrawn,
 } from "@/src/lib/riderDispatchTakenToast";
 import {
@@ -49,6 +50,24 @@ import {
   isOrderNoLongerAvailableError,
   isOrderTakenByAnotherRiderError,
 } from "@/src/lib/rider-dispatch-accept-errors";
+import {
+  classifyRiderActionFailure,
+  isRetryableRiderActionError,
+  riderActionBusyLabel,
+} from "@/src/lib/rider-action-kind";
+import {
+  findPendingRiderAction,
+  useRiderPendingActionStore,
+} from "@/src/stores/riderPendingActionStore";
+import { detectNewOfferIds, mergeIncomingOfferLists } from "@/src/lib/incomingDispatchOffers";
+import { useIncomingDispatchOfferStore } from "@/src/stores/incomingDispatchOfferStore";
+import { riderDispatchLog } from "@/src/lib/rider-dispatch-log";
+import { cancelIncomingDispatchOffer } from "@/src/lib/ingestIncomingDispatchOffer";
+import {
+  logAcceptLatency,
+  markAcceptLatency,
+  setAcceptLatencyOrderId,
+} from "@/src/lib/acceptOrderLatency";
 
 const EMPTY_ORDERS: RiderOrderSummary[] = [];
 
@@ -62,6 +81,8 @@ function toIncomingOrder(order: RiderOrderSummary, offerShownAtMs: number): Inco
     itemCount: order.itemCount,
     pickup: order.pickup,
     delivery: order.delivery,
+    storeImageUrl: order.storeImageUrl,
+    dropAddressImageUrl: order.dropAddressImageUrl,
     distanceKm: order.distanceKm,
     pickupDistanceKm: order.pickupDistanceKm,
     tripDistanceKm: order.tripDistanceKm,
@@ -84,6 +105,7 @@ function toIncomingOrder(order: RiderOrderSummary, offerShownAtMs: number): Inco
 export function IncomingRideOrderHost() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const session = useSessionStore((s) => s.session);
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
   const { selectedServices: dutySelectedServices } = useRiderDutyServiceFilter();
   const { data: dutyStatus } = useDutyStatus();
@@ -91,28 +113,78 @@ export function IncomingRideOrderHost() {
     () => mergeRiderBlockedServices(dutyStatus?.blockedServiceTypes),
     [dutyStatus?.blockedServiceTypes]
   );
-  const { data: available } = useAvailableOrders();
+  const { data: available, error: availableError } = useAvailableOrders();
+  const { data: pending } = usePendingOffers();
+  const ingestCount = useIncomingDispatchOfferStore((s) => s.ingestCount);
+  const offerOwnerRiderId = useIncomingDispatchOfferStore((s) => s.ownerRiderId);
+  /** Length only — avoid re-rendering host when unrelated cancel-list identity churns. */
+  const cancelEpoch = useIncomingDispatchOfferStore((s) => s.cancelledOrderIds.length);
   const { data: acceptanceSettings } = useRiderOrderAcceptanceSettings();
   const acceptOrder = useAcceptOrder();
   const rejectOrder = useRejectOrder();
   const missOrderOffer = useMissOrderOffer();
+  useEffect(() => {
+    if (ingestCount === 0) return;
+    riderDispatchLog("GLOBAL OFFER INGEST", {
+      ingestCount,
+      lastOfferId: useIncomingDispatchOfferStore.getState().lastOfferId,
+    });
+  }, [ingestCount]);
 
-  const orders = available ?? EMPTY_ORDERS;
+  const orders = useMemo(
+    () => mergeIncomingOfferLists(available ?? EMPTY_ORDERS, pending ?? EMPTY_ORDERS),
+    [available, pending]
+  );
+  const lastPollSigRef = useRef("");
+  useEffect(() => {
+    const sig = `${available?.length ?? "x"}:${pending?.length ?? "x"}:${orders.length}`;
+    if (sig === lastPollSigRef.current) return;
+    lastPollSigRef.current = sig;
+    riderDispatchLog("OFFER POLL", {
+      available: available?.length ?? null,
+      pending: pending?.length ?? null,
+      merged: orders.length,
+      availableError: availableError ? String(availableError) : null,
+    });
+  }, [available?.length, pending?.length, orders.length, availableError]);
+  const ordersRef = useRef(orders);
+  ordersRef.current = orders;
   const rejectedRef = useRef(new Set<string>());
   const expiredRef = useRef(new Set<string>());
   const soundPlayedRef = useRef(new Set<string>());
   const locallyAcceptedRef = useRef(new Set<string>());
   const prevAvailableRef = useRef<RiderOrderSummary[]>([]);
+  const seenOfferIdsRef = useRef(new Set<string>());
   const offerShownAtRef = useRef(new Map<string, number>());
   const acceptingRef = useRef(false);
   const [rejectHydrated, setRejectHydrated] = useState(false);
   const [rejectSheetOpen, setRejectSheetOpen] = useState(false);
+  const [accepting, setAccepting] = useState(false);
   const [acceptSwipeResetKey, setAcceptSwipeResetKey] = useState(0);
+  const [acceptBusyLabel, setAcceptBusyLabel] = useState<string | null>(null);
   const [poolEpoch, setPoolEpoch] = useState(0);
 
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const activeOrderIdRef = useRef<string | null>(null);
+  const sessionUserRef = useRef<string | null>(null);
+  const modalOpenLoggedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const userKey = session?.userId ?? null;
+    if (sessionUserRef.current && sessionUserRef.current !== userKey) {
+      seenOfferIdsRef.current = new Set();
+      rejectedRef.current = new Set();
+      expiredRef.current = new Set();
+      soundPlayedRef.current.clear();
+      locallyAcceptedRef.current.clear();
+      offerShownAtRef.current.clear();
+      setActiveOrderId(null);
+      setModalVisible(false);
+      modalOpenLoggedRef.current = null;
+    }
+    sessionUserRef.current = userKey;
+  }, [session?.userId]);
 
   useEffect(() => {
     activeOrderIdRef.current = activeOrderId;
@@ -151,6 +223,8 @@ export function IncomingRideOrderHost() {
       (o) =>
         !rejectedRef.current.has(o.id) &&
         !expiredRef.current.has(o.id) &&
+        !useIncomingDispatchOfferStore.getState().isCancelled(o.id) &&
+        o.status === "pending" &&
         (!hasExplicitSelection ||
           isOrderCategoryInAllowedDutyServices(o.category, dutySelectedServices)) &&
         !isOrderCategoryDispatchBlocked(
@@ -166,6 +240,7 @@ export function IncomingRideOrderHost() {
     blockedServices,
     dutySelectedServices,
     dutyStatus?.allServicesBlacklisted,
+    cancelEpoch,
   ]);
 
   const poolHeadId = orderPool[0]?.id ?? null;
@@ -183,6 +258,16 @@ export function IncomingRideOrderHost() {
     const offerShownAtMs = offerShownAtRef.current.get(activeOrderId) ?? Date.now();
     return toIncomingOrder(hit, offerShownAtMs);
   }, [activeOrderId, orders]);
+  const activeOrderRef = useRef(activeOrder);
+  activeOrderRef.current = activeOrder;
+  const acceptPending = useRiderPendingActionStore((s) =>
+    findPendingRiderAction(
+      s.actions,
+      "accept",
+      activeOrderId,
+      activeOrder?.formattedOrderId
+    )
+  );
 
   const dismissTakenOffer = useCallback(
     (orderId: string) => {
@@ -205,6 +290,14 @@ export function IncomingRideOrderHost() {
       dismissTakenOffer(orderId);
     });
   }, [dismissTakenOffer]);
+
+  // WS cancel marks cancelledOrderIds — drop the open modal immediately even if
+  // the offer is still briefly in the available/pending query cache.
+  useEffect(() => {
+    if (!activeOrderId) return;
+    if (!useIncomingDispatchOfferStore.getState().isCancelled(activeOrderId)) return;
+    dismissTakenOffer(activeOrderId);
+  }, [activeOrderId, cancelEpoch, dismissTakenOffer]);
 
   useEffect(() => {
     const prev = prevAvailableRef.current;
@@ -257,6 +350,32 @@ export function IncomingRideOrderHost() {
   }, [orders, bumpPool]);
 
   useEffect(() => {
+    const me = session?.riderId?.trim() || session?.userId?.trim() || "";
+    if (!session?.accessToken || session.role !== "rider") {
+      const stale =
+        useIncomingDispatchOfferStore.getState().lastOfferId || activeOrderIdRef.current;
+      if (stale) {
+        riderDispatchLog("DROP OFFER", { reason: "unauthenticated" });
+      }
+      stopOrderAlertSound();
+      setActiveOrderId(null);
+      setModalVisible(false);
+      modalOpenLoggedRef.current = null;
+      return;
+    }
+    if (offerOwnerRiderId && me && offerOwnerRiderId !== me && offerOwnerRiderId !== session.userId) {
+      riderDispatchLog("DROP OFFER", {
+        reason: "rider_mismatch",
+        owner: offerOwnerRiderId,
+        me,
+      });
+      stopOrderAlertSound();
+      setActiveOrderId(null);
+      setModalVisible(false);
+      modalOpenLoggedRef.current = null;
+      return;
+    }
+
     if (!isOnDuty) {
       stopOrderAlertSound();
       setActiveOrderId(null);
@@ -264,6 +383,7 @@ export function IncomingRideOrderHost() {
       expiredRef.current.clear();
       offerShownAtRef.current.clear();
       soundPlayedRef.current.clear();
+      modalOpenLoggedRef.current = null;
       bumpPool();
       return;
     }
@@ -272,27 +392,59 @@ export function IncomingRideOrderHost() {
       stopOrderAlertSound();
       setActiveOrderId(null);
       setModalVisible(false);
+      modalOpenLoggedRef.current = null;
       return;
     }
 
+    const newIds = detectNewOfferIds(
+      seenOfferIdsRef.current,
+      ordersRef.current.map((o) => o.id)
+    );
+    for (const id of newIds) seenOfferIdsRef.current.add(id);
+    if (newIds.length > 0) {
+      riderDispatchLog("OFFER HOST DETECTED", {
+        offerId: poolHeadId,
+        newOfferIds: newIds,
+      });
+    }
     markOfferShown(poolHeadId);
+    if (modalOpenLoggedRef.current !== poolHeadId) {
+      modalOpenLoggedRef.current = poolHeadId;
+      riderDispatchLog("MODAL OPENED", { offerId: poolHeadId });
+    }
 
     setActiveOrderId((current) => {
-      if (
-        current &&
-        orders.some(
+      const list = ordersRef.current;
+      const cancelled = useIncomingDispatchOfferStore.getState().cancelledOrderIds;
+      const head = list.find((o) => o.id === poolHeadId);
+      const headIsForce = head?.higherDispatchPriority === true;
+      const currentStillValid =
+        !!current &&
+        list.some(
           (o) =>
             o.id === current &&
             !rejectedRef.current.has(o.id) &&
-            !expiredRef.current.has(o.id)
-        )
-      ) {
+            !expiredRef.current.has(o.id) &&
+            !cancelled.includes(o.id)
+        );
+      // Stick to the open sheet unless a higher-priority Force Assignment arrives.
+      if (currentStillValid && !(headIsForce && current !== poolHeadId)) {
         return current;
       }
       return poolHeadId;
     });
     setModalVisible(true);
-  }, [isOnDuty, poolHeadId, orders, bumpPool, markOfferShown]);
+  }, [
+    session?.accessToken,
+    session?.role,
+    session?.userId,
+    session?.riderId,
+    offerOwnerRiderId,
+    isOnDuty,
+    poolHeadId,
+    bumpPool,
+    markOfferShown,
+  ]);
 
   useEffect(() => {
     if (!isOnDuty || !modalVisible || !poolHeadId || !acceptanceSettings) return;
@@ -313,9 +465,9 @@ export function IncomingRideOrderHost() {
   }, []);
 
   const handleRejectPress = useCallback(() => {
-    if (!activeOrderId) return;
+    if (!activeOrderIdRef.current) return;
     setRejectSheetOpen(true);
-  }, [activeOrderId]);
+  }, []);
 
   const handleRejectReason = useCallback(
     (reasonCode: string, reasonText: string) => {
@@ -356,46 +508,86 @@ export function IncomingRideOrderHost() {
       if (otherActive.length > 0) return;
 
       if (order.category === "ride") {
+        markAcceptLatency("T11_NAVIGATION_START");
+        logAcceptLatency();
         router.push(`/active-ride/${encodeURIComponent(order.id)}`);
         return;
       }
       if (order.category === "food") {
+        markAcceptLatency("T11_NAVIGATION_START");
+        logAcceptLatency();
         router.push(`/active-food/${encodeURIComponent(order.id)}`);
         return;
       }
+      markAcceptLatency("T11_NAVIGATION_START");
+      logAcceptLatency();
       router.push("/(tabs)/orders");
     },
     [queryClient]
   );
 
+  const acceptMutate = acceptOrder.mutate;
   const handleAccept = useCallback(() => {
-    if (!activeOrderId || !activeOrder || acceptOrder.isPending || acceptingRef.current) return;
+    const id = activeOrderIdRef.current;
+    const order = activeOrderRef.current;
+    if (!id || !order || acceptingRef.current) return;
     acceptingRef.current = true;
-    const id = activeOrderId;
-    const acceptRef = activeOrder.formattedOrderId?.trim() || id;
-    const snap = activeOrder;
+    riderDispatchLog("ACCEPT_REQUEST_START", { orderId: id });
+    markAcceptLatency("T1_HANDLER");
+    setAcceptLatencyOrderId(id);
+    const acceptRef = order.formattedOrderId?.trim() || id;
+    const snap = order;
 
     const finishAccept = () => {
       acceptingRef.current = false;
+      markAcceptLatency("T9_SUCCESS_STATE");
       locallyAcceptedRef.current.add(id);
       offerShownAtRef.current.delete(id);
+      useIncomingDispatchOfferStore.getState().clearOfferId(id);
       closeModal();
+      markAcceptLatency("T10_MODAL_CLOSE");
       setActiveOrderId(null);
+      setAccepting(false);
+      setAcceptBusyLabel(null);
       navigateAfterAccept(snap);
+      InteractionManager.runAfterInteractions(() => {
+        void queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      });
     };
 
-    acceptOrder.mutate(acceptRef, {
+    acceptMutate(acceptRef, {
       onSuccess: (data) => {
+        riderDispatchLog("ACCEPT_RESPONSE_RECEIVED", { orderId: id, status: "ok" });
+        riderDispatchLog("ORDER_ASSIGNED", { orderId: id });
         seedRiderOrderDetailCache(queryClient, data, [id, acceptRef]);
         finishAccept();
       },
       onError: async (err) => {
+        if (isRetryableRiderActionError(err) || classifyRiderActionFailure(err) === "busy") {
+          acceptingRef.current = true;
+          setAccepting(true);
+          const kind = classifyRiderActionFailure(err);
+          setAcceptBusyLabel(
+            kind === "timeout"
+              ? t("orders.incoming.checkingStatus", "Connection lost. Checking order status...")
+              : t("orders.incoming.waitingConnection", "Waiting for connection...")
+          );
+          return;
+        }
+
         acceptingRef.current = false;
+        setAccepting(false);
+        setAcceptBusyLabel(null);
+        riderDispatchLog("ACCEPT_RESPONSE_RECEIVED", {
+          orderId: id,
+          status: "error",
+          message: err instanceof Error ? err.message : String(err),
+        });
         const apiMessage = extractRiderAcceptErrorMessage(err);
 
         if (err instanceof ApiError && err.status === 409) {
           if (isOrderTakenByAnotherRiderError(err)) {
-            showAcceptedByAnotherRiderToast(id);
+            cancelIncomingDispatchOffer(queryClient, id, "accept_409");
             expiredRef.current.add(id);
             offerShownAtRef.current.delete(id);
             bumpPool();
@@ -404,7 +596,6 @@ export function IncomingRideOrderHost() {
             return;
           }
 
-          // Fast path: if we already own it (retry after timeout), resume nav without extra RTT only when probe finds us.
           try {
             const active = await riderApi.getActiveOrders();
             const hit = active.find(
@@ -453,19 +644,62 @@ export function IncomingRideOrderHost() {
         setAcceptSwipeResetKey((k) => k + 1);
       },
     });
-  }, [acceptOrder, activeOrderId, activeOrder, closeModal, t, bumpPool, navigateAfterAccept]);
+    setAccepting(true);
+    setAcceptBusyLabel(t("orders.incoming.accepting", "Accepting..."));
+  }, [acceptMutate, closeModal, t, bumpPool, navigateAfterAccept, queryClient]);
+
+  useEffect(() => {
+    if (!acceptPending) return;
+    const label = riderActionBusyLabel(
+      acceptPending.phase,
+      t("orders.incoming.accepting", "Accepting..."),
+      t("orders.incoming.waitingConnection", "Waiting for connection..."),
+      t("orders.incoming.checkingStatus", "Connection lost. Checking order status...")
+    );
+    if (label) setAcceptBusyLabel(label);
+  }, [acceptPending, t]);
+
+  useEffect(() => {
+    if (!acceptingRef.current) return;
+    if (acceptPending) return;
+    const id = activeOrderIdRef.current;
+    const snap = activeOrderRef.current;
+    if (!id || !snap) return;
+    const active =
+      queryClient.getQueryData<RiderOrderSummary[]>(RIDER_ACTIVE_ORDERS_QUERY_KEY) ?? [];
+    const hit = active.find(
+      (o) =>
+        o.id === id ||
+        o.id === snap.formattedOrderId ||
+        (snap.formattedOrderId && o.formattedOrderId === snap.formattedOrderId)
+    );
+    if (hit) {
+      seedRiderOrderDetailCache(queryClient, hit, [id, snap.formattedOrderId ?? ""]);
+      acceptingRef.current = false;
+      locallyAcceptedRef.current.add(id);
+      offerShownAtRef.current.delete(id);
+      useIncomingDispatchOfferStore.getState().clearOfferId(id);
+      closeModal();
+      setActiveOrderId(null);
+      setAccepting(false);
+      setAcceptBusyLabel(null);
+      navigateAfterAccept(snap);
+    }
+  }, [acceptPending, closeModal, navigateAfterAccept, queryClient]);
 
   const handleExpired = useCallback(() => {
-    if (activeOrderId && activeOrder) {
-      const orderRef = activeOrder.formattedOrderId?.trim() || activeOrderId;
+    const id = activeOrderIdRef.current;
+    const order = activeOrderRef.current;
+    if (id && order) {
+      const orderRef = order.formattedOrderId?.trim() || id;
       missOrderOffer.mutate({ orderId: orderRef, reason: "timer_expired" });
-      expiredRef.current.add(activeOrderId);
-      offerShownAtRef.current.delete(activeOrderId);
+      expiredRef.current.add(id);
+      offerShownAtRef.current.delete(id);
       bumpPool();
     }
     closeModal();
     setActiveOrderId(null);
-  }, [activeOrderId, activeOrder, closeModal, bumpPool, missOrderOffer]);
+  }, [closeModal, bumpPool, missOrderOffer]);
 
   if (!isOnDuty) return null;
 
@@ -474,7 +708,8 @@ export function IncomingRideOrderHost() {
       <IncomingOrderModal
         visible={modalVisible && activeOrder != null}
         order={activeOrder}
-        loading={acceptOrder.isPending}
+        loading={accepting || !!acceptPending}
+        loadingLabel={acceptBusyLabel}
         acceptSwipeResetKey={acceptSwipeResetKey}
         onAccept={handleAccept}
         onReject={handleRejectPress}

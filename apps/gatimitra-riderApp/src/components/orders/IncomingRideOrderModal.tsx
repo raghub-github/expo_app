@@ -1,36 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo } from "react";
 import {
   View,
   Text,
   Pressable,
   StyleSheet,
   ScrollView,
-  ActivityIndicator,
   Modal,
   Platform,
-  Animated as RNAnimated,
-  PanResponder,
-  Vibration,
 } from "react-native";
-import Animated, {
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withSequence,
-  withSpring,
-  withTiming,
-} from "react-native-reanimated";
-import Svg, { Path } from "react-native-svg";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme";
-import {
-  formatRiderAcceptCountdown,
-  riderAcceptSecondsLeft,
-  riderAcceptTimeProgress,
-} from "@/src/lib/riderOrderAcceptWindow";
+import { resolveNavScreenBottomInset } from "@/src/hooks/useRiderBottomInset";
 import {
   categoryBannerIcon,
   formatDistanceKm,
@@ -41,6 +23,9 @@ import {
 } from "@/src/lib/incoming-order-display";
 import { resolveRiderDisplayedEarning } from "@/src/lib/rider-earning-display";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
+import { OrderLocationPhotoBox } from "@/src/components/orders/OrderLocationPhotoBox";
+import { IncomingOfferAcceptFooter } from "@/src/components/orders/IncomingOfferAcceptFooter";
+import { IncomingOfferFuseBadge } from "@/src/components/orders/IncomingOfferFuseBadge";
 
 export type IncomingDispatchOrder = {
   id: string;
@@ -51,6 +36,8 @@ export type IncomingDispatchOrder = {
   itemCount?: number;
   pickup: { address: string; lat: number; lng: number };
   delivery: { address: string; lat: number; lng: number };
+  storeImageUrl?: string | null;
+  dropAddressImageUrl?: string | null;
   distanceKm?: number;
   pickupDistanceKm?: number;
   tripDistanceKm?: number;
@@ -79,6 +66,7 @@ type Props = {
   visible: boolean;
   order: IncomingDispatchOrder | null;
   loading?: boolean;
+  loadingLabel?: string | null;
   acceptSwipeResetKey?: number;
   onAccept: () => void;
   onReject: () => void;
@@ -87,274 +75,8 @@ type Props = {
 
 const H_PADDING = 16;
 const CARD_RADIUS = 16;
-const BADGE_W = 168;
 const BADGE_H = 42;
-const BADGE_STROKE = 4;
 const BADGE_OVERLAP = BADGE_H * 0.2;
-const URGENT_SECONDS = 20;
-const ACCEPT_HANDLE_W = 44;
-const ACCEPT_HANDLE_INSET = 6;
-
-function buildPillOutlinePath(w: number, h: number, inset: number): string {
-  const x = inset;
-  const y = inset;
-  const iw = w - inset * 2;
-  const ih = h - inset * 2;
-  const r = ih / 2;
-  if (iw < ih) return "";
-  const topCx = x + iw / 2;
-  return [
-    `M ${topCx} ${y}`,
-    `L ${x + iw - r} ${y}`,
-    `A ${r} ${r} 0 0 1 ${x + iw} ${y + r}`,
-    `V ${y + ih - r}`,
-    `A ${r} ${r} 0 0 1 ${x + iw - r} ${y + ih}`,
-    `H ${x + r}`,
-    `A ${r} ${r} 0 0 1 ${x} ${y + ih - r}`,
-    `V ${y + r}`,
-    `A ${r} ${r} 0 0 1 ${x + r} ${y}`,
-    `H ${topCx}`,
-    "Z",
-  ].join(" ");
-}
-
-function pillOutlineLength(w: number, h: number, inset: number): number {
-  const iw = w - inset * 2;
-  const ih = h - inset * 2;
-  if (iw < ih) return 0;
-  return 2 * (iw - ih) + Math.PI * ih;
-}
-
-function NewRideFusePill({
-  borderProgress,
-  urgent,
-  label,
-}: {
-  borderProgress: number;
-  urgent: boolean;
-  label: string;
-}) {
-  const pulse = useSharedValue(1);
-  const entryScale = useSharedValue(0.94);
-
-  useEffect(() => {
-    entryScale.value = withSpring(1, { damping: 14, stiffness: 200 });
-    const pulseTo = urgent ? 1.04 : 1.02;
-    const pulseMs = urgent ? 420 : 850;
-    pulse.value = withRepeat(
-      withSequence(
-        withTiming(pulseTo, { duration: pulseMs, easing: Easing.inOut(Easing.ease) }),
-        withTiming(1, { duration: pulseMs, easing: Easing.inOut(Easing.ease) })
-      ),
-      -1,
-      false
-    );
-  }, [entryScale, pulse, urgent]);
-
-  const shellStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: entryScale.value * pulse.value }],
-  }));
-
-  const progress = Math.max(0, Math.min(1, borderProgress));
-  const borderColor = urgent ? colors.error[600] : colors.success[700];
-  const trackColor = urgent ? "rgba(220, 38, 38, 0.28)" : "rgba(21, 128, 61, 0.24)";
-  const inset = BADGE_STROKE / 2;
-  const pathD = buildPillOutlinePath(BADGE_W, BADGE_H, inset);
-  const pathLen = pillOutlineLength(BADGE_W, BADGE_H, inset);
-  const dashOffset = (1 - progress) * pathLen;
-
-  return (
-    <Animated.View style={[styles.badgeFuseShell, shellStyle]}>
-      <Svg width={BADGE_W} height={BADGE_H} style={styles.badgeFuseSvg}>
-        <Path d={pathD} stroke={trackColor} strokeWidth={BADGE_STROKE} fill="#FFFFFF" />
-        {progress > 0.005 ? (
-          <Path
-            d={pathD}
-            stroke={borderColor}
-            strokeWidth={BADGE_STROKE}
-            fill="none"
-            strokeLinecap="round"
-            strokeDasharray={`${pathLen} ${pathLen}`}
-            strokeDashoffset={dashOffset}
-          />
-        ) : null}
-      </Svg>
-      <View style={styles.newOrderBadgePill} pointerEvents="none">
-        <Text style={[styles.newOrderBadgeText, urgent && styles.newOrderBadgeTextUrgent]}>
-          {label}
-        </Text>
-      </View>
-    </Animated.View>
-  );
-}
-
-function SwipeHintArrows({ color }: { color: string }) {
-  const shift = useSharedValue(0);
-
-  useEffect(() => {
-    shift.value = withRepeat(
-      withSequence(
-        withTiming(8, { duration: 520, easing: Easing.inOut(Easing.ease) }),
-        withTiming(0, { duration: 520, easing: Easing.inOut(Easing.ease) })
-      ),
-      -1,
-      false
-    );
-  }, [shift]);
-
-  const arrowStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: shift.value }],
-  }));
-
-  return (
-    <Animated.View style={[styles.swipeHintArrows, arrowStyle]}>
-      <Ionicons name="chevron-forward" size={15} color={color} />
-      <Ionicons name="chevron-forward" size={15} color={color} style={styles.acceptChevronSecond} />
-    </Animated.View>
-  );
-}
-
-function AcceptRideSwipeButton({
-  loading,
-  disabled,
-  countdown,
-  timeProgress,
-  urgent,
-  label,
-  resetKey = 0,
-  onPress,
-}: {
-  loading: boolean;
-  disabled: boolean;
-  countdown: string;
-  timeProgress: number;
-  urgent: boolean;
-  label: string;
-  resetKey?: number;
-  onPress: () => void;
-}) {
-  const trackWidth = useRef(0);
-  const trackWidthSv = useSharedValue(0);
-  const dragX = useRef(new RNAnimated.Value(0)).current;
-  const confirmedRef = useRef(false);
-  const btnPulse = useSharedValue(1);
-  const progressWidth = useSharedValue(timeProgress * 100);
-
-  useEffect(() => {
-    btnPulse.value = withRepeat(
-      withSequence(
-        withTiming(1.012, { duration: 1100, easing: Easing.inOut(Easing.ease) }),
-        withTiming(1, { duration: 1100, easing: Easing.inOut(Easing.ease) })
-      ),
-      -1,
-      false
-    );
-  }, [btnPulse]);
-
-  useEffect(() => {
-    progressWidth.value = withTiming(timeProgress * 100, { duration: 280, easing: Easing.linear });
-  }, [progressWidth, timeProgress]);
-
-  const resetDrag = useCallback(() => {
-    confirmedRef.current = false;
-    RNAnimated.timing(dragX, {
-      toValue: 0,
-      duration: 180,
-      useNativeDriver: true,
-    }).start();
-  }, [dragX]);
-
-  useEffect(() => {
-    resetDrag();
-  }, [resetKey, resetDrag]);
-
-  const confirmSwipe = useCallback(() => {
-    if (confirmedRef.current || disabled || loading) return;
-    confirmedRef.current = true;
-    Vibration.vibrate(15);
-    const max = Math.max(0, trackWidth.current - ACCEPT_HANDLE_W - ACCEPT_HANDLE_INSET * 2);
-    dragX.setValue(max);
-    onPress();
-  }, [disabled, loading, onPress, dragX]);
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => !disabled && !loading,
-      onMoveShouldSetPanResponder: (_, gesture) =>
-        !disabled && !loading && Math.abs(gesture.dx) > 6,
-      onStartShouldSetPanResponderCapture: () => !disabled && !loading,
-      onMoveShouldSetPanResponderCapture: (_, gesture) =>
-        !disabled && !loading && Math.abs(gesture.dx) > 6,
-      onPanResponderTerminationRequest: () => false,
-      onPanResponderMove: (_, gesture) => {
-        if (disabled || loading) return;
-        const max = Math.max(0, trackWidth.current - ACCEPT_HANDLE_W - ACCEPT_HANDLE_INSET * 2);
-        dragX.setValue(Math.min(max, Math.max(0, gesture.dx)));
-      },
-      onPanResponderRelease: (_, gesture) => {
-        if (disabled || loading) {
-          resetDrag();
-          return;
-        }
-        const max = Math.max(0, trackWidth.current - ACCEPT_HANDLE_W - ACCEPT_HANDLE_INSET * 2);
-        const threshold = Math.max(22, max * 0.15);
-        if (gesture.dx >= threshold) {
-          // Fire accept immediately — animate handle in parallel (target <300ms feel).
-          confirmSwipe();
-          RNAnimated.timing(dragX, {
-            toValue: max,
-            duration: 60,
-            useNativeDriver: true,
-          }).start();
-        } else {
-          resetDrag();
-        }
-      },
-      onPanResponderTerminate: () => {
-        resetDrag();
-      },
-    })
-  ).current;
-
-  const wrapStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: btnPulse.value }],
-  }));
-
-  const progressStyle = useAnimatedStyle(() => ({
-    width: Math.max(0, (progressWidth.value / 100) * trackWidthSv.value),
-  }));
-
-  const accent = urgent ? colors.error[600] : colors.success[600];
-  const btnBg = urgent ? colors.error[600] : colors.success[500];
-
-  return (
-    <Animated.View style={[styles.acceptBtnWrap, wrapStyle]}>
-      <View
-        style={[styles.acceptBtn, { backgroundColor: btnBg }, disabled && styles.btnDisabled]}
-        onLayout={(e) => {
-          const w = e.nativeEvent.layout.width;
-          trackWidth.current = w;
-          trackWidthSv.value = w;
-        }}
-      >
-        <Animated.View style={[styles.acceptProgressFill, progressStyle]} />
-        <Text style={styles.acceptText} pointerEvents="none">
-          {label} ({countdown})
-        </Text>
-        <RNAnimated.View
-          style={[styles.acceptHandle, { transform: [{ translateX: dragX }] }]}
-          {...panResponder.panHandlers}
-        >
-          {loading ? (
-            <ActivityIndicator color={accent} size="small" />
-          ) : (
-            <SwipeHintArrows color={accent} />
-          )}
-        </RNAnimated.View>
-      </View>
-    </Animated.View>
-  );
-}
 
 function compactAddress(raw: string): string {
   const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
@@ -379,10 +101,11 @@ function formatRideTypeLabel(rideType?: string): string {
   return formatOrderTypeLabel(rideType) || "Ride";
 }
 
-export function IncomingOrderModal({
+function IncomingOrderModalInner({
   visible,
   order,
   loading = false,
+  loadingLabel = null,
   acceptSwipeResetKey = 0,
   onAccept,
   onReject,
@@ -390,35 +113,6 @@ export function IncomingOrderModal({
 }: Props) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
-  const [nowTick, setNowTick] = useStateNow();
-
-  const secondsLeft = useMemo(() => {
-    if (!order) return 0;
-    return riderAcceptSecondsLeft(order);
-  }, [order, nowTick]);
-
-  const mmss = useMemo(() => formatRiderAcceptCountdown(secondsLeft), [secondsLeft]);
-  const fuseProgress = useMemo(() => {
-    if (!order) return 1;
-    return riderAcceptTimeProgress(order);
-  }, [order, nowTick]);
-  const fuseUrgent = secondsLeft > 0 && secondsLeft <= URGENT_SECONDS;
-
-  const visibleSinceRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (visible && order) {
-      visibleSinceRef.current = Date.now();
-    } else {
-      visibleSinceRef.current = null;
-    }
-  }, [visible, order?.id]);
-
-  useEffect(() => {
-    if (!visible || !order || secondsLeft > 0 || loading) return;
-    const shownAt = visibleSinceRef.current;
-    if (shownAt != null && Date.now() - shownAt < 600) return;
-    onExpired?.();
-  }, [visible, order, secondsLeft, loading, onExpired]);
 
   if (!order) return null;
 
@@ -449,7 +143,8 @@ export function IncomingOrderModal({
       ? Math.round(order.prePickupCompanyFunded)
       : 0;
   const totalEarning = Math.round(resolveRiderDisplayedEarning(order));
-  const footerBottomInset = Math.max(insets.bottom, Platform.OS === "android" ? 24 : 12) + 8;
+  // Full-screen overlay covers the tab bar — only pad for the system nav / home indicator.
+  const footerBottomInset = resolveNavScreenBottomInset(insets.bottom) + 2;
   const pickupKm = order.pickupDistanceKm;
   const tripKm = order.tripDistanceKm ?? order.distanceKm;
   const totalKm =
@@ -471,11 +166,7 @@ export function IncomingOrderModal({
 
         <View style={styles.sheetStack}>
           <View style={styles.sheetOverlapHeader} pointerEvents="box-none">
-            <NewRideFusePill
-              borderProgress={fuseProgress}
-              urgent={fuseUrgent}
-              label={badgeLabel}
-            />
+            <IncomingOfferFuseBadge order={order} visible={visible} label={badgeLabel} />
             <View style={styles.rejectAnchor} pointerEvents="box-none">
               <Pressable
                 onPress={onReject}
@@ -668,23 +359,26 @@ export function IncomingOrderModal({
                       {compactAddress(order.delivery.address)}
                     </Text>
                   </View>
+                  <OrderLocationPhotoBox
+                    inline
+                    uri={order.dropAddressImageUrl}
+                    label={t("orders.activeFood.addressPhoto", "Address photo")}
+                  />
                 </View>
               </View>
             </ScrollView>
 
-            <View style={[styles.footer, { paddingBottom: footerBottomInset }]}>
-              <AcceptRideSwipeButton
-                key={order.id}
-                loading={loading}
-                disabled={secondsLeft <= 0}
-                countdown={mmss}
-                timeProgress={fuseProgress}
-                urgent={fuseUrgent}
-                label={acceptLabel}
-                resetKey={acceptSwipeResetKey}
-                onPress={onAccept}
-              />
-            </View>
+            <IncomingOfferAcceptFooter
+              order={order}
+              visible={visible}
+              loading={loading}
+              loadingLabel={loadingLabel}
+              acceptLabel={acceptLabel}
+              resetKey={acceptSwipeResetKey}
+              paddingBottom={footerBottomInset}
+              onAccept={onAccept}
+              onExpired={onExpired}
+            />
           </View>
         </View>
       </View>
@@ -692,18 +386,42 @@ export function IncomingOrderModal({
   );
 }
 
+export const IncomingOrderModal = memo(IncomingOrderModalInner, (prev, next) => {
+  if (
+    prev.visible !== next.visible ||
+    prev.loading !== next.loading ||
+    prev.loadingLabel !== next.loadingLabel ||
+    prev.acceptSwipeResetKey !== next.acceptSwipeResetKey ||
+    prev.onAccept !== next.onAccept ||
+    prev.onReject !== next.onReject ||
+    prev.onExpired !== next.onExpired
+  ) {
+    return false;
+  }
+  const a = prev.order;
+  const b = next.order;
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.id === b.id &&
+    a.acceptDeadlineAt === b.acceptDeadlineAt &&
+    a.estimatedEarning === b.estimatedEarning &&
+    a.totalEarning === b.totalEarning &&
+    a.baseEarning === b.baseEarning &&
+    a.customerTipAmount === b.customerTipAmount &&
+    a.itemCount === b.itemCount &&
+    a.merchantName === b.merchantName &&
+    a.rideType === b.rideType &&
+    a.pickup.address === b.pickup.address &&
+    a.delivery.address === b.delivery.address &&
+    a.storeImageUrl === b.storeImageUrl &&
+    a.dropAddressImageUrl === b.dropAddressImageUrl &&
+    a.offerShownAtMs === b.offerShownAtMs
+  );
+});
+
 /** @deprecated use IncomingOrderModal */
 export const IncomingRideOrderModal = IncomingOrderModal;
-
-/** Tick every 100ms while modal is mounted */
-function useStateNow(): [number, () => void] {
-  const [nowTick, setNowTick] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNowTick(Date.now()), 100);
-    return () => clearInterval(t);
-  }, []);
-  return [nowTick, () => setNowTick(Date.now())];
-}
 
 const styles = StyleSheet.create({
   overlay: {
@@ -738,42 +456,6 @@ const styles = StyleSheet.create({
       android: { elevation: 16 },
       default: {},
     }),
-  },
-  badgeFuseShell: {
-    width: BADGE_W,
-    height: BADGE_H,
-    alignItems: "center",
-    justifyContent: "center",
-    position: "relative",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.06,
-        shadowRadius: 4,
-      },
-      android: { elevation: 4 },
-      default: {},
-    }),
-  },
-  badgeFuseSvg: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-  },
-  newOrderBadgePill: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  newOrderBadgeText: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: colors.gray[900],
-    letterSpacing: 0.15,
-  },
-  newOrderBadgeTextUrgent: {
-    color: colors.error[700],
   },
   rejectAnchor: {
     position: "absolute",
@@ -1101,55 +783,6 @@ const styles = StyleSheet.create({
     color: colors.gray[800],
     marginTop: 3,
     lineHeight: 18,
-  },
-  footer: {
-    paddingHorizontal: H_PADDING,
-    paddingTop: 6,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.gray[200],
-    backgroundColor: "#FFFFFF",
-  },
-  acceptBtnWrap: {
-    width: "100%",
-  },
-  acceptBtn: {
-    height: 52,
-    borderRadius: 14,
-    overflow: "hidden",
-    justifyContent: "center",
-    alignItems: "center",
-    position: "relative",
-  },
-  acceptProgressFill: {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    bottom: 0,
-    backgroundColor: "rgba(255,255,255,0.18)",
-  },
-  acceptText: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#FFFFFF",
-    letterSpacing: 0.2,
-  },
-  acceptHandle: {
-    position: "absolute",
-    left: ACCEPT_HANDLE_INSET,
-    top: ACCEPT_HANDLE_INSET,
-    width: ACCEPT_HANDLE_W,
-    height: 52 - ACCEPT_HANDLE_INSET * 2,
-    borderRadius: 10,
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  swipeHintArrows: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  acceptChevronSecond: {
-    marginLeft: -8,
   },
   btnDisabled: { opacity: 0.55 },
   pressed: { opacity: 0.85 },

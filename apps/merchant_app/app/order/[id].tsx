@@ -49,6 +49,7 @@ import {
   orderRecordToApiFoodOrder,
   type OrderStage,
 } from "@/hooks/useOrders";
+import { isLiveFoodOrderForContact } from "@/lib/orderRecord";
 import { useOrdersContext } from "@/context/OrdersContext";
 import {
   apiFoodOrderToRiderLog,
@@ -316,6 +317,22 @@ export default function OrderDetailScreen() {
     () => (order ? apiStatusToStage(order.order_status) : "created"),
     [order]
   );
+  const orderIsTerminal =
+    isTerminalOrderStatus(order?.order_status) ||
+    stage === "delivered" ||
+    stage === "rejected" ||
+    stage === "rto" ||
+    Boolean(order?.delivered_at) ||
+    Boolean(order?.cancelled_at);
+  const allowContact =
+    Boolean(order) &&
+    !orderIsTerminal &&
+    isLiveFoodOrderForContact(order?.order_status);
+
+  useEffect(() => {
+    if (orderIsTerminal) setTrackingOpen(false);
+  }, [orderIsTerminal]);
+
   const statusStyle = STAGE_UI[stage];
   const timelineEntries = useMemo(
     () =>
@@ -661,8 +678,9 @@ export default function OrderDetailScreen() {
                   orderStage={stage}
                   showPendingAssign={showPendingAssign}
                   nearbySummary={nearbyRiderSummary}
+                  allowCall={allowContact}
                 />
-                {displayRider?.rider_id ? (
+                {displayRider?.rider_id && !orderIsTerminal ? (
                   <Pressable
                     onPress={() => setTrackingOpen(true)}
                     style={styles.trackBtn}
@@ -677,7 +695,7 @@ export default function OrderDetailScreen() {
             ) : null}
 
             <View style={styles.detailSection}>
-              <OrderDetailCustomerSection order={order} />
+              <OrderDetailCustomerSection order={order} allowCall={allowContact} />
             </View>
 
             <View style={styles.detailSection}>
@@ -755,11 +773,11 @@ export default function OrderDetailScreen() {
       </ScrollView>
 
       <MerchantRiderTrackingModal
-        visible={trackingOpen}
+        visible={trackingOpen && !orderIsTerminal}
         onClose={() => setTrackingOpen(false)}
         storeId={storeId}
         ordersFoodId={ordersFoodId}
-        ended={isTerminalOrderStatus(order?.order_status)}
+        ended={orderIsTerminal}
       />
     </View>
   );

@@ -93,15 +93,17 @@ import {
 import {
   haversineDistanceMeters,
   listDispatchPoolOrdersForRider,
+  listPendingDispatchPoolOrdersForRider,
+  loadRiderGpsLastKnown,
   resolveRiderAssignmentContext,
-  validateRiderAcceptance,
   RiderDispatchIneligibleError,
   FOOD_DISPATCHABLE_ORDER_STATUSES,
+  isFoodOrderDispatchable,
   type DispatchPoolOrderRow,
 } from "../../lib/order-assignment-engine.js";
-import { completeOrderDispatch } from "../../lib/order-dispatch.service.js";
+import { finalizeWinningDispatchClaim } from "../../lib/dispatch-claim-finalize.js";
 import { fetchFoodDispatchableStatusesForFlow } from "../../lib/food-rider-accept-flow.js";
-import { recordDispatchAssignmentAudit, recordPendingDispatchOffersMissed, listPendingDispatchOffersForOrder } from "../../lib/rider-dispatch-assignment-audit.js";
+import { recordDispatchAssignmentAudit, listPendingDispatchOffersForOrder } from "../../lib/rider-dispatch-assignment-audit.js";
 import {
   recordRideRiderAccepted,
   recordRideRiderReachedPickup,
@@ -122,6 +124,7 @@ import {
   resolvePersonRideCustomerPayable,
 } from "../../lib/ride-customer-payable.js";
 import { reconcileAndSettlePersonRideCustomerPayable } from "../../lib/settle-zero-payable-person-ride.js";
+import { loadRiderOrderLocationMedia } from "../../lib/rider-order-location-media.js";
 
 export const RIDER_ACCEPT_WINDOW_SEC = 60;
 export {
@@ -259,6 +262,10 @@ export type RiderOrderSummary = {
   walletCreditPending?: boolean;
   /** Average rider feedback rating for this customer (1–5). */
   customerRating?: number | null;
+  /** Customer saved-address door / building photo for reach-customer. */
+  dropAddressImageUrl?: string | null;
+  /** Merchant pickup location photo — not the store marketing banner. */
+  storeImageUrl?: string | null;
   /** Person ride: passenger's star rating for this trip (1–5). */
   passengerRating?: number | null;
   /** Admin/dashboard cancellation penalty debited from rider wallet. */
@@ -968,6 +975,33 @@ function resolveFoodWorkflowMilestones(
   };
 }
 
+async function withFoodLocationMedia(
+  summary: RiderOrderSummary,
+  row: {
+    orderId?: string | null;
+    customerId?: number | null;
+    merchantStoreId?: number | null;
+    dropLat?: string | number | null;
+    dropLon?: string | number | null;
+  }
+): Promise<RiderOrderSummary> {
+  const orderId = summary.id?.trim() || row.orderId?.trim() || "";
+  if (!orderId) return summary;
+  try {
+    const media = await loadRiderOrderLocationMedia({
+      orderId,
+      customerId: row.customerId != null ? Number(row.customerId) : null,
+      merchantStoreId: row.merchantStoreId != null ? Number(row.merchantStoreId) : null,
+      dropLat: row.dropLat != null ? Number(row.dropLat) : null,
+      dropLon: row.dropLon != null ? Number(row.dropLon) : null,
+    });
+    return { ...summary, ...media };
+  } catch (err) {
+    console.warn("[rider-media] attach failed", orderId, (err as Error).message);
+    return summary;
+  }
+}
+
 function mapFoodRowWithStatus(
   row: FoodRowWithStatus,
   ledgerTotal?: number | null,
@@ -1332,14 +1366,40 @@ async function hydrateDispatchPoolOrder(
         alternateContactPhone: ordersCore.alternateContactPhone,
         deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
         deliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+        coreRiderId: ordersCore.riderId,
+        foodRiderId: ordersFood.riderId,
+        foodStatus: ordersFood.orderStatus,
+        foodCancelledAt: ordersFood.cancelledAt,
       })
       .from(ordersCore)
       .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
       .where(eq(ordersCore.id, entry.orderCoreId))
       .limit(1);
     if (!row?.orderId) return null;
+    if (row.foodCancelledAt != null) return null;
+
+    // Force Assignment keeps the current rider on the order until accept.
+    // Normal pool hydration must skip assigned food orders — but the target
+    // rider of a pending force offer must still see/accept it via poll.
+    const hasAssignedRider = row.coreRiderId != null || row.foodRiderId != null;
+    if (hasAssignedRider || !isFoodOrderDispatchable(row.foodStatus)) {
+      try {
+        const { getPendingForceAssignmentForRider } = await import(
+          "../../lib/force-assignment.service.js"
+        );
+        const force = await getPendingForceAssignmentForRider(riderId);
+        if (!force || force.orderCoreId !== entry.orderCoreId) return null;
+      } catch {
+        return null;
+      }
+    }
+
     return applyGeoSlabRiderEarnings(
-      enrichOrderDistances(mapFoodRow(row), riderLat, riderLng),
+      {
+        ...enrichOrderDistances(mapFoodRow(row), riderLat, riderLng),
+        // Preserve pool-row priority (Force Assignment inject sets this).
+        higherDispatchPriority: entry.higherDispatchPriority === true,
+      },
       { riderId, riderLat, riderLng, orderCoreId: entry.orderCoreId }
     );
   }
@@ -1381,24 +1441,94 @@ export async function getAvailableOrdersForRider(riderId: number): Promise<Rider
   const { isRiderSubscriptionDispatchBlocked } = await import(
     "../../lib/rider-subscription-wallet.js"
   );
-  if (await isRiderSubscriptionDispatchBlocked(riderId)) {
-    return [];
-  }
+  const subscriptionBlocked = await isRiderSubscriptionDispatchBlocked(riderId);
 
-  const pool = await listDispatchPoolOrdersForRider(riderId);
-  if (pool.length === 0) return [];
+  const [pool, pending] = await Promise.all([
+    subscriptionBlocked ? Promise.resolve([] as DispatchPoolOrderRow[]) : listDispatchPoolOrdersForRider(riderId),
+    subscriptionBlocked
+      ? (async () => {
+          try {
+            const { appendForceAssignmentPoolRow } = await import(
+              "../../lib/force-assignment.service.js"
+            );
+            return await appendForceAssignmentPoolRow(riderId, []);
+          } catch {
+            return [] as DispatchPoolOrderRow[];
+          }
+        })()
+      : listPendingDispatchPoolOrdersForRider(riderId),
+  ]);
+
+  const byId = new Map<number, DispatchPoolOrderRow>();
+  for (const row of pool) byId.set(row.orderCoreId, row);
+  for (const row of pending) {
+    if (!byId.has(row.orderCoreId)) byId.set(row.orderCoreId, row);
+  }
+  const merged = [...byId.values()];
+  if (merged.length === 0) return [];
 
   const ctx = await resolveRiderAssignmentContext(riderId, { skipAssignmentCheck: true });
-  if (!ctx) return [];
+  const lastKnown = ctx ? null : await loadRiderGpsLastKnown(riderId);
+  const gps = ctx
+    ? { lat: ctx.lat, lng: ctx.lng }
+    : lastKnown
+      ? { lat: lastKnown.lat, lng: lastKnown.lng }
+      : merged[0]
+        ? { lat: merged[0].pickupLat, lng: merged[0].pickupLng }
+        : null;
+  if (!gps) return [];
 
   const summaries: RiderOrderSummary[] = [];
-  for (const entry of pool) {
+  for (const entry of merged) {
     try {
-      const summary = await hydrateDispatchPoolOrder(entry, ctx.lat, ctx.lng, riderId);
+      const summary = await hydrateDispatchPoolOrder(entry, gps.lat, gps.lng, riderId);
       if (summary) summaries.push(summary);
     } catch (err) {
       console.warn(
         "[dispatch] hydrate available order failed",
+        entry.orderId,
+        (err as Error).message
+      );
+    }
+  }
+  return summaries;
+}
+
+export async function getPendingOffersForRider(riderId: number): Promise<RiderOrderSummary[]> {
+  const { isRiderSubscriptionDispatchBlocked } = await import(
+    "../../lib/rider-subscription-wallet.js"
+  );
+  const subscriptionBlocked = await isRiderSubscriptionDispatchBlocked(riderId);
+
+  const pending = subscriptionBlocked
+    ? await (async () => {
+        try {
+          const { appendForceAssignmentPoolRow } = await import(
+            "../../lib/force-assignment.service.js"
+          );
+          return await appendForceAssignmentPoolRow(riderId, []);
+        } catch {
+          return [] as DispatchPoolOrderRow[];
+        }
+      })()
+    : await listPendingDispatchPoolOrdersForRider(riderId);
+  if (pending.length === 0) return [];
+
+  const gps =
+    (await loadRiderGpsLastKnown(riderId)) ??
+    (pending[0]
+      ? { lat: pending[0].pickupLat, lng: pending[0].pickupLng, updatedAt: new Date(0) }
+      : null);
+  if (!gps) return [];
+
+  const summaries: RiderOrderSummary[] = [];
+  for (const entry of pending) {
+    try {
+      const summary = await hydrateDispatchPoolOrder(entry, gps.lat, gps.lng, riderId);
+      if (summary) summaries.push(summary);
+    } catch (err) {
+      console.warn(
+        "[dispatch] hydrate pending offer failed",
         entry.orderId,
         (err as Error).message
       );
@@ -1569,6 +1699,7 @@ export async function getActiveOrdersForRider(riderId: number): Promise<RiderOrd
         customerName: ordersFood.customerName,
         customerPhone: ordersFood.customerPhone,
         customerId: ordersCore.customerId,
+        merchantStoreId: ordersCore.merchantStoreId,
         alternateContactName: ordersCore.alternateContactName,
         alternateContactPhone: ordersCore.alternateContactPhone,
         deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
@@ -1652,9 +1783,8 @@ export async function getActiveOrdersForRider(riderId: number): Promise<RiderOrd
       )
   );
 
-  const summaries: RiderOrderSummary[] = [
-    ...rideSummaries,
-    ...foodRows.filter((r) => r.orderId).map((r) => {
+  const foodSummaries = await Promise.all(
+    foodRows.filter((r) => r.orderId).map(async (r) => {
       const coreId = Number((r as { coreId?: unknown }).coreId);
       const activeAssignment =
         Number.isFinite(coreId) && coreId > 0
@@ -1663,8 +1793,14 @@ export async function getActiveOrdersForRider(riderId: number): Promise<RiderOrd
       const summary = mapFoodRowWithStatus(r, undefined, null, activeAssignment);
       const customerId = Number((r as { customerId?: unknown }).customerId);
       const rating = customerId > 0 ? ratingByCustomer.get(customerId) : undefined;
-      return rating != null ? { ...summary, customerRating: rating } : summary;
-    }),
+      const withRating = rating != null ? { ...summary, customerRating: rating } : summary;
+      return withFoodLocationMedia(withRating, r);
+    })
+  );
+
+  const summaries: RiderOrderSummary[] = [
+    ...rideSummaries,
+    ...foodSummaries,
     ...parcelRows.filter((r) => r.orderId).map((r) => mapParcelRowWithStatus(r)),
   ];
 
@@ -2334,26 +2470,79 @@ async function loadOwnedParcelSummaryForRider(
   return mapParcelRowWithStatus(row, null, null);
 }
 
+function throwOrderAlreadyAssigned(args: {
+  orderId: string;
+  attemptedRiderId: number;
+  winnerRiderId?: number | null;
+}): never {
+  console.info(
+    "[dispatch] ORDER_ALREADY_ASSIGNED",
+    JSON.stringify({
+      order: args.orderId,
+      winner: args.winnerRiderId ?? null,
+      attempted_rider: args.attemptedRiderId,
+    })
+  );
+  throw Object.assign(new Error("Order already assigned"), {
+    statusCode: 409,
+    code: "ORDER_ALREADY_ASSIGNED",
+  });
+}
+
+function enqueueAcceptSideEffect(label: string, work: () => Promise<unknown>): void {
+  void work().catch((err) => {
+    console.warn(`[${label}] post-accept side effect failed:`, (err as Error)?.message ?? err);
+  });
+}
+
+async function assertOfferStillClaimable(riderId: number, orderCoreId: number): Promise<void> {
+  const [{ isOrderDispatchManualHold }, { isRiderExcludedFromOrderDispatch }] = await Promise.all([
+    import("../../lib/order-dispatch-manual-hold.js"),
+    import("../../lib/rider-dispatch-order-exclusion.js"),
+  ]);
+  const [hold, excluded] = await Promise.all([
+    isOrderDispatchManualHold(orderCoreId),
+    isRiderExcludedFromOrderDispatch(riderId, orderCoreId),
+  ]);
+  if (hold) {
+    throw Object.assign(new Error("This order is waiting for admin assignment"), { statusCode: 409 });
+  }
+  if (excluded) {
+    throw Object.assign(new Error("This order is no longer available to you"), { statusCode: 409 });
+  }
+}
+
 export async function acceptOrderForRider(
   riderId: number,
-  orderRef: string
+  orderRef: string,
+  opts?: { idempotencyKey?: string }
 ): Promise<RiderOrderSummary> {
-  const { isRiderSubscriptionDispatchBlocked } = await import(
+  const startedAt = Date.now();
+  const idempotencyKey = opts?.idempotencyKey?.trim() || "";
+  console.info(
+    "[dispatch] OFFER_ACCEPT_ATTEMPT",
+    JSON.stringify({ order: orderRef, rider: riderId, idempotencyKey: idempotencyKey || null })
+  );
+  console.info(
+    "[acceptOrderForRider] accept_request_received",
+    JSON.stringify({ riderId, orderRef, t: startedAt })
+  );
+
+  const { isRiderSubscriptionDispatchBlockedReadOnly } = await import(
     "../../lib/rider-subscription-wallet.js"
   );
-  if (await isRiderSubscriptionDispatchBlocked(riderId)) {
+  if (await isRiderSubscriptionDispatchBlockedReadOnly(riderId)) {
     throw Object.assign(new Error("Subscription dues pending — clear outstanding balance to accept orders"), {
       statusCode: 403,
       code: "subscription_dispatch_blocked",
     });
   }
+  const afterSubMs = Date.now() - startedAt;
 
   const db = getDb();
   const [meta] = await db
     .select({
       orderType: ordersCore.orderType,
-      pickupLat: ordersCore.pickupLat,
-      pickupLon: ordersCore.pickupLon,
     })
     .from(ordersCore)
     .where(orderRefWhere(orderRef))
@@ -2362,45 +2551,49 @@ export async function acceptOrderForRider(
   if (!meta?.orderType) {
     throw Object.assign(new Error("Order not found"), { statusCode: 404 });
   }
+  const afterMetaMs = Date.now() - startedAt;
 
-  // Backend-authoritative service-eligibility gate (document verification + vehicle
-  // class/fuel/commercial + geo policy). Rollout-gated (RIDER_ELIGIBILITY_MODE:
-  // shadow by default → logs only; enforce → throws 403). Never trusts the app's
-  // service toggle, and never blocks on an infra error.
-  {
-    const { assertRiderEligibleForOrderAccept } = await import(
-      "../rider-eligibility/riderEligibility.service.js"
-    );
-    await assertRiderEligibleForOrderAccept({
-      riderId,
-      orderType: meta.orderType,
-      pickupLat: meta.pickupLat != null ? Number(meta.pickupLat) : null,
-      pickupLng: meta.pickupLon != null ? Number(meta.pickupLon) : null,
-    });
-  }
+  const acceptOpts = { skipPickupRadius: true };
 
   let summary: RiderOrderSummary;
   if (meta.orderType === "food") {
-    summary = await acceptFoodOrderForRider(riderId, orderRef);
+    summary = await acceptFoodOrderForRider(riderId, orderRef, acceptOpts);
   } else if (meta.orderType === "person_ride") {
-    summary = await acceptRideOrderForRider(riderId, orderRef);
+    summary = await acceptRideOrderForRider(riderId, orderRef, acceptOpts);
   } else if (meta.orderType === "parcel") {
-    summary = await acceptParcelOrderForRider(riderId, orderRef);
+    summary = await acceptParcelOrderForRider(riderId, orderRef, acceptOpts);
   } else {
     throw Object.assign(new Error("Order type not supported for rider accept"), { statusCode: 409 });
   }
 
-  // Daily GMitra Max: charge on first accept of the IST day (best-effort).
-  try {
+  const afterClaimMs = Date.now() - startedAt;
+  console.info(
+    "[acceptOrderForRider] accept_response_sent",
+    JSON.stringify({
+      riderId,
+      orderRef,
+      orderType: meta.orderType,
+      subscriptionMs: afterSubMs,
+      metaMs: afterMetaMs,
+      claimMs: afterClaimMs,
+    })
+  );
+
+  enqueueAcceptSideEffect("acceptOrderForRider:subscriptionSettle", async () => {
+    const { autoSettleSubscriptionDuesFromEarnings, refreshRiderSubscriptionDispatchBlock } =
+      await import("../../lib/rider-subscription-wallet.js");
+    await autoSettleSubscriptionDuesFromEarnings(riderId);
+    await refreshRiderSubscriptionDispatchBlock(riderId);
     const { maybeChargeDailySubscriptionOnFirstAccept } = await import(
       "../../lib/rider-subscription-accept-fee.js"
     );
     await maybeChargeDailySubscriptionOnFirstAccept(riderId);
-  } catch (err) {
-    console.warn(
-      "[acceptOrderForRider] daily subscription fee skipped:",
-      riderId,
-      (err as Error)?.message ?? err
+  });
+
+  if (idempotencyKey) {
+    console.info(
+      "[acceptOrderForRider] idempotent_accept",
+      JSON.stringify({ riderId, orderRef, idempotencyKey, orderId: summary.id })
     );
   }
 
@@ -2409,7 +2602,8 @@ export async function acceptOrderForRider(
 
 async function acceptFoodOrderForRider(
   riderId: number,
-  orderRef: string
+  orderRef: string,
+  _opts?: { skipPickupRadius?: boolean }
 ): Promise<RiderOrderSummary> {
   const { acceptForceAssignmentForRider } = await import(
     "../../lib/force-assignment.service.js"
@@ -2486,39 +2680,34 @@ async function acceptFoodOrderForRider(
     .limit(1);
 
   if (!preCheck?.id || !preCheck.orderId) {
+    const [existing] = await db
+      .select({ id: ordersCore.id, orderId: ordersCore.orderId, riderId: ordersCore.riderId })
+      .from(ordersCore)
+      .where(and(orderRefWhere(orderRef), eq(ordersCore.orderType, "food")))
+      .limit(1);
+    if (existing?.riderId === riderId) {
+      const ownedSummary = await loadOwnedFoodSummaryForRider(riderId, existing.id);
+      if (ownedSummary) return { ...ownedSummary, status: "assigned" };
+    }
+    if (existing?.riderId) {
+      throwOrderAlreadyAssigned({
+        orderId: existing.orderId ?? orderRef,
+        attemptedRiderId: riderId,
+        winnerRiderId: existing.riderId,
+      });
+    }
     throw Object.assign(new Error("Order not available"), { statusCode: 409 });
   }
 
   const foodStatusAtAccept = String(preCheck.foodStatus ?? "").trim().toUpperCase();
 
-  let foodAcceptCtx: Awaited<ReturnType<typeof validateRiderAcceptance>> | null = null;
-  try {
-    foodAcceptCtx = await validateRiderAcceptance(
-      riderId,
-      "food",
-      {
-        latitude: parseCoord(preCheck.pickupLat),
-        longitude: parseCoord(preCheck.pickupLon),
-      },
-      { orderCoreId: preCheck.id }
-    );
-  } catch (error) {
-    throwDispatchError(error);
-  }
+  await assertOfferStillClaimable(riderId, preCheck.id);
 
-  // First-mile allowance snapshot: rate/km × rider→store distance at accept. 0 when the
-  // pre-pickup rate is unset (Phase 4b). Paid into the delivery credit on delivery.
-  const foodPrePickup = foodAcceptCtx
-    ? await computePrePickupAllowanceForPickup(
-        "food",
-        foodAcceptCtx.lat,
-        foodAcceptCtx.lng,
-        parseCoord(preCheck.pickupLat),
-        parseCoord(preCheck.pickupLon),
-        // Geo-aware: resolve the store pickup location for the per-location pre-pickup rate.
-        { latitude: parseCoord(preCheck.pickupLat), longitude: parseCoord(preCheck.pickupLon) }
-      ).catch(() => null)
-    : null;
+  const txStartedAt = Date.now();
+  console.info(
+    "[acceptFoodOrderForRider] accept_transaction_started",
+    JSON.stringify({ riderId, orderCoreId: preCheck.id, t: txStartedAt })
+  );
 
   const [riderProfile] = await db
     .select({ name: riders.name, mobile: riders.mobile })
@@ -2540,13 +2729,6 @@ async function acceptFoodOrderForRider(
         status: "accepted",
         currentStatus: readyNow ? "RIDER_ASSIGNED" : nextCoreStatus,
         actualPickupTime: null,
-        ...(foodPrePickup
-          ? {
-              riderPrePickupAllowance: String(foodPrePickup.amount),
-              riderPickupDistanceMeters: foodPrePickup.pickupDistanceMeters,
-              riderPrePickupFunding: foodPrePickup.funding,
-            }
-          : {}),
         updatedAt: now,
       })
       .where(
@@ -2559,7 +2741,10 @@ async function acceptFoodOrderForRider(
       .returning({ id: ordersCore.id, orderId: ordersCore.orderId });
 
     if (!updated?.id) {
-      throw Object.assign(new Error("Order already taken"), { statusCode: 409 });
+      throwOrderAlreadyAssigned({
+        orderId: preCheck.orderId,
+        attemptedRiderId: riderId,
+      });
     }
 
     await tx
@@ -2635,42 +2820,48 @@ async function acceptFoodOrderForRider(
     if (!row?.orderId) throw new Error("Accepted order missing");
     return mapFoodRow(row);
   });
-
-  await completeOrderDispatch(preCheck.id, "accepted");
+  console.info(
+    "[acceptFoodOrderForRider] accept_transaction_completed",
+    JSON.stringify({
+      riderId,
+      orderCoreId: preCheck.id,
+      txMs: Date.now() - txStartedAt,
+    })
+  );
 
   const orderIdText = preCheck.orderId.trim();
-  await recordDispatchAssignmentAudit({
+  console.info(
+    "[dispatch] ORDER_CLAIM_SUCCESS",
+    JSON.stringify({ order: orderIdText, rider: riderId })
+  );
+  await finalizeWinningDispatchClaim({
     orderCoreId: preCheck.id,
     orderId: orderIdText,
-    riderId,
-    eventType: "accepted",
-    acceptedAt: now,
-    responseReceivedAt: now,
-    actorType: "rider",
-    actorId: String(riderId),
-    metadata: { serviceType: "food", foodStatus: foodStatusAtAccept },
+    winnerRiderId: riderId,
+    serviceType: "food",
     occurredAt: now,
   });
-  await recordDispatchAssignmentAudit({
-    orderCoreId: preCheck.id,
-    orderId: orderIdText,
-    riderId,
-    eventType: "assigned",
-    assignedAt: now,
-    actorType: "rider",
-    actorId: String(riderId),
-    metadata: { serviceType: "food", foodStatus: foodStatusAtAccept },
-    occurredAt: now,
-  });
-
-  await recordPendingDispatchOffersMissed({
-    orderCoreId: preCheck.id,
-    excludeRiderId: riderId,
-    reason: "order_accepted_by_other_rider",
-    missSource: "dispatch_accept",
-    occurredAt: now,
-  }).catch((err) => {
-    console.warn("[acceptFoodOrderForRider] missed-offer audit failed:", err);
+  enqueueAcceptSideEffect("acceptFoodOrderForRider:prePickup", async () => {
+    const gps = await loadRiderGpsLastKnown(riderId);
+    if (!gps) return;
+    const allowance = await computePrePickupAllowanceForPickup(
+      "food",
+      gps.lat,
+      gps.lng,
+      parseCoord(preCheck.pickupLat),
+      parseCoord(preCheck.pickupLon),
+      { latitude: parseCoord(preCheck.pickupLat), longitude: parseCoord(preCheck.pickupLon) }
+    ).catch(() => null);
+    if (!allowance) return;
+    await db
+      .update(ordersCore)
+      .set({
+        riderPrePickupAllowance: String(allowance.amount),
+        riderPickupDistanceMeters: allowance.pickupDistanceMeters,
+        riderPrePickupFunding: allowance.funding,
+        updatedAt: new Date(),
+      })
+      .where(eq(ordersCore.id, preCheck.id));
   });
 
   void (async () => {
@@ -2784,7 +2975,8 @@ async function acceptFoodOrderForRider(
 
 async function acceptParcelOrderForRider(
   riderId: number,
-  orderRef: string
+  orderRef: string,
+  _opts?: { skipPickupRadius?: boolean }
 ): Promise<RiderOrderSummary> {
   const db = getDb();
   const now = new Date();
@@ -2824,34 +3016,9 @@ async function acceptParcelOrderForRider(
     throw Object.assign(new Error("Order not available"), { statusCode: 409 });
   }
 
-  let parcelAcceptCtx: Awaited<ReturnType<typeof validateRiderAcceptance>> | null = null;
-  try {
-    parcelAcceptCtx = await validateRiderAcceptance(
-      riderId,
-      "parcel",
-      {
-        latitude: parseCoord(preCheck.pickupLat),
-        longitude: parseCoord(preCheck.pickupLon),
-      },
-      { orderCoreId: preCheck.id }
-    );
-  } catch (error) {
-    throwDispatchError(error);
-  }
+  await assertOfferStillClaimable(riderId, preCheck.id);
 
   const previousStatus = String(preCheck.currentStatus ?? "SEARCHING_RIDER");
-  // First-mile allowance snapshot (Phase 4b): rate/km × rider→store distance at accept.
-  const parcelPrePickup = parcelAcceptCtx
-    ? await computePrePickupAllowanceForPickup(
-        "parcel",
-        parcelAcceptCtx.lat,
-        parcelAcceptCtx.lng,
-        parseCoord(preCheck.pickupLat),
-        parseCoord(preCheck.pickupLon),
-        // Geo-aware: resolve the parcel pickup location for the per-location pre-pickup rate.
-        { latitude: parseCoord(preCheck.pickupLat), longitude: parseCoord(preCheck.pickupLon) }
-      ).catch(() => null)
-    : null;
 
   const accepted = await db.transaction(async (tx) => {
     const [existing] = await tx
@@ -2870,20 +3037,16 @@ async function acceptParcelOrderForRider(
         riderId,
         status: "accepted",
         currentStatus: "OUT_FOR_DELIVERY",
-        ...(parcelPrePickup
-          ? {
-              riderPrePickupAllowance: String(parcelPrePickup.amount),
-              riderPickupDistanceMeters: parcelPrePickup.pickupDistanceMeters,
-              riderPrePickupFunding: parcelPrePickup.funding,
-            }
-          : {}),
         updatedAt: now,
       })
       .where(and(eq(ordersCore.id, existing.id), isNull(ordersCore.riderId)))
       .returning({ id: ordersCore.id });
 
     if (!updated?.id) {
-      throw Object.assign(new Error("Order already taken"), { statusCode: 409 });
+      throwOrderAlreadyAssigned({
+        orderId: existing.orderId,
+        attemptedRiderId: riderId,
+      });
     }
 
     await tx
@@ -2942,29 +3105,39 @@ async function acceptParcelOrderForRider(
   });
 
   const orderIdText = preCheck.orderId.trim();
-  await recordDispatchAssignmentAudit({
+  enqueueAcceptSideEffect("acceptParcelOrderForRider:prePickup", async () => {
+    const gps = await loadRiderGpsLastKnown(riderId);
+    if (!gps) return;
+    const allowance = await computePrePickupAllowanceForPickup(
+      "parcel",
+      gps.lat,
+      gps.lng,
+      parseCoord(preCheck.pickupLat),
+      parseCoord(preCheck.pickupLon),
+      { latitude: parseCoord(preCheck.pickupLat), longitude: parseCoord(preCheck.pickupLon) }
+    ).catch(() => null);
+    if (!allowance) return;
+    await db
+      .update(ordersCore)
+      .set({
+        riderPrePickupAllowance: String(allowance.amount),
+        riderPickupDistanceMeters: allowance.pickupDistanceMeters,
+        riderPrePickupFunding: allowance.funding,
+        updatedAt: new Date(),
+      })
+      .where(eq(ordersCore.id, preCheck.id));
+  });
+  console.info(
+    "[dispatch] ORDER_CLAIM_SUCCESS",
+    JSON.stringify({ order: orderIdText, rider: riderId })
+  );
+  await finalizeWinningDispatchClaim({
     orderCoreId: preCheck.id,
     orderId: orderIdText,
-    riderId,
-    eventType: "accepted",
-    acceptedAt: now,
-    responseReceivedAt: now,
-    actorType: "rider",
-    actorId: String(riderId),
-    metadata: { serviceType: "parcel" },
+    winnerRiderId: riderId,
+    serviceType: "parcel",
     occurredAt: now,
   });
-  await recordPendingDispatchOffersMissed({
-    orderCoreId: preCheck.id,
-    excludeRiderId: riderId,
-    reason: "order_accepted_by_other_rider",
-    missSource: "dispatch_accept",
-    occurredAt: now,
-  }).catch((err) => {
-    console.warn("[acceptParcelOrderForRider] missed-offer audit failed:", err);
-  });
-
-  await completeOrderDispatch(preCheck.id, "accepted");
   noteRiderOrderLocationMilestone(riderId, accepted.id, "accepted");
   void backfillAcceptTimelineDistances({
     orderCorePk: preCheck.id,
@@ -2982,7 +3155,8 @@ async function acceptParcelOrderForRider(
 
 async function acceptRideOrderForRider(
   riderId: number,
-  orderRef: string
+  orderRef: string,
+  _opts?: { skipPickupRadius?: boolean }
 ): Promise<RiderOrderSummary> {
   const db = getDb();
   const now = new Date();
@@ -3014,57 +3188,7 @@ async function acceptRideOrderForRider(
     throw Object.assign(new Error("Order not available"), { statusCode: 409 });
   }
 
-  let rideAcceptCtx: Awaited<ReturnType<typeof validateRiderAcceptance>> | null = null;
-  try {
-    rideAcceptCtx = await validateRiderAcceptance(
-      riderId,
-      "person_ride",
-      {
-        latitude: parseCoord(preCheck.pickupLat),
-        longitude: parseCoord(preCheck.pickupLon),
-      },
-      { orderCoreId: preCheck.id }
-    );
-  } catch (error) {
-    throwDispatchError(error);
-  }
-
-  // First-mile allowance snapshot (Phase 4b): rate/km × rider→pickup distance at accept.
-  // Geo-aware: a per-location pre-pickup override (geo_pre_pickup_compensation) takes
-  // precedence over the global rate when the pickup pincode/state is known.
-  const rideAcceptGeo = rideGeoFromCheckoutMetadata(preCheck.checkoutMetadata);
-  const ridePrePickup = rideAcceptCtx
-    ? await computePrePickupAllowanceForPickup(
-        "person_ride",
-        rideAcceptCtx.lat,
-        rideAcceptCtx.lng,
-        parseCoord(preCheck.pickupLat),
-        parseCoord(preCheck.pickupLon),
-        {
-          pincode: rideAcceptGeo.pickupPincode,
-          state: rideAcceptGeo.pickupState,
-          latitude: parseCoord(preCheck.pickupLat),
-          longitude: parseCoord(preCheck.pickupLon),
-        }
-      ).catch(() => null)
-    : null;
-
-  const [takenByOther] = await db
-    .select({ riderId: ordersCore.riderId })
-    .from(ordersCore)
-    .where(
-      and(
-        orderRefWhere(orderRef),
-        eq(ordersCore.orderType, "person_ride"),
-        sql`${ordersCore.riderId} IS NOT NULL`,
-        sql`${ordersCore.riderId} <> ${riderId}`
-      )
-    )
-    .limit(1);
-
-  if (takenByOther?.riderId != null) {
-    throw Object.assign(new Error("Order already taken"), { statusCode: 409 });
-  }
+  await assertOfferStillClaimable(riderId, preCheck.id);
 
   const [riderProfile] = await db
     .select({ name: riders.name, mobile: riders.mobile })
@@ -3096,13 +3220,6 @@ async function acceptRideOrderForRider(
         riderId,
         status: "accepted",
         currentStatus: "RIDER_ASSIGNED",
-        ...(ridePrePickup
-          ? {
-              riderPrePickupAllowance: String(ridePrePickup.amount),
-              riderPickupDistanceMeters: ridePrePickup.pickupDistanceMeters,
-              riderPrePickupFunding: ridePrePickup.funding,
-            }
-          : {}),
         updatedAt: now,
       })
       .where(
@@ -3115,7 +3232,10 @@ async function acceptRideOrderForRider(
       .returning({ id: ordersCore.id });
 
     if (!updated?.id) {
-      throw Object.assign(new Error("Order already taken"), { statusCode: 409 });
+      throwOrderAlreadyAssigned({
+        orderId: orderRef,
+        attemptedRiderId: riderId,
+      });
     }
 
     await tx
@@ -3184,34 +3304,52 @@ async function acceptRideOrderForRider(
   });
 
   const orderIdText = accepted.id?.trim() || orderRef.trim();
-  await recordDispatchAssignmentAudit({
+  enqueueAcceptSideEffect("acceptRideOrderForRider:prePickup", async () => {
+    const gps = await loadRiderGpsLastKnown(riderId);
+    if (!gps) return;
+    const rideAcceptGeo = rideGeoFromCheckoutMetadata(preCheck.checkoutMetadata);
+    const allowance = await computePrePickupAllowanceForPickup(
+      "person_ride",
+      gps.lat,
+      gps.lng,
+      parseCoord(preCheck.pickupLat),
+      parseCoord(preCheck.pickupLon),
+      {
+        pincode: rideAcceptGeo.pickupPincode,
+        state: rideAcceptGeo.pickupState,
+        latitude: parseCoord(preCheck.pickupLat),
+        longitude: parseCoord(preCheck.pickupLon),
+      }
+    ).catch(() => null);
+    if (!allowance) return;
+    await db
+      .update(ordersCore)
+      .set({
+        riderPrePickupAllowance: String(allowance.amount),
+        riderPickupDistanceMeters: allowance.pickupDistanceMeters,
+        riderPrePickupFunding: allowance.funding,
+        updatedAt: new Date(),
+      })
+      .where(eq(ordersCore.id, preCheck.id));
+  });
+  console.info(
+    "[dispatch] ORDER_CLAIM_SUCCESS",
+    JSON.stringify({ order: orderIdText, rider: riderId })
+  );
+  await finalizeWinningDispatchClaim({
     orderCoreId: preCheck.id,
     orderId: orderIdText,
-    riderId,
-    eventType: "accepted",
-    acceptedAt: now,
-    responseReceivedAt: now,
-    actorType: "rider",
-    actorId: String(riderId),
-    metadata: { serviceType: "person_ride" },
+    winnerRiderId: riderId,
+    serviceType: "person_ride",
     occurredAt: now,
   });
-  await recordPendingDispatchOffersMissed({
-    orderCoreId: preCheck.id,
-    excludeRiderId: riderId,
-    reason: "order_accepted_by_other_rider",
-    missSource: "dispatch_accept",
-    occurredAt: now,
-  }).catch((err) => {
-    console.warn("[acceptRideOrderForRider] missed-offer audit failed:", err);
-  });
 
-  await completeOrderDispatch(preCheck.id, "accepted");
-
-  const { notifyCustomerRideCaptainOnTheWay } = await import(
-    "../../lib/customer-ride-captain-notify.js"
-  );
-  void notifyCustomerRideCaptainOnTheWay(preCheck.id, orderIdText, riderId);
+  void (async () => {
+    const { notifyCustomerRideCaptainOnTheWay } = await import(
+      "../../lib/customer-ride-captain-notify.js"
+    );
+    await notifyCustomerRideCaptainOnTheWay(preCheck.id, orderIdText, riderId);
+  })();
 
   void (async () => {
     try {
@@ -3520,6 +3658,7 @@ export async function getFoodOrderForRider(
       customerName: ordersFood.customerName,
       customerPhone: ordersFood.customerPhone,
       customerId: ordersCore.customerId,
+      merchantStoreId: ordersCore.merchantStoreId,
       alternateContactName: ordersCore.alternateContactName,
       alternateContactPhone: ordersCore.alternateContactPhone,
       deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
@@ -3564,7 +3703,7 @@ export async function getFoodOrderForRider(
   }
   return attachRiderOrderCancellationPenalty(
     await attachRiderOrderDistanceBreakdown(riderId, row.coreId, {
-      ...summary,
+      ...(await withFoodLocationMedia(summary, row)),
       foodItems,
       deliveryInstructions: row.deliveryInstructions?.trim() || null,
       requiresUtensils: row.requiresUtensils === true,
@@ -3794,6 +3933,22 @@ export async function verifyPickupOtpForRider(
   const normalizedOtp = String(otpInput ?? "").trim().replace(/\D/g, "");
   if (normalizedOtp.length !== 4) {
     throw Object.assign(new Error("Enter the 4-digit pickup OTP"), { statusCode: 400 });
+  }
+
+  const [alreadyVerified] = await db
+    .select({ pickupOtpVerifiedAt: ordersRide.pickupOtpVerifiedAt })
+    .from(ordersCore)
+    .innerJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
+    .where(
+      and(
+        orderRefWhere(orderRef),
+        eq(ordersCore.riderId, riderId),
+        eq(ordersCore.orderType, "person_ride")
+      )
+    )
+    .limit(1);
+  if (alreadyVerified?.pickupOtpVerifiedAt) {
+    return getRideOrderForRider(riderId, orderRef);
   }
 
   const updated = await db.transaction(async (tx) => {
@@ -4794,6 +4949,7 @@ async function markReachedFoodPickupForRider(
   const now = new Date();
   let didNewlyReachStore = false;
 
+  const dbStarted = Date.now();
   const updated = await db.transaction(async (tx) => {
     const [existing] = await tx
       .select({
@@ -4828,7 +4984,9 @@ async function markReachedFoodPickupForRider(
     );
 
     if (activeAssignment?.pickedUpAt) {
-      throw Object.assign(new Error("Food order already picked up"), { statusCode: 409 });
+      const full = await selectFoodOrderRowForRider(tx, existing.id);
+      if (!full?.orderId) throw new Error("Food order missing after update");
+      return mapFoodRowForActiveRider(tx, full, riderId, existing.id);
     }
 
     const alreadyAtStore =
@@ -4919,6 +5077,11 @@ async function markReachedFoodPickupForRider(
     if (!full?.orderId) throw new Error("Food order missing after update");
     didNewlyReachStore = true;
     return mapFoodRowForActiveRider(tx, full, riderId, row.id);
+  });
+  console.log("[RiderSlideDb]", {
+    action: "reached_food_pickup",
+    txnMs: Date.now() - dbStarted,
+    riderId,
   });
 
   if (didNewlyReachStore) {
@@ -5045,7 +5208,11 @@ async function finalizeFoodPickupVerificationForRider(
     riderId
   );
   if (activeAssignment?.pickedUpAt || foodSt === "DELIVERED") {
-    throw Object.assign(new Error("Food order already picked up"), { statusCode: 409 });
+    const full = await selectFoodOrderRowForRider(tx, existing.id);
+    if (!full) {
+      throw Object.assign(new Error("Food order missing after pickup"), { statusCode: 500 });
+    }
+    return full;
   }
 
   if (!isMerchantFoodOrderReady(foodSt)) {
@@ -5348,7 +5515,9 @@ export async function acknowledgeFoodPickupForRider(
     );
 
     if (activeAssignment?.pickedUpAt) {
-      throw Object.assign(new Error("Food order already picked up"), { statusCode: 409 });
+      const full = await selectFoodOrderRowForRider(tx, existing.id);
+      if (!full?.orderId) throw new Error("Food order missing after update");
+      return mapFoodRowForActiveRider(tx, full, riderId, existing.id);
     }
 
     const foodSt = String(existing.foodStatus ?? "").trim().toUpperCase();
@@ -5481,6 +5650,11 @@ async function verifyFoodPickupOtpForRider(
     const existing = await loadFoodOrderAwaitingPickupVerification(tx, riderId, orderRef);
     orderCorePk = existing.id;
 
+    const storedOtp = String(existing.foodPickupOtp ?? existing.corePickupOtp ?? "").trim();
+    if (!storedOtp || storedOtp !== normalizedOtp) {
+      throw Object.assign(new Error("Incorrect pickup OTP"), { statusCode: 403 });
+    }
+
     await assertRiderMilestoneGeoFence({
       riderId,
       orderCorePk: existing.id,
@@ -5488,11 +5662,6 @@ async function verifyFoodPickupOtpForRider(
       milestoneKey: "mark_picked_up",
       gps,
     });
-
-    const storedOtp = String(existing.foodPickupOtp ?? existing.corePickupOtp ?? "").trim();
-    if (!storedOtp || storedOtp !== normalizedOtp) {
-      throw Object.assign(new Error("Incorrect pickup OTP"), { statusCode: 403 });
-    }
 
     const finalized = await finalizeFoodPickupVerificationForRider(tx, riderId, existing, gps, {
       method: "otp",
@@ -5650,6 +5819,7 @@ async function markReachedFoodCustomerForRider(
 ): Promise<RiderOrderSummary> {
   const db = getDb();
   const now = new Date();
+  const dbStarted = Date.now();
 
   const updated = await db.transaction(async (tx) => {
     const [existing] = await tx
@@ -5755,6 +5925,11 @@ async function markReachedFoodCustomerForRider(
 
     if (!full?.orderId) throw new Error("Food order missing after reach customer");
     return mapFoodRowForActiveRider(tx, full, riderId, row.id);
+  });
+  console.log("[RiderSlideDb]", {
+    action: "reached_food_customer",
+    txnMs: Date.now() - dbStarted,
+    riderId,
   });
 
   noteRiderOrderLocationMilestone(riderId, updated.id, "reached_user", gps);
@@ -6627,17 +6802,15 @@ async function verifyPersonRideDropOtpForRider(
   return updated;
 }
 
+/**
+ * Food rider self-cancel is allowed after pickup / out-for-delivery (penalty via
+ * Financial Rule Engine AFTER_MARK_PICKUP). Only terminal/closed statuses block.
+ * Mirrors person-ride: RIDER_UNASSIGNABLE_STATUSES includes picked_up / in_transit.
+ */
 const FOOD_RIDER_SELF_CANCEL_BLOCKED_FOOD_STATUS = new Set([
-  "PICKED_UP",
-  "OUT_FOR_DELIVERY",
-  "IN_TRANSIT",
-  "ON_THE_WAY",
   "DELIVERED",
   "CANCELLED",
   "RTO",
-  "REACHED_CUSTOMER",
-  "AT_CUSTOMER",
-  "RIDER_AT_DROP",
 ]);
 
 const RIDER_UNASSIGNABLE_STATUSES = new Set([
@@ -6880,22 +7053,108 @@ export async function cancelAssignedFoodForRider(
     "../../lib/food-rider-unassign.service.js"
   );
 
-  await unassignFoodRiderAndRestartDispatch({
-    orderCorePk: existing.id,
-    orderIdText: existing.orderId.trim(),
-    riderId,
-    reasonCode,
-    reasonText: input.reasonText?.trim() || null,
-    removedBy: String(riderId),
-    actorType: "rider",
-    actorId: String(riderId),
-  });
+  try {
+    await unassignFoodRiderAndRestartDispatch({
+      orderCorePk: existing.id,
+      orderIdText: existing.orderId.trim(),
+      riderId,
+      reasonCode,
+      reasonText: input.reasonText?.trim() || null,
+      removedBy: String(riderId),
+      actorType: "rider",
+      actorId: String(riderId),
+      awaitDispatchRestart: false,
+    });
+  } catch (err) {
+    const replay = await loadSelfCancelReplayResult(riderId, existing.id);
+    if (replay) {
+      return {
+        ok: true as const,
+        penaltyApplied: Boolean(penalty.penaltyApplied) || replay.penaltyApplied,
+        penaltyAmount:
+          Number(penalty.penaltyAmount ?? 0) > 0
+            ? Number(penalty.penaltyAmount)
+            : replay.penaltyAmount,
+      };
+    }
+    throw err;
+  }
 
   return {
     ok: true as const,
     penaltyApplied: penalty.penaltyApplied,
     penaltyAmount: penalty.penaltyAmount,
   };
+}
+
+async function riderAlreadySelfCancelledAssigned(
+  riderId: number,
+  orderCoreId: number
+): Promise<boolean> {
+  const pg = getSql();
+  try {
+    const excluded = (await pg`
+      SELECT 1 AS ok
+      FROM order_rider_dispatch_exclusions
+      WHERE order_core_id = ${orderCoreId}
+        AND rider_id = ${riderId}
+        AND exclusion_source = 'rider_cancel_assigned'
+      LIMIT 1
+    `) as Array<{ ok: number }>;
+    if (excluded.length > 0) return true;
+  } catch {
+    /* optional table */
+  }
+
+  try {
+    const cancelled = (await pg`
+      SELECT 1 AS ok
+      FROM order_rider_assignments
+      WHERE order_core_id = ${orderCoreId}
+        AND rider_id = ${riderId}
+        AND assignment_status::text = 'cancelled'
+      LIMIT 1
+    `) as Array<{ ok: number }>;
+    if (cancelled.length > 0) return true;
+  } catch {
+    /* optional table */
+  }
+
+  return false;
+}
+
+async function loadSelfCancelReplayResult(
+  riderId: number,
+  orderCoreId: number
+): Promise<{ ok: true; penaltyApplied: boolean; penaltyAmount: number } | null> {
+  if (!(await riderAlreadySelfCancelledAssigned(riderId, orderCoreId))) return null;
+
+  let penaltyAmount = 0;
+  try {
+    const ledgerRows = await getDb().execute<{ total: string | null }>(sql`
+      SELECT COALESCE(SUM(amount), 0)::text AS total
+      FROM wallet_ledger
+      WHERE rider_id = ${riderId}
+        AND direction = 'DEBIT'
+        AND ref LIKE ${`rider_cancel_pen:${orderCoreId}:%`}
+    `);
+    const ledgerTotal = Number((ledgerRows as { total: string | null }[])[0]?.total ?? 0);
+    if (Number.isFinite(ledgerTotal) && ledgerTotal > 0) penaltyAmount = ledgerTotal;
+  } catch {
+    /* optional ledger */
+  }
+
+  return {
+    ok: true as const,
+    penaltyApplied: penaltyAmount > 0,
+    penaltyAmount,
+  };
+}
+
+function riderCancelErrStatus(err: unknown): number | undefined {
+  if (!err || typeof err !== "object" || !("statusCode" in err)) return undefined;
+  const n = Number((err as { statusCode?: unknown }).statusCode);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 export async function cancelAssignedOrderForRider(
@@ -6905,21 +7164,41 @@ export async function cancelAssignedOrderForRider(
 ): Promise<{ ok: true; penaltyApplied?: boolean; penaltyAmount?: number }> {
   const db = getDb();
   const [existing] = await db
-    .select({ orderType: ordersCore.orderType })
+    .select({
+      id: ordersCore.id,
+      orderType: ordersCore.orderType,
+      riderId: ordersCore.riderId,
+    })
     .from(ordersCore)
-    .where(and(orderRefWhere(orderRef), eq(ordersCore.riderId, riderId)))
+    .where(orderRefWhere(orderRef))
     .limit(1);
 
-  if (!existing?.orderType) {
+  if (!existing?.id || !existing.orderType) {
+    throw Object.assign(new Error("Order not found"), { statusCode: 404 });
+  }
+
+  const assignedToCaller = Number(existing.riderId) === riderId;
+  if (!assignedToCaller) {
+    const replay = await loadSelfCancelReplayResult(riderId, existing.id);
+    if (replay) return replay;
     throw Object.assign(new Error("Order not found"), { statusCode: 404 });
   }
 
   const orderType = String(existing.orderType).trim().toLowerCase();
-  if (orderType === "food") {
-    return cancelAssignedFoodForRider(riderId, orderRef, input);
-  }
-  if (orderType === "person_ride") {
-    return cancelAssignedRideForRider(riderId, orderRef, input);
+  try {
+    if (orderType === "food") {
+      return await cancelAssignedFoodForRider(riderId, orderRef, input);
+    }
+    if (orderType === "person_ride") {
+      return await cancelAssignedRideForRider(riderId, orderRef, input);
+    }
+  } catch (err) {
+    const status = riderCancelErrStatus(err);
+    if (status === 404 || status === 409) {
+      const replay = await loadSelfCancelReplayResult(riderId, existing.id);
+      if (replay) return replay;
+    }
+    throw err;
   }
 
   throw Object.assign(new Error("Order type does not support rider cancellation"), {

@@ -19,6 +19,7 @@ import {
   docStateFrom,
   ownershipFromVehicle,
   rcDocStateFromVehicle,
+  resolveOwnershipProofState,
   vehicleClassFromCategory,
 } from "./riderEligibilityInputs.js";
 import { resolveEffectiveEligibilityPolicy } from "./riderEligibility.repository.js";
@@ -101,7 +102,10 @@ export async function listRiderVehiclesWithEligibility(args: {
   };
   const dl = riderDocState("dl");
   const evProof = riderDocState("ev_proof");
-  const ownershipProof = riderDocState("ownership_proof");
+  const dedicatedOwnership = riderDocState("ownership_proof");
+  const rcDocument = riderDocState("rc");
+  const rentalProof = riderDocState("rental_proof");
+  const evOwnershipProof = riderDocState("ev_ownership_proof");
   const commercialProof = riderDocState("commercial_proof");
 
   // Resolve geo once (rider registered location unless coords passed).
@@ -133,15 +137,26 @@ export async function listRiderVehiclesWithEligibility(args: {
 
   const out: RiderVehicleView[] = [];
   for (const v of vehicles) {
+    const vehicleRc = rcDocStateFromVehicle({
+      verified: v.verified,
+      fitnessExpiry: v.fitnessExpiry,
+      permitExpiry: v.permitExpiry,
+    });
     const input = {
       vehicleClass: vehicleClassFromCategory(v.vehicleCategory ?? null, v.vehicleType ?? null),
       vehicleType: v.vehicleType ?? null,
       fuelKind: v.fuelType ?? null,
       ownership: ownershipFromVehicle(v.isCommercial),
       dl,
-      rc: rcDocStateFromVehicle({ verified: v.verified, fitnessExpiry: v.fitnessExpiry, permitExpiry: v.permitExpiry }),
+      rc: vehicleRc,
       evProof,
-      ownershipProof,
+      ownershipProof: resolveOwnershipProofState({
+        dedicated: dedicatedOwnership,
+        rcDocument,
+        vehicleRc,
+        rentalProof,
+        evOwnershipProof,
+      }),
       commercialProof,
     };
     const services = {} as Record<EligibilityService, EligibilityDecision>;

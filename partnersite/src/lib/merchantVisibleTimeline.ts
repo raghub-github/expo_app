@@ -5,6 +5,7 @@ import {
   isCatalogCancellationReason,
   isMerchantAcceptTimeoutReason,
 } from '@/lib/merchant-cancellation-display';
+import { resolveCancelledByBrandForLedger } from '@/lib/merchant-cancellation-ledger-brand';
 import {
   normalizeActionMode,
   normalizeActionSource,
@@ -171,7 +172,11 @@ function pickMetaString(meta: Record<string, unknown>, keys: string[]): string {
 
 export function parseActorDetailFromAction(
   action: MerchantOrderActionForTimeline | null | undefined,
-  fallbackLabel?: string | null
+  fallbackLabel?: string | null,
+  cancelCtx?: {
+    cancelledByType?: string | null;
+    rejectedReason?: string | null;
+  }
 ): TimelineActorDetail {
   const meta = (action?.metadata && typeof action.metadata === 'object' ? action.metadata : {}) as Record<
     string,
@@ -182,6 +187,37 @@ export function parseActorDetailFromAction(
   const labelText = (fallbackLabel || action?.actor_label || '').trim();
   const acceptedThrough =
     parseAcceptedThroughLabel(labelText) || defaultAcceptedThrough(source, mode);
+
+  // Cancel rows: derive Source from cancelled_by_type / label, not mis-logged action_source.
+  if (cancelCtx) {
+    const brand = resolveCancelledByBrandForLedger(
+      cancelCtx.cancelledByType,
+      labelText || cancelCtx.rejectedReason,
+      null
+    );
+    if (brand === '__AUTO__') {
+      return { variant: 'admin', acceptedBy: 'System', source: 'System' };
+    }
+    if (brand === 'GatiMitra') {
+      return { variant: 'admin', acceptedBy: 'GatiMitra Team', source: 'GatiMitra Team' };
+    }
+    if (brand === 'customer') {
+      return {
+        variant: 'merchant',
+        role: 'Customer',
+        source: 'Customer App',
+        acceptedThrough: labelText || 'Cancelled by customer',
+      };
+    }
+    if (brand === 'store') {
+      return {
+        variant: 'merchant',
+        role: 'Owner',
+        source: SOURCE_DISPLAY[source === 'admin' ? 'website' : source],
+        acceptedThrough: labelText || 'Cancelled by store',
+      };
+    }
+  }
 
   if (source === 'admin') {
     return {

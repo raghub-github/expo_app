@@ -19,8 +19,14 @@ import {
   useNotificationInboxStore,
 } from "@/src/stores/notificationInboxStore";
 import { RIDER_AVAILABLE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
+import { ingestIncomingDispatchOffer } from "@/src/lib/ingestIncomingDispatchOffer";
 import { setRiderPushUnregister } from "@/src/lib/riderPushUnregister";
 import { setRiderPushRefresh } from "@/src/lib/riderPushRefresh";
+import {
+  RIDER_DISPATCH_OFFER_CHANNEL_ID,
+  RIDER_DISPATCH_OFFER_SOUND,
+  isRiderDispatchOfferPushData,
+} from "@/src/lib/riderDispatchOfferChannel";
 import {
   parseRiderNumericId,
   useRiderWalletFreezeLive,
@@ -67,11 +73,21 @@ export function RiderPushSetup() {
         payload.data ?? {},
         typeof payload.body === "string" ? payload.body : null,
       );
+      const data = payload.data ?? {};
+      if (isRiderDispatchOfferPushData(data)) {
+        ingestIncomingDispatchOffer(
+          queryClient,
+          typeof data.orderId === "string" ? data.orderId : undefined,
+          "push_open"
+        );
+        router.replace("/(tabs)/orders");
+        return;
+      }
       navigateFromPushData(router, {
-        ...payload.data,
+        ...data,
         appRole: "rider",
         orderPath:
-          payload.data.orderId != null ? `/order/${String(payload.data.orderId)}` : undefined,
+          data.orderId != null ? `/order/${String(data.orderId)}` : undefined,
       });
     },
     [router, queryClient]
@@ -97,15 +113,21 @@ export function RiderPushSetup() {
         body,
       );
 
-      const type = typeof payload.data.type === "string" ? payload.data.type : "";
-      if (
-        type === "new_order" ||
-        type === "order_assigned" ||
-        type === "dispatch_offer" ||
-        type === "incoming_order" ||
-        type.includes("order")
-      ) {
-        void queryClient.invalidateQueries({ queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY });
+      if (isRiderDispatchOfferPushData(payload.data ?? {})) {
+        ingestIncomingDispatchOffer(
+          queryClient,
+          typeof payload.data?.orderId === "string" ? payload.data.orderId : undefined,
+          "push_foreground"
+        );
+      } else {
+        const type = typeof payload.data.type === "string" ? payload.data.type : "";
+        if (
+          type === "new_order" ||
+          type === "order_assigned" ||
+          type.includes("order")
+        ) {
+          void queryClient.invalidateQueries({ queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY });
+        }
       }
     },
     [queryClient]
@@ -120,6 +142,14 @@ export function RiderPushSetup() {
       apiBaseUrl,
       androidPackageName: "com.gatimitra.rider",
       androidChannels: [
+        {
+          channelId: RIDER_DISPATCH_OFFER_CHANNEL_ID,
+          name: "Incoming order requests",
+          importance: 5,
+          sound: RIDER_DISPATCH_OFFER_SOUND,
+          vibrationPattern: [0, 450, 120, 450, 120, 450],
+          lightColor: "#0d9488",
+        },
         { channelId: "default", name: "Orders & alerts", lightColor: "#0d9488" },
         { channelId: "rider_default", name: "Orders & alerts", lightColor: "#0d9488" },
       ],
@@ -254,14 +284,22 @@ export function RiderPushSetup() {
   return (
     <FloatingInAppBannerHost
       onPressBanner={(item) => {
-        if (item.data) {
-          navigateFromPushData(router, {
-            ...item.data,
-            appRole: "rider",
-            orderPath:
-              item.data.orderId != null ? `/order/${String(item.data.orderId)}` : undefined,
-          });
+        if (!item.data) return;
+        if (isRiderDispatchOfferPushData(item.data)) {
+          ingestIncomingDispatchOffer(
+            queryClient,
+            typeof item.data.orderId === "string" ? item.data.orderId : undefined,
+            "push_banner"
+          );
+          router.replace("/(tabs)/orders");
+          return;
         }
+        navigateFromPushData(router, {
+          ...item.data,
+          appRole: "rider",
+          orderPath:
+            item.data.orderId != null ? `/order/${String(item.data.orderId)}` : undefined,
+        });
       }}
     />
   );

@@ -9,14 +9,14 @@ import {
   AppState,
   Alert,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import * as Location from "expo-location";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useDutyStore } from "@/src/stores/dutyStore";
-import { createForegroundLocationTracker, getSharedLocationEngine, type LocationTrackerState } from "@/src/services/location/locationTracker";
+import { createForegroundLocationTracker, getSharedLocationEngine, LOCATION_ENGINE_PROFILES, type LocationTrackerState } from "@/src/services/location/locationTracker";
 import { useAvailableOrders, useActiveOrders, useRidePaymentHolds, RIDER_ACTIVE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { useFocusEffect } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEarningsSummary } from "@/src/hooks/useEarnings";
 import { useDemandZones } from "@/src/hooks/useDemandZones";
@@ -29,7 +29,7 @@ import { useDutyToggle } from "@/src/hooks/useDutyToggle";
 import { colors } from "@/src/theme";
 import { Button } from "@/src/components/ui/Button";
 import { permissionManager } from "@/src/services/permissions/permissionManager";
-import { RiderMapView, type RiderMapViewHandle } from "@/src/components/RiderMapView";
+import { type RiderMapViewHandle } from "@/src/components/RiderMapView";
 import { HomeMapHeader, ORDERS_HEADER_BG } from "@/src/components/home/HomeMapHeader";
 import { AccountRestrictedBanner, PenaltyBanner, OffDutyBanner, RidePaymentHoldBanner } from "@/src/components/home/HomeAlertBanners";
 import {
@@ -52,17 +52,28 @@ import {
 import { useRiderPenaltyPayment } from "@/src/hooks/useRiderPenaltyPayment";
 import { useRiderProfile } from "@/src/hooks/useRiderProfile";
 import { extractApiErrorMessage } from "@/src/services/http";
+import { shouldSkipCoalescedFix, COALESCE_IDLE_HOME_MOVE_M, COALESCE_IDLE_HOME_HEADING_DEG, type CoalesceFixSnapshot } from "@/src/lib/coalesceLocationUi";
+import { useHomeMapLocationStore } from "@/src/stores/homeMapLocationStore";
+import { HomeDutyMap } from "@/src/components/home/HomeDutyMap";
 
 /** Demand heatmap may use a slightly stale fix; map pin stays on a stricter gate. */
 const DEMAND_FIX_MAX_AGE_MS = 5 * 60_000;
+/** Screen/demand re-render threshold — coarser than the map pin store. */
+const DEMAND_SCREEN_MIN_MOVE_M = 40;
+const DEMAND_SCREEN_MIN_HEADING_DEG = 25;
 
 export default function OrdersScreen() {
   const { t } = useTranslation();
   const session = useSessionStore((s) => s.session);
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
+  const homeFocused = useIsFocused();
   const { setDuty, isPending: dutyPending, dutyGoOnBlocked } = useDutyToggle();
   const tracker = useMemo(
-    () => createForegroundLocationTracker({ profileId: "orders-map" }),
+    () =>
+      createForegroundLocationTracker({
+        profileId: "orders-map",
+        ...LOCATION_ENGINE_PROFILES.dutyIdleBg,
+      }),
     []
   );
   const [state, setState] = useState<LocationTrackerState>(tracker.getState());
@@ -399,9 +410,71 @@ export default function OrdersScreen() {
     void queryClient.invalidateQueries({ queryKey: RIDER_DUTY_STATUS_QUERY_KEY });
   }, [subscriptionDispatchBlocked, dutyGoOnBlocked, isOnDuty, queryClient]);
 
-  const locationCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastEmittedFixRef = useRef<CoalesceFixSnapshot | null>(null);
+  const lastScreenFixRef = useRef<CoalesceFixSnapshot | null>(null);
 
-  useEffect(() => tracker.subscribe(setState), [tracker]);
+  useEffect(
+    () =>
+      tracker.subscribe((next) => {
+        const nextFix = next.status === "tracking" ? next.lastFix : undefined;
+        const now = Date.now();
+
+        // Map pin store — update at idle-home coalesce without re-rendering OrdersScreen.
+        if (nextFix) {
+          if (
+            !shouldSkipCoalescedFix(lastEmittedFixRef.current, nextFix, now, {
+              minMoveM: COALESCE_IDLE_HOME_MOVE_M,
+              minHeadingDeg: COALESCE_IDLE_HOME_HEADING_DEG,
+            })
+          ) {
+            lastEmittedFixRef.current = {
+              lat: nextFix.lat,
+              lng: nextFix.lng,
+              heading: nextFix.headingDeg,
+              atMs: now,
+            };
+            stickyFixRef.current = nextFix;
+            useHomeMapLocationStore.getState().setFix({
+              lat: parseFloat(nextFix.lat.toFixed(7)),
+              lng: parseFloat(nextFix.lng.toFixed(7)),
+              accuracyM: nextFix.accuracyM,
+              speedMps: nextFix.speedMps,
+              heading: nextFix.headingDeg,
+              tsMs: nextFix.tsMs,
+            });
+          }
+        } else if (next.status !== "tracking") {
+          lastEmittedFixRef.current = null;
+          useHomeMapLocationStore.getState().setFix(null);
+        }
+
+        setState((prev) => {
+          if (next.status !== prev.status) {
+            return next;
+          }
+          if (!nextFix || prev.status !== "tracking") {
+            return prev;
+          }
+          // Coarse updates only — demand zones / HDZ panel, not the map pin.
+          if (
+            shouldSkipCoalescedFix(lastScreenFixRef.current, nextFix, now, {
+              minMoveM: DEMAND_SCREEN_MIN_MOVE_M,
+              minHeadingDeg: DEMAND_SCREEN_MIN_HEADING_DEG,
+            })
+          ) {
+            return prev;
+          }
+          lastScreenFixRef.current = {
+            lat: nextFix.lat,
+            lng: nextFix.lng,
+            heading: nextFix.headingDeg,
+            atMs: now,
+          };
+          return next;
+        });
+      }),
+    [tracker]
+  );
 
   // Paint last-known coords immediately so home never waits on cold GPS.
   useEffect(() => {
@@ -426,6 +499,14 @@ export default function OrdersScreen() {
         };
         stickyFixRef.current = fix;
         getSharedLocationEngine().ingestExternalFix(fix);
+        useHomeMapLocationStore.getState().setFix({
+          lat: parseFloat(fix.lat.toFixed(7)),
+          lng: parseFloat(fix.lng.toFixed(7)),
+          accuracyM: fix.accuracyM,
+          speedMps: fix.speedMps,
+          heading: fix.headingDeg,
+          tsMs: fix.tsMs,
+        });
         setState(getSharedLocationEngine().getState());
       } catch {
         /* tracker.start still runs */
@@ -444,8 +525,6 @@ export default function OrdersScreen() {
         const { status } = await Location.getForegroundPermissionsAsync();
         const enabled = await Location.hasServicesEnabledAsync();
         if (status !== "granted") {
-          // Permission problem — the native GPS dialog cannot grant permission,
-          // so guide the rider to Settings.
           if (!alertShown) {
             alertShown = true;
             Alert.alert(
@@ -464,43 +543,47 @@ export default function OrdersScreen() {
             );
           }
         } else if (!enabled) {
-          // GPS off — handled by the "GPS Disabled" gate + auto-recovery (native
-          // turn-on dialog + poll). Skip the intrusive alert to avoid a double prompt.
           alertShown = false;
         } else {
           alertShown = false;
-          if (state.status !== "tracking") void tracker.start();
+          if (tracker.getState().status !== "tracking") void tracker.start();
         }
       } catch (error) {
         console.warn("Location check error:", error);
       }
     };
     void checkLocationStatus();
-    locationCheckIntervalRef.current = setInterval(checkLocationStatus, 5000);
+    // Permission/GPS recovery is AppState-driven. A 5s poll while tracking
+    // burned CPU/battery for no UI change (OS dialogs already cover GPS-off).
     const subscription = AppState.addEventListener("change", (nextAppState) => {
       if (nextAppState === "active") void checkLocationStatus();
     });
     return () => {
-      if (locationCheckIntervalRef.current) clearInterval(locationCheckIntervalRef.current);
       subscription.remove();
     };
-  }, [isOnDuty, state.status, t, tracker]);
+  }, [isOnDuty, t, tracker]);
 
   useEffect(() => {
+    const needsWatch = homeFocused && (isOnDuty || activeOrders.length > 0);
+    if (!needsWatch) {
+      void tracker.stop();
+      return;
+    }
     void tracker.start();
     return () => {
       void tracker.stop();
     };
-  }, [tracker]);
+  }, [tracker, isOnDuty, activeOrders.length, homeFocused]);
 
   // Foreground resume: refresh without tearing down the shared watch (keeps last fix).
   useEffect(() => {
     const sub = AppState.addEventListener("change", (nextAppState) => {
       if (nextAppState !== "active") return;
+      if (!isOnDuty && activeOrders.length === 0) return;
       void tracker.start();
     });
     return () => sub.remove();
-  }, [tracker]);
+  }, [tracker, isOnDuty, activeOrders.length]);
 
   const handleEnableLocation = useCallback(async () => {
     setCheckingLocation(true);
@@ -580,77 +663,35 @@ export default function OrdersScreen() {
     };
   }, [state.status, tracker, handleTurnOnGps]);
 
-  if (state.status === "permission_denied") {
-    return (
-      <SafeAreaView style={styles.permissionScreen}>
-        <Text style={styles.permissionTitle}>{t("location.required")}</Text>
-        <Text style={styles.permissionSub}>{t("location.permissionDenied")}</Text>
-        <Button onPress={handleEnableLocation} style={{ marginTop: 16 }} disabled={checkingLocation}>
-          {t("location.enableLocation")}
-        </Button>
-        <Button onPress={() => void tracker.start()} variant="outline" style={{ marginTop: 12 }}>
-          {t("location.turnedOn", "I allowed location — retry")}
-        </Button>
-      </SafeAreaView>
-    );
-  }
-
-  if (state.status === "services_disabled") {
-    return (
-      <SafeAreaView style={styles.permissionScreen}>
-        <Text style={styles.permissionTitle}>{t("location.gpsDisabled")}</Text>
-        <Text style={styles.permissionSub}>{t("location.gpsDisabledMessage")}</Text>
-        <Button
-          onPress={() => void handleTurnOnGps()}
-          style={{ marginTop: 16 }}
-          disabled={checkingLocation}
-        >
-          {t("location.turnOnGps", "Turn On Location")}
-        </Button>
-        <Button
-          onPress={handleEnableLocation}
-          variant="outline"
-          style={{ marginTop: 12 }}
-          disabled={checkingLocation}
-        >
-          {t("location.openSettings")}
-        </Button>
-      </SafeAreaView>
-    );
-  }
+  const gpsBlocked =
+    state.status === "permission_denied" || state.status === "services_disabled";
 
   const rawFix = state.status === "tracking" ? state.lastFix : undefined;
   if (rawFix) stickyFixRef.current = rawFix;
-  /** Prefer fresh fix; fall back to sticky so map chrome never waits on a blank gate. */
-  const freshFix =
-    rawFix && Number.isFinite(rawFix.tsMs) && Date.now() - rawFix.tsMs <= 15_000
-      ? rawFix
-      : undefined;
-  const fix = freshFix ?? stickyFixRef.current;
 
-  const mapOrders = availableOrders
-    .filter((order) => order.pickup?.lat != null && order.pickup?.lng != null)
-    .map((order) => ({
-      id: order.id,
-      pickupLat: parseFloat(Number(order.pickup.lat).toFixed(7)),
-      pickupLng: parseFloat(Number(order.pickup.lng).toFixed(7)),
-      deliveryLat: order.delivery?.lat ? parseFloat(Number(order.delivery.lat).toFixed(7)) : undefined,
-      deliveryLng: order.delivery?.lng ? parseFloat(Number(order.delivery.lng).toFixed(7)) : undefined,
-      estimatedEarning: order.estimatedEarning,
-      category: order.category,
-      distanceKm: order.distanceKm,
-    }));
-
-  const riderLocation = fix
-    ? {
-        lat: parseFloat(fix.lat.toFixed(7)),
-        lng: parseFloat(fix.lng.toFixed(7)),
-        accuracyM: fix.accuracyM,
-        speedMps: fix.speedMps,
-      }
-    : undefined;
+  const mapOrders = useMemo(
+    () =>
+      availableOrders
+        .filter((order) => order.pickup?.lat != null && order.pickup?.lng != null)
+        .map((order) => ({
+          id: order.id,
+          pickupLat: parseFloat(Number(order.pickup.lat).toFixed(7)),
+          pickupLng: parseFloat(Number(order.pickup.lng).toFixed(7)),
+          deliveryLat: order.delivery?.lat
+            ? parseFloat(Number(order.delivery.lat).toFixed(7))
+            : undefined,
+          deliveryLng: order.delivery?.lng
+            ? parseFloat(Number(order.delivery.lng).toFixed(7))
+            : undefined,
+          estimatedEarning: order.estimatedEarning,
+          category: order.category,
+          distanceKm: order.distanceKm,
+        })),
+    [availableOrders]
+  );
 
   const showOffDutyBanner = homeChrome.showOffDutyBanner;
+  const mapHasPin = useHomeMapLocationStore((s) => s.fix != null);
 
   return (
     <View style={styles.container}>
@@ -663,18 +704,71 @@ export default function OrdersScreen() {
       </View>
 
       <View style={styles.mapSection}>
-        <RiderMapView
+        <HomeDutyMap
           ref={mapRef}
-          riderLocation={riderLocation}
           orders={mapOrders}
           style={styles.map}
-          showRadar={homeChrome.showSearchingRadar && !!riderLocation}
+          paused={!homeFocused}
+          showRadar={homeChrome.showSearchingRadar && mapHasPin && !gpsBlocked}
           demandZones={hotZones.length > 0 ? [] : demandZones}
           hotZones={homeChrome.fetchDemandZones ? hotZones : []}
           isOnDuty={isOnDuty}
         />
 
-        {homeChrome.showSearchingPill ? <SearchingOrdersPill /> : null}
+        {homeChrome.showSearchingPill && !gpsBlocked && homeFocused ? <SearchingOrdersPill /> : null}
+
+        {gpsBlocked ? (
+          <View style={styles.gpsOverlay} pointerEvents="box-none">
+            <View style={styles.gpsCard}>
+              <Text style={styles.permissionTitle}>
+                {state.status === "permission_denied"
+                  ? t("location.required")
+                  : t("location.gpsDisabled")}
+              </Text>
+              <Text style={styles.permissionSub}>
+                {state.status === "permission_denied"
+                  ? t("location.permissionDenied")
+                  : t("location.gpsDisabledMessage")}
+              </Text>
+              {state.status === "permission_denied" ? (
+                <>
+                  <Button
+                    onPress={handleEnableLocation}
+                    style={{ marginTop: 16 }}
+                    disabled={checkingLocation}
+                  >
+                    {t("location.enableLocation")}
+                  </Button>
+                  <Button
+                    onPress={() => void tracker.start()}
+                    variant="outline"
+                    style={{ marginTop: 12 }}
+                  >
+                    {t("location.turnedOn", "I allowed location — retry")}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    onPress={() => void handleTurnOnGps()}
+                    style={{ marginTop: 16 }}
+                    disabled={checkingLocation}
+                  >
+                    {t("location.turnOnGps", "Turn On Location")}
+                  </Button>
+                  <Button
+                    onPress={handleEnableLocation}
+                    variant="outline"
+                    style={{ marginTop: 12 }}
+                    disabled={checkingLocation}
+                  >
+                    {t("location.openSettings")}
+                  </Button>
+                </>
+              )}
+            </View>
+          </View>
+        ) : null}
 
         <MapRightControls
           onRecenter={handleRecenter}
@@ -775,6 +869,20 @@ const styles = StyleSheet.create({
   permissionSub: {
     marginTop: 8,
     color: colors.gray[600],
+  },
+  gpsOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "flex-end",
+    padding: 16,
+    backgroundColor: "rgba(15, 23, 42, 0.28)",
+    zIndex: 80,
+    elevation: 30,
+  },
+  gpsCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 24,
   },
 });
 

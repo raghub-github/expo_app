@@ -163,8 +163,11 @@ export function riderFrontWheelPoint(
 
 function buildRemainingOnRoad(remainingRaw: LatLng[]): LatLng[] {
   if (remainingRaw.length < 2) return remainingRaw;
+  const start = remainingRaw[0]!;
   const dest = remainingRaw[remainingRaw.length - 1]!;
-  const trimmed = trimRouteEndBeforePoint(remainingRaw, dest);
+  /** Clear the rider disc so the blue route begins ahead of the marker. */
+  const afterStart = trimRouteStartAfterPoint(remainingRaw, start, 16);
+  const trimmed = trimRouteEndBeforePoint(afterStart, dest);
   return trimmed.length >= 2 ? trimmed : remainingRaw;
 }
 
@@ -239,6 +242,7 @@ export type RiderRouteDeviation = {
   /** Rider heading differs from route direction (moving wrong way on road). */
   wrongWay: boolean;
   headingDeltaDeg: number;
+  remainingDistanceM?: number;
   visiblyOffRoute?: boolean;
   shouldReroute?: boolean;
 };
@@ -252,6 +256,7 @@ export {
   analyzeRiderOnRoute,
   rerouteDebounceMs,
   resolveDisplayRiderPosition,
+  shouldRequestReroute,
 } from "@gatimitra/map-tracking-engine";
 
 export type RouteConnectorFeature = {

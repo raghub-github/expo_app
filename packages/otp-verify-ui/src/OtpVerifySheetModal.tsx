@@ -2,17 +2,17 @@ import React, { useCallback, useEffect, useRef, useState, type ReactNode } from 
 import {
   View,
   Text,
-  TextInput,
   Pressable,
   Modal,
   StyleSheet,
   ActivityIndicator,
+  Keyboard,
   Platform,
   useWindowDimensions,
-  Keyboard,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { OtpSheetWaveCut, OTP_WAVE_H, OTP_WAVE_LOW_Y } from "./OtpSheetWaveCut";
+import { OtpPinField } from "./OtpPinField";
 import { useOtpKeyboardLift } from "./useOtpKeyboardLift";
 
 export type OtpVerifySheetTheme = {
@@ -32,8 +32,9 @@ export type OtpVerifySheetModalProps = {
   title: string;
   subtitle: string;
   otpLength?: 4 | 6;
-  value: string;
-  onChange: (next: string) => void;
+  /** Unused for digit rendering. Kept for reset/compat; digits live in OtpPinField. */
+  value?: string;
+  onChange?: (next: string) => void;
   /** Called with the completed OTP string when verifying. */
   onVerify: (code: string) => void;
   onCancel: () => void;
@@ -57,18 +58,26 @@ export type OtpVerifySheetModalProps = {
   dockToKeyboard?: boolean;
   /** Disable verify button even when OTP complete */
   verifyDisabled?: boolean;
+  /** Modal enter animation. Default fade. Use `none` to avoid a flash over an existing screen. */
+  animationType?: "none" | "fade" | "slide";
+  /**
+   * Render as an overlay View instead of a nested Modal (e.g. inside the drop-order Modal).
+   */
+  embedded?: boolean;
+  /** Clear isolated pin digits (invalid OTP / reopen). */
+  resetKey?: number;
 };
 
 /**
  * System soft-keyboard OTP sheet.
  * Android Modal: TextInput mounts only after `onShow` so the phone keyboard opens reliably.
+ * Digit state is isolated in OtpPinField so typing does not re-render photo/wave/map chrome.
  */
 export function OtpVerifySheetModal({
   visible,
   title,
   subtitle,
   otpLength = 4,
-  value,
   onChange,
   onVerify,
   onCancel,
@@ -85,95 +94,81 @@ export function OtpVerifySheetModal({
   hideVerifyButton = false,
   hideCancelButton = false,
   dockToKeyboard = false,
+  animationType = "fade",
+  embedded = false,
+  resetKey = 0,
 }: OtpVerifySheetModalProps) {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
-  const inputRef = useRef<TextInput>(null);
-  const [focused, setFocused] = useState(false);
-  /** Gate TextInput mount until Modal window is ready (fixes Android keyboard). */
   const [modalReady, setModalReady] = useState(false);
+  const [completeCode, setCompleteCode] = useState("");
+  const [dismissedError, setDismissedError] = useState(false);
+  const [focusNonce, setFocusNonce] = useState(0);
   const keyboardLift = useOtpKeyboardLift(visible, dockToKeyboard ? 0 : undefined);
-  const autoSubmittedRef = useRef("");
   const keyboardUp = keyboardLift > 0;
   const showActions = !hideVerifyButton || !hideCancelButton;
 
   const titleFont = theme.titleFontFamily;
   const bodyFont = theme.bodyFontFamily ?? theme.titleFontFamily;
   const digitFont = theme.digitFontFamily ?? theme.bodyFontFamily;
-  /** Digits only — one char per box. Never render the raw TextInput string in the UI. */
-  const digitsOnly = value.replace(/\D/g, "").slice(0, otpLength);
-  const otpReadySafe = digitsOnly.length === otpLength;
-  const activeIndex = Math.min(digitsOnly.length, otpLength - 1);
 
-  const focusInput = useCallback(() => {
-    if (loading || !modalReady) return;
-    const node = inputRef.current;
-    if (!node) return;
-    node.blur();
-    requestAnimationFrame(() => {
-      node.focus();
-      if (Platform.OS === "android") {
-        const State = (TextInput as unknown as { State?: { focusTextInput?: (n: unknown) => void } })
-          .State;
-        State?.focusTextInput?.(node);
-      }
-    });
-  }, [loading, modalReady]);
+  const onVerifyRef = useRef(onVerify);
+  onVerifyRef.current = onVerify;
+  const loadingRef = useRef(loading);
+  loadingRef.current = loading;
+  const verifyDisabledRef = useRef(verifyDisabled);
+  verifyDisabledRef.current = verifyDisabled;
+  const autoSubmitRef = useRef(autoSubmitOnComplete);
+  autoSubmitRef.current = autoSubmitOnComplete;
+  const hideVerifyRef = useRef(hideVerifyButton);
+  hideVerifyRef.current = hideVerifyButton;
+
+  const shownError = dismissedError ? null : error;
+
+  useEffect(() => {
+    setDismissedError(false);
+  }, [error]);
+
+  const fireVerify = useCallback((code: string) => {
+    setDismissedError(true);
+    if (!hideVerifyRef.current) setCompleteCode(code);
+    if (!autoSubmitRef.current) return;
+    if (loadingRef.current || verifyDisabledRef.current) return;
+    onVerifyRef.current(code);
+  }, []);
+
+  const otpReadySafe = completeCode.length === otpLength;
+
+  const requestPinFocus = useCallback(() => {
+    setFocusNonce((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     if (!visible) {
-      autoSubmittedRef.current = "";
       setModalReady(false);
-      setFocused(false);
+      setCompleteCode("");
+      setDismissedError(false);
       Keyboard.dismiss();
-    }
-  }, [visible]);
-
-  useEffect(() => {
-    if (!modalReady || !visible || loading) return;
-    const t = setTimeout(() => focusInput(), Platform.OS === "android" ? 80 : 40);
-    return () => clearTimeout(t);
-  }, [modalReady, visible, loading, focusInput]);
-
-  useEffect(() => {
-    if (!visible || !autoSubmitOnComplete || !otpReadySafe || loading || verifyDisabled) {
-      if (!otpReadySafe) autoSubmittedRef.current = "";
       return;
     }
-    // Don't auto-resubmit while an error is showing (cleared input stays empty).
-    if (error?.trim()) {
-      autoSubmittedRef.current = "";
-      return;
-    }
-    if (autoSubmittedRef.current === digitsOnly) return;
-    autoSubmittedRef.current = digitsOnly;
-    onVerify(digitsOnly);
-  }, [
-    visible,
-    autoSubmitOnComplete,
-    otpReadySafe,
-    loading,
-    verifyDisabled,
-    digitsOnly,
-    onVerify,
-    error,
-  ]);
+    if (!embedded) return;
+    const id = requestAnimationFrame(() => setModalReady(true));
+    return () => cancelAnimationFrame(id);
+  }, [visible, embedded]);
 
-  const sheetBottomPad = dockToKeyboard && keyboardUp ? 10 : Math.max(insets.bottom, 12);
+  useEffect(() => {
+    if (resetKey > 0) setCompleteCode("");
+  }, [resetKey]);
 
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onCancel}
-      statusBarTranslucent
-      onShow={() => {
-        // Defer one frame so the Modal root view exists before TextInput mounts.
-        requestAnimationFrame(() => setModalReady(true));
-      }}
-    >
-      <View style={styles.modalRoot}>
+  const sheetBottomPad =
+    dockToKeyboard && keyboardUp
+      ? 10
+      : Math.max(insets.bottom, Platform.OS === "android" ? 48 : 12);
+
+  if (embedded && !visible) return null;
+
+  const body = (
+      <View style={[styles.modalRoot, embedded && styles.embeddedRoot]}>
         <Pressable
           style={styles.dim}
           onPress={dismissOnBackdropPress ? onCancel : undefined}
@@ -195,7 +190,7 @@ export function OtpVerifySheetModal({
                 { paddingBottom: sheetBottomPad },
                 dockToKeyboard && keyboardUp && styles.sheetBodyDocked,
               ]}
-              onPress={focusInput}
+              onPress={requestPinFocus}
             >
               <Text
                 style={[
@@ -220,70 +215,25 @@ export function OtpVerifySheetModal({
 
               {prependContent ? <View style={styles.prepend}>{prependContent}</View> : null}
 
-              <Pressable
-                style={styles.boxesRow}
-                onPress={focusInput}
-                accessibilityLabel={`One-time code, ${otpLength} digits`}
-              >
-                {Array.from({ length: otpLength }).map((_, index) => {
-                  const digit = digitsOnly.charAt(index);
-                  const active = focused && index === activeIndex;
-                  return (
-                    <View key={index} style={styles.box} pointerEvents="none">
-                      <Text
-                        style={[
-                          styles.digit,
-                          digit ? styles.digitFilled : styles.digitEmpty,
-                          digitFont
-                            ? { fontFamily: digitFont, fontWeight: "normal" }
-                            : styles.digitFallbackWeight,
-                          { color: theme.textPrimary },
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {digit || (active ? "\u200B" : "-")}
-                      </Text>
-                      <View
-                        style={[
-                          styles.underline,
-                          active && { backgroundColor: theme.primary },
-                        ]}
-                      />
-                      {active && !digit ? <View style={styles.caret} /> : null}
-                    </View>
-                  );
-                })}
-                {modalReady ? (
-                  <TextInput
-                    key={`otp-input-${visible ? "on" : "off"}`}
-                    ref={inputRef}
-                    style={styles.hiddenInput}
-                    value={digitsOnly}
-                    onChangeText={(t) => onChange(t.replace(/\D/g, "").slice(0, otpLength))}
-                    onFocus={() => setFocused(true)}
-                    onBlur={() => setFocused(false)}
-                    keyboardType="number-pad"
-                    maxLength={otpLength}
-                    editable={!loading}
-                    textContentType="oneTimeCode"
-                    autoComplete="sms-otp"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    importantForAutofill="yes"
-                    showSoftInputOnFocus
-                    autoFocus
-                    blurOnSubmit={false}
-                    caretHidden
-                    contextMenuHidden
-                    selectTextOnFocus={false}
-                    selectionColor="transparent"
-                    underlineColorAndroid="transparent"
-                  />
-                ) : null}
-              </Pressable>
+              {visible ? (
+                <OtpPinField
+                  otpLength={otpLength}
+                  loading={loading}
+                  visible={visible}
+                  resetKey={resetKey}
+                  error={error}
+                  digitFontFamily={digitFont}
+                  textPrimary={theme.textPrimary}
+                  primary={theme.primary}
+                  inputReady={modalReady}
+                  focusNonce={focusNonce}
+                  onComplete={fireVerify}
+                  onChange={onChange}
+                />
+              ) : null}
               {resendSlot ? <View style={styles.resendWrap}>{resendSlot}</View> : null}
 
-              {error ? (
+              {shownError ? (
                 <View style={styles.errorBanner}>
                   <Text
                     style={[
@@ -292,7 +242,7 @@ export function OtpVerifySheetModal({
                       { color: theme.error },
                     ]}
                   >
-                    {error}
+                    {shownError}
                   </Text>
                 </View>
               ) : null}
@@ -330,7 +280,10 @@ export function OtpVerifySheetModal({
                           : styles.verifyBtnIdle,
                         (loading || verifyDisabled) && styles.btnDisabled,
                       ]}
-                      onPress={() => onVerify(digitsOnly)}
+                      onPress={() => {
+                        if (!otpReadySafe || loading || verifyDisabled) return;
+                        onVerifyRef.current(completeCode);
+                      }}
                       disabled={loading || verifyDisabled || !otpReadySafe}
                     >
                       {loading ? (
@@ -348,6 +301,22 @@ export function OtpVerifySheetModal({
           </View>
         </View>
       </View>
+  );
+
+  if (embedded) return body;
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType={animationType}
+      onRequestClose={onCancel}
+      statusBarTranslucent
+      onShow={() => {
+        requestAnimationFrame(() => setModalReady(true));
+      }}
+    >
+      {body}
     </Modal>
   );
 }
@@ -356,6 +325,11 @@ const styles = StyleSheet.create({
   modalRoot: {
     flex: 1,
     justifyContent: "flex-end",
+  },
+  embeddedRoot: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 80,
+    elevation: 80,
   },
   dim: {
     ...StyleSheet.absoluteFillObject,
@@ -393,63 +367,6 @@ const styles = StyleSheet.create({
   },
   prepend: {
     marginBottom: 12,
-  },
-  boxesRow: {
-    position: "relative",
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 8,
-    marginBottom: 10,
-    overflow: "hidden",
-  },
-  box: {
-    flex: 1,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "flex-end",
-    paddingBottom: 6,
-    overflow: "hidden",
-  },
-  digit: {
-    fontSize: 24,
-    minHeight: 28,
-    width: "100%",
-    textAlign: "center",
-    includeFontPadding: false,
-  },
-  digitFilled: {
-    fontSize: 26,
-  },
-  digitEmpty: {},
-  digitFallbackWeight: {
-    fontWeight: "700",
-  },
-  underline: {
-    width: "100%",
-    height: 2,
-    borderRadius: 1,
-    backgroundColor: "#94A3B8",
-  },
-  caret: {
-    position: "absolute",
-    bottom: 10,
-    width: 2,
-    height: 22,
-    backgroundColor: "#0F172A",
-  },
-  /**
-   * Invisible but focusable — keep opacity tiny so the phone keyboard still opens,
-   * while the typed string never paints over the per-box digits.
-   */
-  hiddenInput: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 2,
-    opacity: Platform.OS === "android" ? 0.02 : 0.01,
-    color: "transparent",
-    backgroundColor: "transparent",
-    fontSize: 1,
-    letterSpacing: 0,
-    includeFontPadding: false,
   },
   resendWrap: {
     marginBottom: 14,

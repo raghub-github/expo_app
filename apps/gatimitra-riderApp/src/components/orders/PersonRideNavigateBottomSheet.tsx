@@ -62,6 +62,14 @@ type Props = {
   startRideLoading?: boolean;
   completeRideLoading?: boolean;
   reachSliderDone?: boolean;
+  reachSliderLocked?: boolean;
+  reachBusyLabel?: string | null;
+  reachDropLocked?: boolean;
+  reachDropBusyLabel?: string | null;
+  startRideLocked?: boolean;
+  startRideBusyLabel?: string | null;
+  completeRideLocked?: boolean;
+  completeRideBusyLabel?: string | null;
   startRideSliderKey?: number;
   waitTimerLabel?: string | null;
   otpSheetOpen?: boolean;
@@ -78,7 +86,7 @@ type Props = {
   milestoneGeo?: Partial<Record<string, MilestoneGeoState>>;
 };
 
-export function PersonRideNavigateBottomSheet({
+export function PersonRideNavigateBottomSheetInner({
   order,
   tripId,
   phase,
@@ -105,6 +113,14 @@ export function PersonRideNavigateBottomSheet({
   startRideLoading = false,
   completeRideLoading = false,
   reachSliderDone = false,
+  reachSliderLocked = false,
+  reachBusyLabel = null,
+  reachDropLocked = false,
+  reachDropBusyLabel = null,
+  startRideLocked = false,
+  startRideBusyLabel = null,
+  completeRideLocked = false,
+  completeRideBusyLabel = null,
   startRideSliderKey = 0,
   waitTimerLabel = null,
   otpSheetOpen = false,
@@ -180,10 +196,13 @@ export function PersonRideNavigateBottomSheet({
           onComplete={onReachPickup}
           disabled={reachSliderDone || pickupOtpVerified}
           loading={reachedLoading && !reachSliderDone}
+          locked={reachSliderLocked}
+          busyLabel={reachBusyLabel}
           completed={reachSliderDone || pickupOtpVerified}
           completedLabel={t("orders.activeRide.reachedDone", "Reached pickup ✓")}
           geoLocked={reachPickupGeo.locked}
           geoHint={reachPickupGeo.hintText}
+          actionName="reached_pickup"
         />
       ) : null}
       {showPickupWaitTimer ? (
@@ -198,10 +217,13 @@ export function PersonRideNavigateBottomSheet({
           label={t("orders.activeRide.slideStartRide", "Start ride")}
           onComplete={onStartRide!}
           loading={startRideLoading}
+          locked={startRideLocked}
+          busyLabel={startRideBusyLabel}
           completed={false}
           completedLabel={t("orders.activeRide.rideStartedDone", "Ride started ✓")}
           geoLocked={startRideGeo.locked}
           geoHint={startRideGeo.hintText}
+          actionName="start_ride"
         />
       ) : null}
       {showReachDrop ? (
@@ -209,10 +231,13 @@ export function PersonRideNavigateBottomSheet({
           label={t("orders.activeRide.slideReachDrop", "Reach drop location")}
           onComplete={onReachDrop}
           loading={reachedLoading}
+          locked={reachDropLocked}
+          busyLabel={reachDropBusyLabel}
           completed={atDrop}
           completedLabel={t("orders.activeRide.reachedDrop", "Reached drop ✓")}
           geoLocked={reachDropGeo.locked}
           geoHint={reachDropGeo.hintText}
+          actionName="reached_drop"
         />
       ) : null}
       {showCompleteRide ? (
@@ -220,10 +245,13 @@ export function PersonRideNavigateBottomSheet({
           label={t("orders.activeRide.slideCompleteRider", "Complete rider")}
           onComplete={onCompleteRide}
           loading={completeRideLoading}
+          locked={completeRideLocked}
+          busyLabel={completeRideBusyLabel}
           completed={orderDelivered}
           completedLabel={t("orders.activeRide.rideCompleted", "Ride completed ✓")}
           geoLocked={completeRideGeo.locked}
           geoHint={completeRideGeo.hintText}
+          actionName="complete_ride"
         />
       ) : null}
       {orderDelivered ? (
@@ -281,7 +309,7 @@ export function PersonRideNavigateBottomSheet({
 
       <NavSheetWaveShell
         style={[styles.sheetOuter, sheetShadow]}
-        bodyStyle={{ paddingBottom: Math.max(bottomInset, 12) }}
+        bodyStyle={{ paddingBottom: Math.max(bottomInset, 8) }}
       >
         <View style={styles.sheetHandleDock}>
           {onToggleSheetExpanded ? (
@@ -371,6 +399,8 @@ export function PersonRideNavigateBottomSheet({
     </View>
   );
 }
+
+export const PersonRideNavigateBottomSheet = React.memo(PersonRideNavigateBottomSheetInner);
 
 function RideNavActionButton({
   icon,
@@ -883,7 +913,8 @@ const styles = StyleSheet.create({
   },
   actionsDock: {
     width: "100%",
-    paddingTop: 4,
+    paddingTop: 2,
+    paddingBottom: 0,
   },
   geoHintSlot: {
     minHeight: 40,

@@ -74,6 +74,26 @@ async function readPersistedSession(): Promise<Session | null> {
 
 const REFRESH_LEAD_SEC = 60 * 60 * 24; // refresh when < 24h left
 
+async function hydrateRiderSession(
+  set: (partial: Partial<SessionState>) => void,
+  get: () => SessionState
+): Promise<void> {
+  if (get().hydrated) return;
+  try {
+    const restored = await readPersistedSession();
+    if (!restored) {
+      set({ hydrated: true, session: null });
+      return;
+    }
+    set({ session: restored });
+    await get().refreshSessionIfNeeded();
+    set({ hydrated: true, session: get().session ?? restored });
+  } catch (error) {
+    console.error("[SessionStore] Hydration error:", error);
+    set({ hydrated: true, session: null });
+  }
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   hydrated: false,
   session: null,
@@ -89,28 +109,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     await persistSession(s);
   },
 
-  hydrate: async () => {
-    if (get().hydrated) {
-      console.log("[SessionStore] Already hydrated");
-      return;
-    }
-    console.log("[SessionStore] Starting hydration");
-    try {
-      const restored = await readPersistedSession();
-      if (!restored) {
-        console.log("[SessionStore] No session found");
-        set({ hydrated: true, session: null });
-        return;
-      }
-      console.log("[SessionStore] Session restored");
-      set({ session: restored });
-      await get().refreshSessionIfNeeded();
-      set({ hydrated: true, session: get().session ?? restored });
-    } catch (error) {
-      console.error("[SessionStore] Hydration error:", error);
-      set({ hydrated: true, session: null });
-    }
-  },
+  hydrate: () => hydrateRiderSession(set, get),
 
   refreshSessionIfNeeded: async (opts) => {
     const current = get().session;

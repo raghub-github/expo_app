@@ -63,6 +63,40 @@ export function normFoodStatus(s: string | null | undefined): string {
   return u === 'NEW' ? 'CREATED' : u;
 }
 
+/** Kitchen / rider statuses where the merchant may still call rider or customer. */
+const LIVE_CONTACT_STATUSES = new Set([
+  'CREATED',
+  'NEW',
+  'PLACED',
+  'ACCEPTED',
+  'PREPARING',
+  'READY_FOR_PICKUP',
+  'READY',
+  'OUT_FOR_DELIVERY',
+  'PICKED_UP',
+  'IN_TRANSIT',
+  'ON_THE_WAY',
+  'DISPATCHED',
+  'DESPATCHED',
+  'ASSIGNED',
+  'REACHED_STORE',
+  'RIDER_AT_PICKUP',
+]);
+
+/** Call icons only while the order is still in the live pipeline. */
+export function isPartnerOrderLiveForContact(status: string | null | undefined): boolean {
+  const u = String(status ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_');
+  return LIVE_CONTACT_STATUSES.has(u);
+}
+
+/** After delivery / cancel / RTO — no call icon and no phone digits. */
+export function isPartnerOrderClosedForContact(status: string | null | undefined): boolean {
+  return !isPartnerOrderLiveForContact(status);
+}
+
 /**
  * Map order_events / kitchen strings (PLACED, ACCEPTED, …) → partner tab filter codes.
  * Returns one of: CREATED | ACCEPTED | PREPARING | READY_FOR_PICKUP | OUT_FOR_DELIVERY | DELIVERED | CANCELLED | RTO

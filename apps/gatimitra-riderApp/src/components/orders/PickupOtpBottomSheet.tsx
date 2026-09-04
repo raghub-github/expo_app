@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { useTranslation } from "react-i18next";
 import { OtpVerifySheetModal } from "@gatimitra/otp-verify-ui";
 import { riderOtpVerifyTheme } from "@/src/theme/otpVerifyTheme";
@@ -20,7 +20,7 @@ type Props = {
   onClearError?: () => void;
 };
 
-export function PickupOtpBottomSheet({
+function PickupOtpBottomSheetInner({
   visible,
   loading = false,
   error,
@@ -30,10 +30,8 @@ export function PickupOtpBottomSheet({
   purpose = "pickup",
   onDismiss,
   onSubmit,
-  onClearError,
 }: Props) {
   const { t } = useTranslation();
-  const [otp, setOtp] = useState("");
   const isFood = otpContext === "merchant";
   const isDropOtp = purpose === "drop";
   const isRidePickup = !isFood && !isDropOtp;
@@ -63,46 +61,26 @@ export function PickupOtpBottomSheet({
             "Ask the customer for their 4-digit code to start the ride."
           );
 
-  useEffect(() => {
-    if (!visible) {
-      setOtp("");
-    }
-  }, [visible]);
-
-  // Invalid OTP → clear digits so rider can re-enter immediately.
-  useEffect(() => {
-    if (error?.trim()) {
-      setOtp("");
-    }
-  }, [error]);
-
-  useEffect(() => {
-    if (resetKey > 0) {
-      setOtp("");
-    }
-  }, [resetKey]);
-
   return (
     <OtpVerifySheetModal
       visible={visible}
       title={t("auth.verifyOtp", "Verify OTP")}
       subtitle={subtitle}
       otpLength={4}
-      value={otp}
-      onChange={(next) => {
-        if (error?.trim()) onClearError?.();
-        setOtp(next);
-      }}
       onVerify={onSubmit}
       onCancel={onDismiss}
       loading={loading}
       error={error}
+      resetKey={resetKey}
       autoSubmitOnComplete
       hideVerifyButton
       hideCancelButton
       dockToKeyboard
       dismissOnBackdropPress={false}
+      animationType="none"
       theme={riderOtpVerifyTheme}
     />
   );
 }
+
+export const PickupOtpBottomSheet = React.memo(PickupOtpBottomSheetInner);

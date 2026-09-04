@@ -12,7 +12,26 @@ type Props = {
   ended?: boolean;
 };
 
-const TERMINAL_RE = /deliver|complete|cancel|reject|rto|fail/i;
+export function isTerminalOrderStatus(status: string | null | undefined): boolean {
+  const u = String(status ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
+  if (!u) return false;
+  // Do not treat OUT_FOR_DELIVERY as terminal (`deliver` is a substring).
+  if (u === "OUT_FOR_DELIVERY" || u === "IN_TRANSIT" || u === "PICKED_UP") return false;
+  return (
+    u === "DELIVERED" ||
+    u === "COMPLETED" ||
+    u === "CANCELLED" ||
+    u === "CANCELED" ||
+    u === "REJECTED" ||
+    u === "RTO" ||
+    u === "FAILED" ||
+    u.includes("CANCEL") ||
+    u.includes("REJECT")
+  );
+}
 
 export function MerchantRiderTrackingModal({ visible, onClose, storeId, ordersFoodId, ended }: Props) {
   const { data, loading, error } = useMerchantRiderTracking({
@@ -84,10 +103,6 @@ export function MerchantRiderTrackingModal({ visible, onClose, storeId, ordersFo
       </View>
     </Modal>
   );
-}
-
-export function isTerminalOrderStatus(status: string | null | undefined): boolean {
-  return TERMINAL_RE.test(String(status ?? ""));
 }
 
 const styles = StyleSheet.create({

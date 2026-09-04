@@ -274,15 +274,22 @@ const EnvSchema = z.object({
   SERVICE_RADIUS_KM_DEFAULT: z.preprocess(emptyToUndefined, z.coerce.number().positive().max(200)).default(15),
 
   /**
-   * Max age (seconds) of a rider's GPS ping before they are INELIGIBLE for NEW dispatch
-   * offers — i.e. dispatch only ever assigns using a genuinely-fresh location. A healthy
-   * rider pings every 3–30s, so 120s excludes only devices that stopped reporting (crash,
-   * background-kill, no network). Kept separate from any looser map-display freshness.
-   * Bounds guard against a mis-set value silently starving or over-loosening dispatch.
+   * GPS age (seconds) treated as FRESH for scoring / map. Duty ON is never flipped when
+   * location is older than this. NEW-offer eligibility uses the stale window below.
    */
   RIDER_DISPATCH_LOCATION_MAX_AGE_SECONDS: z
     .preprocess(emptyToUndefined, z.coerce.number().int().min(30).max(3600))
     .default(120),
+
+  /**
+   * Max GPS age (seconds) while Duty remains ON for NEW dispatch offers.
+   * App kill / Doze can delay pings; 15 minutes is the explicit location-safety
+   * window. Older than this → location UNKNOWN (still ON DUTY, not offered NEW
+   * work until a ping arrives). Pending offers remain recoverable separately.
+   */
+  RIDER_DISPATCH_LOCATION_STALE_MAX_AGE_SECONDS: z
+    .preprocess(emptyToUndefined, z.coerce.number().int().min(30).max(3600))
+    .default(900),
 
   /**
    * P2 "wake + fresh ping": before finalizing an offer to the top candidate, ask that

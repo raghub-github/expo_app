@@ -5,6 +5,20 @@
 import { getSql } from "../db/client.js";
 import { publishRiderEvent } from "../modules/realtime/publish.js";
 
+export const TERMINAL_DISPATCH_OFFER_EVENTS = [
+  "accepted",
+  "rejected",
+  "timeout",
+  "cancelled",
+  "assigned",
+] as const;
+
+export function isTerminalDispatchOfferEvent(eventType: string): boolean {
+  return (TERMINAL_DISPATCH_OFFER_EVENTS as readonly string[]).includes(eventType);
+}
+
+export const ORDER_ASSIGNED_TO_OTHER_RIDER = "ORDER_ASSIGNED_TO_OTHER_RIDER";
+
 export type DispatchAssignmentAuditEventType =
   | "offer_sent"
   | "offer_viewed"
@@ -229,7 +243,7 @@ export async function listPendingDispatchOffersForOrder(
         WHERE o.order_core_id = a.order_core_id
           AND o.rider_id = a.rider_id
           AND o.assignment_attempt_number = a.assignment_attempt_number
-          AND o.event_type IN ('accepted', 'rejected', 'timeout')
+          AND o.event_type IN ('accepted', 'rejected', 'timeout', 'cancelled', 'assigned')
       )
     ORDER BY a.rider_id, a.assignment_attempt_number, a.created_at DESC
   `) as Array<Record<string, unknown>>;
@@ -279,13 +293,108 @@ export async function recordPendingDispatchOffersMissed(input: {
       occurredAt: now,
     });
 
+    const offerId = row.order_id;
+    // Always push a cancel frame so open incoming modals close instantly —
+    // customer cancel / dispatch expire previously only wrote audit rows.
     if (input.reason === "order_accepted_by_other_rider") {
       await publishRiderEvent(row.rider_id, {
         type: "dispatch_offer_withdrawn",
         reason: "accepted_by_other_rider",
-        orderId: row.order_id,
+        orderId: offerId,
+        order_id: offerId,
+        offerId,
+        offer_id: offerId,
+      });
+    } else {
+      const cancelReason =
+        input.reason === "dispatch_cancelled"
+          ? "order_cancelled"
+          : input.reason === "dispatch_expired"
+            ? "dispatch_expired"
+            : input.reason;
+      await publishRiderEvent(row.rider_id, {
+        type: "dispatch_offer_cancelled",
+        reason: cancelReason,
+        orderId: offerId,
+        order_id: offerId,
+        offerId,
+        offer_id: offerId,
+      });
+      await publishRiderEvent(row.rider_id, {
+        type: "dispatch_offer_withdrawn",
+        reason: cancelReason,
+        orderId: offerId,
+        order_id: offerId,
+        offerId,
+        offer_id: offerId,
       });
     }
+  }
+  return pending.length;
+}
+
+/** Cancel every still-pending offer after another rider claimed the order. */
+export async function cancelLosingDispatchOffers(input: {
+  orderCoreId: number;
+  winnerRiderId: number;
+  orderId: string;
+  occurredAt?: Date;
+}): Promise<number> {
+  const pending = await listPendingDispatchOffersForOrder(
+    input.orderCoreId,
+    input.winnerRiderId
+  );
+  if (pending.length === 0) return 0;
+
+  const now = input.occurredAt ?? new Date();
+  const orderId = input.orderId.trim();
+  for (const row of pending) {
+    await recordDispatchAssignmentAudit({
+      orderCoreId: input.orderCoreId,
+      orderId: row.order_id || orderId,
+      riderId: row.rider_id,
+      eventType: "cancelled",
+      assignmentAttemptNumber: row.assignment_attempt_number,
+      dispatchSessionId: row.dispatch_session_id,
+      waveNumber: row.wave_number,
+      cancelledAt: now,
+      responseReceivedAt: now,
+      removalReason: ORDER_ASSIGNED_TO_OTHER_RIDER,
+      actorType: "system",
+      actorId: "dispatch_accept",
+      metadata: {
+        missReason: ORDER_ASSIGNED_TO_OTHER_RIDER,
+        assignedRiderId: input.winnerRiderId,
+        serviceType: row.metadata?.serviceType ?? null,
+      },
+      occurredAt: now,
+    });
+
+    const offerId = row.order_id || orderId;
+    await publishRiderEvent(row.rider_id, {
+      type: "dispatch_offer_cancelled",
+      order_id: offerId,
+      offer_id: offerId,
+      orderId: offerId,
+      offerId,
+      reason: ORDER_ASSIGNED_TO_OTHER_RIDER,
+      assigned_rider_id: input.winnerRiderId,
+      assignedRiderId: input.winnerRiderId,
+    });
+    await publishRiderEvent(row.rider_id, {
+      type: "dispatch_offer_withdrawn",
+      reason: "accepted_by_other_rider",
+      orderId: offerId,
+    });
+    console.info(
+      "[dispatch] OFFER_CANCEL_EVENT",
+      JSON.stringify({
+        order: offerId,
+        offer: offerId,
+        rider: row.rider_id,
+        winner: input.winnerRiderId,
+      })
+    );
   }
   return pending.length;
 }
@@ -353,39 +462,76 @@ export async function recordDispatchOffersSent(args: {
   );
   const now = args.occurredAt ?? new Date();
   const attempt = await resolveGlobalDispatchAttemptNumber(args.orderCoreId);
-  for (const riderId of args.riderIds) {
-    const eligibility = await evaluateAndAuditRiderAssignmentEligibility(
-      riderId,
-      args.serviceType,
-      {
-        orderCoreId: args.orderCoreId,
-        orderId: args.orderId,
-        eventContext: "dispatch_offer",
-      }
+  const { isOrderStillDispatchable } = await import("./order-dispatch.service.js");
+  const stillOpen = await isOrderStillDispatchable(args.orderCoreId);
+  if (!stillOpen) {
+    console.info(
+      "[dispatch] WAVE_STOPPED",
+      JSON.stringify({
+        order: args.orderId,
+        reason: "ORDER_ASSIGNED",
+      })
     );
-    await recordDispatchAssignmentAudit({
-      orderCoreId: args.orderCoreId,
-      orderId: args.orderId,
-      riderId,
-      eventType: "offer_sent",
-      assignmentAttemptNumber: attempt,
-      dispatchSessionId: args.dispatchSessionId,
-      waveNumber: args.waveNumber,
-      dispatchRadiusMeters: args.dispatchRadiusMeters,
-      offerSentAt: now,
-      actorType: "system",
-      actorId: "dispatch_engine",
-      occurredAt: now,
-      metadata: {
-        activeFoodOrders: eligibility.counts.food,
-        activeParcelOrders: eligibility.counts.parcel,
-        activePersonRides: eligibility.counts.person_ride,
-        assignmentLimitUsed: eligibility.assignmentLimitUsed,
-        crossServiceRuleApplied: eligibility.crossServiceRuleApplied,
-        personRideExclusiveApplied: eligibility.personRideExclusiveApplied,
-        eligibilityResult: eligibility.eligible ? "eligible" : "blocked",
-        blockReason: eligibility.blockReason,
-      },
-    });
+    return;
   }
+
+  await Promise.all(
+    args.riderIds.map(async (riderId) => {
+      try {
+        if (!(await isOrderStillDispatchable(args.orderCoreId))) {
+          return;
+        }
+        const eligibility = await evaluateAndAuditRiderAssignmentEligibility(
+          riderId,
+          args.serviceType,
+          {
+            orderCoreId: args.orderCoreId,
+            orderId: args.orderId,
+            eventContext: "dispatch_offer",
+          }
+        );
+        await recordDispatchAssignmentAudit({
+          orderCoreId: args.orderCoreId,
+          orderId: args.orderId,
+          riderId,
+          eventType: "offer_sent",
+          assignmentAttemptNumber: attempt,
+          dispatchSessionId: args.dispatchSessionId,
+          waveNumber: args.waveNumber,
+          dispatchRadiusMeters: args.dispatchRadiusMeters,
+          offerSentAt: now,
+          actorType: "system",
+          actorId: "dispatch_engine",
+          occurredAt: now,
+          metadata: {
+            activeFoodOrders: eligibility.counts.food,
+            activeParcelOrders: eligibility.counts.parcel,
+            activePersonRides: eligibility.counts.person_ride,
+            assignmentLimitUsed: eligibility.assignmentLimitUsed,
+            crossServiceRuleApplied: eligibility.crossServiceRuleApplied,
+            personRideExclusiveApplied: eligibility.personRideExclusiveApplied,
+            eligibilityResult: eligibility.eligible ? "eligible" : "blocked",
+            blockReason: eligibility.blockReason,
+          },
+        });
+        console.info(
+          "[dispatch] OFFER_CREATED",
+          JSON.stringify({
+            order: args.orderId,
+            offer: args.orderId,
+            rider: riderId,
+          })
+        );
+      } catch (err) {
+        console.warn(
+          "[dispatch] OFFER_CREATED failed (other riders still notified)",
+          JSON.stringify({
+            order: args.orderId,
+            rider: riderId,
+            message: err instanceof Error ? err.message : String(err),
+          })
+        );
+      }
+    })
+  );
 }

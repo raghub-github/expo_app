@@ -9,7 +9,7 @@ import { useDashboardAccessQuery } from '@/hooks/queries/useDashboardAccessQuery
 import { usePermissionsQuery } from '@/hooks/queries/usePermissionsQuery';
 import { queryKeys } from '@/lib/queryKeys';
 import { resolveRiderDashboardReturnUrl } from '@/lib/riders/rider-dashboard-navigation';
-import { CheckCircle, ArrowLeft, User, Car, FileText, CreditCard, Receipt, DollarSign, Calendar, MapPin, Phone, Mail, IdCard, Building2, Fuel, Settings, Shield, Clock, AlertCircle } from 'lucide-react';
+import { CheckCircle, ArrowLeft, User, Car, FileText, CreditCard, Receipt, DollarSign, Calendar, MapPin, Phone, Mail, IdCard, Building2, Fuel, Settings, Shield, ShieldCheck, Clock, AlertCircle } from 'lucide-react';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
 import { DocAutoVerificationDetailsView } from '@/components/verification/DocAutoVerificationDetails';
@@ -215,6 +215,8 @@ export default function RiderDetailsPage() {
   const queryClient = useQueryClient();
   const riderId = parseInt(params.id as string);
   const returnToParam = searchParams.get("returnTo");
+  const [vehicleVerifyLoading, setVehicleVerifyLoading] = useState(false);
+  const [docActionLoading, setDocActionLoading] = useState<number | null>(null);
 
   const handleBackToRiders = () => {
     router.push(resolveRiderDashboardReturnUrl(returnToParam, riderId));
@@ -223,13 +225,13 @@ export default function RiderDetailsPage() {
   const {
     data: riderData,
     isLoading: riderLoading,
-    isFetching: riderFetching,
     error: riderError,
+    refetch: refetchRiderDetails,
   } = useGetRiderDetailsQuery(riderId, {
     skip: Number.isNaN(riderId),
   } as any);
 
-  const loading = riderLoading || riderFetching;
+  const loading = riderLoading && !riderData;
   const error = riderError instanceof Error ? riderError.message : riderError ? String(riderError) : null;
 
   // Check if user has rider access
@@ -346,8 +348,55 @@ export default function RiderDetailsPage() {
     rider.kycStatus === 'APPROVED' &&
     rider.onboardingStage === 'ACTIVE';
 
-  // Check if verification is needed
   const needsVerification = !isFullyOnboarded;
+  const rcDoc = documents.find((d) => d.docType === "rc");
+  const ownershipVerified =
+    vehicle?.verified === true || rcDoc?.verified === true;
+  const ownershipLabel = vehicle?.verified
+    ? "Verified (vehicle)"
+    : rcDoc?.verified
+      ? "Verified via approved RC"
+      : "Pending — approve RC or verify vehicle";
+
+  const handleVerifyVehicle = async () => {
+    setVehicleVerifyLoading(true);
+    try {
+      const res = await fetch(`/api/riders/${rider.id}/vehicle/verify`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to verify vehicle");
+      }
+      await refetchRiderDetails();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Could not verify vehicle / ownership");
+    } finally {
+      setVehicleVerifyLoading(false);
+    }
+  };
+
+  const handleApproveDocument = async (docId: number) => {
+    setDocActionLoading(docId);
+    try {
+      const res = await fetch(`/api/riders/${rider.id}/documents/${docId}/approve`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to approve document");
+      }
+      await refetchRiderDetails();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Could not approve document");
+    } finally {
+      setDocActionLoading(null);
+    }
+  };
 
   const documentLabels: Record<string, string> = {
     aadhaar: "Aadhaar Card",
@@ -367,12 +416,14 @@ export default function RiderDetailsPage() {
     profile_photo: "Profile Photo",
     vehicle_image: "Vehicle Image",
     ev_ownership_proof: "EV Ownership Proof",
+    ownership_proof: "Vehicle Ownership Proof",
     other: "Other Document",
   };
 
   const verificationStatusLabel: Record<string, string> = {
     pending: "Pending",
     approved: "Approved",
+    auto_verified: "Verified",
     rejected: "Rejected",
   };
 
@@ -574,7 +625,29 @@ export default function RiderDetailsPage() {
                 <InfoCard icon={<User className="h-4 w-4" />} label="Seating Capacity" value={vehicle.seatingCapacity != null ? `${vehicle.seatingCapacity} seats` : "—"} />
                 <InfoCard icon={<Building2 className="h-4 w-4" />} label="Commercial Vehicle" value={vehicle.isCommercial ? "Yes" : "No"} />
                 <InfoCard icon={<Shield className="h-4 w-4" />} label="Vehicle Status" value={vehicle.vehicleActiveStatus ? String(vehicle.vehicleActiveStatus).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "—"} />
+                <InfoCard
+                  icon={<ShieldCheck className="h-4 w-4" />}
+                  label="Ownership proof"
+                  value={ownershipLabel}
+                  highlight={ownershipVerified}
+                />
               </div>
+              {!vehicle.verified ? (
+                <div className="mt-4">
+                  <button
+                    type="button"
+                    onClick={() => void handleVerifyVehicle()}
+                    disabled={vehicleVerifyLoading}
+                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                  >
+                    <ShieldCheck className="h-4 w-4" />
+                    {vehicleVerifyLoading ? "Verifying…" : "Verify vehicle / ownership"}
+                  </button>
+                  <p className="mt-2 text-xs text-gray-500">
+                    Food dispatch in some states requires ownership proof. Approving the RC document or verifying the vehicle both count.
+                  </p>
+                </div>
+              ) : null}
             </div>
 
             {/* Expiry Dates */}
@@ -699,7 +772,7 @@ export default function RiderDetailsPage() {
                       {title}
                     </h3>
                     <span className={`shrink-0 px-2 py-1 text-xs font-medium rounded-full ${
-                      verStatus === "approved" ? "bg-emerald-100 text-emerald-800" :
+                      verStatus === "approved" || verStatus === "auto_verified" || doc.verified ? "bg-emerald-100 text-emerald-800" :
                       verStatus === "rejected" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"
                     }`}>
                       {verificationStatusLabel[verStatus] || (doc.verified ? "Verified" : "Pending")}
@@ -721,6 +794,11 @@ export default function RiderDetailsPage() {
                     {doc.rejectedReason && (
                       <p className="text-red-600"><span className="font-medium">Rejected:</span> {doc.rejectedReason}</p>
                     )}
+                    {doc.docType === "rc" && doc.verified ? (
+                      <p className="text-emerald-700 pt-1">
+                        Approved RC is used as vehicle ownership proof for food dispatch.
+                      </p>
+                    ) : null}
                     <p className="text-gray-500 pt-1">{new Date(doc.createdAt).toLocaleDateString()}</p>
                   </div>
                   {autoVerifyDisplay ? (
@@ -740,6 +818,16 @@ export default function RiderDetailsPage() {
                         {f.side && f.side !== "single" ? `View ${String(f.side).charAt(0).toUpperCase() + String(f.side).slice(1)} →` : "View Document →"}
                       </a>
                     ))}
+                    {!doc.verified && verStatus !== "rejected" ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleApproveDocument(doc.id)}
+                        disabled={docActionLoading === doc.id}
+                        className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                      >
+                        {docActionLoading === doc.id ? "Approving…" : "Approve"}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               );

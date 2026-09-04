@@ -923,6 +923,13 @@ async function cancelRideOrderForRow(
     metadata: { reasonCode, cancelMode, displayReason: reasonCode },
   });
 
+  try {
+    const { completeOrderDispatch } = await import("../../lib/order-dispatch.service.js");
+    await completeOrderDispatch(row.id, "cancelled");
+  } catch {
+    /* non-fatal — cancel must not fail if dispatch session is already gone */
+  }
+
   // Pre-pickup compensation: customer cancel after rider reached pickup.
   let riderAtPickup = false;
   if (cancelledByType === "customer" && row.riderId != null && row.riderId > 0) {

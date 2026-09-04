@@ -107,7 +107,7 @@ export function PaymentDetailsScreen() {
           <RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={TEAL} />
         }
       >
-        {isLoading ? (
+        {isLoading && !data ? (
           <View style={styles.centerBox}>
             <ActivityIndicator color={TEAL} />
           </View>

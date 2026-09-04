@@ -209,6 +209,7 @@ export function useDutyToggle() {
           if (!data.isOnDuty) {
             return { ok: false, blockedFromGoingOn: true, reason: "blocked" };
           }
+          void import("@/src/lib/riderPushRefresh").then((m) => m.runRiderPushRefresh());
           return { ok: true };
         } catch (error) {
           if (isVehicleDetailsRequiredError(error)) {

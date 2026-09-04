@@ -98,7 +98,7 @@ export function MerchantOrderActionsSheet({
   const menu = (variant === "compact" ? COMPACT_MENU : FULL_MENU).filter((item) => {
     if (item.id === "view_details" && !onViewDetails) return false;
     // After delivery / cancel, kitchen ticket is closed — bill only.
-    if (isTerminal && item.id === "print_kot") return false;
+    if (isTerminal && (item.id === "call" || item.id === "print_kot")) return false;
     // New (unaccepted) orders — no print KOT / bill from the card menu.
     if (order?.status === "created" && (item.id === "print_kot" || item.id === "print_order")) {
       return false;

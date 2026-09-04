@@ -76,3 +76,37 @@ export function docStateFrom(input: {
   if (input.submitted === true) return "pending";
   return "missing";
 }
+
+const OWNERSHIP_RANK: Record<DocState, number> = {
+  verified: 4,
+  pending: 3,
+  expired: 2,
+  failed: 1,
+  missing: 0,
+};
+
+/**
+ * Geo food policy asks for `ownership_proof`, but that is not a rider_documents
+ * enum value. Approved RC (document or vehicle.verified) is the ownership proof
+ * agents actually review. Dedicated rental / EV ownership docs still count.
+ */
+export function resolveOwnershipProofState(args: {
+  dedicated?: DocState;
+  rcDocument?: DocState;
+  vehicleRc?: DocState;
+  rentalProof?: DocState;
+  evOwnershipProof?: DocState;
+}): DocState {
+  const candidates: DocState[] = [
+    args.dedicated ?? "missing",
+    args.rcDocument ?? "missing",
+    args.vehicleRc ?? "missing",
+    args.rentalProof ?? "missing",
+    args.evOwnershipProof ?? "missing",
+  ];
+  let best: DocState = "missing";
+  for (const state of candidates) {
+    if (OWNERSHIP_RANK[state] > OWNERSHIP_RANK[best]) best = state;
+  }
+  return best;
+}

@@ -49,11 +49,22 @@ function sleep(ms: number): Promise<void> {
 let lastOpenSig = "";
 let lastOpenAt = 0;
 
+function campaignOpenSig(payload: PushNotificationOpenPayload): string {
+  const d = payload.data ?? {};
+  const campaignId = typeof d.campaign_id === "string" ? d.campaign_id : "";
+  const messageId =
+    (typeof d.message_id === "string" && d.message_id) ||
+    (typeof d.notification_id === "string" && d.notification_id) ||
+    "";
+  if (campaignId || messageId) return `${campaignId}:${messageId}`;
+  return `${payload.title ?? ""}|${JSON.stringify(d)}`;
+}
+
 function emitNotificationOpen(
   options: PushControllerOptions,
   payload: PushNotificationOpenPayload,
 ): void {
-  const sig = `${payload.title ?? ""}|${JSON.stringify(payload.data ?? {})}`;
+  const sig = campaignOpenSig(payload);
   const now = Date.now();
   if (sig === lastOpenSig && now - lastOpenAt < 2500) return;
   lastOpenSig = sig;
@@ -73,6 +84,7 @@ async function reportClickIfPresent(
   apiBaseUrl: string,
   getAuth: PushControllerOptions["getAuth"],
   data: Record<string, unknown>,
+  source: "open" | "cta" = "open",
 ): Promise<void> {
   const nid = notificationIdFromData(data);
   if (!nid) return;
@@ -85,6 +97,7 @@ async function reportClickIfPresent(
         getAuthHeader: async () => `Bearer ${auth.accessToken}`,
       },
       nid,
+      { source },
     );
   } catch {
     // Analytics best-effort — never block navigation.
@@ -396,12 +409,22 @@ export function createPushPermissionController(
     if (!responseSub) {
       responseSub = Notifications.addNotificationResponseReceivedListener((response) => {
         const c = response.notification.request.content;
+        const actionIdentifier = String(response.actionIdentifier ?? "");
+        const isCta =
+          actionIdentifier.length > 0 &&
+          actionIdentifier !== "expo.modules.notifications.actions.DEFAULT";
         const payload: PushNotificationOpenPayload = {
           title: c.title ?? null,
           body: c.body ?? null,
           data: (c.data ?? {}) as Record<string, unknown>,
+          actionIdentifier,
         };
-        void reportClickIfPresent(options.apiBaseUrl, options.getAuth, payload.data);
+        void reportClickIfPresent(
+          options.apiBaseUrl,
+          options.getAuth,
+          payload.data,
+          isCta ? "cta" : "open",
+        );
         emitNotificationOpen(options, payload);
       });
     }

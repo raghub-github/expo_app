@@ -80,8 +80,9 @@ export function useDemandZones({
     enabled: canFetch,
     staleTime: 90_000,
     refetchInterval: canFetch ? 90_000 : false,
-    refetchOnWindowFocus: canFetch,
-    refetchOnMount: canFetch,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 
   const zones = useMemo(() => {

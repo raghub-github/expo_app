@@ -11,7 +11,7 @@ import { useNotificationInboxStore } from "@/src/stores/notificationInboxStore";
 
 export const ORDERS_HEADER_BG = "#F5F7FA";
 
-export function HomeMapHeader() {
+export function HomeMapHeaderInner() {
   const headerRef = useRef<View>(null);
   const insets = useSafeAreaInsets();
   const [showLangSheet, setShowLangSheet] = useState(false);
@@ -49,6 +49,8 @@ export function HomeMapHeader() {
     </>
   );
 }
+
+export const HomeMapHeader = React.memo(HomeMapHeaderInner);
 
 const styles = StyleSheet.create({
   shell: {

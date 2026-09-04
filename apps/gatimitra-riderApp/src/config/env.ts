@@ -26,6 +26,7 @@ const CANONICAL_SUPABASE_ANON_KEY =
 
 /** Retired / unresolvable projects that break OTP with "Network request failed". */
 const DEAD_SUPABASE_HOSTS = new Set(["mjfnzmepmeqemcoakjkw.supabase.co"]);
+const loggedDeadSupabaseHosts = new Set<string>();
 
 function resolveSupabaseProject(
   url: string | null,
@@ -44,7 +45,8 @@ function resolveSupabaseProject(
     };
   }
   if (DEAD_SUPABASE_HOSTS.has(host)) {
-    if (__DEV__) {
+    if (__DEV__ && !loggedDeadSupabaseHosts.has(host)) {
+      loggedDeadSupabaseHosts.add(host);
       // eslint-disable-next-line no-console
       console.warn(
         `[RiderEnv] Ignoring dead Supabase host ${host}; using merchant project ${CANONICAL_SUPABASE_URL}`

@@ -19,9 +19,6 @@ import { StatusBar } from "expo-status-bar";
 import "react-native-reanimated";
 
 import { AppProviders } from "@/src/providers/AppProviders";
-import { usePermissionStore } from "@/src/stores/permissionStore";
-import { useSessionStore } from "@/src/stores/sessionStore";
-import { useLanguageStore } from "@/src/stores/languageStore";
 import { colors } from "@/src/theme";
 import { RiderFonts } from "@/src/theme/fonts";
 import { RiderPushSetup } from "@/src/components/RiderPushSetup";
@@ -39,6 +36,7 @@ import { ActiveOrderResumeBootstrap } from "@/src/components/orders/ActiveOrderR
 import { ActiveOrderKeepAwakeGate } from "@/src/hooks/useActiveOrderKeepAwake";
 import { RiderPostDeliveryTipHost } from "@/src/components/orders/RiderPostDeliveryTipHost";
 import { RiderToastHost } from "@/src/components/RiderToastHost";
+import { RiderOfflineBanner } from "@/src/components/RiderOfflineBanner";
 import { initializeMapbox } from "@/src/services/maps/mapbox";
 import { fetchRiderAppAssets } from "@/src/services/appAssets.service";
 import { useAppAssetsStore } from "@/src/stores/appAssetsStore";
@@ -121,15 +119,8 @@ export default function RootLayout() {
 }
 
 function RootLayoutNav() {
-  const hydratePermissions = usePermissionStore((s) => s.hydrate);
-  const hydrateSession = useSessionStore((s) => s.hydrate);
-  const hydrateLanguage = useLanguageStore((s) => s.hydrate);
-
-  useEffect(() => {
-    void hydratePermissions();
-    void hydrateSession();
-    void hydrateLanguage().catch(() => undefined);
-  }, [hydratePermissions, hydrateSession, hydrateLanguage]);
+  // Hydration lives in AppProviders only — duplicating it here spam-logs and
+  // races session/permission/language stores on every root render.
 
   // Render navigation immediately — stores hydrate in background (no "Initializing..." blank).
   try {
@@ -231,6 +222,7 @@ function RootLayoutNav() {
           <RiderPaymentSuccessSheet />
           <RiderPostDeliveryTipHost />
           <RiderToastHost />
+          <RiderOfflineBanner />
         </ThemeProvider>
       </AppProviders>
     );

@@ -91,7 +91,7 @@ function isSelfPickupFulfillment(
   return meta === "self_pickup" || meta === "takeaway";
 }
 
-async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
+export async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
   const db = getDb();
   const [row] = await db
     .select({
@@ -103,6 +103,7 @@ async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
       billingSnapshot: ordersCore.billingSnapshot,
       checkoutMetadata: ordersCore.checkoutMetadata,
       foodStatus: ordersFood.orderStatus,
+      foodRiderId: ordersFood.riderId,
       foodCancelled: ordersFood.cancelledAt,
       rideCancelled: ordersRide.cancelledAt,
       rideSearchExpiresAt: ordersRide.searchExpiresAt,
@@ -114,6 +115,7 @@ async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
     .limit(1);
 
   if (!row?.orderType || row.riderId != null) return false;
+  if (row.foodRiderId != null) return false;
 
   const serviceType = normalizeOrderServiceType(row.orderType);
   if (!serviceType) return false;
@@ -122,6 +124,14 @@ async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
     // Self-pick-up never needs a rider — do not open / keep dispatch sessions.
     if (
       isSelfPickupFulfillment(row.deliveryType, row.billingSnapshot, row.checkoutMetadata)
+    ) {
+      return false;
+    }
+    const currentSt = String(row.currentStatus ?? "").trim().toUpperCase();
+    if (
+      ["OUT_FOR_DELIVERY", "DISPATCHED", "IN_TRANSIT", "RIDER_ASSIGNED", "REACHED_CUSTOMER"].includes(
+        currentSt
+      )
     ) {
       return false;
     }
@@ -226,13 +236,15 @@ async function recordRiderNotifications(
 ): Promise<void> {
   if (riderIds.length === 0) return;
   const sql = getSql();
-  for (const riderId of riderIds) {
-    await sql`
-      INSERT INTO order_dispatch_rider_notifications (session_id, rider_id, wave_number)
-      VALUES (${sessionId}, ${riderId}, ${waveNumber})
-      ON CONFLICT (session_id, rider_id) DO NOTHING
-    `;
-  }
+  await Promise.all(
+    riderIds.map((riderId) =>
+      sql`
+        INSERT INTO order_dispatch_rider_notifications (session_id, rider_id, wave_number)
+        VALUES (${sessionId}, ${riderId}, ${waveNumber})
+        ON CONFLICT (session_id, rider_id) DO NOTHING
+      `
+    )
+  );
 }
 
 async function filterNewlyEligibleRiders(
@@ -439,9 +451,74 @@ export async function executeDispatchWave(sessionId: number): Promise<{
   const target = await loadDispatchOrderTarget(orderCoreId, waveNumber);
   if (!target) return { notified: 0, eligible: 0 };
 
+  console.info(
+    "[dispatch] WAVE_START",
+    JSON.stringify({
+      order: target.orderId,
+      orderCoreId,
+      sessionId,
+      serviceType: target.serviceType,
+      waveNumber,
+      radiusMeters: target.effectiveRadiusMeters,
+    })
+  );
+
   const eligible = await listEligibleRidersForDispatchOrder(target);
+  if (!(await isOrderStillDispatchable(orderCoreId))) {
+    await completeOrderDispatch(orderCoreId, "accepted");
+    console.info(
+      "[dispatch] WAVE_STOPPED",
+      JSON.stringify({ order: target.orderId, reason: "ORDER_ASSIGNED" })
+    );
+    return { notified: 0, eligible: eligible.length };
+  }
   const toNotify = await filterNewlyEligibleRiders(sessionId, eligible);
-  const notified = await notifyEligibleRidersDispatchOffer(target, toNotify);
+
+  // Persist offer_sent BEFORE WS/FCM. Local Expo Go has no FCM, and ws-gateway
+  // is often down — polling /pending-offers is the only recovery path.
+  if (toNotify.length > 0) {
+    await recordDispatchOffersSent({
+      orderCoreId,
+      orderId: target.orderId,
+      serviceType: target.serviceType,
+      dispatchSessionId: sessionId,
+      waveNumber,
+      dispatchRadiusMeters: target.effectiveRadiusMeters,
+      riderIds: toNotify.map((r) => r.riderId),
+    });
+    console.info(
+      "[dispatch] OFFER_CREATED",
+      JSON.stringify({
+        order: target.orderId,
+        offer: target.orderId,
+        rider: toNotify.map((r) => r.riderId),
+        orderCoreId,
+        sessionId,
+        waveNumber,
+      })
+    );
+  }
+  await recordRiderNotifications(
+    sessionId,
+    waveNumber,
+    toNotify.map((r) => r.riderId)
+  );
+
+  if (toNotify.length > 0) {
+    void notifyEligibleRidersDispatchOffer(target, toNotify).catch((err) => {
+      console.warn(
+        "[dispatch] notify failed after offer_sent (polling still recovers)",
+        JSON.stringify({
+          orderId: target.orderId,
+          orderCoreId,
+          sessionId,
+          waveNumber,
+          riderCount: toNotify.length,
+          message: (err as Error).message,
+        })
+      );
+    });
+  }
   console.info(
     "[dispatch] wave_dispatched",
     JSON.stringify({
@@ -454,19 +531,14 @@ export async function executeDispatchWave(sessionId: number): Promise<{
       nextWave: null,
       candidateCount: eligible.length,
       eligibleCount: eligible.length,
-      notifiedCount: notified,
+      notifiedCount: toNotify.length,
       radiusKm: Math.round((target.effectiveRadiusMeters / 1000) * 1000) / 1000,
       configuredRadiusMeters: target.effectiveRadiusMeters,
       eligibleWithinRadius: eligible.length,
-      newlyNotified: notified,
+      newlyNotified: toNotify.length,
       alreadyNotifiedEarlierWaves: eligible.length - toNotify.length,
       transitionReason: "WAVE_EXECUTE",
     })
-  );
-  await recordRiderNotifications(
-    sessionId,
-    waveNumber,
-    toNotify.map((r) => r.riderId)
   );
   void recordDispatchEvent({
     orderCoreId,
@@ -475,19 +547,8 @@ export async function executeDispatchWave(sessionId: number): Promise<{
     eventType: "wave_dispatched",
     waveNumber,
     radiusMeters: target.effectiveRadiusMeters,
-    metadata: { newlyNotified: notified, eligibleWithinRadius: eligible.length },
+    metadata: { newlyNotified: toNotify.length, eligibleWithinRadius: eligible.length },
   });
-  if (toNotify.length > 0) {
-    await recordDispatchOffersSent({
-      orderCoreId,
-      orderId: target.orderId,
-      serviceType: target.serviceType,
-      dispatchSessionId: sessionId,
-      waveNumber,
-      dispatchRadiusMeters: target.effectiveRadiusMeters,
-      riderIds: toNotify.map((r) => r.riderId),
-    });
-  }
 
   // Zero eligible riders: do not wait the full wave interval — arm next wave ASAP.
   // Timeout / no-accept still uses the normal interval when candidates were notified.
@@ -531,7 +592,7 @@ export async function executeDispatchWave(sessionId: number): Promise<{
     }
   }
 
-  return { notified, eligible: eligible.length };
+  return { notified: toNotify.length, eligible: eligible.length };
 }
 
 /** Advance to the next wave when interval elapses and no rider accepted. */
@@ -900,11 +961,13 @@ export async function processDueDispatchWaves(limit = 25): Promise<number> {
   `) as Array<{ id: number }>;
 
   let processed = 0;
+  const advanced = new Set<number>();
   for (const row of due ?? []) {
     const sessionId = Number(row.id);
     if (!sessionId) continue;
     try {
       await advanceDispatchWave(sessionId);
+      advanced.add(sessionId);
       processed += 1;
     } catch (err) {
       console.error(
@@ -914,6 +977,37 @@ export async function processDueDispatchWaves(limit = 25): Promise<number> {
           message: (err as Error).message,
         })
       );
+    }
+  }
+
+  // Same-wave refresh: any newly eligible rider (fresh GPS, just came on duty)
+  // must receive the offer before the next radius expansion. Dedup is
+  // order_dispatch_rider_notifications — already-notified riders are skipped.
+  const refreshBudget = Math.max(0, limit - processed);
+  if (refreshBudget > 0) {
+    const active = (await sql`
+      SELECT id
+      FROM order_dispatch_sessions
+      WHERE status = 'active'
+        AND (last_wave_at IS NULL OR last_wave_at <= NOW() - INTERVAL '5 seconds')
+      ORDER BY last_wave_at ASC NULLS FIRST
+      LIMIT ${refreshBudget}
+    `) as Array<{ id: number }>;
+    for (const row of active ?? []) {
+      const sessionId = Number(row.id);
+      if (!sessionId || advanced.has(sessionId)) continue;
+      try {
+        await executeDispatchWave(sessionId);
+        processed += 1;
+      } catch (err) {
+        console.error(
+          "[dispatch] current_wave_refresh failed (continuing batch)",
+          JSON.stringify({
+            sessionId,
+            message: (err as Error).message,
+          })
+        );
+      }
     }
   }
   return processed;

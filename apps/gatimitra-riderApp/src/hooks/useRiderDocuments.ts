@@ -50,6 +50,6 @@ export function useRiderDocuments() {
     },
     enabled: !!session?.accessToken,
     staleTime: 30_000,
-    refetchOnMount: "always",
+    refetchOnMount: true,
   });
 }

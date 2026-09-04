@@ -3,12 +3,6 @@ import { Animated, Platform, Vibration } from "react-native";
 
 const DIGIT_SLOTS = [0, 1, 2, 3] as const;
 
-function hapticLight() {
-  if (Platform.OS === "android") {
-    Vibration.vibrate(12);
-  }
-}
-
 function hapticError() {
   if (Platform.OS === "android") {
     Vibration.vibrate([0, 30, 40, 30]);
@@ -105,23 +99,20 @@ export function useOtpPinInput({
   const pressDigit = useCallback(
     (digit: string) => {
       if (loading || otp.length >= 4) return;
-      hapticLight();
       applyOtp(`${otp}${digit}`);
     },
     [applyOtp, loading, otp]
   );
 
   const backspace = useCallback(() => {
-    if (loading || otp.length === 0) return;
-    hapticLight();
-    applyOtp(otp.slice(0, -1));
+      if (loading || otp.length === 0) return;
+      applyOtp(otp.slice(0, -1));
   }, [applyOtp, loading, otp]);
 
   const applyPastedOtp = useCallback(
     (value: string) => {
       const next = value.replace(/\D/g, "").slice(0, 4);
       if (!next) return;
-      hapticLight();
       applyOtp(next);
     },
     [applyOtp]

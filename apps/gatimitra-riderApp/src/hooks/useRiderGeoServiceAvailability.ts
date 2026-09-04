@@ -33,11 +33,9 @@ export function useRiderGeoServiceAvailability() {
       return result.availability;
     },
     enabled: canQuery,
-    // Coverage (duty) is separate from Prevent Services blocks — still refresh
-    // promptly so coverage* / preventBlocked stay current for advisory UX.
-    staleTime: 15_000,
-    refetchInterval: 30_000,
-    refetchOnWindowFocus: true,
+    staleTime: 5 * 60_000,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
     gcTime: 10 * 60_000,
     retry: 2,
   });

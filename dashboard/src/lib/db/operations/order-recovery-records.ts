@@ -22,8 +22,8 @@ export interface OrderRecoveryRecord {
   /** Always a positive magnitude. Sign is derived from `impact` in the UI. */
   amount: number;
   impact: RecoveryImpact;
-  /** Whether the debit was a partial or full charge (null when N/A). */
-  debitScope: "partial" | "full" | null;
+  /** Whether the debit was a partial or full charge (`none` = no merchant debit). */
+  debitScope: "partial" | "full" | "none" | null;
   status: string | null;
   createdAt: string | null;
 }
@@ -33,12 +33,15 @@ function resolveDebitScope(
   impact: RecoveryImpact,
   amount: number,
   referenceAmount: number | null
-): "partial" | "full" | null {
+): "partial" | "full" | "none" | null {
   const mode = (debitMode ?? "").trim().toLowerCase();
+  if (mode.includes("no_debit") || mode === "none") return "none";
   if (mode.includes("partial")) return "partial";
   if (mode.includes("full")) return "full";
   // Credits never have a debit scope.
   if (impact === "credit") return null;
+  // Info-only cancellation rows (no_debit / not yet credited) are not a merchant debit.
+  if (impact === "info") return "none";
   if (
     referenceAmount != null &&
     referenceAmount > 0 &&
@@ -47,8 +50,7 @@ function resolveDebitScope(
   ) {
     return "partial";
   }
-  // Debits (and info-only cancellation charges) default to full when amount > 0.
-  if (impact === "debit" || (impact === "info" && amount > 0)) return "full";
+  if (impact === "debit" && amount > 0) return "full";
   return null;
 }
 

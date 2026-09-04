@@ -9,17 +9,17 @@ import { useActiveOrders } from "@/src/hooks/useOrders";
 const KEEP_AWAKE_TAG = "gm-rider-foreground";
 
 /**
- * Keeps the screen on while the rider app is in the foreground.
- * Releases when backgrounded. Power-button lock is unchanged.
- *
- * `useActiveOrders()` is kept so this hook’s call order stays stable across Fast Refresh.
+ * Keeps the screen on only while an active order is in progress and the app
+ * is foregrounded. Idle Home must be allowed to dim — a permanent wake lock
+ * is a major thermal source. Power-button lock is unchanged.
  */
 export function useActiveOrderKeepAwake(): void {
-  useActiveOrders();
+  const { data: activeOrders = [] } = useActiveOrders();
+  const shouldKeepAwake = activeOrders.length > 0;
 
   const heldRef = useRef(false);
-  const shouldKeepAwakeRef = useRef(true);
-  shouldKeepAwakeRef.current = true;
+  const shouldKeepAwakeRef = useRef(shouldKeepAwake);
+  shouldKeepAwakeRef.current = shouldKeepAwake;
 
   async function activate(): Promise<void> {
     try {
@@ -41,8 +41,12 @@ export function useActiveOrderKeepAwake(): void {
   }
 
   useEffect(() => {
-    if (!heldRef.current) void activate();
-  }, []);
+    if (shouldKeepAwake && AppState.currentState === "active") {
+      if (!heldRef.current) void activate();
+      return;
+    }
+    if (heldRef.current) void release();
+  }, [shouldKeepAwake]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state: AppStateStatus) => {

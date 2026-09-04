@@ -114,3 +114,47 @@ export async function maybeAutoVerifyRiderSelfie(riderId: number): Promise<boole
 
   return true;
 }
+
+/**
+ * Profile selfie re-upload: always mark the stored selfie as auto-verified.
+ * Onboarding still uses maybeAutoVerifyRiderSelfie (electronic KYC only).
+ */
+export async function autoVerifyUploadedRiderSelfie(riderId: number): Promise<boolean> {
+  const db = getDb();
+  const [selfie] = (await db
+    .select({
+      id: riderDocuments.id,
+      docType: riderDocuments.docType,
+      verified: riderDocuments.verified,
+      verificationMethod: riderDocuments.verificationMethod,
+      verificationStatus: riderDocuments.verificationStatus,
+      metadata: riderDocuments.metadata,
+      fileUrl: riderDocuments.fileUrl,
+    })
+    .from(riderDocuments)
+    .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, "selfie")))) as DocRow[];
+
+  if (!selfie?.fileUrl || selfie.fileUrl === "pending") return false;
+
+  await db
+    .update(riderDocuments)
+    .set({
+      verified: true,
+      verificationStatus: "auto_verified",
+      verificationMethod: "APP_VERIFIED",
+      verifiedAt: new Date(),
+      requiresManualReview: false,
+      rejectedReason: null,
+      metadata: {
+        ...(selfie.metadata && typeof selfie.metadata === "object"
+          ? (selfie.metadata as Record<string, unknown>)
+          : {}),
+        autoVerifiedFromProfileUpload: true,
+        autoVerifiedAt: new Date().toISOString(),
+      },
+      updatedAt: new Date(),
+    })
+    .where(and(eq(riderDocuments.id, selfie.id), eq(riderDocuments.riderId, riderId)));
+
+  return true;
+}
