@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Layers, Loader2, Plus } from "lucide-react";
-import { RiderPayoutRulesPanel, ProductionVerificationCard } from "./RiderPayoutRulesPanel";
+import { ProductionVerificationCard } from "./RiderPayoutRulesPanel";
 import { RiderLegPricingPanel } from "./RiderLegPricingPanel";
 import { DynamicPricingPanel } from "./DynamicPricingPanel";
 import { VEHICLE_OPTIONS, PARCEL_VEHICLE_OPTIONS, type VehicleType } from "./rideVehicleTypes";
@@ -562,21 +562,16 @@ export function GeoNodePricingContent(props: { level: GeoNodeLevel; refId: strin
 
           {pricingTab === "rider" ? (
             <>
-              <RiderPayoutRulesPanel
-                level={level}
-                refId={refId}
-                service={riderService as "food" | "parcel" | "ride"}
-                surgeRefreshKey={surgeRefreshKey}
-                legRulesRefreshKey={legRulesRefreshKey}
-              />
+              {/* Rider payout is DISTANCE-based (pre-pickup first-mile + post-pickup delivery
+                  legs, company-funded), independent of the customer delivery fee — so a low/₹0
+                  customer fee never means ₹0 to the rider. The old "% of customer fare" panel
+                  was removed: it produced wrong payouts when the delivery fee was low. */}
               <RiderLegPricingPanel
                 level={level}
                 refId={refId}
                 service={riderService as "food" | "parcel" | "ride"}
                 onChanged={() => setLegRulesRefreshKey((k) => k + 1)}
               />
-              {/* Production-engine status sits BELOW both the payout rules and the
-                  leg-pricing panels so the config editors come first, verification last. */}
               <ProductionVerificationCard />
             </>
           ) : serviceType === "person_ride" ? (
