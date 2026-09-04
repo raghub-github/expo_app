@@ -1057,9 +1057,10 @@ export default function MerchantDetailScreen() {
   });
 
   const similarStoreType = useMemo(() => {
-    const st = (pageMerchant?.storeType ?? merchant?.storeType ?? "").trim().toUpperCase();
+    // pageMerchant (= displayMerchant ?? merchant) is declared later; inline its inputs here.
+    const st = (displayMerchant?.storeType ?? merchant?.storeType ?? "").trim().toUpperCase();
     return st === "GROCERY" ? "GROCERY" : "FOOD";
-  }, [pageMerchant?.storeType, merchant?.storeType]);
+  }, [displayMerchant?.storeType, merchant?.storeType]);
 
   const { data: similarMerchants = EMPTY_SIMILAR_MERCHANTS } = useQuery({
     queryKey: [

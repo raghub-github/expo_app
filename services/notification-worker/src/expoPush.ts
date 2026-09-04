@@ -113,6 +113,7 @@ export async function sendPush(
     channelId?: string;
     imageUrl?: string;
     contentAvailable?: boolean;
+    collapseKey?: string;
   },
   log: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void },
 ): Promise<{ accepted: number; failed: number; chunks: number; deadTokens: string[] }> {

@@ -693,7 +693,7 @@ const MerchantDetailFlashListInner = forwardRef<
         ) : null}
         <FlashList
           ref={scrollRef}
-          style={[styles.list, dark && styles.listDark]}
+          style={StyleSheet.flatten([styles.list, dark && styles.listDark])}
           data={data}
           keyExtractor={keyExtractor}
           renderItem={renderItem}

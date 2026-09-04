@@ -9,11 +9,11 @@ export default function TabsLayout() {
       <AndroidBackHandler />
       <Tabs
         tabBar={(props) => <CustomerTabBar {...props} />}
-        sceneContainerStyle={{ backgroundColor: GatiMitraColors.softBackground }}
         screenOptions={{
           headerShown: true,
           headerStyle: { backgroundColor: GatiMitraColors.softBackground },
           headerShadowVisible: false,
+          sceneStyle: { backgroundColor: GatiMitraColors.softBackground },
           // Inactive tabs stay mounted (so their data stays warm) but stop
           // re-rendering — otherwise Home's card animations and Orders' polling
           // re-renders kept running while the user was on another tab.

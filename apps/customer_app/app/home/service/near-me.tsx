@@ -24,10 +24,7 @@ import { GMSearchBar } from "@/components/GMSearchBar";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 import { EmptyRestaurantsNearby } from "@/components/EmptyRestaurantsNearby";
 import { BrandingFooter } from "@/components/BrandingFooter";
-import {
-  GMRestaurantCardV2,
-  RESTAURANT_CARD_ESTIMATED_SIZE,
-} from "@/components/GMRestaurantCardV2";
+import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import {
   NearMeFilterSheet,
   DEFAULT_NEAR_ME_FILTERS,
@@ -478,7 +475,6 @@ export default function ExploreNearbyScreen() {
           style={styles.list}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
-          estimatedItemSize={RESTAURANT_CARD_ESTIMATED_SIZE}
           ListHeaderComponent={listHeader}
           contentContainerStyle={{
             paddingHorizontal: 16,

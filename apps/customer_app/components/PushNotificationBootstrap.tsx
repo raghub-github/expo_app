@@ -183,7 +183,7 @@ function PushNotificationBootstrapInner() {
     async (snap: {
       expoPushToken?: string | null;
       nativePushToken?: string | null;
-      lastBackendSyncOk?: boolean;
+      lastBackendSyncOk?: boolean | null;
       osStatus?: string;
     }) => {
       const hasPushToken = Boolean(

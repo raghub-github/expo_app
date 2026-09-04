@@ -155,7 +155,6 @@ function RootLayoutNav() {
               statusBarStyle: "dark",
               statusBarAnimation: "none",
               statusBarTranslucent: false,
-              statusBarColor: "#ffffff",
             }}
           >
             <Stack.Screen
