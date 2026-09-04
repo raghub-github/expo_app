@@ -74,7 +74,7 @@ export function ProfileMenuSections({
             iconBg: "#DBEAFE",
             title: t("profile.vehicle"),
             subtitle: vehicleSubtitle,
-            onPress: () => router.push("/view-vehicle"),
+            onPress: () => router.push("/vehicles"),
           },
           {
             key: "my-rides",
