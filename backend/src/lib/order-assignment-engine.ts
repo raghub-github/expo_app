@@ -312,27 +312,38 @@ export async function getRiderActiveVehicleTypeCodes(riderId: number): Promise<s
   return [...types];
 }
 
-/** Active verified vehicle profile for dispatch service rules (e.g. food vs 3/4-wheeler). */
+/** Active verified vehicle profile for dispatch service rules (e.g. food vs 3/4-wheeler).
+ * Keys on the rider's chosen ACTIVE vehicle (riders.active_vehicle_id) when set — so a
+ * two-vehicle rider is dispatched only for their active vehicle, not the union of both.
+ * Falls back to the union of all active+verified vehicles for legacy/unset riders. */
 export async function getRiderActiveVehicleProfile(riderId: number): Promise<{
   vehicleTypes: string[];
   vehicleCategories: string[];
 }> {
   const db = getDb();
+  const [riderRow] = await db
+    .select({ activeVehicleId: riders.activeVehicleId })
+    .from(riders)
+    .where(eq(riders.id, riderId))
+    .limit(1);
+
+  const conditions = [
+    eq(riderVehicles.riderId, riderId),
+    eq(riderVehicles.isActive, true),
+    eq(riderVehicles.verified, true),
+    isNull(riderVehicles.deletedAt),
+    sql`COALESCE(${riderVehicles.vehicleActiveStatus}, 'active') = 'active'`,
+  ];
+  if (riderRow?.activeVehicleId != null) {
+    conditions.push(eq(riderVehicles.id, riderRow.activeVehicleId));
+  }
   const rows = await db
     .select({
       vehicleType: riderVehicles.vehicleType,
       vehicleCategory: riderVehicles.vehicleCategory,
     })
     .from(riderVehicles)
-    .where(
-      and(
-        eq(riderVehicles.riderId, riderId),
-        eq(riderVehicles.isActive, true),
-        eq(riderVehicles.verified, true),
-        isNull(riderVehicles.deletedAt),
-        sql`COALESCE(${riderVehicles.vehicleActiveStatus}, 'active') = 'active'`
-      )
-    );
+    .where(and(...conditions));
 
   const vehicleTypes = new Set<string>();
   const vehicleCategories = new Set<string>();

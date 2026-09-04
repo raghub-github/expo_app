@@ -170,10 +170,11 @@ export async function listRiderVehiclesWithEligibility(args: {
 
 export type SetActiveVehicleResult =
   | { ok: true; activeVehicleId: number }
-  | { ok: false; code: "NOT_FOUND" | "NOT_VERIFIED" | "RETIRED"; reason: string };
+  | { ok: false; code: "NOT_FOUND" | "NOT_VERIFIED" | "RETIRED" | "LIVE_ORDER"; reason: string };
 
-/** Set the rider's active vehicle. Validates ownership + that it's verified + not retired.
- * (The live-order guard is applied by the online/dispatch layer in the next phase.) */
+/** Set the rider's active vehicle. Validates ownership + verified + not-retired, and — per
+ * §10 — refuses to SWITCH to a different vehicle while the rider has a live/active order
+ * (setting it for the first time, or re-selecting the same vehicle, is always allowed). */
 export async function setRiderActiveVehicle(
   riderId: number,
   vehicleId: number
@@ -192,6 +193,31 @@ export async function setRiderActiveVehicle(
   if (!v || v.deletedAt) return { ok: false, code: "NOT_FOUND", reason: "Vehicle not found." };
   if ((v.status ?? "active") === "retired") return { ok: false, code: "RETIRED", reason: "This vehicle is retired." };
   if (v.verified !== true) return { ok: false, code: "NOT_VERIFIED", reason: "This vehicle is not verified yet." };
+
+  const [riderRow] = await db
+    .select({ activeVehicleId: riders.activeVehicleId })
+    .from(riders)
+    .where(eq(riders.id, riderId))
+    .limit(1);
+  const current = riderRow?.activeVehicleId ?? null;
+
+  // Switching to a DIFFERENT vehicle while a live order is assigned would invalidate that
+  // order's vehicle — block it (§10). First-time selection / re-selecting the same is fine.
+  if (current != null && current !== vehicleId) {
+    try {
+      const { countRiderActiveAssignments } = await import("../../lib/rider-assignment-control.js");
+      const counts = await countRiderActiveAssignments(riderId);
+      if (counts.total > 0) {
+        return {
+          ok: false,
+          code: "LIVE_ORDER",
+          reason: "Vehicle cannot be switched while active orders are assigned.",
+        };
+      }
+    } catch {
+      /* if the active-order check is unavailable, do not block the switch */
+    }
+  }
 
   await db.update(riders).set({ activeVehicleId: vehicleId, updatedAt: new Date() }).where(eq(riders.id, riderId));
   return { ok: true, activeVehicleId: vehicleId };

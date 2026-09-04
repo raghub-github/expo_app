@@ -6,7 +6,7 @@
  */
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { getDb } from "../../db/client.js";
-import { riderDocuments, riderVehicles } from "../../db/schema.js";
+import { riders, riderDocuments, riderVehicles } from "../../db/schema.js";
 import { resolveGeoLocation } from "../billing/geoLocationResolver.js";
 import { pickMostSpecificGeoAnchor } from "../ride-state-config/rideStateConfig.repository.js";
 import {
@@ -20,6 +20,7 @@ import { loadActiveOverridesForRider } from "./riderEligibilityOverrides.reposit
 import {
   docStateFrom,
   ownershipFromVehicle,
+  rcDocStateFromVehicle,
   vehicleClassFromCategory,
 } from "./riderEligibilityInputs.js";
 import { resolveEffectiveEligibilityPolicy } from "./riderEligibility.repository.js";
@@ -57,28 +58,64 @@ export async function loadRiderEligibilityAttributes(
 ): Promise<RiderEligibilityInput> {
   const db = getDb();
 
-  // Read the rider's ACTIVE vehicle's declared attributes (class/fuel/ownership) — these are
-  // known at selection, independent of RC verification. A verified vehicle is preferred when
-  // present, but an unverified one still supplies the attributes so a service whose RC is
-  // optional (e.g. food) can be evaluated. Document VERIFICATION is handled separately below.
-  const [vehicle] = await db
-    .select({
-      vehicleType: riderVehicles.vehicleType,
-      vehicleCategory: riderVehicles.vehicleCategory,
-      fuelType: riderVehicles.fuelType,
-      isCommercial: riderVehicles.isCommercial,
-      ownershipType: riderVehicles.ownershipType,
-    })
-    .from(riderVehicles)
-    .where(
-      and(
-        eq(riderVehicles.riderId, riderId),
-        eq(riderVehicles.isActive, true),
-        isNull(riderVehicles.deletedAt)
-      )
-    )
-    .orderBy(desc(riderVehicles.verified))
+  // Resolve the vehicle whose attributes drive eligibility. Prefer the rider's chosen ACTIVE
+  // vehicle (riders.active_vehicle_id); fall back to the verified-first active vehicle when no
+  // active vehicle is set (single-vehicle / legacy riders — unchanged behaviour). Attributes
+  // (class/fuel/ownership) come from the vehicle row; RC verification is per-vehicle.
+  const vehicleCols = {
+    vehicleType: riderVehicles.vehicleType,
+    vehicleCategory: riderVehicles.vehicleCategory,
+    fuelType: riderVehicles.fuelType,
+    isCommercial: riderVehicles.isCommercial,
+    ownershipType: riderVehicles.ownershipType,
+    verified: riderVehicles.verified,
+    fitnessExpiry: riderVehicles.fitnessExpiry,
+    permitExpiry: riderVehicles.permitExpiry,
+  };
+  const [riderRow] = await db
+    .select({ activeVehicleId: riders.activeVehicleId })
+    .from(riders)
+    .where(eq(riders.id, riderId))
     .limit(1);
+
+  type VehicleRow = {
+    vehicleType: string | null;
+    vehicleCategory: string | null;
+    fuelType: string | null;
+    isCommercial: boolean | null;
+    ownershipType: string | null;
+    verified: boolean | null;
+    fitnessExpiry: string | null;
+    permitExpiry: string | null;
+  };
+  let vehicle: VehicleRow | undefined;
+  if (riderRow?.activeVehicleId != null) {
+    [vehicle] = await db
+      .select(vehicleCols)
+      .from(riderVehicles)
+      .where(
+        and(
+          eq(riderVehicles.id, riderRow.activeVehicleId),
+          eq(riderVehicles.riderId, riderId),
+          isNull(riderVehicles.deletedAt)
+        )
+      )
+      .limit(1);
+  }
+  if (!vehicle) {
+    [vehicle] = await db
+      .select(vehicleCols)
+      .from(riderVehicles)
+      .where(
+        and(
+          eq(riderVehicles.riderId, riderId),
+          eq(riderVehicles.isActive, true),
+          isNull(riderVehicles.deletedAt)
+        )
+      )
+      .orderBy(desc(riderVehicles.verified))
+      .limit(1);
+  }
 
   const docs = await db
     .select({
@@ -106,7 +143,16 @@ export async function loadRiderEligibilityAttributes(
   const dlRow = docs.find((d) => d.docType === "dl");
   const rcRow = docs.find((d) => d.docType === "rc");
   const dl = docVerified(dlRow);
-  const rc = docVerified(rcRow);
+
+  // RC is PER-VEHICLE: use the resolved vehicle's own verification + fitness/permit validity.
+  // Fall back to the rider-level rc document only when no vehicle row is present.
+  const rc = vehicle
+    ? rcDocStateFromVehicle({
+        verified: vehicle.verified,
+        fitnessExpiry: vehicle.fitnessExpiry,
+        permitExpiry: vehicle.permitExpiry,
+      })
+    : docStateFrom({ ...docVerified(rcRow), expired: isDocExpired(rcRow) });
 
   return {
     vehicleClass: vehicleClassFromCategory(vehicle?.vehicleCategory ?? null, vehicle?.vehicleType ?? null),
@@ -114,7 +160,7 @@ export async function loadRiderEligibilityAttributes(
     fuelKind: vehicle?.fuelType ?? null,
     ownership: ownershipFromVehicle(vehicle?.isCommercial ?? false),
     dl: docStateFrom({ ...dl, expired: isDocExpired(dlRow) }),
-    rc: docStateFrom({ ...rc, expired: isDocExpired(rcRow) }),
+    rc,
     evProof: stateFor("ev_proof"),
     ownershipProof: stateFor("ownership_proof"),
     commercialProof: stateFor("commercial_proof"),
