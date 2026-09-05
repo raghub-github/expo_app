@@ -16,6 +16,7 @@ import {
 import OpeningHoursModal from '@/components/common/OpeningHoursModal'
 import OrderHeader from '@/components/order/OrderHeader'
 import { restaurantDetailHref } from '@/lib/restaurantDetailLink'
+import StoreInnerLink from '@/components/order/StoreInnerLink'
 
 // Add CSS for blinking animation
 const styleSheet = typeof document !== 'undefined' ? (() => {
@@ -390,16 +391,14 @@ const RestaurantListPage = ({ variant = 'restaurant' }: { variant?: StoreListVar
   React.useEffect(() => {
     setLoading(true);
     setError(null);
-    const storeTypeParam = variant === 'grocery' ? 'store_type=GROCERY' : ''
+    const listingParam = variant === 'grocery' ? 'listing=grocery' : 'listing=food'
     const geo = effectiveGeoQs ? `&${effectiveGeoQs}` : ''
-    const typePrefix = storeTypeParam ? `${storeTypeParam}&` : ''
+    const typePrefix = listingParam ? `${listingParam}&` : ''
     let url = effectiveGeoQs
       ? `/api/restaurants?${typePrefix}${effectiveGeoQs}`
-      : storeTypeParam
-        ? `/api/restaurants?${storeTypeParam}`
-        : '/api/restaurants'
+      : `/api/restaurants?${listingParam}`
     if (selectedCategory) {
-      url = `/api/restaurants/by-category?category=${encodeURIComponent(selectedCategory)}${geo}${storeTypeParam ? `&${storeTypeParam}` : ''}`
+      url = `/api/restaurants/by-category?category=${encodeURIComponent(selectedCategory)}${geo}&${listingParam}`
     }
     fetch(url)
       .then(res => {
@@ -702,7 +701,7 @@ const RestaurantListPage = ({ variant = 'restaurant' }: { variant?: StoreListVar
                 : null
               const isClosed = opStatus != null && isOperationalClosedStatus(opStatus)
               return (
-                <Link
+                <StoreInnerLink
                   key={restaurant.id}
                   href={restaurantDetailHref(
                     {
@@ -828,7 +827,7 @@ const RestaurantListPage = ({ variant = 'restaurant' }: { variant?: StoreListVar
                       </div>
                     </div>
                   </div>
-                </Link>
+                </StoreInnerLink>
               );
             })}
           </div>

@@ -68,7 +68,9 @@ import { AddressesPrefetch } from "@/components/AddressesPrefetch";
 import { FeaturedOffersPrefetch } from "@/components/FeaturedOffersPrefetch";
 import { WeatherPrefetch } from "@/components/WeatherPrefetch";
 import { WeatherRealtimeSync } from "@/components/WeatherRealtimeSync";
-import { resumePendingAddressShare } from "@/lib/pendingAddressShare";
+import * as Linking from "expo-linking";
+import { resumePendingAddressShare, storePendingAddressShareToken } from "@/lib/pendingAddressShare";
+import { extractAddressShareToken } from "@/lib/addressShareLink";
 import {
   clearPendingReferral,
   peekPendingReferral,
@@ -387,6 +389,7 @@ export default function RootLayout() {
                   <LanguageSync />
                 </AppErrorBoundary>
                 <AuthNavigationGate />
+                <AddressShareLinkCapture />
                 <CustomerSystemChrome />
                 <AndroidSystemNavigationFill />
                 <StatusBarRouteChromeGuard />
@@ -511,6 +514,36 @@ function LanguageSync() {
   useEffect(() => {
     if (langHydrated) setAppLanguage(language);
   }, [langHydrated, language]);
+  return null;
+}
+
+function AddressShareLinkCapture() {
+  const router = useRouter();
+  const initialHandledRef = useRef(false);
+
+  useEffect(() => {
+    const apply = (url: string | null, isInitial: boolean) => {
+      const token = extractAddressShareToken(url);
+      if (!token) return;
+      if (isInitial) {
+        if (initialHandledRef.current) return;
+        initialHandledRef.current = true;
+      }
+      void storePendingAddressShareToken(token).then(() => {
+        if (!useAuthStore.getState().hydrated) return;
+        if (!useAuthStore.getState().session?.accessToken) {
+          router.replace("/(auth)/login");
+          return;
+        }
+        router.replace(`/address/save?id=${encodeURIComponent(token)}`);
+      });
+    };
+
+    void Linking.getInitialURL().then((url) => apply(url, true));
+    const sub = Linking.addEventListener("url", (event) => apply(event.url, false));
+    return () => sub.remove();
+  }, [router]);
+
   return null;
 }
 

@@ -2,7 +2,6 @@
 
 import React, { useMemo, useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react'
 import Image from 'next/image'
-import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import GatiMitraSpinner from '@/components/common/GatiMitraSpinner'
 import OpeningHoursModal from '@/components/common/OpeningHoursModal'
@@ -22,6 +21,7 @@ import {
 } from '@/lib/operationalStatusBadge'
 import { normalizeLatLonForStorage, reverseGeocodeSearchParams } from '@/lib/normalizeLatLon'
 import { restaurantDetailHref } from '@/lib/restaurantDetailLink'
+import StoreInnerLink from '@/components/order/StoreInnerLink'
 import { buildLocationQueryFromState } from '@/lib/locationQuery'
 
 const GREEN = '#109D4C'
@@ -999,7 +999,7 @@ export default function AroundYouPage() {
                 store.operationalStatus != null &&
                 isOperationalClosedStatus(store.operationalStatus)
               return (
-              <Link
+              <StoreInnerLink
                 key={store.id}
                 href={restaurantDetailHref(
                   { public_slug: store.publicSlug, store_id: store.storeId },
@@ -1093,7 +1093,7 @@ export default function AroundYouPage() {
                     </div>
                   </div>
                 </article>
-              </Link>
+              </StoreInnerLink>
               )
             })}
           </div>

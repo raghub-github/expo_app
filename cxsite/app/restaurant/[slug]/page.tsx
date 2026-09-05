@@ -1,4 +1,4 @@
-import { notFound, permanentRedirect } from 'next/navigation'
+import { permanentRedirect } from 'next/navigation'
 import RestaurantPage from '@/components/restaurant/RestaurantPage'
 import GroceryStorePage from '@/components/grocery/GroceryStorePage'
 import { RestaurantJsonLd, buildRestaurantPageMetadata } from '@/components/restaurant/RestaurantSeo'
@@ -54,22 +54,17 @@ export default async function Page({ params, searchParams }: PageProps) {
   const sp = searchParams ? await searchParams : {}
   const row = await loadPublicStore(slug)
 
-  if (!row) notFound()
+  const publicSlug = row?.public_slug ? String(row.public_slug).trim() : ''
 
-  const publicSlug = row.public_slug ? String(row.public_slug).trim() : ''
-  if (!publicSlug) notFound()
-
-  if ((looksLikeInternalStoreId(slug) || /^\d+$/.test(slug)) && publicSlug !== slug) {
+  if (row && publicSlug && (looksLikeInternalStoreId(slug) || /^\d+$/.test(slug)) && publicSlug !== slug) {
     permanentRedirect(restaurantPublicPath(publicSlug))
   }
 
-  if (!isStorePubliclyVisible(row)) {
-    notFound()
-  }
-
-  const name = storeDisplayName(row)
-  const isGroceryStore = String(row.store_type ?? '').toUpperCase() === 'GROCERY'
-  const phones = row.store_phones as string[] | string | null | undefined
+  const renderSlug = publicSlug || slug
+  const name = row ? storeDisplayName(row) : 'Store'
+  const isGroceryStore = String(row?.store_type ?? '').toUpperCase() === 'GROCERY'
+  const visible = row ? isStorePubliclyVisible(row) : false
+  const phones = row?.store_phones as string[] | string | null | undefined
   const phone =
     Array.isArray(phones) && phones.length > 0
       ? phones[0]
@@ -79,22 +74,24 @@ export default async function Page({ params, searchParams }: PageProps) {
 
   return (
     <>
-      <RestaurantJsonLd
-        name={name}
-        city={String(row.city ?? '')}
-        publicSlug={publicSlug}
-        description={(row.store_description as string | null) ?? null}
-        imageUrl={toAbsoluteImageUrl((row.banner_url as string | null) ?? null)}
-        address={(row.full_address as string | null) ?? null}
-        phone={phone}
-        cuisines={(row.cuisine_types as string[] | null) ?? null}
-        latitude={row.latitude != null ? Number(row.latitude) : null}
-        longitude={row.longitude != null ? Number(row.longitude) : null}
-      />
+      {row && visible && publicSlug ? (
+        <RestaurantJsonLd
+          name={name}
+          city={String(row.city ?? '')}
+          publicSlug={publicSlug}
+          description={(row.store_description as string | null) ?? null}
+          imageUrl={toAbsoluteImageUrl((row.banner_url as string | null) ?? null)}
+          address={(row.full_address as string | null) ?? null}
+          phone={phone}
+          cuisines={(row.cuisine_types as string[] | null) ?? null}
+          latitude={row.latitude != null ? Number(row.latitude) : null}
+          longitude={row.longitude != null ? Number(row.longitude) : null}
+        />
+      ) : null}
       {isGroceryStore ? (
-        <GroceryStorePage storeSlug={publicSlug} entryFrom={sp.from} />
+        <GroceryStorePage storeSlug={renderSlug} entryFrom={sp.from} />
       ) : (
-        <RestaurantPage restaurantId={publicSlug} entryFrom={sp.from} />
+        <RestaurantPage restaurantId={renderSlug} entryFrom={sp.from} />
       )}
     </>
   )

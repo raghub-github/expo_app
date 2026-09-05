@@ -243,6 +243,13 @@ const EnvSchema = z.object({
   ANDROID_RIDER_APP_LINK_SHA256: z.preprocess(emptyToUndefined, z.string().optional()),
   /** Rider App package name for assetlinks.json. */
   ANDROID_RIDER_APP_PACKAGE: z.preprocess(emptyToUndefined, z.string().optional()),
+  /**
+   * Apple Developer Team ID for Universal Links (AASA). Optional until an iOS
+   * Customer App listing ships. Without this, AASA is not published.
+   */
+  APPLE_TEAM_ID: z.preprocess(emptyToUndefined, z.string().min(5).max(12).optional()),
+  /** iOS bundle id for AASA (defaults to com.gatimitra.customer). */
+  IOS_APP_BUNDLE_ID: z.preprocess(emptyToUndefined, z.string().optional()),
   REDIS_URL: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 
   /** Open-Meteo — no API key (see weather.constants.ts). */

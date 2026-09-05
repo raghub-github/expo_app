@@ -1,6 +1,6 @@
 /**
  * Geo-bound featured offers for home service-card corner pills.
- * Prefetch + shared query keys so pills paint from cache on first home frame.
+ * FOOD/RIDE reuse the home/ride featured queries so we do not duplicate those APIs.
  */
 
 import { useMemo } from "react";
@@ -12,33 +12,34 @@ import {
   pickBestFeaturedOffer,
   resolveServiceOfferPillText,
 } from "@/lib/serviceOfferPill";
+import {
+  normalizeOfferLocationParams,
+  type OfferLocationParams,
+} from "@/lib/featuredOfferGeo";
+import { featuredOffersHomeQueryOptions } from "@/hooks/useFeaturedOffersHome";
+import { featuredOffersRideQueryOptions } from "@/hooks/useFeaturedOffersRide";
 
-type OfferServiceType = "FOOD" | "GROCERY" | "PARCEL" | "RIDE";
+type PillOnlyServiceType = "GROCERY" | "PARCEL";
 
-const SERVICE_TYPES: OfferServiceType[] = ["FOOD", "GROCERY", "RIDE", "PARCEL"];
+const PILL_ONLY_TYPES: PillOnlyServiceType[] = ["GROCERY", "PARCEL"];
 
 export type ServiceOfferPillMap = Partial<Record<CustomerHomeServiceId, string>>;
 
-export type ServiceOfferPillParams = {
-  lat?: number;
-  lng?: number;
-  pincode?: string;
-  state?: string;
-  city?: string;
-};
+export type ServiceOfferPillParams = OfferLocationParams;
 
 export function serviceOfferPillQueryKey(
-  serviceType: OfferServiceType,
+  serviceType: PillOnlyServiceType,
   params: ServiceOfferPillParams
 ) {
+  const p = normalizeOfferLocationParams(params);
   return [
     "featured-offers-service-pill",
     serviceType,
-    params.lat,
-    params.lng,
-    params.pincode,
-    params.state,
-    params.city,
+    p.lat,
+    p.lng,
+    p.pincode,
+    p.state,
+    p.city,
   ] as const;
 }
 
@@ -46,13 +47,14 @@ export function prefetchServiceCardOfferPills(
   queryClient: QueryClient,
   params: ServiceOfferPillParams
 ) {
+  const p = normalizeOfferLocationParams(params);
   return Promise.all(
-    SERVICE_TYPES.map((serviceType) =>
+    PILL_ONLY_TYPES.map((serviceType) =>
       queryClient.prefetchQuery({
-        queryKey: serviceOfferPillQueryKey(serviceType, params),
+        queryKey: serviceOfferPillQueryKey(serviceType, p),
         queryFn: () =>
           offersService.getFeaturedOffers({
-            ...params,
+            ...p,
             serviceType,
             limit: 3,
           }),
@@ -71,30 +73,42 @@ export function useServiceCardOfferPills(enabled = true): ServiceOfferPillMap {
   const lng = useLocationStore((s) => s.coords?.longitude);
   const locationHydrated = useLocationStore((s) => s.locationHydrated);
 
-  const params: ServiceOfferPillParams = { pincode, state, city, lat, lng };
+  const params = normalizeOfferLocationParams({ pincode, state, city, lat, lng });
+  const ready = enabled && locationHydrated;
 
   const queries = useQueries({
-    queries: SERVICE_TYPES.map((serviceType) => ({
-      queryKey: serviceOfferPillQueryKey(serviceType, params),
-      queryFn: () =>
-        offersService.getFeaturedOffers({
-          ...params,
-          serviceType,
-          limit: 3,
-        }),
-      enabled: enabled && locationHydrated,
-      staleTime: 5 * 60 * 1000,
-      gcTime: 30 * 60 * 1000,
-      retry: 1,
-      refetchOnWindowFocus: false,
-      // Keep last location's pills while coords settle — avoids empty→label flash.
-      placeholderData: (prev: { offers?: unknown } | undefined) => prev,
-    })),
+    queries: [
+      {
+        ...featuredOffersHomeQueryOptions(params),
+        enabled: ready,
+        placeholderData: (prev: { offers?: unknown } | undefined) => prev,
+      },
+      {
+        ...featuredOffersRideQueryOptions(params),
+        enabled: ready,
+        placeholderData: (prev: { offers?: unknown } | undefined) => prev,
+      },
+      ...PILL_ONLY_TYPES.map((serviceType) => ({
+        queryKey: serviceOfferPillQueryKey(serviceType, params),
+        queryFn: () =>
+          offersService.getFeaturedOffers({
+            ...params,
+            serviceType,
+            limit: 3,
+          }),
+        enabled: ready,
+        staleTime: 5 * 60 * 1000,
+        gcTime: 30 * 60 * 1000,
+        retry: 1,
+        refetchOnWindowFocus: false,
+        placeholderData: (prev: { offers?: unknown } | undefined) => prev,
+      })),
+    ],
   });
 
   const foodOffers = queries[0]?.data?.offers;
-  const groceryOffers = queries[1]?.data?.offers;
-  const rideOffers = queries[2]?.data?.offers;
+  const rideOffers = queries[1]?.data?.offers;
+  const groceryOffers = queries[2]?.data?.offers;
   const parcelOffers = queries[3]?.data?.offers;
 
   return useMemo(() => {

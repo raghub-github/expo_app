@@ -84,3 +84,72 @@ export function parseStoreTypeQueryParam(raw: string | null | undefined): Parsed
   if (ALLOWED.has(t)) return { mode: 'eq', value: t as MerchantStoreTypeDb }
   return { mode: 'all' }
 }
+
+/** Food vs grocery catalog split used by /order, /restaurants, and /grocery. */
+export type StoreListingVertical = 'all' | 'food' | 'grocery'
+
+export function parseListingQueryParam(raw: string | null | undefined): StoreListingVertical {
+  const t = (raw ?? '').trim().toLowerCase()
+  if (t === 'food') return 'food'
+  if (t === 'grocery') return 'grocery'
+  return 'all'
+}
+
+function normalizeStoreType(storeType: string | null | undefined): string {
+  return (storeType ?? '').trim().toUpperCase().replace(/[\s-]+/g, '_')
+}
+
+const NON_FOOD_VERTICALS = new Set([
+  'GROCERY',
+  'PHARMA',
+  'FASHION',
+  'ELECTRONICS_ECOMMERCE',
+  'STATIONERY',
+  'GARAGE',
+  'WAREHOUSE',
+])
+
+export function isGroceryStoreType(storeType: string | null | undefined): boolean {
+  return normalizeStoreType(storeType) === 'GROCERY'
+}
+
+function groceryCueText(value: string | null | undefined): boolean {
+  if (!value) return false
+  return /\bgrocery\b|\bkirana\b|\bsupermarket\b|\bpan\s*bhandar\b/i.test(value)
+}
+
+export type StoreListingRow = {
+  store_type?: string | null
+  cuisine_type?: string | null
+  cuisine_types?: string[] | null
+  restaurant_name?: string | null
+  name?: string | null
+  store_name?: string | null
+  store_display_name?: string | null
+}
+
+export function isGroceryListingStore(row: StoreListingRow): boolean {
+  if (isGroceryStoreType(row.store_type)) return true
+  const cuisine =
+    row.cuisine_type ||
+    (Array.isArray(row.cuisine_types) ? row.cuisine_types.join(', ') : '')
+  if (groceryCueText(cuisine)) return true
+  const name = row.restaurant_name || row.name || row.store_display_name || row.store_name || ''
+  return groceryCueText(name)
+}
+
+export function isFoodOrderStore(row: StoreListingRow): boolean {
+  if (isGroceryListingStore(row)) return false
+  const n = normalizeStoreType(row.store_type)
+  if (NON_FOOD_VERTICALS.has(n)) return false
+  return true
+}
+
+export function applyListingVerticalFilter<T extends StoreListingRow>(
+  rows: T[],
+  listing: StoreListingVertical
+): T[] {
+  if (listing === 'grocery') return rows.filter((r) => isGroceryListingStore(r))
+  if (listing === 'food') return rows.filter((r) => isFoodOrderStore(r))
+  return rows
+}

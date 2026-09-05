@@ -7,17 +7,29 @@ import GatiMitraSpinner from '@/components/common/GatiMitraSpinner'
 import GroceryCategoryBar from '@/components/grocery/GroceryCategoryBar'
 import GroceryHeroBanner from '@/components/grocery/GroceryHeroBanner'
 import GroceryProductCard, { type GroceryProduct } from '@/components/grocery/GroceryProductCard'
+import StoreInnerLink from '@/components/order/StoreInnerLink'
 import Footer from '@/components/layout/Footer'
 import OrderHeader from '@/components/order/OrderHeader'
 import { useLocationContext } from '@/components/providers/LocationProvider'
 import { getRestaurantGeoQueryString } from '@/lib/buildRestaurantGeoQuery'
 import { buildGroceryCategoryList } from '@/lib/groceryCategoryMeta'
+import { formatMerchantDeliveryTime } from '@/lib/merchantDeliveryTime'
+import { restaurantDetailHref } from '@/lib/restaurantDetailLink'
 
 type ProductsResponse = {
   title: string
   showing: number
   total: number
   products: GroceryProduct[]
+}
+
+type GroceryStoreCard = {
+  id: string
+  public_slug: string | null
+  name: string
+  image: string
+  deliveryTime: string
+  isClosed: boolean
 }
 
 export default function GroceryPage() {
@@ -27,6 +39,7 @@ export default function GroceryPage() {
   const searchParams = useSearchParams()
   const categoryFromUrl = searchParams.get('category')?.trim() || 'All'
   const [data, setData] = useState<ProductsResponse | null>(null)
+  const [stores, setStores] = useState<GroceryStoreCard[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [selectedCategory, setSelectedCategory] = useState(categoryFromUrl)
@@ -64,6 +77,36 @@ export default function GroceryPage() {
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
+      })
+
+    const storeQs = new URLSearchParams(geoQs)
+    storeQs.set('listing', 'grocery')
+    fetch(`/api/restaurants?${storeQs.toString()}`)
+      .then((r) => r.json())
+      .then((list: unknown) => {
+        if (cancelled || !Array.isArray(list)) return
+        setStores(
+          list
+            .map((row) => {
+              const r = row as Record<string, unknown>
+              const name = String(r.restaurant_name ?? r.name ?? '').trim()
+              const slug = r.public_slug != null ? String(r.public_slug).trim() : ''
+              if (!name || !slug) return null
+              const operationalStatus = String(r.operational_status ?? '').toUpperCase()
+              return {
+                id: slug,
+                public_slug: slug,
+                name,
+                image: String(r.store_img ?? r.image_url ?? '').trim() || '/img/placeholder.png',
+                deliveryTime: formatMerchantDeliveryTime(r) || '30-40 mins',
+                isClosed: operationalStatus !== 'OPEN' && operationalStatus !== '',
+              } satisfies GroceryStoreCard
+            })
+            .filter(Boolean) as GroceryStoreCard[]
+        )
+      })
+      .catch(() => {
+        if (!cancelled) setStores([])
       })
 
     return () => {
@@ -109,6 +152,33 @@ export default function GroceryPage() {
           title="Daily essentials, delivered"
           subtitle="Browse snacks, dairy, beverages and more from grocery stores in your area."
         />
+
+        {stores.length > 0 && (
+          <section className="mb-8 mt-6">
+            <h2 className="text-xl font-bold text-[#111827] sm:text-2xl">Grocery stores near you</h2>
+            <p className="mt-1 text-sm text-[#6b7280]">Open a store to browse its catalog.</p>
+            <div
+              className="mt-4 flex gap-4 overflow-x-auto pb-1"
+              style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+            >
+              {stores.map((store) => (
+                <StoreInnerLink
+                  key={store.id}
+                  href={restaurantDetailHref({ public_slug: store.public_slug }, 'grocery')}
+                  className={`group w-[122px] shrink-0 text-center no-underline sm:w-[136px] ${
+                    store.isClosed ? 'opacity-55' : ''
+                  }`}
+                >
+                  <div className="relative mx-auto h-24 w-24 overflow-hidden rounded-[12px] sm:h-28 sm:w-28">
+                    <img src={store.image} alt={store.name} className="h-full w-full object-cover" />
+                  </div>
+                  <p className="mt-2 truncate text-sm font-medium text-gray-900">{store.name}</p>
+                  <p className="text-xs text-gray-500">{store.isClosed ? 'Closed' : store.deliveryTime}</p>
+                </StoreInnerLink>
+              ))}
+            </div>
+          </section>
+        )}
 
         <header className="mb-4 mt-6 sm:mb-5">
           <h2 className="text-xl font-bold text-[#111827] sm:text-2xl">{sectionTitle}</h2>

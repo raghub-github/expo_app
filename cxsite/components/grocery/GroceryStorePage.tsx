@@ -3,12 +3,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
-import GatiMitraSpinner from '@/components/common/GatiMitraSpinner'
 import GroceryCategoryBar from '@/components/grocery/GroceryCategoryBar'
 import GroceryHeroBanner from '@/components/grocery/GroceryHeroBanner'
 import GroceryProductCard, { type GroceryProduct } from '@/components/grocery/GroceryProductCard'
 import Footer from '@/components/layout/Footer'
 import OrderHeader from '@/components/order/OrderHeader'
+import StorePageSkeleton from '@/components/restaurant/StorePageSkeleton'
 import { buildGroceryCategoryList } from '@/lib/groceryCategoryMeta'
 import { getRestaurantBreadcrumbMiddle } from '@/lib/restaurantDetailLink'
 
@@ -101,6 +101,10 @@ export default function GroceryStorePage({
   const storeName = storeMeta?.restaurant_name ?? data?.storeName ?? data?.title ?? 'Grocery store'
   const bannerUrl = storeMeta?.banner_url ?? storeMeta?.store_img ?? null
 
+  if (loading && !data) {
+    return <StorePageSkeleton />
+  }
+
   return (
     <div className="min-h-screen bg-[#f7f7f9]">
       <OrderHeader
@@ -186,8 +190,10 @@ export default function GroceryStorePage({
         </div>
 
         {loading ? (
-          <div className="flex min-h-[320px] items-center justify-center">
-            <GatiMitraSpinner message="Loading products..." />
+          <div className="space-y-3 py-2" aria-busy="true">
+            <div className="gm-skel-bar h-20 w-full" />
+            <div className="gm-skel-bar h-20 w-full" />
+            <div className="gm-skel-bar h-20 w-full" />
           </div>
         ) : error ? (
           <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-8 text-center text-sm text-red-700">

@@ -1,32 +1,8 @@
 "use client";
 
-// Skeleton Loader Components
-function Skeleton({ className = '' }) {
-  return <div className={`animate-pulse bg-gradient-to-r from-purple-light/80 via-mint-light/50 to-purple-light/80 ${className}`}></div>;
-}
-
-function RestaurantSkeleton() {
-  return (
-    <div className="min-h-screen bg-bg">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-3 pb-4 space-y-3">
-        <Skeleton className="h-3 w-52 rounded opacity-40" />
-        <div className="flex justify-between gap-3">
-          <Skeleton className="h-7 w-2/3 max-w-sm rounded-lg opacity-35" />
-          <Skeleton className="h-12 w-28 rounded-lg opacity-35 hidden sm:block" />
-        </div>
-        <Skeleton className="h-3 w-full max-w-lg rounded opacity-30" />
-        <Skeleton className="h-36 sm:h-48 w-full rounded-xl opacity-25" />
-      </div>
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 space-y-3 pb-16">
-        {[1, 2, 3, 4, 5].map((k) => (
-          <Skeleton key={k} className="h-20 w-full rounded-xl opacity-20" />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 import { useState, useEffect, useRef, useLayoutEffect, useMemo, useCallback, Fragment } from 'react'
+import StorePageSkeleton from '@/components/restaurant/StorePageSkeleton'
+import { hideStoreNavSkeleton } from '@/lib/storeNavSkeleton'
 import { Smartphone, X } from 'lucide-react'
 import { createClient } from '@supabase/supabase-js'
 import AppAssetImage from '@/components/common/AppAssetImage'
@@ -36,6 +12,7 @@ import ProtectedImage from '@/components/common/ProtectedImage'
 import { CX } from '@/lib/appAssetKeys'
 import { toAbsoluteImageUrl } from '@/lib/mediaUrl'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { getRestaurantBreadcrumbMiddle } from '@/lib/restaurantDetailLink'
 import {
   buildMerchantDeepLink,
@@ -548,6 +525,7 @@ function RestaurantPage({
   const popularItems: MenuItem[] = [];
 
   useEffect(() => {
+    hideStoreNavSkeleton()
     setShowSkeleton(true)
   }, [restaurantId])
 
@@ -933,7 +911,7 @@ function RestaurantPage({
   }, [restaurant, photosTabImageUrls])
 
   if (showSkeleton) {
-    return <RestaurantSkeleton />;
+    return <StorePageSkeleton />;
   }
   // Only show error after loading completes and data is missing
   if (!loadingRestaurant && !restaurant) {
@@ -953,7 +931,7 @@ function RestaurantPage({
   }
 
   if (!restaurant) {
-    return <RestaurantSkeleton />
+    return <StorePageSkeleton />
   }
 
   // Calculate open/closed status
@@ -1086,13 +1064,16 @@ function RestaurantPage({
         <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-2 pb-2 sm:pt-2.5 sm:pb-2">
           <div className="flex sm:hidden items-center justify-between gap-2 mb-2">
             <nav className="text-[11px] text-text-light flex flex-wrap items-center gap-1 min-w-0" aria-label="Breadcrumb">
-              <a href="/order" className="hover:text-purple transition-colors">Home</a>
+              <Link href="/order" onClick={() => hideStoreNavSkeleton()} className="hover:text-purple transition-colors">Home</Link>
               <span className="text-border/80">/</span>
               <a href={crumbMiddle.href} className="hover:text-purple transition-colors">{crumbMiddle.label}</a>
             </nav>
             <button
               type="button"
-              onClick={() => router.back()}
+              onClick={() => {
+                hideStoreNavSkeleton()
+                router.back()
+              }}
               className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-text-light hover:text-purple transition-colors"
             >
               <i className="fas fa-arrow-left text-[10px]" />
@@ -1103,9 +1084,9 @@ function RestaurantPage({
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4 mb-2">
             <div className="min-w-0 flex-1">
               <nav className="hidden sm:flex text-[11px] sm:text-xs text-text-light flex-wrap items-center gap-1" aria-label="Breadcrumb">
-                <a href="/order" className="hover:text-purple transition-colors">
+                <Link href="/order" onClick={() => hideStoreNavSkeleton()} className="hover:text-purple transition-colors">
                   Home
-                </a>
+                </Link>
                 <span className="text-border/80">/</span>
                 <a href={crumbMiddle.href} className="hover:text-purple transition-colors">
                   {crumbMiddle.label}
@@ -1150,7 +1131,10 @@ function RestaurantPage({
             <div className="hidden sm:flex flex-col items-end gap-3 shrink-0 sm:pt-0.5">
               <button
                 type="button"
-                onClick={() => router.back()}
+                onClick={() => {
+                  hideStoreNavSkeleton()
+                  router.back()
+                }}
                 className="flex items-center gap-1.5 text-[11px] sm:text-xs font-medium text-text-light hover:text-purple transition-colors"
               >
                 <i className="fas fa-arrow-left text-[10px]" />

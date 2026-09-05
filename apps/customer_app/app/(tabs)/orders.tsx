@@ -24,17 +24,17 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { orderService } from "@/services/order.service";
-import type { OrderSummary } from "@/services/order.service";
-import { addressService } from "@/services/address.service";
+import type { OrderDetail, OrderSummary } from "@/services/order.service";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { DietIndicator } from "@/components/store/DietIndicator";
 import { RideHistoryRow } from "@/components/ride/RideHistoryRow";
 import { RideActiveHistoryRow } from "@/components/ride/RideActiveHistoryRow";
 import { isPersonRideOrderSummary } from "@/lib/person-ride-orders";
 import { getRideDropTitle } from "@/lib/ride-order-display";
-import { useReorderStoreEligibility } from "@/hooks/useReorderStoreEligibility";
+import { checkReorderStoreEligibility } from "@/hooks/useReorderStoreEligibility";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { useLocationStore } from "@/store/locationStore";
+import { useAddresses, useActiveLocation } from "@/hooks/useAddresses";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -52,6 +52,12 @@ import {
   seedMyOrdersQueryIfCached,
   writeCachedMyOrders,
 } from "@/lib/myOrdersCache";
+import {
+  findOrderInListCache,
+  mergeIncomingOrderDetail,
+  orderSummaryToDetail,
+  seedOrderDetailCache,
+} from "@/lib/orderDetailCache";
 import {
   getActiveOrderBadge,
   getCustomerOrderCancellationDisplayLabel,
@@ -286,8 +292,6 @@ function HistoryOrderCard({
   onShareRestaurant,
   onOrderDetails,
   onDeleteOrder,
-  deliveryAddressId,
-  dropCoords,
 }: {
   order: OrderSummary;
   onPress: () => void;
@@ -300,10 +304,7 @@ function HistoryOrderCard({
   onShareRestaurant: () => void;
   onOrderDetails: () => void;
   onDeleteOrder: () => void;
-  deliveryAddressId: number | null;
-  dropCoords: { latitude: number; longitude: number } | null;
 }) {
-  const storeId = order.merchantPublicStoreId?.trim() || null;
   const statusNorm = normalizeCustomerOrderStatus(order.status);
   const isCancelledOrFailed =
     statusNorm === "CANCELLED" || statusNorm === "PAYMENT_FAILED" || statusNorm === "FAILED";
@@ -325,14 +326,6 @@ function HistoryOrderCard({
   const hasStoreReply = Boolean(order.storeMerchantReplyText?.trim());
   const price = orderListPriceDisplay(order);
 
-  const { canReorder, reason: reorderReason } = useReorderStoreEligibility({
-    storeId,
-    delivered,
-    deliveryAddressId,
-    dropCoords,
-  });
-  const showOutOfDeliveryZone = reorderReason === "out_of_zone";
-  const showStoreClosed = reorderReason === "store_closed";
   const restaurantName = order.merchantPublicName ?? order.merchantName ?? "";
   const merchantArea = getCompactAddressLine(order.merchantAddress);
   const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
@@ -525,19 +518,11 @@ function HistoryOrderCard({
               )}
             </View>
 
-            {canReorder ? (
+            {delivered ? (
               <TouchableOpacity style={styles.reorderBtn} onPress={onReorder} activeOpacity={0.9}>
                 <Ionicons name="refresh" size={15} color="#fff" />
                 <AppText style={styles.reorderText}>Reorder</AppText>
               </TouchableOpacity>
-            ) : showOutOfDeliveryZone ? (
-              <View style={styles.outOfZoneBtn}>
-                <AppText style={styles.outOfZoneText}>Out of delivery zone</AppText>
-              </View>
-            ) : showStoreClosed ? (
-              <View style={styles.outOfZoneBtn}>
-                <AppText style={styles.outOfZoneText}>Store closed</AppText>
-              </View>
             ) : null}
           </View>
         </>
@@ -575,16 +560,8 @@ export default function OrdersScreen() {
   const coords = useLocationStore((s) => s.coords);
   const locationSource = useLocationStore((s) => s.locationSource);
 
-  const { data: activeLocation } = useQuery({
-    queryKey: ["active-location"],
-    queryFn: () => addressService.getActiveLocation(),
-    staleTime: 60_000,
-  });
-
-  const { data: addresses = [] } = useQuery({
-    queryKey: ["addresses"],
-    queryFn: () => addressService.getAddresses(),
-  });
+  const { data: activeLocation } = useActiveLocation();
+  const { data: addresses = [] } = useAddresses();
 
   const resolvedDeliveryAddress = useMemo(
     () =>
@@ -763,10 +740,18 @@ export default function OrdersScreen() {
   ) => {
     if (navLockRef.current) return;
     navLockRef.current = true;
-    void queryClient.prefetchQuery({
+    const fromList = findOrderInListCache(queryClient, orderId);
+    if (fromList) {
+      seedOrderDetailCache(queryClient, orderId, orderSummaryToDetail(fromList));
+    }
+    void queryClient.fetchQuery({
       queryKey: ["order", orderId],
-      queryFn: () => orderService.getOrder(orderId),
-      staleTime: 30_000,
+      queryFn: async () =>
+        mergeIncomingOrderDetail(
+          queryClient.getQueryData<OrderDetail>(["order", orderId]),
+          await orderService.getOrder(orderId)
+        ),
+      staleTime: 0,
     });
     const params: { id: string; rate?: string; view?: string } = { id: orderId };
     if (opts?.rate) params.rate = "1";
@@ -781,6 +766,36 @@ export default function OrdersScreen() {
       if (reorderInFlightRef.current || navLockRef.current) return;
       reorderInFlightRef.current = true;
       try {
+        const storeId = order.merchantPublicStoreId?.trim() || null;
+        const gate = await checkReorderStoreEligibility({
+          storeId,
+          deliveryAddressId: resolvedDeliveryAddress?.id ?? null,
+          dropCoords,
+        });
+        if (gate === "out_of_zone") {
+          setReorderSheet({
+            title: "Out of delivery zone",
+            message: "This store does not deliver to your current location.",
+            order,
+          });
+          return;
+        }
+        if (gate === "store_closed") {
+          setReorderSheet({
+            title: "Store closed",
+            message: "This store is closed right now. You can still browse the menu.",
+            order,
+          });
+          return;
+        }
+        if (gate !== "ok") {
+          setReorderSheet({
+            title: "Unable to reorder",
+            message: "This store is not available for delivery right now.",
+            order,
+          });
+          return;
+        }
         // List payloads often have display items without menuItemId (orders_core.items JSON).
         // Always load detail when ids are missing/empty so reorder can rebuild the cart.
         let orderData = order;
@@ -824,7 +839,7 @@ export default function OrdersScreen() {
         reorderInFlightRef.current = false;
       }
     },
-    [router]
+    [router, resolvedDeliveryAddress?.id, dropCoords]
   );
 
   const renderHistoryList = () => {
@@ -877,8 +892,6 @@ export default function OrdersScreen() {
             openOrderDetails(order.orderId, { history: true });
           }}
           onDeleteOrder={() => handleDeleteOrder(order.orderId)}
-          deliveryAddressId={resolvedDeliveryAddress?.id ?? null}
-          dropCoords={dropCoords}
         />
       );
     }

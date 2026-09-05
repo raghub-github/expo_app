@@ -7,7 +7,6 @@ import { View, StyleSheet, ActivityIndicator, TouchableOpacity } from "react-nat
 import { AppText } from "@/components/AppText";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
-import { formatPhoneLine } from "@/lib/addressGeo";
 import type { AddressSharePreview } from "@/services/addressShare.service";
 
 const BRAND = "#14b8a6";
@@ -35,8 +34,7 @@ export function SharedAddressSaveSheet({
   onClose,
   onSave,
 }: Props) {
-  const phoneLine = preview?.contactMobile ? formatPhoneLine(preview.contactMobile) : null;
-  const title = preview?.label?.trim() || "Shared address";
+  const title = preview?.label?.trim() || "Shared Address";
 
   return (
     <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.72}>
@@ -46,12 +44,12 @@ export function SharedAddressSaveSheet({
             <Ionicons name="location-outline" size={22} color={BRAND} />
           </View>
           <View style={styles.headerText}>
-            <AppText style={styles.heading}>Shared delivery address</AppText>
-            <AppText style={styles.subheading}>
-              {alreadySaved
-                ? "Already saved in your address book"
-                : "Save this address to your account?"}
-            </AppText>
+          <AppText style={styles.heading}>Shared Address</AppText>
+          <AppText style={styles.subheading}>
+            {alreadySaved
+              ? "Already saved in your address book"
+              : "Save this address to your GatiMitra account?"}
+          </AppText>
           </View>
         </View>
 
@@ -73,11 +71,6 @@ export function SharedAddressSaveSheet({
                 {preview.contactName}
               </AppText>
             ) : null}
-            {phoneLine ? (
-              <AppText style={styles.previewMeta} numberOfLines={1}>
-                {phoneLine}
-              </AppText>
-            ) : null}
           </View>
         ) : null}
 
@@ -97,7 +90,7 @@ export function SharedAddressSaveSheet({
               {saving ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
-                <AppText style={styles.saveBtnText}>Save to my addresses</AppText>
+                <AppText style={styles.saveBtnText}>Save Address</AppText>
               )}
             </TouchableOpacity>
           )
@@ -105,7 +98,7 @@ export function SharedAddressSaveSheet({
 
         <TouchableOpacity style={styles.dismissBtn} onPress={onClose} activeOpacity={0.85}>
           <AppText style={styles.dismissBtnText}>
-            {alreadySaved || errorText ? "Done" : "Not now"}
+            {alreadySaved || errorText ? "Done" : "Cancel"}
           </AppText>
         </TouchableOpacity>
       </View>

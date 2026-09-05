@@ -9,7 +9,7 @@ import { z } from "zod";
 import { randomBytes } from "crypto";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { verifyRazorpaySignature, verifyRazorpayPaymentDetails } from "../../services/payment/razorpayService.js";
-import { getStoreByStoreId, getStoreByIdForOrder, getMerchantAboutPayload } from "../merchants/merchant.service.js";
+import { getStoreByStoreId, getStoreByIdForOrder, getStoresByIdsForOrder, getMerchantAboutPayload } from "../merchants/merchant.service.js";
 import { getStoreRatingsForStores } from "../merchants/merchant-store-ratings.js";
 import { auth } from "../../plugins/auth.js";
 import {
@@ -402,6 +402,18 @@ const orderDetailResponseSchema = z.object({
       status: z.string().nullable(),
       amount: z.number().nullable(),
       reference: z.string().nullable(),
+      references: z.array(z.string()).optional(),
+      slabs: z
+        .array(
+          z.object({
+            amount: z.number(),
+            reference: z.string().nullable(),
+            status: z.string().nullable(),
+            initiatedAt: z.string().nullable(),
+            completedAt: z.string().nullable(),
+          })
+        )
+        .optional(),
       walletReference: z.string().nullable().optional(),
       gatewayReference: z.string().nullable().optional(),
       originalGatiCashTxnId: z.string().nullable().optional(),
@@ -745,10 +757,12 @@ export async function orderRoutes(app: FastifyInstance) {
           .offset(offset)
       );
 
-      const storeBannerCache = new Map<number, string | null>();
       const storeRatingCache = new Map<number, { avgRating: number; totalReviews: number } | null>();
       const storeIds = [...new Set(pageRows.map((r) => (r.merchantStoreId != null ? Number(r.merchantStoreId) : null)).filter((v): v is number => v != null && Number.isFinite(v) && v > 0))];
-      const ratingMap = await getStoreRatingsForStores(storeIds);
+      const [ratingMap, storeByPk] = await Promise.all([
+        getStoreRatingsForStores(storeIds),
+        getStoresByIdsForOrder(storeIds),
+      ]);
       for (const sid of storeIds) {
         storeRatingCache.set(sid, ratingMap.get(sid) ?? null);
       }
@@ -902,7 +916,7 @@ export async function orderRoutes(app: FastifyInstance) {
         ]);
       }
 
-      const summaries = await mapWithConcurrency(pageRows, 2, async (row) => {
+      const summaries = await mapWithConcurrency(pageRows, 8, async (row) => {
           const orderIdDisplay = row.orderId ?? String(row.id);
           const foodRow =
             row.orderType === "food" ? foodSummaryByCorePk.get(row.id) : undefined;
@@ -918,20 +932,10 @@ export async function orderRoutes(app: FastifyInstance) {
           let merchantPublicStoreId: string | null = null;
           if (row.merchantStoreId != null) {
             const storeId = Number(row.merchantStoreId);
-            if (storeBannerCache.has(storeId)) {
-              merchantBannerUrl = storeBannerCache.get(storeId) ?? null;
-            } else {
-              const store = await getStoreByIdForOrder(storeId);
-              merchantBannerUrl = store?.bannerUrl ?? null;
-              merchantPublicName = store?.storeDisplayName ?? store?.storeName ?? null;
-              merchantPublicStoreId = store?.storeId ?? null;
-              storeBannerCache.set(storeId, merchantBannerUrl);
-            }
-            if (!merchantPublicName) {
-              const store = await getStoreByIdForOrder(storeId);
-              merchantPublicName = store?.storeDisplayName ?? store?.storeName ?? null;
-              merchantPublicStoreId = store?.storeId ?? null;
-            }
+            const store = storeByPk.get(storeId) ?? null;
+            merchantBannerUrl = store?.bannerUrl ?? null;
+            merchantPublicName = store?.storeDisplayName ?? store?.storeName ?? null;
+            merchantPublicStoreId = store?.storeId ?? null;
           }
 
           let items: {
@@ -2115,6 +2119,8 @@ export async function orderRoutes(app: FastifyInstance) {
               status: refundSummary.status,
               amount: refundSummary.amount,
               reference: refundSummary.reference,
+              references: refundSummary.references,
+              slabs: refundSummary.slabs,
               walletReference: refundSummary.walletReference,
               gatewayReference: refundSummary.gatewayReference,
               originalGatiCashTxnId: refundSummary.originalGatiCashTxnId,

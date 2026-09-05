@@ -1,8 +1,8 @@
 'use client'
 
 import Image from 'next/image'
-import Link from 'next/link'
 import { restaurantDetailHref } from '@/lib/restaurantDetailLink'
+import StoreInnerLink from '@/components/order/StoreInnerLink'
 import RatingCard from './RatingCard'
 
 interface Restaurant {
@@ -118,9 +118,9 @@ export default function RestaurantCard({ restaurant, onClick }: RestaurantCardPr
       {cardContent}
     </div>
   ) : (
-    <Link href={restaurantDetailHref({ public_slug: (restaurant as { public_slug?: string }).public_slug, store_id: String((restaurant as { store_id?: string }).store_id ?? restaurant.id), id: restaurant.id }, 'order')} className="no-underline">
+    <StoreInnerLink href={restaurantDetailHref({ public_slug: (restaurant as { public_slug?: string }).public_slug, store_id: String((restaurant as { store_id?: string }).store_id ?? restaurant.id), id: restaurant.id }, 'order')} className="no-underline">
       {cardContent}
-    </Link>
+    </StoreInnerLink>
   )
 }
 

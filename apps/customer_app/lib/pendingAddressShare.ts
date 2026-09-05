@@ -6,6 +6,11 @@ export async function storePendingAddressShareToken(token: string): Promise<void
   await AsyncStorage.setItem(PENDING_TOKEN_KEY, token.trim());
 }
 
+export async function peekPendingAddressShareToken(): Promise<string | null> {
+  const token = await AsyncStorage.getItem(PENDING_TOKEN_KEY);
+  return token?.trim() || null;
+}
+
 export async function clearPendingAddressShareToken(): Promise<void> {
   await AsyncStorage.removeItem(PENDING_TOKEN_KEY);
 }

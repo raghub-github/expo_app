@@ -9,6 +9,9 @@ import LocationVisitGate from "@/components/location-search/LocationVisitGate";
 import OrganizationJsonLd from "@/components/legal/OrganizationJsonLd";
 import { AppAssetsProvider } from "@/components/providers/AppAssetsProvider";
 import ImageProtection from "@/components/common/ImageProtection";
+import ChunkLoadRecovery from "@/components/providers/ChunkLoadRecovery";
+import CategoryRailPrefetch from "@/components/order/CategoryRailPrefetch";
+import StoreNavSkeletonCleanup from "@/components/order/StoreNavSkeletonCleanup";
 import { GATIMITRA_SUBTAGLINE, GATIMITRA_TAGLINE } from "@/lib/brandTagline";
 
 export const metadata: Metadata = {
@@ -65,6 +68,9 @@ export default function RootLayout({
       <body suppressHydrationWarning>
         <OrganizationJsonLd />
         <ImageProtection />
+        <ChunkLoadRecovery />
+        <CategoryRailPrefetch />
+        <StoreNavSkeletonCleanup />
         <ReduxProvider>
           <AppAssetsProvider>
             <LocationProvider>

@@ -546,6 +546,19 @@ export function LandingHeroGreenContent() {
                   <button
                     type="button"
                     onClick={() => enabled && setSelectedIndex(itemIndex)}
+                    onMouseEnter={() => {
+                      if (arcItem.href === '/order') {
+                        void Promise.all([
+                          import('@/lib/categoryRailImageCache'),
+                          import('@/lib/resolveAppAssetUrl'),
+                        ]).then(([cache, media]) => {
+                          const tiles = cache.readCachedFoodCategories()
+                          cache.preloadCategoryRailImages(
+                            tiles.map((c) => (c.img ? media.resolveAppAssetUrl(c.img) : null))
+                          )
+                        })
+                      }
+                    }}
                     title={enabled ? arcItem.title : `${arcItem.title} — Coming soon`}
                     disabled={!enabled}
                     className={`relative flex h-[46px] w-[46px] items-center justify-center overflow-visible rounded-full bg-white shadow-[0_6px_20px_rgba(0,0,0,0.12)] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C] sm:h-[52px] sm:w-[52px] md:h-[56px] md:w-[56px] ${

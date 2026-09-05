@@ -163,6 +163,14 @@ export type OrderDetail = OrderSummary & {
     status: string | null;
     amount: number | null;
     reference: string | null;
+    references?: string[];
+    slabs?: {
+      amount: number;
+      reference: string | null;
+      status: string | null;
+      initiatedAt: string | null;
+      completedAt: string | null;
+    }[];
     walletReference?: string | null;
     gatewayReference?: string | null;
     originalGatiCashTxnId?: string | null;

@@ -23,18 +23,18 @@ export function generateAddressShareShortCode(): string {
   return randomBytes(4).toString("hex");
 }
 
-export function buildAddressShareUrl(shortCode: string, token: string): string {
+export function buildAddressShareUrl(_shortCode: string, token: string): string {
   const env = getEnv();
   const explicit = env.ADDRESS_LINK_BASE_URL?.replace(/\/+$/, "");
-  if (explicit) return `${explicit}/addr/${shortCode}?id=${token}`;
+  if (explicit) return `${explicit}/address/share/${encodeURIComponent(token)}`;
 
   if (env.NODE_ENV !== "production") {
     const apiBase = env.API_BASE_URL?.replace(/\/+$/, "");
-    if (apiBase) return `${apiBase}/addr/${shortCode}?id=${token}`;
-    return `http://localhost:${env.PORT}/addr/${shortCode}?id=${token}`;
+    if (apiBase) return `${apiBase}/address/share/${encodeURIComponent(token)}`;
+    return `http://localhost:${env.PORT}/address/share/${encodeURIComponent(token)}`;
   }
 
-  return `https://gatimitra.com/addr/${shortCode}?id=${token}`;
+  return `https://gatimitra.com/address/share/${encodeURIComponent(token)}`;
 }
 
 /** Absolute HTTPS URL for WhatsApp / Telegram link-preview image (og:image). */
@@ -48,6 +48,7 @@ export function resolveAddressLinkPublicBase(): string {
   const env = getEnv();
   const explicit = env.ADDRESS_LINK_BASE_URL?.replace(/\/+$/, "");
   if (explicit) return explicit;
+  if (env.NODE_ENV === "production") return "https://gatimitra.com";
   const apiBase = env.API_BASE_URL?.replace(/\/+$/, "");
   if (apiBase) return apiBase;
   return `http://localhost:${env.PORT}`;
@@ -79,6 +80,8 @@ export function buildAddressShareMessage(fullAddress: string, url: string): stri
 type ShareRow = {
   token: string;
   shortCode: string;
+  sharerCustomerId: number;
+  sourceAddressId: number | null;
   fullAddress: string;
   label: string | null;
   landmark: string | null;
@@ -97,7 +100,7 @@ type ShareRow = {
 async function loadShareByToken(token: string): Promise<ShareRow | null> {
   const sql = getSql();
   const rows = (await sql`
-    SELECT token, short_code, full_address, label, landmark, city, state, postal_code,
+    SELECT token, short_code, sharer_customer_id, source_address_id, full_address, label, landmark, city, state, postal_code,
            country, latitude, longitude, contact_name, contact_mobile, expires_at, claimed_at
     FROM address_share_links
     WHERE token = ${token}
@@ -108,6 +111,8 @@ async function loadShareByToken(token: string): Promise<ShareRow | null> {
   return {
     token: String(r.token),
     shortCode: String(r.short_code),
+    sharerCustomerId: Number(r.sharer_customer_id),
+    sourceAddressId: r.source_address_id != null ? Number(r.source_address_id) : null,
     fullAddress: String(r.full_address),
     label: r.label != null ? String(r.label) : null,
     landmark: r.landmark != null ? String(r.landmark) : null,
@@ -223,11 +228,25 @@ export async function claimAddressShareLink(args: {
   longitude: number;
   label: string | null;
 }> {
-  const db = getDb();
   const row = await loadShareByToken(args.token);
   if (!row) throw new Error("not_found");
   if (row.expiresAt.getTime() <= Date.now()) throw new Error("expired");
   if (row.claimedAt) throw new Error("already_claimed");
+
+  const resultPayload = {
+    fullAddress: row.fullAddress,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    label: row.label,
+  };
+
+  // Sender opening their own link must not mutate or re-save their address.
+  if (row.sharerCustomerId === args.recipientCustomerPk) {
+    return {
+      addressId: row.sourceAddressId ?? 0,
+      ...resultPayload,
+    };
+  }
 
   const sql = getSql();
   const claimed = (await sql`
@@ -264,10 +283,7 @@ export async function claimAddressShareLink(args: {
 
   return {
     addressId: saved.id,
-    fullAddress: row.fullAddress,
-    latitude: row.latitude,
-    longitude: row.longitude,
-    label: row.label,
+    ...resultPayload,
   };
 }
 
@@ -287,6 +303,18 @@ export async function getAddressShareForLandingPage(shortCode: string, token: st
     claimedAt: r.claimed_at ? new Date(String(r.claimed_at)) : null,
     token,
     shortCode,
+  };
+}
+
+export async function getAddressShareForLandingByToken(token: string) {
+  const row = await loadShareByToken(token);
+  if (!row) return null;
+  return {
+    fullAddress: row.fullAddress,
+    expiresAt: row.expiresAt,
+    claimedAt: row.claimedAt,
+    token: row.token,
+    shortCode: row.shortCode,
   };
 }
 

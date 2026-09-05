@@ -7,11 +7,23 @@ export type CustomerRefundTimelineStep = {
   at: string | null;
 };
 
+export type CustomerRefundSlab = {
+  amount: number;
+  reference: string | null;
+  status: string | null;
+  initiatedAt: string | null;
+  completedAt: string | null;
+};
+
 export type CustomerOrderRefundSummary = {
   status: string | null;
   amount: number | null;
-  /** Primary customer-facing RRN (RRN-{UUID}). */
+  /** Primary customer-facing RRN (latest modern RRN-{UUID}). */
   reference: string | null;
+  /** Every customer RRN across refund slabs (chronological). */
+  references: string[];
+  /** One entry per settled/in-flight refund row (partial + follow-up slabs). */
+  slabs: CustomerRefundSlab[];
   /** GatiCash / wallet ledger reference when wallet portion was restored. */
   walletReference: string | null;
   /** Razorpay / PG refund id when a gateway refund exists. */
@@ -224,6 +236,210 @@ function resolveCustomerRefundReferences(row: Record<string, unknown>): {
   return { reference, walletReference, gatewayReference };
 }
 
+function customerFacingRrn(refs: {
+  reference: string | null;
+  walletReference: string | null;
+  gatewayReference: string | null;
+}): string | null {
+  const raw = refs.reference?.trim() || null;
+  if (!raw) return null;
+  if (/^RFND-\d+$/i.test(raw)) return null;
+  if (isModernRefundRrn(raw)) return raw.toUpperCase();
+  if (isPlaceholderRefundRef(raw) || isWalletRefundRef(raw) || isGatewayRefundRef(raw)) {
+    return null;
+  }
+  return raw;
+}
+
+function mergeRefundStatus(statuses: Array<string | null>): string | null {
+  const normalized = statuses.map((s) => (s ?? "").trim().toLowerCase()).filter(Boolean);
+  if (normalized.length === 0) return null;
+  if (normalized.some((s) => s === "processing" || s === "pending")) {
+    return normalized.some((s) => s === "processing") ? "processing" : "pending";
+  }
+  if (normalized.every((s) => s === "completed" || s === "refunded")) return "completed";
+  return normalized[normalized.length - 1] ?? null;
+}
+
+function mergeRefundRoute(routes: string[], walletAmount: number, gatewayAmount: number): string | null {
+  const set = new Set(routes.map((r) => r.trim().toUpperCase()).filter(Boolean));
+  if (walletAmount > 0.005 && gatewayAmount > 0.005) return "MIXED";
+  if (set.has("MIXED")) return "MIXED";
+  if (set.has("WALLET") && (set.has("RAZORPAY") || set.has("GATEWAY"))) return "MIXED";
+  if (set.has("WALLET") || (walletAmount > 0.005 && gatewayAmount <= 0.005)) return "WALLET";
+  if (set.has("RAZORPAY") || set.has("GATEWAY") || gatewayAmount > 0.005) return "RAZORPAY";
+  return routes.find((r) => r.trim())?.trim().toUpperCase() ?? null;
+}
+
+function pickIso(values: Array<string | null>, which: "earliest" | "latest"): string | null {
+  const times = values
+    .filter((v): v is string => Boolean(v))
+    .map((v) => ({ v, t: Date.parse(v) }))
+    .filter((x) => Number.isFinite(x.t));
+  if (times.length === 0) return null;
+  times.sort((a, b) => a.t - b.t);
+  return which === "earliest" ? times[0]!.v : times[times.length - 1]!.v;
+}
+
+/** Combine every non-failed refund row for one order into a single customer summary. */
+export function aggregateCustomerRefundRows(
+  rows: Record<string, unknown>[]
+): CustomerOrderRefundSummary | null {
+  if (rows.length === 0) return null;
+
+  const slabs: CustomerRefundSlab[] = [];
+  const references: string[] = [];
+  const seenRefs = new Set<string>();
+  const statuses: Array<string | null> = [];
+  const routes: string[] = [];
+  let amount = 0;
+  let walletAmount = 0;
+  let gatewayAmount = 0;
+  let walletReference: string | null = null;
+  let gatewayReference: string | null = null;
+  let originalGatiCashTxnId: string | null = null;
+  const initiatedAts: Array<string | null> = [];
+  const processedAts: Array<string | null> = [];
+  const completedAts: Array<string | null> = [];
+  const timeline: CustomerRefundTimelineStep[] = [];
+
+  for (const row of rows) {
+    const slabAmount = round2(num(row.refund_amount));
+    const ledgerId =
+      row.customer_wallet_ledger_id != null ? Number(row.customer_wallet_ledger_id) : null;
+    const hasMoneyMovement =
+      (ledgerId != null && Number.isFinite(ledgerId) && ledgerId > 0) ||
+      Boolean(trimRef(row.razorpay_refund_id));
+    const status = normalizeRefundStatus(
+      row.execution_status != null ? String(row.execution_status) : null,
+      row.refund_status != null ? String(row.refund_status) : null,
+      { amount: slabAmount, hasMoneyMovement }
+    );
+    statuses.push(status);
+    amount = round2(amount + slabAmount);
+    const splitWallet = num(row.split_wallet_amount ?? row.customer_wallet_amount);
+    const origWallet = num(row.original_gati_cash_amount);
+    const slabWallet =
+      splitWallet > 0.005
+        ? splitWallet
+        : origWallet > 0.005 && origWallet <= slabAmount + 0.02
+          ? origWallet
+          : String(row.execution_route ?? "").toUpperCase() === "WALLET"
+            ? slabAmount
+            : 0;
+    const splitGw = num(row.split_razorpay_amount);
+    const origGw = num(row.original_gateway_amount);
+    const slabGw =
+      splitGw > 0.005
+        ? splitGw
+        : origGw > 0.005 && origGw <= slabAmount + 0.02
+          ? origGw
+          : String(row.execution_route ?? "").toUpperCase() === "RAZORPAY" ||
+              String(row.execution_route ?? "").toUpperCase() === "GATEWAY"
+            ? slabAmount
+            : 0;
+    walletAmount = round2(walletAmount + slabWallet);
+    gatewayAmount = round2(gatewayAmount + slabGw);
+    if (typeof row.execution_route === "string" && row.execution_route.trim()) {
+      routes.push(row.execution_route.trim());
+    }
+    const refs = resolveCustomerRefundReferences(row);
+    if (refs.walletReference && !walletReference) walletReference = refs.walletReference;
+    if (refs.gatewayReference && !gatewayReference) gatewayReference = refs.gatewayReference;
+    const rrn = customerFacingRrn(refs);
+    if (rrn && !seenRefs.has(rrn)) {
+      seenRefs.add(rrn);
+      references.push(rrn);
+    }
+    const txn =
+      typeof row.original_gati_cash_txn_id === "string" && row.original_gati_cash_txn_id.trim()
+        ? String(row.original_gati_cash_txn_id).trim()
+        : null;
+    if (txn && !originalGatiCashTxnId) originalGatiCashTxnId = txn;
+
+    const initiatedAt = isoOrNull(row.initiated_at ?? row.created_at);
+    const processedAt = isoOrNull(row.executed_at ?? row.initiated_at);
+    const completedAt = isoOrNull(row.completed_at);
+    initiatedAts.push(initiatedAt);
+    processedAts.push(processedAt);
+    completedAts.push(completedAt);
+
+    slabs.push({
+      amount: slabAmount,
+      reference: rrn,
+      status,
+      initiatedAt,
+      completedAt,
+    });
+
+    if (slabAmount > 0.005) {
+      timeline.push({
+        key: `initiated-${slabs.length}`,
+        label:
+          rows.length > 1
+            ? `Refund ${slabs.length} of ₹${slabAmount.toFixed(2)} initiated`
+            : `Refund initiated for ₹${slabAmount.toFixed(2)}`,
+        at: initiatedAt,
+      });
+    }
+  }
+
+  const status = mergeRefundStatus(statuses);
+  const initiatedAt = pickIso(initiatedAts, "earliest");
+  const processedAt = pickIso(processedAts, "latest");
+  const completedAt = pickIso(completedAts, "latest");
+  const st = (status ?? "").toLowerCase();
+  if (rows.length === 1) {
+    const storedTimeline = parseTimeline(rows[0]?.refund_timeline);
+    if (storedTimeline.length > 0) {
+      timeline.length = 0;
+      timeline.push(...storedTimeline);
+    }
+  }
+  if (timeline.length === 0 && amount > 0) {
+    timeline.push(
+      ...buildFallbackTimeline({
+        amount,
+        initiatedAt,
+        processedAt,
+        completedAt,
+        status,
+      })
+    );
+  } else if (timeline.length > 0) {
+    timeline.push({
+      key: "processed",
+      label: "Refund processed",
+      at: processedAt ?? initiatedAt,
+    });
+    if (st === "completed" || st === "refunded" || st === "processed") {
+      timeline.push({
+        key: "completed",
+        label: "Refund completed",
+        at: completedAt ?? processedAt ?? initiatedAt,
+      });
+    }
+  }
+
+  return {
+    status,
+    amount: amount > 0 ? amount : null,
+    reference: references[references.length - 1] ?? null,
+    references,
+    slabs,
+    walletReference,
+    gatewayReference,
+    originalGatiCashTxnId,
+    route: mergeRefundRoute(routes, walletAmount, gatewayAmount),
+    walletAmount: walletAmount > 0.005 ? walletAmount : null,
+    gatewayAmount: gatewayAmount > 0.005 ? gatewayAmount : null,
+    initiatedAt,
+    processedAt,
+    completedAt,
+    timeline,
+  };
+}
+
 /**
  * Latest refund status for customer history "Refunded" badge.
  *
@@ -252,7 +468,7 @@ export async function loadOrderRefundSummariesByCorePks(
 
   try {
     const refundRows = await sql<Record<string, unknown>[]>`
-      SELECT DISTINCT ON (order_id)
+      SELECT
         id,
         order_id,
         refund_status,
@@ -278,76 +494,25 @@ export async function loadOrderRefundSummariesByCorePks(
       WHERE order_id IN ${sql(corePks)}
         AND UPPER(COALESCE(execution_status::text, '')) <> 'FAILED'
         AND LOWER(COALESCE(refund_status, '')) NOT IN ('failed', 'cancelled', 'rejected')
-      ORDER BY order_id, created_at DESC
+      ORDER BY order_id ASC, created_at ASC NULLS LAST, id ASC
     `;
+    const grouped = new Map<number, Record<string, unknown>[]>();
     for (const row of refundRows) {
       const pk = Number(row.order_id);
       if (!Number.isFinite(pk)) continue;
-      const amount = round2(num(row.refund_amount));
-      const ledgerId =
-        row.customer_wallet_ledger_id != null ? Number(row.customer_wallet_ledger_id) : null;
-      const hasMoneyMovement =
-        (ledgerId != null && Number.isFinite(ledgerId) && ledgerId > 0) ||
-        Boolean(trimRef(row.razorpay_refund_id));
-      const status = normalizeRefundStatus(
-        row.execution_status != null ? String(row.execution_status) : null,
-        row.refund_status != null ? String(row.refund_status) : null,
-        { amount, hasMoneyMovement }
-      );
-      const walletAmount = round2(
-        num(
-          row.split_wallet_amount ??
-            row.customer_wallet_amount ??
-            row.original_gati_cash_amount
-        )
-      );
-      const gatewayAmount = round2(
-        num(row.split_razorpay_amount ?? row.original_gateway_amount)
-      );
-      const refs = resolveCustomerRefundReferences(row);
-
-      const initiatedAt = isoOrNull(row.initiated_at ?? row.created_at);
-      const processedAt = isoOrNull(row.executed_at ?? row.initiated_at);
-      const completedAt = isoOrNull(row.completed_at);
-      let timeline = parseTimeline(row.refund_timeline);
-      if (timeline.length === 0) {
-        timeline = buildFallbackTimeline({
-          amount: amount > 0 ? amount : null,
-          initiatedAt,
-          processedAt,
-          completedAt,
-          status,
-        });
-      }
-
-      out.set(pk, {
-        status,
-        amount: amount > 0 ? amount : null,
-        reference: refs.reference,
-        walletReference: refs.walletReference,
-        gatewayReference: refs.gatewayReference,
-        originalGatiCashTxnId:
-          typeof row.original_gati_cash_txn_id === "string" &&
-          row.original_gati_cash_txn_id.trim()
-            ? String(row.original_gati_cash_txn_id).trim()
-            : null,
-        route:
-          typeof row.execution_route === "string" && row.execution_route.trim()
-            ? String(row.execution_route).trim().toUpperCase()
-            : null,
-        walletAmount: walletAmount > 0.005 ? walletAmount : null,
-        gatewayAmount: gatewayAmount > 0.005 ? gatewayAmount : null,
-        initiatedAt,
-        processedAt,
-        completedAt,
-        timeline,
-      });
+      const list = grouped.get(pk) ?? [];
+      list.push(row);
+      grouped.set(pk, list);
+    }
+    for (const [pk, list] of grouped) {
+      const summary = aggregateCustomerRefundRows(list);
+      if (summary) out.set(pk, summary);
     }
   } catch {
     /* columns from 0483 / 0422 may be absent — fallback below */
     try {
       const refundRows = await sql<Record<string, unknown>[]>`
-        SELECT DISTINCT ON (order_id)
+        SELECT
           id,
           order_id,
           refund_status,
@@ -364,41 +529,20 @@ export async function loadOrderRefundSummariesByCorePks(
         WHERE order_id IN ${sql(corePks)}
           AND UPPER(COALESCE(execution_status::text, '')) <> 'FAILED'
           AND LOWER(COALESCE(refund_status, '')) NOT IN ('failed', 'cancelled', 'rejected')
-        ORDER BY order_id, created_at DESC
+        ORDER BY order_id ASC, created_at ASC NULLS LAST, id ASC
       `;
+      const grouped = new Map<number, Record<string, unknown>[]>();
       for (const row of refundRows) {
         const pk = Number(row.order_id);
         if (!Number.isFinite(pk)) continue;
-        const status = normalizeRefundStatus(
-          row.execution_status != null ? String(row.execution_status) : null,
-          row.refund_status != null ? String(row.refund_status) : null
-        );
-        const amount = round2(num(row.refund_amount));
-        const initiatedAt = isoOrNull(row.created_at);
-        const processedAt = isoOrNull(row.executed_at);
-        const completedAt = isoOrNull(row.completed_at);
-        const refs = resolveCustomerRefundReferences(row);
-        out.set(pk, {
-          status,
-          amount: amount > 0 ? amount : null,
-          reference: refs.reference,
-          walletReference: refs.walletReference,
-          gatewayReference: refs.gatewayReference,
-          originalGatiCashTxnId: null,
-          route: null,
-          walletAmount: null,
-          gatewayAmount: null,
-          initiatedAt,
-          processedAt,
-          completedAt,
-          timeline: buildFallbackTimeline({
-            amount: amount > 0 ? amount : null,
-            initiatedAt,
-            processedAt,
-            completedAt,
-            status,
-          }),
-        });
+        const list = grouped.get(pk) ?? [];
+        list.push(row);
+        grouped.set(pk, list);
+      }
+      for (const [pk, list] of grouped) {
+        if (out.has(pk)) continue;
+        const summary = aggregateCustomerRefundRows(list);
+        if (summary) out.set(pk, summary);
       }
     } catch {
       /* ignore */
@@ -424,6 +568,11 @@ export async function loadOrderRefundSummariesByCorePks(
         status,
         amount: amount > 0 ? amount : null,
         reference: null,
+        references: [],
+        slabs:
+          amount > 0
+            ? [{ amount, reference: null, status, initiatedAt: null, completedAt: null }]
+            : [],
         walletReference: null,
         gatewayReference: null,
         originalGatiCashTxnId: null,
