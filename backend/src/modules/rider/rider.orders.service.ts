@@ -64,7 +64,7 @@ import {
   fetchLedgerEarningsByCoreIds,
   resolveRiderOrderEarnings,
 } from "../../lib/rider-order-earning-resolve.js";
-import { resolveOrderRiderPayoutBreakdown } from "../../lib/resolve-order-rider-payout.js";
+import type { DispatchServiceType } from "../../lib/order-assignment-engine.js";
 import { computePrePickupAllowanceForPickup } from "../../lib/pre-pickup-pay.js";
 import { rideAddressLabelsFromCheckoutMetadata, rideGeoFromCheckoutMetadata, resolveRideAddressDisplayLabel, rideTripDistanceFromCheckoutMetadata, roundRideTripDistanceKm } from "../../lib/ride-address-display.js";
 import {
@@ -1221,69 +1221,43 @@ function mapParcelRow(row: ParcelRow, ledgerTotal?: number | null): RiderOrderSu
   };
 }
 
-/**
- * Rider Fare Engine v3.0: rider payout is a percentage of the customer's
- * fare, so we must read the fare directly from orders_core/orders_ride here
- * rather than deriving it from RiderOrderSummary — that type is serialized
- * verbatim to rider-facing API responses (see getAvailableOrdersForRider),
- * and must never carry the customer's fare amount.
- */
-async function resolveCustomerFareForPayout(
-  orderCoreId: number,
-  service: "food" | "parcel" | "ride"
-): Promise<number> {
-  const { resolveCustomerFareForRiderPayout } = await import(
-    "../../lib/build-dispatch-offer-rider-earnings.js"
-  );
-  return resolveCustomerFareForRiderPayout(orderCoreId, service);
-}
-
 async function applyGeoSlabRiderEarnings(
   order: RiderOrderSummary,
   ctx: { riderId: number; riderLat: number; riderLng: number; orderCoreId: number },
-  rideCheckoutMetadata?: unknown
+  _rideCheckoutMetadata?: unknown
 ): Promise<RiderOrderSummary> {
-  const service =
-    order.category === "ride" ? "ride" : order.category === "parcel" ? "parcel" : "food";
+  // Rider fare CONSISTENCY (bug fix): the pool/offer LIST used to show a bare
+  // percentage-of-customer-fare number (resolveOrderRiderPayoutBreakdown only), while the
+  // dispatch offer push AND the delivery-time credit both reconcile the v3.2 pre/post legs
+  // (company-funded, on top). That made the SAME order show a different amount on different
+  // screens. Route this display through the SAME canonical resolver the offer push + credit
+  // use, so offered == displayed == paid everywhere.
+  const serviceType: DispatchServiceType =
+    order.category === "ride" ? "person_ride" : order.category === "parcel" ? "parcel" : "food";
   try {
-    const customerFare = await resolveCustomerFareForPayout(ctx.orderCoreId, service);
-    if (customerFare <= 0) return order;
-
-    const bookingTripKm =
-      service === "ride"
-        ? rideTripDistanceFromCheckoutMetadata(rideCheckoutMetadata) ??
-          roundRideTripDistanceKm(order.tripDistanceKm ?? order.distanceKm)
-        : roundRideTripDistanceKm(order.tripDistanceKm ?? order.distanceKm);
-    const rideGeo =
-      service === "ride" ? rideGeoFromCheckoutMetadata(rideCheckoutMetadata) : {};
-
-    const payout = await resolveOrderRiderPayoutBreakdown({
-      service,
-      customerFare,
-      pickupLat: order.pickup.lat,
-      pickupLng: order.pickup.lng,
-      dropLat: order.delivery.lat,
-      dropLng: order.delivery.lng,
-      pickupKm: order.pickupDistanceKm,
-      dropKm: bookingTripKm,
+    const { buildDispatchOfferRiderEarnings } = await import(
+      "../../lib/build-dispatch-offer-rider-earnings.js"
+    );
+    const pickupDistanceMeters = Math.max(0, Number(order.pickupDistanceKm ?? 0)) * 1000;
+    const earnings = await buildDispatchOfferRiderEarnings({
+      orderCoreId: ctx.orderCoreId,
+      serviceType,
+      riderId: ctx.riderId,
       riderLat: ctx.riderLat,
       riderLng: ctx.riderLng,
-      riderId: ctx.riderId,
-      rideCatalogCode: order.rideType,
-      pincode: rideGeo.pickupPincode,
-      state: rideGeo.pickupState,
+      pickupDistanceMeters,
     });
-    if (payout == null || payout.finalAmount <= 0) return order;
-    const tip = order.customerTipAmount ?? 0;
-    const total = payout.finalAmount + tip;
+    if (!earnings || earnings.totalEarning <= 0) return order;
     return {
       ...order,
-      baseEarning: payout.subtotalBeforeSurge,
-      waitingEarning: payout.waitingAmount > 0 ? payout.waitingAmount : undefined,
-      surgeEarning: payout.surgeTotal > 0 ? payout.surgeTotal : undefined,
-      appliedSurges: payout.appliedSurges.length > 0 ? payout.appliedSurges : undefined,
-      estimatedEarning: total,
-      totalEarning: total,
+      baseEarning: earnings.baseEarning,
+      waitingEarning: earnings.waitingEarning,
+      surgeEarning: earnings.surgeEarning,
+      appliedSurges: earnings.appliedSurges,
+      customerTipAmount: earnings.customerTipAmount ?? order.customerTipAmount,
+      // totalEarning already includes tip + legs + surge/incentive (see reconcileRiderLegs).
+      estimatedEarning: earnings.totalEarning,
+      totalEarning: earnings.totalEarning,
     };
   } catch (err) {
     console.warn("[dispatch] geo rider payout failed", order.id, (err as Error).message);

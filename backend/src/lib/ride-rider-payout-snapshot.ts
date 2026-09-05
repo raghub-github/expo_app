@@ -481,13 +481,33 @@ export async function persistRideRiderAcceptPayoutSnapshot(
 
   if (payout == null || payout.finalAmount <= 0) return null;
 
+  // FARE CONSISTENCY (bug fix): freeze the SAME v3.2 leg-reconciled total the dispatch offer
+  // and the delivery-time credit use (pre/post legs + reconcileRiderLegs, company-funded on
+  // top), not the bare percentage-of-fare pool. Otherwise the "Rider Receives" shown before
+  // settlement (snapshot) differed from what is actually credited (legs) — the same order
+  // appearing to pay less/more on different screens. Dynamic import avoids a require cycle.
+  const { buildDispatchOfferRiderEarnings } = await import("./build-dispatch-offer-rider-earnings.js");
+  const legEarnings = await buildDispatchOfferRiderEarnings({
+    orderCoreId: orderCorePk,
+    serviceType: "person_ride",
+    riderId,
+    riderLat: riderLat || 0,
+    riderLng: riderLng || 0,
+    pickupDistanceMeters: (pickupKm ?? 0) * 1000,
+  }).catch(() => null);
+  const tipAmt = round0(Number(row.customerTipAmount) || 0);
+  const totalEarning =
+    legEarnings && legEarnings.totalEarning > 0
+      ? legEarnings.totalEarning
+      : payout.finalAmount + tipAmt;
+
   return persistRideRiderPayoutFromSummary(orderCorePk, {
-    baseEarning: payout.subtotalBeforeSurge,
-    waitingEarning: 0,
-    surgeEarning: payout.surgeTotal,
-    appliedSurges: payout.appliedSurges,
-    totalEarning: payout.finalAmount + round0(Number(row.customerTipAmount) || 0),
-    customerTipAmount: round0(Number(row.customerTipAmount) || 0),
+    baseEarning: legEarnings?.baseEarning ?? payout.subtotalBeforeSurge,
+    waitingEarning: legEarnings?.waitingEarning ?? 0,
+    surgeEarning: legEarnings?.surgeEarning ?? payout.surgeTotal,
+    appliedSurges: legEarnings?.appliedSurges ?? payout.appliedSurges,
+    totalEarning,
+    customerTipAmount: tipAmt,
     pickupDistanceKm: pickupKm,
     tripDistanceKm: tripKm,
     totalDistanceKm:
@@ -578,13 +598,27 @@ export async function persistFoodRiderAcceptPayoutSnapshot(
 
   if (payout == null || payout.finalAmount <= 0) return null;
 
+  // FARE CONSISTENCY (bug fix): freeze the v3.2 leg-reconciled total (same resolver the offer
+  // + delivery credit use), not the bare percentage-of-fare pool — so the frozen food payout
+  // equals what the rider is actually credited. Dynamic import avoids a require cycle.
+  const { buildDispatchOfferRiderEarnings } = await import("./build-dispatch-offer-rider-earnings.js");
+  const legEarnings = await buildDispatchOfferRiderEarnings({
+    orderCoreId: orderCorePk,
+    serviceType: "food",
+    riderId,
+    riderLat: riderLat || 0,
+    riderLng: riderLng || 0,
+    pickupDistanceMeters: (pickupKm ?? 0) * 1000,
+  }).catch(() => null);
   const tip = round0(Number(row.tipAmount) || 0);
+  const totalEarning =
+    legEarnings && legEarnings.totalEarning > 0 ? legEarnings.totalEarning : payout.finalAmount + tip;
   return persistRideRiderPayoutFromSummary(orderCorePk, {
-    baseEarning: payout.subtotalBeforeSurge,
-    waitingEarning: 0,
-    surgeEarning: payout.surgeTotal,
-    appliedSurges: payout.appliedSurges,
-    totalEarning: payout.finalAmount + tip,
+    baseEarning: legEarnings?.baseEarning ?? payout.subtotalBeforeSurge,
+    waitingEarning: legEarnings?.waitingEarning ?? 0,
+    surgeEarning: legEarnings?.surgeEarning ?? payout.surgeTotal,
+    appliedSurges: legEarnings?.appliedSurges ?? payout.appliedSurges,
+    totalEarning,
     customerTipAmount: tip,
     pickupDistanceKm: pickupKm,
     tripDistanceKm: tripKm,
