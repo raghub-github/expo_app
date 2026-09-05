@@ -111,10 +111,13 @@ async function applyCanonicalCustomerMenuPrices<
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
 const SEARCH_LIMIT = 30;
-/** Non-negotiable upper bound. No store ever shows beyond this from the user. */
+/**
+ * Non-negotiable upper bound (air/straight-line km). A store is shown when the user is within
+ * min(MAX_RADIUS_KM, store.delivery_radius_km) as-the-crow-flies of it — the store's OWN
+ * service radius governs up to this ceiling. Road distance never gates visibility (it only
+ * drives displayed km / ETA / fare). Same ceiling `listStores` uses, so both listings agree.
+ */
 const MAX_RADIUS_KM = 15;
-const ROUGH_RADIUS_KM = 12;
-const FINAL_MAX_ROAD_DISTANCE_KM = 10;
 const MAX_MAPBOX_CANDIDATES = 15;
 const MAPBOX_CONCURRENCY = 5;
 
@@ -296,7 +299,7 @@ async function mapWithConcurrency<T, R>(
 export async function listNearbyStoresByRoadDistance(params: {
   lat: number;
   lng: number;
-  /** Hard upper bound from the caller, capped at FINAL_MAX_ROAD_DISTANCE_KM. */
+  /** Optional TIGHTER air-radius bound from the caller, capped at MAX_RADIUS_KM (the ceiling). */
   maxRoadDistanceKm?: number;
   /** Max stores to send to Mapbox Matrix. Capped at MAX_MAPBOX_CANDIDATES (matrix is 25 coords/req). */
   mapboxLimit?: number;
@@ -308,9 +311,12 @@ export async function listNearbyStoresByRoadDistance(params: {
   }
 
   const user = { lat: params.lat, lng: params.lng };
+  // Ceiling = MAX_RADIUS_KM. A store's own delivery_radius_km governs below it (via
+  // effectiveServiceRadiusKm), so a store configured to serve, say, 15 km is shown to 15 km —
+  // not clipped to a smaller global road cap. A caller may request a TIGHTER bound.
   const globalCap = Math.min(
-    FINAL_MAX_ROAD_DISTANCE_KM,
-    Math.max(1, params.maxRoadDistanceKm ?? FINAL_MAX_ROAD_DISTANCE_KM),
+    MAX_RADIUS_KM,
+    Math.max(1, params.maxRoadDistanceKm ?? MAX_RADIUS_KM),
   );
   const mapboxLimit = Math.min(
     MAX_MAPBOX_CANDIDATES,
@@ -329,13 +335,12 @@ export async function listNearbyStoresByRoadDistance(params: {
 
   // --- Stage 1: SQL bbox prefilter ---
   // Latitude: 1 degree ≈ 111.32 km. Longitude: 111.32 km × cos(lat).
-  // The bbox is sized to the ROUGH_RADIUS_KM (12 km), so any store
-  // outside it cannot possibly be in service range under MAX_RADIUS_KM.
-  // This converts the previous "SELECT *" full scan into an indexed
-  // range scan on (latitude, longitude).
-  const latDelta = ROUGH_RADIUS_KM / 111.32;
+  // The bbox is sized to `globalCap` (the air ceiling, ≤ MAX_RADIUS_KM). A store outside it
+  // cannot be within min(globalCap, its radius) air-km of the user, so it is never serviceable.
+  // This converts the previous "SELECT *" full scan into an indexed range scan on (lat, lng).
+  const latDelta = globalCap / 111.32;
   const cosLat = Math.max(Math.cos((user.lat * Math.PI) / 180), 0.1); // clamp for poles
-  const lngDelta = ROUGH_RADIUS_KM / (111.32 * cosLat);
+  const lngDelta = globalCap / (111.32 * cosLat);
 
   const supabase = getSupabase();
   const { data, error } = await supabase
@@ -359,12 +364,14 @@ export async function listNearbyStoresByRoadDistance(params: {
   if (error) throw error;
   const baseRows = (data ?? []) as NearbyStoreBase[];
 
-  // --- Stage 2: Haversine sort + per-store rough filter ---
-  // We rough-filter by `min(globalCap, store.delivery_radius_km) × 1.5`
-  // — the 1.5× buffer absorbs the worst-case detour ratio between
-  // straight-line and road distance. Anything outside this buffer
-  // cannot possibly satisfy `road_dist ≤ store_radius`, so we skip the
-  // Mapbox call for it.
+  // --- Stage 2: Haversine (AIR) serviceability gate + sort ---
+  // A store's delivery_radius_km is a COVERAGE CIRCLE measured as-the-crow-flies, so
+  // visibility is decided by straight-line (air) distance: the user is served when they are
+  // within min(globalCap, store.delivery_radius_km) air-km of the store. Road distance is NOT
+  // used to gate visibility — it only drives the displayed km / ETA (Stage 3/4) and the fare
+  // (store-quote engine). Gating on road here hid stores that are inside their air-radius but
+  // reached by a longer road detour — the "user doesn't see all nearby stores" bug. This now
+  // matches resolveStoreDeliveryQuote (air gate) and listStores (haversine serviceability).
   const roughCandidates = baseRows
     .map((row) => {
       const lat = toNumber(row.latitude);
@@ -372,8 +379,7 @@ export async function listNearbyStoresByRoadDistance(params: {
       if (lat == null || lng == null) return null;
       const roughKm = haversineDistanceKm(user, { lat, lng });
       const storeRadius = effectiveServiceRadiusKm(globalCap, row.delivery_radius_km);
-      const roughBudget = Math.min(ROUGH_RADIUS_KM, storeRadius * 1.5);
-      if (roughKm > roughBudget) return null;
+      if (roughKm > storeRadius) return null; // AIR serviceability gate
       return { row, lat, lng, roughKm, storeRadius };
     })
     .filter(
@@ -433,13 +439,14 @@ export async function listNearbyStoresByRoadDistance(params: {
   const items: NearbyStoreListingItem[] = roughCandidates
     .map((c, i) => {
       const mb = matrixResults[i];
-      // Mapbox failed for this candidate → fall back to haversine for
-      // it. The store still gets a chance to appear; we just won't have
-      // an accurate road distance. We never silently inflate the cap.
+      // Road distance (Mapbox Matrix) is DISPLAY/ETA/sort only — never a visibility gate.
+      // Serviceability was already decided by the AIR radius in Stage 2. When Mapbox has no
+      // value for this candidate we fall back to the air distance for display.
       const distanceKm = mb?.distanceKm ?? c.roughKm;
       const durationMin = mb?.durationMin ?? null;
-      // THE CORE RULE: per-store delivery_radius_km gate
-      if (distanceKm > c.storeRadius) return null;
+      // Defensive: re-assert the AIR serviceability gate (no-op after Stage 2). A store is
+      // shown iff the user is within its air coverage radius — road detour must not hide it.
+      if (c.roughKm > c.storeRadius) return null;
 
       const storeInternalId = Number(c.row.id);
       const sched =
