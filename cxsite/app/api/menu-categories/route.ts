@@ -34,8 +34,7 @@ export async function GET() {
       log('Supabase error:', catError.message)
       return NextResponse.json(
         { error: 'Failed to fetch categories', details: catError.message },
-        { status: 500 },
-        { headers: NO_CACHE_HEADERS }
+        { status: 500, headers: NO_CACHE_HEADERS }
       )
     }
 

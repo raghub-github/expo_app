@@ -16,7 +16,7 @@ export type MerchantEtaInput = {
 function pickPrepMinutes(merchant: MerchantEtaInput): number | null {
   const raw =
     merchant.avgPreparationTimeMinutes ?? merchant.avg_preparation_time_minutes
-  if (raw == null || raw === '') return null
+  if (raw == null) return null
   const n = Number(raw)
   return Number.isFinite(n) && n > 0 ? Math.round(n) : null
 }

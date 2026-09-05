@@ -76,7 +76,7 @@ export default function GroceryProductDetailPage({
   const imageZoom = useGroceryProductImageZoom(product.imageUrl)
 
   const breadcrumbs = useMemo(() => {
-    const items = [
+    const items: { label: string; href?: string }[] = [
       { label: 'Home', href: '/grocery' },
       { label: 'Grocery', href: '/grocery' },
     ]

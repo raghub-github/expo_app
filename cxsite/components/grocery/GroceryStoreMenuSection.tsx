@@ -75,7 +75,7 @@ export default function GroceryStoreMenuSection({
 
   return (
     <div
-      ref={menuColumnRef}
+      ref={menuColumnRef as React.RefObject<HTMLDivElement>}
       className="w-full min-w-0"
       style={
         searchQuery.trim() && searchListMinHeightRef.current
@@ -84,7 +84,7 @@ export default function GroceryStoreMenuSection({
       }
     >
       <div
-        ref={menuSelectionsHeaderRef}
+        ref={menuSelectionsHeaderRef as React.RefObject<HTMLDivElement>}
         className="sticky top-0 z-30 w-full shrink-0 isolate border-b border-border/30 bg-bg/95 pb-3 pt-4 backdrop-blur-md supports-[backdrop-filter]:bg-bg/90"
       >
         <div className="flex w-full min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">

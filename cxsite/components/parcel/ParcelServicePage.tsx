@@ -377,9 +377,14 @@ export default function ParcelServicePageV2() {
   }
 
   const handleBookParcel = async () => {
-    // Web booking is intentionally blocked for parcel.
-    setShowAppDownloadModal(true)
-    return
+    // Web booking is intentionally blocked for parcel — send the user to the app. Typed as
+    // `boolean` (not the literal `true`) so the disabled booking flow below still type-checks
+    // (unreachable code skips control-flow narrowing) without changing this runtime behaviour.
+    const webBookingBlocked: boolean = true
+    if (webBookingBlocked) {
+      setShowAppDownloadModal(true)
+      return
+    }
 
     if (!isAuthenticated || !user) {
       setIsAuthModalOpen(true)

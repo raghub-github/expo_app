@@ -76,7 +76,7 @@ export function GroceryProductImageSource({
 
   return (
     <div
-      ref={containerRef}
+      ref={containerRef as React.RefObject<HTMLDivElement>}
       className="relative mx-auto aspect-square w-full max-w-[320px] cursor-crosshair sm:max-w-[360px] lg:mx-0"
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
