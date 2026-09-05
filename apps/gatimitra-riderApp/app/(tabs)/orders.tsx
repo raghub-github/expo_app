@@ -19,8 +19,8 @@ import { useFocusEffect } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEarningsSummary } from "@/src/hooks/useEarnings";
-import { useDemandZones } from "@/src/hooks/useDemandZones";
 import { useHotZones } from "@/src/hooks/useHotZones";
+import { hotZonesToPanelZones } from "@/src/lib/hot-zones";
 import { HighDemandZonesPanel } from "@/src/components/home/HighDemandZonesPanel";
 import { resolveRiderHomeChrome } from "@/src/lib/rider-home-chrome";
 import { useDutyStatus, RIDER_DUTY_STATUS_QUERY_KEY } from "@/src/hooks/useDutyStatus";
@@ -340,26 +340,6 @@ export default function OrdersScreen() {
     [isOnDuty, activeOrders, availableOrders]
   );
 
-  const demandExtraPoints = useMemo(
-    () =>
-      homeChrome.fetchDemandZones
-        ? availableOrders
-            .filter(
-              (o) =>
-                o.category === "food" &&
-                o.pickup?.lat != null &&
-                o.pickup?.lng != null &&
-                Number.isFinite(Number(o.pickup.lat)) &&
-                Number.isFinite(Number(o.pickup.lng))
-            )
-            .map((o) => ({
-              lat: Number(o.pickup.lat),
-              lng: Number(o.pickup.lng),
-            }))
-        : [],
-    [availableOrders, homeChrome.fetchDemandZones]
-  );
-
   const rawFixPreview = state.status === "tracking" ? state.lastFix : undefined;
   if (rawFixPreview) stickyFixRef.current = rawFixPreview;
   /**
@@ -373,19 +353,19 @@ export default function OrdersScreen() {
       ? stickyFixRef.current
       : undefined;
 
-  const { zones: demandZones, isLoading: demandZonesLoading } = useDemandZones({
+  // Real backend H3 hot zones — the SINGLE source for both the map layer and the side panel.
+  // The legacy store-cluster "demand zones" (a shop being online) are retired as a hot-zone
+  // source: the backend now returns true demand/supply pressure within a 20km radius.
+  const { zones: hotZones, isLoading: hotZonesLoading } = useHotZones({
     riderLat: demandFix?.lat,
     riderLng: demandFix?.lng,
-    extraPoints: demandExtraPoints,
     enabled: homeChrome.fetchDemandZones,
   });
 
-  // Real backend H3 hot zones for the MAP (replaces the legacy store-cluster circles).
-  const { zones: hotZones } = useHotZones({
-    riderLat: demandFix?.lat,
-    riderLng: demandFix?.lng,
-    enabled: homeChrome.fetchDemandZones,
-  });
+  const panelZones = useMemo(
+    () => hotZonesToPanelZones(hotZones, demandFix ? { lat: demandFix.lat, lng: demandFix.lng } : null),
+    [hotZones, demandFix]
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -710,7 +690,7 @@ export default function OrdersScreen() {
           style={styles.map}
           paused={!homeFocused}
           showRadar={homeChrome.showSearchingRadar && mapHasPin && !gpsBlocked}
-          demandZones={hotZones.length > 0 ? [] : demandZones}
+          demandZones={[]}
           hotZones={homeChrome.fetchDemandZones ? hotZones : []}
           isOnDuty={isOnDuty}
         />
@@ -781,8 +761,8 @@ export default function OrdersScreen() {
           <View style={styles.demandHost} pointerEvents="box-none">
             <HighDemandZonesPanel
               visible
-              zones={demandZones}
-              isLoading={demandZonesLoading}
+              zones={panelZones}
+              isLoading={hotZonesLoading}
               riderLat={demandFix?.lat}
               riderLng={demandFix?.lng}
             />

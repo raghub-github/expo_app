@@ -131,6 +131,44 @@ export function hotZonesToGeoJson(cells: HotZoneCell[]): HotZoneFeatureCollectio
   };
 }
 
+/** Short status word for row labels. */
+const STATUS_WORD: Record<ZoneStatus, string> = {
+  NORMAL: "Busy",
+  WARM: "Warm",
+  HOT: "Hot",
+  CRITICAL: "Surge",
+};
+
+/**
+ * Adapt real H3 hot zones to the {@link HighDemandZonesPanel}'s row shape so the side panel
+ * shows the BACKEND engine (service-aware, demand/supply) instead of the legacy store-cluster
+ * list. `storeCount` is 0 (these are demand zones, not restaurant counts); the service mix and
+ * status are carried in the label so the rider sees *why* a zone is elevated.
+ */
+export type PanelZone = {
+  id: string;
+  label: string;
+  centroid: { lat: number; lng: number };
+  distanceKm: number;
+  storeCount: number;
+};
+
+export function hotZonesToPanelZones(
+  cells: HotZoneCell[],
+  rider: { lat: number; lng: number } | null | undefined
+): PanelZone[] {
+  return hotZonesToDisplayList(cells, rider).map((item) => {
+    const services = item.services.map((s) => SERVICE_LABEL[s.service]).join(", ");
+    return {
+      id: item.id,
+      label: services ? `${STATUS_WORD[item.status]} · ${services}` : `${STATUS_WORD[item.status]} zone`,
+      centroid: item.center,
+      distanceKm: item.distanceKm,
+      storeCount: 0,
+    };
+  });
+}
+
 function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
   const R = 6371;
   const dLat = ((b.lat - a.lat) * Math.PI) / 180;

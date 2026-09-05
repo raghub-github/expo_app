@@ -2742,7 +2742,7 @@ async function acceptFoodOrderForRider(
 
     if (!updated?.id) {
       throwOrderAlreadyAssigned({
-        orderId: preCheck.orderId,
+        orderId: preCheck.orderId ?? "",
         attemptedRiderId: riderId,
       });
     }

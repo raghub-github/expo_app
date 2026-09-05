@@ -185,8 +185,8 @@ export default function NotificationDetailScreen() {
   )
     .replace(/\s+/g, " ")
     .trim();
-  const openLabel = orderPath ? "View order" : deepLink.startsWith("http") ? "Open link" : metaCta || "Open";
   const orderPath = item ? resolveActiveOrderPath(item) : null;
+  const openLabel = orderPath ? "View order" : deepLink.startsWith("http") ? "Open link" : metaCta || "Open";
   const canOpenLink = (() => {
     if (orderPath) return true;
     if (!deepLink) return false;
