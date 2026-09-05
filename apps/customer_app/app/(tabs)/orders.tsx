@@ -68,6 +68,7 @@ import {
   normalizeCustomerOrderStatus,
 } from "@/lib/customer-order-status-display";
 import { resolveOrderCustomerPaidAmount } from "@/lib/orderBillBreakdown";
+import { textIncludes } from "@/lib/safe-text";
 
 const GREEN = GatiMitraColors.primaryMint;
 const ERROR = GatiMitraColors.errorRed;
@@ -106,15 +107,15 @@ function orderMatchesSearch(order: OrderSummary, query: string): boolean {
   if (!q) return true;
   if (isPersonRideOrderSummary(order)) {
     return (
-      getRideDropTitle(order).toLowerCase().includes(q) ||
-      !!order.merchantAddress?.toLowerCase().includes(q) ||
-      !!order.deliveryAddress?.toLowerCase().includes(q)
+      textIncludes(getRideDropTitle(order), q) ||
+      textIncludes(order.merchantAddress, q) ||
+      textIncludes(order.deliveryAddress, q)
     );
   }
   return (
-    !!order.merchantName?.toLowerCase().includes(q) ||
-    !!order.merchantPublicName?.toLowerCase().includes(q) ||
-    !!order.items?.some((i) => i.name.toLowerCase().includes(q))
+    textIncludes(order.merchantName, q) ||
+    textIncludes(order.merchantPublicName, q) ||
+    !!order.items?.some((i) => textIncludes(i.name, q))
   );
 }
 

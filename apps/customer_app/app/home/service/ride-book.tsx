@@ -310,6 +310,7 @@ export default function RideBookScreen() {
   const [mapReady, setMapReady] = useState(false);
   const mapFrameRafRef = useRef<number | null>(null);
   const lastMapFrameTickAtRef = useRef(0);
+  const confirmNavLockRef = useRef(false);
   const routeEndpointsKeyRef = useRef("");
   const [fareQuotes, setFareQuotes] = useState<Record<string, number>>({});
   const [fareQuoteMeta, setFareQuoteMeta] = useState<Record<string, RideFareQuote>>({});
@@ -1090,10 +1091,15 @@ export default function RideBookScreen() {
 
   const navigateToConfirmPickup = useCallback(
     (customerTipAmount = 0) => {
+      if (confirmNavLockRef.current) return;
       if (!selectedRide || !selectedRideId) return;
+      confirmNavLockRef.current = true;
       const quoted = displayFareQuotes[selectedRideId];
       const quoteMeta = fareQuoteMeta[selectedRideId];
-      if (tripKm != null && tripKm > 0 && (quoted == null || quoted <= 0)) return;
+      if (tripKm != null && tripKm > 0 && (quoted == null || quoted <= 0)) {
+        confirmNavLockRef.current = false;
+        return;
+      }
       const slabFare = quoteMeta ? resolveRideQuoteSlabFare(quoteMeta) : 0;
       const payableFare =
         quoted != null && quoted > 0
@@ -1101,7 +1107,10 @@ export default function RideBookScreen() {
           : quoteMeta
             ? resolveRideQuotePayableAmount(quoteMeta)
             : 0;
-      if (slabFare <= 0 || payableFare <= 0) return;
+      if (slabFare <= 0 || payableFare <= 0) {
+        confirmNavLockRef.current = false;
+        return;
+      }
       const offerPreview = estimateMatchingRidePlatformOffer({
         fare: payableFare,
         vehicleId: selectedRideId,
@@ -1146,6 +1155,9 @@ export default function RideBookScreen() {
       }
       setTipSheetVisible(false);
       router.push({ pathname: "/home/service/ride-confirm-pickup", params: navParams });
+      setTimeout(() => {
+        confirmNavLockRef.current = false;
+      }, 1200);
     },
     [
       effectivePickupAddress,

@@ -599,7 +599,12 @@ function normalizeCustomerOrderStatus(
 ): string {
   const cur = (currentStatus ?? "").trim();
   if (cur === "PLACED") return "ORDER_PLACED";
-  if (cur) return cur.toUpperCase();
+  if (cur) {
+    const upper = cur.toUpperCase().replace(/[\s-]+/g, "_");
+    if (upper === "COMPLETED" || upper === "COMPLETE") return "DELIVERED";
+    if (upper === "RETURNED") return "RTO";
+    return upper;
+  }
   return toAppStatus(dbStatus ?? null).toUpperCase();
 }
 

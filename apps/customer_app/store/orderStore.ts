@@ -4,6 +4,12 @@
  */
 
 import { create } from "zustand";
+import {
+  isCustomerOrderTerminalStatus,
+  orderRefsMatch,
+  selectAuthoritativeCustomerStatus,
+} from "@/lib/customer-order-status-machine";
+import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
 
 export type OrderStatus =
   | "ORDER_PLACED"
@@ -102,31 +108,53 @@ export const useOrderStore = create<OrderState>((set) => ({
   setActiveOrder: (order) =>
     set((s) => {
       if (!order) return { activeOrder: null };
-      const exists = s.activeOrders.find((o) => o.orderId === order.orderId);
-      const merged = mergeActiveOrder(exists, order);
-      const alreadyListed = s.activeOrders.some((o) => o.orderId === order.orderId);
+      if (isCustomerOrderTerminalStatus(order.status)) {
+        const next = s.activeOrders.filter((o) => !orderRefsMatch(o, order));
+        const still = next.length > 0 ? next[0]! : null;
+        return { activeOrder: still, activeOrders: next };
+      }
+      const exists = s.activeOrders.find((o) => orderRefsMatch(o, order));
+      const merged = mergeActiveOrder(exists, {
+        ...order,
+        status: exists
+          ? (selectAuthoritativeCustomerStatus(exists.status, order.status) as OrderStatus)
+          : (normalizeCustomerOrderStatus(order.status) as OrderStatus),
+      });
+      const alreadyListed = s.activeOrders.some((o) => orderRefsMatch(o, order));
       const activeOrders = alreadyListed
-        ? s.activeOrders.map((o) => (o.orderId === order.orderId ? merged : o))
+        ? s.activeOrders.map((o) => (orderRefsMatch(o, order) ? merged : o))
         : [...s.activeOrders, merged];
       return { activeOrder: merged, activeOrders };
     }),
 
   addActiveOrder: (order) =>
     set((s) => {
-      const exists = s.activeOrders.find((o) => o.orderId === order.orderId);
-      const merged = mergeActiveOrder(exists, order);
+      if (isCustomerOrderTerminalStatus(order.status)) {
+        const next = s.activeOrders.filter((o) => !orderRefsMatch(o, order));
+        const still = next.length > 0 ? next[0]! : null;
+        const activeOrder = s.activeOrder && orderRefsMatch(s.activeOrder, order) ? still : s.activeOrder;
+        return { activeOrder, activeOrders: next };
+      }
+      const exists = s.activeOrders.find((o) => orderRefsMatch(o, order));
+      const incomingStatus = normalizeCustomerOrderStatus(order.status) as OrderStatus;
+      const merged = mergeActiveOrder(exists, {
+        ...order,
+        status: exists
+          ? (selectAuthoritativeCustomerStatus(exists.status, incomingStatus) as OrderStatus)
+          : incomingStatus,
+      });
       const next = exists
-        ? s.activeOrders.map((o) => (o.orderId === order.orderId ? merged : o))
+        ? s.activeOrders.map((o) => (orderRefsMatch(o, order) ? merged : o))
         : [...s.activeOrders, merged];
       return { activeOrder: merged, activeOrders: next };
     }),
 
   removeActiveOrder: (orderId) =>
     set((s) => {
-      const next = s.activeOrders.filter((o) => o.orderId !== orderId);
+      const next = s.activeOrders.filter((o) => !orderRefsMatch(o, orderId));
       const still = next.length > 0 ? next[0]! : null;
       return {
-        activeOrder: s.activeOrder?.orderId === orderId ? still : s.activeOrder,
+        activeOrder: s.activeOrder && orderRefsMatch(s.activeOrder, orderId) ? still : s.activeOrder,
         activeOrders: next,
       };
     }),
@@ -151,21 +179,34 @@ export const useOrderStore = create<OrderState>((set) => ({
 
   updateOrderStatus: (orderId, status, etaMinutes, patch) =>
     set((s) => {
-      const apply = (o: ActiveOrder): ActiveOrder => ({
-        ...o,
-        status,
-        ...(etaMinutes != null && { etaMinutes }),
-        ...(patch?.formattedOrderId ? { formattedOrderId: patch.formattedOrderId } : {}),
-        ...(patch?.storeName ? { storeName: patch.storeName } : {}),
-        ...(patch?.serviceType ? { serviceType: patch.serviceType } : {}),
-        ...(patch?.vehicleImageKey
-          ? { vehicleImageKey: patch.vehicleImageKey }
-          : {}),
-      });
+      const incoming = normalizeCustomerOrderStatus(status) as OrderStatus;
+      if (isCustomerOrderTerminalStatus(incoming)) {
+        const next = s.activeOrders.filter((o) => !orderRefsMatch(o, orderId));
+        const still = next.length > 0 ? next[0]! : null;
+        return {
+          activeOrder: s.activeOrder && orderRefsMatch(s.activeOrder, orderId) ? still : s.activeOrder,
+          activeOrders: next,
+        };
+      }
+
+      const apply = (o: ActiveOrder): ActiveOrder => {
+        const nextStatus = selectAuthoritativeCustomerStatus(o.status, incoming) as OrderStatus;
+        return {
+          ...o,
+          status: nextStatus,
+          ...(etaMinutes != null && { etaMinutes }),
+          ...(patch?.formattedOrderId ? { formattedOrderId: patch.formattedOrderId } : {}),
+          ...(patch?.storeName ? { storeName: patch.storeName } : {}),
+          ...(patch?.serviceType ? { serviceType: patch.serviceType } : {}),
+          ...(patch?.vehicleImageKey
+            ? { vehicleImageKey: patch.vehicleImageKey }
+            : {}),
+        };
+      };
       const same =
         (o: ActiveOrder | null | undefined) =>
           !!o &&
-          o.status === status &&
+          o.status === selectAuthoritativeCustomerStatus(o.status, incoming) &&
           (etaMinutes == null || o.etaMinutes === etaMinutes) &&
           (!patch?.formattedOrderId || o.formattedOrderId === patch.formattedOrderId) &&
           (!patch?.storeName || o.storeName === patch.storeName) &&
@@ -173,15 +214,18 @@ export const useOrderStore = create<OrderState>((set) => ({
           (!patch?.vehicleImageKey || o.vehicleImageKey === patch.vehicleImageKey);
 
       const activeUnchanged =
-        s.activeOrder?.orderId !== orderId || same(s.activeOrder);
+        !s.activeOrder || !orderRefsMatch(s.activeOrder, orderId) || same(s.activeOrder);
       const listUnchanged = s.activeOrders.every((o) =>
-        o.orderId === orderId ? same(o) : true
+        orderRefsMatch(o, orderId) ? same(o) : true
       );
       if (activeUnchanged && listUnchanged) return s;
 
       return {
-        activeOrder: s.activeOrder?.orderId === orderId ? apply(s.activeOrder) : s.activeOrder,
-        activeOrders: s.activeOrders.map((o) => (o.orderId === orderId ? apply(o) : o)),
+        activeOrder:
+          s.activeOrder && orderRefsMatch(s.activeOrder, orderId)
+            ? apply(s.activeOrder)
+            : s.activeOrder,
+        activeOrders: s.activeOrders.map((o) => (orderRefsMatch(o, orderId) ? apply(o) : o)),
       };
     }),
 

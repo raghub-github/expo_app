@@ -12,6 +12,7 @@ import { useEffect, useRef } from "react";
 import { Platform, AppState } from "react-native";
 import Constants from "expo-constants";
 import { useOrderStore, type ActiveOrder, type ActiveOrderService } from "@/store/orderStore";
+import { collectOrderAliases } from "@/lib/customer-order-status-machine";
 import {
   applyLiveProgressFromPush as applyLiveProgressNative,
   dismissStaleLiveOrderTrayNotifications,
@@ -220,9 +221,13 @@ export function LiveOrderProgressNotification() {
 
     const sync = () => {
       const nextIds = new Set<string>();
+      const dismissIds = new Set<string>();
       for (const order of activeOrders) {
         if (!order.orderId) continue;
         nextIds.add(order.orderId);
+        for (const alias of collectOrderAliases(order.orderId, order.formattedOrderId)) {
+          dismissIds.add(alias);
+        }
         const ui = liveUiFromOrder(order);
         // Step / title only — raw ETA ticks were rescheduling the sticky every poll (ANR).
         const sig = `${order.serviceType ?? "food"}|${ui.title}|${ui.step}|${ui.terminal ? 1 : 0}`;
@@ -250,12 +255,23 @@ export function LiveOrderProgressNotification() {
         }
       }
       knownIdsRef.current = nextIds;
-      void dismissStaleLiveOrderTrayNotifications(nextIds);
+      void dismissStaleLiveOrderTrayNotifications(dismissIds);
     };
 
     const t = setTimeout(sync, 400);
     const sub = AppState.addEventListener("change", (state) => {
-      if (state === "active") sync();
+      if (state === "active") {
+        // Resume: drop leftover FCM shade rows. Do not convert current
+        // order status history into new heads-up notifications.
+        const dismissIds = new Set<string>();
+        for (const order of useOrderStore.getState().activeOrders) {
+          for (const alias of collectOrderAliases(order.orderId, order.formattedOrderId)) {
+            dismissIds.add(alias);
+          }
+        }
+        void dismissStaleLiveOrderTrayNotifications(dismissIds, { force: true });
+        sync();
+      }
     });
     return () => {
       clearTimeout(t);

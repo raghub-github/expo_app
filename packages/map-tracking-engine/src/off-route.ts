@@ -115,6 +115,24 @@ export function shouldRequestReroute(
   return true;
 }
 
+/** Do not walk the full polyline on every GPS sample. */
+export const OFF_ROUTE_ANALYZE_MIN_MOVE_M = 8;
+export const OFF_ROUTE_ANALYZE_MIN_INTERVAL_MS = 1000;
+
+export function shouldAnalyzeOffRouteSample(
+  last: { lat: number; lng: number; atMs: number } | null,
+  rider: { latitude: number; longitude: number },
+  nowMs = Date.now()
+): boolean {
+  if (!last) return true;
+  if (nowMs - last.atMs >= OFF_ROUTE_ANALYZE_MIN_INTERVAL_MS) return true;
+  const moved = distanceMeters(
+    { latitude: last.lat, longitude: last.lng },
+    { latitude: rider.latitude, longitude: rider.longitude }
+  );
+  return moved >= OFF_ROUTE_ANALYZE_MIN_MOVE_M;
+}
+
 /**
  * On-route: keep the vehicle on the road polyline.
  * Off-route: return real GPS — never snap back onto the old route.

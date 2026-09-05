@@ -3,8 +3,10 @@ export function normalizeCustomerOrderStatus(status: string | null | undefined):
   const raw = (status ?? "").trim();
   if (!raw) return "";
   if (raw === "PLACED") return "ORDER_PLACED";
-  const upper = raw.toUpperCase();
+  const upper = raw.toUpperCase().replace(/[\s-]+/g, "_");
   if (upper === "PLACED") return "ORDER_PLACED";
+  if (upper === "COMPLETED" || upper === "COMPLETE") return "DELIVERED";
+  if (upper === "RETURNED") return "RTO";
   return upper;
 }
 
@@ -15,7 +17,8 @@ export function isTerminalOrderStatus(status: string | null | undefined): boolea
     s === "DELIVERED" ||
     s === "CANCELLED" ||
     s === "PAYMENT_FAILED" ||
-    s === "FAILED"
+    s === "FAILED" ||
+    s === "RTO"
   );
 }
 
@@ -59,9 +62,10 @@ export function getHistoryOrderStatusLabel(
   status: string,
   options?: { orderType?: string | null }
 ): string {
-  const s = status.toUpperCase();
+  const s = normalizeCustomerOrderStatus(status);
   if (s === "CANCELLED") return "Cancelled";
   if (s === "PAYMENT_FAILED" || s === "FAILED") return "Payment failed";
+  if (s === "RTO") return "Returned";
   if (s === "DELIVERED") {
     const type = String(options?.orderType ?? "").trim().toLowerCase();
     if (type === "person_ride" || type === "ride") return "Completed";

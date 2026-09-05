@@ -53,6 +53,7 @@ export default function OffersTabScreen() {
       }),
     enabled: debouncedCoords?.latitude != null && debouncedCoords?.longitude != null,
     staleTime: 2 * 60 * 1000,
+    placeholderData: (previous) => previous,
   });
 
   const offers = data?.offers ?? [];
@@ -67,7 +68,7 @@ export default function OffersTabScreen() {
         contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 80 }]}
         showsVerticalScrollIndicator={false}
       >
-        {isLoading ? (
+        {isLoading && !data ? (
           <ActivityIndicator color={GatiMitraColors.splashMint} style={styles.loader} />
         ) : offers.length === 0 ? (
           <View style={styles.empty}>

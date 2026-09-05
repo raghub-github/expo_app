@@ -148,6 +148,7 @@ function foodLiveMeta(
     liveSteps: FOOD_LIVE_STEPS,
     liveTitle: live.title,
     liveBody,
+    skip_in_app_banner: true,
     orderId,
     ...(opts?.storeName ? { storeName: opts.storeName } : {}),
     ...(eta != null ? { etaMinutes: eta } : {}),

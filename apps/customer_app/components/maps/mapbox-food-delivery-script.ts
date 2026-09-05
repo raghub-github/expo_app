@@ -22,7 +22,7 @@ export function mapboxFoodDeliveryScript(_bikeUri: string): string {
       var pulsePhase = 0;
       var animFrame = null;
       var riderAnimFrame = null;
-      var followRider = true;
+      var followRider = false;
       var geofenceCameraActive = false;
       var ROUTE_BLUE = '${NAV_ROUTE_BLUE}';
       var ROUTE_CONNECTOR = '${NAV_OFF_ROUTE_CONNECTOR}';
@@ -317,6 +317,21 @@ export function mapboxFoodDeliveryScript(_bikeUri: string): string {
         map.setPaintProperty(fillId, 'fill-opacity', fillOp);
       }
 
+      function raiseRouteAboveZones() {
+        var routeIds = [
+          'route-pre-rider-line',
+          'route-remaining-glow',
+          'route-remaining-casing',
+          'route-remaining-line',
+          'route-connector-casing',
+          'route-connector-line',
+          'route-join-dot'
+        ];
+        routeIds.forEach(function(id) {
+          try { if (map.getLayer(id)) map.moveLayer(id); } catch (e) {}
+        });
+      }
+
       function activeDestination() {
         if (state.mapPhase === 'rider_to_drop') {
           return { lat: state.dropLat, lng: state.dropLng };
@@ -465,6 +480,12 @@ export function mapboxFoodDeliveryScript(_bikeUri: string): string {
         animFrame = requestAnimationFrame(tick);
       }
 
+      function stopPulse() {
+        if (animFrame == null) return;
+        cancelAnimationFrame(animFrame);
+        animFrame = null;
+      }
+
       window.updateDeliveryMap = function(data) {
         ensureRouteLayers();
         state.pickupLat = data.pickupLat;
@@ -486,6 +507,7 @@ export function mapboxFoodDeliveryScript(_bikeUri: string): string {
         updateZone('pickup-zone', 'pickup-zone-fill', 'pickup-zone-stroke', state.pickupLat, state.pickupLng, showPickup, state.geofenceRadiusM);
         updateZone('drop-zone', 'drop-zone-fill', 'drop-zone-stroke', state.dropLat, state.dropLng, showDrop, state.geofenceRadiusM);
         if (showPickup || showDrop) startPulse();
+        else stopPulse();
 
         // Marker visibility by phase:
         // - Pre-rider: store + customer (dashed preview) — no rider pin
@@ -514,7 +536,7 @@ export function mapboxFoodDeliveryScript(_bikeUri: string): string {
           setRiderMarker(data.riderLat, data.riderLng, data.riderHeading);
         }
 
-        var hideRoute = state.hideRouteLine || state.riderArrived;
+        var hideRoute = state.hideRouteLine;
         var preRiderModeChanged = state.wasPreRider !== isPreRider;
         state.wasPreRider = isPreRider;
         if (preRiderArc) {
@@ -537,17 +559,13 @@ export function mapboxFoodDeliveryScript(_bikeUri: string): string {
           setJoinDot(data.routeJoinLat, data.routeJoinLng, !!(data.routeJoinLat != null && data.connectorRoute && data.connectorRoute.length >= 2));
         }
 
+        raiseRouteAboveZones();
+
+        // Radar/radius must never drive camera zoom. Only initial fit, explicit
+        // recenter (refitCamera), or pre-rider ↔ live-route mode changes.
         if (state.refitCamera || !state.initialFitDone || preRiderModeChanged) {
-          if (showDrop) {
-            fitMapToZoneCenter(state.dropLat, state.dropLng, state.geofenceRadiusM);
-          } else if (showPickup) {
-            fitMapToZoneCenter(state.pickupLat, state.pickupLng, state.geofenceRadiusM);
-          } else {
-            geofenceCameraActive = false;
-            fitMapToContent(data);
-          }
-        } else if (!showPickup && !showDrop) {
           geofenceCameraActive = false;
+          fitMapToContent(data);
         }
       };
   `;

@@ -255,15 +255,13 @@ export default function FoodMerchantsScreen() {
     [foodLocked, queryClient, router]
   );
 
-  const {
-    address,
-    coords,
-    permissionStatus,
-    locationSource,
-    locationHydrated,
-    refetchLocation,
-    requestPermissionAndFetch,
-  } = useLocationStore();
+  const address = useLocationStore((s) => s.address);
+  const coords = useLocationStore((s) => s.coords);
+  const permissionStatus = useLocationStore((s) => s.permissionStatus);
+  const locationSource = useLocationStore((s) => s.locationSource);
+  const locationHydrated = useLocationStore((s) => s.locationHydrated);
+  const refetchLocation = useLocationStore((s) => s.refetchLocation);
+  const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
   const debouncedCoords = useDebouncedCoords(coords, 250);
   /** User-picked pin updates instantly; GPS drift stays movement-gated. */
   const listingCoords = useMemo(() => {

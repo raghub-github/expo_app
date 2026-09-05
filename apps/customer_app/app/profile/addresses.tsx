@@ -10,8 +10,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { useRouter, useLocalSearchParams, useNavigation } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { addressService, type Address } from "@/services/address.service";
+import { useAddresses } from "@/hooks/useAddresses";
 import { shareAddressViaLink } from "@/services/addressShare.service";
 import { SavedAddressLocationCard } from "@/components/address/SavedAddressLocationCard";
 import { AddressOptionsBottomSheet } from "@/components/address/AddressOptionsBottomSheet";
@@ -58,11 +59,7 @@ export default function AddressesScreen() {
     });
   }, [navigation, selectingForCheckout, t]);
 
-  const { data: addresses = [], isLoading, error } = useQuery({
-    queryKey: ["addresses"],
-    queryFn: () => addressService.getAddresses(),
-    retry: false,
-  });
+  const { data: addresses = [], isLoading, error } = useAddresses();
 
   const referenceCoords = useMemo(() => {
     if (coords?.latitude != null && coords?.longitude != null) {
@@ -156,14 +153,14 @@ export default function AddressesScreen() {
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
         showsVerticalScrollIndicator={false}
       >
-        {isLoading ? (
+        {isLoading && addresses.length === 0 ? (
           <View style={styles.emptyWrap}>
             <ActivityIndicator size="small" color={TEAL} />
             <AppText style={[styles.emptySub, { marginTop: 12 }]}>
               {t("addresses.loading", "Loading addresses...")}
             </AppText>
           </View>
-        ) : error ? (
+        ) : error && addresses.length === 0 ? (
           <View style={styles.emptyWrap}>
             <View style={styles.emptyIconWrap}>
               <Ionicons name="warning-outline" size={48} color={TEXT_MUTED} />

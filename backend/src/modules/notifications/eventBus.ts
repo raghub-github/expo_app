@@ -371,6 +371,7 @@ const FOOD_LIVE_BY_TEMPLATE: Record<
   ORDER_ACCEPTED: { step: 1, title: "Order Confirmed by the Store", body: "Your order has been confirmed by the store and is now being prepared." },
   ORDER_PREPARING: { step: 1, title: "Preparing Your Order", body: "Preparing" },
   ORDER_FOOD_READY: { step: 2, title: "Ready for Pickup", body: "Rider arriving at store" },
+  ORDER_RIDER_ASSIGNED: { step: 2, title: "Ready for Pickup", body: "Rider heading to store" },
   ORDER_RIDER_AT_STORE: { step: 2, title: "Ready for Pickup", body: "Rider at the store" },
   ORDER_OUT_FOR_DELIVERY: { step: 3, title: "On The Way", body: "Arriving" },
   ORDER_RIDER_ARRIVING: { step: 4, title: "Nearby", body: "Rider is almost there" },
@@ -405,6 +406,7 @@ function foodLiveMetadata(
     liveSteps: 5,
     liveTitle: live.title,
     liveBody,
+    skip_in_app_banner: true,
     ...(extras?.merchantName ? { storeName: extras.merchantName } : {}),
     ...(extras?.etaMinutes != null ? { etaMinutes: extras.etaMinutes } : {}),
     ...(extras?.deliveryOtp ? { deliveryOtp: extras.deliveryOtp } : {}),
@@ -525,7 +527,7 @@ export function registerDomainEventHandlers(): void {
         templateCode: customerTemplate,
         variables: vars,
         target: { user_id: e.customerId },
-        idempotencyKey: `${customerTemplate}:${e.orderId}:${e.toStatus}`,
+        idempotencyKey: `${customerTemplate}:${e.orderId}`,
         metadata: foodLiveMetadata(customerTemplate, e.orderId, {
           merchantName: e.merchantName,
           riderName: e.riderName,
@@ -626,7 +628,7 @@ export function registerDomainEventHandlers(): void {
         etaMinutes: e.etaMinutes ?? 25,
       },
       target: { user_id: e.customerId },
-      idempotencyKey: `ORDER_RIDER_ASSIGNED:${e.orderId}:${e.riderUserId}`,
+      idempotencyKey: `ORDER_RIDER_ASSIGNED:${e.orderId}`,
       metadata: {
         orderId: e.orderId,
         riderId: e.riderUserId,
@@ -637,6 +639,7 @@ export function registerDomainEventHandlers(): void {
         liveSteps: 5,
         liveTitle: "Ready for Pickup",
         liveBody: "Rider heading to store",
+        skip_in_app_banner: true,
       },
     });
   });

@@ -59,7 +59,11 @@ type Template = {
   category: string;
 };
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const fetcher = async (url: string) => {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+};
 
 function campaignCount(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
@@ -112,7 +116,7 @@ export default function CampaignsPage() {
   const { data, mutate, isLoading } = useSWR<{ items: Campaign[] }>(
     "/api/super-admin/notifications/campaigns?limit=100",
     fetcher,
-    { refreshInterval: 15_000 },
+    { refreshInterval: 15_000, errorRetryCount: 2, dedupingInterval: 8_000 },
   );
   const [creating, setCreating] = useState(false);
   const [detail, setDetail] = useState<Campaign | null>(null);

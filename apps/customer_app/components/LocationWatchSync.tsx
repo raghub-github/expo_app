@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { AppState } from "react-native";
 import * as Location from "expo-location";
 import { useQueryClient } from "@tanstack/react-query";
+import { useAuthStore } from "@/store/authStore";
 import {
   useLocationStore,
   coordsMovedSignificantly,
@@ -12,6 +13,7 @@ import { saveLastKnownLocation } from "@/lib/lastKnownLocationCache";
 import { debouncedInvalidateFoodHomeListingQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import { syncActiveLocationFromStore } from "@/lib/syncActiveLocationFromStore";
 import { useActiveLocationReconcileReady } from "@/hooks/useActiveLocationReconcileReady";
+import { thermalAudit } from "@/lib/thermalAudit";
 
 /**
  * Keep GPS fresh while the app is foregrounded (when not on an explicit
@@ -22,6 +24,7 @@ const FOREGROUND_GPS_POLL_MS = 90_000;
 
 export function LocationWatchSync() {
   const queryClient = useQueryClient();
+  const hasSession = useAuthStore((s) => !!s.session);
   const locationSource = useLocationStore((s) => s.locationSource);
   const permissionStatus = useLocationStore((s) => s.permissionStatus);
   const reconcileReady = useActiveLocationReconcileReady();
@@ -33,6 +36,7 @@ export function LocationWatchSync() {
     if (permissionStatus !== "granted") return;
     if (locationSource === "selected") return;
     if (!reconcileReady) return;
+    if (!hasSession) return;
 
     let cancelled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -53,6 +57,7 @@ export function LocationWatchSync() {
       if (!coordsMovedSignificantly(prev, next, LOCATION_SIGNIFICANT_MOVE_METERS)) return;
 
       lastAppliedRef.current = next;
+      thermalAudit("GPS_UPDATE", { source: "foreground_poll" });
       useLocationStore.setState({
         coords: next,
         coordsAccuracy: accuracy,
@@ -145,7 +150,7 @@ export function LocationWatchSync() {
       stopPolling();
       if (geocodeTimerRef.current) clearTimeout(geocodeTimerRef.current);
     };
-  }, [permissionStatus, locationSource, reconcileReady, queryClient]);
+  }, [permissionStatus, locationSource, reconcileReady, queryClient, hasSession]);
 
   return null;
 }

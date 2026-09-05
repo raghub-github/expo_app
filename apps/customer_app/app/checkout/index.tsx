@@ -75,6 +75,11 @@ import {
   parseDeliveryInstructionsList,
 } from "@/lib/delivery-instructions";
 import { seedOrderDetailCache } from "@/lib/orderDetailCache";
+import {
+  persistPendingCheckoutPayment,
+  peekPendingCheckoutPayment,
+  clearPendingCheckoutPayment,
+} from "@/lib/pendingCheckoutPayment";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { reverseGeocode } from "@/services/location.service";
 import { checkDispatchServiceability } from "@/services/geoServices.service";
@@ -1152,6 +1157,14 @@ function CheckoutScreen() {
   const instructionsHydratedForAddressRef = useRef<number | null>(null);
   /** Latest checkout ETA preview — read in order-success callbacks (mutations defined above useMemo). */
   const checkoutDeliveryEtaRef = useRef({ label: "", etaMaxMinutes: 0 });
+
+  useEffect(() => {
+    void peekPendingCheckoutPayment().then((pending) => {
+      if (pending?.idempotencyKey && !idempotencyKeyRef.current) {
+        idempotencyKeyRef.current = pending.idempotencyKey;
+      }
+    });
+  }, []);
 
   const { data: addresses = EMPTY_ADDRESSES, isLoading: addressesLoading } = useQuery({
     queryKey: ["addresses"],
@@ -4403,6 +4416,7 @@ function CheckoutScreen() {
       // Order placed successfully — any future "Place order" tap should start a
       // brand-new checkout attempt, not reuse the same key.
       idempotencyKeyRef.current = null;
+      void clearPendingCheckoutPayment();
       const orderId = order?.orderId ?? (order as { order_id?: string })?.order_id;
       if (!orderId) {
         console.warn("[checkout] finalize success but no orderId in response", order);
@@ -4529,6 +4543,15 @@ function CheckoutScreen() {
           paymentMethod,
           idempotencyKey: idempotencyKeyRef.current,
         });
+        const { label: etaLabel } = checkoutDeliveryEtaRef.current;
+        void persistPendingCheckoutPayment({
+          pendingId: pending.pendingId,
+          idempotencyKey: idempotencyKeyRef.current ?? undefined,
+          merchantName: merchantName ?? undefined,
+          amount: typeof toPayAmount === "number" ? String(toPayAmount) : undefined,
+          method: "UPI / Cards",
+          deliveryEtaLabel: etaLabel || undefined,
+        });
         // GatiCash covered the whole bill: there is nothing to charge, so skip Razorpay
         // entirely and let the backend settle the order off the wallet ledger. Minting a
         // ₹0 gateway order is impossible and used to fail checkout outright.
@@ -4610,6 +4633,7 @@ function CheckoutScreen() {
     toPayAmount,
     showPaymentFailedSheet,
     paymentMethod,
+    merchantName,
   ]);
 
   const handlePlaceOrderPress = useCallback(async () => {

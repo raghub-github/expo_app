@@ -57,10 +57,11 @@ function MapboxWebDeliveryMapInner({
 }: Props) {
   const Mapbox = useCustomerNativeMapbox();
   const cameraRef = useRef(null);
-  const followRiderRef = useRef(true);
+  const followRiderRef = useRef(false);
   const lastFollowCameraRef = useRef(null);
   const [mapReady, setMapReady] = useState(false);
-  const lastFitKeyRef = useRef("");
+  const initialFitDoneRef = useRef(false);
+  const lastRefitNonceRef = useRef(0);
 
   const remaining = payload.remainingRoute.length >= 2
     ? payload.remainingRoute
@@ -119,22 +120,17 @@ function MapboxWebDeliveryMapInner({
 
   useEffect(() => {
     if (!mapReady) return;
-    const key = [
-      remaining.length,
-      remaining[0]?.latitude.toFixed(4),
-      remaining[remaining.length - 1]?.latitude.toFixed(4),
-      payload.mapPhase ?? "",
-      payload.hideRouteLine ? "1" : "0",
-      payload.highlightPickupZone ? "1" : "0",
-      payload.highlightDropZone ? "1" : "0",
-      String(refitNonce),
-    ].join("|");
-    if (key === lastFitKeyRef.current && refitNonce === 0) return;
-    lastFitKeyRef.current = key;
-    if (refitNonce > 0) followRiderRef.current = true;
-    const t = setTimeout(fitMap, 180);
-    return () => clearTimeout(t);
-  }, [mapReady, fitMap, remaining, payload.mapPhase, payload.hideRouteLine, payload.highlightPickupZone, payload.highlightDropZone, refitNonce]);
+    const userRequestedRefit = refitNonce > lastRefitNonceRef.current;
+    lastRefitNonceRef.current = refitNonce;
+    if (!initialFitDoneRef.current || userRequestedRefit) {
+      if (userRequestedRefit) followRiderRef.current = true;
+      const t = setTimeout(() => {
+        fitMap();
+        initialFitDoneRef.current = true;
+      }, 180);
+      return () => clearTimeout(t);
+    }
+  }, [mapReady, fitMap, refitNonce]);
 
   useEffect(() => {
     if (!mapReady || !followRiderRef.current) return;

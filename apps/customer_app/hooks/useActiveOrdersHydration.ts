@@ -16,6 +16,7 @@ import {
   type OrderStatus,
 } from "@/store/orderStore";
 import { isActiveOrderStatus, normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
+import { orderRefsMatch } from "@/lib/customer-order-status-machine";
 import { isActivePersonRideOrder, isPersonRideOrderSummary } from "@/lib/person-ride-orders";
 import { resolveDockVehicleImageKey } from "@/lib/dock-vehicle-image";
 import { isSelfPickupOrder } from "@/lib/self-pickup-order";
@@ -87,9 +88,12 @@ export function useActiveOrdersHydration() {
       return list;
     },
     enabled: hydrated && hasSession,
-    staleTime: 60_000,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnReconnect: true,
     refetchInterval:
       hydrated && hasSession && hasTrackableOrders ? 90_000 : false,
+    refetchIntervalInBackground: false,
     initialData: cachedOrders,
     initialDataUpdatedAt: getMyOrdersCachedAt(),
     placeholderData: (previous) => previous ?? cachedOrders,
@@ -99,18 +103,20 @@ export function useActiveOrdersHydration() {
     if (!orders) return;
 
     const active = orders.filter(isTrackableActiveOrder);
-    const orderById = new Map(orders.map((o) => [o.orderId, o]));
-
     const stored = useOrderStore.getState().activeOrders;
+
     for (const storedOrder of stored) {
-      const fromApi = orderById.get(storedOrder.orderId);
+      const fromApi = orders.find((o) => orderRefsMatch(o, storedOrder));
       if (fromApi && !isTrackableActiveOrder(fromApi)) {
         removeActiveOrder(storedOrder.orderId);
+        if (storedOrder.formattedOrderId) {
+          removeActiveOrder(storedOrder.formattedOrderId);
+        }
       }
     }
 
     for (const order of active) {
-      const existing = stored.find((o) => o.orderId === order.orderId);
+      const existing = stored.find((o) => orderRefsMatch(o, order));
       addActiveOrder(toActiveOrder(order, existing));
     }
   }, [orders, addActiveOrder, removeActiveOrder]);

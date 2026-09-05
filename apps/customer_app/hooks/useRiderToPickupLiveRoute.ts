@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AppState } from "react-native";
 import {
   getCalculatedRouteCoordinates,
   type CalculatedRoute,
@@ -12,6 +13,7 @@ import {
   analyzeRiderOnRoute,
   resolveDisplayRiderPosition,
   rerouteDebounceMs,
+  shouldAnalyzeOffRouteSample,
   shouldRequestReroute,
   trackDebug,
 } from "@gatimitra/map-tracking-engine";
@@ -38,6 +40,9 @@ export function useRiderToPickupLiveRoute(
   const rerouteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastDestKeyRef = useRef<string>("");
   const lastRerouteAtRef = useRef(0);
+  const lastOffRouteAnalyzeRef = useRef<{ lat: number; lng: number; atMs: number } | null>(
+    null
+  );
 
   useEffect(() => {
     hasRouteRef.current = false;
@@ -57,6 +62,7 @@ export function useRiderToPickupLiveRoute(
     lastDestKeyRef.current = destKey;
 
     if (hasRouteRef.current && !destChanged) return;
+    if (AppState.currentState !== "active") return;
 
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
@@ -81,6 +87,21 @@ export function useRiderToPickupLiveRoute(
 
   useEffect(() => {
     if (!rider || !pickup || !route?.coordinates?.length) return;
+    if (AppState.currentState !== "active") return;
+    if (rerouteTimerRef.current) return;
+    if (
+      !shouldAnalyzeOffRouteSample(lastOffRouteAnalyzeRef.current, {
+        latitude: rider.latitude,
+        longitude: rider.longitude,
+      })
+    ) {
+      return;
+    }
+    lastOffRouteAnalyzeRef.current = {
+      lat: rider.latitude,
+      lng: rider.longitude,
+      atMs: Date.now(),
+    };
 
     const deviation = analyzeRiderOnRoute(route.coordinates, {
       latitude: rider.latitude,
@@ -96,13 +117,12 @@ export function useRiderToPickupLiveRoute(
       wrongWay: deviation.wrongWay,
     });
 
-    lastRerouteAtRef.current = Date.now();
-
-    if (rerouteTimerRef.current) clearTimeout(rerouteTimerRef.current);
     const debounceMs = rerouteDebounceMs(deviation);
     trackDebug("rerouting_started", { rideId, debounceMs });
 
     rerouteTimerRef.current = setTimeout(() => {
+      rerouteTimerRef.current = null;
+      lastRerouteAtRef.current = Date.now();
       const requestId = requestIdRef.current + 1;
       requestIdRef.current = requestId;
       setIsRefreshing(true);
@@ -122,10 +142,6 @@ export function useRiderToPickupLiveRoute(
         }
       );
     }, debounceMs);
-
-    return () => {
-      if (rerouteTimerRef.current) clearTimeout(rerouteTimerRef.current);
-    };
   }, [
     rider?.latitude,
     rider?.longitude,
@@ -136,11 +152,20 @@ export function useRiderToPickupLiveRoute(
     rideId,
   ]);
 
+  useEffect(() => {
+    return () => {
+      if (rerouteTimerRef.current) {
+        clearTimeout(rerouteTimerRef.current);
+        rerouteTimerRef.current = null;
+      }
+    };
+  }, [rideId]);
+
   const fullCoordinates = useMemo(() => route?.coordinates ?? [], [route?.coordinates]);
 
   const coordinates = useMemo(
     () => sliceRouteFromRider(fullCoordinates, rider),
-    [fullCoordinates, rider]
+    [fullCoordinates, rider?.latitude, rider?.longitude]
   );
 
   const distanceM = useMemo(() => {

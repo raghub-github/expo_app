@@ -271,8 +271,9 @@ export function GlobalFloatingCart() {
   const clearCart = useCartStore((s) => s.clearCart);
   const activeOrdersRaw = useOrderStore((s) => s.activeOrders);
   const activeOrderFallback = useOrderStore((s) => s.activeOrder);
-  const activeOrders = activeOrdersRaw.filter(
-    (o) => o.status !== "DELIVERED" && o.status !== "CANCELLED"
+  const activeOrders = useMemo(
+    () => activeOrdersRaw.filter((o) => o.status !== "DELIVERED" && o.status !== "CANCELLED"),
+    [activeOrdersRaw]
   );
   const trackingOrders = useMemo(() => {
     const raw =

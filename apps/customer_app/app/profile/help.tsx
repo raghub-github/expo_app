@@ -59,6 +59,7 @@ export default function HelpScreen() {
   const { data, isLoading, isRefetching, refetch } = useQuery({
     queryKey: ["support", "tickets"],
     queryFn: () => ticketService.getMyTickets({ limit: 50 }),
+    placeholderData: (previous) => previous,
   });
   const tickets = data?.tickets ?? [];
   const onRefresh = useCallback(() => refetch(), [refetch]);
@@ -91,7 +92,7 @@ export default function HelpScreen() {
 
         {/* My tickets */}
         <AppText style={styles.sectionTitle}>My tickets</AppText>
-        {isLoading ? (
+        {isLoading && tickets.length === 0 ? (
           <View style={styles.loaderWrap}>
             <ActivityIndicator size="small" color={TEAL} />
             <AppText style={styles.loaderText}>Loading…</AppText>

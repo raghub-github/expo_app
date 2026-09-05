@@ -17,6 +17,13 @@
 import { randomUUID } from "node:crypto";
 import { isExpoPushTokenString } from "@gatimitra/contracts";
 import { getSql } from "../../db/client.js";
+import {
+  claimCustomerOrderNotificationFromIntent,
+  keepCustomerOrderNotificationClaim,
+  markCustomerOrderNotificationSent,
+  releaseCustomerOrderNotificationClaim,
+  type CustomerOrderNotificationClaim,
+} from "../../lib/customer-order-notification-events.js";
 import { deliverExpoPush } from "../push/deliverExpoPush.js";
 import {
   isTerminalPushDeliveryError,
@@ -117,9 +124,14 @@ function isCustomerLiveOrderProgressRow(row: {
 
 function customerLiveOrderCollapseKey(row: {
   metadata?: Record<string, unknown> | null;
+  templateCode?: string | null;
 }): string | null {
   const orderId = String(row.metadata?.orderId ?? "").trim();
-  return orderId ? `customer-live-order-${orderId}` : null;
+  if (!orderId) return null;
+  // One shade row per order: later status updates replace the previous live
+  // card. Distinct events still send exactly once (table lock); this only
+  // prevents uuid vs GMF twins stacking in the tray.
+  return `customer-live-order-${orderId}`.slice(0, 64);
 }
 
 /**
@@ -683,6 +695,12 @@ export async function send(intent: SendIntent): Promise<SendResult> {
   try {
     return await sendImpl(intent);
   } catch (e) {
+    const meta = intent.metadata ?? {};
+    const orderId = typeof meta.orderId === "string" ? meta.orderId : "";
+    const eventType = typeof meta.event_type === "string" ? meta.event_type : "";
+    if (orderId && eventType) {
+      await releaseCustomerOrderNotificationClaim({ orderId, eventType }).catch(() => undefined);
+    }
     console.warn(
       `[notifications] Push send failed (tolerated) template=${intent.templateCode}:`,
       (e as Error).message,
@@ -748,6 +766,59 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
       return { campaignId: intent.campaignId, queued: 0, skipped: 0, failedSync: 0, notificationIds: [] };
     }
   }
+
+  // 1c. Atomic (order_id, event_type) lock — source of truth for customer
+  // lifecycle pushes. Wins INSERT ON CONFLICT; losers skip the send.
+  let orderEventClaim: CustomerOrderNotificationClaim | null = null;
+  try {
+    orderEventClaim = await claimCustomerOrderNotificationFromIntent(intent);
+  } catch (err) {
+    console.warn(
+      "[notifications] order-event claim failed (send continues)",
+      (err as Error).message
+    );
+    orderEventClaim = null;
+  }
+  if (orderEventClaim?.duplicate) {
+    return {
+      campaignId: intent.campaignId,
+      queued: 0,
+      skipped: 1,
+      failedSync: 0,
+      notificationIds: [],
+      skipReason: "duplicate_order_event",
+    };
+  }
+  if (orderEventClaim?.inserted) {
+    intent.idempotencyKey = orderEventClaim.eventKey;
+    intent.metadata = {
+      ...(intent.metadata ?? {}),
+      orderId: orderEventClaim.orderId,
+      event_type: orderEventClaim.eventType,
+      idempotency_key: orderEventClaim.eventKey,
+    };
+  }
+
+  const finishOrderEventClaim = async (result: SendResult): Promise<SendResult> => {
+    if (!orderEventClaim?.inserted) return result;
+    try {
+      if (keepCustomerOrderNotificationClaim(result)) {
+        await markCustomerOrderNotificationSent({
+          orderId: orderEventClaim.orderId,
+          eventType: orderEventClaim.eventType,
+          notificationId: result.notificationIds[0] ?? null,
+        });
+      } else {
+        await releaseCustomerOrderNotificationClaim({
+          orderId: orderEventClaim.orderId,
+          eventType: orderEventClaim.eventType,
+        });
+      }
+    } catch (err) {
+      console.warn("[notifications] order-event finalize failed", (err as Error).message);
+    }
+    return result;
+  };
 
   // 2. Render
   const vars = intent.variables ?? {};
@@ -828,7 +899,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
       if (intent.campaignId) {
         await syncCampaignCountsFromLogs(intent.campaignId);
       }
-      return {
+      return finishOrderEventClaim({
         campaignId: intent.campaignId,
         queued: 0,
         skipped: 0,
@@ -836,7 +907,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         notificationIds: [],
         skipReason: "no_recipients",
         warning: softSkipWarningForTarget(intent.target, "no_recipients"),
-      };
+      });
     }
   }
 
@@ -864,14 +935,14 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         if (intent.campaignId) {
           await syncCampaignCountsFromLogs(intent.campaignId);
         }
-        return {
+        return finishOrderEventClaim({
           campaignId: intent.campaignId,
           queued: 0,
           skipped: recipients.length,
           failedSync: 0,
           notificationIds: [],
           skipReason: "quiet_hours",
-        };
+        });
       }
     }
   }
@@ -1004,13 +1075,13 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     await bulkInsertQueuedLogs(logRows);
   } catch (e) {
     console.error("[notifications] failed to insert logs", (e as Error).message);
-    return {
+    return finishOrderEventClaim({
       campaignId: intent.campaignId,
       queued: 0,
       skipped: 0,
       failedSync: logRows.length,
       notificationIds: [],
-    };
+    });
   }
 
   // 7. Dispatch — Expo Push for mobile push rows, FCM v1 for topic/direct/browser
@@ -1218,7 +1289,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     console.warn(`[notifications] send took ${took}ms (template=${template.code}, recipients=${logRows.length})`);
   }
 
-  return {
+  return finishOrderEventClaim({
     campaignId: intent.campaignId,
     queued,
     skipped,
@@ -1236,7 +1307,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           ),
         }
       : {}),
-  };
+  });
 }
 
 // ---------------------------------------------------------------------------

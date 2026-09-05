@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "test": "node --import tsx --experimental-test-module-mocks --test lib/locationFixSelection.test.ts lib/lastKnownLocationCache.test.ts lib/reverseGeocodeCacheKey.test.ts lib/checkoutToPayAmount.test.ts",
+    "test": "node --import tsx --experimental-test-module-mocks --test lib/locationFixSelection.test.ts lib/lastKnownLocationCache.test.ts lib/reverseGeocodeCacheKey.test.ts lib/checkoutToPayAmount.test.ts lib/customer-order-status-machine.test.ts lib/customer-push-tray-match.test.ts lib/addressShareLink.test.ts lib/realtime-lifecycle.test.ts lib/tracking-camera-policy.test.ts lib/safe-text.test.ts lib/ride-map-coords.test.ts lib/pendingCheckoutPayment.test.ts",
     "start": "expo start --offline --go",
     "start:c": "node scripts/clear-metro-cache.js && expo start --offline --go --clear",
     "start:dev-client": "expo start --offline --dev-client",

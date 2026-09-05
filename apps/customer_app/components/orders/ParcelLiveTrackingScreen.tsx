@@ -57,6 +57,7 @@ import { useStableOrderInstructionLists } from "@/lib/order-instruction-display"
 import { splitPickupOtpDigits } from "@/lib/ride-tracking-display";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import { useFoodDeliveryRouteProgress } from "@/hooks/useFoodDeliveryRouteProgress";
+import { useAppInBackground } from "@/hooks/useAppInBackground";
 import { pollIntervalWithBackoff, queryRetryDelay } from "@/lib/query-poll-backoff";
 import { seedOrderDetailCache } from "@/lib/orderDetailCache";
 import {
@@ -204,6 +205,8 @@ export function ParcelLiveTrackingScreen({
     Number.isFinite(tracking.rider.longitude);
 
   const hasRider = isFoodRiderAssignedForMap(orderStatus, merged.rider, hasTrackingFix, null);
+  const trackingLive = !isTerminalOrderStatus(orderStatus);
+  const trackingPaused = useAppInBackground();
 
   const showPickupOtp = shouldShowCustomerPickupOtp(orderStatus, merged.pickupOtp, {
     riderReachedPickupAt: merged.riderReachedPickupAt,
@@ -286,10 +289,11 @@ export function ParcelLiveTrackingScreen({
     riderArrived,
     riderHeading,
     hasRider,
+    trackingLive,
   });
 
   const riderGpsFix = useMemo(() => {
-    if (!hasRider || !riderPos) return undefined;
+    if (!hasRider || !riderPos || !trackingLive) return undefined;
     return {
       lat: riderPos.latitude,
       lng: riderPos.longitude,
@@ -298,6 +302,7 @@ export function ParcelLiveTrackingScreen({
     };
   }, [
     hasRider,
+    trackingLive,
     riderPos?.latitude,
     riderPos?.longitude,
     riderHeading,
@@ -306,7 +311,8 @@ export function ParcelLiveTrackingScreen({
 
   const smoothedRider = useSmoothedRiderPosition(
     riderGpsFix,
-    resolveSmoothDurationMs(tracking?.rider?.speedMps)
+    resolveSmoothDurationMs(tracking?.rider?.speedMps),
+    trackingPaused
   );
   const mapRiderHeading = smoothedRider?.headingDeg ?? riderHeading;
 
@@ -345,7 +351,6 @@ export function ParcelLiveTrackingScreen({
       mapPhase,
       showPickupMarker: mapPhase === "rider_to_pickup",
       showDropMarker: true,
-      refitCamera: mapRefitNonce > 0,
     };
   }, [
     pickupLat,
@@ -366,7 +371,6 @@ export function ParcelLiveTrackingScreen({
     highlightDropZone,
     riderArrived,
     mapPhase,
-    mapRefitNonce,
   ]);
 
   const deliveryDetails = useMemo(

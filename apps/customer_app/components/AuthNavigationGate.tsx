@@ -56,15 +56,22 @@ export function AuthNavigationGate() {
     if (root === "(auth)" && leaf === "login") {
       if (redirectingRef.current) return;
       redirectingRef.current = true;
+      let cancelled = false;
       void (async () => {
         const pending = shareToken || (await peekPendingAddressShareToken());
+        if (cancelled) {
+          redirectingRef.current = false;
+          return;
+        }
         if (pending) {
           router.replace(`/address/save?id=${encodeURIComponent(pending)}`);
           return;
         }
         router.replace("/");
       })();
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
 
     redirectingRef.current = false;

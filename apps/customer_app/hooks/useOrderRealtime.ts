@@ -36,6 +36,17 @@ import {
   isEtaUpdatedEvent,
   type EtaUpdatedWsEvent,
 } from "@/lib/applyEtaUpdatedEvent";
+import { applyServerCustomerOrderStatus } from "@/lib/apply-customer-order-status";
+import {
+  isCustomerOrderStatusEventType,
+  isCustomerOrderTerminalStatus,
+} from "@/lib/customer-order-status-machine";
+import { isActiveOrderStatus, normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
+import {
+  shouldCatchUpAfterWsOpen,
+  shouldSuspendRealtimeTransport,
+} from "@/lib/realtime-lifecycle";
+import { thermalAudit } from "@/lib/thermalAudit";
 
 /**
  * Poll cadence is transport-aware. The WebSocket pushes rider location and ETA,
@@ -230,7 +241,7 @@ export function useOrderRealtime() {
   // layout. Memoising on the *content* key keeps identity stable across renders
   // that did not actually change the active order set.
   const liveOrders = useMemo(
-    () => activeOrders.filter((o) => o.status !== "DELIVERED" && o.status !== "CANCELLED"),
+    () => activeOrders.filter((o) => isActiveOrderStatus(o.status)),
     [activeOrders]
   );
 
@@ -304,12 +315,18 @@ export function useOrderRealtime() {
               skipEtaFetch ? Promise.resolve(null) : etaService.getForOrder(orderId),
             ]);
 
-            const status = (detail?.status ?? "").toUpperCase();
-            if (status === "DELIVERED" || status === "CANCELLED") {
-              removeActiveOrder(orderId);
+            const status = normalizeCustomerOrderStatus(detail?.status);
+            if (isCustomerOrderTerminalStatus(status)) {
+              applyServerCustomerOrderStatus({
+                queryClient,
+                orderIds: [orderId, detail?.orderId, detail?.formattedOrderId],
+                status,
+                detail,
+                formattedOrderId: detail?.formattedOrderId ?? null,
+              });
               clearTrackingForOrders(
                 queryClient,
-                [orderId, detail?.formattedOrderId].filter(
+                [orderId, detail?.formattedOrderId, detail?.orderId].filter(
                   (v): v is string => typeof v === "string" && v.trim().length > 0
                 ),
                 lastAcceptedMsRef.current
@@ -327,46 +344,17 @@ export function useOrderRealtime() {
                 : orderType === "parcel"
                   ? ("parcel" as const)
                   : ("food" as const);
-            updateOrderStatus(
-              orderId,
-              status as import("@/store/orderStore").OrderStatus,
-              etaMins ?? undefined,
-              {
-                formattedOrderId: detail?.formattedOrderId ?? null,
-                storeName: detail?.merchantPublicName ?? detail?.merchantName ?? null,
-                serviceType,
-              }
-            );
 
-            // Keep React Query order cache in sync so Captain Card / rider profile
-            // appear as soon as assignment lands — independent of map/WS/GPS.
-            if (detail) {
-              queryClient.setQueryData(["order", orderId], detail);
-              if (detail.formattedOrderId && detail.formattedOrderId !== orderId) {
-                queryClient.setQueryData(["order", detail.formattedOrderId], detail);
-              }
-              // Keep My Orders Active badges live (not only on 15s refetch / terminal).
-              queryClient.setQueryData(
-                ["my-orders"],
-                (prev: import("@/services/order.service").OrderSummary[] | undefined) => {
-                  if (!Array.isArray(prev)) return prev;
-                  let changed = false;
-                  const next = prev.map((row) => {
-                    const same =
-                      row.orderId === orderId ||
-                      row.orderId === detail.orderId ||
-                      (detail.formattedOrderId &&
-                        (row.orderId === detail.formattedOrderId ||
-                          row.formattedOrderId === detail.formattedOrderId));
-                    if (!same) return row;
-                    if (row.status === detail.status) return row;
-                    changed = true;
-                    return { ...row, status: detail.status };
-                  });
-                  return changed ? next : prev;
-                }
-              );
-            }
+            applyServerCustomerOrderStatus({
+              queryClient,
+              orderIds: [orderId, detail?.orderId, detail?.formattedOrderId],
+              status,
+              detail,
+              etaMinutes: etaMins,
+              formattedOrderId: detail?.formattedOrderId ?? null,
+              storeName: detail?.merchantPublicName ?? detail?.merchantName ?? null,
+              serviceType,
+            });
 
             if (eta) {
               queryClient.setQueryData(["orderEta", orderId], eta);
@@ -549,6 +537,7 @@ export function useOrderRealtime() {
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     let lastActivity = Date.now();
     let backgroundedAtMs: number | null = null;
+    let suspended = false;
 
     const clearHeartbeat = () => {
       if (heartbeatTimer) {
@@ -580,7 +569,7 @@ export function useOrderRealtime() {
     };
 
     const scheduleReconnect = (reason: string) => {
-      if (cancelled) return;
+      if (cancelled || suspended) return;
       markWs(false);
       setLiveLocationReconnecting(true);
       if (reconnectTimer) clearTimeout(reconnectTimer);
@@ -627,14 +616,19 @@ export function useOrderRealtime() {
       orderIdText?: string;
       status?: string;
     }) => {
-      const t = String(payload.type ?? "").trim().toLowerCase();
-      if (t !== "status_changed" && t !== "order.status_changed") return;
+      if (!isCustomerOrderStatusEventType(payload.type)) return;
       const orderKey = String(payload.orderIdText ?? payload.orderId ?? "").trim();
       if (!orderKey) return;
-      // Instant catch-up — scoped to the affected order (avoid refetching every open order screen).
+      const incoming = normalizeCustomerOrderStatus(payload.status);
+      if (incoming) {
+        const applied = applyServerCustomerOrderStatus({
+          queryClient,
+          orderIds: [orderKey, ...orderIds, ...pollOrderIds],
+          status: incoming,
+        });
+        if (applied) return;
+      }
       void queryClient.invalidateQueries({ queryKey: ["order", orderKey] });
-      void queryClient.invalidateQueries({ queryKey: ["orderEta", orderKey] });
-      void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
       void syncStatusRef.current?.();
     };
 
@@ -659,8 +653,16 @@ export function useOrderRealtime() {
         stage === "AT_STORE" ||
         stage === "CUSTOMER_DELIVERY" ||
         stage === "ARRIVING" ||
-        stage === "DELIVERED"
+        stage === "DELIVERED" ||
+        stage === "COMPLETED"
       ) {
+        if (stage === "DELIVERED" || stage === "COMPLETED") {
+          applyServerCustomerOrderStatus({
+            queryClient,
+            orderIds: [orderKey, ...orderIds, ...pollOrderIds],
+            status: "DELIVERED",
+          });
+        }
         void queryClient.invalidateQueries({ queryKey: ["order", orderKey] });
         void syncStatusRef.current?.();
       }
@@ -718,7 +720,7 @@ export function useOrderRealtime() {
     };
 
     const connect = async (reason: string) => {
-      if (cancelled || connectInFlight) return;
+      if (cancelled || connectInFlight || suspended) return;
       connectInFlight = true;
       const gen = ++connectGen;
       setLiveLocationReconnecting(true);
@@ -769,10 +771,13 @@ export function useOrderRealtime() {
           lastActivity = Date.now();
           markWs(true);
           if (ws) startHeartbeat(ws);
-          // Catch up after reconnect — REST is authoritative if WS frames were missed.
-          void queryClient.invalidateQueries({ queryKey: ["orderEta"] });
-          void queryClient.invalidateQueries({ queryKey: ["orderEtaTimeline"] });
-          void syncStatusRef.current?.();
+          if (shouldCatchUpAfterWsOpen(reason)) {
+            void queryClient.invalidateQueries({ queryKey: ["orderEta"] });
+            void queryClient.invalidateQueries({ queryKey: ["orderEtaTimeline"] });
+            void syncStatusRef.current?.();
+          } else {
+            void fetchLatestLocationRef.current?.();
+          }
           if (__DEV__) {
             console.log("[live-track] customer ws open", { reason, orderIds: ticketOrderIds });
           }
@@ -800,7 +805,7 @@ export function useOrderRealtime() {
         ws.onclose = () => {
           clearHeartbeat();
           markWs(false);
-          if (cancelled || gen !== connectGen) return;
+          if (cancelled || gen !== connectGen || suspended) return;
           failureCount += 1;
           scheduleReconnect("closed");
         };
@@ -823,19 +828,36 @@ export function useOrderRealtime() {
       void connect(reason);
     };
 
-    void connect("mount");
+    if (shouldSuspendRealtimeTransport(AppState.currentState)) {
+      suspended = true;
+    } else {
+      void connect("mount");
+    }
 
     const appStateSub = AppState.addEventListener("change", (state: AppStateStatus) => {
-      if (state === "background" || state === "inactive") {
+      if (shouldSuspendRealtimeTransport(state)) {
         backgroundedAtMs = Date.now();
+        suspended = true;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        clearHeartbeat();
+        markWs(false);
+        try {
+          ws?.close();
+        } catch {
+          /* ignore */
+        }
+        thermalAudit("WS_SUSPEND", { reason: "background" });
         return;
       }
       if (state !== "active" || cancelled) return;
 
       const awayMs = backgroundedAtMs != null ? Date.now() - backgroundedAtMs : 0;
       backgroundedAtMs = null;
+      suspended = false;
 
-      // Immediate reconnect + authoritative ETA/status sync after any resume.
       setLiveLocationReconnecting(true);
       failureCount = 0;
       if (reconnectTimer) {
@@ -843,8 +865,6 @@ export function useOrderRealtime() {
         reconnectTimer = null;
       }
       void connect(awayMs >= 60_000 ? "resume_long" : "foreground");
-      void fetchLatestLocationRef.current?.();
-      void syncStatusRef.current?.();
 
       if (__DEV__) {
         console.log("[live-track] app resume", { awayMs });

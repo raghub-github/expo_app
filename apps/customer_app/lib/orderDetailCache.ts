@@ -5,13 +5,16 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { OrderDetail, OrderSummary } from "@/services/order.service";
 import { mergeCaptainProfile } from "@/lib/mergeCaptainProfile";
+import { selectAuthoritativeCustomerStatus } from "@/lib/customer-order-status-machine";
 
 export function mergeIncomingOrderDetail(
   prev: OrderDetail | undefined,
   incoming: OrderDetail
 ): OrderDetail {
+  const status = selectAuthoritativeCustomerStatus(prev?.status, incoming.status);
   return {
     ...incoming,
+    status,
     rider: mergeCaptainProfile(prev?.rider, incoming.rider) ?? incoming.rider,
     billingSnapshot: incoming.billingSnapshot ?? prev?.billingSnapshot ?? null,
     checkoutMetadata: incoming.checkoutMetadata ?? prev?.checkoutMetadata ?? null,
@@ -26,13 +29,16 @@ export function seedOrderDetailCache(
   patch: Partial<OrderDetail> & Pick<OrderDetail, "orderId">
 ) {
   queryClient.setQueryData<OrderDetail>(["order", orderId], (prev) => {
+    const incomingStatus = patch.status ?? prev?.status ?? "ORDER_PLACED";
+    const status = selectAuthoritativeCustomerStatus(prev?.status, incomingStatus);
     const base = {
       ...(prev ?? {
         orderId,
-        status: patch.status ?? "ORDER_PLACED",
+        status,
         createdAt: patch.createdAt ?? new Date().toISOString(),
       }),
       ...patch,
+      status,
     };
     if (patch.rider !== undefined) {
       base.rider = mergeCaptainProfile(prev?.rider, patch.rider) ?? patch.rider;

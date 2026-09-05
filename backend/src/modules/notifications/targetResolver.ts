@@ -111,6 +111,35 @@ async function tokensForUserIds(
  * Native FCM (Android/web) tokens. APNs skipped for direct FCM send.
  * `includeAppFcmWithoutExpo` — add app Android FCM only when that user has no Expo token.
  */
+function keepLatestNativeTokenPerDevice(
+  rows: Array<{
+    user_id: string;
+    role: string;
+    platform: string | null;
+    native_token: string;
+    source: string | null;
+    device_model?: string | null;
+    last_seen_at?: Date | string | null;
+  }>
+): typeof rows {
+  const best = new Map<string, (typeof rows)[number]>();
+  const seenAt = (row: (typeof rows)[number]) => {
+    const raw = row.last_seen_at;
+    if (!raw) return 0;
+    const t = raw instanceof Date ? raw.getTime() : Date.parse(String(raw));
+    return Number.isFinite(t) ? t : 0;
+  };
+  for (const row of rows) {
+    const model = String(row.device_model ?? "").trim();
+    const key = `${row.user_id}|${row.role}|${row.platform ?? ""}|${row.source ?? "app"}|${
+      model || row.native_token
+    }`;
+    const prev = best.get(key);
+    if (!prev || seenAt(row) >= seenAt(prev)) best.set(key, row);
+  }
+  return [...best.values()];
+}
+
 async function nativeFcmTokens(opts: {
   userIds?: string[];
   role?: NotificationRole;
@@ -129,12 +158,14 @@ async function nativeFcmTokens(opts: {
     platform: string | null;
     native_token: string;
     source: string | null;
+    device_model?: string | null;
+    last_seen_at?: Date | string | null;
   }> = [];
 
   try {
     if (storeIds.length > 0) {
       rows = (await sql`
-        SELECT user_id, role, platform, native_token, source
+        SELECT user_id, role, platform, native_token, source, device_model, last_seen_at
         FROM public.native_device_push_tokens
         WHERE token_type = 'fcm'
           AND store_id = ANY(${storeIds}::bigint[])
@@ -142,7 +173,7 @@ async function nativeFcmTokens(opts: {
       `) as unknown as typeof rows;
     } else if (userIds.length > 0) {
       rows = (await sql`
-        SELECT user_id, role, platform, native_token, source
+        SELECT user_id, role, platform, native_token, source, device_model, last_seen_at
         FROM public.native_device_push_tokens
         WHERE token_type = 'fcm'
           AND user_id = ANY(${userIds}::text[])
@@ -151,7 +182,7 @@ async function nativeFcmTokens(opts: {
       `) as unknown as typeof rows;
     } else if (opts.allForRole && role) {
       rows = (await sql`
-        SELECT user_id, role, platform, native_token, source
+        SELECT user_id, role, platform, native_token, source, device_model, last_seen_at
         FROM public.native_device_push_tokens
         WHERE token_type = 'fcm'
           AND lower(role) = ${role}
@@ -166,7 +197,7 @@ async function nativeFcmTokens(opts: {
 
   // App Android FCM is always included; preferNativeAndroidFcm drops Expo
   // duplicates for the same user so we do not double-notify.
-  return rows
+  return keepLatestNativeTokenPerDevice(rows)
     .filter((r) => {
       if (!r.native_token || isExpoPushTokenString(r.native_token)) return false;
       return true;

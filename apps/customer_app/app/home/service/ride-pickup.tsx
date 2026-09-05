@@ -244,7 +244,8 @@ export default function RidePickupScreen() {
   const router = useRouter();
   const routeParams = useLocalSearchParams<RouteBookRestoreParams>();
   const restoringFromBook = isRouteBookRestore(routeParams);
-  const { address, coords } = useLocationStore();
+  const address = useLocationStore((s) => s.address);
+  const coords = useLocationStore((s) => s.coords);
   const addRecentLocation = useRecentLocationStore((s) => s.addRecentLocation);
   const setLastRidePickup = useRecentLocationStore((s) => s.setLastRidePickup);
   const setLastRideDrop = useRecentLocationStore((s) => s.setLastRideDrop);

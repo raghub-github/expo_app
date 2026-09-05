@@ -75,6 +75,7 @@ import { MealsUnderPriceLoadingSkeleton } from "@/components/meals-under-price/M
 import { MerchantDarkPalette, MerchantUiThemeProvider } from "@/features/merchant-detail/merchantUiTheme";
 import { DiscoveryWaveDivider } from "@/features/discovery-home/DiscoveryWaveDivider";
 import { filterVegSafeCategories, isMerchantPureVeg, textLooksNonVeg } from "@/lib/pureVegFilter";
+import { textIncludes } from "@/lib/safe-text";
 
 const STORE_TYPE = "FOOD";
 const PAD = 16;
@@ -481,7 +482,7 @@ export default function MealsUnderPriceScreen() {
         const merchant = merchantById.get(store.storePublicId);
         const cuisines = merchant?.cuisines?.map((c) => c.toLowerCase()) ?? [];
         if (cuisines.some((c) => c.includes(needle) || needle.includes(c))) return true;
-        return store.items.some((item) => item.name.toLowerCase().includes(needle));
+        return store.items.some((item) => textIncludes(item.name, needle));
       });
     }
     if (nearFast) {

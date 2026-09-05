@@ -85,7 +85,9 @@ export default function FreePackagingStoresScreen() {
   const insets = useAppSafeAreaInsets();
   const { width } = useWindowDimensions();
   const router = useRouter();
-  const { address, coords, locationSource } = useLocationStore();
+  const address = useLocationStore((s) => s.address);
+  const coords = useLocationStore((s) => s.coords);
+  const locationSource = useLocationStore((s) => s.locationSource);
   const debouncedCoords = useDebouncedCoords(coords, 250);
   const listingCoords = useMemo(() => {
     if (locationSource === "selected" && coords) return coords;

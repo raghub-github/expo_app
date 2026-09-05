@@ -10,7 +10,9 @@ import React, {
 import { StyleSheet, View } from "react-native";
 import type { CustomerMapRef, MapEdgePadding } from "@/lib/customer-map-handle";
 import type { LatLng } from "@/services/directions.service";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { NavRiderDotMarker } from "@/components/maps/NavRiderDotMarker";
+import { RIDE_GPS_AUTO_FOLLOW_DEFAULT } from "@/lib/ride-map-coords";
 import {
   DropHomePin,
   NATIVE_MAP_STYLE,
@@ -59,7 +61,20 @@ type Props = {
 };
 
 export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
-  function MapboxWebRideTrackingMap(
+  function MapboxWebRideTrackingMap(props, ref) {
+    return (
+      <AppErrorBoundary
+        source="mapbox-ride-tracking"
+        fallback={() => <NativeMapUnavailable style={props.style} />}
+      >
+        <MapboxWebRideTrackingMapInner {...props} ref={ref} />
+      </AppErrorBoundary>
+    );
+  }
+);
+
+const MapboxWebRideTrackingMapInner = forwardRef<CustomerMapRef, Props>(
+  function MapboxWebRideTrackingMapInner(
     {
       center,
       routeCoordinates,
@@ -83,7 +98,7 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
     const mapRef = useRef(null);
     const cameraRef = useRef(null);
     const readyRef = useRef(false);
-    const followRef = useRef(true);
+    const followRef = useRef(RIDE_GPS_AUTO_FOLLOW_DEFAULT);
     const geofenceCameraRef = useRef(false);
     const lastFollowCameraRef = useRef(null);
     const pendingFitRef = useRef<{
@@ -220,7 +235,7 @@ export const MapboxWebRideTrackingMap = forwardRef<CustomerMapRef, Props>(
           scaleBarEnabled={false}
           scrollEnabled
           zoomEnabled
-          pitchEnabled={navigationMode}
+          pitchEnabled={true}
           rotateEnabled
           surfaceView={false}
           onDidFinishLoadingMap={() => {

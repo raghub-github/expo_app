@@ -1914,9 +1914,8 @@ export default function OrderDetailClient({
   const hasAssignedRider =
     order.riderId != null && Number.isFinite(Number(order.riderId)) && Number(order.riderId) > 0;
 
-  /** Hide live map after delivery / cancel — rider card stays half-width. */
+  /** Hide live map after delivery / cancel — still show store↔customer before a rider is assigned. */
   const showLiveRiderMap =
-    hasAssignedRider &&
     dispatchStage !== "delivered" &&
     dispatchStage !== "cancelled";
 
@@ -2422,7 +2421,7 @@ export default function OrderDetailClient({
             {showLiveRiderMap ? (
               <div className="w-full md:w-1/2 md:min-w-0 md:shrink-0">
               <RiderRouteMap
-                key={`rider-map-${order.riderId}`}
+                key={`rider-map-${order.riderId ?? "unassigned"}`}
                 className="h-full flex flex-col"
                 orderId={order.id}
                 orderIdText={

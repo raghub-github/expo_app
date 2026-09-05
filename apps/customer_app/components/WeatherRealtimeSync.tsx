@@ -10,6 +10,8 @@ import {
   patchLocationWeatherCache,
 } from "@/hooks/useLocationWeather";
 import type { CustomerWeatherContext } from "@/services/weather.service";
+import { shouldSuspendRealtimeTransport } from "@/lib/realtime-lifecycle";
+import { thermalAudit } from "@/lib/thermalAudit";
 
 const RECONNECT_BASE_MS = 3_000;
 const RECONNECT_MAX_MS = 60_000;
@@ -59,6 +61,7 @@ export function WeatherRealtimeSync() {
   const cancelledRef = useRef(false);
   const connectGenRef = useRef(0);
   const connectInFlightRef = useRef(false);
+  const suspendedRef = useRef(false);
 
   useEffect(() => {
     const { wsEnabled } = getConfig();
@@ -117,14 +120,14 @@ export function WeatherRealtimeSync() {
     };
 
     const scheduleReconnect = (reason: string) => {
-      if (cancelledRef.current) return;
+      if (cancelledRef.current || suspendedRef.current) return;
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       const delay = Math.min(RECONNECT_BASE_MS * 2 ** failureCountRef.current, RECONNECT_MAX_MS);
       reconnectTimer.current = setTimeout(() => void connect(`backoff:${reason}`), delay);
     };
 
     const connect = async (reason: string) => {
-      if (cancelledRef.current || connectInFlightRef.current) return;
+      if (cancelledRef.current || connectInFlightRef.current || suspendedRef.current) return;
       connectInFlightRef.current = true;
       const gen = ++connectGenRef.current;
 
@@ -199,7 +202,7 @@ export function WeatherRealtimeSync() {
 
         ws.onclose = () => {
           clearHeartbeat();
-          if (cancelledRef.current || gen !== connectGenRef.current) return;
+          if (cancelledRef.current || gen !== connectGenRef.current || suspendedRef.current) return;
           failureCountRef.current += 1;
           scheduleReconnect("closed");
         };
@@ -212,10 +215,30 @@ export function WeatherRealtimeSync() {
       }
     };
 
-    void connect("mount");
+    if (shouldSuspendRealtimeTransport(AppState.currentState)) {
+      suspendedRef.current = true;
+    } else {
+      void connect("mount");
+    }
 
     const appStateSub = AppState.addEventListener("change", (state: AppStateStatus) => {
+      if (shouldSuspendRealtimeTransport(state)) {
+        suspendedRef.current = true;
+        if (reconnectTimer.current) {
+          clearTimeout(reconnectTimer.current);
+          reconnectTimer.current = null;
+        }
+        clearHeartbeat();
+        try {
+          wsRef.current?.close();
+        } catch {
+          /* ignore */
+        }
+        thermalAudit("WS_SUSPEND", { reason: "weather_background" });
+        return;
+      }
       if (state === "active" && !cancelledRef.current) {
+        suspendedRef.current = false;
         failureCountRef.current = 0;
         void connect("foreground");
       }

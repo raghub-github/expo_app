@@ -14,6 +14,27 @@ function norm(s: string | null | undefined): string {
 
 const RIDER_AT_STORE = new Set(["RIDER_AT_PICKUP", "REACHED_STORE", "REACHED_MERCHANT"]);
 
+/** Same post-pickup statuses as customer `getFoodDeliveryMapPhase`. */
+const POST_PICKUP_STATUS = new Set([
+  "PICKED_UP",
+  "PICKED_BY_RIDER",
+  "ON_THE_WAY",
+  "OUT_FOR_DELIVERY",
+  "IN_TRANSIT",
+  "DISPATCHED",
+]);
+
+export type DashboardFoodMapPhase = "pre_rider" | "rider_to_pickup" | "rider_to_drop";
+
+function isAtCustomerStatus(s: string): boolean {
+  return (
+    s === "RIDER_AT_CUSTOMER" ||
+    s === "REACHED_CUSTOMER" ||
+    s === "ARRIVED_AT_CUSTOMER" ||
+    (s.includes("REACHED") && s.includes("CUSTOMER"))
+  );
+}
+
 export function haversineMeters(
   lat1: number,
   lon1: number,
@@ -30,7 +51,7 @@ export function haversineMeters(
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-/** Post-pickup only when rider explicitly marked food pickup — not merchant dispatch / core in_transit. */
+/** Post-pickup: rider timestamp (SoT) or customer-app on-the-way / at-customer statuses. */
 export function isFoodPostPickupPhase(args: {
   pickedUpAt?: string | null;
   dispatchedAt?: string | null;
@@ -40,11 +61,25 @@ export function isFoodPostPickupPhase(args: {
   coreStatus?: string | null;
   currentStatus?: string | null;
 }): boolean {
-  return (
+  if (
     hasRiderMarkedFoodPickup(args.pickedUpAt) ||
     hasRiderMarkedFoodPickup(args.riderPickedUpAt) ||
     hasRiderMarkedFoodPickup(args.assignmentPickedUpAt)
-  );
+  ) {
+    return true;
+  }
+  const statuses = [args.foodOrderStatus, args.coreStatus, args.currentStatus].map(norm);
+  if (statuses.some(isAtCustomerStatus)) return true;
+  return statuses.some((s) => POST_PICKUP_STATUS.has(s));
+}
+
+/** Customer-app map legs: store↔customer until assigned, then rider→store, then rider→customer. */
+export function getDashboardFoodMapPhase(
+  hasRider: boolean,
+  phaseArgs: Parameters<typeof isFoodPostPickupPhase>[0]
+): DashboardFoodMapPhase {
+  if (!hasRider) return "pre_rider";
+  return isFoodPostPickupPhase(phaseArgs) ? "rider_to_drop" : "rider_to_pickup";
 }
 
 export function shouldHighlightPickupZone(args: {

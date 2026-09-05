@@ -10,6 +10,7 @@ import {
   resolveMarkerAnimTiming,
   shouldFreezeSmoothedMarker,
   shouldIgnoreMarkerGpsNoise,
+  shouldPublishSmoothedMarkerUi,
 } from "./marker-animation";
 import { trackDebug } from "./debug";
 
@@ -30,7 +31,8 @@ const DEFAULT_DURATION_MS = 850;
 
 export function useSmoothedRiderPosition(
   fix: RiderGpsFix | undefined,
-  durationMs = DEFAULT_DURATION_MS
+  durationMs = DEFAULT_DURATION_MS,
+  paused = false
 ): SmoothedRider | undefined {
   const [smoothed, setSmoothed] = useState<SmoothedRider | undefined>(() =>
     fix
@@ -49,12 +51,25 @@ export function useSmoothedRiderPosition(
   const startMsRef = useRef(0);
   const durationRef = useRef(durationMs);
   const rafRef = useRef<number | null>(null);
+  const lastPublishedRef = useRef<SmoothedRider | null>(fromRef.current);
 
   useEffect(() => {
+    if (paused) {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+      if (!fix) {
+        setSmoothed(undefined);
+        fromRef.current = null;
+        toRef.current = null;
+        lastPublishedRef.current = null;
+      }
+      return;
+    }
     if (!fix) {
       setSmoothed(undefined);
       fromRef.current = null;
       toRef.current = null;
+      lastPublishedRef.current = null;
       return;
     }
 
@@ -76,6 +91,7 @@ export function useSmoothedRiderPosition(
         };
         fromRef.current = initial;
         toRef.current = initial;
+        lastPublishedRef.current = initial;
         setSmoothed(initial);
       }
     };
@@ -119,6 +135,7 @@ export function useSmoothedRiderPosition(
       const snapped = { lat: fix.lat, lng: fix.lng, headingDeg: heading };
       fromRef.current = snapped;
       toRef.current = snapped;
+      lastPublishedRef.current = snapped;
       setSmoothed(snapped);
       trackDebug("marker_animation_completed", { reason: "snap_teleport" });
       return;
@@ -155,10 +172,21 @@ export function useSmoothedRiderPosition(
       };
 
       fromRef.current = next;
-      // ~30fps UI updates — smooth enough without janking the nav tree.
       const now = Date.now();
-      if (t >= 1 || now - lastUiMs >= 33) {
+      const lastPublished = lastPublishedRef.current;
+      const moveSincePublishM = lastPublished
+        ? haversineMeters(lastPublished.lat, lastPublished.lng, next.lat, next.lng)
+        : Number.POSITIVE_INFINITY;
+      if (
+        shouldPublishSmoothedMarkerUi({
+          lastPublishMs: lastUiMs,
+          nowMs: now,
+          moveSincePublishM,
+          isComplete: t >= 1,
+        })
+      ) {
         lastUiMs = now;
+        lastPublishedRef.current = next;
         setSmoothed(next);
       }
 
@@ -176,7 +204,7 @@ export function useSmoothedRiderPosition(
     return () => {
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     };
-  }, [fix?.lat, fix?.lng, fix?.headingDeg, fix?.speedMps, durationMs]);
+  }, [fix?.lat, fix?.lng, fix?.headingDeg, fix?.speedMps, durationMs, paused]);
 
   return smoothed;
 }
