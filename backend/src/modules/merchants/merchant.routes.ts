@@ -236,7 +236,7 @@ const searchQuerySchema = z.object({
 const nearbyStoresQuerySchema = z.object({
   lat: z.coerce.number(),
   lng: z.coerce.number(),
-  maxDistanceKm: z.coerce.number().min(1).max(10).optional().default(10),
+  maxDistanceKm: z.coerce.number().min(1).max(15).optional().default(15),
   mapboxLimit: z.coerce.number().int().min(1).max(15).optional().default(15),
 });
 

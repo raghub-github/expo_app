@@ -6,6 +6,7 @@
 import { and, eq } from "drizzle-orm";
 import { cacheDel, cacheGet, cacheSet } from "@gatimitra/redis";
 import { getDb, getSql } from "../db/client.js";
+import { triggerHotZoneReconcileSoon } from "./hot-zones/hot-zone-reconciler.js";
 import {
   customerRideServiceCatalog,
   ordersCore,
@@ -341,6 +342,10 @@ export async function completeOrderDispatch(
 export async function startOrderDispatch(orderCoreId: number): Promise<void> {
   if (!(await isOrderStillDispatchable(orderCoreId))) return;
   if (await isDispatchHeldForManualAssignment(orderCoreId)) return;
+
+  // Event-driven hot-zone nudge: a new order entering dispatch is fresh unassigned demand,
+  // so coalesce a fast reconcile pass instead of waiting for the periodic tick. Fire-and-forget.
+  triggerHotZoneReconcileSoon();
 
   const sql = getSql();
   const existing = (await sql`

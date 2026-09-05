@@ -1,6 +1,6 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback, useMemo, memo } from "react";
-import { View, Text, StyleSheet, Platform } from "react-native";
+import { View, Text, StyleSheet, Platform, type StyleProp, type ViewStyle } from "react-native";
 import { getMapboxModule, isMapboxAvailable } from "@/src/services/maps/mapbox";
 import { resolveMapboxPublicToken } from "@/src/lib/mapbox-env";
 import { MapboxUnavailablePanel } from "@/src/components/maps/MapboxUnavailablePanel";
@@ -45,7 +45,7 @@ interface RiderMapViewProps {
   riderLocation: Location | undefined;
   orders: Order[];
   onOrderPress?: (orderId: string) => void;
-  style?: object;
+  style?: StyleProp<ViewStyle>;
   showRadar?: boolean;
   /** Unmount native Mapbox while another tab is showing — GL keeps compositing even if JS is frozen. */
   paused?: boolean;

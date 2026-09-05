@@ -255,6 +255,15 @@ const adminOptions: AdminOption[] = [
     color: "text-rose-700",
     bgColor: "bg-rose-50 hover:bg-rose-100",
   },
+  {
+    name: "Hot Zone Engine",
+    href: "/dashboard/super-admin/hot-zones",
+    Icon: GeoIcon,
+    description:
+      "Demand/supply pressure zones (H3) — tune thresholds & inspect why each zone is hot",
+    color: "text-orange-700",
+    bgColor: "bg-orange-50 hover:bg-orange-100",
+  },
 
   // ✅ YOUR MODULES
   {

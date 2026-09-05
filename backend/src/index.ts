@@ -52,6 +52,8 @@ import { incrCounter, renderPrometheus } from "@gatimitra/logger";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
 import { pushRoutes } from "./modules/push/push.routes.js";
 import { notificationRoutes, notificationInternalRoutes, startScheduledPoller, startNotificationRetryPoller, startReminderPoller, registerDomainEventHandlers } from "./modules/notifications/index.js";
+import { startHotZoneReconciler } from "./lib/hot-zones/hot-zone-reconciler.js";
+import { startRideOnlineQrReconciler } from "./modules/rides/ride-online-qr-reconciler.js";
 import { verificationAdminRoutes } from "./modules/verification/routes/admin.routes.js";
 import { cashfreeHeaderWebhookRoutes, cashfreeBodySignedWebhookRoutes } from "./modules/verification/routes/webhook.routes.js";
 import { offersRoutes } from "./modules/offers/offers.routes.js";
@@ -873,6 +875,12 @@ const { trackingAdminRoutes } = await import(
 );
 await app.register(trackingAdminRoutes, { prefix: "/v1/admin/tracking" });
 
+// Control Dashboard — Hot Zone Engine config editor + live zone inspector.
+const { hotZoneAdminRoutes } = await import(
+  "./modules/rider/hot-zone.admin.routes.js"
+);
+await app.register(hotZoneAdminRoutes, { prefix: "/v1/admin/hot-zones" });
+
 await app.register(offersRoutes, { prefix: "/v1/offers" });
 const { pricingRoutes } = await import("./modules/pricing/pricing.routes.js");
 await app.register(pricingRoutes, { prefix: "/v1/pricing" });
@@ -1256,6 +1264,21 @@ try {
     app.log.error({ err }, "notification_reminder_poller_start_failed"),
   );
   app.log.info("notification reminder poller started");
+
+  // Hot-zone reconciler — computes city-wide demand/supply pressure into
+  // rider_hot_zone_state; the per-rider read filters that within the rider's
+  // visibility radius. Redis-locked so only one replica reconciles.
+  void startHotZoneReconciler().catch((err) =>
+    app.log.error({ err }, "hot_zone_reconciler_start_failed"),
+  );
+  app.log.info("hot zone reconciler started");
+
+  // Online-QR ride payment reconciler — safety net that finalizes rides whose
+  // `qr_code.credited` webhook was missed/mis-configured, so the ride auto-completes
+  // even without the webhook. No-op (does not spin) in dummy mode / without real keys.
+  void startRideOnlineQrReconciler().catch((err) =>
+    app.log.error({ err }, "ride_online_qr_reconciler_start_failed"),
+  );
 
   // Verification background workers — R2 mirror + retry queue.
   // Skip locked; running multiple backend replicas is safe.
