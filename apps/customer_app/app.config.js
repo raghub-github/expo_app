@@ -52,6 +52,13 @@ module.exports = {
     ios: {
       ...appJson.expo.ios,
       icon: APP_ICON,
+      bundleIdentifier: appJson.expo.ios?.bundleIdentifier || "com.gatimitra.customer",
+      associatedDomains: [
+        ...new Set([
+          ...((appJson.expo.ios?.associatedDomains || []) as string[]),
+          "applinks:gatimitra.com",
+        ]),
+      ],
       infoPlist: {
         ...(appJson.expo.ios?.infoPlist || {}),
         UIFileSharingEnabled: true,
@@ -90,12 +97,10 @@ module.exports = {
           action: "VIEW",
           autoVerify: true,
           data: [
-            { scheme: "https", host: "gatimitra.com", pathPrefix: "/addr" },
+            { scheme: "https", host: "gatimitra.com", pathPrefix: "/address/share" },
+            { scheme: "https", host: "gatimitra.com", pathPrefix: "/addr/" },
             { scheme: "https", host: "gatimitra.com", pathPrefix: "/ref" },
             { scheme: "https", host: "gatimitra.com", pathPrefix: "/invite" },
-            { scheme: "gatimitra", host: "address" },
-            { scheme: "gatimitra", host: "addr" },
-            { scheme: "gatimitra", host: "referral" },
           ],
           category: ["BROWSABLE", "DEFAULT"],
         },

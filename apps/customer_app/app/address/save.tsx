@@ -1,7 +1,7 @@
 /**
  * Deep link handler — preview shared address in a bottom sheet, then save if needed.
- * URL: gatimitra://address/save?id={token}
- *      https://gatimitra.com/addr/<shortCode>?id={token}
+ * URL: https://gatimitra.com/address/share/{token}
+ *      gatimitra://address/save?id={token}
  */
 
 import { useEffect, useRef, useState } from "react";

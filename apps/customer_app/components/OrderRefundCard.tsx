@@ -22,10 +22,20 @@ export type OrderRefundTimelineStep = {
   at: string | null;
 };
 
+export type OrderRefundSlab = {
+  amount: number;
+  reference: string | null;
+  status: string | null;
+  initiatedAt: string | null;
+  completedAt: string | null;
+};
+
 export type OrderRefundCardData = {
   status: string | null;
   amount: number | null;
   reference: string | null;
+  references?: string[];
+  slabs?: OrderRefundSlab[];
   walletReference?: string | null;
   gatewayReference?: string | null;
   originalGatiCashTxnId?: string | null;
@@ -129,9 +139,29 @@ function refundInfoMessage(kind: RefundDisplayKind, completed: boolean): string 
 
 type RefRow = { label: string; value: string };
 
-/** Customer card shows only a real unique refund RRN (never RFND-{id}). */
+/** Customer card shows every unique refund RRN across slabs (never RFND-{id}). */
 function buildReferenceRows(refund: OrderRefundCardData): RefRow[] {
+  const slabs = refund.slabs?.filter((s) => Boolean(s.reference?.trim())) ?? [];
+  if (slabs.length > 1) {
+    return slabs.map((s, i) => ({
+      label: `Refund reference number (RRN) ${i + 1} · ${formatMoney(s.amount)}`,
+      value: s.reference!.trim(),
+    }));
+  }
+
+  const fromList = (refund.references ?? [])
+    .map((r) => r.trim())
+    .filter((r) => r && !/^RFND-\d+$/i.test(r));
+  const unique = [...new Set(fromList)];
+  if (unique.length > 1) {
+    return unique.map((value, i) => ({
+      label: `Refund reference number (RRN) ${i + 1}`,
+      value,
+    }));
+  }
+
   const raw =
+    unique[0] ||
     refund.reference?.trim() ||
     refund.walletReference?.trim() ||
     refund.gatewayReference?.trim() ||
@@ -150,8 +180,11 @@ export function OrderRefundCard({ refund }: { refund: OrderRefundCardData }) {
   const title = completed
     ? `Refund of ${formatMoney(amount)} sent`
     : `Refund of ${formatMoney(amount)} in progress`;
+  const slabCount = refund.slabs?.length ?? 0;
   const subtitle = completed
-    ? `Refund completed on ${formatRefundWhen(refund.completedAt ?? refund.processedAt)}`
+    ? `Refund completed on ${formatRefundWhen(refund.completedAt ?? refund.processedAt)}${
+        slabCount > 1 ? ` · ${slabCount} refunds` : ""
+      }`
     : refund.processedAt
       ? `Refund processed on ${formatRefundWhen(refund.processedAt)}`
       : refund.initiatedAt

@@ -25,6 +25,7 @@ import {
   prefetchFeaturedOffersHome,
   useFeaturedOffersHome,
 } from "@/hooks/useFeaturedOffersHome";
+import { normalizeOfferLocationParams } from "@/lib/featuredOfferGeo";
 import { reloadCustomerAppAssets } from "@/store/appAssetsStore";
 import { useCustomerGeoServiceAvailability } from "@/hooks/useCustomerGeoServiceAvailability";
 import { useNearbyGroceryAvailability } from "@/hooks/useNearbyGroceryAvailability";
@@ -119,13 +120,14 @@ export default function HomeScreen() {
   const { promoCardH, serviceCardH, brandH } = useHomeScreenLayout(showWeatherBlock);
 
   const offerLocationParams = useMemo(
-    () => ({
-      pincode: address?.pincode?.trim() || undefined,
-      state: address?.state?.trim() || undefined,
-      city: address?.city?.trim() || undefined,
-      lat: coords?.latitude,
-      lng: coords?.longitude,
-    }),
+    () =>
+      normalizeOfferLocationParams({
+        pincode: address?.pincode?.trim() || undefined,
+        state: address?.state?.trim() || undefined,
+        city: address?.city?.trim() || undefined,
+        lat: coords?.latitude,
+        lng: coords?.longitude,
+      }),
     [
       address?.pincode,
       address?.state,

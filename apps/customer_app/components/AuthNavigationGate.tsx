@@ -6,20 +6,28 @@
  */
 
 import { useEffect, useRef } from "react";
-import { useRouter, useSegments } from "expo-router";
+import { useRouter, useSegments, useGlobalSearchParams } from "expo-router";
 import { useAuthStore } from "@/store/authStore";
+import {
+  peekPendingAddressShareToken,
+  storePendingAddressShareToken,
+} from "@/lib/pendingAddressShare";
 
 function isPublicUnauthedRoute(segments: readonly string[]): boolean {
   const root = segments[0] ?? "";
   if (!root || root === "index") return true;
   if (root === "(auth)") return true;
   if (root === "legal") return true;
+  // Shared-address App Link must reach /address/save while logged out so the
+  // token can be persisted before login.
+  if (root === "address") return true;
   return false;
 }
 
 export function AuthNavigationGate() {
   const router = useRouter();
   const segments = useSegments() as string[];
+  const params = useGlobalSearchParams<{ id?: string }>();
   const hydrated = useAuthStore((s) => s.hydrated);
   const accessToken = useAuthStore((s) => s.session?.accessToken ?? null);
   const redirectingRef = useRef(false);
@@ -29,8 +37,12 @@ export function AuthNavigationGate() {
 
     const root = segments[0] ?? "";
     const leaf = segments[1] ?? "";
+    const shareToken = typeof params.id === "string" ? params.id.trim() : "";
 
     if (!accessToken) {
+      if (root === "address" && shareToken) {
+        void storePendingAddressShareToken(shareToken);
+      }
       if (isPublicUnauthedRoute(segments)) {
         redirectingRef.current = false;
         return;
@@ -41,17 +53,22 @@ export function AuthNavigationGate() {
       return;
     }
 
-    // Logged in but still on the phone login screen (e.g. restored stack).
-    // Let OTP finish — only bounce away from login.
     if (root === "(auth)" && leaf === "login") {
       if (redirectingRef.current) return;
       redirectingRef.current = true;
-      router.replace("/");
+      void (async () => {
+        const pending = shareToken || (await peekPendingAddressShareToken());
+        if (pending) {
+          router.replace(`/address/save?id=${encodeURIComponent(pending)}`);
+          return;
+        }
+        router.replace("/");
+      })();
       return;
     }
 
     redirectingRef.current = false;
-  }, [hydrated, accessToken, segments, router]);
+  }, [hydrated, accessToken, segments, router, params.id]);
 
   return null;
 }

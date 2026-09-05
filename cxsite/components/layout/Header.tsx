@@ -22,6 +22,7 @@ import AppDownloadModal from '@/components/common/AppDownloadModal'
 import AppLinkSentToast from '@/components/common/AppLinkSentToast'
 import GetAppNavControl from '@/components/common/GetAppNavControl'
 import { restaurantDetailHref } from '@/lib/restaurantDetailLink'
+import StoreInnerLink from '@/components/order/StoreInnerLink'
 import { buildLocationQueryFromState, mergeLocationQuery } from '@/lib/locationQuery'
 import { useLocationPromptAutoOpen } from '@/lib/hooks/useLocationPromptAutoOpen'
 
@@ -147,12 +148,20 @@ export default function Header() {
 
     useEffect(() => {
       if (!hydrated) return
-      const q = restaurantGeoQs ? `?${restaurantGeoQs}` : ''
+      const listing =
+        pathname?.startsWith('/grocery')
+          ? 'grocery'
+          : pathname?.startsWith('/order') || pathname?.startsWith('/restaurants')
+            ? 'food'
+            : ''
+      const params = new URLSearchParams(restaurantGeoQs || '')
+      if (listing) params.set('listing', listing)
+      const q = params.toString() ? `?${params.toString()}` : ''
       fetch(`/api/restaurants${q}`)
         .then((res) => res.json())
         .then((data) => setRestaurantList(Array.isArray(data) ? data : []))
         .catch(() => setRestaurantList([]))
-    }, [restaurantGeoQs, hydrated])
+    }, [restaurantGeoQs, hydrated, pathname])
 
     // When on city/area page, location comes from URL sync — no auto GPS override.
 
@@ -811,25 +820,27 @@ export default function Header() {
                                 )}
                                 {!searchLoading && searchResults.length > 0 && (
                                   <div className="max-h-[420px] overflow-y-auto py-1">
-                                    {searchResults.map((item: any, idx: number) => (
-                                      <Link
-                                        key={`${item.type || 'item'}-${item.id || item.restaurant_id || idx}`}
-                                        href={
-                                          item.type === 'dish'
-                                            ? `/order?restaurant=${item.restaurant_id}`
-                                            : restaurantDetailHref(
-                                                {
-                                                  public_slug: item.public_slug,
-                                                  store_id: item.restaurant_id,
-                                                  id: item.restaurant_id,
-                                                },
-                                                'search',
-                                                mergeLocationQuery(
-                                                  queryFromLocation(),
-                                                  buildLocationQueryFromState(locationState)
-                                                )
+                                    {searchResults.map((item: any, idx: number) => {
+                                      const href =
+                                        item.type === 'dish'
+                                          ? `/order?restaurant=${item.restaurant_id}`
+                                          : restaurantDetailHref(
+                                              {
+                                                public_slug: item.public_slug,
+                                                store_id: item.restaurant_id,
+                                                id: item.restaurant_id,
+                                              },
+                                              'search',
+                                              mergeLocationQuery(
+                                                queryFromLocation(),
+                                                buildLocationQueryFromState(locationState)
                                               )
-                                        }
+                                            )
+                                      const ResultLink = item.type === 'dish' ? Link : StoreInnerLink
+                                      return (
+                                      <ResultLink
+                                        key={`${item.type || 'item'}-${item.id || item.restaurant_id || idx}`}
+                                        href={href}
                                         onClick={() => setShowSearchResults(false)}
                                         className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-gray-50"
                                       >
@@ -846,8 +857,9 @@ export default function Header() {
                                             {item.type === 'dish' ? 'Dish result' : 'Restaurant result'}
                                           </div>
                                         </div>
-                                      </Link>
-                                    ))}
+                                      </ResultLink>
+                                      )
+                                    })}
                                   </div>
                                 )}
                                 {!searchLoading && searchResults.length === 0 && debouncedSearchQuery && (
@@ -1027,25 +1039,27 @@ export default function Header() {
                             )}
                             {!searchLoading && searchResults.length > 0 && (
                               <div className="max-h-[360px] overflow-y-auto py-1">
-                                {searchResults.map((item: any, idx: number) => (
-                                  <Link
-                                    key={`mobile-${item.type || 'item'}-${item.id || item.restaurant_id || idx}`}
-                                    href={
-                                      item.type === 'dish'
-                                        ? `/order?restaurant=${item.restaurant_id}`
-                                        : restaurantDetailHref(
-                                            {
-                                              public_slug: item.public_slug,
-                                              store_id: item.restaurant_id,
-                                              id: item.restaurant_id,
-                                            },
-                                            'search',
-                                            mergeLocationQuery(
-                                              queryFromLocation(),
-                                              buildLocationQueryFromState(locationState)
-                                            )
+                                {searchResults.map((item: any, idx: number) => {
+                                  const href =
+                                    item.type === 'dish'
+                                      ? `/order?restaurant=${item.restaurant_id}`
+                                      : restaurantDetailHref(
+                                          {
+                                            public_slug: item.public_slug,
+                                            store_id: item.restaurant_id,
+                                            id: item.restaurant_id,
+                                          },
+                                          'search',
+                                          mergeLocationQuery(
+                                            queryFromLocation(),
+                                            buildLocationQueryFromState(locationState)
                                           )
-                                    }
+                                        )
+                                  const ResultLink = item.type === 'dish' ? Link : StoreInnerLink
+                                  return (
+                                  <ResultLink
+                                    key={`mobile-${item.type || 'item'}-${item.id || item.restaurant_id || idx}`}
+                                    href={href}
                                     onClick={() => setShowSearchResults(false)}
                                     className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-gray-50"
                                   >
@@ -1060,8 +1074,9 @@ export default function Header() {
                                       <div className="truncate text-sm font-semibold text-gray-900">{item.item_name || item.restaurant_name || item.name}</div>
                                       <div className="truncate text-xs text-gray-500">{item.type === 'dish' ? 'Dish result' : 'Restaurant result'}</div>
                                     </div>
-                                  </Link>
-                                ))}
+                                  </ResultLink>
+                                  )
+                                })}
                               </div>
                             )}
                             {!searchLoading && searchResults.length === 0 && debouncedSearchQuery && (

@@ -7,6 +7,9 @@ import {
   haversineKm,
 } from '@/lib/server/merchantStoreGeo'
 import { attachStoreRatingsToRows } from '@/lib/server/fetchStoreRatings'
+import { attachPublicSlugsToListRows } from '@/lib/server/attachPublicSlugsToListRows'
+import { applyListingVerticalFilter, parseListingQueryParam } from '@/lib/merchantStoreTypes'
+import type { WebRestaurantRow } from '@/lib/server/fetchMerchantStores'
 
 export const dynamic = 'force-dynamic'
 
@@ -44,6 +47,7 @@ function parseGeo(searchParams: URLSearchParams): Geo | null {
 function mapStoreToRestaurant(row: {
   id: number
   store_id: string
+  public_slug?: string | null
   parent_id: number
   store_name: string
   store_display_name: string | null
@@ -61,6 +65,7 @@ function mapStoreToRestaurant(row: {
   status?: string
   approval_status?: string
   operational_status?: string
+  store_type?: string | null
   latitude?: number | null
   longitude?: number | null
   distance_km?: number | null
@@ -73,6 +78,7 @@ function mapStoreToRestaurant(row: {
   return {
     id: row.id,
     store_id: row.store_id,
+    public_slug: row.public_slug ?? null,
     restaurant_id: row.store_id,
     restaurant_name: name,
     name,
@@ -95,6 +101,7 @@ function mapStoreToRestaurant(row: {
     closing_time: null as string | null,
     approval_status: row.approval_status,
     operational_status: row.operational_status ?? null,
+    store_type: row.store_type ?? null,
     latitude: row.latitude ?? null,
     longitude: row.longitude ?? null,
     distance_km: row.distance_km ?? null,
@@ -104,6 +111,7 @@ function mapStoreToRestaurant(row: {
 const storeSelect = `
   id,
   store_id,
+  public_slug,
   parent_id,
   store_name,
   store_display_name,
@@ -122,6 +130,7 @@ const storeSelect = `
   status,
   approval_status,
   operational_status,
+  store_type,
   latitude,
   longitude,
   delivery_radius_km
@@ -148,6 +157,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const category = searchParams.get('category')?.trim()
+    const listing = parseListingQueryParam(searchParams.get('listing'))
     const geo = parseGeo(searchParams)
 
     log('category param:', category, 'geo:', geo)
@@ -316,7 +326,14 @@ export async function GET(request: NextRequest) {
       return (rankIndex.get(aKey) ?? Number.MAX_SAFE_INTEGER) - (rankIndex.get(bKey) ?? Number.MAX_SAFE_INTEGER)
     })
 
-    const mapped = await attachStoreRatingsToRows(mapRows(orderedStores as Record<string, unknown>[]))
+    const mapped = applyListingVerticalFilter(
+      await attachPublicSlugsToListRows(
+        (await attachStoreRatingsToRows(
+          mapRows(orderedStores as Record<string, unknown>[])
+        )) as WebRestaurantRow[]
+      ),
+      listing
+    )
     log('Returning', mapped.length, 'stores from scored category match')
     return NextResponse.json(mapped)
   } catch (err) {

@@ -969,17 +969,31 @@ export async function getStoreDetailsForFoodOrder(
   };
 }
 
-export async function getStoreByIdForOrder(
-  merchantStoreId: number
-): Promise<{ parentId: number | null; storeId: string | null; fullAddress: string | null; bannerUrl: string | null; storeName: string | null; storeDisplayName: string | null; latitude: number | null; longitude: number | null; is_accepting_orders: boolean; storeType: string | null } | null> {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("merchant_stores")
-    .select("parent_id, store_id, full_address, banner_url, store_name, store_display_name, latitude, longitude, is_accepting_orders, store_type")
-    .eq("id", merchantStoreId)
-    .single();
-  if (error || !data) return null;
-  const row = data as { parent_id?: number | null; store_id?: string | null; full_address?: string | null; banner_url?: string | null; store_name?: string | null; store_display_name?: string | null; latitude?: number | string | null; longitude?: number | string | null; is_accepting_orders?: boolean | null; store_type?: string | null };
+export type StoreForOrder = {
+  parentId: number | null;
+  storeId: string | null;
+  fullAddress: string | null;
+  bannerUrl: string | null;
+  storeName: string | null;
+  storeDisplayName: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  is_accepting_orders: boolean;
+  storeType: string | null;
+};
+
+function mapStoreForOrderRow(row: {
+  parent_id?: number | null;
+  store_id?: string | null;
+  full_address?: string | null;
+  banner_url?: string | null;
+  store_name?: string | null;
+  store_display_name?: string | null;
+  latitude?: number | string | null;
+  longitude?: number | string | null;
+  is_accepting_orders?: boolean | null;
+  store_type?: string | null;
+}): StoreForOrder {
   return {
     parentId: row.parent_id != null ? Number(row.parent_id) : null,
     storeId: row.store_id ?? null,
@@ -992,6 +1006,37 @@ export async function getStoreByIdForOrder(
     is_accepting_orders: row.is_accepting_orders === true,
     storeType: row.store_type ?? null,
   };
+}
+
+export async function getStoresByIdsForOrder(
+  merchantStoreIds: number[]
+): Promise<Map<number, StoreForOrder>> {
+  const unique = [
+    ...new Set(
+      merchantStoreIds.filter((id) => Number.isFinite(id) && id > 0)
+    ),
+  ];
+  const result = new Map<number, StoreForOrder>();
+  if (unique.length === 0) return result;
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("merchant_stores")
+    .select("id, parent_id, store_id, full_address, banner_url, store_name, store_display_name, latitude, longitude, is_accepting_orders, store_type")
+    .in("id", unique);
+  if (error || !data) return result;
+  for (const raw of data as Array<{ id?: number } & Parameters<typeof mapStoreForOrderRow>[0]>) {
+    const id = Number(raw.id);
+    if (!Number.isFinite(id) || id < 1) continue;
+    result.set(id, mapStoreForOrderRow(raw));
+  }
+  return result;
+}
+
+export async function getStoreByIdForOrder(
+  merchantStoreId: number
+): Promise<StoreForOrder | null> {
+  const map = await getStoresByIdsForOrder([merchantStoreId]);
+  return map.get(merchantStoreId) ?? null;
 }
 
 /**

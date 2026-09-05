@@ -131,6 +131,7 @@ import {
   resolveMerchantLiveStatus,
 } from "@/lib/merchantListing";
 import { useFeaturedOffersHome } from "@/hooks/useFeaturedOffersHome";
+import { normalizeOfferLocationParams } from "@/lib/featuredOfferGeo";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
 import { useFoodHomeLayout } from "@/hooks/useFoodHomeLayout";
 import {
@@ -446,16 +447,13 @@ export default function FoodMerchantsScreen() {
     }
   }, [merchantsData]);
   const offerLocationParams = useMemo(() => {
-    const pincode = address?.pincode?.trim() || undefined;
-    const state = address?.state?.trim() || undefined;
-    const city = address?.city?.trim() || undefined;
-    return {
-      pincode,
-      state,
-      city,
+    return normalizeOfferLocationParams({
+      pincode: address?.pincode?.trim() || undefined,
+      state: address?.state?.trim() || undefined,
+      city: address?.city?.trim() || undefined,
       lat: merchantsAnchorCoords?.latitude,
       lng: merchantsAnchorCoords?.longitude,
-    };
+    });
   }, [
     address?.pincode,
     address?.state,

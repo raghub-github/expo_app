@@ -685,19 +685,21 @@ const { referralRoutes, referralPublicLandingRoutes } = await import(
 );
 await app.register(referralRoutes, { prefix: "/v1/referral" });
 await app.register(referralPublicLandingRoutes, { prefix: "" });
-const { renderAddressShareLandingPage } = await import("./modules/addresses/address-share-page.js");
+const {
+  renderAddressShareLandingPage,
+  renderAddressShareLandingByToken,
+  isLinkPreviewCrawler,
+  buildAddressSharePlayStoreUrl,
+} = await import("./modules/addresses/address-share-page.js");
 const { sendAddressShareOgLogo } = await import("./modules/addresses/address-share-og-asset.js");
 
-// Android App Links verification. Served on gatimitra.com (nginx proxies
-// the exact path /.well-known/assetlinks.json and the /addr/* prefix to this
-// backend). Android fetches this to auto-verify the domain so /addr/... links
-// open the app directly instead of a browser/chooser.
-const { buildAssetLinksJson } = await import("./lib/assetlinks.js");
+// Android App Links + iOS Universal Links. nginx on gatimitra.com proxies
+// /.well-known/* and /address/share/* + /addr/* to this backend so the OS
+// can verify the domain and open the Customer App directly.
+const { buildAssetLinksJson, buildAppleAppSiteAssociation } = await import("./lib/assetlinks.js");
 app.get("/.well-known/assetlinks.json", async (_req, reply) => {
   const payload = buildAssetLinksJson();
   if (!payload) {
-    // No fingerprints configured — 503 rather than publish an empty file that
-    // Android would cache as a verification failure.
     return reply
       .status(503)
       .type("text/plain")
@@ -709,7 +711,52 @@ app.get("/.well-known/assetlinks.json", async (_req, reply) => {
     .send(payload);
 });
 
+app.get("/.well-known/apple-app-site-association", async (_req, reply) => {
+  const payload = buildAppleAppSiteAssociation();
+  if (!payload) {
+    return reply.status(404).type("text/plain").send("AASA not configured");
+  }
+  return reply
+    .type("application/json")
+    .header("Cache-Control", "public, max-age=300")
+    .send(payload);
+});
+app.get("/apple-app-site-association", async (_req, reply) => {
+  const payload = buildAppleAppSiteAssociation();
+  if (!payload) {
+    return reply.status(404).type("text/plain").send("AASA not configured");
+  }
+  return reply
+    .type("application/json")
+    .header("Cache-Control", "public, max-age=300")
+    .send(payload);
+});
+
+async function sendAddressShareHttp(
+  reply: {
+    redirect: (url: string, code?: number) => unknown;
+    status: (n: number) => { send: (b: string) => unknown };
+    type: (t: string) => { send: (b: string) => unknown };
+  },
+  html: string | null,
+  token: string,
+  userAgent: string | string[] | undefined
+) {
+  const ua = Array.isArray(userAgent) ? userAgent[0] : userAgent;
+  if (!html) return reply.status(410).send("This link has expired or was already used.");
+  if (isLinkPreviewCrawler(ua)) {
+    return reply.type("text/html; charset=utf-8").send(html);
+  }
+  return reply.redirect(buildAddressSharePlayStoreUrl(token), 302);
+}
+
 app.get("/addr/og-logo.png", async (_req, reply) => sendAddressShareOgLogo(reply));
+app.get<{ Params: { token: string } }>("/address/share/:token", async (req, reply) => {
+  const token = String(req.params.token ?? "").trim();
+  if (!token) return reply.status(400).send("Invalid link");
+  const html = await renderAddressShareLandingByToken(token);
+  return sendAddressShareHttp(reply, html, token, req.headers["user-agent"]);
+});
 app.get<{ Params: { shortCode: string }; Querystring: { id?: string } }>(
   "/addr/:shortCode",
   async (req, reply) => {
@@ -717,8 +764,7 @@ app.get<{ Params: { shortCode: string }; Querystring: { id?: string } }>(
     const shortCode = String(req.params.shortCode ?? "").trim();
     if (!token || !shortCode) return reply.status(400).send("Invalid link");
     const html = await renderAddressShareLandingPage(shortCode, token);
-    if (!html) return reply.status(410).send("This link has expired or was already used.");
-    return reply.type("text/html; charset=utf-8").send(html);
+    return sendAddressShareHttp(reply, html, token, req.headers["user-agent"]);
   }
 );
 await app.register(locationSearchRoutes, { prefix: "/v1/me" });

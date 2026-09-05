@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import { useAppSelector } from '@/lib/hooks'
@@ -28,15 +28,25 @@ import { locationAutoDetectErrorMessage } from '@/lib/locationAutoDetect'
 import { resolveOrderPageLocationLabel } from '@/lib/panIndiaLocation'
 import { formatMerchantDeliveryTime } from '@/lib/merchantDeliveryTime'
 import { restaurantDetailHref } from '@/lib/restaurantDetailLink'
+import StoreInnerLink from '@/components/order/StoreInnerLink'
+import { isFoodOrderStore } from '@/lib/merchantStoreTypes'
+import { readCachedOrderRestaurants, writeCachedOrderRestaurants } from '@/lib/orderListingCache'
+import {
+  canPaintCategoryImageNow,
+  markCategoryImagePainted,
+  peekCategoryImageSrc,
+  persistCategoryImage,
+  preloadCategoryRailImages,
+  readCachedFoodCategories,
+  writeCachedFoodCategories,
+} from '@/lib/categoryRailImageCache'
 import { getMagicpinPathAfterLocationSelect, mergeLocationNavigationUrl } from '@/lib/magicpinLocationUrl'
 import type { LocationItem } from '@/components/location-search/LocationPopup'
 import { useLocationPromptAutoOpen } from '@/lib/hooks/useLocationPromptAutoOpen'
 
-const FOOD_CATEGORIES_CACHE_KEY = 'gatimitra_food_categories_v2'
+type FoodCategoryTile = { id: string; name: string; img: string | null }
 const TOP_PICKS_PER_PAGE = 14
 const TOP_PICKS_COLS = 7
-
-type FoodCategoryTile = { id: string; name: string; img: string | null }
 
 interface CategoriesSectionProps {
   onViewRestaurants: () => void
@@ -79,64 +89,77 @@ function TopPickCategoryCard({
   variant?: 'desktop' | 'mobile'
   priority?: boolean
 }) {
-  const [imgBroken, setImgBroken] = useState(false)
   const src = category.img ? resolveAppAssetUrl(category.img) : null
+  const [displaySrc, setDisplaySrc] = useState<string | null>(src)
+  const [imgReady, setImgReady] = useState(false)
+  const [imgBroken, setImgBroken] = useState(false)
   const firstLetter = (category.name && category.name.trim()[0]) || '?'
-  const showImage = Boolean(src) && !imgBroken
 
-  if (variant === 'mobile') {
-    return (
-      <Link
-        href={`/restaurants?category=${encodeURIComponent(category.name)}${locationQueryString ? `&${locationQueryString}` : ''}`}
-        className="flex w-full min-w-0 flex-col items-center text-center no-underline"
-        aria-label={category.name}
-      >
-        <div className="top-picks-circle">
-          {showImage ? (
-            <div className="top-picks-circle__img">
-              <img
-                src={src!}
-                alt=""
-                loading={priority ? 'eager' : 'lazy'}
-                fetchPriority={priority ? 'high' : 'auto'}
-                decoding={priority ? 'sync' : 'async'}
-                onError={() => setImgBroken(true)}
-              />
-            </div>
-          ) : (
-            <span className="text-2xl font-bold text-[#FF6B6B] select-none sm:text-3xl">
-              {firstLetter.toUpperCase()}
-            </span>
-          )}
-        </div>
-        <div className="top-picks-label">{category.name}</div>
-      </Link>
-    )
-  }
+  useLayoutEffect(() => {
+    setImgBroken(false)
+    if (!src) {
+      setDisplaySrc(null)
+      setImgReady(false)
+      return
+    }
+    const cached = peekCategoryImageSrc(src)
+    if (cached) {
+      setDisplaySrc(cached)
+      setImgReady(true)
+      return
+    }
+    if (canPaintCategoryImageNow(src)) {
+      setDisplaySrc(src)
+      setImgReady(true)
+      void persistCategoryImage(src)
+      return
+    }
+    setDisplaySrc(src)
+    void persistCategoryImage(src).then((url) => {
+      if (url && url !== src) setDisplaySrc(url)
+    })
+  }, [src])
+
+  const showImage = Boolean(displaySrc) && !imgBroken
+
+  const img = showImage ? (
+    <div className="top-picks-circle__img">
+      <img
+        src={displaySrc!}
+        alt=""
+        draggable={false}
+        loading="eager"
+        fetchPriority={priority ? 'high' : 'low'}
+        decoding="async"
+        onLoad={() => {
+          if (src) markCategoryImagePainted(src)
+          setImgReady(true)
+        }}
+        onError={() => setImgBroken(true)}
+      />
+    </div>
+  ) : (
+    <span
+      className={`font-bold text-[#FF6B6B] select-none ${
+        variant === 'mobile' ? 'text-2xl sm:text-3xl' : 'text-3xl'
+      }`}
+    >
+      {firstLetter.toUpperCase()}
+    </span>
+  )
 
   return (
     <Link
       href={`/restaurants?category=${encodeURIComponent(category.name)}${locationQueryString ? `&${locationQueryString}` : ''}`}
-      className="flex min-w-0 flex-col items-center text-center no-underline"
+      className={`flex min-w-0 flex-col items-center text-center no-underline ${
+        variant === 'mobile' ? 'w-full' : ''
+      }`}
       aria-label={category.name}
+      draggable={false}
+      onDragStart={(e) => e.preventDefault()}
     >
-      <div className="top-picks-circle">
-        {showImage ? (
-          <div className="top-picks-circle__img">
-            <img
-              src={src!}
-              alt=""
-              loading={priority ? 'eager' : 'lazy'}
-              fetchPriority={priority ? 'high' : 'auto'}
-              decoding={priority ? 'sync' : 'async'}
-              onError={() => setImgBroken(true)}
-            />
-          </div>
-        ) : (
-          <span className="text-3xl font-bold text-[#FF6B6B] select-none">
-            {firstLetter.toUpperCase()}
-          </span>
-        )}
+      <div className={`top-picks-circle${showImage && !imgReady ? ' top-picks-circle--waiting' : ''}`}>
+        {img}
       </div>
       <div className="top-picks-label">{category.name}</div>
     </Link>
@@ -214,8 +237,12 @@ export default function CategoriesSection({
   const searchCache = useRef<{ [key: string]: any[] }>({})
   // Restaurant list for mapping id to name
   const [restaurantList, setRestaurantList] = useState<any[]>([])
+  const foodStores = useMemo(
+    () => (restaurantList || []).filter((r: any) => isFoodOrderStore(r)),
+    [restaurantList]
+  )
   const topStores = useMemo(() => {
-    const stores = (restaurantList || [])
+    const stores = foodStores
       .map((r: any) => {
         const id = String(r?.restaurant_id ?? r?.id ?? '')
         const name = String(r?.restaurant_name ?? r?.name ?? '').trim()
@@ -256,9 +283,9 @@ export default function CategoriesSection({
       .map((x) => x.store)
 
     return sorted.slice(0, 10)
-  }, [restaurantList])
+  }, [foodStores])
   const locationStores = useMemo(() => {
-    return (restaurantList || [])
+    return foodStores
       .map((r: any) => {
         const id = String(r?.restaurant_id ?? r?.id ?? '')
         const name = String(r?.restaurant_name ?? r?.name ?? '').trim()
@@ -297,7 +324,7 @@ export default function CategoriesSection({
       avgRating: number | null
       isClosed: boolean
     }>
-  }, [restaurantList])
+  }, [foodStores])
 
   // Notification state
   const [notification, setNotification] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
@@ -409,13 +436,26 @@ export default function CategoriesSection({
     })
   }
 
+  useLayoutEffect(() => {
+    const cached = readCachedOrderRestaurants()
+    if (cached.length > 0) setRestaurantList(cached)
+  }, [])
+
   useEffect(() => {
     if (!hydrated) return
-    const q = restaurantGeoQs ? `?${restaurantGeoQs}` : ''
+    const q = restaurantGeoQs ? `?${restaurantGeoQs}&listing=food` : '?listing=food'
+    const cached = readCachedOrderRestaurants(q)
+    if (cached.length > 0) setRestaurantList(cached)
     fetch(`/api/restaurants${q}`)
       .then((res) => res.json())
-      .then((data) => setRestaurantList(Array.isArray(data) ? data : []))
-      .catch(() => setRestaurantList([]))
+      .then((data) => {
+        const list = Array.isArray(data) ? data : []
+        writeCachedOrderRestaurants(q, list)
+        setRestaurantList(list)
+      })
+      .catch(() => {
+        /* keep cached list so back-navigation does not hide stores */
+      })
   }, [restaurantGeoQs, hydrated])
 
   // Restore auth state on mount
@@ -655,40 +695,19 @@ export default function CategoriesSection({
         })
         .filter((c) => c.name)
 
-    // Seed SSR list + warm session cache immediately (instant paint).
+    // Seed SSR list + warm durable cache immediately (instant paint).
     if (Array.isArray(initialCategories) && initialCategories.length > 0) {
       const seeded = normalize(initialCategories)
       setFoodCategories(seeded)
       setCategoriesLoading(false)
-      try {
-        sessionStorage.setItem(FOOD_CATEGORIES_CACHE_KEY, JSON.stringify(seeded))
-      } catch {
-        // ignore
-      }
-      // Decode first page of icons ASAP (same-origin attachment proxy).
-      for (const c of seeded.slice(0, TOP_PICKS_PER_PAGE)) {
-        const src = c.img ? resolveAppAssetUrl(c.img) : null
-        if (!src || typeof window === 'undefined') continue
-        const img = new window.Image()
-        img.decoding = 'async'
-        img.src = src
-      }
+      writeCachedFoodCategories(seeded)
+      preloadCategoryRailImages(seeded.map((c) => (c.img ? resolveAppAssetUrl(c.img) : null)))
     } else {
-      try {
-        const raw = sessionStorage.getItem(FOOD_CATEGORIES_CACHE_KEY)
-        if (raw) {
-          const parsed = JSON.parse(raw) as Array<{
-            id: string
-            name: string
-            img: string | null
-          }>
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setFoodCategories(parsed)
-            setCategoriesLoading(false)
-          }
-        }
-      } catch {
-        // Ignore cache read errors and fetch from API.
+      const cached = readCachedFoodCategories()
+      if (cached.length > 0) {
+        setFoodCategories(cached)
+        setCategoriesLoading(false)
+        void preloadCategoryRailImages(cached.map((c) => (c.img ? resolveAppAssetUrl(c.img) : null)))
       }
     }
 
@@ -700,11 +719,8 @@ export default function CategoriesSection({
         if (!Array.isArray(data)) return
         const list = normalize(data)
         setFoodCategories(list)
-        try {
-          sessionStorage.setItem(FOOD_CATEGORIES_CACHE_KEY, JSON.stringify(list))
-        } catch {
-          // Ignore cache write failures.
-        }
+        writeCachedFoodCategories(list)
+        void preloadCategoryRailImages(list.map((c) => (c.img ? resolveAppAssetUrl(c.img) : null)))
       })
       .catch(() => {
         /* keep seeded / cached list */
@@ -776,6 +792,21 @@ export default function CategoriesSection({
     const el = categoryTrackRef.current
     if (!el) return
 
+    const beginMouseDrag = () => {
+      // Must disable snap/smooth immediately — waiting for React re-render snaps back to page 0.
+      el.classList.add('is-dragging')
+      el.style.scrollSnapType = 'none'
+      el.style.scrollBehavior = 'auto'
+      setCategoryDragging(true)
+    }
+
+    const endMouseDragStyles = () => {
+      el.classList.remove('is-dragging')
+      el.style.scrollSnapType = ''
+      el.style.scrollBehavior = ''
+      setCategoryDragging(false)
+    }
+
     const syncPageFromScroll = () => {
       if (Date.now() < ignoreScrollSyncUntil.current) return
       const width = el.clientWidth
@@ -814,13 +845,13 @@ export default function CategoriesSection({
       const drag = categoryDragRef.current
       if (!drag.active) return
       const dx = e.clientX - drag.startX
-      if (!drag.moved && Math.abs(dx) < 8) return
+      if (!drag.moved && Math.abs(dx) < 6) return
       if (!drag.moved) {
         drag.moved = true
         suppressClickRef.current = true
-        setCategoryDragging(true)
+        beginMouseDrag()
       }
-      ignoreScrollSyncUntil.current = 0
+      ignoreScrollSyncUntil.current = Date.now() + 80
       el.scrollLeft = drag.startScroll - dx
       e.preventDefault()
     }
@@ -829,12 +860,12 @@ export default function CategoriesSection({
       const drag = categoryDragRef.current
       if (!drag.active) return
       drag.active = false
-      setCategoryDragging(false)
       try {
-        el.releasePointerCapture(e.pointerId)
+        if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
       } catch {
         /* ignore */
       }
+      endMouseDragStyles()
       if (!drag.moved) return
       const width = el.clientWidth
       if (width <= 0) return
@@ -854,6 +885,10 @@ export default function CategoriesSection({
       suppressClickRef.current = false
     }
 
+    const onDragStart = (e: DragEvent) => {
+      e.preventDefault()
+    }
+
     const onWheel = (e: WheelEvent) => {
       const dx = e.deltaX
       const dy = e.deltaY
@@ -869,24 +904,28 @@ export default function CategoriesSection({
 
     el.addEventListener('scroll', onScroll, { passive: true })
     el.addEventListener('scrollend', syncPageFromScroll as EventListener)
-    el.addEventListener('pointerdown', onPointerDown)
-    el.addEventListener('pointermove', onPointerMove)
+    el.addEventListener('pointerdown', onPointerDown, true)
+    el.addEventListener('pointermove', onPointerMove, { passive: false })
     el.addEventListener('pointerup', endDrag)
     el.addEventListener('pointercancel', endDrag)
+    el.addEventListener('lostpointercapture', endDrag as EventListener)
+    el.addEventListener('dragstart', onDragStart)
     el.addEventListener('click', onClickCapture, true)
     el.addEventListener('wheel', onWheel, { passive: false })
 
-    // Align track with current page once mounted.
     scrollCategoryToPage(categoryPageRef.current, false)
 
     return () => {
       if (scrollRaf) cancelAnimationFrame(scrollRaf)
+      endMouseDragStyles()
       el.removeEventListener('scroll', onScroll)
       el.removeEventListener('scrollend', syncPageFromScroll as EventListener)
-      el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('pointerdown', onPointerDown, true)
       el.removeEventListener('pointermove', onPointerMove)
       el.removeEventListener('pointerup', endDrag)
       el.removeEventListener('pointercancel', endDrag)
+      el.removeEventListener('lostpointercapture', endDrag as EventListener)
+      el.removeEventListener('dragstart', onDragStart)
       el.removeEventListener('click', onClickCapture, true)
       el.removeEventListener('wheel', onWheel)
     }
@@ -1471,7 +1510,7 @@ export default function CategoriesSection({
               style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
             >
               {topStores.map((store) => (
-                <Link
+                <StoreInnerLink
                   key={store.id}
                   href={restaurantDetailHref(
                     {
@@ -1499,7 +1538,7 @@ export default function CategoriesSection({
                   </div>
                   <p className="mt-2 text-sm font-medium text-gray-900 truncate">{store.name}</p>
                   <p className="text-xs text-gray-500">{store.isClosed ? 'Closed' : store.deliveryTime}</p>
-                </Link>
+                </StoreInnerLink>
               ))}
             </div>
           </div>
@@ -1513,7 +1552,7 @@ export default function CategoriesSection({
             </h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
               {locationStores.map((store) => (
-                <Link
+                <StoreInnerLink
                   key={`location-store-${store.id}`}
                   href={restaurantDetailHref(
                     {
@@ -1558,7 +1597,7 @@ export default function CategoriesSection({
                       <span>{store.isClosed ? 'Not accepting orders' : store.deliveryTime}</span>
                     </div>
                   </div>
-                </Link>
+                </StoreInnerLink>
               ))}
             </div>
           </div>

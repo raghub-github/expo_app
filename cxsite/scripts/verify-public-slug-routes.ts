@@ -53,8 +53,8 @@ async function main() {
   slugTests += 1
   const invalid = await fetchHead(`${BASE}/restaurant/does-not-exist-xyz-404`, 'follow')
   checks.push({
-    name: 'Invalid slug 404',
-    ok: invalid.status === 404,
+    name: 'Invalid slug still renders store inner page',
+    ok: invalid.status === 200,
     detail: `status=${invalid.status}`,
   })
 

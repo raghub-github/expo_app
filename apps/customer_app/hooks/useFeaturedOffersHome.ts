@@ -1,41 +1,36 @@
 import { type QueryClient, useQuery } from "@tanstack/react-query";
 import { offersService } from "@/services/offers.service";
+import {
+  normalizeOfferLocationParams,
+  type OfferLocationParams,
+} from "@/lib/featuredOfferGeo";
 
-export type FeaturedOffersHomeParams = {
-  lat?: number;
-  lng?: number;
-  pincode?: string;
-  state?: string;
-  city?: string;
-};
+export type FeaturedOffersHomeParams = OfferLocationParams;
 
 export function featuredOffersHomeQueryKey(params: FeaturedOffersHomeParams) {
-  return [
-    "featured-offers-home",
-    params.lat,
-    params.lng,
-    params.pincode,
-    params.state,
-    params.city,
-  ] as const;
+  const p = normalizeOfferLocationParams(params);
+  return ["featured-offers-home", p.lat, p.lng, p.pincode, p.state, p.city] as const;
 }
 
 export function featuredOffersHomeQueryOptions(params: FeaturedOffersHomeParams) {
+  const p = normalizeOfferLocationParams(params);
   return {
-    queryKey: featuredOffersHomeQueryKey(params),
+    queryKey: featuredOffersHomeQueryKey(p),
     queryFn: () =>
       offersService.getFeaturedOffers({
-        pincode: params.pincode,
-        state: params.state,
-        city: params.city,
-        lat: params.lat,
-        lng: params.lng,
-        serviceType: "FOOD",
+        pincode: p.pincode,
+        state: p.state,
+        city: p.city,
+        lat: p.lat,
+        lng: p.lng,
+        serviceType: "FOOD" as const,
         limit: 6,
       }),
     staleTime: 5 * 60 * 1000,
     gcTime: 30 * 60 * 1000,
     retry: 1,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   } as const;
 }
 

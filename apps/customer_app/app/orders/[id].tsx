@@ -208,8 +208,15 @@ export default function OrderDetailsScreen() {
     },
     enabled: !!orderId,
     initialData: () => getOrderDetailInitialData(queryClient, orderId),
-    staleTime: 5_000,
-    refetchOnMount: "always",
+    staleTime: useHistoryOrderDetails ? 60_000 : 5_000,
+    refetchOnMount: (query) => {
+      const data = query.state.data;
+      if (!data) return true;
+      if (useHistoryOrderDetails || isTerminalOrderStatus(normalizeCustomerOrderStatus(data.status))) {
+        return false;
+      }
+      return "always";
+    },
     refetchInterval: (query) => {
       const data = query.state.data;
       const status = normalizeCustomerOrderStatus(data?.status);
@@ -376,7 +383,7 @@ export default function OrderDetailsScreen() {
   const { data: mapStore } = useQuery({
     queryKey: ["merchant", storeIdForMap, "tracking-map"],
     queryFn: () => merchantService.getMerchantById(storeIdForMap!),
-    enabled: Boolean(storeIdForMap),
+    enabled: Boolean(storeIdForMap) && isInProgress,
     staleTime: 5 * 60 * 1000,
   });
   const { deliveryLat, deliveryLng, pickupLat, pickupLng } = resolveOrderTrackingMapSnapshots({

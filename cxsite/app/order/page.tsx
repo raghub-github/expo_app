@@ -10,5 +10,14 @@ export default async function Order() {
   // Seed Top Picks from DB (same as customer app) so first paint isn't empty.
   const initialCategories = await fetchUserAppCategories('FOOD')
 
-  return <OrderPage initialCategories={initialCategories} />
+  return (
+    <>
+      {initialCategories.slice(0, 14).map((c) => {
+        const src = c.img?.trim()
+        if (!src) return null
+        return <link key={c.id} rel="preload" as="image" href={src} />
+      })}
+      <OrderPage initialCategories={initialCategories} />
+    </>
+  )
 }

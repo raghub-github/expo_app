@@ -1,36 +1,29 @@
 import { type QueryClient, useQuery } from "@tanstack/react-query";
 import { offersService } from "@/services/offers.service";
+import {
+  normalizeOfferLocationParams,
+  type OfferLocationParams,
+} from "@/lib/featuredOfferGeo";
 
-export type FeaturedOffersRideParams = {
-  lat?: number;
-  lng?: number;
-  pincode?: string;
-  state?: string;
-  city?: string;
-};
+export type FeaturedOffersRideParams = OfferLocationParams;
 
 export function featuredOffersRideQueryKey(params: FeaturedOffersRideParams) {
-  return [
-    "featured-offers-ride",
-    params.lat,
-    params.lng,
-    params.pincode,
-    params.state,
-    params.city,
-  ] as const;
+  const p = normalizeOfferLocationParams(params);
+  return ["featured-offers-ride", p.lat, p.lng, p.pincode, p.state, p.city] as const;
 }
 
 export function featuredOffersRideQueryOptions(params: FeaturedOffersRideParams) {
+  const p = normalizeOfferLocationParams(params);
   return {
-    queryKey: featuredOffersRideQueryKey(params),
+    queryKey: featuredOffersRideQueryKey(p),
     queryFn: () =>
       offersService.getFeaturedOffers({
-        pincode: params.pincode,
-        state: params.state,
-        city: params.city,
-        lat: params.lat,
-        lng: params.lng,
-        serviceType: "RIDE",
+        pincode: p.pincode,
+        state: p.state,
+        city: p.city,
+        lat: p.lat,
+        lng: p.lng,
+        serviceType: "RIDE" as const,
         limit: 10,
       }),
     staleTime: 5 * 60_000,

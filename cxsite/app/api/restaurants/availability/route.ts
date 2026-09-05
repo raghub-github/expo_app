@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { DEFAULT_SERVICE_RADIUS_KM } from '@/lib/server/merchantStoreGeo'
-import { fetchGeoFilteredStores } from '@/lib/server/fetchMerchantStores'
+import { fetchGeoFilteredStores, enrichStoreListMeta } from '@/lib/server/fetchMerchantStores'
+import { applyListingVerticalFilter, parseListingQueryParam } from '@/lib/merchantStoreTypes'
 
 export const dynamic = 'force-dynamic'
 
@@ -41,7 +42,11 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    const stores = await fetchGeoFilteredStores(userLat, userLon, radiusKm)
+    const listing = parseListingQueryParam(searchParams.get('listing'))
+    let stores = await fetchGeoFilteredStores(userLat, userLon, radiusKm)
+    if (listing !== 'all') {
+      stores = applyListingVerticalFilter(await enrichStoreListMeta(stores), listing)
+    }
     const count = stores.length
     const res = NextResponse.json({
       available: count > 0,

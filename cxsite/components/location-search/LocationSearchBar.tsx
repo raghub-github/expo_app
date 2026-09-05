@@ -1,13 +1,13 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import Link from 'next/link'
 import { MapPin, Loader2, Search } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { LocationItem } from './LocationPopup'
 import { reverseGeocodeSearchParams } from '@/lib/normalizeLatLon'
 import LocationSheet from './LocationSheet'
 import { restaurantDetailHref } from '@/lib/restaurantDetailLink'
+import StoreInnerLink from '@/components/order/StoreInnerLink'
 
 const LOCATION_STORAGE_KEY = 'gatimitra_location_display'
 const DEBOUNCE_MS = 300
@@ -193,7 +193,7 @@ export default function LocationSearchBar() {
             )}
             {!searchLoading &&
               searchResults.map((item, idx) => (
-                <Link
+                <StoreInnerLink
                   key={item.id ?? idx}
                   href={
                     item.restaurant_id || item.public_slug
@@ -220,7 +220,7 @@ export default function LocationSearchBar() {
                       </div>
                     )}
                   </div>
-                </Link>
+                </StoreInnerLink>
               ))}
           </motion.div>
         )}

@@ -1,11 +1,15 @@
 /**
  * Reorder eligibility: store must be OPEN and delivery-serviceable for the
  * customer's current location / address (same store-quote locality logic).
+ *
+ * Do not call the hook per history card — that fires N live-status + store-quote
+ * requests and blocks order list/detail on HTTP/1.1. Check on Reorder tap instead.
  */
 
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
+import { getStoreDeliveryQuote } from "@/services/distance.service";
 import { merchantService } from "@/services/merchant.service";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 
@@ -15,6 +19,34 @@ export type ReorderGateReason =
   | "out_of_zone"
   | "store_closed"
   | "unavailable";
+
+export async function checkReorderStoreEligibility(input: {
+  storeId: string | null;
+  deliveryAddressId: number | null;
+  dropCoords: { latitude: number; longitude: number } | null;
+}): Promise<ReorderGateReason> {
+  const storeId = input.storeId?.trim() || null;
+  const hasDeliveryAnchor = input.deliveryAddressId != null || input.dropCoords != null;
+  if (!storeId || !hasDeliveryAnchor) return "unavailable";
+
+  const [live, quote] = await Promise.all([
+    merchantService.getStoreLiveStatusSnapshot(storeId).catch(() => null),
+    getStoreDeliveryQuote({
+      storeId,
+      addressId: input.deliveryAddressId ?? undefined,
+      drop:
+        input.deliveryAddressId == null && input.dropCoords
+          ? { lat: input.dropCoords.latitude, lng: input.dropCoords.longitude }
+          : undefined,
+    }).catch(() => null),
+  ]);
+
+  if (quote?.serviceable === false) return "out_of_zone";
+  if (live?.liveStatus === "CLOSED") return "store_closed";
+  if (quote?.serviceable !== true) return "unavailable";
+  if (live?.liveStatus !== "OPEN") return "unavailable";
+  return "ok";
+}
 
 export function useReorderStoreEligibility(input: {
   storeId: string | null;
@@ -79,7 +111,6 @@ export function useReorderStoreEligibility(input: {
     return { canReorder: false, reason: "store_closed" };
   }
   if (liveStatus !== "OPEN") {
-    // Unknown status — do not leave Reorder always-on.
     return { canReorder: false, reason: "unavailable" };
   }
   return { canReorder: true, reason: "ok" };

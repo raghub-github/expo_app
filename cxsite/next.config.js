@@ -69,6 +69,7 @@ const nextConfig = {
   async rewrites() {
     return [
       { source: '/home/merchant/:id', destination: '/restaurant/:id' },
+      { source: '/favicon.ico', destination: '/img/fav.png' },
     ]
   },
   async headers() {

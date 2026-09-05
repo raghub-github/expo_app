@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { parseStoreTypeQueryParam } from '@/lib/merchantStoreTypes'
+import {
+  applyListingVerticalFilter,
+  parseListingQueryParam,
+  parseStoreTypeQueryParam,
+} from '@/lib/merchantStoreTypes'
 import {
   DEFAULT_SERVICE_RADIUS_KM,
 } from '@/lib/server/merchantStoreGeo'
@@ -44,6 +48,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const storeTypeFilter = parseStoreTypeQueryParam(searchParams.get('store_type'))
+    const listing = parseListingQueryParam(searchParams.get('listing'))
     const latParam = searchParams.get('lat')
     const lonParam = searchParams.get('lon') ?? searchParams.get('lng')
     const radiusKm = Math.min(
@@ -68,15 +73,15 @@ export async function GET(request: NextRequest) {
     if (hasValidCoords) {
       let rows = await fetchGeoFilteredStores(userLat, userLon, radiusKm)
       rows = await withPublicSlugs(rows)
-      const mapped = applyStoreTypeFilter(rows, storeTypeFilter)
+      const mapped = applyListingVerticalFilter(applyStoreTypeFilter(rows, storeTypeFilter), listing)
       log('Geo filter at', userLat, userLon, '→', mapped.length, 'stores')
       return NextResponse.json(mapped.map((r) => sanitizePublicStoreListRow(r as unknown as Record<string, unknown>)))
     }
 
     log('Pan-India: approved active stores')
-    const mapped = applyStoreTypeFilter(
-      await withPublicSlugs(await fetchPanIndiaStores()),
-      storeTypeFilter
+    const mapped = applyListingVerticalFilter(
+      applyStoreTypeFilter(await withPublicSlugs(await fetchPanIndiaStores()), storeTypeFilter),
+      listing
     )
     log('Returning', mapped.length, 'restaurants (pan-India)')
     return NextResponse.json(mapped.map((r) => sanitizePublicStoreListRow(r as unknown as Record<string, unknown>)))

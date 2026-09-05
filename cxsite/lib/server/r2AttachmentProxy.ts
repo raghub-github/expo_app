@@ -1,4 +1,5 @@
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 let s3Client: S3Client | null = null
 
@@ -286,16 +287,59 @@ export function expandR2LookupCandidates(primary: string): string[] {
 /** Candidate R2 keys — same families as partner menu/gallery uploads. */
 export function attachmentKeyCandidates(rawKey: string): string[] {
   const k = decodeKeyParam(rawKey)
+  // Category rail + bundled CMS assets live at the exact R2 key — skip menu-path variants.
+  if (/^(user-app-categories|app-static-assets)\//i.test(k)) {
+    return [k]
+  }
   return expandR2LookupCandidates(k)
 }
 
-export async function fetchAttachmentFromR2(
-  search: string
-): Promise<{ body: Buffer; contentType: string } | null> {
+export function r2KeyFromProxySearch(search: string): string | null {
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search)
+  const keyParam = params.get('key')
+  if (!keyParam) return null
+  const k = decodeKeyParam(keyParam)
+  return k || null
+}
+
+/** Large CMS/category files — never buffer through Next; 302 like the backend proxy. */
+export function shouldRedirectAttachmentToR2(key: string): boolean {
+  return /^(user-app-categories|app-static-assets)\//i.test(key)
+}
+
+type SignedCacheEntry = { url: string; expiresAtMs: number }
+const signedUrlLru = new Map<string, SignedCacheEntry>()
+const SIGNED_URL_TTL_SEC = 3600
+
+export async function signR2GetUrl(key: string): Promise<string | null> {
   const client = getR2Client()
   const bucket = process.env.R2_BUCKET_NAME?.trim()
-  if (!client || !bucket) return null
+  if (!client || !bucket || !key) return null
 
+  const now = Date.now()
+  const hit = signedUrlLru.get(key)
+  if (hit && hit.expiresAtMs - now > 5 * 60_000) return hit.url
+
+  try {
+    const url = await getSignedUrl(
+      client,
+      new GetObjectCommand({ Bucket: bucket, Key: key }),
+      { expiresIn: SIGNED_URL_TTL_SEC }
+    )
+    signedUrlLru.set(key, { url, expiresAtMs: now + SIGNED_URL_TTL_SEC * 1000 })
+    while (signedUrlLru.size > 400) {
+      const oldest = signedUrlLru.keys().next().value
+      if (oldest == null) break
+      signedUrlLru.delete(oldest)
+    }
+    return url
+  } catch (err) {
+    console.error('[r2AttachmentProxy] sign', key, err)
+    return null
+  }
+}
+
+function r2LookupKeysFromSearch(search: string): string[] {
   const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search)
   const keys: string[] = []
   const keyParam = params.get('key')
@@ -305,6 +349,50 @@ export async function fetchAttachmentFromR2(
     const fromUrl = keyFromUrlParam(decodeURIComponent(urlParam))
     if (fromUrl) keys.push(...attachmentKeyCandidates(fromUrl))
   }
+  return keys
+}
+
+/** Stream category/CMS files same-origin (no 302) so the browser can cache the bytes. */
+export async function streamAttachmentFromR2(
+  search: string
+): Promise<{ stream: ReadableStream; contentType: string } | null> {
+  const client = getR2Client()
+  const bucket = process.env.R2_BUCKET_NAME?.trim()
+  if (!client || !bucket) return null
+
+  const keys = r2LookupKeysFromSearch(search)
+  if (keys.length === 0) return null
+
+  const tried = new Set<string>()
+  for (const key of keys) {
+    if (tried.has(key)) continue
+    tried.add(key)
+    try {
+      const response = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }))
+      if (!response.Body) continue
+      const stream = response.Body.transformToWebStream()
+      return {
+        stream,
+        contentType: response.ContentType || 'application/octet-stream',
+      }
+    } catch (err: unknown) {
+      const code = (err as { name?: string })?.name
+      if (code !== 'NoSuchKey' && code !== 'NotFound') {
+        console.error('[r2AttachmentProxy] stream', key, err)
+      }
+    }
+  }
+  return null
+}
+
+export async function fetchAttachmentFromR2(
+  search: string
+): Promise<{ body: Buffer; contentType: string } | null> {
+  const client = getR2Client()
+  const bucket = process.env.R2_BUCKET_NAME?.trim()
+  if (!client || !bucket) return null
+
+  const keys = r2LookupKeysFromSearch(search)
   if (keys.length === 0) return null
 
   const tried = new Set<string>()
