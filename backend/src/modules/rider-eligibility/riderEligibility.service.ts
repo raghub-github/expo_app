@@ -253,12 +253,23 @@ export async function resolveRiderAllServiceEligibilityAtLocation(args: {
   lng?: number | null;
   pincode?: string | null;
   state?: string | null;
+  /**
+   * Onboarding PREVIEW: merge the vehicle attributes the rider is currently choosing in the
+   * form (vehicleClass/vehicleType/fuelKind/ownership) OVER their real, backend-resolved
+   * inputs (DL/RC verification, EV/ownership/commercial proof stay authoritative). Lets the
+   * "Services you will deliver" picker show exactly what THIS vehicle would be eligible for
+   * before it is saved — without ever trusting the client for document verification (§4/§7).
+   */
+  attributesOverride?: Partial<RiderEligibilityInput> | null;
 }): Promise<{
   attributes: RiderEligibilityInput;
   resolvedGeo: { level: string; refId: string } | null;
   services: Record<EligibilityService, EligibilityDecision>;
 }> {
-  const attributes = await loadRiderEligibilityAttributes(args.riderId);
+  const base = await loadRiderEligibilityAttributes(args.riderId);
+  const attributes: RiderEligibilityInput = args.attributesOverride
+    ? { ...base, ...args.attributesOverride }
+    : base;
   const overrides = await loadActiveOverridesForRider(args.riderId);
 
   let resolvedGeo: { level: string; refId: string } | null = null;

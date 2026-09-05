@@ -40,6 +40,8 @@ import type {
   RiderVehicleOnboardingPrefill,
   UpsertRiderVehiclePayload,
 } from "@/src/hooks/useRiderVehicle";
+import { useQuery } from "@tanstack/react-query";
+import { riderApi } from "@/src/services/api/riderApi";
 import { useCategoryServiceAssignments } from "@/src/hooks/useCategoryServiceAssignments";
 import { useOnboardingVehicleTypes } from "@/src/hooks/useOnboardingVehicleTypes";
 import {
@@ -380,6 +382,68 @@ export function VehicleDetailsForm({
     assignmentsQuery.data?.byMapsToVehicleType,
   ]);
 
+  // ── Backend-authoritative service eligibility for the vehicle being entered ──
+  // The RC (fuel + class) is fetched from Cashfree and the rider chooses type/commercial here;
+  // the engine returns which of Food / Parcel / Person-ride THIS vehicle can actually deliver
+  // (RC/DL verification + EV/petrol + vehicle class + commercial + location-wise rules). The
+  // picker then offers only eligible services and explains the rest — no client-side guessing.
+  const eligibilityPreviewQuery = useQuery({
+    queryKey: [
+      "rider",
+      "onboarding",
+      "eligible-services",
+      vehicleType,
+      vehicleCategoryCode ?? "",
+      fuelType ?? "",
+      isCommercial == null ? "unset" : String(isCommercial),
+    ],
+    queryFn: () =>
+      riderApi.previewEligibleServices({
+        vehicleType: vehicleType || null,
+        vehicleCategory: vehicleCategoryCode || null,
+        fuelKind: fuelType || null,
+        isCommercial: isCommercial ?? null,
+      }),
+    enabled: Boolean(vehicleType && vehicleType.trim().length > 0),
+    staleTime: 30_000,
+    retry: 1,
+  });
+
+  const eligibility = eligibilityPreviewQuery.data ?? null;
+  const eligibilityKnown = Boolean(eligibility?.services);
+  /** Hard-gate selection only when the backend actually enforces eligibility (else advisory). */
+  const eligibilityEnforced = eligibility?.enforced ?? false;
+  const serviceEligibility = useMemo(() => {
+    const map: Record<string, { eligible: boolean; reason: string | null }> = {};
+    for (const v of RIDER_SERVICE_TYPE_VALUES) {
+      const d = eligibility?.services?.[v as "food" | "parcel" | "person_ride"];
+      map[v] = d
+        ? {
+            eligible: d.eligible,
+            reason: d.eligible
+              ? null
+              : d.blocking?.[0]?.reason ?? "Not available with this vehicle / documents here.",
+          }
+        : { eligible: true, reason: null };
+    }
+    return map;
+  }, [eligibility]);
+
+  /** Picker rows: eligibility-driven once the engine responds; static filter until then. */
+  const serviceOptionsWithEligibility = useMemo(() => {
+    if (!eligibilityKnown) {
+      return allowedServiceOptions.map((o) => ({ ...o, eligible: true, reason: null as string | null }));
+    }
+    const rows = RIDER_SERVICE_TYPE_OPTIONS.filter((o) => o.value !== "all").map((o) => {
+      const e = serviceEligibility[o.value] ?? { eligible: true, reason: null };
+      return { value: o.value, label: o.label, eligible: e.eligible, reason: e.reason };
+    });
+    const allEligible = rows.length > 0 && rows.every((r) => r.eligible);
+    return allEligible
+      ? [{ value: "all", label: "All services", eligible: true, reason: null as string | null }, ...rows]
+      : rows;
+  }, [eligibilityKnown, allowedServiceOptions, serviceEligibility]);
+
   useEffect(() => {
     const assigned = filterServicesByVehicleAssignments(
       normalizeSelectedServiceTypes(selectedServices),
@@ -403,6 +467,20 @@ export function VehicleDetailsForm({
     assignmentsQuery.data?.byMapsToVehicleType,
   ]);
 
+  // When eligibility is ENFORCED, a service the vehicle/documents don't qualify for can never
+  // be selected — drop any such service from the current selection so the rider can't save it.
+  useEffect(() => {
+    if (!eligibilityKnown || !eligibilityEnforced) return;
+    setSelectedServices((prev) => {
+      const normalized = normalizeSelectedServiceTypes(prev);
+      const kept = normalized.filter((s) => serviceEligibility[s]?.eligible !== false);
+      if (kept.length === normalized.length) return prev;
+      return kept.length === RIDER_SERVICE_TYPE_VALUES.length
+        ? ["all", ...RIDER_SERVICE_TYPE_VALUES]
+        : kept;
+    });
+  }, [eligibilityKnown, eligibilityEnforced, serviceEligibility]);
+
   const canSubmitStep2 = useMemo(() => {
     if (normalizedServices.length < 1) return false;
     if (!ownershipType) return false;
@@ -416,12 +494,14 @@ export function VehicleDetailsForm({
     if (normalizedServices.length === RIDER_SERVICE_TYPE_VALUES.length) {
       return t("vehicle.form.serviceAll", "All services");
     }
-    return allowedServiceOptions.filter(
-      (o) => o.value !== "all" && normalizedServices.includes(o.value),
+    return serviceOptionsWithEligibility.filter(
+      (o) =>
+        o.value !== "all" &&
+        normalizedServices.includes(o.value as (typeof RIDER_SERVICE_TYPE_VALUES)[number]),
     )
       .map((o) => o.label)
       .join(", ");
-  }, [normalizedServices, allowedServiceOptions, t]);
+  }, [normalizedServices, serviceOptionsWithEligibility, t]);
 
   const validateStep1 = (): boolean => {
     const reg = registrationNumber.trim();
@@ -1089,25 +1169,41 @@ export function VehicleDetailsForm({
             <Text style={styles.modalTitle}>
               {t("vehicle.form.serviceTypes", "Services you will deliver")}
             </Text>
-            {allowedServiceOptions.map((opt) => {
+            {serviceOptionsWithEligibility.map((opt) => {
               const checked = isServiceOptionSelected(selectedServices, opt.value);
+              const blocked = opt.eligible === false;
+              const hardBlocked = blocked && eligibilityEnforced;
               return (
                 <Pressable
                   key={opt.value}
-                  onPress={() =>
-                    setSelectedServices((prev) => toggleServiceSelection(prev, opt.value))
-                  }
-                  style={styles.checkRow}
+                  disabled={hardBlocked}
+                  onPress={() => {
+                    if (hardBlocked) return;
+                    setSelectedServices((prev) => toggleServiceSelection(prev, opt.value));
+                  }}
+                  style={[styles.checkRow, hardBlocked && styles.checkRowDisabled]}
                 >
                   <Ionicons
-                    name={checked ? "checkbox" : "square-outline"}
+                    name={hardBlocked ? "lock-closed" : checked ? "checkbox" : "square-outline"}
                     size={22}
-                    color={checked ? TEAL : "#94A3B8"}
+                    color={hardBlocked ? "#CBD5E1" : checked ? TEAL : "#94A3B8"}
                   />
-                  <Text style={styles.checkLabel}>{opt.label}</Text>
+                  <View style={styles.checkTextCol}>
+                    <Text style={[styles.checkLabel, hardBlocked && styles.checkLabelDisabled]}>
+                      {opt.label}
+                    </Text>
+                    {blocked && opt.reason ? (
+                      <Text style={styles.checkReason}>{opt.reason}</Text>
+                    ) : null}
+                  </View>
                 </Pressable>
               );
             })}
+            {eligibilityPreviewQuery.isLoading && !eligibilityKnown ? (
+              <Text style={styles.checkReason}>
+                {t("vehicle.form.checkingEligibility", "Checking eligible services…")}
+              </Text>
+            ) : null}
             <Pressable
               onPress={() => setServicePickerOpen(false)}
               style={styles.modalDoneBtn}
@@ -1517,6 +1613,21 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "500",
     color: "#334155",
+  },
+  checkRowDisabled: {
+    opacity: 0.85,
+  },
+  checkTextCol: {
+    flex: 1,
+    gap: 2,
+  },
+  checkLabelDisabled: {
+    color: "#94A3B8",
+  },
+  checkReason: {
+    fontSize: 12,
+    color: "#B45309",
+    fontWeight: "500",
   },
   modalDoneBtn: {
     marginTop: 12,
