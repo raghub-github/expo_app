@@ -1,6 +1,7 @@
 export function applyLiveProgressFromPush(data: Record<string, unknown>): Promise<void>;
 export function dismissStaleLiveOrderTrayNotifications(
-  activeOrderIds: Set<string> | string[]
+  activeOrderIds: Set<string> | string[],
+  opts?: { force?: boolean }
 ): Promise<void>;
 export function isGmLiveProgressPush(data: Record<string, unknown>): boolean;
 export function liveProgressHandlerResult(data: Record<string, unknown>): {
