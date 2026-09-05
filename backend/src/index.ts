@@ -53,6 +53,7 @@ import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes
 import { pushRoutes } from "./modules/push/push.routes.js";
 import { notificationRoutes, notificationInternalRoutes, startScheduledPoller, startNotificationRetryPoller, startReminderPoller, registerDomainEventHandlers } from "./modules/notifications/index.js";
 import { startHotZoneReconciler } from "./lib/hot-zones/hot-zone-reconciler.js";
+import { startRideOnlineQrReconciler } from "./modules/rides/ride-online-qr-reconciler.js";
 import { verificationAdminRoutes } from "./modules/verification/routes/admin.routes.js";
 import { cashfreeHeaderWebhookRoutes, cashfreeBodySignedWebhookRoutes } from "./modules/verification/routes/webhook.routes.js";
 import { offersRoutes } from "./modules/offers/offers.routes.js";
@@ -1225,6 +1226,13 @@ try {
     app.log.error({ err }, "hot_zone_reconciler_start_failed"),
   );
   app.log.info("hot zone reconciler started");
+
+  // Online-QR ride payment reconciler — safety net that finalizes rides whose
+  // `qr_code.credited` webhook was missed/mis-configured, so the ride auto-completes
+  // even without the webhook. No-op (does not spin) in dummy mode / without real keys.
+  void startRideOnlineQrReconciler().catch((err) =>
+    app.log.error({ err }, "ride_online_qr_reconciler_start_failed"),
+  );
 
   // Verification background workers — R2 mirror + retry queue.
   // Skip locked; running multiple backend replicas is safe.
