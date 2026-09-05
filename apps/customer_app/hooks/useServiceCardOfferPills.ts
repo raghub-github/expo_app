@@ -4,7 +4,7 @@
  */
 
 import { useMemo } from "react";
-import { type QueryClient, useQueries } from "@tanstack/react-query";
+import { type QueryClient, useQueries, keepPreviousData } from "@tanstack/react-query";
 import { useLocationStore } from "@/store/locationStore";
 import { offersService } from "@/services/offers.service";
 import type { CustomerHomeServiceId } from "@/lib/customerHomeServiceMeta";
@@ -81,12 +81,12 @@ export function useServiceCardOfferPills(enabled = true): ServiceOfferPillMap {
       {
         ...featuredOffersHomeQueryOptions(params),
         enabled: ready,
-        placeholderData: (prev: { offers?: unknown } | undefined) => prev,
+        placeholderData: keepPreviousData,
       },
       {
         ...featuredOffersRideQueryOptions(params),
         enabled: ready,
-        placeholderData: (prev: { offers?: unknown } | undefined) => prev,
+        placeholderData: keepPreviousData,
       },
       ...PILL_ONLY_TYPES.map((serviceType) => ({
         queryKey: serviceOfferPillQueryKey(serviceType, params),
@@ -101,7 +101,7 @@ export function useServiceCardOfferPills(enabled = true): ServiceOfferPillMap {
         gcTime: 30 * 60 * 1000,
         retry: 1,
         refetchOnWindowFocus: false,
-        placeholderData: (prev: { offers?: unknown } | undefined) => prev,
+        placeholderData: keepPreviousData,
       })),
     ],
   });
