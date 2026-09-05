@@ -96,21 +96,38 @@ export async function computeHotZonesForRider(args: {
       AND service_type::text = ANY (${serviceDbTypes})
       AND center_lat BETWEEN ${args.riderLat - latDelta} AND ${args.riderLat + latDelta}
       AND center_lng BETWEEN ${args.riderLng - lngDelta} AND ${args.riderLng + lngDelta}
-  `) as unknown as Array<{
-    h3_index: string;
-    resolution: number;
-    service_type: string;
-    status: string;
-    center_lat: number | string;
-    center_lng: number | string;
-    weighted_demand: number | string;
-    effective_supply: number | string;
-    pressure: number | string;
-    computed_at: string | Date;
-    valid_until: string | Date;
-  }>;
+  `) as unknown as HotZoneStateReadRow[];
 
-  // Group rows by cell → one HotZoneCell with a services[] array; trim to the exact circle.
+  return { zones: filterZonesWithinRadius(rows, args.riderLat, args.riderLng, radiusM), config: cfg };
+}
+
+/** Raw `rider_hot_zone_state` row shape returned by the per-rider read query. */
+export type HotZoneStateReadRow = {
+  h3_index: string;
+  resolution: number | string;
+  service_type: string;
+  status: string;
+  center_lat: number | string;
+  center_lng: number | string;
+  weighted_demand: number | string;
+  effective_supply: number | string;
+  pressure: number | string;
+  computed_at: string | Date;
+  valid_until: string | Date;
+};
+
+/**
+ * PURE: group state rows by H3 cell and keep only those whose CENTRE is within
+ * `radiusMeters` of the rider (exact haversine). This is the guarantee that EVERY rider
+ * sees hot zones within their visibility radius (20km) and nothing beyond it — independent
+ * of where they are. Unit-testable without a DB.
+ */
+export function filterZonesWithinRadius(
+  rows: HotZoneStateReadRow[],
+  riderLat: number,
+  riderLng: number,
+  radiusMeters: number
+): HotZoneCell[] {
   const byCell = new Map<
     string,
     { resolution: number; lat: number; lng: number; validUntil: string; calculatedAt: string; services: HotZoneServiceCell[] }
@@ -121,7 +138,7 @@ export async function computeHotZonesForRider(args: {
     const clat = Number(r.center_lat);
     const clng = Number(r.center_lng);
     if (!Number.isFinite(clat) || !Number.isFinite(clng)) continue;
-    if (haversineMeters(args.riderLat, args.riderLng, clat, clng) > radiusM) continue;
+    if (haversineMeters(riderLat, riderLng, clat, clng) > radiusMeters) continue;
 
     let entry = byCell.get(r.h3_index);
     if (!entry) {
@@ -158,6 +175,5 @@ export async function computeHotZonesForRider(args: {
       validUntil: e.validUntil,
     });
   }
-
-  return { zones, config: cfg };
+  return zones;
 }
