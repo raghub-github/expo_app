@@ -580,3 +580,37 @@ export async function createRazorpayQrCode(
   return (await res.json()) as CreateQrCodeResponse;
 }
 
+export type RazorpayQrCapturedPayment = {
+  id: string;
+  amount: number; // paise
+  status: string; // "captured" | "authorized" | "failed" | ...
+};
+
+/**
+ * Fetch the payments made against a QR code — used by the online-QR RECONCILER to close a
+ * ride whose `qr_code.credited` webhook was missed/unconfigured. Returns [] in dummy mode or
+ * when credentials are absent (the reconciler then skips). Only CAPTURED payments matter.
+ */
+export async function fetchRazorpayQrPayments(qrId: string): Promise<RazorpayQrCapturedPayment[]> {
+  const env = getEnv();
+  if (env.PAYMENT_DUMMY_MODE || !env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) return [];
+  const auth = Buffer.from(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`).toString("base64");
+  const res = await fetch(
+    `https://api.razorpay.com/v1/payments/qr_codes/${encodeURIComponent(qrId)}/payments?count=10`,
+    { method: "GET", headers: { Authorization: `Basic ${auth}` } }
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw Object.assign(new Error(`Razorpay QR fetch ${res.status}: ${text.slice(0, 240)}`), {
+      statusCode: res.status >= 500 ? 502 : res.status,
+      code: "QR_FETCH_FAILED",
+    });
+  }
+  const json = (await res.json()) as { items?: Array<Record<string, unknown>> };
+  return (json.items ?? []).map((p) => ({
+    id: String(p.id ?? ""),
+    amount: Number(p.amount ?? 0),
+    status: String(p.status ?? ""),
+  }));
+}
+
