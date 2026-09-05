@@ -558,7 +558,7 @@ export default function ParcelOrderDetailClient({
     <div className="flex h-full min-h-[360px] items-center justify-center rounded-lg border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-[12px] text-slate-500">
       {hasAssignedRider
         ? "Route map will appear when pickup & drop coordinates are available."
-        : "Assign a captain or ensure pickup/drop coordinates are saved to view the route."}
+        : "Pickup and drop coordinates are needed to show the route."}
     </div>
   );
 

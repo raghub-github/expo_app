@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AppState } from "react-native";
 import {
   decodePolyline,
   getCalculatedRouteCoordinates,
@@ -14,6 +15,7 @@ import type { FoodDeliveryMapPhase } from "@/lib/food-delivery-map-phase";
 import {
   analyzeRiderOnRoute,
   rerouteDebounceMs,
+  shouldAnalyzeOffRouteSample,
   shouldRequestReroute,
   trackDebug,
 } from "@gatimitra/map-tracking-engine";
@@ -78,6 +80,9 @@ export function useFoodDeliveryLiveRoute(args: {
   const rerouteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastDestKeyRef = useRef<string>("");
   const lastRerouteAtRef = useRef(0);
+  const lastOffRouteAnalyzeRef = useRef<{ lat: number; lng: number; atMs: number } | null>(
+    null
+  );
 
   useEffect(() => {
     hasRouteRef.current = false;
@@ -95,11 +100,16 @@ export function useFoodDeliveryLiveRoute(args: {
       setRoute(null);
       hasRouteRef.current = false;
       setIsRefreshing(false);
+      if (rerouteTimerRef.current) {
+        clearTimeout(rerouteTimerRef.current);
+        rerouteTimerRef.current = null;
+      }
       return;
     }
 
     // Wait for a real rider fix — never build pickup→pickup placeholder routes.
     if (!rider) return;
+    if (AppState.currentState !== "active") return;
 
     const destChanged = lastDestKeyRef.current !== destKey;
     lastDestKeyRef.current = destKey;
@@ -138,6 +148,21 @@ export function useFoodDeliveryLiveRoute(args: {
   // Off-route → debounced reroute only (no per-tick route API).
   useEffect(() => {
     if (!enabled || !rider || !route?.coordinates?.length) return;
+    if (AppState.currentState !== "active") return;
+    if (rerouteTimerRef.current) return;
+    if (
+      !shouldAnalyzeOffRouteSample(lastOffRouteAnalyzeRef.current, {
+        latitude: rider.latitude,
+        longitude: rider.longitude,
+      })
+    ) {
+      return;
+    }
+    lastOffRouteAnalyzeRef.current = {
+      lat: rider.latitude,
+      lng: rider.longitude,
+      atMs: Date.now(),
+    };
 
     const deviation = analyzeRiderOnRoute(route.coordinates, {
       latitude: rider.latitude,
@@ -153,13 +178,12 @@ export function useFoodDeliveryLiveRoute(args: {
       wrongWay: deviation.wrongWay,
     });
 
-    lastRerouteAtRef.current = Date.now();
-
-    if (rerouteTimerRef.current) clearTimeout(rerouteTimerRef.current);
     const debounceMs = rerouteDebounceMs(deviation);
     trackDebug("rerouting_started", { orderId, debounceMs });
 
     rerouteTimerRef.current = setTimeout(() => {
+      rerouteTimerRef.current = null;
+      lastRerouteAtRef.current = Date.now();
       const from: MapLatLng = { latitude: rider.latitude, longitude: rider.longitude };
       const to: MapLatLng = { latitude: toLat, longitude: toLng };
       const requestId = requestIdRef.current + 1;
@@ -183,10 +207,6 @@ export function useFoodDeliveryLiveRoute(args: {
         setIsRefreshing(false);
       })();
     }, debounceMs);
-
-    return () => {
-      if (rerouteTimerRef.current) clearTimeout(rerouteTimerRef.current);
-    };
   }, [
     enabled,
     rider?.latitude,
@@ -198,10 +218,19 @@ export function useFoodDeliveryLiveRoute(args: {
     orderId,
   ]);
 
+  useEffect(() => {
+    return () => {
+      if (rerouteTimerRef.current) {
+        clearTimeout(rerouteTimerRef.current);
+        rerouteTimerRef.current = null;
+      }
+    };
+  }, [orderId, enabled]);
+
   const coordinates = route?.coordinates ?? [];
   const remainingCoordinates = useMemo(
     () => sliceRouteFromRider(coordinates, rider),
-    [coordinates, rider]
+    [coordinates, rider?.latitude, rider?.longitude]
   );
 
   // Prefer live remaining distance along geometry (no new route call).

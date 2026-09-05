@@ -152,6 +152,7 @@ export default function LoginScreen() {
   const scrollRef = useRef<ScrollView>(null);
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
+  const sendOtpLockRef = useRef(false);
   const [error, setError] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
@@ -247,11 +248,13 @@ export default function LoginScreen() {
   };
 
   const handleSendOtp = async () => {
+    if (sendOtpLockRef.current || loading) return;
     if (!isPhoneValid) {
       setError(`Enter a valid ${requiredPhoneLen}-digit mobile number`);
       return;
     }
     const digits = phoneDigits;
+    sendOtpLockRef.current = true;
     setError("");
     setLoading(true);
     try {
@@ -279,6 +282,7 @@ export default function LoginScreen() {
             : "Failed to send OTP. Try again.")
       );
     } finally {
+      sendOtpLockRef.current = false;
       setLoading(false);
     }
   };

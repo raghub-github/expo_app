@@ -7,13 +7,17 @@ import { ConfirmModal } from "@/components/ui/ConfirmModal";
 
 type Campaign = { id: number; name: string; template_code: string | null; scheduled_at: string | null; status: string; sent_count: number; created_by: string | null };
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const fetcher = async (url: string) => {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+};
 
 export default function ScheduledPage() {
   const { data, mutate, isLoading } = useSWR<{ items: Campaign[] }>(
     "/api/super-admin/notifications/campaigns?status=scheduled&limit=100",
     fetcher,
-    { refreshInterval: 15_000 },
+    { refreshInterval: 15_000, errorRetryCount: 2, dedupingInterval: 8_000 },
   );
   const [cancelTarget, setCancelTarget] = useState<Campaign | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);

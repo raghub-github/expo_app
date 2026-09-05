@@ -3,8 +3,10 @@ import { describe, it } from "node:test";
 import {
   MARKER_NOISE_MOVE_M,
   MARKER_STATIONARY_SPEED_MPS,
+  MARKER_UI_UPDATE_MIN_MS,
   shouldFreezeSmoothedMarker,
   shouldIgnoreMarkerGpsNoise,
+  shouldPublishSmoothedMarkerUi,
   resolveSmoothDurationMs,
 } from "./marker-animation";
 
@@ -41,10 +43,66 @@ describe("shouldFreezeSmoothedMarker", () => {
 
 describe("resolveSmoothDurationMs", () => {
   it("matches rider-app speed buckets", () => {
-    assert.equal(resolveSmoothDurationMs(null), 550);
-    assert.equal(resolveSmoothDurationMs(0.2), 550);
-    assert.equal(resolveSmoothDurationMs(1), 420);
-    assert.equal(resolveSmoothDurationMs(5), 320);
-    assert.equal(resolveSmoothDurationMs(12), 240);
+    assert.equal(resolveSmoothDurationMs(null), 620);
+    assert.equal(resolveSmoothDurationMs(0.2), 620);
+    assert.equal(resolveSmoothDurationMs(1), 480);
+    assert.equal(resolveSmoothDurationMs(5), 360);
+    assert.equal(resolveSmoothDurationMs(12), 280);
+  });
+});
+
+describe("shouldPublishSmoothedMarkerUi", () => {
+  it("always publishes the first sample and the lerp completion", () => {
+    assert.equal(
+      shouldPublishSmoothedMarkerUi({
+        lastPublishMs: 0,
+        nowMs: 10,
+        moveSincePublishM: 0,
+        isComplete: false,
+      }),
+      true
+    );
+    assert.equal(
+      shouldPublishSmoothedMarkerUi({
+        lastPublishMs: 1_000,
+        nowMs: 1_010,
+        moveSincePublishM: 0,
+        isComplete: true,
+      }),
+      true
+    );
+  });
+
+  it("throttles sub-200ms React publishes even when the marker moved", () => {
+    assert.equal(
+      shouldPublishSmoothedMarkerUi({
+        lastPublishMs: 1_000,
+        nowMs: 1_000 + MARKER_UI_UPDATE_MIN_MS - 1,
+        moveSincePublishM: 5,
+        isComplete: false,
+      }),
+      false
+    );
+    assert.equal(
+      shouldPublishSmoothedMarkerUi({
+        lastPublishMs: 1_000,
+        nowMs: 1_000 + MARKER_UI_UPDATE_MIN_MS,
+        moveSincePublishM: 5,
+        isComplete: false,
+      }),
+      true
+    );
+  });
+
+  it("skips tiny moves after the interval so GPS noise does not rerender the tree", () => {
+    assert.equal(
+      shouldPublishSmoothedMarkerUi({
+        lastPublishMs: 1_000,
+        nowMs: 1_400,
+        moveSincePublishM: 0.2,
+        isComplete: false,
+      }),
+      false
+    );
   });
 });

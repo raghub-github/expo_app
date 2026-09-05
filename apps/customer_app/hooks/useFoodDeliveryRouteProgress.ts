@@ -22,8 +22,20 @@ export function useFoodDeliveryRouteProgress(args: {
   riderHeading?: number | null;
   /** False until a delivery partner is assigned to the order. */
   hasRider?: boolean;
+  /** Stop Directions + remaining-path work after the order is terminal. */
+  trackingLive?: boolean;
 }) {
-  const { phase, rider, pickup, drop, orderId, riderArrived, riderHeading, hasRider = true } = args;
+  const {
+    phase,
+    rider,
+    pickup,
+    drop,
+    orderId,
+    riderArrived,
+    riderHeading,
+    hasRider = true,
+    trackingLive = true,
+  } = args;
 
   const { coordinates: fullRoute, distanceM, isRefreshing } = useFoodDeliveryLiveRoute({
     phase,
@@ -31,7 +43,7 @@ export function useFoodDeliveryRouteProgress(args: {
     pickup,
     drop,
     orderId,
-    enabled: hasRider,
+    enabled: hasRider && trackingLive,
     riderHeading,
   });
 

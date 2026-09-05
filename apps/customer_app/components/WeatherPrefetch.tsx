@@ -23,8 +23,6 @@ export function WeatherPrefetch() {
     address?.primary,
     address?.secondary,
     queryClient,
-    address,
-    coords,
   ]);
 
   return null;

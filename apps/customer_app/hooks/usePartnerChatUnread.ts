@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { orderPartnerChatService } from "@/services/orderPartnerChat.service";
 
-const POLL_MS = 15_000;
+const POLL_MS = 30_000;
 
 export function partnerChatUnreadQueryKey(orderId: string) {
   return ["order-partner-chat-unread", orderId] as const;
@@ -14,7 +14,7 @@ export function usePartnerChatUnread(orderId: string | null | undefined, enabled
     enabled: Boolean(orderId) && enabled,
     refetchInterval: POLL_MS,
     refetchIntervalInBackground: false,
-    refetchOnWindowFocus: true,
-    staleTime: 10_000,
+    refetchOnWindowFocus: false,
+    staleTime: 20_000,
   });
 }

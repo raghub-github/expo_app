@@ -1,9 +1,20 @@
-import { haversineKm } from "@/lib/billSummary";
-import type { OrderDetail } from "@/services/order.service";
-import type { MapLatLng } from "@/lib/map-route-utils";
+import { haversineKm } from "./billSummary";
+import type { OrderDetail } from "../services/order.service";
+import type { MapLatLng } from "./map-route-utils";
 
 /** Max straight-line distance captain can be from pickup on an active local ride. */
 export const MAX_CAPTAIN_PICKUP_DISTANCE_KM = 80;
+
+/**
+ * GPS / status / radar must never remount the native map.
+ * Encoding `nav` vs `pickup` in the React key recreates Mapbox and flashes the screen.
+ */
+export function rideTrackingMapInstanceKey(orderId: string | null | undefined): string {
+  return String(orderId ?? "").trim();
+}
+
+/** Follow camera only after the user taps locate — GPS ticks must not pan/zoom. */
+export const RIDE_GPS_AUTO_FOLLOW_DEFAULT = false;
 
 export function isValidMapCoordinate(
   lat: number | null | undefined,

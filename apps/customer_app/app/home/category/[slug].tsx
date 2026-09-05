@@ -63,6 +63,7 @@ import { CX } from "@/lib/appAssetKeys";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { resolveTopSafeInset, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { parseGroceryMenuCategorySlug } from "@/lib/groceryMenuCategorySlug";
+import { anyTextIncludes, textIncludes } from "@/lib/safe-text";
 
 const { width, height: WINDOW_HEIGHT } = Dimensions.get("window");
 /** Cuisines bottom sheet height (~72% screen): taller drawer, still leaves header/chips visible. */
@@ -278,7 +279,8 @@ export default function CategoryBrowseScreen() {
     [setCategoryRoute]
   );
 
-  const { coords, address } = useLocationStore();
+  const coords = useLocationStore((s) => s.coords);
+  const address = useLocationStore((s) => s.address);
   const debouncedCoords = useDebouncedCoords(coords, 400);
   const {
     layoutKey,
@@ -452,8 +454,8 @@ export default function CategoryBrowseScreen() {
   const filteredMerchants = useMemo(() => {
     if (!searchQ) return merchants;
     return merchants.filter((m) => {
-      if (m.name.toLowerCase().includes(searchQ)) return true;
-      if (m.cuisines?.some((c) => c.toLowerCase().includes(searchQ))) return true;
+      if (textIncludes(m.name, searchQ)) return true;
+      if (anyTextIncludes(m.cuisines, searchQ)) return true;
       return false;
     });
   }, [merchants, searchQ]);
@@ -545,9 +547,8 @@ export default function CategoryBrowseScreen() {
     // Fallback while API empty: soft cuisine / name match on nearby list.
     const needle = selectedCategoryLabel.toLowerCase();
     return filteredMerchants.filter((m) => {
-      if (m.cuisines?.some((c) => c.toLowerCase().includes(needle) || needle.includes(c.toLowerCase())))
-        return true;
-      if (m.name.toLowerCase().includes(needle)) return true;
+      if (anyTextIncludes(m.cuisines, needle)) return true;
+      if (textIncludes(m.name, needle)) return true;
       return false;
     });
   }, [

@@ -35,6 +35,7 @@ import { useCheckoutAddressHandoffStore } from "@/store/checkoutAddressHandoffSt
 import { useCartStore } from "@/store/cartStore";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import { isValidMapCoordinate, parseMapCoordParam, resolveMapCenter } from "@/lib/map-coordinates";
+import { textIncludes } from "@/lib/safe-text";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
@@ -1262,7 +1263,7 @@ export default function LocationAddressScreen() {
   const filteredContacts = deviceContacts.filter((c) => {
     const q = contactSearch.trim().toLowerCase();
     if (!q) return true;
-    return c.name.toLowerCase().includes(q) || c.phone.toLowerCase().includes(q);
+    return textIncludes(c.name, q) || textIncludes(c.phone, q);
   });
   const handleUseCurrentLocationOnMap = async () => {
     setIsCurrentLocationSheetLoading(true);

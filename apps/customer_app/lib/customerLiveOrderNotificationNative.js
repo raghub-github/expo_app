@@ -10,7 +10,10 @@ let channelReady = false;
 let postInFlight = false;
 let queuedPost = null;
 const lastPostedSig = new Map();
+const lastPostedStep = new Map();
 let lastDismissIdsKey = "";
+const pendingLiveByOrder = new Map();
+let pendingLiveTimer = null;
 
 function ongoingId(orderId) {
   return `customer-live-order-${orderId}`;
@@ -30,11 +33,60 @@ function isGmLiveProgressPush(data) {
 
 function isOrderLifecyclePush(data) {
   if (!data || typeof data !== "object") return false;
+  if (data.type === "live_order_progress") return true;
   const code =
     (typeof data.template_code === "string" && data.template_code) ||
+    (typeof data.templateCode === "string" && data.templateCode) ||
     (typeof data.gmType === "string" && data.gmType) ||
+    (typeof data.event_type === "string" && data.event_type) ||
     "";
-  return /^ORDER_/i.test(code);
+  const upper = String(code).toUpperCase();
+  return (
+    /^ORDER_/i.test(upper) ||
+    /^RIDE_/i.test(upper) ||
+    /^PARCEL_/i.test(upper) ||
+    upper === "CUSTOMER_DELIVERY_OTP_NEARBY" ||
+    upper === "CUSTOMER_PICKUP_OTP_ARRIVED"
+  );
+}
+
+function normalizeActiveIdSet(activeOrderIds) {
+  const active = new Set();
+  const list = activeOrderIds instanceof Set ? [...activeOrderIds] : activeOrderIds ?? [];
+  for (const raw of list) {
+    const id = String(raw ?? "").trim();
+    if (id) active.add(id.toUpperCase());
+  }
+  return active;
+}
+
+function orderIdsFromPresentedItem(item) {
+  const ids = [];
+  const seen = new Set();
+  const add = (raw) => {
+    const id = String(raw ?? "").trim();
+    if (!id) return;
+    const key = id.toUpperCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    ids.push(key);
+  };
+  const identifier = item?.request?.identifier ?? item?.identifier ?? "";
+  if (String(identifier).startsWith("customer-live-order-")) {
+    add(String(identifier).slice("customer-live-order-".length));
+  }
+  const data = item?.request?.content?.data ?? item?.data ?? {};
+  add(data.orderId);
+  add(data.order_id);
+  add(data.orderIdText);
+  add(data.formattedOrderId);
+  add(data.formatted_order_id);
+  add(data.orderShortId);
+  add(data.order_short_id);
+  const deep = data.deepLink || data.deep_link || data.screen || "";
+  const match = String(deep).match(/\/orders\/([^/?#]+)/i);
+  if (match?.[1]) add(decodeURIComponent(match[1]));
+  return ids;
 }
 
 async function ensureChannel(Notifications) {
@@ -53,6 +105,13 @@ async function ensureChannel(Notifications) {
 async function postOrUpdateLiveNotification(args) {
   const sig = `${args.orderId}|${args.title}|${args.step}|${args.terminal ? 1 : 0}`;
   if (!args.terminal && lastPostedSig.get(args.orderId) === sig) return;
+  const prevStep = lastPostedStep.get(args.orderId);
+  if (prevStep != null && !args.terminal) {
+    const nextStep = Number(args.step);
+    if (Number.isFinite(nextStep) && nextStep < prevStep) {
+      return;
+    }
+  }
   if (postInFlight) {
     queuedPost = args;
     return;
@@ -64,10 +123,12 @@ async function postOrUpdateLiveNotification(args) {
     const id = ongoingId(args.orderId);
     if (args.terminal) {
       lastPostedSig.delete(args.orderId);
+      lastPostedStep.delete(args.orderId);
       await Notifications.dismissNotificationAsync(id).catch(() => undefined);
       return;
     }
     lastPostedSig.set(args.orderId, sig);
+    lastPostedStep.set(args.orderId, Number(args.step) || 0);
     const bar = progressBar(args.step, args.steps);
     const href = `/orders/${args.orderId}`;
     await Notifications.scheduleNotificationAsync({
@@ -138,7 +199,7 @@ async function applyLiveProgressFromPush(data) {
     String(data.gmType ?? "").includes("COMPLETED") ||
     String(data.gmType ?? "").includes("CANCELLED");
 
-  await postOrUpdateLiveNotification({
+  const next = {
     orderId,
     title,
     body,
@@ -146,16 +207,32 @@ async function applyLiveProgressFromPush(data) {
     steps,
     terminal,
     service,
-  });
+  };
+  const prev = pendingLiveByOrder.get(orderId);
+  if (!prev || next.step >= prev.step || next.terminal) {
+    pendingLiveByOrder.set(orderId, next);
+  }
+  if (pendingLiveTimer) clearTimeout(pendingLiveTimer);
+  pendingLiveTimer = setTimeout(() => {
+    pendingLiveTimer = null;
+    const batch = [...pendingLiveByOrder.values()];
+    pendingLiveByOrder.clear();
+    void (async () => {
+      for (const args of batch) {
+        await postOrUpdateLiveNotification(args);
+      }
+    })();
+  }, 280);
 }
 
 /**
  * Remove stale FCM tray rows for active orders — keep only the sticky per orderId.
  */
-async function dismissStaleLiveOrderTrayNotifications(activeOrderIds) {
-  const active = activeOrderIds instanceof Set ? activeOrderIds : new Set(activeOrderIds ?? []);
+async function dismissStaleLiveOrderTrayNotifications(activeOrderIds, opts) {
+  const active = normalizeActiveIdSet(activeOrderIds);
   const idsKey = [...active].sort().join(",");
-  if (idsKey === lastDismissIdsKey) return;
+  const force = Boolean(opts && opts.force);
+  if (!force && idsKey === lastDismissIdsKey) return;
   lastDismissIdsKey = idsKey;
 
   const Notifications = require("expo-notifications");
@@ -169,17 +246,18 @@ async function dismissStaleLiveOrderTrayNotifications(activeOrderIds) {
   for (const item of presented) {
     const identifier = item?.request?.identifier ?? "";
     const data = item?.request?.content?.data ?? {};
-    const orderId = typeof data.orderId === "string" ? data.orderId.trim() : "";
+    const keys = orderIdsFromPresentedItem(item);
+    const matchesActive = keys.some((k) => active.has(k));
 
     if (identifier.startsWith("customer-live-order-")) {
-      const stickyOrderId = identifier.slice("customer-live-order-".length);
-      if (!active.has(stickyOrderId)) {
+      const stickyOrderId = identifier.slice("customer-live-order-".length).toUpperCase();
+      if (!active.has(stickyOrderId) && !matchesActive) {
         await Notifications.dismissNotificationAsync(identifier).catch(() => undefined);
       }
       continue;
     }
 
-    if (!orderId || !active.has(orderId)) continue;
+    if (!matchesActive) continue;
 
     const isLive =
       isGmLiveProgressPush(data) ||
@@ -187,29 +265,35 @@ async function dismissStaleLiveOrderTrayNotifications(activeOrderIds) {
       data.type === "live_order_progress";
 
     if (isLive) {
+      // Historical FCM shade rows for this active order — never keep them
+      // around to "replay" when the customer opens the app.
       await Notifications.dismissNotificationAsync(identifier).catch(() => undefined);
     }
   }
 }
 
 function liveProgressHandlerResult(data) {
-  if (!isGmLiveProgressPush(data)) {
+  // Foreground / resume must not paint OS alerts for order-status pushes.
+  // Killed/background delivery still uses the FCM notification block (this
+  // handler is not running then). On resume Expo may re-invoke the handler
+  // for tray items — suppressing prevents Confirmed+Assigned replay.
+  if (isGmLiveProgressPush(data) || isOrderLifecyclePush(data)) {
     return {
-      suppress: false,
-      shouldShowAlert: true,
-      shouldPlaySound: true,
-      shouldSetBadge: true,
-      shouldShowBanner: true,
-      shouldShowList: true,
+      suppress: true,
+      shouldShowAlert: false,
+      shouldPlaySound: false,
+      shouldSetBadge: false,
+      shouldShowBanner: false,
+      shouldShowList: false,
     };
   }
   return {
-    suppress: true,
-    shouldShowAlert: false,
-    shouldPlaySound: false,
-    shouldSetBadge: false,
-    shouldShowBanner: false,
-    shouldShowList: false,
+    suppress: false,
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
   };
 }
 

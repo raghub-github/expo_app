@@ -26,9 +26,11 @@ apps/gatimitra-riderApp
 .pnpm-store
 .npm
 
-# ── Logs ─────────────────────────────────────────────────────────────────
+# ── Log files only (do NOT ignore **/logs dirs — that excluded the
+# dashboard Next.js route `.../notifications/logs` from the image, 404).
 **/*.log
-**/logs
+backend/logs
+**/npm-debug.log*
 
 # ── Env files (passed in via env_file: at runtime, not baked in) ─────────
 **/.env

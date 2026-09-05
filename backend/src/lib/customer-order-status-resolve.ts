@@ -24,13 +24,21 @@ const CUSTOMER_STATUS_RANK: Record<string, number> = {
   RIDER_AT_DROP: 6,
   AT_CUSTOMER: 6,
   DELIVERED: 7,
+  COMPLETED: 7,
   CANCELLED: 99,
   FAILED: 99,
   PAYMENT_FAILED: 99,
   RTO: 99,
 };
 
-const TERMINAL_STATUSES = new Set(["DELIVERED", "CANCELLED", "FAILED", "PAYMENT_FAILED", "RTO"]);
+const TERMINAL_STATUSES = new Set([
+  "DELIVERED",
+  "COMPLETED",
+  "CANCELLED",
+  "FAILED",
+  "PAYMENT_FAILED",
+  "RTO",
+]);
 
 function customerStatusRank(status: string): number {
   return CUSTOMER_STATUS_RANK[status] ?? -1;
@@ -53,6 +61,7 @@ function partnerPipelineToCustomer(pipeline: string): string {
     case "OUT_FOR_DELIVERY":
       return "OUT_FOR_DELIVERY";
     case "DELIVERED":
+    case "COMPLETED":
       return "DELIVERED";
     case "CANCELLED":
       return "CANCELLED";
@@ -67,7 +76,10 @@ function normalizeOmsStatus(raw: string | null | undefined): string | null {
   const trimmed = String(raw ?? "").trim();
   if (!trimmed) return null;
   if (trimmed === "PLACED") return "ORDER_PLACED";
-  return trimmed.toUpperCase().replace(/[\s-]+/g, "_");
+  const upper = trimmed.toUpperCase().replace(/[\s-]+/g, "_");
+  if (upper === "COMPLETED" || upper === "COMPLETE") return "DELIVERED";
+  if (upper === "RETURNED") return "RTO";
+  return upper;
 }
 
 function coreLifecycleToCustomer(coreStatus: string | null | undefined): string | null {
@@ -80,6 +92,7 @@ function coreLifecycleToCustomer(coreStatus: string | null | undefined): string 
     case "in_transit":
       return "OUT_FOR_DELIVERY";
     case "delivered":
+    case "completed":
       return "DELIVERED";
     case "cancelled":
       return "CANCELLED";
@@ -113,9 +126,8 @@ export function normalizeCustomerOrderStatus(
   currentStatus: string | null | undefined,
   dbStatus: string | null | undefined
 ): string {
-  const cur = String(currentStatus ?? "").trim();
-  if (cur === "PLACED") return "ORDER_PLACED";
-  if (cur) return cur.toUpperCase().replace(/[\s-]+/g, "_");
+  const cur = normalizeOmsStatus(currentStatus);
+  if (cur) return cur;
   return toAppStatusFromCore(dbStatus).toUpperCase();
 }
 

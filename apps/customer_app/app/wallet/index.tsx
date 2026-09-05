@@ -29,7 +29,7 @@ import {
   type WalletTxFilter,
 } from "@/services/wallet.service";
 import { refreshCustomerWallet } from "@/lib/refreshCustomerWallet";
-import { writeWalletBalanceCache } from "@/lib/walletBalanceCache";
+import { writeWalletBalanceCache, readSyncWalletBalance } from "@/lib/walletBalanceCache";
 import { WALLET_BALANCE_QUERY_KEY } from "@/hooks/useWalletBalance";
 import { useWalletDark } from "@/hooks/useWalletDark";
 import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
@@ -177,6 +177,7 @@ export default function WalletScreen() {
     },
     staleTime: 15_000,
     refetchOnWindowFocus: true,
+    placeholderData: (previous) => previous ?? readSyncWalletBalance() ?? undefined,
   });
 
   const txQ = useQuery({
@@ -213,7 +214,7 @@ export default function WalletScreen() {
 
   const balance = balanceQ.data?.available_balance ?? balanceQ.data?.balance ?? 0;
   const transactions = txQ.data?.transactions ?? [];
-  const loading = balanceQ.isLoading || txQ.isLoading;
+  const loading = (balanceQ.isLoading && balanceQ.data == null) || (txQ.isLoading && !txQ.data);
   const refreshing = (balanceQ.isFetching || txQ.isFetching) && !loading;
 
   const onRefresh = useCallback(() => {
@@ -236,7 +237,7 @@ export default function WalletScreen() {
     return `₹${locked.toFixed(2)} locked for active orders`;
   }, [balanceQ.data?.locked_amount]);
 
-  const balanceDisplay = balanceQ.isLoading
+  const balanceDisplay = balanceQ.isLoading && balanceQ.data == null
     ? null
     : `₹${balance.toFixed(balance % 1 === 0 ? 0 : 2)}`;
 
@@ -268,7 +269,7 @@ export default function WalletScreen() {
             <AppText style={[styles.balanceLabel, dark && styles.balanceLabelDark]}>
               YOUR BALANCE
             </AppText>
-            {balanceQ.isLoading ? (
+            {balanceQ.isLoading && balanceQ.data == null ? (
               <ActivityIndicator color={accent} style={{ marginTop: 10 }} />
             ) : (
               <AppText style={[styles.balanceAmount, dark && styles.balanceAmountDark]}>

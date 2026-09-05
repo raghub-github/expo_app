@@ -35,6 +35,7 @@ import {
 import { useToast } from "@/context/ToastContext";
 import { riderDeliveryMilestoneLabel } from "@/lib/riders/rider-order-status-display";
 import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
+import { formatIstDateTimeParts } from "@/lib/format-ist-datetime";
 
 /** Matches dispatch wave offer window — agent can retry manual assign after this. */
 const MANUAL_ASSIGN_COOLDOWN_SEC = 120;
@@ -272,6 +273,14 @@ export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy
   const [logs, setLogs] = useState<RiderActivityLogApiRow[]>([]);
   const [summary, setSummary] = useState<RiderActivityLogSummary>(EMPTY_RIDER_ACTIVITY_SUMMARY);
   const [error, setError] = useState<string | null>(null);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  const markCopied = (field: string) => {
+    setCopiedField(field);
+    window.setTimeout(() => {
+      setCopiedField((prev) => (prev === field ? null : prev));
+    }, 1500);
+  };
 
   useEffect(() => {
     if (!isOpen || !orderId) return;
@@ -363,7 +372,7 @@ export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy
                 <thead>
                   <tr className="bg-gray-50">
                     <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
-                      Created at
+                      Created at (IST)
                     </th>
                     <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600 shadow-[0_1px_0_0_rgb(229,231,235)]">
                       Provider
@@ -401,6 +410,7 @@ export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy
                 {visibleLogs.map((log) => {
                   const distanceCx = formatDistanceKm(log.distanceCxKm);
                   const distanceMx = formatDistanceKm(log.distanceMxKm);
+                  const created = formatIstDateTimeParts(log.createdAt);
                   return (
                   <tr
                     key={log.id}
@@ -416,57 +426,55 @@ export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy
                               : ""
                     }`}
                   >
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
-                      <div className="font-medium">
-                        <OrderNum>{log.createdAt.split(" ")[0]}</OrderNum>
-                      </div>
-                      <div className="text-[10px] text-gray-500">
-                        <OrderNum>{log.createdAt.split(" ")[1]}</OrderNum>
-                      </div>
+                    <td className="px-3 py-3 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
+                      <OrderNum>
+                        {created.date}
+                        {created.time ? `, ${created.time}` : ""}
+                      </OrderNum>
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px] border-r border-gray-100">
+                    <td className="px-3 py-3 whitespace-nowrap text-[11px] border-r border-gray-100">
                       <span
                         className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${providerBadgeClass(log.provider)}`}
                       >
                         {log.provider}
                       </span>
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px] font-mono text-gray-900 border-r border-gray-100">
+                    <td className="px-3 py-3 whitespace-nowrap text-[11px] font-mono text-gray-900 border-r border-gray-100">
                       {log.trackingOrderId}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
+                    <td className="px-3 py-3 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
                       {log.riderName || (
                         <span className="text-gray-400 italic">Not assigned</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px] border-r border-gray-100">
+                    <td className="px-3 py-3 whitespace-nowrap text-[11px] border-r border-gray-100">
                       {log.riderMobile ? (
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center">
                           <span className="text-gray-900 orders-num">{log.riderMobile}</span>
-                          <button
-                            type="button"
-                            onClick={() => onCopy(log.riderMobile!)}
-                            className="p-1 hover:bg-gray-100 rounded cursor-pointer"
-                            title="Copy number"
-                          >
-                            <i className="bi bi-clipboard text-[10px] text-gray-500" />
-                          </button>
+                          <CopyIconButton
+                            value={log.riderMobile}
+                            fieldKey={`mobile-${log.id}`}
+                            copiedField={copiedField}
+                            onCopied={markCopied}
+                            onCopy={onCopy}
+                            ariaLabel="Copy rider mobile"
+                          />
                         </div>
                       ) : (
                         <span className="text-gray-400 italic">-</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px] border-r border-gray-100">
+                    <td className="px-3 py-3 whitespace-nowrap text-[11px] border-r border-gray-100">
                       <span
                         className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${statusBadgeClass(log.status)}`}
                       >
                         {log.status}
                       </span>
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
+                    <td className="px-3 py-3 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100">
                       {log.updatedBy}
                     </td>
-                    <td className="px-3 py-2 text-[11px] border-r border-gray-100 align-top">
+                    <td className="px-3 py-3 text-[11px] border-r border-gray-100 align-top">
                       {log.reason && shouldShowActivityReason(log.status, log.reason) ? (
                         (() => {
                           const { main, cancelledBy } = parseRiderActivityReason(log.reason);
@@ -489,17 +497,17 @@ export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy
                         <span className="text-slate-900">-</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100 orders-num">
+                    <td className="px-3 py-3 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100 orders-num">
                       {distanceCx || (
                         <span className="text-gray-400 italic">-</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100 orders-num">
+                    <td className="px-3 py-3 whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100 orders-num">
                       {distanceMx || (
                         <span className="text-gray-400 italic">-</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-[11px]">
+                    <td className="px-3 py-3 whitespace-nowrap text-[11px]">
                       {log.trackingUrl ? (
                         <a
                           href={log.trackingUrl}
@@ -602,8 +610,6 @@ function DetailField({
   );
 }
 
-type RiderCopiedField = "mobile" | "trackingId" | "riderId";
-
 function CopyIconButton({
   value,
   fieldKey,
@@ -613,9 +619,9 @@ function CopyIconButton({
   ariaLabel,
 }: {
   value: string;
-  fieldKey: RiderCopiedField;
-  copiedField: RiderCopiedField | null;
-  onCopied: (field: RiderCopiedField) => void;
+  fieldKey: string;
+  copiedField: string | null;
+  onCopied: (field: string) => void;
   onCopy: (text: string) => void;
   ariaLabel: string;
 }) {
@@ -665,9 +671,9 @@ export default function RiderDetails({
   const [resolvedDeliveryProofUrl, setResolvedDeliveryProofUrl] = useState<string | null>(
     deliveryProofImageUrl?.trim() || null
   );
-  const [copiedField, setCopiedField] = useState<RiderCopiedField | null>(null);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
 
-  const markCopied = (field: RiderCopiedField) => {
+  const markCopied = (field: string) => {
     setCopiedField(field);
     window.setTimeout(() => {
       setCopiedField((prev) => (prev === field ? null : prev));

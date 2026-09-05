@@ -400,11 +400,7 @@ function formatActivityLogDistance(km: unknown): number | null {
 }
 
 function formatActivityLogTimestamp(value: unknown): string {
-  const iso = toIso(value);
-  if (!iso) return "—";
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return toIso(value) ?? "—";
 }
 
 const CANCELLATION_EVENT_TYPES = new Set(["cancelled", "rejected", "unassigned", "timeout"]);

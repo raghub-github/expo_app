@@ -3,7 +3,11 @@
 import { useState } from "react";
 import useSWR from "swr";
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const fetcher = async (url: string) => {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+};
 
 type LogRow = {
   id: number;
@@ -22,7 +26,7 @@ export default function LogsFailuresPage() {
   const { data, isLoading, mutate } = useSWR<{ items: LogRow[] }>(
     "/api/super-admin/notifications/logs?status=failed&limit=200",
     fetcher,
-    { refreshInterval: 20_000 },
+    { refreshInterval: 20_000, errorRetryCount: 2, dedupingInterval: 8_000 },
   );
   const [busyId, setBusyId] = useState<number | null>(null);
 

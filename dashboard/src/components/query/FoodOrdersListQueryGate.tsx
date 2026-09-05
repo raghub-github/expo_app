@@ -40,7 +40,7 @@ export function FoodOrdersListQueryGate() {
         void queryClient.prefetchQuery({
           queryKey: key,
           queryFn: ({ signal }) => fetchFoodOrders(DEFAULT_FOOD_ORDERS_FILTERS, signal),
-          staleTime: 2 * 60 * 1000,
+          staleTime: 0,
         });
       }
       return;

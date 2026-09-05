@@ -49,7 +49,9 @@ export default function HomeScreen() {
   const locationSource = useLocationStore((s) => s.locationSource);
   const coords = useLocationStore((s) => s.coords);
   const refining = useLocationStore((s) => s.refining);
-  const { address, requestPermissionAndFetch, refetchLocation } = useLocationStore();
+  const address = useLocationStore((s) => s.address);
+  const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
+  const refetchLocation = useLocationStore((s) => s.refetchLocation);
   const reconcileReady = useActiveLocationReconcileReady();
 
   const onRefresh = useCallback(async () => {

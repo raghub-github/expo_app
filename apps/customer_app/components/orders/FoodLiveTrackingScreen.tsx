@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Linking, Alert, Dimensions, Modal } from "react-native";
+import { View, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Linking, Alert, Dimensions, BackHandler, Platform } from "react-native";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { useRouter, useFocusEffect } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
@@ -37,6 +37,7 @@ import { FoodOrderTipSheet } from "@/components/orders/FoodOrderTipSheet";
 import { parseOrderBillFromSnapshot, resolveOrderPaymentDisplay } from "@/lib/orderBillBreakdown";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useFoodDeliveryRouteProgress } from "@/hooks/useFoodDeliveryRouteProgress";
+import { useAppInBackground } from "@/hooks/useAppInBackground";
 import { useLiveTrackingEtaMinutes } from "@/hooks/useLiveTrackingEtaMinutes";
 import { resolveOrderTrackingMapSnapshots } from "@/lib/orderTrackingMapSnapshots";
 import {
@@ -234,7 +235,6 @@ export function FoodLiveTrackingScreen({
       return () => resetStatusBarBackground();
     }, [setStatusBarBackground, resetStatusBarBackground])
   );
-  const [mapReady, setMapReady] = useState(false);
   const [mapFullscreen, setMapFullscreen] = useState(false);
   const [mapRefitNonce, setMapRefitNonce] = useState(0);
   const [itemsExpanded, setItemsExpanded] = useState(false);
@@ -301,6 +301,8 @@ export function FoodLiveTrackingScreen({
   );
   const hasRider = isSelfPickup ? false : assignedRider;
   const riderArrived = isRiderAtCustomerStatus(orderStatus);
+  const trackingLive = !isTerminalOrderStatus(orderStatus);
+  const trackingPaused = useAppInBackground();
   const deliveryOtpCode = (order.deliveryOtp ?? "").trim();
   const showDeliveryOtp =
     !isSelfPickup && Boolean(deliveryOtpCode) && !isTerminalOrderStatus(orderStatus);
@@ -449,10 +451,11 @@ export function FoodLiveTrackingScreen({
     riderArrived,
     riderHeading,
     hasRider,
+    trackingLive,
   });
 
   const riderGpsFix = useMemo(() => {
-    if (!hasRider || !riderPos) return undefined;
+    if (!hasRider || !riderPos || !trackingLive) return undefined;
     return {
       lat: riderPos.latitude,
       lng: riderPos.longitude,
@@ -461,6 +464,7 @@ export function FoodLiveTrackingScreen({
     };
   }, [
     hasRider,
+    trackingLive,
     riderPos?.latitude,
     riderPos?.longitude,
     riderHeading,
@@ -469,7 +473,8 @@ export function FoodLiveTrackingScreen({
 
   const smoothedRider = useSmoothedRiderPosition(
     riderGpsFix,
-    resolveSmoothDurationMs(tracking?.rider?.speedMps)
+    resolveSmoothDurationMs(tracking?.rider?.speedMps),
+    trackingPaused
   );
 
   const selfPickupRouteQuery = useQuery({
@@ -655,34 +660,15 @@ export function FoodLiveTrackingScreen({
   const mapRiderHeading = smoothedRider?.headingDeg ?? riderHeading;
 
   const prevMapPhaseRef = useRef(mapPhase);
-  const prevHighlightDropRef = useRef(highlightDropZone);
-  const prevHighlightPickupRef = useRef(highlightPickupZone);
 
   useEffect(() => {
     if (prevMapPhaseRef.current !== mapPhase) {
       prevMapPhaseRef.current = mapPhase;
+      // Phase change (store → customer) may re-fit once so both pins stay on screen.
+      // Radar appearance must never drive camera zoom.
       setMapRefitNonce((n) => n + 1);
     }
   }, [mapPhase]);
-
-  useEffect(() => {
-    if (highlightDropZone && !prevHighlightDropRef.current) {
-      setMapRefitNonce((n) => n + 1);
-    }
-    prevHighlightDropRef.current = highlightDropZone;
-  }, [highlightDropZone]);
-
-  useEffect(() => {
-    if (highlightPickupZone && !prevHighlightPickupRef.current) {
-      setMapRefitNonce((n) => n + 1);
-    }
-    prevHighlightPickupRef.current = highlightPickupZone;
-  }, [highlightPickupZone]);
-
-  useEffect(() => {
-    const t = setTimeout(() => setMapReady(true), 120);
-    return () => clearTimeout(t);
-  }, [order.orderId]);
 
   const deliveryMapPayload = useMemo<DeliveryMapPayload>(
     () => ({
@@ -847,16 +833,23 @@ export function FoodLiveTrackingScreen({
 
   const openMapFullscreen = useCallback(() => {
     setMapFullscreen(true);
-    setMapRefitNonce((n) => n + 1);
   }, []);
 
   const closeMapFullscreen = useCallback(() => {
     setMapFullscreen(false);
-    setMapRefitNonce((n) => n + 1);
   }, []);
 
-  const renderTrackingMap = (mode: "inline" | "fullscreen") => {
-    const fullscreen = mode === "fullscreen";
+  useEffect(() => {
+    if (!mapFullscreen || Platform.OS !== "android") return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      closeMapFullscreen();
+      return true;
+    });
+    return () => sub.remove();
+  }, [mapFullscreen, closeMapFullscreen]);
+
+  const renderTrackingMap = () => {
+    const fullscreen = mapFullscreen;
     const mapControlTop = fullscreen ? insets.top + 12 : 12;
     const mapControlBottom = fullscreen ? Math.max(insets.bottom, 8) + 12 : 16;
     return (
@@ -871,19 +864,13 @@ export function FoodLiveTrackingScreen({
                 ]
           }
         >
-          {mapReady ? (
-            <MapboxWebDeliveryMap
-              key={`${order.orderId}-${mode}`}
-              style={StyleSheet.absoluteFill}
-              center={trackingMapCenter}
-              payload={trackingMapPayload}
-              refitNonce={mapRefitNonce}
-            />
-          ) : (
-            <View style={styles.mapLoading}>
-              <ActivityIndicator size="small" color={MINT} />
-            </View>
-          )}
+          <MapboxWebDeliveryMap
+            key={order.orderId}
+            style={StyleSheet.absoluteFill}
+            center={trackingMapCenter}
+            payload={trackingMapPayload}
+            refitNonce={mapRefitNonce}
+          />
         </View>
         <LiveTrackingStatusChip
           hasRiderFix={!isSelfPickup && riderLat != null && riderLng != null}
@@ -1205,27 +1192,20 @@ export function FoodLiveTrackingScreen({
         </View>
       </LinearGradient>
 
-      <Modal
-        visible={mapFullscreen}
-        animationType="fade"
-        transparent={false}
-        statusBarTranslucent
-        presentationStyle="overFullScreen"
-        onRequestClose={closeMapFullscreen}
+      <View
+        style={mapFullscreen ? styles.mapOverlayHost : styles.mapWrap}
+        collapsable={false}
       >
-        <View style={styles.mapFullscreenRoot}>{renderTrackingMap("fullscreen")}</View>
-      </Modal>
+        {renderTrackingMap()}
+      </View>
 
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 0) }}
         showsVerticalScrollIndicator={false}
         nestedScrollEnabled
+        scrollEnabled={!mapFullscreen}
       >
-        <View style={styles.mapWrap}>
-          {mapFullscreen ? <View style={styles.mapSection} /> : renderTrackingMap("inline")}
-        </View>
-
         {showPickupOtp ? (
           <>
             <DeliveryOtpBanner
@@ -1601,8 +1581,10 @@ const styles = StyleSheet.create({
   mapWrap: {
     position: "relative",
   },
-  mapFullscreenRoot: {
+  mapOverlayHost: {
     ...StyleSheet.absoluteFillObject,
+    zIndex: 40,
+    elevation: 40,
     backgroundColor: "#E5E7EB",
   },
   liveStatusChip: {

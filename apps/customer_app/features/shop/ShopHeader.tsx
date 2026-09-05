@@ -39,7 +39,7 @@ export function ShopHeader({
   onCartPress,
 }: ShopHeaderProps) {
   const router = useRouter();
-  const { address } = useLocationStore();
+  const address = useLocationStore((s) => s.address);
   const locationDisplay = getLocationDisplay(address?.fullAddress, address?.primary, address?.secondary);
 
   return (

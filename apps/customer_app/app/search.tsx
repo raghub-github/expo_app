@@ -164,7 +164,7 @@ export default function SearchScreen() {
     if (next) setQuery(next);
   }, [params.q]);
   const { items: recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, hydrate } = useRecentSearchStore();
-  const { coords } = useLocationStore();
+  const coords = useLocationStore((s) => s.coords);
   const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
   const hydrateDietaryPreferences = useDietaryPreferenceStore((s) => s.hydrate);
   const { results, isLoading, isError, errorMessage, refetch } = useDebouncedSearch(

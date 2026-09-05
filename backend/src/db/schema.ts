@@ -5440,6 +5440,31 @@ export const nativeDevicePushTokens = pgTable(
   })
 );
 
+/** One customer push per order status event (migration 0601). */
+export const customerOrderNotificationEvents = pgTable(
+  "customer_order_notification_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").notNull(),
+    eventType: text("event_type").notNull(),
+    eventKey: text("event_key").notNull(),
+    templateCode: text("template_code"),
+    formattedOrderId: text("formatted_order_id"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    notificationId: uuid("notification_id"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (t) => ({
+    orderEventUniq: uniqueIndex("customer_order_notification_events_order_event_uidx").on(
+      t.orderId,
+      t.eventType
+    ),
+    eventKeyUniq: uniqueIndex("customer_order_notification_events_event_key_uidx").on(t.eventKey),
+    claimedIdx: index("customer_order_notification_events_claimed_idx").on(t.claimedAt),
+  })
+);
+
 // ============================================================================
 // RIDER INCENTIVE RELATIONS
 // ============================================================================

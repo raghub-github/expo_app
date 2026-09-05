@@ -15,6 +15,7 @@ import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
 import { FlashList, type FlashListRef, type ListRenderItem } from "@shopify/flash-list";
 import { StatusBar } from "expo-status-bar";
 import { useRouter, useFocusEffect } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Animated, {
   useSharedValue,
@@ -91,6 +92,7 @@ import {
 import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { NON_SERVICEABLE_STATUS_BAR_BG, useScreenChromeStore } from "@/store/screenChromeStore";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
+import { anyTextIncludes, textIncludes } from "@/lib/safe-text";
 import {
   fetchUserAppCategoriesWithCache,
   getUserAppCategoriesCachedAt,
@@ -126,6 +128,7 @@ function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryIt
 
 export default function GroceryGridFirstHomeScreen() {
   const router = useRouter();
+  const isScreenFocused = useIsFocused();
   const insets = useAppSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const queryClient = useQueryClient();
@@ -398,14 +401,10 @@ export default function GroceryGridFirstHomeScreen() {
 
     const needle = selectedGroceryCategoryLabel.toLowerCase();
     return filteredMerchants.filter((m) => {
-      if (
-        m.cuisines?.some(
-          (c) => c.toLowerCase().includes(needle) || needle.includes(c.toLowerCase())
-        )
-      ) {
+      if (anyTextIncludes(m.cuisines, needle)) {
         return true;
       }
-      return m.name.toLowerCase().includes(needle);
+      return textIncludes(m.name, needle);
     });
   }, [filteredMerchants, selectedGroceryCategoryLabel, categoryDishSearch?.stores]);
 
@@ -847,6 +846,7 @@ export default function GroceryGridFirstHomeScreen() {
                       placeholderColor={GatiMitraColors.softBackground}
                       onHeroHeightChange={onGridFirstHeroHeightChange}
                       onHeroReadyChange={onGridFirstHeroReadyChange}
+                      shouldPlay={isScreenFocused && gridFirstHeroReady}
                     />
                   </View>
                   ) : null}

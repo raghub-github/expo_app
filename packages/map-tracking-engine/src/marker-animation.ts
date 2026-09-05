@@ -40,6 +40,30 @@ export const MARKER_NOISE_MOVE_M = 0.4;
 export const MARKER_STATIONARY_SPEED_MPS = 0.45;
 /** Max drift while stationary before we accept a new rendered position. */
 export const MARKER_STATIONARY_MAX_DRIFT_M = 25;
+/**
+ * Minimum gap between React `setState` publishes from the rAF lerp.
+ * Native interpolation can run every frame; the JS tree must not.
+ */
+export const MARKER_UI_UPDATE_MIN_MS = 200;
+/** Skip a UI publish when the marker has barely moved since the last one. */
+export const MARKER_UI_PUBLISH_MIN_MOVE_M = 0.8;
+
+export function shouldPublishSmoothedMarkerUi(args: {
+  lastPublishMs: number;
+  nowMs: number;
+  moveSincePublishM: number;
+  isComplete: boolean;
+  minIntervalMs?: number;
+  minMoveM?: number;
+}): boolean {
+  if (args.isComplete) return true;
+  if (args.lastPublishMs <= 0) return true;
+  const minIntervalMs = args.minIntervalMs ?? MARKER_UI_UPDATE_MIN_MS;
+  if (args.nowMs - args.lastPublishMs < minIntervalMs) return false;
+  const minMoveM = args.minMoveM ?? MARKER_UI_PUBLISH_MIN_MOVE_M;
+  if (args.moveSincePublishM < minMoveM) return false;
+  return true;
+}
 
 export function shouldIgnoreMarkerGpsNoise(moveM: number): boolean {
   return moveM < MARKER_NOISE_MOVE_M;

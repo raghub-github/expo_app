@@ -16,10 +16,13 @@ import { StatusBar } from "expo-status-bar";
 import { LiveTrackingStatusChip } from "@/components/orders/LiveTrackingStatusChip";
 import { PartnerChatUnreadBadge } from "@/components/orders/PartnerChatUnreadBadge";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
+import { useAppInBackground } from "@/hooks/useAppInBackground";
 import { MapboxWebRideTrackingMap } from "@/components/maps/MapboxWebRideTrackingMap";
 import type { CustomerMapRef } from "@/lib/customer-map-handle";
 import { RideRouteMapPillOverlay } from "@/features/ride/RideRouteMapPillOverlay";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { reportHandledError } from "@/lib/crashReporting";
+import { rideTrackingMapInstanceKey } from "@/lib/ride-map-coords";
 import type { OrderDetail } from "@/services/order.service";
 import type { OrderTrackingResponse } from "@/services/order.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
@@ -35,7 +38,7 @@ import {
   shouldHighlightFoodPickupZone,
   shouldHighlightRideDropZone,
 } from "@/lib/food-delivery-map-phase";
-import { normalizeCustomerOrderStatus, isPersonRideOnDropLeg, isParcelOrder, shouldShowCustomerPickupOtp } from "@/lib/customer-order-status-display";
+import { normalizeCustomerOrderStatus, isPersonRideOnDropLeg, isParcelOrder, shouldShowCustomerPickupOtp, isTerminalOrderStatus } from "@/lib/customer-order-status-display";
 import { getRideOrderStatus, cancelRideOrder, type RideOrderStatusResponse } from "@/services/rideBooking.service";
 import { cancelParcelOrder } from "@/services/parcelBooking.service";
 import { orderService } from "@/services/order.service";
@@ -51,6 +54,7 @@ import { RideCancelledAckSheet } from "@/components/ride/RideCancelledAckSheet";
 import type { RideCancelReason } from "@/lib/ride-cancel-reasons";
 import { purgeRideOrderFromClientCaches } from "@/lib/ride-order-query-cache";
 import { seedOrderDetailCache } from "@/lib/orderDetailCache";
+import { applyServerCustomerOrderStatus } from "@/lib/apply-customer-order-status";
 import { isPlaceholderCaptainName, mergeCaptainProfile } from "@/lib/mergeCaptainProfile";
 import { useRiderToPickupLiveRoute } from "@/hooks/useRiderToPickupLiveRoute";
 import { bearingDegrees, type MapLatLng } from "@/lib/map-route-utils";
@@ -172,6 +176,8 @@ export function RideAcceptedTrackingScreen({
   const pickupPoint = useMemo(() => resolveRidePickupPoint(order), [order]);
   const dropPoint = useMemo(() => resolveRideDropPoint(order), [order]);
   const orderStatus = normalizeCustomerOrderStatus(order.status);
+  const trackingLive = !isTerminalOrderStatus(orderStatus);
+  const trackingPaused = useAppInBackground();
 
   const liveStatusQueryKey = [
     isParcelOrder(order) ? "parcelOrderStatus" : "rideOrderStatus",
@@ -277,7 +283,12 @@ export function RideAcceptedTrackingScreen({
   useEffect(() => {
     if (!liveRideStatus || liveRideStatus.cancelled) return;
     const app = (liveRideStatus.appStatus ?? "").trim().toUpperCase();
-    if (app === "DELIVERED") {
+    if (app === "DELIVERED" || app === "COMPLETED") {
+      applyServerCustomerOrderStatus({
+        queryClient,
+        orderIds: [order.orderId, order.formattedOrderId],
+        status: "DELIVERED",
+      });
       void queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
       void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
       void queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
@@ -389,7 +400,7 @@ export function RideAcceptedTrackingScreen({
     distanceM,
     etaMinutes: routeEtaMinutes,
   } = useRiderToPickupLiveRoute(
-    riderPos,
+    trackingLive ? riderPos : null,
     routeDestination,
     rideCatalogId,
     tracking?.rider?.headingDegrees ?? null
@@ -434,10 +445,21 @@ export function RideAcceptedTrackingScreen({
     setMapReady(false);
     const fallback = setTimeout(() => setMapReady(true), 5000);
     return () => clearTimeout(fallback);
-  }, [order.orderId, rideInProgress]);
+  }, [order.orderId]);
 
+  const pickupMissingReportedRef = useRef(false);
   useEffect(() => {
-    if (pickupPoint) return;
+    if (pickupPoint) {
+      pickupMissingReportedRef.current = false;
+      return;
+    }
+    if (!pickupMissingReportedRef.current) {
+      pickupMissingReportedRef.current = true;
+      reportHandledError(
+        "ride-pickup-coords-missing",
+        new Error(`order ${order.orderId} is missing pickup coordinates`)
+      );
+    }
     void queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
   }, [pickupPoint, order.orderId, queryClient]);
 
@@ -487,7 +509,7 @@ export function RideAcceptedTrackingScreen({
   }, [tracking?.rider?.headingDegrees, riderPos, routeCoordinates, routeDestination]);
 
   const riderGpsFix = useMemo(() => {
-    if (!riderPos) return undefined;
+    if (!riderPos || !trackingLive) return undefined;
     return {
       lat: riderPos.latitude,
       lng: riderPos.longitude,
@@ -495,6 +517,7 @@ export function RideAcceptedTrackingScreen({
       speedMps: tracking?.rider?.speedMps ?? undefined,
     };
   }, [
+    trackingLive,
     riderPos?.latitude,
     riderPos?.longitude,
     riderHeading,
@@ -503,7 +526,8 @@ export function RideAcceptedTrackingScreen({
 
   const smoothedRider = useSmoothedRiderPosition(
     riderGpsFix,
-    resolveSmoothDurationMs(tracking?.rider?.speedMps)
+    resolveSmoothDurationMs(tracking?.rider?.speedMps),
+    trackingPaused
   );
 
   const mapRiderPos = useMemo(() => {
@@ -537,60 +561,26 @@ export function RideAcceptedTrackingScreen({
       dropLng: dropPoint.longitude,
     });
 
-  // Geofence camera: when captain enters pickup/drop radius, frame the full circle.
+  // Radar/radius is visual-only — never auto-zoom when the 200m circle appears.
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
+    if (highlightPickupZone || highlightDropZone) return;
+    mapRef.current.clearGeofenceCamera?.();
+    lastGeofenceModeRef.current = "none";
+  }, [mapReady, highlightPickupZone, highlightDropZone]);
 
-    const mode: "none" | "pickup" | "drop" = highlightPickupZone
-      ? "pickup"
-      : highlightDropZone
-        ? "drop"
-        : "none";
-
-    if (mode === "none") {
-      if (lastGeofenceModeRef.current !== "none") {
-        mapRef.current.clearGeofenceCamera?.();
-        lastGeofenceModeRef.current = "none";
-        lastFitKeyRef.current = "";
-        if (!userDisabledFollowRef.current) {
-          mapRef.current.recenterOnRider?.();
-        }
-      }
-      return;
-    }
-
-    const center = mode === "pickup" ? pickupPoint : dropPoint;
-    if (!center) return;
-
-    const entered = lastGeofenceModeRef.current !== mode;
-    if (!entered && userDisabledFollowRef.current) return;
-    lastGeofenceModeRef.current = mode;
-
-    mapRef.current.fitToGeofence?.(center, FOOD_DELIVERY_GEOFENCE_RADIUS_M, {
-      edgePadding: mapEdgePadding,
-      animated: true,
-      maxZoom: 16.2,
-      force: entered,
-    });
-  }, [
-    mapReady,
-    highlightPickupZone,
-    highlightDropZone,
-    pickupPoint,
-    dropPoint,
-    mapEdgePadding,
-  ]);
-
-  // Normal tracking fit — skipped while geofence framing is active.
+  // Initial tracking fit only. Rider GPS / radar / route ticks must not reset zoom.
   useEffect(() => {
     if (rideInProgress || !mapReady || !mapRef.current || !pickupPoint) return;
-    if (highlightPickupZone || highlightDropZone) return;
+    if (userDisabledFollowRef.current) return;
+    if (lastFitKeyRef.current) return;
 
     const fitPoints: MapLatLng[] = [...displayRouteCoordinates];
     if (riderPos) fitPoints.push(riderPos);
     fitPoints.push(pickupPoint);
 
     if (fitPoints.length === 1) {
+      lastFitKeyRef.current = "initial";
       mapRef.current.fitToCoordinates([pickupPoint], {
         edgePadding: mapEdgePadding,
         maxZoom: 15,
@@ -599,17 +589,7 @@ export function RideAcceptedTrackingScreen({
     }
     if (fitPoints.length < 2) return;
 
-    const fitKey = [
-      riderPos?.latitude?.toFixed(4),
-      riderPos?.longitude?.toFixed(4),
-      displayRouteCoordinates.length,
-      displayRouteCoordinates[0]?.latitude?.toFixed(4),
-      displayRouteCoordinates[displayRouteCoordinates.length - 1]?.latitude?.toFixed(4),
-    ].join("|");
-
-    if (fitKey === lastFitKeyRef.current) return;
-    lastFitKeyRef.current = fitKey;
-
+    lastFitKeyRef.current = "initial";
     mapRef.current.fitToCoordinates(fitPoints, {
       edgePadding: mapEdgePadding,
       animated: true,
@@ -815,8 +795,23 @@ export function RideAcceptedTrackingScreen({
   if (!pickupPoint) {
     return (
       <View style={[styles.screen, styles.mapLoading]}>
-        <ActivityIndicator size="large" color={GREEN} />
-        <AppText style={styles.loadingMapText}>Loading pickup location…</AppText>
+        <Ionicons name="warning-outline" size={36} color="#9CA3AF" />
+        <AppText style={styles.loadingMapText}>Pickup location unavailable</AppText>
+        <AppText style={styles.pickupMissingSub}>
+          This ride is missing map coordinates. Retry or go back — the rest of your orders are unaffected.
+        </AppText>
+        <TouchableOpacity
+          style={styles.pickupMissingBtn}
+          onPress={() => {
+            void queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
+          }}
+          activeOpacity={0.85}
+        >
+          <AppText style={styles.pickupMissingBtnText}>Retry</AppText>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={onBack} activeOpacity={0.85} hitSlop={8}>
+          <AppText style={styles.pickupMissingBack}>Go back</AppText>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -830,7 +825,7 @@ export function RideAcceptedTrackingScreen({
   const trackingMapElement = useMemo(
     () => (
       <MapboxWebRideTrackingMap
-        key={`${order.orderId}-${rideInProgress ? "nav" : "pickup"}`}
+        key={rideTrackingMapInstanceKey(order.orderId)}
         ref={mapRef}
         style={StyleSheet.absoluteFill}
         center={mapCenter}
@@ -971,24 +966,6 @@ export function RideAcceptedTrackingScreen({
             style={styles.mapFab}
             onPress={() => {
               userDisabledFollowRef.current = false;
-              if (highlightPickupZone && pickupPoint) {
-                mapRef.current?.fitToGeofence?.(pickupPoint, FOOD_DELIVERY_GEOFENCE_RADIUS_M, {
-                  edgePadding: mapEdgePadding,
-                  animated: true,
-                  maxZoom: 16.2,
-                  force: true,
-                });
-                return;
-              }
-              if (highlightDropZone && dropPoint) {
-                mapRef.current?.fitToGeofence?.(dropPoint, FOOD_DELIVERY_GEOFENCE_RADIUS_M, {
-                  edgePadding: mapEdgePadding,
-                  animated: true,
-                  maxZoom: 16.2,
-                  force: true,
-                });
-                return;
-              }
               mapRef.current?.clearGeofenceCamera?.();
               mapRef.current?.recenterOnRider?.();
             }}
@@ -1376,6 +1353,31 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     color: "#6B7280",
+  },
+  pickupMissingSub: {
+    fontSize: 13,
+    color: "#9CA3AF",
+    textAlign: "center",
+    paddingHorizontal: 32,
+    lineHeight: 18,
+  },
+  pickupMissingBtn: {
+    marginTop: 8,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: GREEN,
+  },
+  pickupMissingBtnText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  pickupMissingBack: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#6B7280",
+    marginTop: 4,
   },
   backBtn: {
     position: "absolute",

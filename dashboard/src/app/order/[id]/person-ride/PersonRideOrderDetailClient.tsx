@@ -616,7 +616,7 @@ export default function PersonRideOrderDetailClient({
     ["delivered", "cancelled", "completed"].includes(
       normalizeStatus(order.currentStatus ?? order.status)
     );
-  const showLiveRiderMap = hasAssignedRider && !rideTerminal;
+  const showLiveRiderMap = !rideTerminal;
 
   const tripStartedAt = useMemo(() => {
     if (!order) return null;
@@ -678,7 +678,7 @@ export default function PersonRideOrderDetailClient({
               {showLiveRiderMap ? (
               <div className="w-full min-h-[360px] md:w-1/2 md:shrink-0">
                   <RiderRouteMap
-                    key={`person-ride-map-${order.riderId}`}
+                    key={`person-ride-map-${order.riderId ?? "unassigned"}`}
                     className="h-full min-h-[360px] flex flex-col"
                     orderId={order.id}
                     orderIdText={
@@ -720,10 +720,6 @@ export default function PersonRideOrderDetailClient({
                     pickupPinStyle="person"
                   />
               </div>
-              ) : !hasAssignedRider ? (
-                <div className="flex h-full min-h-[360px] w-full items-center justify-center rounded-lg border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-[12px] text-slate-500 md:w-1/2 md:max-w-[50%]">
-                  Route map appears when a captain is assigned.
-                </div>
               ) : null}
             </div>
           </div>

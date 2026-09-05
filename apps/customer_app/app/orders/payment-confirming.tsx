@@ -11,6 +11,7 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { presentCheckoutPaymentFailure } from "@/store/checkoutPaymentFailureStore";
 import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
 import { useCartStore } from "@/store/cartStore";
+import { clearPendingCheckoutPayment } from "@/lib/pendingCheckoutPayment";
 
 const PAD = 20;
 
@@ -46,6 +47,7 @@ export default function PaymentConfirmingScreen() {
     if (!data || handledTerminalRef.current) return;
     if (data.finalized && data.orderId) {
       handledTerminalRef.current = true;
+      void clearPendingCheckoutPayment();
       router.replace({
         pathname: "/orders/payment-success",
         params: {
@@ -58,6 +60,7 @@ export default function PaymentConfirmingScreen() {
     }
     if (data.paymentState === "refunded" || data.paymentState === "failed" || data.paymentState === "refund_pending") {
       handledTerminalRef.current = true;
+      void clearPendingCheckoutPayment();
       const amount = amountRaw != null ? Number(amountRaw) : NaN;
       presentCheckoutPaymentFailure({
         amountInr: Number.isFinite(amount) ? amount : null,

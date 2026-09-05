@@ -228,14 +228,7 @@ export default function OrderDetailsScreen() {
       ) {
         return 3_000;
       }
-      const statusUpper = (data?.status ?? "").toUpperCase();
-      if (
-        !statusUpper ||
-        statusUpper === "DELIVERED" ||
-        statusUpper === "CANCELLED" ||
-        statusUpper === "PAYMENT_FAILED" ||
-        statusUpper === "FAILED"
-      ) {
+      if (!status || isTerminalOrderStatus(status)) {
         return false;
       }
       if (data && !isPersonRideOrder(data) && !isParcelOrder(data)) {
@@ -281,10 +274,22 @@ export default function OrderDetailsScreen() {
     if (!isPersonRideSearchingStatus(order, order.status) || order.rider) return;
 
     let cancelled = false;
+    const redirectToSearch = () => {
+      if (cancelled) return;
+      cancelled = true;
+      const redirectParams = buildRideSearchingResumeParams(order);
+      if (openedFromRideHome) redirectParams.returnTo = "ride";
+      router.replace({
+        pathname: "/home/service/ride-searching",
+        params: redirectParams,
+      });
+    };
+    const hung = setTimeout(redirectToSearch, 8_000);
     void getRideOrderStatus(order.orderId)
       .then((rideStatus) => {
         if (cancelled) return;
         if (isRideCaptainAssigned(rideStatus)) {
+          cancelled = true;
           queryClient.setQueryData(["rideOrderStatus", order.orderId], rideStatus);
           if (rideStatus.rider) {
             seedOrderDetailCache(queryClient, order.orderId, {
@@ -296,25 +301,18 @@ export default function OrderDetailsScreen() {
           void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
           return;
         }
-        const redirectParams = buildRideSearchingResumeParams(order);
-        if (openedFromRideHome) redirectParams.returnTo = "ride";
-        router.replace({
-          pathname: "/home/service/ride-searching",
-          params: redirectParams,
-        });
+        redirectToSearch();
       })
       .catch(() => {
-        if (cancelled) return;
-        const redirectParams = buildRideSearchingResumeParams(order);
-        if (openedFromRideHome) redirectParams.returnTo = "ride";
-        router.replace({
-          pathname: "/home/service/ride-searching",
-          params: redirectParams,
-        });
+        redirectToSearch();
+      })
+      .finally(() => {
+        clearTimeout(hung);
       });
 
     return () => {
       cancelled = true;
+      clearTimeout(hung);
     };
   }, [order, router, openedFromRideHome, orderId, queryClient]);
 
@@ -411,8 +409,9 @@ export default function OrderDetailsScreen() {
   useEffect(() => {
     if (!order) return;
     const status = normalizeCustomerOrderStatus(order.status);
-    if (status === "DELIVERED" || status === "CANCELLED") {
+    if (isTerminalOrderStatus(status)) {
       removeActiveOrder(order.orderId);
+      if (order.formattedOrderId) removeActiveOrder(order.formattedOrderId);
     } else {
       const etaMins = resolveLiveEtaMinutes(etaData);
       // Never invent a default ETA (was hardcoding 20) — especially wrong while searching for a captain.
@@ -737,13 +736,15 @@ export default function OrderDetailsScreen() {
           fallback={openedFromRideHome ? RIDE_HOME_FALLBACK : undefined}
           preferFallback={openedFromRideHome}
         />
-        <RideAcceptedTrackingScreen
+        <AppErrorBoundary source="ride-live-tracking" resetKey={order.orderId}>
+          <RideAcceptedTrackingScreen
           order={order}
           tracking={tracking}
           etaMinutes={liveEtaMins}
           onBack={handleRideTrackingBack}
           onOpenSupport={handleOpenHelp}
         />
+        </AppErrorBoundary>
       </>
     );
   }
@@ -754,7 +755,8 @@ export default function OrderDetailsScreen() {
       <>
         <AndroidBackHandler fallback={PARCEL_HOME_FALLBACK} preferFallback />
         <LiveTrackingBackGuard fallback={PARCEL_HOME_FALLBACK} />
-        <ParcelLiveTrackingScreen
+        <AppErrorBoundary source="parcel-live-tracking" resetKey={order.orderId}>
+          <ParcelLiveTrackingScreen
           order={order}
           tracking={tracking}
           etaMinutes={liveEtaMins}
@@ -764,6 +766,7 @@ export default function OrderDetailsScreen() {
             void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
           }}
         />
+        </AppErrorBoundary>
       </>
     );
   }

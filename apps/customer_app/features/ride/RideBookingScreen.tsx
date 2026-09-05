@@ -60,7 +60,9 @@ export function RideBookingScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const routeParams = useLocalSearchParams<RideRouteParams>();
-  const { address, coords, locationHydrated } = useLocationStore();
+  const address = useLocationStore((s) => s.address);
+  const coords = useLocationStore((s) => s.coords);
+  const locationHydrated = useLocationStore((s) => s.locationHydrated);
   const appAssets = useAppAssetsStore((s) => s.assets);
 
   useLayoutEffect(() => {

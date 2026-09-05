@@ -69,7 +69,8 @@ import { FeaturedOffersPrefetch } from "@/components/FeaturedOffersPrefetch";
 import { WeatherPrefetch } from "@/components/WeatherPrefetch";
 import { WeatherRealtimeSync } from "@/components/WeatherRealtimeSync";
 import * as Linking from "expo-linking";
-import { resumePendingAddressShare, storePendingAddressShareToken } from "@/lib/pendingAddressShare";
+import { resumePendingAddressShare, storePendingAddressShareToken, peekPendingAddressShareToken } from "@/lib/pendingAddressShare";
+import { peekPendingCheckoutPayment } from "@/lib/pendingCheckoutPayment";
 import { extractAddressShareToken } from "@/lib/addressShareLink";
 import {
   clearPendingReferral,
@@ -421,6 +422,7 @@ export default function RootLayout() {
                   <WeatherPrefetch />
                   <WeatherRealtimeSync />
                   <PendingAddressShareResume />
+                  <PendingCheckoutPaymentResume />
                   <PendingReferralResume />
                   <FoodHomeLayoutPrefetch />
                   <ProfilePrefetch />
@@ -555,6 +557,44 @@ function PendingAddressShareResume() {
   useEffect(() => {
     if (!hydrated || !session?.accessToken) return;
     void resumePendingAddressShare(router);
+  }, [hydrated, router, session?.accessToken]);
+
+  return null;
+}
+
+function PendingCheckoutPaymentResume() {
+  const router = useRouter();
+  const session = useAuthStore((s) => s.session);
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const attemptedRef = useRef(false);
+
+  useEffect(() => {
+    if (!hydrated || !session?.accessToken) return;
+    if (attemptedRef.current) return;
+    void (async () => {
+      const shareToken = await peekPendingAddressShareToken();
+      if (shareToken) {
+        attemptedRef.current = true;
+        return;
+      }
+      const pending = await peekPendingCheckoutPayment();
+      if (!pending) {
+        attemptedRef.current = true;
+        return;
+      }
+      attemptedRef.current = true;
+      router.replace({
+        pathname: "/orders/payment-confirming",
+        params: {
+          pendingId: pending.pendingId,
+          ...(pending.merchantName ? { merchantName: pending.merchantName } : {}),
+          ...(pending.deliveryEtaLabel ? { deliveryEtaLabel: pending.deliveryEtaLabel } : {}),
+          ...(pending.amount ? { amount: pending.amount } : {}),
+          ...(pending.method ? { method: pending.method } : {}),
+          message: "We're confirming your payment from before the app closed.",
+        },
+      });
+    })();
   }, [hydrated, router, session?.accessToken]);
 
   return null;

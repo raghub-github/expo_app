@@ -11,7 +11,7 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/*.test.ts",
+    "test": "node --import tsx --test src/marker-animation.test.ts src/off-route.test.ts src/map-runtime.test.ts src/route-visibility.test.ts",
     "lint": "echo \"(map-tracking-engine) no lint configured\""
   },
   "peerDependencies": {

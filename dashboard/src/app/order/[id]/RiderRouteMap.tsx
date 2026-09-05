@@ -20,6 +20,7 @@ import {
 import {
   FOOD_DELIVERY_GEOFENCE_RADIUS_M,
   circlePolygonGeoJson,
+  getDashboardFoodMapPhase,
   isFoodPostPickupPhase,
   shouldHighlightDropZone,
   shouldHighlightPickupZone,
@@ -33,6 +34,10 @@ import {
   logRouteSelectionDiagnostic,
   selectShortestPracticalRoute,
 } from "@/lib/map/unified-route-selector";
+import {
+  buildPickupDropPreviewArc,
+  isLikelyStraightLineRoute,
+} from "@/lib/map/preview-arc";
 
 interface RiderRouteMapProps {
   orderId: number;
@@ -81,10 +86,12 @@ interface RiderRouteMapProps {
 
 const RIDER_MAP_BIKE_SRC = "/mapbike.png";
 
+type RouteMode = "live" | "planned" | "preview";
+
 type RouteEndpoints = {
   from: [number, number];
   to: [number, number];
-  mode: "live" | "planned";
+  mode: RouteMode;
 };
 
 /**
@@ -106,6 +113,9 @@ const ROUTE_GREEN_CASING = "#ffffff";
 const ROUTE_LIVE_LINE_WIDTH = 4;
 const ROUTE_LIVE_CASING_WIDTH = 7;
 const ROUTE_PLANNED_COLOR = "#94a3b8";
+const ROUTE_PREVIEW_COLOR = "#1C1C1C";
+/** Customer-app connector is only the short snap gap, never a long chord. */
+const CONNECTOR_MAX_METERS = 80;
 const CONNECTOR_SOURCE_ID = "route-connectors";
 const CONNECTOR_CASING_LAYER_ID = "route-connectors-casing";
 const CONNECTOR_LAYER_ID = "route-connectors-line";
@@ -450,18 +460,24 @@ function resolveRiderRouteAnchorLngLat(
   });
 }
 
-/** Single active leg only: pre-pickup rider→store, post-pickup rider→customer (never both). */
+/** One active leg: unassigned store↔customer arc, then rider→store, then rider→customer. */
 function resolveLiveRouteEndpoints(
   rider: [number, number] | null,
   pickup: [number, number] | null,
   drop: [number, number] | null,
-  phaseArgs: PostPickupPhaseArgs
+  phaseArgs: PostPickupPhaseArgs,
+  hasRider: boolean
 ): RouteEndpoints | null {
-  const postPickup = isPostPickupPhase(phaseArgs);
+  if (!hasRider) {
+    if (pickup && drop && !samePoint(pickup, drop)) {
+      return { from: pickup, to: drop, mode: "preview" };
+    }
+    return null;
+  }
 
   if (!rider) return null;
 
-  const destination = postPickup ? drop : pickup;
+  const destination = isPostPickupPhase(phaseArgs) ? drop : pickup;
   if (destination && !samePoint(rider, destination)) {
     return { from: rider, to: destination, mode: "live" };
   }
@@ -469,10 +485,21 @@ function resolveLiveRouteEndpoints(
   return null;
 }
 
+function polylineLengthMeters(coords: [number, number][]): number {
+  if (coords.length < 2) return 0;
+  let total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    total += haversineMeters(coords[i - 1]!, coords[i]!);
+  }
+  return total;
+}
+
 function movementPhaseLabel(
   phaseArgs: PostPickupPhaseArgs,
-  labels?: { pre?: string; post?: string }
+  labels?: { pre?: string; post?: string },
+  hasRider = true
 ): string {
+  if (!hasRider) return "Store → customer";
   return isPostPickupPhase(phaseArgs)
     ? labels?.post ?? "Rider → customer"
     : labels?.pre ?? "Rider → restaurant";
@@ -763,6 +790,7 @@ export default function RiderRouteMap({
     () =>
       [
         coordKey,
+        riderId ?? "",
         pickedUpAt ?? "",
         dispatchedAt ?? "",
         riderPickedUpAt ?? "",
@@ -770,7 +798,7 @@ export default function RiderRouteMap({
         normalizeStatus(coreStatus),
         normalizeStatus(foodOrderStatus),
       ].join("|"),
-    [coordKey, pickedUpAt, dispatchedAt, riderPickedUpAt, orderStatus, coreStatus, foodOrderStatus]
+    [coordKey, riderId, pickedUpAt, dispatchedAt, riderPickedUpAt, orderStatus, coreStatus, foodOrderStatus]
   );
 
   const phaseArgsRef = useRef<PostPickupPhaseArgs>({});
@@ -808,6 +836,8 @@ export default function RiderRouteMap({
   const mapReadyRef = useRef(false);
   const hasRiderAssignment =
     riderId != null && Number.isFinite(Number(riderId)) && Number(riderId) > 0;
+  const hasRiderAssignmentRef = useRef(hasRiderAssignment);
+  hasRiderAssignmentRef.current = hasRiderAssignment;
 
   const cancelRiderAnimation = useCallback(() => {
     if (riderAnimFrameRef.current != null) {
@@ -819,11 +849,12 @@ export default function RiderRouteMap({
   const boundsFittedRef = useRef(false);
   const userControlsViewRef = useRef(false);
   const lastRouteFromRef = useRef<[number, number] | null>(null);
-  const lastRouteModeRef = useRef<"live" | "planned" | null>(null);
+  const lastRouteModeRef = useRef<RouteMode | null>(null);
   const lastRouteBearingRef = useRef<number | null>(null);
   const lastRouteGeometryRef = useRef<{ type?: string; coordinates?: [number, number][] } | null>(null);
   const lastRouteEndpointsRef = useRef<RouteEndpoints | null>(null);
   const lastDeliveryLegKeyRef = useRef<string | null>(null);
+  const routeLoadGenRef = useRef(0);
   const navFollowRef = useRef<NavigationFollowController | null>(null);
   const lastRouteProgressAlongRef = useRef(-1);
   const lastRouteProgressAtRef = useRef(0);
@@ -869,6 +900,7 @@ export default function RiderRouteMap({
   const [routeSheetOpen, setRouteSheetOpen] = useState(false);
   const [routeSheet, setRouteSheet] = useState<RouteSheetData | null>(null);
   const [mapPainted, setMapPainted] = useState(false);
+  const [routeDistanceLabel, setRouteDistanceLabel] = useState<string | null>(null);
 
   trackingRef.current = tracking;
 
@@ -902,9 +934,12 @@ export default function RiderRouteMap({
       routeStatusLabel(initialTracking, riderId) === "Live route"
         ? `Live route · ${movementPhaseLabel(
             buildPhaseArgs(initialTracking.rider?.assignment_status),
-            movementLabelsRef.current
+            movementLabelsRef.current,
+            Boolean(riderId)
           )}`
-        : routeStatusLabel(initialTracking, riderId)
+        : !riderId
+          ? movementPhaseLabel(buildPhaseArgs(null), movementLabelsRef.current, false)
+          : routeStatusLabel(initialTracking, riderId)
     );
   }, [initialTracking, riderId, buildPhaseArgs]);
 
@@ -1008,9 +1043,17 @@ export default function RiderRouteMap({
       const segments: Array<{ from: [number, number]; to: [number, number] }> = [];
 
       const pushSegment = (from: [number, number], to: [number, number]) => {
-        if (haversineMeters(from, to) < CONNECTOR_MIN_METERS) return;
+        const gap = haversineMeters(from, to);
+        if (gap < CONNECTOR_MIN_METERS || gap > CONNECTOR_MAX_METERS) return;
         segments.push({ from, to });
       };
+
+      if (endpoints.mode !== "live") {
+        if (map.getSource(CONNECTOR_SOURCE_ID)) {
+          map.getSource(CONNECTOR_SOURCE_ID).setData({ type: "FeatureCollection", features: [] });
+        }
+        return;
+      }
 
       const postPickup = isPostPickupPhase(buildPhaseArgs(assignmentStatus));
       if (endpoints.mode === "live") {
@@ -1066,24 +1109,22 @@ export default function RiderRouteMap({
   );
 
   const applyRouteGeometry = useCallback(
-    (map: any, geometry: { type?: string; coordinates?: [number, number][] }, mode: "live" | "planned") => {
+    (map: any, geometry: { type?: string; coordinates?: [number, number][] }, mode: RouteMode) => {
       if (!geometry?.coordinates || geometry.coordinates.length < 2) return;
       const geojson = lineStringFeature(geometry.coordinates);
       const isLive = mode === "live";
-      const lineColor = isLive ? ROUTE_GREEN : ROUTE_PLANNED_COLOR;
+      const isPreview = mode === "preview";
+      const lineColor = isPreview ? ROUTE_PREVIEW_COLOR : isLive ? ROUTE_GREEN : ROUTE_PLANNED_COLOR;
       const lineWidth = isLive ? ROUTE_LIVE_LINE_WIDTH : 3;
       const casingWidth = isLive ? ROUTE_LIVE_CASING_WIDTH : 5;
+      const dash = isLive ? [1, 0] : [2, 2];
 
       if (map.getSource(ROUTE_SOURCE_ID)) {
         map.getSource(ROUTE_SOURCE_ID).setData(geojson);
         map.setPaintProperty(ROUTE_CASING_LAYER_ID, "line-width", casingWidth);
         map.setPaintProperty(ROUTE_LAYER_ID, "line-color", lineColor);
         map.setPaintProperty(ROUTE_LAYER_ID, "line-width", lineWidth);
-        if (mode === "planned") {
-          map.setPaintProperty(ROUTE_LAYER_ID, "line-dasharray", [2, 2]);
-        } else {
-          map.setPaintProperty(ROUTE_LAYER_ID, "line-dasharray", [1]);
-        }
+        map.setPaintProperty(ROUTE_LAYER_ID, "line-dasharray", dash);
         return;
       }
 
@@ -1108,7 +1149,7 @@ export default function RiderRouteMap({
           "line-color": lineColor,
           "line-width": lineWidth,
           "line-opacity": 1,
-          ...(mode === "planned" ? { "line-dasharray": [2, 2] } : {}),
+          "line-dasharray": dash,
         },
       });
     },
@@ -1178,27 +1219,29 @@ export default function RiderRouteMap({
     ) => {
       if (userControlsViewRef.current || boundsFittedRef.current) return;
 
-      const postPickup = isPostPickupPhase(buildPhaseArgs(assignmentStatus));
+      const phaseArgs = buildPhaseArgs(assignmentStatus);
+      const navPhase = getDashboardFoodMapPhase(hasRiderAssignmentRef.current, phaseArgs);
       const bounds = new mapboxgl.LngLatBounds();
       let hasBounds = false;
       const storeLngLat = storeRef.current;
       const dropPoint = dropRef.current;
-      // Always include store + drop so the basemap is useful before GPS arrives.
-      if (storeLngLat) {
-        bounds.extend(storeLngLat);
+
+      const extend = (pt: [number, number] | null) => {
+        if (!pt) return;
+        bounds.extend(pt);
         hasBounds = true;
-      }
-      if (dropPoint) {
-        bounds.extend(dropPoint);
-        hasBounds = true;
-      }
-      if (riderPoint) {
-        bounds.extend(riderPoint);
-        hasBounds = true;
-      }
-      // Prefer destination-focused fit when we know phase and have a rider.
-      if (!riderPoint && storeLngLat && dropPoint && !postPickup) {
-        // keep both — overview while awaiting GPS
+      };
+
+      if (navPhase === "pre_rider") {
+        extend(storeLngLat);
+        extend(dropPoint);
+      } else if (navPhase === "rider_to_drop") {
+        extend(riderPoint);
+        extend(dropPoint);
+      } else {
+        extend(riderPoint);
+        extend(storeLngLat);
+        if (!riderPoint) extend(dropPoint);
       }
       if (hasBounds) {
         // Flat 2D day navigation camera.
@@ -1230,6 +1273,7 @@ export default function RiderRouteMap({
     ) => {
       if (!getMapboxToken() || !mapReadyRef.current) return;
 
+      const gen = ++routeLoadGenRef.current;
       clearDeliveryLegRoute(map);
       lastDeliveryLegKeyRef.current = null;
 
@@ -1237,25 +1281,56 @@ export default function RiderRouteMap({
         riderRouteAnchor,
         storeRef.current,
         dropRef.current,
-        buildPhaseArgs(assignmentStatus)
+        buildPhaseArgs(assignmentStatus),
+        hasRiderAssignmentRef.current
       );
 
-      if (!endpoints) {
+      const clearDrawnRoute = () => {
         lastRouteGeometryRef.current = null;
         lastRouteEndpointsRef.current = null;
         lastRouteFromRef.current = null;
         lastRouteModeRef.current = null;
+        setRouteDistanceLabel(null);
+        setRouteSheet(null);
         if (map.getSource(ROUTE_SOURCE_ID)) {
           map.getSource(ROUTE_SOURCE_ID).setData(emptyFeatureCollection());
         }
         if (map.getSource(CONNECTOR_SOURCE_ID)) {
           map.getSource(CONNECTOR_SOURCE_ID).setData({ type: "FeatureCollection", features: [] });
         }
+      };
+
+      if (!endpoints) {
+        clearDrawnRoute();
+        return;
+      }
+
+      if (endpoints.mode === "preview") {
+        const arc = buildPickupDropPreviewArc(endpoints.from, endpoints.to);
+        if (gen !== routeLoadGenRef.current || !mapReadyRef.current) return;
+        if (arc.length < 2) {
+          clearDrawnRoute();
+          return;
+        }
+        lastRouteGeometryRef.current = null;
+        lastRouteEndpointsRef.current = endpoints;
+        lastRouteFromRef.current = endpoints.from;
+        lastRouteModeRef.current = "preview";
+        navFollowRef.current?.setRoute(null);
+        applyRouteGeometry(map, { type: "LineString", coordinates: arc }, "preview");
+        if (map.getSource(CONNECTOR_SOURCE_ID)) {
+          map.getSource(CONNECTOR_SOURCE_ID).setData({ type: "FeatureCollection", features: [] });
+        }
+        setRouteSheet(null);
+        const pickupL = alwaysShowDropMarkerRef.current ? "Pickup" : "Store";
+        const dropL = alwaysShowDropMarkerRef.current ? "Drop" : "Customer";
+        setRouteDistanceLabel(`${pickupL} → ${dropL} · ${formatMeters(haversineMeters(endpoints.from, endpoints.to))}`);
         return;
       }
 
       const destUnchanged =
         lastRouteEndpointsRef.current != null &&
+        lastRouteEndpointsRef.current.mode === "live" &&
         samePoint(lastRouteEndpointsRef.current.to, endpoints.to);
       const fullCoords = lastRouteGeometryRef.current?.coordinates;
 
@@ -1276,6 +1351,9 @@ export default function RiderRouteMap({
             assignmentStatus
           );
           navFollowRef.current?.setRoute(fullCoords);
+          setRouteDistanceLabel(
+            `${movementPhaseLabel(buildPhaseArgs(assignmentStatus), movementLabelsRef.current, true)} · ${formatMeters(polylineLengthMeters(remaining))}`
+          );
           return;
         }
       }
@@ -1286,42 +1364,44 @@ export default function RiderRouteMap({
           endpoints.to
         );
 
-        if (geometry?.coordinates?.length && mapReadyRef.current) {
-          const coords = geometry.coordinates;
-          if (coords.length >= 2) {
-            lastRouteBearingRef.current = bearingDegreesLngLat(coords[0], coords[1]);
-          }
-          lastRouteGeometryRef.current = geometry;
-          lastRouteEndpointsRef.current = endpoints;
-          navFollowRef.current?.setRoute(coords);
-          const displayCoords =
-            endpoints.mode === "live"
-              ? remainingRouteFromRider(coords, endpoints.from).remaining
-              : coords;
-          applyRouteGeometry(
-            map,
-            {
-              type: "LineString",
-              coordinates: displayCoords.length >= 2 ? displayCoords : coords,
-            },
-            endpoints.mode
-          );
-          applyConnectorLines(
-            map,
-            {
-              type: "LineString",
-              coordinates: displayCoords.length >= 2 ? displayCoords : coords,
-            },
-            endpoints,
-            riderRouteAnchor,
-            assignmentStatus
-          );
-          setRouteSheet(parseMapboxRouteSheet(json, selectedRouteIndex));
-          lastRouteFromRef.current = endpoints.from;
-          lastRouteModeRef.current = endpoints.mode;
+        if (gen !== routeLoadGenRef.current || !mapReadyRef.current) return;
+
+        const coords = geometry?.coordinates;
+        if (!coords?.length) {
+          clearDrawnRoute();
+          return;
         }
+        const chord = haversineMeters(coords[0]!, coords[coords.length - 1]!);
+        if (isLikelyStraightLineRoute(coords, chord)) {
+          clearDrawnRoute();
+          return;
+        }
+
+        lastRouteBearingRef.current = bearingDegreesLngLat(coords[0]!, coords[1]!);
+        lastRouteGeometryRef.current = geometry;
+        lastRouteEndpointsRef.current = endpoints;
+        navFollowRef.current?.setRoute(coords);
+        const displayCoords =
+          endpoints.mode === "live"
+            ? remainingRouteFromRider(coords, endpoints.from).remaining
+            : coords;
+        const drawn = displayCoords.length >= 2 ? displayCoords : coords;
+        applyRouteGeometry(map, { type: "LineString", coordinates: drawn }, endpoints.mode);
+        applyConnectorLines(
+          map,
+          { type: "LineString", coordinates: drawn },
+          endpoints,
+          riderRouteAnchor,
+          assignmentStatus
+        );
+        setRouteSheet(parseMapboxRouteSheet(json, selectedRouteIndex));
+        lastRouteFromRef.current = endpoints.from;
+        lastRouteModeRef.current = endpoints.mode;
+        setRouteDistanceLabel(
+          `${movementPhaseLabel(buildPhaseArgs(assignmentStatus), movementLabelsRef.current, true)} · ${formatMeters(polylineLengthMeters(drawn))}`
+        );
       } catch {
-        /* route optional */
+        if (gen === routeLoadGenRef.current) clearDrawnRoute();
       }
     },
     [buildPhaseArgs, applyRouteGeometry, applyConnectorLines, clearDeliveryLegRoute]
@@ -1355,20 +1435,22 @@ export default function RiderRouteMap({
     const dropPoint = dropRef.current;
     const assignmentStatus = trackingRef.current?.rider?.assignment_status;
     const phaseArgs = buildPhaseArgs(assignmentStatus);
-    const postPickup = isPostPickupPhase(phaseArgs);
-    const riderRouteAnchor = resolveRiderRouteAnchorLngLat(trackingRef.current, {
-      ...phaseArgs,
-      store: pickupPoint,
-      drop: dropPoint,
-      prevGps: prevRiderPosRef.current,
-      routeBearingDeg: lastRouteBearingRef.current,
-    });
+    const navPhase = getDashboardFoodMapPhase(hasRiderAssignmentRef.current, phaseArgs);
+    const showStorePin = navPhase !== "rider_to_drop";
+    const showDropPin = navPhase !== "rider_to_pickup";
+    const riderRouteAnchor = hasRiderAssignmentRef.current
+      ? resolveRiderRouteAnchorLngLat(trackingRef.current, {
+          ...phaseArgs,
+          store: pickupPoint,
+          drop: dropPoint,
+          prevGps: prevRiderPosRef.current,
+          routeBearingDeg: lastRouteBearingRef.current,
+        })
+      : null;
 
     const pointEntries = [
-      ...(pickupPoint ? [{ id: "store" as const, point: pickupPoint }] : []),
-      ...((postPickup || alwaysShowDropMarkerRef.current) && dropPoint
-        ? [{ id: "customer" as const, point: dropPoint }]
-        : []),
+      ...(showStorePin && pickupPoint ? [{ id: "store" as const, point: pickupPoint }] : []),
+      ...(showDropPin && dropPoint ? [{ id: "customer" as const, point: dropPoint }] : []),
       ...(riderRouteAnchor ? [{ id: "rider" as const, point: riderRouteAnchor }] : []),
     ];
     const offsets = overlapMarkerOffsets(pointEntries);
@@ -1403,7 +1485,7 @@ export default function RiderRouteMap({
         .addTo(map);
     };
 
-    if (pickupPoint) {
+    if (showStorePin && pickupPoint) {
       placeMarker(
         "store",
         pickupPoint,
@@ -1415,7 +1497,7 @@ export default function RiderRouteMap({
       markersRef.current.store = undefined;
     }
 
-    if ((postPickup || alwaysShowDropMarkerRef.current) && dropPoint) {
+    if (showDropPin && dropPoint) {
       placeMarker(
         "customer",
         dropPoint,
@@ -1467,7 +1549,11 @@ export default function RiderRouteMap({
 
       const mergedLoc = json.location ?? trackingRef.current?.location ?? null;
       if (!mergedLoc) {
-        setMovementLabel(riderId ? "Map ready · Awaiting GPS" : "Rider not assigned");
+        setMovementLabel(
+          riderId
+            ? "Map ready · Awaiting GPS"
+            : movementPhaseLabel(buildPhaseArgs(null), movementLabelsRef.current, false)
+        );
         if (!json.location) prevRiderPosRef.current = null;
         return;
       }
@@ -1477,7 +1563,8 @@ export default function RiderRouteMap({
       setMovementLabel(
         `Live route · ${movementPhaseLabel(
           buildPhaseArgs(assignmentStatus),
-          movementLabelsRef.current
+          movementLabelsRef.current,
+          true
         )}`
       );
     } catch {
@@ -1558,7 +1645,8 @@ export default function RiderRouteMap({
     setMovementLabel(
       `Live route · ${movementPhaseLabel(
         buildPhaseArgs(trackingRef.current?.rider?.assignment_status ?? null),
-        movementLabelsRef.current
+        movementLabelsRef.current,
+        true
       )}${wsConnected ? " · live" : ""}`
     );
 
@@ -1644,54 +1732,12 @@ export default function RiderRouteMap({
     };
   }, [orderId, isTerminalOrder, fetchTracking, initialTracking?.location?.updated_at]);
 
-  const updateTrailOnMap = useCallback((map: any, payload: OrderRiderTrackingPayload | null) => {
-    const trail = payload?.trail ?? [];
-    let trailCoords =
-      trail.length >= 1
-        ? trail.map((p) => [p.longitude, p.latitude] as [number, number])
-        : [];
-
-    const loc = payload?.location;
-    if (loc && isValidLatLon(loc.latitude, loc.longitude)) {
-      const livePoint: [number, number] = [loc.longitude, loc.latitude];
-      const last = trailCoords[trailCoords.length - 1];
-      if (!last || haversineMeters(last, livePoint) > 8) {
-        trailCoords = [...trailCoords, livePoint];
-      } else {
-        trailCoords = [...trailCoords.slice(0, -1), livePoint];
-      }
+  const updateTrailOnMap = useCallback((map: any, _payload: OrderRiderTrackingPayload | null) => {
+    // GPS breadcrumbs duplicate the live road polyline (customer app does not draw them).
+    for (const id of [`${TRAIL_SOURCE_ID}-line`, `${TRAIL_SOURCE_ID}-casing`]) {
+      if (map.getLayer(id)) map.removeLayer(id);
     }
-
-    if (trailCoords.length < 2) return;
-
-    const geojson = lineStringFeature(trailCoords);
-    if (map.getSource(TRAIL_SOURCE_ID)) {
-      map.getSource(TRAIL_SOURCE_ID).setData(geojson);
-    } else {
-      map.addSource(TRAIL_SOURCE_ID, { type: "geojson", data: geojson });
-      map.addLayer({
-        id: `${TRAIL_SOURCE_ID}-casing`,
-        type: "line",
-        source: TRAIL_SOURCE_ID,
-        layout: { "line-join": "round", "line-cap": "round" },
-        paint: {
-          "line-color": ROUTE_GREEN_CASING,
-          "line-width": 5,
-          "line-opacity": 0.9,
-        },
-      });
-      map.addLayer({
-        id: `${TRAIL_SOURCE_ID}-line`,
-        type: "line",
-        source: TRAIL_SOURCE_ID,
-        layout: { "line-join": "round", "line-cap": "round" },
-        paint: {
-          "line-color": ROUTE_GREEN,
-          "line-width": 2.5,
-          "line-opacity": 0.75,
-        },
-      });
-    }
+    if (map.getSource(TRAIL_SOURCE_ID)) map.removeSource(TRAIL_SOURCE_ID);
   }, []);
 
   const animateRiderTo = useCallback(
@@ -1863,10 +1909,15 @@ export default function RiderRouteMap({
       const pickupPoint = storeRef.current;
       const dropPoint = dropRef.current;
       const assignmentStatus = payload?.rider?.assignment_status ?? null;
-      const postPickup = isPostPickupPhase(buildPhaseArgs(assignmentStatus));
+      const navPhase = getDashboardFoodMapPhase(
+        hasRiderAssignment,
+        buildPhaseArgs(assignmentStatus)
+      );
       const offsets = overlapMarkerOffsets([
-        ...(pickupPoint ? [{ id: "store", point: pickupPoint }] : []),
-        ...((postPickup || alwaysShowDropMarkerRef.current) && dropPoint
+        ...(navPhase !== "rider_to_drop" && pickupPoint
+          ? [{ id: "store", point: pickupPoint }]
+          : []),
+        ...(navPhase !== "rider_to_pickup" && dropPoint
           ? [{ id: "customer", point: dropPoint }]
           : []),
         { id: "rider", point: riderRouteAnchor },
@@ -1927,6 +1978,10 @@ export default function RiderRouteMap({
           const remaining = remainingFromAlong(route, alongM);
           if (remaining.length >= 2) {
             applyRouteGeometry(mapInst, { type: "LineString", coordinates: remaining }, "live");
+            const phaseArgs = phaseArgsRef.current;
+            setRouteDistanceLabel(
+              `${movementPhaseLabel(phaseArgs, movementLabelsRef.current, true)} · ${formatMeters(polylineLengthMeters(remaining))}`
+            );
           }
         });
         nav.seed({
@@ -2028,6 +2083,14 @@ export default function RiderRouteMap({
     if (!mapReadyRef.current || !mapRef.current) return;
     const mapboxgl = (window as any).mapboxgl;
     if (!mapboxgl) return;
+    routeLoadGenRef.current += 1;
+    lastRouteFromRef.current = null;
+    lastRouteModeRef.current = null;
+    lastRouteGeometryRef.current = null;
+    lastRouteEndpointsRef.current = null;
+    boundsFittedRef.current = false;
+    userControlsViewRef.current = false;
+    setFollowPaused(false);
     syncPlaceMarkers(mapboxgl, mapRef.current);
     const riderRouteAnchor = resolveRiderRouteAnchor(
       trackingRef.current,
@@ -2047,15 +2110,6 @@ export default function RiderRouteMap({
       );
     }
   }, [routePhaseKey, syncPlaceMarkers, fitMapToPoints, resolveRiderRouteAnchor]);
-
-  useEffect(() => {
-    if (!mapReadyRef.current || !mapRef.current) return;
-    lastRouteFromRef.current = null;
-    lastRouteModeRef.current = null;
-    lastRouteGeometryRef.current = null;
-    lastRouteEndpointsRef.current = null;
-    boundsFittedRef.current = false;
-  }, [routePhaseKey]);
 
   useEffect(() => {
     if (!containerReady || !containerRef.current) return;
@@ -2284,7 +2338,9 @@ export default function RiderRouteMap({
     Date.now() - new Date(tracking.location.updated_at).getTime() < 90_000;
 
   const canShowRouteSheet = Boolean(routeSheet?.steps.length);
-  const mapPostPickup = isPostPickupPhase(phaseArgsRef.current);
+  const mapNavPhase = getDashboardFoodMapPhase(hasRiderAssignment, phaseArgsRef.current);
+  const showPickupLegend = mapNavPhase !== "rider_to_drop";
+  const showDropLegend = mapNavPhase !== "rider_to_pickup";
 
   return (
     <div
@@ -2295,7 +2351,7 @@ export default function RiderRouteMap({
           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-sky-100 text-sky-700 text-xs font-semibold">
             M
           </span>
-          <span>Live rider map</span>
+          <span>{hasRiderAssignment ? "Live rider map" : "Order map"}</span>
         </span>
         <span
           className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
@@ -2312,6 +2368,7 @@ export default function RiderRouteMap({
       </div>
 
       <div className="mb-1.5 flex flex-wrap gap-3 text-[10px] text-slate-500 shrink-0">
+        {showPickupLegend ? (
         <span className="inline-flex items-center gap-1">
           <span className="inline-flex h-[14px] w-[11px] items-center justify-center text-[#1a1a1a]">
             <svg viewBox="0 0 24 24" className="h-3 w-3" fill="currentColor" aria-hidden>
@@ -2320,7 +2377,8 @@ export default function RiderRouteMap({
           </span>
           {pickupLegendLabel}
         </span>
-        {mapPostPickup || alwaysShowDropMarker ? (
+        ) : null}
+        {showDropLegend ? (
           <span className="inline-flex items-center gap-1">
             <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-violet-600 text-[7px] font-bold text-white">
               CX
@@ -2328,23 +2386,29 @@ export default function RiderRouteMap({
             {dropLegendLabel}
           </span>
         ) : null}
+        {hasRiderAssignment ? (
         <span className="inline-flex items-center gap-1">
           <img src={RIDER_MAP_BIKE_SRC} alt="" className="h-4 w-4 object-contain" />
           Rider (live)
         </span>
+        ) : null}
         <span className="inline-flex items-center gap-1">
           <span
-            className="h-[3px] w-5 rounded-full border border-white bg-green-500 shadow-sm"
+            className={`h-[3px] w-5 rounded-full border border-white shadow-sm ${
+              mapNavPhase === "pre_rider" ? "bg-neutral-800" : "bg-green-500"
+            }`}
             style={{ boxShadow: "0 0 0 1px #fff" }}
           />
-          Route / path
+          {mapNavPhase === "pre_rider" ? "Store ↔ customer" : "Road route"}
         </span>
+        {hasRiderAssignment ? (
         <span className="inline-flex items-center gap-1">
           <span
             className="h-3 w-3 rounded-full border border-emerald-400 bg-emerald-400/20"
           />
           200m highlight zone
         </span>
+        ) : null}
       </div>
 
       <div className="relative flex-1 min-h-[280px] h-[280px] w-full bg-[#eef2f6]">
@@ -2362,6 +2426,12 @@ export default function RiderRouteMap({
           ref={containerRefCallback}
           className="absolute inset-0 h-full w-full rounded border border-gray-200 bg-[#eef2f6] [&_.mapboxgl-canvas]:!w-full [&_.mapboxgl-canvas]:!h-full [&_.mapboxgl-ctrl-bottom-left]:hidden"
         />
+
+            {routeDistanceLabel ? (
+              <div className="absolute bottom-3 left-3 z-20 max-w-[70%] rounded-full border border-slate-200 bg-white/95 px-2.5 py-1 text-[11px] font-semibold text-slate-800 shadow-sm">
+                {routeDistanceLabel}
+              </div>
+            ) : null}
 
             {followPaused && hasRiderAssignment && !isTerminalOrder ? (
               <button

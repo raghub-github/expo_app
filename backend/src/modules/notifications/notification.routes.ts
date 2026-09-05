@@ -621,6 +621,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         const limit = Math.min(200, Math.max(1, Number(q.limit ?? 50)));
         const offset = Math.max(0, Number(q.offset ?? 0));
         const sql = getSql();
+        // Read denormalized KPI columns — scanning dispatch logs per campaign 504s.
         const rows = await sql`
           SELECT
             c.id,
@@ -628,29 +629,16 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
             c.description,
             c.template_code,
             c.status,
-            COALESCE(stats.sent_count, 0)::int      AS sent_count,
-            COALESCE(stats.delivered_count, 0)::int AS delivered_count,
-            COALESCE(stats.clicked_count, 0)::int   AS clicked_count,
-            COALESCE(stats.failed_count, 0)::int    AS failed_count,
+            COALESCE(c.sent_count, 0)::int      AS sent_count,
+            COALESCE(c.delivered_count, 0)::int AS delivered_count,
+            COALESCE(c.clicked_count, 0)::int   AS clicked_count,
+            COALESCE(c.failed_count, 0)::int    AS failed_count,
             c.scheduled_at,
             c.started_at,
             c.finished_at,
             c.created_at,
             c.created_by
           FROM public.notification_campaigns c
-          LEFT JOIN LATERAL (
-            SELECT
-              COUNT(*) FILTER (
-                WHERE l.status IN ('sent', 'delivered', 'clicked')
-              )::int AS sent_count,
-              COUNT(*) FILTER (
-                WHERE l.status IN ('delivered', 'clicked')
-              )::int AS delivered_count,
-              COUNT(*) FILTER (WHERE l.status = 'clicked')::int AS clicked_count,
-              COUNT(*) FILTER (WHERE l.status = 'failed')::int AS failed_count
-            FROM public.notification_dispatch_logs l
-            WHERE l.campaign_id = c.id
-          ) stats ON true
           WHERE 1=1
             ${q.status ? sql`AND c.status = ${q.status}` : sql``}
           ORDER BY COALESCE(c.scheduled_at, c.created_at) DESC

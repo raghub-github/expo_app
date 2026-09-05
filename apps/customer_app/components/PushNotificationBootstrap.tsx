@@ -35,6 +35,8 @@ import { useOrderStore } from "@/store/orderStore";
 import { buildPrepDelayMessage } from "@/lib/order-eta-display";
 import { getConfig } from "@/config/env";
 import { applyLiveProgressFromPush } from "@/components/LiveOrderProgressNotification";
+import { isOrderLifecycleNotification } from "@/lib/notificationDedupe";
+import { isCustomerOrderLifecyclePushData } from "@/lib/customer-push-tray-match";
 import { liveProgressHandlerResult } from "@/lib/customerLiveOrderNotificationNative";
 import { playCustomerNotificationSound } from "@/lib/playCustomerNotificationSound";
 import { isRideServicePush } from "@/lib/isRideServicePush";
@@ -47,6 +49,11 @@ import { setCustomerPushUnregister } from "@/lib/customerPushUnregister";
 import { setNotificationPushAllowHandler } from "@/lib/notificationPushAllow";
 import { useNotificationPushPromptStore } from "@/store/notificationPushPromptStore";
 import { CampaignAnnouncementCard } from "@/components/campaign/CampaignAnnouncementCard";
+import { applyServerCustomerOrderStatus } from "@/lib/apply-customer-order-status";
+import {
+  isCustomerOrderCompletionPush,
+  statusFromCustomerLifecyclePush,
+} from "@/lib/customer-order-status-machine";
 import {
   announcementDedupeKey,
   isCustomerAnnouncementData,
@@ -60,6 +67,9 @@ import {
  * Ride-only CX chime channel (sound is immutable after first Android create).
  * Other customer channels keep the OS default so food/parcel stay quiet.
  */
+/** Campaign inbox poll must not reset seen ids on remount (would replay history). */
+const campaignInboxSeenByUser = new Map<string, Set<string>>();
+
 const CX_SOUND = "cx_notification";
 const CUSTOMER_PUSH_CHANNELS = [
   {
@@ -91,6 +101,30 @@ function PushNotificationBootstrapInner() {
   const [campaignCard, setCampaignCard] = useState<AnnouncementCampaignPayload | null>(null);
   const campaignCardDataRef = useRef<Record<string, unknown> | null>(null);
   const routedKeysRef = useRef(new Set<string>());
+
+  const handleOrderLifecyclePush = useCallback(
+    (data: Record<string, unknown>) => {
+      const orderId =
+        typeof data.orderId === "string"
+          ? data.orderId
+          : typeof data.order_id === "string"
+            ? data.order_id
+            : "";
+      const status = statusFromCustomerLifecyclePush(data);
+      if (!orderId || !status) return;
+      applyServerCustomerOrderStatus({
+        queryClient,
+        orderIds: [orderId],
+        status,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+      void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      if (isCustomerOrderCompletionPush(data) || isWalletAffectingPush(data)) {
+        void refreshCustomerWallet(queryClient);
+      }
+    },
+    [queryClient]
+  );
 
   const handlePrepDelayPush = useCallback(
     (data: Record<string, unknown>) => {
@@ -183,6 +217,7 @@ function PushNotificationBootstrapInner() {
   const handleOpen = useCallback(
     (payload: PushNotificationOpenPayload) => {
       handlePrepDelayPush(payload.data);
+      handleOrderLifecyclePush(payload.data);
       void applyLiveProgressFromPush(payload.data);
       if (isWalletAffectingPush(payload.data)) {
         void refreshCustomerWallet(queryClient);
@@ -192,7 +227,7 @@ function PushNotificationBootstrapInner() {
         payload.actionIdentifier !== "expo.modules.notifications.actions.DEFAULT";
       void routeCampaignOnce(payload.data, isCta ? "cta" : "open");
     },
-    [handlePrepDelayPush, queryClient, routeCampaignOnce]
+    [handlePrepDelayPush, handleOrderLifecyclePush, queryClient, routeCampaignOnce]
   );
 
   const handleForeground = useCallback(
@@ -201,9 +236,13 @@ function PushNotificationBootstrapInner() {
         void playCustomerNotificationSound();
       }
       handlePrepDelayPush(payload.data);
-      void applyLiveProgressFromPush(payload.data);
+      handleOrderLifecyclePush(payload.data);
       if (isWalletAffectingPush(payload.data)) {
         void refreshCustomerWallet(queryClient);
+      }
+      if (isCustomerOrderLifecyclePushData(payload.data)) {
+        void applyLiveProgressFromPush(payload.data);
+        return;
       }
       enqueueInAppBannerFromPush(payload);
       if (!isCustomerAnnouncementData(payload.data)) return;
@@ -216,7 +255,7 @@ function PushNotificationBootstrapInner() {
       campaignCardDataRef.current = payload.data;
       setCampaignCard(parsed);
     },
-    [handlePrepDelayPush, queryClient]
+    [handlePrepDelayPush, handleOrderLifecyclePush, queryClient]
   );
   const authRef = useRef({ session, hydrated });
   authRef.current = { session, hydrated };
@@ -428,8 +467,13 @@ function PushNotificationBootstrapInner() {
   useEffect(() => {
     if (!hydrated || !session?.accessToken || session.role !== "customer") return;
 
-    const seenIds = new Set<string>();
-    let primed = false;
+    const userKey = session.userId ?? session.accessToken.slice(0, 24);
+    let seenIds = campaignInboxSeenByUser.get(userKey);
+    if (!seenIds) {
+      seenIds = new Set<string>();
+      campaignInboxSeenByUser.set(userKey, seenIds);
+    }
+    let primed = seenIds.size > 0;
     let cancelled = false;
 
     const apiCfg = {
@@ -459,6 +503,8 @@ function PushNotificationBootstrapInner() {
           if (!id || seenIds.has(id)) continue;
           seenIds.add(id);
           if (item.clicked_at) continue;
+          // Never convert historical order-status inbox rows into new banners.
+          if (isOrderLifecycleNotification(item)) continue;
           const meta = item.metadata ?? {};
           const title =
             (typeof meta.liveTitle === "string" && meta.liveTitle.trim()) ||
@@ -510,7 +556,7 @@ function PushNotificationBootstrapInner() {
       clearInterval(intervalId);
       sub.remove();
     };
-  }, [hydrated, session?.accessToken, session?.role, apiBaseUrl]);
+  }, [hydrated, session?.accessToken, session?.role, session?.userId, apiBaseUrl]);
 
   return (
     <>

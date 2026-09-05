@@ -3,8 +3,10 @@ import { describe, it } from "node:test";
 import {
   analyzeRiderOnRoute,
   NEAR_DESTINATION_SKIP_REROUTE_M,
+  OFF_ROUTE_ANALYZE_MIN_INTERVAL_MS,
   OFF_ROUTE_REROUTE_M,
   REROUTE_COOLDOWN_MS,
+  shouldAnalyzeOffRouteSample,
   shouldRequestReroute,
   WRONG_WAY_REROUTE_M,
 } from "./off-route";
@@ -86,5 +88,36 @@ describe("shouldRequestReroute", () => {
       headingDeg: 180,
     });
     assert.equal(shouldRequestReroute(near, 0, REROUTE_COOLDOWN_MS + 1), false);
+  });
+});
+
+describe("shouldAnalyzeOffRouteSample", () => {
+  it("always analyzes the first sample", () => {
+    assert.equal(
+      shouldAnalyzeOffRouteSample(null, { latitude: 29.37, longitude: 76.96 }, 1_000),
+      true
+    );
+  });
+
+  it("skips sub-second jitter under the move threshold", () => {
+    assert.equal(
+      shouldAnalyzeOffRouteSample(
+        { lat: 29.37, lng: 76.96, atMs: 1_000 },
+        { latitude: 29.37001, longitude: 76.96 },
+        1_000 + OFF_ROUTE_ANALYZE_MIN_INTERVAL_MS - 1
+      ),
+      false
+    );
+  });
+
+  it("analyzes after the interval even if the rider barely moved", () => {
+    assert.equal(
+      shouldAnalyzeOffRouteSample(
+        { lat: 29.37, lng: 76.96, atMs: 1_000 },
+        { latitude: 29.37001, longitude: 76.96 },
+        1_000 + OFF_ROUTE_ANALYZE_MIN_INTERVAL_MS
+      ),
+      true
+    );
   });
 });

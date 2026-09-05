@@ -5,6 +5,7 @@ import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { useFoodOrdersListActive } from "@/hooks/useFoodOrdersListActive";
+import { useFoodOrdersListLiveSync } from "@/hooks/useFoodOrdersListLiveSync";
 import {
   endOrderListSearch,
   getOrderListSearchSnapshot,
@@ -272,9 +273,9 @@ function useFoodOrdersQuery(
     queryFn: ({ signal }) => fetchFoodOrders(filters, signal),
     enabled,
     ...(initialData != null ? { initialData } : {}),
-    staleTime: 2 * 60 * 1000,
+    staleTime: 0,
     gcTime: 10 * 60 * 1000,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
     refetchOnMount: true,
     placeholderData: (previousData) => previousData,
   });
@@ -295,6 +296,10 @@ export default function FoodOrdersClient() {
   const queryClient = useQueryClient();
   // Server page already enforced ORDER_FOOD access; list API validates session via cookies.
   const shouldFetch = hasMounted && isFoodOrdersListActive;
+
+  useFoodOrdersListLiveSync(shouldFetch, () =>
+    queryClient.invalidateQueries({ queryKey: ["orders", "core", "food"] })
+  );
 
   const router = useRouter();
   const searchParams = useAppSearchParams();
@@ -545,9 +550,9 @@ export default function FoodOrdersClient() {
       queryFn: ({ signal }: { signal?: AbortSignal }) =>
         fetchFoodOrders(tabFilters, signal),
       enabled: shouldFetch,
-      staleTime: 2 * 60 * 1000,
+      staleTime: 0,
       gcTime: 10 * 60 * 1000,
-      refetchOnWindowFocus: false,
+      refetchOnWindowFocus: true,
       placeholderData: (previousData: Awaited<ReturnType<typeof fetchFoodOrders>> | undefined) =>
         previousData,
     })),
@@ -575,7 +580,7 @@ export default function FoodOrdersClient() {
           tabFilters as unknown as Record<string, unknown>
         ),
         queryFn: ({ signal }) => fetchFoodOrders(tabFilters, signal),
-        staleTime: 2 * 60 * 1000,
+        staleTime: 0,
       });
     }
   }, [shouldFetch, filtersForQuery, selectedStatus, queryClient]);
@@ -587,7 +592,7 @@ export default function FoodOrdersClient() {
   const showTableLoading =
     hasMounted && ((isPending && orders.length === 0) || searchInFlight);
   const [manualRefreshing, setManualRefreshing] = useState(false);
-  const isRefreshing = manualRefreshing || (hasMounted && isFetching && orders.length > 0);
+  const isRefreshing = manualRefreshing;
   // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
