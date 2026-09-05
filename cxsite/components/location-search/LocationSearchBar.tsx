@@ -94,7 +94,7 @@ export default function LocationSearchBar() {
   const handleSelectLocation = (displayName: string, _item?: LocationItem) => {
     setLocationDisplay(displayName)
     setLocationState('ready')
-    setLocationSearchQuery('')
+    setSearchQuery('')
     try {
       localStorage.setItem(LOCATION_STORAGE_KEY, displayName)
     } catch {}
@@ -200,7 +200,7 @@ export default function LocationSearchBar() {
                       ? restaurantDetailHref(
                           {
                             public_slug: item.public_slug,
-                            store_id: item.restaurant_id,
+                            store_id: item.restaurant_id != null ? String(item.restaurant_id) : null,
                             id: item.id,
                           },
                           'search'

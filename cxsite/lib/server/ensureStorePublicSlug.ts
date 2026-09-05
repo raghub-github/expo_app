@@ -42,7 +42,7 @@ export async function ensureStorePublicSlug(
   const slug = disambiguateStoreSlug(
     base,
     taken,
-    row.landmark ?? null
+    typeof row.landmark === 'string' ? row.landmark : null
   )
 
   const { error } = await db

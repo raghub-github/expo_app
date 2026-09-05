@@ -40,11 +40,17 @@ interface MenuItem {
   in_stock?: boolean;
   description?: string;
   customizations?: any[];
-  sizes?: unknown[];
-  addons?: unknown[];
+  sizes?: any[];
+  addons?: any[];
   is_active?: boolean;
   created_at?: string;
   updated_at?: string;
+  /** Optional display attributes used by the "popular items" showcase rendering. */
+  isPopular?: boolean;
+  image?: string;
+  isVeg?: boolean;
+  spiceLevel?: number;
+  prepTime?: number;
 }
 
 interface Restaurant {
@@ -492,7 +498,9 @@ function RestaurantPage({
     [groceryProducts]
   )
 
-  const browseCategories = groceryMenu ? groceryCategories : categories
+  const browseCategories: string[] = (groceryMenu ? groceryCategories : categories).filter(
+    (c): c is string => typeof c === "string" && c.length > 0
+  )
 
   const filteredGroceryProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
@@ -1639,7 +1647,7 @@ function RestaurantPage({
                                 <div className="relative h-40 w-full overflow-hidden">
                                   <ProtectedImage
                                     src={item.image}
-                                    alt={item.name}
+                                    alt={item.name ?? item.item_name}
                                     fill
                                     objectFit="cover"
                                     imgClassName="group-hover:scale-110 transition-transform duration-500"

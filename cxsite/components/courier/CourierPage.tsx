@@ -7,6 +7,7 @@ import { useAppSelector, useAppDispatch } from '@/lib/hooks'
 import AuthModal from '@/components/auth/AuthModal'
 import ServiceSwitchModal from '@/components/auth/ServiceSwitchModal'
 import GatiMitraLogo from '@/components/common/GatiMitraLogo'
+import Footer from '@/components/layout/Footer'
 import { ServiceCategory, setCurrentService, logout } from '@/lib/slices/authSlice'
 import { truncateDisplayName } from '@/lib/truncateDisplayName'
 

@@ -266,13 +266,15 @@ export async function GET(request: NextRequest) {
       .limit(1200)
 
     if (itemRes.error) {
-      // Fallback for schemas where category/category_item are unavailable.
-      itemRes = await supabase
+      // Fallback for schemas where category/category_item are unavailable. The narrower
+      // select is read through a defensive per-row cast below, so widen the response type
+      // back to itemRes's shape (missing columns simply read as undefined).
+      itemRes = (await supabase
         .from('merchant_menu_items')
         .select('store_id, item_name, category_id')
         .eq('is_active', true)
         .ilike('item_name', `%${safeCategory}%`)
-        .limit(1200)
+        .limit(1200)) as typeof itemRes
     }
 
     for (const row of itemRes.data || []) {

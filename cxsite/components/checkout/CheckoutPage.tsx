@@ -121,6 +121,8 @@ export default function CheckoutPage() {
         address: newAddress.address,
         city: newAddress.city,
         pincode: newAddress.pincode,
+        latitude: 0,
+        longitude: 0,
         isDefault: false,
       })
       setSelectedAddress(newId)

@@ -84,7 +84,7 @@ export default function LocationPopup({
     fetch(`/api/locations/search?q=${encodeURIComponent(debouncedQuery)}&limit=15`)
       .then((res) => res.json())
       .then((data) => {
-        setLiveResults(Array.isArray(data) && !data.error ? data : [])
+        setLiveResults(Array.isArray(data) ? data : [])
       })
       .catch(() => setLiveResults([]))
       .finally(() => setLiveLoading(false))
