@@ -114,7 +114,7 @@ export function ReferralDetailsScreen() {
           <Text style={styles.summaryLabel}>{TITLES[filter]}</Text>
         </View>
 
-        {isLoading ? (
+        {isLoading && !data ? (
           <ActivityIndicator color={TEAL} style={{ marginTop: 24 }} />
         ) : isError ? (
           <Text style={styles.empty}>

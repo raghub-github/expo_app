@@ -246,7 +246,10 @@ function forceAssignmentIneligibleMessage(
     case "outside_wave_radius":
       return `Selected rider is outside the Force Assignment radius (${radiusKm} km)`;
     case "no_context_offduty_or_stale_gps":
+    case "location_stale_or_missing":
       return "Selected rider is offline or GPS is stale — ask them to go on duty and refresh location";
+    case "off_duty":
+      return "Selected rider is offline — ask them to go on duty";
     case "subscription_blocked":
       return "Selected rider cannot receive offers (subscription / wallet block)";
     case "service_not_eligible":
@@ -257,6 +260,9 @@ function forceAssignmentIneligibleMessage(
     case "assignment_limit_or_active_order":
       return "Selected rider already has an active order";
     default:
+      if (reason?.startsWith("ineligible_")) {
+        return "Selected rider is missing required documents for this order at this location";
+      }
       return "Selected rider is not eligible for this order";
   }
 }
@@ -534,6 +540,8 @@ export async function startForceAssignment(
     const eligible = await evaluateRiderDispatchEligibility(input.newRiderId, target, {
       // Admin intentionally picked this rider (may be busy); still send the offer.
       ignoreAssignmentLimit: true,
+      allowStaleGps: true,
+      logDecision: true,
       lastRejectReason,
     });
 
@@ -729,6 +737,15 @@ export async function appendForceAssignmentPoolRow(
     higherDispatchPriority: true,
     customerTipAmount: 0,
   };
+  console.info(
+    "[force-assignment] pool inject",
+    JSON.stringify({
+      riderId,
+      orderCoreId: force.orderCoreId,
+      orderId: injected.orderId,
+      formattedOrderId: injected.formattedOrderId,
+    })
+  );
   return [injected, ...rows];
 }
 
@@ -1016,6 +1033,8 @@ export async function adminHardAssignSpecificRider(args: {
   const lastRejectReason: { current?: string } = {};
   const eligible = await evaluateRiderDispatchEligibility(args.riderId, target, {
     ignoreAssignmentLimit: true,
+    allowStaleGps: true,
+    logDecision: true,
     lastRejectReason,
   });
 

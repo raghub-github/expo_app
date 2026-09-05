@@ -7,7 +7,10 @@ import {
 } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { syncNegativeWalletBlocks } from "@/lib/rider-negative-wallet-blocks";
-import { resolveRiderDeliveryFeeFromCore } from "@/lib/credit-rider-order-on-delivered";
+import {
+  resolveCompleteOrderValuePaidByCustomer,
+  resolveDeliveryFarePaidToRider,
+} from "@/lib/credit-rider-order-on-delivered";
 import type {
   RiderPenaltyAmountBase,
   RiderPenaltyScenarioCode,
@@ -496,12 +499,18 @@ async function resolvePenaltyAmount(args: {
   const core = rows[0];
   if (!core) return 0;
 
-  if (args.amountBase === "COMPLETE_ORDER_VALUE") {
-    const grand = Number(core.grand_total ?? 0);
-    return round2(Math.max(0, Number.isFinite(grand) ? grand : 0));
+  const billingSnap = core.billing_snapshot;
+  const normalizedBase = String(args.amountBase ?? "")
+    .trim()
+    .toUpperCase();
+  if (normalizedBase === "COMPLETE_ORDER_VALUE" || normalizedBase === "CTC") {
+    return resolveCompleteOrderValuePaidByCustomer({
+      grandTotal: core.grand_total,
+      billingSnapshot: billingSnap,
+    });
   }
 
-  const deliveryFee = resolveRiderDeliveryFeeFromCore({
+  const deliveryFee = resolveDeliveryFarePaidToRider({
     riderEarning: core.rider_earning,
     fareAmount: core.fare_amount,
     billingSnapshot: core.billing_snapshot,
@@ -891,6 +900,8 @@ export type ThreePlRiderPenaltyPreview = {
   ledgerDescription: string;
   skipped?: string;
   skippedLabel?: string;
+  /** True when wallet already has a cancel-penalty debit for this order+rider. */
+  alreadyApplied?: boolean;
 };
 
 const SCENARIO_LABELS: Record<RiderPenaltyScenarioCode, string> = {
@@ -905,8 +916,116 @@ const SKIPPED_LABELS: Record<string, string> = {
   zero_penalty_amount: "Penalty amount is not configured.",
   rider_penalty_panel_disabled: "Rider penalty panel is disabled.",
   penalty_engine_not_migrated: "Rider penalty engine is not set up yet.",
-  already_applied: "Penalty was already applied for this order.",
+  already_applied: "A penalty has already been applied to this rider for this order.",
 };
+
+async function loadExistingRiderCancelPenalty(
+  orderCoreId: number,
+  riderId: number
+): Promise<{
+  amount: number;
+  scenarioCode: RiderPenaltyScenarioCode | null;
+  ledgerTitle: string;
+  ledgerDescription: string;
+} | null> {
+  const sql = getSql();
+  const refPrefix = `rider_cancel_pen:${orderCoreId}:${riderId}:`;
+  try {
+    const rows = await sql.unsafe<
+      {
+        amount: string;
+        ref: string;
+        description: string | null;
+        metadata: unknown;
+      }[]
+    >(
+      `
+        SELECT
+          amount::text,
+          ref,
+          description,
+          metadata
+        FROM wallet_ledger
+        WHERE rider_id = $1
+          AND entry_type = 'penalty'
+          AND ref LIKE $2
+        ORDER BY created_at DESC NULLS LAST, id DESC
+        LIMIT 1
+      `,
+      [riderId, `${refPrefix}%`]
+    );
+    const row = rows[0];
+    if (!row) {
+      // Fallback: rider_penalties row for this order (app cancel may have written both).
+      const penaltyRows = await sql.unsafe<
+        { amount: string; reason: string | null; metadata: unknown }[]
+      >(
+        `
+          SELECT amount::text, reason, metadata
+          FROM rider_penalties
+          WHERE rider_id = $1
+            AND order_id = $2
+            AND status = 'active'
+            AND penalty_type = 'cancellation'
+          ORDER BY created_at DESC NULLS LAST, id DESC
+          LIMIT 1
+        `,
+        [riderId, orderCoreId]
+      );
+      const p = penaltyRows[0];
+      if (!p) return null;
+      const amount = round2(Math.max(0, Number(p.amount) || 0));
+      if (!(amount > 0)) return null;
+      const meta =
+        p.metadata != null && typeof p.metadata === "object"
+          ? (p.metadata as Record<string, unknown>)
+          : null;
+      const sc = String(meta?.scenarioCode ?? "").trim().toUpperCase();
+      const scenarioCode =
+        sc === "AFTER_MARK_PICKUP" || sc === "AFTER_ACCEPT_DISPATCH"
+          ? (sc as RiderPenaltyScenarioCode)
+          : null;
+      return {
+        amount,
+        scenarioCode,
+        ledgerTitle: String(p.reason ?? "").trim() || "Rider cancellation penalty",
+        ledgerDescription:
+          String(meta?.ledgerDescription ?? "").trim() ||
+          "Penalty was already debited from this rider's wallet for this order.",
+      };
+    }
+
+    const amount = round2(Math.max(0, Number(row.amount) || 0));
+    if (!(amount > 0)) return null;
+    const ref = String(row.ref ?? "");
+    const scenarioPart = ref.slice(refPrefix.length).trim().toUpperCase();
+    let scenarioCode: RiderPenaltyScenarioCode | null =
+      scenarioPart === "AFTER_MARK_PICKUP" || scenarioPart === "AFTER_ACCEPT_DISPATCH"
+        ? (scenarioPart as RiderPenaltyScenarioCode)
+        : null;
+    const meta =
+      row.metadata != null && typeof row.metadata === "object"
+        ? (row.metadata as Record<string, unknown>)
+        : null;
+    if (!scenarioCode) {
+      const sc = String(meta?.scenarioCode ?? "").trim().toUpperCase();
+      if (sc === "AFTER_MARK_PICKUP" || sc === "AFTER_ACCEPT_DISPATCH") {
+        scenarioCode = sc as RiderPenaltyScenarioCode;
+      }
+    }
+    return {
+      amount,
+      scenarioCode,
+      ledgerTitle: String(row.description ?? "").trim() || "Rider cancellation penalty",
+      ledgerDescription:
+        String(meta?.ledgerDescription ?? "").trim() ||
+        "Penalty was already debited from this rider's wallet for this order.",
+    };
+  } catch (e) {
+    if (isRelationMissingError(e)) return null;
+    throw e;
+  }
+}
 
 export async function previewThreePlRiderCancellationPenalty(args: {
   orderCoreId: number;
@@ -935,6 +1054,22 @@ export async function previewThreePlRiderCancellationPenalty(args: {
         ...empty,
         skipped: "rider_not_on_order",
         skippedLabel: SKIPPED_LABELS.rider_not_on_order,
+      };
+    }
+
+    // Rider already self-cancelled (or admin already debited) — show that, don't say "not configured".
+    const existing = await loadExistingRiderCancelPenalty(args.orderCoreId, args.riderId);
+    if (existing) {
+      const scenarioCode = existing.scenarioCode;
+      return {
+        appliesPenalty: false,
+        penaltyAmount: existing.amount,
+        scenarioCode,
+        scenarioLabel: scenarioCode ? SCENARIO_LABELS[scenarioCode] : null,
+        ledgerTitle: existing.ledgerTitle,
+        ledgerDescription: existing.ledgerDescription,
+        skipped: "already_applied",
+        skippedLabel: `A ₹${existing.amount.toFixed(2)} penalty has already been applied to this rider for this order.`,        alreadyApplied: true,
       };
     }
 

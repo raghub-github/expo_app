@@ -41,10 +41,27 @@ export function resolveNotificationDeepLink(
   const targetType = asString(data.target_type || data.targetType).toUpperCase();
   const serviceId = asString(data.target_service_id || data.targetServiceId).toLowerCase();
   const categoryId = asString(data.target_category_id || data.targetCategoryId);
-  const storeId = asString(data.target_store_id || data.targetStoreId);
+  const storeId = asString(data.target_store_id || data.targetStoreId || data.target_id);
+  const targetId = asString(data.target_id || data.targetId);
+
+  if (targetType === "HOME" || targetType === "FOOD_HOME") return "/home";
+  if (targetType === "GROCERY_HOME") return "/home/grocery";
+  if (targetType === "RIDES") return "/home/service/ride";
+  if (targetType === "PARCEL") return "/home/service/parcels";
+  if (targetType === "OFFER" || targetType === "COUPON") return "/offers";
+  if (targetType === "SUBSCRIPTION" || targetType === "GMITRA_PLUS") return "/profile/subscription";
+  if (targetType === "ORDER") {
+    const orderId = asString(data.orderId || data.target_order_id) || targetId;
+    return orderId ? `/orders/${encodeURIComponent(orderId)}` : "/orders";
+  }
+  if (targetType === "CUSTOM_DEEP_LINK") {
+    const path = asString(data.customDeepLink || data.custom_deep_link) || targetId;
+    if (path.startsWith("/") && !path.startsWith("//") && !path.includes("..")) return path;
+    return "/home";
+  }
 
   if (targetType === "SERVICE" && serviceId) {
-    return SERVICE_ROUTES[serviceId] ?? null;
+    return SERVICE_ROUTES[serviceId] ?? "/home";
   }
 
   if (targetType === "CATEGORY" && categoryId) {
@@ -52,7 +69,10 @@ export function resolveNotificationDeepLink(
     return `/home/category/${encodeURIComponent(categoryId)}?storeType=${encodeURIComponent(st)}`;
   }
 
-  if (targetType === "STORE" && storeId) {
+  if (
+    (targetType === "STORE" || targetType === "RESTAURANT" || targetType === "MENU" || targetType === "PRODUCT") &&
+    storeId
+  ) {
     return `/home/merchant/${encodeURIComponent(storeId)}`;
   }
 

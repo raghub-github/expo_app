@@ -40,7 +40,7 @@ const MUTED = "#828282";
 const BANNER_BG = "#FFF7ED";
 const BANNER_TEXT = "#92400E";
 const SEND_ORANGE = colors.brandOrange[500];
-const POLL_MS = 3500;
+const POLL_MS = 6000;
 
 type QuickReplyIcon = {
   family: "ionicons" | "material";

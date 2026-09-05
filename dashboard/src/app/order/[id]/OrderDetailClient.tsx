@@ -326,8 +326,8 @@ export interface OrderRecoveryRecordItem {
   reason: string | null;
   amount: number;
   impact: "debit" | "credit" | "info";
-  /** Whether the debit was partial or full. */
-  debitScope?: "partial" | "full" | null;
+  /** Whether the debit was a partial or full charge (`none` = no merchant debit). */
+  debitScope?: "partial" | "full" | "none" | null;
   status: string | null;
   createdAt: string | null;
 }

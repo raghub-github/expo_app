@@ -1,13 +1,13 @@
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { riderApi, type RiderOrderSummary } from "@/src/services/api/riderApi";
-import { useDutyStore } from "@/src/stores/dutyStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { useDutyStatus } from "@/src/hooks/useDutyStatus";
+import { logSlideActionLatency, markSlideAction } from "@/src/lib/slideActionLatency";
 import {
-  isRiderFullyDispatchBlocked,
-  mergeRiderBlockedServices,
-} from "@/src/lib/rider-blocked-services";
-import { isRiderDispatchRealtimeActive } from "@/src/stores/riderWsStore";
+  fetchAvailableOrdersForDispatch,
+  fetchPendingOffersForDispatch,
+} from "@/src/lib/riderDispatchFetch";
+import { executeRiderAction } from "@/src/lib/riderActionRuntime";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export const RIDER_ORDER_DETAIL_QUERY_KEY = (orderId: string) =>
   ["rider", "orders", "detail", orderId] as const;
@@ -28,7 +28,11 @@ export function findRiderOrderInQueryCache(
   if (fromActive) return fromActive;
 
   const available = queryClient.getQueryData<RiderOrderSummary[]>(RIDER_AVAILABLE_ORDERS_QUERY_KEY);
-  return available?.find((o) => orderRefMatches(o, orderRef));
+  const fromAvailable = available?.find((o) => orderRefMatches(o, orderRef));
+  if (fromAvailable) return fromAvailable;
+
+  const pending = queryClient.getQueryData<RiderOrderSummary[]>(RIDER_PENDING_OFFERS_QUERY_KEY);
+  return pending?.find((o) => orderRefMatches(o, orderRef));
 }
 
 export function seedRiderOrderDetailCache(
@@ -48,52 +52,96 @@ export function seedRiderOrderDetailCache(
   }
 }
 
+/** Cache first; list refetch must not delay mutation settlement or slider unlock. */
+function cacheOrderThenRefreshLists(
+  queryClient: QueryClient,
+  orderId: string,
+  data: RiderOrderSummary
+) {
+  queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
+  void queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+}
+
+function applySlideOrderSuccess(
+  queryClient: QueryClient,
+  orderId: string,
+  data: RiderOrderSummary
+) {
+  markSlideAction("T7_UI_SUCCESS");
+  logSlideActionLatency();
+  cacheOrderThenRefreshLists(queryClient, orderId, data);
+}
+
 export const RIDER_AVAILABLE_ORDERS_QUERY_KEY = ["rider", "orders", "available"] as const;
+export const RIDER_PENDING_OFFERS_QUERY_KEY = ["rider", "orders", "pending-offers"] as const;
 
 /**
  * Hook to fetch available orders
  */
 export function useAvailableOrders() {
-  const session = useSessionStore((s) => s.session);
-  const sessionHydrated = useSessionStore((s) => s.hydrated);
-  const isOnDuty = useDutyStore((s) => s.isOnDuty);
-  const { data: dutyStatus } = useDutyStatus();
-  const blockedServices = mergeRiderBlockedServices(dutyStatus?.blockedServiceTypes);
-  const dispatchBlocked = isRiderFullyDispatchBlocked({
-    accountRestricted: dutyStatus?.accountRestricted,
-    allServicesBlacklisted: dutyStatus?.allServicesBlacklisted,
-    blockedServices,
-  });
-
   return useQuery({
     queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY,
-    queryFn: () => riderApi.getAvailableOrders(),
-    // Do NOT gate `enabled` on dispatchBlocked: a stale/optimistic block flag from
-    // useDutyStatus would otherwise disable the query entirely, turning the WS
-    // `dispatch_offer` invalidate into a no-op and permanently dropping offers with
-    // no polling safety net. The server (getAvailableOrdersForRider) is the SSOT and
-    // returns [] for a genuinely blocked rider, so we keep polling — just slowly.
-    enabled: sessionHydrated && Boolean(session?.accessToken) && isOnDuty,
-    refetchInterval: (query) => {
-      // Genuinely-blocked riders still poll, but at a floor so a stale flag
-      // self-heals within 30s instead of never; WS-invalidate stays instant.
-      if (dispatchBlocked) return 30_000;
-      if (isRiderDispatchRealtimeActive()) return 12_000;
-      const err = query.state.error as { status?: number } | null;
-      if (err?.status === 503 || err?.status === 429) return 12_000;
-      return 4_000;
-    },
+    queryFn: async () => fetchAvailableOrdersForDispatch(),
+    // Cache observers only — a mount fetch raced the lifecycle poll and aborted
+    // the 15s /available scan, leaving idle Home with an empty pool.
+    enabled: false,
+    networkMode: "always",
+    // Session-layer RiderDispatchLifecycle owns polling so idle Home / unfocused
+    // tabs cannot pause recovery. These observers only read the shared cache.
+    refetchInterval: false,
     refetchIntervalInBackground: false,
-    refetchOnWindowFocus: true,
-    refetchOnMount: true,
-    staleTime: 3000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    staleTime: 3_000,
+    placeholderData: (prev) => prev,
     retry: 2,
     retryDelay: (attempt) => Math.min(1_500 * 2 ** attempt, 12_000),
   });
 }
 
+export function usePendingOffers() {
+  return useQuery({
+    queryKey: RIDER_PENDING_OFFERS_QUERY_KEY,
+    queryFn: async () => fetchPendingOffersForDispatch(),
+    enabled: false,
+    networkMode: "always",
+    refetchInterval: false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    staleTime: 3_000,
+    placeholderData: (prev) => prev,
+    retry: 2,
+  });
+}
+
 export const RIDER_ACTIVE_ORDERS_QUERY_KEY = ["rider", "orders", "active"] as const;
 export const RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY = ["rider", "orders", "ride-payment-holds"] as const;
+
+const LAST_ACTIVE_ORDERS_KEY = "gm.rider.lastActiveOrders.v1";
+
+export function persistLastActiveOrders(orders: RiderOrderSummary[]): void {
+  void AsyncStorage.setItem(LAST_ACTIVE_ORDERS_KEY, JSON.stringify(orders.slice(0, 4))).catch(
+    () => {}
+  );
+}
+
+export async function hydrateLastActiveOrders(queryClient: QueryClient): Promise<void> {
+  try {
+    const raw = await AsyncStorage.getItem(LAST_ACTIVE_ORDERS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as RiderOrderSummary[]) : [];
+    if (!Array.isArray(parsed) || parsed.length === 0) return;
+    if (queryClient.getQueryData(RIDER_ACTIVE_ORDERS_QUERY_KEY)) return;
+    queryClient.setQueryData(RIDER_ACTIVE_ORDERS_QUERY_KEY, parsed);
+    for (const order of parsed) {
+      seedRiderOrderDetailCache(queryClient, order);
+    }
+  } catch {
+    /* ignore corrupt cache */
+  }
+}
 
 export type RiderOrderHistoryFilter = "all" | "food" | "ride" | "parcel";
 
@@ -125,11 +173,20 @@ export function useActiveOrders() {
 
   return useQuery({
     queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY,
-    queryFn: () => riderApi.getActiveOrders(),
+    queryFn: async () => {
+      const data = await riderApi.getActiveOrders();
+      persistLastActiveOrders(data);
+      return data;
+    },
     enabled: !!session?.accessToken,
-    refetchInterval: 5000,
-    refetchOnMount: true,
-    refetchOnWindowFocus: true,
+    refetchInterval: (query) => {
+      const n = Array.isArray(query.state.data) ? query.state.data.length : 0;
+      // Navigation already polls order detail; /active is only a safety net.
+      return n > 0 ? 20_000 : 30_000;
+    },
+    refetchIntervalInBackground: false,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
     staleTime: 15_000,
     placeholderData: (prev) => prev,
     retry: 2,
@@ -143,10 +200,14 @@ export function useRidePaymentHolds() {
     queryKey: RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY,
     queryFn: () => riderApi.getRidePaymentHolds(),
     enabled: !!session?.accessToken,
-    refetchInterval: 5000,
+    refetchInterval: (query) => {
+      const n = Array.isArray(query.state.data) ? query.state.data.length : 0;
+      return n > 0 ? 12_000 : 30_000;
+    },
     refetchOnMount: true,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
     staleTime: 10_000,
+    placeholderData: (prev) => prev,
     retry: 2,
   });
 }
@@ -158,10 +219,34 @@ export function useAcceptOrder() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (orderId: string) => riderApi.acceptOrder(orderId),
+    mutationFn: (orderId: string) =>
+      executeRiderAction({
+        orderId,
+        actionType: "accept",
+        send: (actionId) => riderApi.acceptOrder(orderId, { actionId }),
+      }),
+    retry: false,
+    networkMode: "always",
     onSuccess: (data, orderId) => {
       seedRiderOrderDetailCache(queryClient, data, [orderId]);
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      queryClient.setQueryData<RiderOrderSummary[]>(RIDER_ACTIVE_ORDERS_QUERY_KEY, (prev) => {
+        const list = Array.isArray(prev) ? prev : [];
+        if (list.some((o) => o.id === data.id)) {
+          return list.map((o) => (o.id === data.id ? data : o));
+        }
+        return [data, ...list];
+      });
+      const drop = (list: RiderOrderSummary[] | undefined) =>
+        Array.isArray(list)
+          ? list.filter(
+              (o) =>
+                o.id !== data.id &&
+                o.id !== orderId &&
+                (!data.formattedOrderId || o.formattedOrderId !== data.formattedOrderId)
+            )
+          : list;
+      queryClient.setQueryData(RIDER_AVAILABLE_ORDERS_QUERY_KEY, drop);
+      queryClient.setQueryData(RIDER_PENDING_OFFERS_QUERY_KEY, drop);
     },
   });
 }
@@ -179,7 +264,7 @@ export function useRejectOrder() {
         reasonText: args.reasonText,
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      void queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
     },
   });
 }
@@ -192,9 +277,27 @@ export function useMissOrderOffer() {
     mutationFn: (args: { orderId: string; reason?: string }) =>
       riderApi.missOrderOffer(args.orderId, args.reason),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
-      queryClient.invalidateQueries({ queryKey: ["rider", "dispatch-offer-stats"] });
+      void queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      void queryClient.invalidateQueries({ queryKey: ["rider", "dispatch-offer-stats"] });
     },
+  });
+}
+
+function syncDetailIntoActiveList(queryClient: QueryClient, data: RiderOrderSummary) {
+  queryClient.setQueryData<RiderOrderSummary[]>(RIDER_ACTIVE_ORDERS_QUERY_KEY, (prev) => {
+    if (!Array.isArray(prev) || prev.length === 0) return prev;
+    let changed = false;
+    const next = prev.map((o) => {
+      if (
+        o.id === data.id ||
+        (data.formattedOrderId && o.formattedOrderId === data.formattedOrderId)
+      ) {
+        changed = true;
+        return data;
+      }
+      return o;
+    });
+    return changed ? next : prev;
   });
 }
 
@@ -206,10 +309,17 @@ export function useRideOrder(
 
   return useQuery({
     queryKey: RIDER_ORDER_DETAIL_QUERY_KEY(orderId ?? ""),
-    queryFn: () => riderApi.getRideOrder(orderId!),
+    queryFn: async () => {
+      const data = await riderApi.getRideOrder(orderId!);
+      seedRiderOrderDetailCache(queryClient, data, [orderId!]);
+      syncDetailIntoActiveList(queryClient, data);
+      return data;
+    },
     enabled: !!orderId,
-    staleTime: 5000,
+    staleTime: 10_000,
     refetchInterval: opts?.refetchInterval,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: false,
     retry: 2,
     // Prefer cached list/detail so Active Ride opens without a full-screen spinner.
     initialData: () =>
@@ -234,10 +344,17 @@ export function useReachedPickup() {
 
   return useMutation({
     mutationFn: (args: OrderGpsArgs) =>
-      riderApi.markReachedPickup(args.orderId, { lat: args.lat, lng: args.lng }),
+      executeRiderAction({
+        orderId: args.orderId,
+        actionType: "reached_pickup",
+        payload: { lat: args.lat, lng: args.lng },
+        send: (actionId) =>
+          riderApi.markReachedPickup(args.orderId, { lat: args.lat, lng: args.lng }, { actionId }),
+      }),
+    retry: false,
+    networkMode: "always",
     onSuccess: (data, { orderId }) => {
-      queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      applySlideOrderSuccess(queryClient, orderId, data);
     },
   });
 }
@@ -260,8 +377,7 @@ export function useSubmitMerchantPickupFeedback() {
         skipped: args.skipped,
       }),
     onSuccess: (data, { orderId }) => {
-      queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      cacheOrderThenRefreshLists(queryClient, orderId, data);
     },
   });
 }
@@ -286,8 +402,7 @@ export function useSubmitCustomerDeliveryFeedback() {
         skipped: args.skipped,
       }),
     onSuccess: (data, { orderId }) => {
-      queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      cacheOrderThenRefreshLists(queryClient, orderId, data);
     },
   });
 }
@@ -297,10 +412,17 @@ export function useReachedCustomer() {
 
   return useMutation({
     mutationFn: (args: OrderGpsArgs) =>
-      riderApi.markReachedCustomer(args.orderId, { lat: args.lat, lng: args.lng }),
+      executeRiderAction({
+        orderId: args.orderId,
+        actionType: "reached_drop",
+        payload: { lat: args.lat, lng: args.lng },
+        send: (actionId) =>
+          riderApi.markReachedCustomer(args.orderId, { lat: args.lat, lng: args.lng }, { actionId }),
+      }),
+    retry: false,
+    networkMode: "always",
     onSuccess: (data, { orderId }) => {
-      queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      applySlideOrderSuccess(queryClient, orderId, data);
     },
   });
 }
@@ -310,20 +432,28 @@ export function useCancelAssignedRide() {
 
   return useMutation({
     mutationFn: (args: { orderId: string; reasonCode: string; reasonText?: string }) =>
-      riderApi.cancelAssignedRide(args.orderId, {
-        reasonCode: args.reasonCode,
-        reasonText: args.reasonText,
+      executeRiderAction({
+        orderId: args.orderId,
+        actionType: "cancel_assigned",
+        payload: { reasonCode: args.reasonCode, reasonText: args.reasonText },
+        send: (actionId) =>
+          riderApi.cancelAssignedRide(
+            args.orderId,
+            { reasonCode: args.reasonCode, reasonText: args.reasonText },
+            { actionId }
+          ),
       }),
+    retry: false,
+    networkMode: "always",
     onSuccess: async () => {
-      await Promise.all([
+      void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["rider", "orders"] }),
         queryClient.invalidateQueries({ queryKey: ["rider", "earnings"] }),
         queryClient.invalidateQueries({ queryKey: ["rider", "ledger"] }),
         queryClient.invalidateQueries({ queryKey: ["rider", "wallet"] }),
         queryClient.invalidateQueries({ queryKey: ["rider", "duty"] }),
       ]);
-      // Force ledger lists to refetch so penalty debit is visible immediately.
-      await queryClient.refetchQueries({ queryKey: ["rider", "ledger"], type: "active" });
+      void queryClient.refetchQueries({ queryKey: ["rider", "ledger"], type: "active" });
     },
   });
 }
@@ -337,32 +467,33 @@ export function syncRiderOrderDetailCache(
   void queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
 }
 
-const VERIFY_PICKUP_OTP_TIMEOUT_MS = 15_000;
-
 export function useVerifyPickupOtp() {
   return useMutation({
-    mutationFn: async (args: {
+    mutationFn: (args: {
       orderId: string;
       otp: string;
       lat?: number;
       lng?: number;
       deviceTimestamp?: string;
-    }) => {
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-      try {
-        return await Promise.race([
-          riderApi.verifyPickupOtp(args.orderId, args),
-          new Promise<never>((_, reject) => {
-            timeoutId = setTimeout(
-              () => reject(new Error("Request timed out. Check your network and try again.")),
-              VERIFY_PICKUP_OTP_TIMEOUT_MS
-            );
-          }),
-        ]);
-      } finally {
-        if (timeoutId) clearTimeout(timeoutId);
-      }
-    },
+    }) =>
+      executeRiderAction({
+        orderId: args.orderId,
+        actionType: "verify_pickup_otp",
+        payload: { otp: args.otp, lat: args.lat, lng: args.lng },
+        send: (actionId) =>
+          riderApi.verifyPickupOtp(
+            args.orderId,
+            {
+              otp: args.otp,
+              lat: args.lat,
+              lng: args.lng,
+              deviceTimestamp: args.deviceTimestamp,
+            },
+            { actionId }
+          ),
+      }),
+    retry: false,
+    networkMode: "always",
   });
 }
 
@@ -381,7 +512,15 @@ export function useMarkFoodPickup() {
       lat?: number;
       lng?: number;
       deviceTimestamp?: string;
-    }) => riderApi.markFoodPickup(args.orderId, args),
+    }) =>
+      executeRiderAction({
+        orderId: args.orderId,
+        actionType: "mark_pickup",
+        payload: { lat: args.lat, lng: args.lng },
+        send: (actionId) => riderApi.markFoodPickup(args.orderId, args, { actionId }),
+      }),
+    retry: false,
+    networkMode: "always",
   });
 }
 
@@ -392,7 +531,7 @@ export function useAcknowledgeFoodPickup() {
     mutationFn: (orderId: string) => riderApi.acknowledgeFoodPickup(orderId),
     onSuccess: (data, orderId) => {
       queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      void queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
     },
   });
 }
@@ -414,10 +553,17 @@ export function useCompleteRide() {
 
   return useMutation({
     mutationFn: (args: OrderGpsArgs) =>
-      riderApi.completeRide(args.orderId, { lat: args.lat, lng: args.lng }),
+      executeRiderAction({
+        orderId: args.orderId,
+        actionType: "complete_ride",
+        payload: { lat: args.lat, lng: args.lng },
+        send: (actionId) =>
+          riderApi.completeRide(args.orderId, { lat: args.lat, lng: args.lng }, { actionId }),
+      }),
+    retry: false,
+    networkMode: "always",
     onSuccess: (data, { orderId }) => {
-      queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      applySlideOrderSuccess(queryClient, orderId, data);
     },
   });
 }
@@ -427,49 +573,60 @@ export function useStartRide() {
 
   return useMutation({
     mutationFn: (args: OrderGpsArgs) =>
-      riderApi.startRide(args.orderId, { lat: args.lat, lng: args.lng }),
+      executeRiderAction({
+        orderId: args.orderId,
+        actionType: "start_ride",
+        payload: { lat: args.lat, lng: args.lng },
+        send: (actionId) =>
+          riderApi.startRide(args.orderId, { lat: args.lat, lng: args.lng }, { actionId }),
+      }),
+    retry: false,
+    networkMode: "always",
     onSuccess: (data, { orderId }) => {
-      queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      applySlideOrderSuccess(queryClient, orderId, data);
     },
   });
 }
-
-const VERIFY_DELIVERY_OTP_TIMEOUT_MS = 30_000;
 
 export function useVerifyDeliveryOtp() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (args: {
+    mutationFn: (args: {
       orderId: string;
       otp: string;
       lat?: number;
       lng?: number;
       deliveryImageUrl?: string;
       deliveryImageR2Key?: string;
-    }) => {
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-      try {
-        return await Promise.race([
-          riderApi.verifyDeliveryOtp(args.orderId, args),
-          new Promise<never>((_, reject) => {
-            timeoutId = setTimeout(
-              () =>
-                reject(
-                  new Error("Request timed out. Check your network and API URL.")
-                ),
-              VERIFY_DELIVERY_OTP_TIMEOUT_MS
-            );
-          }),
-        ]);
-      } finally {
-        if (timeoutId) clearTimeout(timeoutId);
-      }
-    },
+    }) =>
+      executeRiderAction({
+        orderId: args.orderId,
+        actionType: "verify_delivery_otp",
+        payload: {
+          otp: args.otp,
+          lat: args.lat,
+          lng: args.lng,
+          deliveryImageUrl: args.deliveryImageUrl,
+          deliveryImageR2Key: args.deliveryImageR2Key,
+        },
+        send: (actionId) =>
+          riderApi.verifyDeliveryOtp(
+            args.orderId,
+            {
+              otp: args.otp,
+              lat: args.lat,
+              lng: args.lng,
+              deliveryImageUrl: args.deliveryImageUrl,
+              deliveryImageR2Key: args.deliveryImageR2Key,
+            },
+            { actionId }
+          ),
+      }),
+    retry: false,
+    networkMode: "always",
     onSuccess: (data, { orderId }) => {
-      queryClient.setQueryData(["rider", "orders", "detail", orderId], data);
-      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      applySlideOrderSuccess(queryClient, orderId, data);
     },
   });
 }

@@ -468,7 +468,8 @@ export function useMerchantWalletAnalytics(
   period: WalletAnalyticsPeriod,
   options?: { enabled?: boolean }
 ) {
-  const enabled = (options?.enabled ?? true) && !!storeId;
+  const enabled =
+    (options?.enabled ?? true) && !!storeId && isValidPartnerStoreId(storeId);
   return useQuery({
     queryKey: merchantKeys.walletAnalytics(storeId ?? '', period),
     queryFn: () => fetchWalletAnalytics(storeId!, period),
@@ -483,7 +484,8 @@ export function useMerchantPayoutRequests(
   limit = 5,
   options?: { enabled?: boolean; live?: boolean }
 ) {
-  const enabled = (options?.enabled ?? true) && !!storeId;
+  const enabled =
+    (options?.enabled ?? true) && !!storeId && isValidPartnerStoreId(storeId);
   return useQuery({
     queryKey: merchantKeys.payoutRequests(storeId ?? '', limit),
     queryFn: () => fetchPayoutRequests(storeId!, limit),

@@ -1,13 +1,13 @@
 /**
- * Validate CUSTOMER_ANNOUNCEMENT tap targets against DB (categories / stores).
+ * Validate CUSTOMER_ANNOUNCEMENT tap targets against DB (categories / stores / orders).
  */
 import { getSql } from "../../db/client.js";
 import {
   buildAnnouncementDeepLink,
   getCustomerHomeService,
+  isAllowedGatimitraDeepLink,
   type AnnouncementTargetInput,
   type AnnouncementTargetResolved,
-  type AnnouncementTargetType,
 } from "../../lib/customer-home-services.js";
 
 export type ValidateAnnouncementTargetResult =
@@ -19,14 +19,18 @@ function parseTargetFromBody(body: Record<string, unknown> | null | undefined): 
   const typeRaw = String(src.targetType ?? src.target_type ?? "NONE")
     .trim()
     .toUpperCase();
-  const targetType = (
-    ["NONE", "SERVICE", "CATEGORY", "STORE"].includes(typeRaw) ? typeRaw : "NONE"
-  ) as AnnouncementTargetType;
   return {
-    targetType,
+    targetType: typeRaw,
     serviceId: (src.serviceId ?? src.target_service_id ?? null) as string | null,
     categoryId: (src.categoryId ?? src.target_category_id ?? null) as string | null,
     storeId: (src.storeId ?? src.target_store_id ?? null) as string | null,
+    orderId: (src.orderId ?? src.target_order_id ?? (typeRaw === "ORDER" ? src.target_id : null)) as
+      | string
+      | null,
+    customDeepLink: (src.customDeepLink ??
+      src.custom_deep_link ??
+      (typeRaw === "CUSTOM_DEEP_LINK" ? src.target_id : null)) as string | null,
+    targetId: (src.targetId ?? src.target_id ?? null) as string | null,
   };
 }
 
@@ -41,14 +45,52 @@ export async function validateAnnouncementTarget(
     return { ok: false, error: e instanceof Error ? e.message : "Invalid target" };
   }
 
-  if (resolved.target_type === "NONE" || resolved.target_type === "SERVICE") {
+  if (
+    resolved.target_type === "NONE" ||
+    resolved.target_type === "HOME" ||
+    resolved.target_type === "SERVICE" ||
+    resolved.target_type === "OFFER" ||
+    resolved.target_type === "SUBSCRIPTION"
+  ) {
+    return { ok: true, resolved };
+  }
+
+  if (resolved.target_type === "CUSTOM_DEEP_LINK") {
+    if (!isAllowedGatimitraDeepLink(resolved.deepLink)) {
+      return { ok: false, error: "Custom deep link is not an allowed GatiMitra route" };
+    }
+    return { ok: true, resolved };
+  }
+
+  const sql = getSql();
+
+  if (resolved.target_type === "ORDER") {
+    const orderId = resolved.target_id;
+    if (!orderId) return { ok: false, error: "Order target requires an order id" };
+    const rows = await sql<
+      Array<{ order_id: string | null; formatted_order_id: string | null }>
+    >`
+      SELECT order_id, formatted_order_id
+      FROM orders_core
+      WHERE order_id = ${orderId}
+         OR formatted_order_id = ${orderId}
+         OR id::text = ${orderId}
+      LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row) return { ok: false, error: "Order not found" };
+    const publicId = String(row.formatted_order_id || row.order_id || orderId).trim();
+    resolved = {
+      ...resolved,
+      target_id: publicId,
+      target_payload: { orderId: publicId },
+      deepLink: `/orders/${encodeURIComponent(publicId)}`,
+    };
     return { ok: true, resolved };
   }
 
   const service = getCustomerHomeService(resolved.target_service_id);
   if (!service) return { ok: false, error: "Unknown service" };
-
-  const sql = getSql();
 
   if (resolved.target_type === "CATEGORY") {
     if (!service.storeType || !resolved.target_category_id) {
@@ -109,6 +151,7 @@ export async function validateAnnouncementTarget(
     const publicId = String(row.store_id || storeId).trim();
     resolved = {
       ...resolved,
+      target_id: publicId,
       target_store_id: publicId,
       deepLink: `/home/merchant/${encodeURIComponent(publicId)}`,
     };

@@ -232,8 +232,9 @@ export function useRiderStatus(riderId: string | undefined) {
       });
     },
     enabled: !!riderId && !!session?.accessToken,
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
+    staleTime: 15_000,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
     retry: (failureCount, error) => {
       if (isRiderNotFoundError(error) || isUnauthorizedError(error)) return false;
       return failureCount < 2;

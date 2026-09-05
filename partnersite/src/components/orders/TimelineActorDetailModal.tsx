@@ -4,7 +4,10 @@ import React, { useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import type { TimelineActorDetail } from '@/lib/merchantVisibleTimeline';
 
-function buildRows(detail: TimelineActorDetail): { label: string; value: string }[] {
+function buildRows(
+  detail: TimelineActorDetail,
+  hidePhone = false
+): { label: string; value: string }[] {
   if (detail.variant === 'admin') {
     return [
       { label: 'Accepted By', value: detail.acceptedBy },
@@ -13,7 +16,7 @@ function buildRows(detail: TimelineActorDetail): { label: string; value: string 
   }
   const rows: { label: string; value: string }[] = [];
   if (detail.name) rows.push({ label: 'Name', value: detail.name });
-  if (detail.phone) rows.push({ label: 'Phone number', value: detail.phone });
+  if (detail.phone && !hidePhone) rows.push({ label: 'Phone number', value: detail.phone });
   if (detail.email) rows.push({ label: 'Email', value: detail.email });
   rows.push({ label: 'Role', value: detail.role });
   rows.push({ label: 'Source', value: detail.source });
@@ -27,12 +30,17 @@ export function TimelineActorDetailModal({
   open,
   detail,
   onClose,
+  hidePhone = false,
 }: {
   open: boolean;
   detail: TimelineActorDetail | null;
   onClose: () => void;
+  hidePhone?: boolean;
 }) {
-  const rows = useMemo(() => (detail ? buildRows(detail) : []), [detail]);
+  const rows = useMemo(
+    () => (detail ? buildRows(detail, hidePhone) : []),
+    [detail, hidePhone]
+  );
 
   if (!open || !detail || rows.length === 0 || typeof document === 'undefined') return null;
 

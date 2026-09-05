@@ -23,6 +23,7 @@ import {
 } from '@/lib/merchantVisibleTimeline';
 import { MerchantOrderTimelineStrip } from '@/components/orders/MerchantOrderTimelineStrip';
 import { TimelineActorDetailModal } from '@/components/orders/TimelineActorDetailModal';
+import { isPartnerOrderClosedForContact } from '@/lib/partner-orders-unify';
 
 function formatTs(s: string | null | undefined) {
   if (!s) return '—';
@@ -257,7 +258,12 @@ export function OrderTimelineModal({
       setActorDetail(parseActorDetailFromAction(act));
     } else {
       const act = findActionForStep(effectiveActions, ['CANCELLED']);
-      setActorDetail(parseActorDetailFromAction(act, order.cancelled_by_label ?? order.rejected_reason));
+      setActorDetail(
+        parseActorDetailFromAction(act, order.cancelled_by_label ?? order.rejected_reason, {
+          cancelledByType: order.cancelled_by_type,
+          rejectedReason: order.rejected_reason,
+        })
+      );
     }
     setActorOpen(true);
   };
@@ -360,6 +366,7 @@ export function OrderTimelineModal({
       <TimelineActorDetailModal
         open={actorOpen}
         detail={actorDetail}
+        hidePhone={isPartnerOrderClosedForContact(order?.order_status)}
         onClose={() => setActorOpen(false)}
       />
     </>,

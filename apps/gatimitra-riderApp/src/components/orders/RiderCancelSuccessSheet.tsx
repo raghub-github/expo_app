@@ -61,7 +61,7 @@ export function RiderCancelSuccessSheet({
               <Ionicons name="checkmark-circle" size={48} color={colors.success[600]} />
             </View>
             <Text style={styles.title}>
-              {t("orders.cancel.successTitle", "Cancelled by You")}
+              {t("orders.cancel.successTitle", "Cancelled by Me")}
             </Text>
             {orderIdLabel ? (
               <Text style={styles.orderId}>

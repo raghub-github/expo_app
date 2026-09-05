@@ -12,6 +12,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
+import { markAcceptScreenVisible } from "@/src/lib/acceptOrderLatency";
+import { beginSlideAction, markSlideAction } from "@/src/lib/slideActionLatency";
 import {
   ActiveRideNavigationMap,
   type ActiveRideNavigationMapHandle,
@@ -49,7 +51,7 @@ import { PickupCameraPermissionSheet } from "@/src/components/orders/PickupCamer
 import { readCameraPermission } from "@/src/lib/cameraPermission";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
-import { createForegroundLocationTracker, type LocationTrackerState } from "@/src/services/location/locationTracker";
+import { createForegroundLocationTracker, LOCATION_ENGINE_PROFILES, type LocationTrackerState } from "@/src/services/location/locationTracker";
 import {
   getNavigationRouteToPickup,
   latLngFromRider,
@@ -83,7 +85,7 @@ import { buildFoodDeliverySuccessParams } from "@/src/lib/food-delivery-success-
 import { buildRideDeliverySuccessParams } from "@/src/lib/ride-delivery-success-nav";
 import { recordOrderTipBaseline } from "@/src/lib/rider-tip-celebration-storage";
 import { isRideFarePaymentPending } from "@/src/lib/ride-payment-wait";
-import { useNavScreenBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { useRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 import { usePartnerChatUnread } from "@/src/hooks/usePartnerChatUnread";
 import { useMilestoneGeoFence } from "@/src/hooks/useMilestoneGeoFence";
 import { resolveMilestoneGeoUi } from "@/src/lib/milestone-geo-hint";
@@ -98,10 +100,25 @@ import {
   FoodDeliveryConfirmBottomSheet,
 } from "@/src/components/orders/FoodDeliveryConfirmBottomSheet";
 import { captureDeliveryProofPhoto } from "@/src/lib/capture-delivery-proof-photo";
+import { resolveDeliverySlideAction } from "@/src/lib/deliverySlideAction";
 import { buildOrderDeliveryProofKey, uploadToR2 } from "@/src/services/storage/cloudflareR2";
+import {
+  cancellationPenaltyPreviewQueryKey,
+  usePrefetchCancelPenaltyPreviews,
+  useRiderCancellationReasons,
+} from "@/src/hooks/useRiderCancellationReasons";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { resolveSmoothDurationMs, useSmoothedRiderPosition } from "@/src/hooks/useSmoothedRiderPosition";
 import { extractApiErrorMessage, isOrderFetchNotFoundError } from "@/src/services/http";
+import {
+  isRetryableRiderActionError,
+  isWrongOtpError,
+  riderActionBusyLabel,
+} from "@/src/lib/rider-action-kind";
+import {
+  findPendingRiderAction,
+  useRiderPendingActionStore,
+} from "@/src/stores/riderPendingActionStore";
+import { shouldSkipCoalescedFix, type CoalesceFixSnapshot } from "@/src/lib/coalesceLocationUi";
 import {
   isRiderOrderCancelled,
   resolveRiderCancellationPenaltyAmount,
@@ -110,11 +127,10 @@ import {
   splitRouteProgress,
   etaMinutesFromMeters,
   analyzeRiderOnRoute,
-  buildRiderRouteConnectorGeoJson,
-  OFF_ROUTE_REROUTE_M,
-  resolveDisplayRiderPosition,
   rerouteDebounceMs,
+  shouldRequestReroute,
 } from "@/src/lib/navigation-route-progress";
+import { useActiveNavLocationStore } from "@/src/stores/activeNavLocationStore";
 import { trackDebug } from "@gatimitra/map-tracking-engine";
 import {
   resolveCustomerDropPin,
@@ -149,34 +165,7 @@ function compactAddress(raw: string): { line1: string; landmark?: string } {
   };
 }
 
-// ── Screen-render coalescing for the 800ms location tracker ──────────────────
-// The foreground tracker emits a fix every ~800ms (or every 2m). Pushing every
-// emit into React state re-renders this whole (large) screen — even while the
-// rider is standing still — which manifests as the map + trip-details section
-// blinking ~once a second. We coalesce insignificant/stationary emits so the
-// screen only re-renders on meaningful movement (≥ ~2m), a heading change, a
-// status transition, or a staleness cap (so distance/ETA stay fresh). GPS
-// collection + backend location sync are unaffected (they run in the tracker);
-// the marker stays smooth because it is interpolated downstream. §16 of the spec
-// explicitly allows throttling the UI render while keeping the GPS/DB cadence.
-const COALESCE_MIN_MOVE_M = 2;
-const COALESCE_MIN_HEADING_DEG = 8;
-const COALESCE_MAX_STALE_MS = 2000;
-
-function coalesceHaversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {
-  const R = 6371000;
-  const dLat = ((bLat - aLat) * Math.PI) / 180;
-  const dLng = ((bLng - aLng) * Math.PI) / 180;
-  const s =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((aLat * Math.PI) / 180) * Math.cos((bLat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
-}
-
-function coalesceHeadingDeltaDeg(a: number, b: number): number {
-  const d = Math.abs(((a - b + 540) % 360) - 180);
-  return d;
-}
+const EMPTY_ROUTE_COORDS: LatLng[] = [];
 
 type RouteProgressSlice = {
   traveled: LatLng[];
@@ -217,15 +206,16 @@ function buildRouteProgressSlice(
 export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const isFoodOrder = mode === "food";
   const { t } = useTranslation();
+  useEffect(() => {
+    markAcceptScreenVisible();
+  }, [orderId]);
   const insets = useSafeAreaInsets();
   const mapRef = useRef<ActiveRideNavigationMapHandle>(null);
   const tracker = useMemo(
     () =>
       createForegroundLocationTracker({
-        timeIntervalMs: 800,
-        distanceIntervalM: 2,
-        minAccuracyM: 80,
         profileId: "active-nav",
+        ...LOCATION_ENGINE_PROFILES.nav,
       }),
     []
   );
@@ -239,6 +229,9 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const [routeError, setRouteError] = useState(false);
   const lastRouteFromRef = useRef<string | null>(null);
   const lastPickupKeyRef = useRef<string | null>(null);
+  const lastRerouteAtRef = useRef(0);
+  const lastRouteDistanceKmRef = useRef<number | null>(null);
+  const routeInFlightRef = useRef(false);
   const routeFetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const offRouteRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hadRouteRef = useRef(false);
@@ -255,7 +248,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const autoFollowResumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { data: order, isLoading, isError, error, isFetching } = useRideOrder(orderId, {
-    refetchInterval: isFoodOrder ? 5000 : 8000,
+    refetchInterval: isFoodOrder ? 12_000 : 15_000,
   });
   const { data: chatUnread } = usePartnerChatUnread(orderId, Boolean(order));
   const chatUnreadCount = chatUnread?.unreadCount ?? 0;
@@ -273,6 +266,49 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const completeRide = useCompleteRide();
   const verifyDeliveryOtp = useVerifyDeliveryOtp();
   const queryClient = useQueryClient();
+  const pendingActions = useRiderPendingActionStore((s) => s.actions);
+  const pendingReachPickup = findPendingRiderAction(
+    pendingActions,
+    "reached_pickup",
+    orderId,
+    order?.id,
+    order?.formattedOrderId
+  );
+  const pendingReachDrop = findPendingRiderAction(
+    pendingActions,
+    "reached_drop",
+    orderId,
+    order?.id,
+    order?.formattedOrderId
+  );
+  const pendingStartRide = findPendingRiderAction(
+    pendingActions,
+    "start_ride",
+    orderId,
+    order?.id,
+    order?.formattedOrderId
+  );
+  const pendingCompleteRide = findPendingRiderAction(
+    pendingActions,
+    "complete_ride",
+    orderId,
+    order?.id,
+    order?.formattedOrderId
+  );
+  const pendingPickupOtp = findPendingRiderAction(
+    pendingActions,
+    "verify_pickup_otp",
+    orderId,
+    order?.id,
+    order?.formattedOrderId
+  );
+  const pendingDeliveryOtp = findPendingRiderAction(
+    pendingActions,
+    "verify_delivery_otp",
+    orderId,
+    order?.id,
+    order?.formattedOrderId
+  );
   const [cancelSheetOpen, setCancelSheetOpen] = useState(false);
   const [penaltySheetOpen, setPenaltySheetOpen] = useState(false);
   const [cancelFailedMessage, setCancelFailedMessage] = useState<string | null>(null);
@@ -284,11 +320,20 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const [pendingCancel, setPendingCancel] = useState<{ reasonCode: string; label: string } | null>(
     null
   );
+  const cancelVariant = isFoodOrder ? "food" : "ride";
+  const { data: cancelReasons } = useRiderCancellationReasons(cancelVariant);
+  // Prefetch every reason's penalty as soon as the order screen has reasons —
+  // confirm sheet then paints with cached amount (no "Checking penalty…" flash).
+  usePrefetchCancelPenaltyPreviews(
+    orderId,
+    cancelReasons,
+    Boolean(orderId && (cancelReasons?.length ?? 0) > 0)
+  );
   const [otpSheetOpen, setOtpSheetOpen] = useState(false);
   const [deliveryOtpSheetOpen, setDeliveryOtpSheetOpen] = useState(false);
-  /** Delivery photo — uploaded to R2 before OTP sheet; reused on OTP retry. */
+  /** Captured delivery photo — OTP can open before R2 upload finishes. */
   const [deliveryProof, setDeliveryProof] = useState<DeliveryProofState | null>(null);
-  const [deliveryPhotoUploading, setDeliveryPhotoUploading] = useState(false);
+  const [deliveryCaptureBusy, setDeliveryCaptureBusy] = useState(false);
   const session = useSessionStore((s) => s.session);
   const [otpError, setOtpError] = useState<string | null>(null);
   const [otpResetKey, setOtpResetKey] = useState(0);
@@ -305,6 +350,14 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const [pickupCameraSheetOpen, setPickupCameraSheetOpen] = useState(false);
   const [barcodeError, setBarcodeError] = useState<string | null>(null);
   const foodPickupOtpFromVerificationRef = useRef(false);
+  const deliveryActionLockRef = useRef(false);
+  const captureLaunchRef = useRef(false);
+  const uploadPromiseRef = useRef<Promise<boolean> | null>(null);
+  const deliveryProofRef = useRef<DeliveryProofState | null>(null);
+  const deliveryFlowMountedRef = useRef(true);
+  const verifyingDeliveryRef = useRef(false);
+  const deliveryOtpOpenRef = useRef(false);
+  const [deliveryOtpBusy, setDeliveryOtpBusy] = useState(false);
   const prevRiderMarkedPickupRef = useRef<boolean | null>(null);
   const prevReachSliderDoneRef = useRef(false);
   const [dropOrderScreenOpen, setDropOrderScreenOpen] = useState(false);
@@ -319,6 +372,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const [waitTick, setWaitTick] = useState(() => Date.now());
   const hadActiveOrderRef = useRef(false);
   const adminCancelHandledRef = useRef(false);
+  const riderSelfCancelIntentRef = useRef(false);
 
   useEffect(() => {
     setNavSheetExpanded(true);
@@ -339,19 +393,39 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     prevOrderStatusRef.current = undefined;
     hadActiveOrderRef.current = false;
     adminCancelHandledRef.current = false;
+    riderSelfCancelIntentRef.current = false;
     setAdminCancelSheetOpen(false);
     setAdminCancelPenaltyAmount(null);
     setAdminCancelByType(null);
     setDeliveryProof(null);
     setDeliveryOtpSheetOpen(false);
-    setDeliveryPhotoUploading(false);
+    setDeliveryCaptureBusy(false);
+    deliveryActionLockRef.current = false;
+    captureLaunchRef.current = false;
+    uploadPromiseRef.current = null;
+    deliveryProofRef.current = null;
+    verifyingDeliveryRef.current = false;
+    setDeliveryOtpBusy(false);
     setOtpError(null);
     setRestaurantFeedbackOpen(false);
     setRiderFoodPickupConfirmed(false);
     prevRiderMarkedPickupRef.current = null;
     setReachSliderPending(false);
     setRideStartedOptimistic(false);
+    lastRerouteAtRef.current = 0;
+    lastRouteFromRef.current = null;
+    lastRouteDistanceKmRef.current = null;
+    lastPickupKeyRef.current = null;
   }, [orderId]);
+
+  useEffect(() => {
+    deliveryFlowMountedRef.current = true;
+    return () => {
+      deliveryFlowMountedRef.current = false;
+      deliveryActionLockRef.current = false;
+      captureLaunchRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const cached = findRiderOrderInQueryCache(queryClient, orderId);
@@ -382,6 +456,23 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
     if (!unassignedByAdmin && !cancelledOnOrder) return;
 
+    const riderSelfCancel =
+      riderSelfCancelIntentRef.current || cancelAssigned.isPending;
+    if (riderSelfCancel) {
+      adminCancelHandledRef.current = true;
+      void tracker.stop();
+      setPenaltySheetOpen(false);
+      setCancelSheetOpen(false);
+      setCancelFailedMessage(null);
+      setCancelSuccess({
+        reasonLabel: pendingCancel?.label ?? "",
+        penaltyApplied: false,
+        penaltyAmount: 0,
+      });
+      setPendingCancel(null);
+      return;
+    }
+
     adminCancelHandledRef.current = true;
     void tracker.stop();
     setCancelSheetOpen(false);
@@ -401,12 +492,14 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
     queryClient.removeQueries({ queryKey: ["rider", "orders", "detail", orderId] });
   }, [
+    cancelAssigned.isPending,
     cancelSuccess,
     error,
     isError,
     isLoading,
     order,
     orderId,
+    pendingCancel,
     queryClient,
     tracker,
   ]);
@@ -424,33 +517,35 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     order,
   ]);
 
-  const sheetBottomInset = useNavScreenBottomInset();
+  const sheetBottomInset = useRiderBottomInset();
   const liveFix = trackerState.status === "tracking" ? trackerState.lastFix : undefined;
   useEffect(() => {
     if (liveFix) stickyFixRef.current = liveFix;
   }, [liveFix]);
   const riderFix = liveFix ?? stickyFixRef.current;
-  const smoothDurationMs = resolveSmoothDurationMs(riderFix?.speedMps);
-
-  const smoothedRider = useSmoothedRiderPosition(
-    riderFix
-      ? {
-          lat: riderFix.lat,
-          lng: riderFix.lng,
-          headingDeg: riderFix.headingDeg,
-          speedMps: riderFix.speedMps,
-        }
-      : undefined,
-    smoothDurationMs
+  /** Coalesced GPS only — high-frequency smoothing lives inside the map component. */
+  const riderLocation = useMemo(
+    () =>
+      riderFix
+        ? {
+            lat: riderFix.lat,
+            lng: riderFix.lng,
+            headingDeg: riderFix.headingDeg,
+            speedMps: riderFix.speedMps,
+          }
+        : undefined,
+    [riderFix?.lat, riderFix?.lng, riderFix?.headingDeg, riderFix?.speedMps]
   );
 
-  const riderLocation = smoothedRider
-    ? { lat: smoothedRider.lat, lng: smoothedRider.lng, headingDeg: smoothedRider.headingDeg }
-    : undefined;
+  const riderForRoute = useMemo(
+    () => (riderFix ? { lat: riderFix.lat, lng: riderFix.lng } : undefined),
+    [riderFix?.lat, riderFix?.lng]
+  );
 
-  const riderForRoute = riderFix
-    ? { lat: riderFix.lat, lng: riderFix.lng }
-    : undefined;
+  useEffect(() => {
+    useActiveNavLocationStore.getState().setOrderId(orderId);
+    useActiveNavLocationStore.getState().setRaw(riderLocation ?? null);
+  }, [orderId, riderLocation]);
 
   const { byMilestone: milestoneGeo } = useMilestoneGeoFence(
     orderId,
@@ -475,7 +570,36 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       order.rideStarted
     );
   }, [order, isFoodOrder]);
-  const reachSliderDone = serverReachPickupCompleted || reachSliderPending;
+  const reachSliderDone = serverReachPickupCompleted;
+  useEffect(() => {
+    if (serverReachPickupCompleted) setReachSliderPending(false);
+  }, [serverReachPickupCompleted]);
+  const reachPickupLocked = !!pendingReachPickup || reachSliderPending;
+  const reachPickupBusyLabel = riderActionBusyLabel(
+    pendingReachPickup?.phase ?? (reachSliderPending ? "processing" : "idle"),
+    t("orders.activeRide.updating", "Updating..."),
+    t("orders.activeRide.waitingConnection", "Waiting for connection..."),
+    t("orders.activeRide.checkingStatus", "Checking status...")
+  );
+  const reachDropLocked = !!pendingReachDrop || reachedCustomer.isPending;
+  const reachDropBusyLabel = riderActionBusyLabel(
+    pendingReachDrop?.phase ?? (reachedCustomer.isPending ? "processing" : "idle"),
+    t("orders.activeRide.updating", "Updating..."),
+    t("orders.activeRide.waitingConnection", "Waiting for connection..."),
+    t("orders.activeRide.checkingStatus", "Checking status...")
+  );
+  const startRideBusyLabel = riderActionBusyLabel(
+    pendingStartRide?.phase ?? (startRide.isPending ? "processing" : "idle"),
+    t("orders.activeRide.updating", "Updating..."),
+    t("orders.activeRide.waitingConnection", "Waiting for connection..."),
+    t("orders.activeRide.checkingStatus", "Checking status...")
+  );
+  const completeRideBusyLabel = riderActionBusyLabel(
+    pendingCompleteRide?.phase ?? (completeRide.isPending ? "processing" : "idle"),
+    t("orders.activeRide.updating", "Updating..."),
+    t("orders.activeRide.waitingConnection", "Waiting for connection..."),
+    t("orders.activeRide.checkingStatus", "Checking status...")
+  );
   const pickupConfirmed = isFoodOrder
     ? !!(order?.atPickup || (order?.pickupWaitStartedAt && !order?.rideStarted))
     : !!order?.pickupOtpVerified;
@@ -607,11 +731,14 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     }
   }, [isFoodOrder, reachSliderDone, order?.merchantOrderReady]);
 
-  const riderGps = useCallback(() => {
-    const fix = trackerState.status === "tracking" ? trackerState.lastFix : undefined;
+  const trackerStateRef = useRef(trackerState);
+  trackerStateRef.current = trackerState;
+  const readRiderGps = useCallback(() => {
+    const state = trackerStateRef.current;
+    const fix = state.status === "tracking" ? state.lastFix : undefined;
     if (!fix) return undefined;
     return { lat: fix.lat, lng: fix.lng };
-  }, [trackerState]);
+  }, []);
 
   const customerDropPin = useMemo(() => resolveCustomerDropPin(order), [order]);
   const restaurantPickupPin = useMemo(() => resolveRestaurantPickupPin(order), [order]);
@@ -648,33 +775,31 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     pickup?.address,
   ]);
 
-  const lastEmittedFixRef = useRef<{ lat: number; lng: number; heading?: number; atMs: number } | null>(null);
+  const lastEmittedFixRef = useRef<CoalesceFixSnapshot | null>(null);
   useEffect(() => {
     return tracker.subscribe((next) => {
       setTrackerState((prev) => {
         const nextFix = next.status === "tracking" ? next.lastFix : undefined;
         const prevFix = prev.status === "tracking" ? prev.lastFix : undefined;
-        // Always update on a status transition or first/last fix appearing/vanishing.
         if (next.status !== prev.status || !nextFix || !prevFix) {
           lastEmittedFixRef.current = nextFix
             ? { lat: nextFix.lat, lng: nextFix.lng, heading: nextFix.headingDeg, atMs: Date.now() }
             : null;
           return next;
         }
-        const last = lastEmittedFixRef.current;
         const now = Date.now();
-        const movedM = last ? coalesceHaversineM(last.lat, last.lng, nextFix.lat, nextFix.lng) : Infinity;
-        const headingDelta =
-          last?.heading != null && nextFix.headingDeg != null
-            ? coalesceHeadingDeltaDeg(last.heading, nextFix.headingDeg)
-            : 0;
-        const stale = last ? now - last.atMs : Infinity;
-        // Rider effectively stationary + fresh enough → skip the re-render (return the
-        // same reference so React bails out). Prevents the ~1s idle screen blink.
-        if (movedM < COALESCE_MIN_MOVE_M && headingDelta < COALESCE_MIN_HEADING_DEG && stale < COALESCE_MAX_STALE_MS) {
+        if (shouldSkipCoalescedFix(lastEmittedFixRef.current, nextFix, now, {
+          minMoveM: 1,
+          minHeadingDeg: 4,
+        })) {
           return prev;
         }
-        lastEmittedFixRef.current = { lat: nextFix.lat, lng: nextFix.lng, heading: nextFix.headingDeg, atMs: now };
+        lastEmittedFixRef.current = {
+          lat: nextFix.lat,
+          lng: nextFix.lng,
+          heading: nextFix.headingDeg,
+          atMs: now,
+        };
         return next;
       });
     });
@@ -689,25 +814,36 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
       if (next !== "active") return;
-      void (async () => {
-        await tracker.stop();
-        await tracker.start();
-      })();
+      // Resume only if not already tracking — avoid stop/start remount flashes.
+      const st = tracker.getState();
+      if (st.status !== "tracking") {
+        void tracker.start();
+      }
     });
     return () => sub.remove();
   }, [tracker]);
 
+  const riderForRouteRef = useRef(riderForRoute);
+  riderForRouteRef.current = riderForRoute;
+  const riderLocationRef = useRef(riderLocation);
+  riderLocationRef.current = riderLocation;
+  const navDestinationRef = useRef(navDestination);
+  navDestinationRef.current = navDestination;
+  const routeLenRef = useRef(route?.coordinates?.length ?? 0);
+  routeLenRef.current = route?.coordinates?.length ?? 0;
+
   const fetchRoute = useCallback(
     async (force = false) => {
-      const navRider = riderForRoute ?? riderLocation;
-      if (!navRider || !navDestination) {
+      const navRider = riderForRouteRef.current ?? riderLocationRef.current;
+      const dest = navDestinationRef.current;
+      if (!navRider || !dest) {
         // Keep prior polyline; wait for GPS — do not spin forever.
         if (!hadRouteRef.current) setRouteLoading(true);
         return;
       }
 
-      const pickupLat = Number(navDestination.lat);
-      const pickupLng = Number(navDestination.lng);
+      const pickupLat = Number(dest.lat);
+      const pickupLng = Number(dest.lng);
       if (!Number.isFinite(pickupLat) || !Number.isFinite(pickupLng) || (pickupLat === 0 && pickupLng === 0)) {
         setRoute(null);
         setRouteError(true);
@@ -717,10 +853,12 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
       const fromKey = `${pickupLat.toFixed(5)},${pickupLng.toFixed(5)}|${navRider.lat.toFixed(3)},${navRider.lng.toFixed(3)}`;
       if (!force && lastRouteFromRef.current === fromKey) return;
+      if (routeInFlightRef.current) return;
 
-      const isInitialRoute = !route?.coordinates?.length;
+      const isInitialRoute = routeLenRef.current === 0;
       if (isInitialRoute) setRouteLoading(true);
       setRouteError(false);
+      routeInFlightRef.current = true;
       try {
         const result = await getNavigationRouteToPickup(
           latLngFromRider(navRider.lat, navRider.lng),
@@ -728,13 +866,22 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           order?.rideType
         );
         if (result) {
-          setRoute(result);
           lastRouteFromRef.current = fromKey;
+          const samePolyline =
+            !isInitialRoute &&
+            routeLenRef.current === (result.coordinates?.length ?? 0) &&
+            lastRouteDistanceKmRef.current != null &&
+            Math.abs(lastRouteDistanceKmRef.current - (result.distanceKm ?? 0)) < 0.008;
+          lastRouteDistanceKmRef.current = result.distanceKm ?? 0;
+          if (!samePolyline) {
+            setRoute(result);
+          }
           trackDebug(force ? "rerouting_completed" : "route_generated", {
             orderId,
             points: result.coordinates?.length ?? 0,
             distanceKm: result.distanceKm,
             force,
+            skippedDuplicate: samePolyline,
           });
         } else {
           // Keep last good polyline so the map never blanks on a flaky Directions call.
@@ -745,10 +892,11 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         if (!hadRouteRef.current) setRoute(null);
         setRouteError(true);
       } finally {
+        routeInFlightRef.current = false;
         setRouteLoading(false);
       }
     },
-    [riderForRoute, riderLocation, navDestination, order?.rideType, route?.coordinates?.length, orderId]
+    [order?.rideType, orderId]
   );
 
   useEffect(() => {
@@ -829,24 +977,18 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       longitude: navRider.lng,
       headingDeg: riderLocation?.headingDeg,
     });
-    if (!deviation) return;
-
-    const shouldReroute =
-      deviation.shouldReroute === true ||
-      deviation.offRouteM > OFF_ROUTE_REROUTE_M ||
-      (deviation.wrongWay && deviation.offRouteM > 12);
-
-    if (!shouldReroute) return;
+    if (!shouldRequestReroute(deviation, lastRerouteAtRef.current)) return;
 
     trackDebug("off_route_detected", {
       orderId,
-      offRouteM: Math.round(deviation.offRouteM),
-      wrongWay: deviation.wrongWay,
+      offRouteM: Math.round(deviation!.offRouteM),
+      wrongWay: deviation!.wrongWay,
+      remainingM: Math.round(deviation!.remainingDistanceM),
     });
 
-    lastRouteFromRef.current = null;
+    lastRerouteAtRef.current = Date.now();
     if (offRouteRefetchTimerRef.current) clearTimeout(offRouteRefetchTimerRef.current);
-    const debounceMs = rerouteDebounceMs(deviation);
+    const debounceMs = rerouteDebounceMs(deviation!);
     trackDebug("rerouting_started", { orderId, debounceMs });
     offRouteRefetchTimerRef.current = setTimeout(() => {
       void fetchRoute(true);
@@ -858,10 +1000,9 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [
     riderForRoute?.lat,
     riderForRoute?.lng,
-    riderLocation?.lat,
-    riderLocation?.lng,
     riderLocation?.headingDeg,
-    navDestination,
+    navDestination?.lat,
+    navDestination?.lng,
     route?.coordinates,
     fetchRoute,
     orderId,
@@ -872,74 +1013,74 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     [route, riderForRoute, riderFix?.headingDeg]
   );
 
-  const mapRouteProgress = useMemo(
-    () =>
-      buildRouteProgressSlice(
-        route,
-        riderLocation ?? riderForRoute,
-        riderLocation?.headingDeg
-      ),
-    [route, riderLocation, riderForRoute]
-  );
+  /** Sheet ETA/distance — throttle so GPS coalesce does not thrash bottom sheet text. */
+  const sheetEtaAtRef = useRef(0);
+  const sheetMetersRef = useRef<number | null>(null);
+  const [sheetMetersAway, setSheetMetersAway] = useState<number | null>(null);
+  const [sheetEtaMinutes, setSheetEtaMinutes] = useState(0);
+  const [sheetDistanceKm, setSheetDistanceKm] = useState(0.1);
 
-  const riderRouteConnectorGeoJson = useMemo(() => {
-    const join = mapRouteProgress.routeJoinPoint;
-    const pos = riderLocation ?? riderForRoute;
-    if (!join || !pos) return null;
-    return buildRiderRouteConnectorGeoJson(
-      { latitude: pos.lat, longitude: pos.lng },
-      join
-    );
-  }, [
-    mapRouteProgress.routeJoinPoint,
-    riderLocation?.lat,
-    riderLocation?.lng,
-    riderForRoute?.lat,
-    riderForRoute?.lng,
-  ]);
+  useEffect(() => {
+    const m = Math.round(routeProgressMetrics.remainingDistanceM);
+    const now = Date.now();
+    const prev = sheetMetersRef.current;
+    if (
+      prev != null &&
+      Math.abs(m - prev) < 20 &&
+      now - sheetEtaAtRef.current < 1200
+    ) {
+      return;
+    }
+    sheetMetersRef.current = m;
+    sheetEtaAtRef.current = now;
+    useActiveNavLocationStore.getState().setSheetRemainingM(m);
+    setSheetMetersAway(m);
+    setSheetEtaMinutes(etaMinutesFromMeters(m));
+    setSheetDistanceKm(Math.max(0.1, m / 1000));
+  }, [routeProgressMetrics.remainingDistanceM]);
 
-  const liveEtaMinutes = useMemo(
-    () => etaMinutesFromMeters(routeProgressMetrics.remainingDistanceM),
-    [routeProgressMetrics.remainingDistanceM]
-  );
-
-  const liveDistanceKm = useMemo(
-    () => Math.max(0.1, routeProgressMetrics.remainingDistanceM / 1000),
-    [routeProgressMetrics.remainingDistanceM]
-  );
+  const liveEtaMinutes = sheetEtaMinutes;
+  const liveDistanceKm = sheetDistanceKm;
 
   const metersToPickup = useMemo(() => {
     if (!riderForRoute || !navDestination) return null;
     return Math.round(routeProgressMetrics.remainingDistanceM);
   }, [riderForRoute, navDestination, routeProgressMetrics.remainingDistanceM]);
 
-  const mapRiderLocation = useMemo(() => {
-    const raw = riderLocation
-      ? riderLocation
-      : riderForRoute
+  const mapRiderLocation = riderLocation;
+
+  const sheetRouteMeta = useMemo(
+    () => ({
+      etaMinutes: liveEtaMinutes,
+      distanceKm: liveDistanceKm,
+      metersAway: sheetMetersAway ?? metersToPickup,
+      loading: routeLoading && !route,
+      error: routeError,
+      onRetryRoute: () => void fetchRoute(true),
+    }),
+    [
+      liveEtaMinutes,
+      liveDistanceKm,
+      sheetMetersAway,
+      metersToPickup,
+      routeLoading,
+      route,
+      routeError,
+      fetchRoute,
+    ]
+  );
+
+  const mapPickup = useMemo(
+    () =>
+      navDestination
         ? {
-            lat: riderForRoute.lat,
-            lng: riderForRoute.lng,
-            headingDeg: riderFix?.headingDeg,
+            lat: navDestination.lat,
+            lng: navDestination.lng,
+            address: navDestination.address,
           }
-        : undefined;
-    if (!raw) return undefined;
-    const coords = route?.coordinates;
-    if (coords && coords.length >= 2) {
-      const display = resolveDisplayRiderPosition(coords, {
-        latitude: raw.lat,
-        longitude: raw.lng,
-        headingDeg: raw.headingDeg,
-      });
-      return {
-        lat: display.latitude,
-        lng: display.longitude,
-        headingDeg: raw.headingDeg,
-        speedMps: riderFix?.speedMps,
-      };
-    }
-    return { ...raw, speedMps: riderFix?.speedMps };
-  }, [riderLocation, riderForRoute, riderFix?.headingDeg, riderFix?.speedMps, route?.coordinates]);
+        : null,
+    [navDestination?.lat, navDestination?.lng, navDestination?.address]
+  );
 
   const navigationFollowMode =
     !!mapRiderLocation && (route?.coordinates?.length ?? 0) >= 2;
@@ -1125,7 +1266,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [order, isFoodOrder, atCustomer, reachSliderDone, t]);
 
   const handleReachedPickup = useCallback(() => {
-    const gps = riderGps();
+    const gps = readRiderGps();
     reachedPickup.mutate(
       { orderId, ...gps },
       {
@@ -1136,6 +1277,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           setReachSliderPending(false);
         },
         onError: (err) => {
+          if (isRetryableRiderActionError(err)) return;
           setReachSliderPending(false);
           Alert.alert(
             t("orders.activeRide.updateFailedTitle", "Update failed"),
@@ -1147,10 +1289,10 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         },
       }
     );
-  }, [orderId, reachedPickup, isFoodOrder, riderGps, t]);
+  }, [orderId, reachedPickup, isFoodOrder, readRiderGps, t]);
 
   const handleReachStore = useCallback(() => {
-    const gps = riderGps();
+    const gps = readRiderGps();
     reachedPickup.mutate(
       { orderId, ...gps },
       {
@@ -1162,6 +1304,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           setPickOrderSheetDismissed(false);
         },
         onError: (err) => {
+          if (isRetryableRiderActionError(err)) return;
           setReachSliderPending(false);
           Alert.alert(
             t("orders.activeRide.updateFailedTitle", "Update failed"),
@@ -1173,7 +1316,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         },
       }
     );
-  }, [orderId, reachedPickup, riderGps, t]);
+  }, [orderId, reachedPickup, readRiderGps, t]);
 
   const closeRestaurantFeedback = useCallback(() => {
     setRestaurantFeedbackOpen(false);
@@ -1190,6 +1333,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         Math.round(Number(deliveredOrder.customerTipAmount) || 0),
         [deliveredOrder.formattedOrderId?.trim() ?? ""]
       );
+      markSlideAction("T8_NAVIGATION");
       router.replace({
         pathname: "/food-delivery-success",
         params: buildFoodDeliverySuccessParams(deliveredOrder),
@@ -1487,11 +1631,12 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     setBarcodeError(null);
 
     if (!pickupVerificationRequired) {
-      const gps = riderGps();
+      const gps = readRiderGps();
       void markFoodPickup
         .mutateAsync({ orderId, ...gps, deviceTimestamp: new Date().toISOString() })
         .then((data) => completeFoodPickupVerification(data))
         .catch((err) => {
+          if (isRetryableRiderActionError(err)) return;
           Alert.alert(
             t("orders.activeRide.updateFailedTitle", "Update failed"),
             extractApiErrorMessage(
@@ -1522,7 +1667,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     pickupVerificationRequired,
     barcodeVerificationEnabled,
     otpVerificationEnabled,
-    riderGps,
+    readRiderGps,
     markFoodPickup,
     orderId,
     completeFoodPickupVerification,
@@ -1541,7 +1686,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const handleBarcodeScanned = useCallback(
     (barcode: string) => {
       setBarcodeError(null);
-      const gps = riderGps();
+      const gps = readRiderGps();
       void verifyPickupBarcode
         .mutateAsync({
           orderId,
@@ -1562,11 +1707,11 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           );
         });
     },
-    [orderId, riderGps, verifyPickupBarcode, completeFoodPickupVerification, t]
+    [orderId, readRiderGps, verifyPickupBarcode, completeFoodPickupVerification, t]
   );
 
   const handleReachCustomer = useCallback(() => {
-    const gps = riderGps();
+    const gps = readRiderGps();
     reachedCustomer.mutate(
       { orderId, ...gps },
       {
@@ -1574,6 +1719,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           setDropOrderScreenOpen(true);
         },
         onError: (err) => {
+          if (isRetryableRiderActionError(err)) return;
           Alert.alert(
             t("orders.activeRide.updateFailedTitle", "Update failed"),
             extractApiErrorMessage(
@@ -1586,17 +1732,19 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         },
       }
     );
-  }, [orderId, reachedCustomer, riderGps, isFoodOrder, t]);
+  }, [orderId, reachedCustomer, readRiderGps, isFoodOrder, t]);
 
   const handleCompleteRide = useCallback(() => {
-    const gps = riderGps();
+    const gps = readRiderGps();
     completeRide.mutate(
       { orderId, ...gps },
       {
         onSuccess: (deliveredOrder) => {
+          markSlideAction("T8_NAVIGATION");
           finishRideDeliveryFlow(deliveredOrder);
         },
         onError: (err) => {
+          if (isRetryableRiderActionError(err)) return;
           Alert.alert(
             t("orders.activeRide.updateFailedTitle", "Update failed"),
             extractApiErrorMessage(
@@ -1607,7 +1755,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         },
       }
     );
-  }, [completeRide, orderId, riderGps, finishRideDeliveryFlow, t]);
+  }, [completeRide, orderId, readRiderGps, finishRideDeliveryFlow, t]);
 
   const handleGoHomeAfterRide = useCallback(() => {
     if (order?.status === "delivered") {
@@ -1651,93 +1799,145 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     async (uri: string): Promise<boolean> => {
       const token = session?.accessToken;
       if (!token) {
-        Alert.alert(
-          t("orders.activeFood.uploadAuthError", "Session expired"),
-          t("orders.activeFood.signInAgain", "Sign in again and retry delivery.")
-        );
+        if (deliveryFlowMountedRef.current && !deliveryOtpOpenRef.current) {
+          Alert.alert(
+            t("orders.activeFood.uploadAuthError", "Session expired"),
+            t("orders.activeFood.signInAgain", "Sign in again and retry delivery.")
+          );
+        }
         return false;
       }
 
-      setDeliveryPhotoUploading(true);
       try {
         const key = buildOrderDeliveryProofKey(orderId);
         const result = await uploadToR2(uri, "orders", token, key);
-        setDeliveryProof({
+        if (!deliveryFlowMountedRef.current) return false;
+        const next: DeliveryProofState = {
           localUri: uri,
           uploaded: { proxyUrl: result.proxyUrl, key: result.key },
-        });
+        };
+        deliveryProofRef.current = next;
+        setDeliveryProof(next);
         return true;
       } catch (err) {
-        Alert.alert(
-          t("orders.activeFood.uploadFailedTitle", "Upload failed"),
-          err instanceof Error
-            ? err.message
-            : t(
-                "orders.activeFood.uploadFailed",
-                "Could not upload delivery photo. Slide again to retry."
-              )
-        );
+        if (!deliveryFlowMountedRef.current) return false;
+        if (!deliveryOtpOpenRef.current) {
+          Alert.alert(
+            t("orders.activeFood.uploadFailedTitle", "Upload failed"),
+            err instanceof Error
+              ? err.message
+              : t(
+                  "orders.activeFood.uploadFailed",
+                  "Could not upload delivery photo. Slide again to retry."
+                )
+          );
+        }
         return false;
-      } finally {
-        setDeliveryPhotoUploading(false);
       }
     },
     [orderId, session?.accessToken, t]
   );
 
+  const startBackgroundUpload = useCallback(
+    (uri: string): Promise<boolean> => {
+      if (uploadPromiseRef.current) return uploadPromiseRef.current;
+      const pending = uploadDeliveryProof(uri).finally(() => {
+        if (uploadPromiseRef.current === pending) {
+          uploadPromiseRef.current = null;
+        }
+      });
+      uploadPromiseRef.current = pending;
+      return pending;
+    },
+    [uploadDeliveryProof]
+  );
+
   const reopenDeliveryOtpSheet = useCallback(
     (opts?: { resetOtp?: boolean }) => {
       setOtpError(null);
-      verifyDeliveryOtp.reset();
       if (opts?.resetOtp) {
         setOtpResetKey((k) => k + 1);
       }
       setDeliveryOtpSheetOpen(true);
     },
-    [verifyDeliveryOtp]
+    []
   );
 
-  const handleDelivered = useCallback(async () => {
+  const releaseDeliveryAction = useCallback(() => {
+    if (!deliveryFlowMountedRef.current) return;
+    deliveryActionLockRef.current = false;
+    captureLaunchRef.current = false;
+    setDeliveryCaptureBusy(false);
+  }, []);
+
+  const handleDelivered = useCallback(() => {
+    if (deliveryActionLockRef.current || captureLaunchRef.current) return;
+
+    const proof = deliveryProofRef.current;
+    const action = resolveDeliverySlideAction(proof);
+
+    if (action === "reopen-otp" || action === "reopen-otp-and-upload") {
+      deliveryActionLockRef.current = true;
+      setDeliveryCaptureBusy(true);
+      reopenDeliveryOtpSheet(action === "reopen-otp" ? undefined : { resetOtp: false });
+      setDeliveryCaptureBusy(false);
+      if (action === "reopen-otp-and-upload" && proof?.localUri) {
+        void startBackgroundUpload(proof.localUri);
+      }
+      return;
+    }
+
+    deliveryActionLockRef.current = true;
+    setDeliveryCaptureBusy(true);
+    captureLaunchRef.current = true;
     setOtpSheetOpen(false);
 
-    if (isDeliveryProofUploaded(deliveryProof)) {
-      reopenDeliveryOtpSheet();
-      return;
-    }
+    void (async () => {
+      try {
+        const uri = await captureDeliveryProofPhoto(t);
+        if (!deliveryFlowMountedRef.current) return;
+        if (!uri) {
+          releaseDeliveryAction();
+          return;
+        }
 
-    if (deliveryProof?.localUri) {
-      const uploaded = await uploadDeliveryProof(deliveryProof.localUri);
-      if (uploaded) {
+        const next: DeliveryProofState = { localUri: uri };
+        deliveryProofRef.current = next;
+        setDeliveryProof(next);
         reopenDeliveryOtpSheet({ resetOtp: true });
+        setDeliveryCaptureBusy(false);
+        captureLaunchRef.current = false;
+        void startBackgroundUpload(uri);
+      } catch (err) {
+        if (!deliveryFlowMountedRef.current) return;
+        releaseDeliveryAction();
+        Alert.alert(
+          t("orders.activeFood.captureFailedTitle", "Photo failed"),
+          err instanceof Error
+            ? err.message
+            : t(
+                "orders.activeFood.captureFailed",
+                "Could not capture delivery photo. Slide again to retry."
+              )
+        );
       }
-      return;
-    }
+    })();
+  }, [reopenDeliveryOtpSheet, releaseDeliveryAction, startBackgroundUpload, t]);
 
-    setDeliveryProof(null);
-    setDeliveryOtpSheetOpen(false);
+  deliveryProofRef.current = deliveryProof;
+  deliveryOtpOpenRef.current = deliveryOtpSheetOpen;
+
+  const handleDismissDeliveryOtp = useCallback(() => {
+    if (verifyDeliveryOtp.isPending || verifyingDeliveryRef.current) return;
     verifyDeliveryOtp.reset();
+    setDeliveryOtpSheetOpen(false);
+    setDeliveryOtpBusy(false);
+    releaseDeliveryAction();
+  }, [verifyDeliveryOtp.reset, verifyDeliveryOtp.isPending, releaseDeliveryAction]);
 
-    try {
-      const uri = await captureDeliveryProofPhoto(t);
-      if (!uri) return;
-
-      setDeliveryProof({ localUri: uri });
-      const uploaded = await uploadDeliveryProof(uri);
-      if (uploaded) {
-        reopenDeliveryOtpSheet({ resetOtp: true });
-      }
-    } catch (err) {
-      Alert.alert(
-        t("orders.activeFood.captureFailedTitle", "Photo failed"),
-        err instanceof Error
-          ? err.message
-          : t(
-              "orders.activeFood.captureFailed",
-              "Could not capture delivery photo. Slide again to retry."
-            )
-      );
-    }
-  }, [deliveryProof, reopenDeliveryOtpSheet, t, uploadDeliveryProof, verifyDeliveryOtp]);
+  const handleClearDeliveryOtpError = useCallback(() => {
+    setOtpError(null);
+  }, []);
 
   const handleDismissOtpSheet = useCallback(() => {
     if (verifyPickupOtp.isPending) return;
@@ -1779,14 +1979,21 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       setPendingCancel({ reasonCode, label });
       setCancelSheetOpen(false);
       setPenaltySheetOpen(true);
+      // Kick / refresh preview in background — UI uses cache when ready (no spinner if prefetched).
+      void queryClient.ensureQueryData({
+        queryKey: cancellationPenaltyPreviewQueryKey(orderId, reasonCode),
+        queryFn: () => riderApi.getCancellationPenaltyPreview(orderId, reasonCode),
+        staleTime: 60_000,
+      });
     },
-    []
+    [orderId, queryClient]
   );
 
   const handleProceedCancel = useCallback(() => {
     if (!pendingCancel || cancelAssigned.isPending) return;
     setCancelFailedMessage(null);
     const reasonLabel = pendingCancel.label;
+    riderSelfCancelIntentRef.current = true;
     cancelAssigned.mutate(
       { orderId, reasonCode: pendingCancel.reasonCode, reasonText: pendingCancel.label },
       {
@@ -1804,6 +2011,9 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           });
         },
         onError: (err) => {
+          if (!isRetryableRiderActionError(err)) {
+            riderSelfCancelIntentRef.current = false;
+          }
           const fallback = isFoodOrder
             ? t(
                 "orders.activeFood.cancelFailedMessage",
@@ -1833,8 +2043,25 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     (otp: string) => {
       if (verifyPickupOtp.isPending) return;
       if (otp.replace(/\D/g, "").length !== 4) return;
+      beginSlideAction("verify_pickup_otp", orderId);
+      markSlideAction("T1_HANDLER");
       setOtpError(null);
-      const gps = riderGps();
+
+      // Instant UI on submit — don't keep the OTP sheet spinning until the API returns.
+      // Wrong OTP reopens the sheet; success path is already painted.
+      setOtpSheetOpen(false);
+      if (isFoodOrder) {
+        setRiderFoodPickupConfirmed(true);
+        setRideStartedOptimistic(true);
+        setPickOrderDetailOpen(false);
+        setPickOrderSheetDismissed(true);
+        setCameraFitTrigger((n) => n + 1);
+      } else {
+        setRideStartedOptimistic(true);
+        setCameraFitTrigger((n) => n + 1);
+      }
+
+      const gps = readRiderGps();
       void verifyPickupOtp
         .mutateAsync({
           orderId,
@@ -1851,7 +2078,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           setOtpSheetOpen(false);
           setRideStartedOptimistic(true);
           setCameraFitTrigger((n) => n + 1);
-          const rideGps = riderGps();
+          const rideGps = readRiderGps();
           void startRide
             .mutateAsync({ orderId, ...rideGps })
             .then(() => {
@@ -1865,6 +2092,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
               setCameraFitTrigger((n) => n + 1);
             })
             .catch((err) => {
+              if (isRetryableRiderActionError(err)) return;
               setRideStartedOptimistic(false);
               setStartRideSliderKey((k) => k + 1);
               Alert.alert(
@@ -1877,7 +2105,31 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
             });
         })
         .catch((err) => {
+          if (isRetryableRiderActionError(err)) {
+            setOtpError(
+              t(
+                "orders.activeRide.otpRetrying",
+                "Connection lost. Retrying verification..."
+              )
+            );
+            setOtpSheetOpen(true);
+            if (isFoodOrder) {
+              setRiderFoodPickupConfirmed(false);
+              setRideStartedOptimistic(false);
+            } else {
+              setRideStartedOptimistic(false);
+            }
+            return;
+          }
           verifyPickupOtp.reset();
+          // Revert optimistic transition — OTP was wrong or verification failed.
+          if (isFoodOrder) {
+            setRiderFoodPickupConfirmed(false);
+            setRideStartedOptimistic(false);
+          } else {
+            setRideStartedOptimistic(false);
+          }
+          setOtpSheetOpen(true);
           setOtpError(
             extractApiErrorMessage(
               err,
@@ -1892,88 +2144,150 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
                   )
             )
           );
-          setOtpResetKey((k) => k + 1);
+          if (isWrongOtpError(err)) setOtpResetKey((k) => k + 1);
         });
     },
     [
-      verifyPickupOtp,
+      verifyPickupOtp.mutateAsync,
+      verifyPickupOtp.isPending,
       orderId,
-      riderGps,
+      readRiderGps,
       isFoodOrder,
       t,
       completeFoodPickupVerification,
       queryClient,
-      startRide,
-      riderGps,
+      startRide.mutateAsync,
     ]
   );
 
   const handleVerifyDeliveryOtp = useCallback(
     (otp: string) => {
-      const uploaded = deliveryProof?.uploaded;
-      if (!uploaded) {
-        setOtpError(
-          t(
-            "orders.activeFood.uploadFailed",
-            "Could not upload delivery photo. Close and slide deliver again."
-          )
-        );
-        setOtpResetKey((k) => k + 1);
-        return;
-      }
-      if (verifyDeliveryOtp.isPending) return;
-
+      if (verifyingDeliveryRef.current || verifyDeliveryOtp.isPending) return;
+      verifyingDeliveryRef.current = true;
+      beginSlideAction("verify_delivery_otp", orderId);
+      markSlideAction("T1_HANDLER");
+      setDeliveryOtpBusy(true);
       setOtpError(null);
 
-      const gps = riderGps();
-      verifyDeliveryOtp.mutate(
-        {
-          orderId,
-          otp,
-          ...gps,
-          deliveryImageUrl: uploaded.proxyUrl,
-          deliveryImageR2Key: uploaded.key,
-        },
-        {
-          onSuccess: (deliveredOrder) => {
-            deliverySuccessHandledRef.current = true;
-            setDeliveryOtpSheetOpen(false);
-            setDeliveryProof(null);
-            setDropOrderScreenOpen(false);
-            deliveredOrderForSuccessRef.current = deliveredOrder;
-            queryClient.setQueryData(["rider", "orders", "detail", orderId], deliveredOrder);
-            if (deliveredOrder.customerFeedbackSubmitted === true) {
-              navigateToFoodDeliverySuccess(deliveredOrder);
-            } else {
-              setCustomerFeedbackOpen(true);
+      void (async () => {
+        const failBusy = () => {
+          verifyingDeliveryRef.current = false;
+          if (deliveryFlowMountedRef.current) setDeliveryOtpBusy(false);
+        };
+
+        try {
+          if (!isDeliveryProofUploaded(deliveryProofRef.current) && uploadPromiseRef.current) {
+            const uploadedOk = await uploadPromiseRef.current;
+            if (!deliveryFlowMountedRef.current) return;
+            if (!uploadedOk && !isDeliveryProofUploaded(deliveryProofRef.current)) {
+              const uri = deliveryProofRef.current?.localUri;
+              if (uri) {
+                const retried = await startBackgroundUpload(uri);
+                if (!deliveryFlowMountedRef.current) return;
+                if (!retried) {
+                  setOtpError(
+                    t(
+                      "orders.activeFood.uploadFailed",
+                      "Could not upload delivery photo. Try again."
+                    )
+                  );
+                  failBusy();
+                  return;
+                }
+              }
             }
-          },
-          onError: (err) => {
-            verifyDeliveryOtp.reset();
-            setOtpError(
-              extractApiErrorMessage(
-                err,
+          }
+
+          let uploaded = deliveryProofRef.current?.uploaded;
+          if (!uploaded) {
+            const uri = deliveryProofRef.current?.localUri;
+            if (!uri) {
+              setOtpError(
                 t(
-                  "orders.activeFood.deliveryOtpInvalid",
-                  "OTP invalid hai. Customer se sahi delivery OTP le kar dubara enter karein."
+                  "orders.activeFood.captureFailed",
+                  "Could not capture delivery photo. Slide again to retry."
                 )
-              )
-            );
-            setOtpResetKey((k) => k + 1);
-          },
+              );
+              failBusy();
+              return;
+            }
+            const ok = await startBackgroundUpload(uri);
+            if (!deliveryFlowMountedRef.current) return;
+            uploaded = deliveryProofRef.current?.uploaded;
+            if (!ok || !uploaded) {
+              setOtpError(
+                t(
+                  "orders.activeFood.uploadFailed",
+                  "Could not upload delivery photo. Try again."
+                )
+              );
+              failBusy();
+              return;
+            }
+          }
+
+          const gps = readRiderGps();
+          verifyDeliveryOtp.mutate(
+            {
+              orderId,
+              otp,
+              ...gps,
+              deliveryImageUrl: uploaded.proxyUrl,
+              deliveryImageR2Key: uploaded.key,
+            },
+            {
+              onSuccess: (deliveredOrder) => {
+                deliverySuccessHandledRef.current = true;
+                verifyingDeliveryRef.current = false;
+                deliveryActionLockRef.current = false;
+                setDeliveryOtpBusy(false);
+                setDeliveryOtpSheetOpen(false);
+                setDeliveryProof(null);
+                deliveryProofRef.current = null;
+                setDropOrderScreenOpen(false);
+                setDeliveryCaptureBusy(false);
+                deliveredOrderForSuccessRef.current = deliveredOrder;
+                queryClient.setQueryData(["rider", "orders", "detail", orderId], deliveredOrder);
+                if (deliveredOrder.customerFeedbackSubmitted === true) {
+                  navigateToFoodDeliverySuccess(deliveredOrder);
+                } else {
+                  setCustomerFeedbackOpen(true);
+                }
+              },
+              onError: (err) => {
+                if (isRetryableRiderActionError(err)) {
+                  verifyingDeliveryRef.current = false;
+                  setDeliveryOtpBusy(false);
+                  setOtpError(
+                    t(
+                      "orders.activeRide.otpRetrying",
+                      "Connection lost. Retrying verification..."
+                    )
+                  );
+                  return;
+                }
+                verifyingDeliveryRef.current = false;
+                setDeliveryOtpBusy(false);
+                verifyDeliveryOtp.reset();
+                setOtpError(
+                  extractApiErrorMessage(
+                    err,
+                    t(
+                      "orders.activeFood.deliveryOtpInvalid",
+                      "OTP invalid hai. Customer se sahi delivery OTP le kar dubara enter karein."
+                    )
+                  )
+                );
+                if (isWrongOtpError(err)) setOtpResetKey((k) => k + 1);
+              },
+            }
+          );
+        } catch {
+          failBusy();
         }
-      );
+      })();
     },
-    [
-      deliveryProof?.uploaded,
-      verifyDeliveryOtp.isPending,
-      orderId,
-      verifyDeliveryOtp,
-      riderGps,
-      navigateToFoodDeliverySuccess,
-      queryClient,
-      t,
-    ]
+    [orderId, verifyDeliveryOtp.mutate, verifyDeliveryOtp.reset, readRiderGps, navigateToFoodDeliverySuccess, queryClient, t, startBackgroundUpload]
   );
 
   useEffect(() => {
@@ -2208,22 +2522,18 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         <ActiveRideNavigationMap
           ref={mapRef}
           riderLocation={mapRiderLocation}
-          pickup={{
-            lat: navDestination.lat,
-            lng: navDestination.lng,
-            address: navDestination.address,
-          }}
+          pickup={mapPickup!}
           destinationLabel={navDestination.mapLabel}
           foodRestaurantName={
             isFoodOrder && navDestination.mapLabel === "Pickup" ? restaurantDisplayName : undefined
           }
-          remainingCoordinates={mapRouteProgress.remaining}
-          fullRouteCoordinates={route?.coordinates ?? []}
+          remainingCoordinates={routeProgressMetrics.remaining}
+          fullRouteCoordinates={route?.coordinates ?? EMPTY_ROUTE_COORDS}
           alternativeRoutes={route?.alternatives}
-          offRouteConnectorGeoJson={riderRouteConnectorGeoJson}
-          routeJoinPoint={mapRouteProgress.routeJoinPoint ?? null}
+          offRouteConnectorGeoJson={null}
+          routeJoinPoint={routeProgressMetrics.routeJoinPoint ?? null}
           routeDeviationWrongWay={routeDeviation?.wrongWay ?? false}
-          traveledCoordinates={[]}
+          traveledCoordinates={EMPTY_ROUTE_COORDS}
           previousPickup={previousPickup}
           mapEdgeInsets={mapEdgeInsets}
           fitCameraTrigger={cameraFitTrigger}
@@ -2287,20 +2597,14 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           }
           pickupAddress={pickupAddressParts.line1}
           pickupLandmark={pickupAddressParts.landmark}
-          routeMeta={{
-            etaMinutes: liveEtaMinutes,
-            distanceKm: liveDistanceKm,
-            metersAway: metersToPickup,
-            loading: routeLoading && !route,
-            error: routeError,
-            onRetryRoute: () => void fetchRoute(true),
-          }}
+          routeMeta={sheetRouteMeta}
           pickupConfirmed={pickupConfirmed}
           rideStarted={foodDeliveryActive}
           atCustomer={atCustomer}
           orderDelivered={orderDelivered}
-          reachedLoading={reachedPickup.isPending || reachedCustomer.isPending}
-          deliveryPhotoLoading={deliveryPhotoUploading}
+          reachedLoading={reachedPickup.isPending || reachedCustomer.isPending || reachPickupLocked}
+          deliveryPhotoLoading={false}
+          deliveryActionLocked={deliveryCaptureBusy || deliveryOtpSheetOpen || !!pendingDeliveryOtp}
           deliveryPhotoReady={isDeliveryProofUploaded(deliveryProof)}
           bottomInset={sheetBottomInset}
           onReachStore={handleReachStore}
@@ -2308,6 +2612,20 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           onReachCustomer={handleReachCustomer}
           onDelivered={handleDelivered}
           reachSliderDone={reachSliderDone}
+          reachStoreLocked={reachPickupLocked}
+          reachStoreBusyLabel={reachPickupBusyLabel}
+          reachDropLocked={reachDropLocked}
+          reachDropBusyLabel={reachDropBusyLabel}
+          deliverBusyLabel={
+            pendingDeliveryOtp
+              ? riderActionBusyLabel(
+                  pendingDeliveryOtp.phase,
+                  t("orders.activeRide.updating", "Updating..."),
+                  t("orders.activeRide.waitingConnection", "Waiting for connection..."),
+                  t("orders.activeRide.checkingStatus", "Checking status...")
+                )
+              : null
+          }
           hideMarkPickupWhilePickSheet={
             showFoodPickOrderSheet ||
             pickOrderDetailOpen ||
@@ -2354,29 +2672,30 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           locationLandmark={pickupAddressParts.landmark}
           pickupAddress={pickup?.address?.trim() || ""}
           dropAddress={delivery?.address?.trim() || ""}
-          routeMeta={{
-            etaMinutes: liveEtaMinutes,
-            distanceKm: liveDistanceKm,
-            metersAway: metersToPickup,
-            loading: routeLoading && !route,
-            error: routeError,
-            onRetryRoute: () => void fetchRoute(true),
-          }}
+          routeMeta={sheetRouteMeta}
           pickupConfirmed={pickupConfirmed}
           pickupOtpVerified={pickupOtpVerified}
           rideStarted={rideStarted}
           atDrop={atCustomer}
           orderDelivered={orderDelivered}
-          reachedLoading={reachedPickup.isPending || reachedCustomer.isPending}
-          startRideLoading={startRide.isPending || verifyPickupOtp.isPending}
+          reachedLoading={reachedPickup.isPending || reachedCustomer.isPending || reachPickupLocked}
+          startRideLoading={startRide.isPending || verifyPickupOtp.isPending || !!pendingStartRide || !!pendingPickupOtp}
           cancelLoading={cancelAssigned.isPending}
           bottomInset={sheetBottomInset}
-          completeRideLoading={completeRide.isPending}
+          completeRideLoading={completeRide.isPending || !!pendingCompleteRide}
           onReachPickup={handleReachedPickup}
           onReachDrop={handleReachCustomer}
           onCompleteRide={handleCompleteRide}
           onStartRide={handleStartRide}
           reachSliderDone={reachSliderDone}
+          reachSliderLocked={reachPickupLocked}
+          reachBusyLabel={reachPickupBusyLabel}
+          reachDropLocked={reachDropLocked}
+          reachDropBusyLabel={reachDropBusyLabel}
+          startRideLocked={!!pendingStartRide}
+          startRideBusyLabel={startRideBusyLabel}
+          completeRideLocked={!!pendingCompleteRide}
+          completeRideBusyLabel={completeRideBusyLabel}
           startRideSliderKey={startRideSliderKey}
           waitTimerLabel={rideWaitTimerLabel}
           otpSheetOpen={otpSheetOpen}
@@ -2492,36 +2811,35 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           onClearError={() => setOtpError(null)}
         />
 
-        {deliveryProof ? (
+        {deliveryProof && !(dropOrderScreenOpen && atCustomer && !orderDelivered) ? (
           <FoodDeliveryConfirmBottomSheet
             visible={deliveryOtpSheetOpen && isFoodOrder}
             proofImageUri={deliveryProof.localUri}
-            loading={verifyDeliveryOtp.isPending}
+            loading={verifyDeliveryOtp.isPending || deliveryOtpBusy}
             error={otpError}
             resetKey={otpResetKey}
             customerName={order.customerName}
             bottomOffset={0}
-            onDismiss={() => {
-              if (verifyDeliveryOtp.isPending) return;
-              verifyDeliveryOtp.reset();
-              setDeliveryOtpSheetOpen(false);
-            }}
+            onDismiss={handleDismissDeliveryOtp}
             onSubmit={handleVerifyDeliveryOtp}
-            onClearError={() => setOtpError(null)}
+            onClearError={handleClearDeliveryOtpError}
           />
         ) : null}
       </View>
 
       {isFoodOrder && order ? (
         <FoodDropOrderScreen
-          visible={dropOrderScreenOpen && atCustomer && !orderDelivered && !deliveryOtpSheetOpen}
+          visible={dropOrderScreenOpen && atCustomer && !orderDelivered}
           order={order}
           orderIdLabel={displayId}
           deliveryAddress={[pickupAddressParts.line1, pickupAddressParts.landmark]
             .filter(Boolean)
             .join(", ")}
           restaurantName={restaurantDisplayName}
-          onBack={() => setDropOrderScreenOpen(false)}
+          onBack={() => {
+            if (deliveryOtpSheetOpen || deliveryCaptureBusy) return;
+            setDropOrderScreenOpen(false);
+          }}
           onEmergencyPress={handleEmergencyPress}
           onDirectionsPress={handleOpenMaps}
           onHelpPress={handleReportIssue}
@@ -2530,10 +2848,27 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           chatUnreadCount={chatUnreadCount}
           onOpenMaps={handleOpenMaps}
           onDelivered={handleDelivered}
-          deliverLoading={deliveryPhotoUploading}
+          deliverLoading={false}
+          deliverLocked={deliveryCaptureBusy || deliveryOtpSheetOpen || !!pendingDeliveryOtp}
           deliverPhotoReady={isDeliveryProofUploaded(deliveryProof)}
           customerRating={order.customerRating ?? undefined}
-        />
+        >
+          {deliveryProof && dropOrderScreenOpen && atCustomer && !orderDelivered ? (
+            <FoodDeliveryConfirmBottomSheet
+              visible={deliveryOtpSheetOpen && isFoodOrder}
+              proofImageUri={deliveryProof.localUri}
+              loading={verifyDeliveryOtp.isPending || deliveryOtpBusy}
+              error={otpError}
+              resetKey={otpResetKey}
+              customerName={order.customerName}
+              bottomOffset={0}
+              embedded
+              onDismiss={handleDismissDeliveryOtp}
+              onSubmit={handleVerifyDeliveryOtp}
+              onClearError={handleClearDeliveryOtpError}
+            />
+          ) : null}
+        </FoodDropOrderScreen>
       ) : null}
 
       {isFoodOrder && order ? (
@@ -2558,15 +2893,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           onSkip={handleRestaurantFeedbackSkip}
           onSubmit={handleRestaurantFeedbackSubmit}
         />
-      ) : null}
-
-      {deliveryPhotoUploading && !deliveryOtpSheetOpen ? (
-        <View style={styles.deliveryUploadOverlay} pointerEvents="auto">
-          <ActivityIndicator size="large" color={colors.primary[600]} />
-          <Text style={styles.deliveryUploadText}>
-            {t("orders.activeFood.uploadingDeliveryPhoto", "Uploading delivery photo…")}
-          </Text>
-        </View>
       ) : null}
 
       <RiderRideCancelReasonSheet
@@ -2708,21 +3034,6 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
     color: colors.gray[600],
-    textAlign: "center",
-  },
-  deliveryUploadOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 100,
-    backgroundColor: "rgba(255,255,255,0.88)",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 14,
-    paddingHorizontal: 32,
-  },
-  deliveryUploadText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: colors.gray[700],
     textAlign: "center",
   },
 });

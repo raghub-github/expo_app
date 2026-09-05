@@ -115,6 +115,7 @@ export function useRiderSubscriptionPlans() {
     },
     enabled: Boolean(session?.accessToken),
     staleTime: 60_000,
+    placeholderData: (previous) => previous,
     retry: 2,
   });
 }

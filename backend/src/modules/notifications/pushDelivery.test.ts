@@ -20,7 +20,14 @@ function channelIdForRecipient(
     if (priority === "critical" || priority === "high") return "merchant_new_orders";
     return "merchant_default";
   }
-  if (role === "rider") return "default";
+  if (role === "rider") {
+    const code = String(opts?.templateCode ?? "").toUpperCase();
+    const metaType = String(opts?.metadataType ?? "").toLowerCase();
+    if (code === "RIDER_DISPATCH_OFFER" || metaType === "dispatch_offer") {
+      return "rider_dispatch_offers_alert";
+    }
+    return "rider_default";
+  }
   const live = String(opts?.liveService ?? "").toLowerCase();
   const code = String(opts?.templateCode ?? "").toUpperCase();
   if (live === "ride" || code.startsWith("RIDE_")) return "customer_ride_cx";
@@ -40,6 +47,13 @@ function soundForRecipient(
     const code = String(opts?.templateCode ?? "").toUpperCase();
     const metaType = String(opts?.metadataType ?? "").toLowerCase();
     if (code === "MERCHANT_NEW_ORDER" || metaType === "merchant_new_order") {
+      return "notification";
+    }
+  }
+  if (role === "rider") {
+    const code = String(opts?.templateCode ?? "").toUpperCase();
+    const metaType = String(opts?.metadataType ?? "").toLowerCase();
+    if (code === "RIDER_DISPATCH_OFFER" || metaType === "dispatch_offer") {
       return "notification";
     }
   }
@@ -68,6 +82,18 @@ describe("super admin push delivery helpers", () => {
       "notification",
     );
     assert.equal(soundForRecipient("merchant"), "default");
+  });
+
+  it("routes rider dispatch offers to the dedicated alert channel", () => {
+    assert.equal(channelIdForRecipient("rider"), "rider_default");
+    assert.equal(
+      channelIdForRecipient("rider", "high", { templateCode: "RIDER_DISPATCH_OFFER" }),
+      "rider_dispatch_offers_alert",
+    );
+    assert.equal(
+      soundForRecipient("rider", { templateCode: "RIDER_DISPATCH_OFFER" }),
+      "notification",
+    );
   });
 
   it("routes customer ride pushes to CX sound channel", () => {

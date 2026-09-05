@@ -131,6 +131,52 @@ export function resolveRiderHistoryExcludingCurrent(
   });
 }
 
+function assignmentRowKey(r: FoodOrderRiderLogEntry): string {
+  return `${Number(r.rider_id) || 0}:${r.assigned_at ?? ""}:${r.picked_up_at ?? ""}`;
+}
+
+export function logRowsAreSameAssignment(
+  a: FoodOrderRiderLogEntry | null | undefined,
+  b: FoodOrderRiderLogEntry | null | undefined
+): boolean {
+  if (!a || !b) return false;
+  return assignmentRowKey(a) === assignmentRowKey(b);
+}
+
+/** Latest assignment that actually marked pickup. */
+export function resolvePickupRiderFromLog(
+  riders: FoodOrderRiderLogEntry[]
+): FoodOrderRiderLogEntry | null {
+  const withPickup = riders
+    .filter((r) => Boolean(r.picked_up_at?.trim()))
+    .sort(
+      (a, b) =>
+        (Date.parse(b.picked_up_at ?? "") || 0) - (Date.parse(a.picked_up_at ?? "") || 0)
+    );
+  return withPickup[0] ?? null;
+}
+
+/** Pickup rider first, then newest assignment. */
+export function sortRidersLogForDisplay(
+  riders: FoodOrderRiderLogEntry[]
+): FoodOrderRiderLogEntry[] {
+  const pickup = resolvePickupRiderFromLog(riders);
+  const pickupKey = pickup ? assignmentRowKey(pickup) : null;
+  return [...riders].sort((a, b) => {
+    if (pickupKey) {
+      const aPick = assignmentRowKey(a) === pickupKey;
+      const bPick = assignmentRowKey(b) === pickupKey;
+      if (aPick !== bPick) return aPick ? -1 : 1;
+    }
+    return (Date.parse(b.assigned_at ?? "") || 0) - (Date.parse(a.assigned_at ?? "") || 0);
+  });
+}
+
+/** Open the full rider list whenever this order has any assignment history. */
+export function shouldShowAllRidersButton(riders: FoodOrderRiderLogEntry[]): boolean {
+  return riders.length >= 1;
+}
+
 export function riderStatusLabelFromOrder(order: OrderRecord): string {
   if (order.riderPickedUpAt) return "Out for delivery";
   if (order.riderReachedAt) return "Rider at store";

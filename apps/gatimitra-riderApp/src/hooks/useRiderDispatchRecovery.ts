@@ -1,86 +1,77 @@
-import { useCallback, useEffect, useRef } from "react";
-import { AppState, type AppStateStatus } from "react-native";
+import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import NetInfo from "@react-native-community/netinfo";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useDutyStore } from "@/src/stores/dutyStore";
-import { RIDER_AVAILABLE_ORDERS_QUERY_KEY, RIDER_ACTIVE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { riderDispatchLog } from "@/src/lib/rider-dispatch-log";
-
-const DUTY_SYNC_INTERVAL_MS = 60_000;
-const FOREGROUND_POLL_INTERVAL_MS = 30_000;
+import { dispatchSessionKey } from "@/src/lib/riderDispatchPolicy";
+import {
+  startRiderDispatchLifecycle,
+  stopRiderDispatchLifecycle,
+} from "@/src/lib/riderDispatchLifecycle";
 
 /**
- * Keeps dispatch eligibility fresh: duty sync, offer polling, network recovery.
- * Complements RiderDispatchRealtime (WebSocket) and useAvailableOrders (5s poll).
+ * Binds the process-wide dispatch lifecycle to the authenticated rider session.
+ * One subsystem per session — not per tab/screen.
  */
 export function useRiderDispatchRecovery(): void {
   const queryClient = useQueryClient();
   const session = useSessionStore((s) => s.session);
   const hydrated = useSessionStore((s) => s.hydrated);
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
-  const syncDutyFromServer = useDutyStore((s) => s.syncFromServer);
-  const wasOfflineRef = useRef(false);
+  const prevDutyRef = useRef<boolean | null>(null);
+  const prevSessionKeyRef = useRef<string | null>(null);
 
-  const refreshOffers = useCallback(async (reason: string) => {
-    if (!hydrated || !session?.accessToken || session.role !== "rider" || !isOnDuty) {
+  useEffect(() => {
+    if (!hydrated) return;
+
+    if (!session?.accessToken || session.role !== "rider") {
+      stopRiderDispatchLifecycle("unauthenticated");
+      prevDutyRef.current = null;
+      prevSessionKeyRef.current = null;
       return;
     }
-    riderDispatchLog(`refresh offers (${reason})`);
-    try {
-      await syncDutyFromServer();
-    } catch {
-      /* duty sync is best-effort */
+
+    const riderId =
+      session.riderId?.trim() || session.userId?.trim() || "";
+    const sessionKey = dispatchSessionKey({
+      userId: session.userId,
+      riderId: session.riderId,
+      accessToken: session.accessToken,
+    });
+
+    if (prevSessionKeyRef.current && prevSessionKeyRef.current !== sessionKey) {
+      riderDispatchLog("SESSION READY", { sessionKey, riderId });
+    } else if (!prevSessionKeyRef.current) {
+      riderDispatchLog("SESSION READY", { sessionKey, riderId });
     }
-    await queryClient.invalidateQueries({ queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY });
-    await queryClient.refetchQueries({
-      queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY,
-      type: "active",
+    prevSessionKeyRef.current = sessionKey;
+
+    if (!isOnDuty) {
+      if (prevDutyRef.current === true) {
+        riderDispatchLog("DUTY OFF");
+      }
+      prevDutyRef.current = false;
+      stopRiderDispatchLifecycle("duty_off");
+      return;
+    }
+
+    if (prevDutyRef.current !== true) {
+      riderDispatchLog("DUTY ON", { riderId });
+    }
+    prevDutyRef.current = true;
+
+    startRiderDispatchLifecycle({
+      queryClient,
+      sessionKey,
+      riderId,
     });
-  }, [hydrated, session?.accessToken, session?.role, isOnDuty, syncDutyFromServer, queryClient]);
-
-  useEffect(() => {
-    const onAppState = (state: AppStateStatus) => {
-      if (state === "active") {
-        void refreshOffers("app_foreground");
-      }
-    };
-    const sub = AppState.addEventListener("change", onAppState);
-    return () => sub.remove();
-  }, [refreshOffers]);
-
-  useEffect(() => {
-    if (!isOnDuty || !session?.accessToken) return;
-    const id = setInterval(() => {
-      void syncDutyFromServer();
-    }, DUTY_SYNC_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [isOnDuty, session?.accessToken, syncDutyFromServer]);
-
-  useEffect(() => {
-    if (!isOnDuty) return;
-    const id = setInterval(() => {
-      if (AppState.currentState !== "active") return;
-      void queryClient.invalidateQueries({ queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY });
-    }, FOREGROUND_POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [isOnDuty, queryClient]);
-
-  useEffect(() => {
-    const unsub = NetInfo.addEventListener((state) => {
-      const online = state.isConnected === true && state.isInternetReachable !== false;
-      if (!online) {
-        wasOfflineRef.current = true;
-        riderDispatchLog("network offline");
-        return;
-      }
-      if (wasOfflineRef.current) {
-        wasOfflineRef.current = false;
-        void refreshOffers("network_restored");
-        // Always restore assigned work after reconnect — even if OFF duty mid-delivery.
-        void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
-      }
-    });
-    return () => unsub();
-  }, [refreshOffers, queryClient]);
+  }, [
+    hydrated,
+    session?.accessToken,
+    session?.role,
+    session?.userId,
+    session?.riderId,
+    isOnDuty,
+    queryClient,
+  ]);
 }

@@ -12,6 +12,7 @@ import Animated, {
 import { Ionicons } from "@expo/vector-icons";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
 import { getCategoryImageLastGood } from "@/lib/categoryImageLastGood";
+import { getLocalCategoryImageUri } from "@/lib/categoryImageFileCache";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { FoodHomeCategoryItem } from "@/components/home/FoodHomeCategoryVariants";
 import { AppText } from "@/components/AppText";
@@ -104,7 +105,8 @@ function CategoryPhoto({
 }) {
   const { circle } = layout;
   const lastGood = cacheKey ? getCategoryImageLastGood(cacheKey) : null;
-  const resolvedUrl = imageUrl?.trim() || lastGood || null;
+  const localFile = cacheKey ? getLocalCategoryImageUri(cacheKey, imageUrl) : null;
+  const resolvedUrl = imageUrl?.trim() || localFile || lastGood || null;
   const hasImage = !!resolvedUrl;
   const dark = useMerchantUiDark();
   const photoW = circle;
@@ -535,7 +537,8 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F8FAFC",
+    // Transparent — avoid grey flash while expo-image paints from disk/file cache.
+    backgroundColor: "transparent",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(15,23,42,0.06)",
   },

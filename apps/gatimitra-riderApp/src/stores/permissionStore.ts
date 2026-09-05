@@ -110,7 +110,6 @@ export const usePermissionStore = create<PermissionStoreState>((set, get) => ({
   hydrate: async () => {
     // Prevent multiple simultaneous hydrations
     if (get().hydrated) {
-      console.log('[PermissionStore] Already hydrated');
       return;
     }
 

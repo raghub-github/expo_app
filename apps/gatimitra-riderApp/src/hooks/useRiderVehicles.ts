@@ -19,7 +19,7 @@ export function useRiderVehicles() {
     queryFn: () => riderApi.getVehicles(),
     enabled: authed,
     staleTime: 15_000,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
     retry: 1,
   });
 

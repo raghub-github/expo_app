@@ -10,6 +10,8 @@ import {
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
 import { rememberCategoryImageLastGood } from "@/lib/categoryImageLastGood";
+import { warmLocalCategoryImages } from "@/lib/categoryImageFileCache";
+import { fastGetString, fastSetString, hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
 
 export const USER_APP_CATEGORIES_QUERY_ROOT = "userAppCategories";
 
@@ -106,10 +108,39 @@ export function getUserAppCategoriesCachedAt(storeType: string): number | undefi
   return memoryByStoreType.get(storeType)?.cachedAt;
 }
 
-async function readPersistedBlob(): Promise<UserAppCategoriesCacheBlob> {
+function rememberCategoryImagesFromResponse(response: UserAppCategoriesResponse): void {
+  const fileEntries: Array<{ cacheKey: string; imageUrl: string | null | undefined }> = [];
+  if (response.allTab?.imageUrl) {
+    rememberCategoryImageLastGood("tab-category-all", response.allTab.imageUrl);
+    fileEntries.push({ cacheKey: "tab-category-all", imageUrl: response.allTab.imageUrl });
+  }
+  for (const item of response.items ?? []) {
+    if (item.imageUrl) {
+      const cacheKey = `tab-category-${item.id}`;
+      rememberCategoryImageLastGood(cacheKey, item.imageUrl);
+      // Alias keys used by classic / search rails so last-good + files hit everywhere.
+      rememberCategoryImageLastGood(`category-${item.id}`, item.imageUrl);
+      fileEntries.push({ cacheKey, imageUrl: item.imageUrl });
+      fileEntries.push({ cacheKey: `category-${item.id}`, imageUrl: item.imageUrl });
+    }
+  }
+  warmLocalCategoryImages(fileEntries);
+}
+
+function applyCachedEntry(storeType: string, entry: CachedUserAppCategoriesEntry): void {
+  memoryByStoreType.set(storeType, entry);
+  rememberCategoryImagesFromResponse(entry.response);
+  // Fire-and-forget decode into expo-image disk/memory — do not await on first paint.
+  void prefetchUserAppCategoryImagesAwait(
+    entry.response.items,
+    entry.response.allTab?.imageUrl,
+    { visibleFirst: VISIBLE_CATEGORY_IMAGE_PREFETCH_COUNT }
+  );
+}
+
+function parseCategoriesBlob(raw: string | null | undefined): UserAppCategoriesCacheBlob {
+  if (!raw) return {};
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEYS.USER_APP_CATEGORIES_CACHE);
-    if (!raw) return {};
     const parsed = JSON.parse(raw) as UserAppCategoriesCacheBlob;
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
@@ -117,32 +148,61 @@ async function readPersistedBlob(): Promise<UserAppCategoriesCacheBlob> {
   }
 }
 
-async function writePersistedBlob(blob: UserAppCategoriesCacheBlob): Promise<void> {
+/** Sync seed from MMKV so home can paint chips before AsyncStorage resolves. */
+function seedCategoriesFromFastKv(): void {
+  const blob = parseCategoriesBlob(fastGetString(STORAGE_KEYS.USER_APP_CATEGORIES_CACHE));
+  for (const [storeType, entry] of Object.entries(blob)) {
+    if (entry?.response?.items?.length || entry?.response?.allTab) {
+      applyCachedEntry(storeType, entry);
+    }
+  }
+}
+
+seedCategoriesFromFastKv();
+
+async function readPersistedBlob(): Promise<UserAppCategoriesCacheBlob> {
+  const fromFast = parseCategoriesBlob(fastGetString(STORAGE_KEYS.USER_APP_CATEGORIES_CACHE));
+  if (Object.keys(fromFast).length > 0) return fromFast;
   try {
-    await AsyncStorage.setItem(STORAGE_KEYS.USER_APP_CATEGORIES_CACHE, JSON.stringify(blob));
+    const raw = await AsyncStorage.getItem(STORAGE_KEYS.USER_APP_CATEGORIES_CACHE);
+    if (!raw) return {};
+    const parsed = parseCategoriesBlob(raw);
+    if (Object.keys(parsed).length > 0) {
+      try {
+        fastSetString(STORAGE_KEYS.USER_APP_CATEGORIES_CACHE, raw);
+      } catch {
+        /* ignore */
+      }
+    }
+    return parsed;
   } catch {
-    // Non-blocking — in-memory + React Query still work.
+    return {};
+  }
+}
+
+async function writePersistedBlob(blob: UserAppCategoriesCacheBlob): Promise<void> {
+  const raw = JSON.stringify(blob);
+  try {
+    fastSetString(STORAGE_KEYS.USER_APP_CATEGORIES_CACHE, raw);
+  } catch {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.USER_APP_CATEGORIES_CACHE, raw);
+    } catch {
+      // Non-blocking — in-memory + React Query still work.
+    }
   }
 }
 
 /** Warm in-memory cache from disk as early as possible (before first home paint). */
 export async function hydrateUserAppCategoriesMemoryFromStorage(): Promise<void> {
+  await hydrateFastKvFromAsyncStorage([STORAGE_KEYS.USER_APP_CATEGORIES_CACHE]);
+  seedCategoriesFromFastKv();
+  if (memoryByStoreType.size > 0) return;
+
   const blob = await readPersistedBlob();
   for (const [storeType, entry] of Object.entries(blob)) {
     if (entry?.response?.items?.length || entry?.response?.allTab) {
-      memoryByStoreType.set(storeType, entry);
-      if (entry.response.allTab?.imageUrl) {
-        rememberCategoryImageLastGood("tab-category-all", entry.response.allTab.imageUrl);
-      }
-      for (const item of entry.response.items ?? []) {
-        if (item.imageUrl) {
-          rememberCategoryImageLastGood(`tab-category-${item.id}`, item.imageUrl);
-        }
-      }
-      void prefetchUserAppCategoryImagesAwait(
-        entry.response.items,
-        entry.response.allTab?.imageUrl
-      );
+      applyCachedEntry(storeType, entry);
     }
   }
 }
@@ -175,14 +235,7 @@ export async function writeCachedUserAppCategories(
     items: mergedItems,
   };
 
-  if (mergedAllTab.imageUrl) {
-    rememberCategoryImageLastGood("tab-category-all", mergedAllTab.imageUrl);
-  }
-  for (const item of mergedItems) {
-    if (item.imageUrl) {
-      rememberCategoryImageLastGood(`tab-category-${item.id}`, item.imageUrl);
-    }
-  }
+  rememberCategoryImagesFromResponse(merged);
 
   const entry: CachedUserAppCategoriesEntry = { response: merged, cachedAt: Date.now() };
   memoryByStoreType.set(storeType, entry);
@@ -226,8 +279,7 @@ export async function hydrateUserAppCategoriesQuery(
   const entry = blob[storeType];
   if (!entry?.response) return undefined;
 
-  memoryByStoreType.set(storeType, entry);
-  void prefetchUserAppCategoryImagesAwait(entry.response.items, entry.response.allTab?.imageUrl);
+  applyCachedEntry(storeType, entry);
   queryClient.setQueryData(userAppCategoriesQueryKey(storeType), entry.response);
   return entry.response;
 }

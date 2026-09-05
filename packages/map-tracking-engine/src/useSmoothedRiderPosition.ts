@@ -105,12 +105,12 @@ export function useSmoothedRiderPosition(
       heading = current.headingDeg;
     }
 
-    const speedScale = speed > 0.5 ? Math.max(0.55, Math.min(1.2, 8 / Math.max(speed, 0.5))) : 1;
+    const speedScale = speed > 0.5 ? Math.max(0.5, Math.min(1.05, 7 / Math.max(speed, 0.5))) : 1;
     const timing = resolveMarkerAnimTiming(current.lat, current.lng, fix.lat, fix.lng, {
-      minMs: Math.round(Math.min(durationMs, 380) * speedScale),
-      maxMs: Math.round(Math.max(durationMs, 720) * speedScale),
-      metersPerMs: 22,
-      snapIfJumpM: 120,
+      minMs: Math.round(Math.min(durationMs, 320) * speedScale),
+      maxMs: Math.round(Math.max(durationMs, 900) * speedScale),
+      metersPerMs: 28,
+      snapIfJumpM: 100,
     });
 
     if (timing.durationMs === 0) {
@@ -155,9 +155,9 @@ export function useSmoothedRiderPosition(
       };
 
       fromRef.current = next;
-      // Cap React setState to ~12fps — 60fps marker lerp was janking the whole tracking tree.
+      // ~30fps UI updates — smooth enough without janking the nav tree.
       const now = Date.now();
-      if (t >= 1 || now - lastUiMs >= 80) {
+      if (t >= 1 || now - lastUiMs >= 33) {
         lastUiMs = now;
         setSmoothed(next);
       }

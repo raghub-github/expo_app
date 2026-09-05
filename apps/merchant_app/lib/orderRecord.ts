@@ -232,9 +232,37 @@ export function apiStatusToStage(api: string | null | undefined): OrderStage {
   if (u === "READY_FOR_PICKUP") return "ready";
   if (u === "OUT_FOR_DELIVERY") return "picked_up";
   if (u === "DELIVERED") return "delivered";
-  if (u === "CANCELLED") return "rejected";
-  if (u === "RTO") return "rto";
+  if (u === "CANCELLED" || u === "CANCELED" || u === "REJECTED") return "rejected";
+  if (u === "RTO" || u === "FAILED") return "rto";
   return "created";
+}
+
+const LIVE_CONTACT_STATUSES = new Set([
+  "CREATED",
+  "NEW",
+  "PLACED",
+  "ACCEPTED",
+  "PREPARING",
+  "READY_FOR_PICKUP",
+  "READY",
+  "OUT_FOR_DELIVERY",
+  "PICKED_UP",
+  "IN_TRANSIT",
+  "ON_THE_WAY",
+  "DISPATCHED",
+  "DESPATCHED",
+  "ASSIGNED",
+  "REACHED_STORE",
+  "RIDER_AT_PICKUP",
+]);
+
+/** Rider/customer call icon only on live kitchen statuses — never after complete/cancel. */
+export function isLiveFoodOrderForContact(status: string | null | undefined): boolean {
+  const u = String(status ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
+  return LIVE_CONTACT_STATUSES.has(u);
 }
 
 export function stageTransitionToApi(from: OrderStage, to: OrderStage): string {

@@ -20,6 +20,19 @@ export function resolveCancelledByBrandForLedger(
     return 'customer';
   }
 
+  // Admin / GatiMitra before channel sources — action_source "website" must not
+  // rebrand a dashboard / ops cancel as "store".
+  if (
+    type === 'admin' ||
+    type === 'rider' ||
+    source === 'admin_cancel' ||
+    source.includes('dashboard') ||
+    label.includes('gatimitra team') ||
+    label.includes('gatimitra')
+  ) {
+    return 'GatiMitra';
+  }
+
   if (
     type === 'store' ||
     type === 'merchant' ||
@@ -43,16 +56,6 @@ export function resolveCancelledByBrandForLedger(
     /auto cancel/i.test(label)
   ) {
     return '__AUTO__';
-  }
-
-  if (
-    type === 'admin' ||
-    source === 'admin_cancel' ||
-    source.includes('dashboard') ||
-    label.includes('gatimitra team') ||
-    label.includes('gatimitra')
-  ) {
-    return 'GatiMitra';
   }
 
   if (source.includes('merchant') || source.includes('partner')) {

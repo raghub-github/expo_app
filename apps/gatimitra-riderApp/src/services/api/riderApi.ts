@@ -3,6 +3,8 @@ import { getRiderAppConfig, resolveUrlForDevice } from "@/src/config/env";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { notifyForceLogoutIfNeeded } from "@/src/services/rider-auth-errors";
 import { z } from "zod";
+import { getAcceptLatencyT0, markAcceptLatency } from "@/src/lib/acceptOrderLatency";
+import { getSlideActionT0, markSlideAction } from "@/src/lib/slideActionLatency";
 
 // API Response Schemas
 const OrderSummarySchema = z.object({
@@ -92,6 +94,8 @@ const OrderSummarySchema = z.object({
   adminRiderPaymentClearedAt: z.string().nullable().optional(),
   walletCreditPending: z.boolean().optional(),
   customerRating: z.number().nullable().optional(),
+  dropAddressImageUrl: z.string().nullable().optional(),
+  storeImageUrl: z.string().nullable().optional(),
   passengerRating: z.number().nullable().optional(),
   cancellationPenaltyApplied: z.boolean().optional(),
   cancellationPenaltyAmount: z.number().nullable().optional(),
@@ -533,7 +537,12 @@ async function ensureSessionRefreshed(force = false): Promise<boolean> {
 type RiderRequestInit<T> = RequestInit & {
   responseSchema?: z.ZodSchema<T>;
   idempotencyKey?: string;
+  onBeforeFetch?: () => void;
+  timeoutMs?: number;
 };
+
+const RIDER_MUTATION_TIMEOUT_MS = 20_000;
+const RIDER_QUERY_TIMEOUT_MS = 25_000;
 
 function apiErrorBody(err: ApiError): string | undefined {
   if (err.payload == null) return undefined;
@@ -550,9 +559,16 @@ async function riderRequest<T>(path: string, init: RiderRequestInit<T> = {}): Pr
     const config = getRiderAppConfig();
     const client = new ApiClient({
       baseUrl: resolveUrlForDevice(config.apiBaseUrl),
-      getAccessToken: async () => useSessionStore.getState().session?.accessToken ?? null,
+      getAccessToken: () => useSessionStore.getState().session?.accessToken ?? null,
     });
-    return client.request<T>(path, init);
+    return client.request<T>(path, {
+      ...init,
+      timeoutMs:
+        init.timeoutMs ??
+        ((init.method ?? "GET").toUpperCase() === "GET"
+          ? RIDER_QUERY_TIMEOUT_MS
+          : RIDER_MUTATION_TIMEOUT_MS),
+    });
   };
 
   try {
@@ -581,17 +597,69 @@ function createApiClient(): { request: typeof riderRequest } {
   return { request: riderRequest };
 }
 
+function slidePostHeaders(action: string): Record<string, string> {
+  markSlideAction("T2_REQUEST_CREATED");
+  const t0 = getSlideActionT0() || Date.now();
+  return {
+    "content-type": "application/json",
+    "x-slide-t0": String(t0),
+    "x-slide-action": action,
+  };
+}
+
+function markSlideRequestSent(): void {
+  markSlideAction("T3_REQUEST_SENT");
+}
+
+async function slidePost<T>(
+  path: string,
+  action: string,
+  body: unknown,
+  responseSchema: z.ZodType<T>,
+  actionId?: string
+): Promise<T> {
+  const client = createApiClient();
+  const result = await client.request<T>(path, {
+    method: "POST",
+    headers: slidePostHeaders(action),
+    body: JSON.stringify(body ?? {}),
+    responseSchema,
+    idempotencyKey: actionId,
+    timeoutMs: RIDER_MUTATION_TIMEOUT_MS,
+    onBeforeFetch: markSlideRequestSent,
+  });
+  markSlideAction("T6_RESPONSE");
+  return result;
+}
+
 // API Service
 export const riderApi = {
   /**
    * Get available orders for the rider
    */
-  async getAvailableOrders() {
+  async getAvailableOrders(signal?: AbortSignal) {
     const client = createApiClient();
     return client.request<z.infer<typeof OrderSummarySchema>[]>(
       "/v1/rider/orders/available",
       {
         method: "GET",
+        signal,
+        responseSchema: z.array(OrderSummarySchema),
+      }
+    );
+  },
+
+  /**
+   * Pending server-side dispatch offers (survives app kill). Also merged into
+   * getAvailableOrders; this endpoint is for explicit recovery on launch/tap.
+   */
+  async getPendingOffers(signal?: AbortSignal) {
+    const client = createApiClient();
+    return client.request<z.infer<typeof OrderSummarySchema>[]>(
+      "/v1/rider/orders/pending-offers",
+      {
+        method: "GET",
+        signal,
         responseSchema: z.array(OrderSummarySchema),
       }
     );
@@ -665,18 +733,30 @@ export const riderApi = {
   /**
    * Accept an order
    */
-  async acceptOrder(orderId: string) {
+  async acceptOrder(orderId: string, opts?: { actionId?: string }) {
     const client = createApiClient();
     const ref = encodeURIComponent(orderId.trim());
-    return client.request<z.infer<typeof OrderSummarySchema>>(
+    markAcceptLatency("T2_REQUEST_CREATED");
+    const t0 = getAcceptLatencyT0() || Date.now();
+    const result = await client.request<z.infer<typeof OrderSummarySchema>>(
       `/v1/rider/orders/${ref}/accept`,
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-accept-t0": String(t0),
+        },
         body: "{}",
         responseSchema: OrderSummarySchema,
+        idempotencyKey: opts?.actionId,
+        timeoutMs: RIDER_MUTATION_TIMEOUT_MS,
+        onBeforeFetch: () => {
+          markAcceptLatency("T3_REQUEST_SENT");
+        },
       }
     );
+    markAcceptLatency("T8_RESPONSE_RECEIVED");
+    return result;
   },
 
   /**
@@ -770,15 +850,16 @@ export const riderApi = {
 
   async markFoodPickup(
     orderId: string,
-    gps?: { lat?: number; lng?: number; deviceTimestamp?: string }
+    gps?: { lat?: number; lng?: number; deviceTimestamp?: string },
+    opts?: { actionId?: string }
   ) {
-    const client = createApiClient();
-    return client.request<RiderOrderSummary>(`/v1/rider/orders/${orderId}/mark-food-pickup`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(gps ?? {}),
-      responseSchema: OrderSummarySchema,
-    });
+    return slidePost(
+      `/v1/rider/orders/${orderId}/mark-food-pickup`,
+      "mark_pickup",
+      gps ?? {},
+      OrderSummarySchema,
+      opts?.actionId
+    );
   },
 
   async acknowledgeFoodPickup(orderId: string) {
@@ -834,33 +915,29 @@ export const riderApi = {
 
   async markReachedPickup(
     orderId: string,
-    gps?: { lat?: number; lng?: number }
+    gps?: { lat?: number; lng?: number },
+    opts?: { actionId?: string }
   ) {
-    const client = createApiClient();
-    return client.request<RiderOrderSummary>(
+    return slidePost(
       `/v1/rider/orders/${orderId}/reached-pickup`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(gps ?? {}),
-        responseSchema: OrderSummarySchema,
-      }
+      "reached_pickup",
+      gps ?? {},
+      OrderSummarySchema,
+      opts?.actionId
     );
   },
 
   async markReachedCustomer(
     orderId: string,
-    gps?: { lat?: number; lng?: number }
+    gps?: { lat?: number; lng?: number },
+    opts?: { actionId?: string }
   ) {
-    const client = createApiClient();
-    return client.request<RiderOrderSummary>(
+    return slidePost(
       `/v1/rider/orders/${orderId}/reached-customer`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(gps ?? {}),
-        responseSchema: OrderSummarySchema,
-      }
+      "reached_drop",
+      gps ?? {},
+      OrderSummarySchema,
+      opts?.actionId
     );
   },
 
@@ -895,7 +972,8 @@ export const riderApi = {
 
   async cancelAssignedRide(
     orderId: string,
-    payload: { reasonCode: string; reasonText?: string }
+    payload: { reasonCode: string; reasonText?: string },
+    opts?: { actionId?: string }
   ) {
     const client = createApiClient();
     return client.request<{ ok: true; penaltyApplied?: boolean; penaltyAmount?: number }>(
@@ -903,6 +981,7 @@ export const riderApi = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
+      idempotencyKey: opts?.actionId,
     });
   },
 
@@ -932,15 +1011,16 @@ export const riderApi = {
 
   async verifyPickupOtp(
     orderId: string,
-    payload: { otp: string; lat?: number; lng?: number; deviceTimestamp?: string }
+    payload: { otp: string; lat?: number; lng?: number; deviceTimestamp?: string },
+    opts?: { actionId?: string }
   ) {
-    const client = createApiClient();
-    return client.request<RiderOrderSummary>(`/v1/rider/orders/${orderId}/verify-pickup-otp`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-      responseSchema: OrderSummarySchema,
-    });
+    return slidePost(
+      `/v1/rider/orders/${orderId}/verify-pickup-otp`,
+      "verify_pickup_otp",
+      payload,
+      OrderSummarySchema,
+      opts?.actionId
+    );
   },
 
   async verifyPickupBarcode(
@@ -959,24 +1039,32 @@ export const riderApi = {
     );
   },
 
-  async completeRide(orderId: string, gps?: { lat?: number; lng?: number }) {
-    const client = createApiClient();
-    return client.request<RiderOrderSummary>(`/v1/rider/orders/${orderId}/complete-ride`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(gps ?? {}),
-      responseSchema: OrderSummarySchema,
-    });
+  async completeRide(
+    orderId: string,
+    gps?: { lat?: number; lng?: number },
+    opts?: { actionId?: string }
+  ) {
+    return slidePost(
+      `/v1/rider/orders/${orderId}/complete-ride`,
+      "complete_ride",
+      gps ?? {},
+      OrderSummarySchema,
+      opts?.actionId
+    );
   },
 
-  async startRide(orderId: string, gps?: { lat?: number; lng?: number }) {
-    const client = createApiClient();
-    return client.request<RiderOrderSummary>(`/v1/rider/orders/${orderId}/start-ride`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(gps ?? {}),
-      responseSchema: OrderSummarySchema,
-    });
+  async startRide(
+    orderId: string,
+    gps?: { lat?: number; lng?: number },
+    opts?: { actionId?: string }
+  ) {
+    return slidePost(
+      `/v1/rider/orders/${orderId}/start-ride`,
+      "start_ride",
+      gps ?? {},
+      OrderSummarySchema,
+      opts?.actionId
+    );
   },
 
   async verifyDeliveryOtp(
@@ -987,15 +1075,16 @@ export const riderApi = {
       lng?: number;
       deliveryImageUrl?: string;
       deliveryImageR2Key?: string;
-    }
+    },
+    opts?: { actionId?: string }
   ) {
-    const client = createApiClient();
-    return client.request<RiderOrderSummary>(`/v1/rider/orders/${orderId}/verify-delivery-otp`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-      responseSchema: OrderSummarySchema,
-    });
+    return slidePost(
+      `/v1/rider/orders/${orderId}/verify-delivery-otp`,
+      "verify_delivery_otp",
+      payload,
+      OrderSummarySchema,
+      opts?.actionId
+    );
   },
 
   /**

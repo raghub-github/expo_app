@@ -35,7 +35,8 @@ export function RiderRideCancelReasonSheet({
   const { t } = useTranslation();
   const bottomInset = useRiderBottomInset();
   const isFood = variant === "food";
-  const { data: reasons = RIDER_CANCEL_REASON_FALLBACK, isLoading: reasonsLoading, isFetching } =
+  // Catalog is prefetched on the nav screen — always render the list (fallback or cache).
+  const { data: reasons = RIDER_CANCEL_REASON_FALLBACK } =
     useRiderCancellationReasons(variant, visible);
 
   const title = isFood
@@ -52,8 +53,7 @@ export function RiderRideCancelReasonSheet({
         "Please cancel only if necessary or in an emergency. Otherwise, penalties may apply to your account."
       );
 
-  const listLoading = visible && (reasonsLoading || isFetching) && reasons === RIDER_CANCEL_REASON_FALLBACK;
-  const disabled = loading || listLoading;
+  const disabled = loading;
 
   const reasonRows = reasons.map((opt, index) => (
     <TouchableOpacity
@@ -99,21 +99,15 @@ export function RiderRideCancelReasonSheet({
               <Text style={styles.warningText}>{warning}</Text>
             </View>
 
-            {listLoading ? (
-              <View style={styles.loadingRow}>
-                <ActivityIndicator color={colors.primary[600]} />
-              </View>
-            ) : (
-              <ScrollView
-                style={styles.list}
-                contentContainerStyle={styles.listContent}
-                showsVerticalScrollIndicator={false}
-                bounces={false}
-                keyboardShouldPersistTaps="handled"
-              >
-                {reasonRows}
-              </ScrollView>
-            )}
+            <ScrollView
+              style={styles.list}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              {reasonRows}
+            </ScrollView>
 
             {loading ? (
               <View style={styles.loadingRow}>

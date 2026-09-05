@@ -38,6 +38,11 @@ function isCancellationBalanceDebit(entry: MergeableLedgerEntry): boolean {
   );
 }
 
+function isNoDebitCancellationEntry(entry: MergeableLedgerEntry | undefined): boolean {
+  const mode = String((entry?.metadata ?? {}).merchant_debit_mode ?? "").toLowerCase();
+  return mode === "no_debit";
+}
+
 function extractFormattedOrderIdFromDescription(
   description: string | null | undefined
 ): string | null {
@@ -268,8 +273,9 @@ export function buildCancellationLedgerDisplayMap(
     }
 
     if (bucket.info) {
+      const noDebit = isNoDebitCancellationEntry(bucket.info);
       displayById.set(bucket.info.id, {
-        originalAmount: originalAmount || Math.max(0, Number(bucket.info.amount ?? 0)),
+        originalAmount: noDebit ? 0 : (originalAmount || Math.max(0, Number(bucket.info.amount ?? 0))),
         creditAmount: 0,
         showCancelledStatus: true,
       });

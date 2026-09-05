@@ -29,10 +29,10 @@ const DEFAULT_PROFILE: LocationEngineProfile = {
 };
 
 const NAV_PROFILE: LocationEngineProfile = {
-  timeIntervalMs: 800,
-  distanceIntervalM: 2,
+  timeIntervalMs: 1200,
+  distanceIntervalM: 5,
   minAccuracyM: 80,
-  accuracy: Location.Accuracy.Highest,
+  accuracy: Location.Accuracy.High,
 };
 
 const ACTIVE_ORDER_BG_PROFILE: LocationEngineProfile = {
@@ -43,8 +43,8 @@ const ACTIVE_ORDER_BG_PROFILE: LocationEngineProfile = {
 };
 
 const DUTY_IDLE_BG_PROFILE: LocationEngineProfile = {
-  timeIntervalMs: 15000,
-  distanceIntervalM: 25,
+  timeIntervalMs: 20000,
+  distanceIntervalM: 40,
   minAccuracyM: 150,
   accuracy: Location.Accuracy.Balanced,
 };
@@ -64,12 +64,27 @@ function normalizeFix(loc: Location.LocationObject): LocationFix {
   };
 }
 
+function compactPartialProfile(
+  profile?: Partial<LocationEngineProfile>
+): Partial<LocationEngineProfile> {
+  if (!profile) return {};
+  const next: Partial<LocationEngineProfile> = {};
+  if (Number.isFinite(profile.timeIntervalMs)) next.timeIntervalMs = profile.timeIntervalMs;
+  if (Number.isFinite(profile.distanceIntervalM)) next.distanceIntervalM = profile.distanceIntervalM;
+  if (Number.isFinite(profile.minAccuracyM)) next.minAccuracyM = profile.minAccuracyM;
+  if (profile.accuracy != null) next.accuracy = profile.accuracy;
+  return next;
+}
+
 function mergeProfiles(profiles: LocationEngineProfile[]): LocationEngineProfile {
   if (profiles.length === 0) return DEFAULT_PROFILE;
+  const intervals = profiles.map((p) => p.timeIntervalMs).filter((n) => Number.isFinite(n));
+  const distances = profiles.map((p) => p.distanceIntervalM).filter((n) => Number.isFinite(n));
+  const accuracies = profiles.map((p) => p.minAccuracyM).filter((n) => Number.isFinite(n));
   return {
-    timeIntervalMs: Math.min(...profiles.map((p) => p.timeIntervalMs)),
-    distanceIntervalM: Math.min(...profiles.map((p) => p.distanceIntervalM)),
-    minAccuracyM: Math.min(...profiles.map((p) => p.minAccuracyM)),
+    timeIntervalMs: intervals.length ? Math.min(...intervals) : DEFAULT_PROFILE.timeIntervalMs,
+    distanceIntervalM: distances.length ? Math.min(...distances) : DEFAULT_PROFILE.distanceIntervalM,
+    minAccuracyM: accuracies.length ? Math.min(...accuracies) : DEFAULT_PROFILE.minAccuracyM,
     accuracy: profiles.some((p) => p.accuracy === Location.Accuracy.Highest)
       ? Location.Accuracy.Highest
       : profiles.some((p) => p.accuracy === Location.Accuracy.High)
@@ -113,7 +128,7 @@ class SharedLocationEngine {
   async acquire(profileId: string, profile?: Partial<LocationEngineProfile>): Promise<void> {
     const next: LocationEngineProfile = {
       ...DEFAULT_PROFILE,
-      ...profile,
+      ...compactPartialProfile(profile),
     };
     this.profiles.set(profileId, next);
     await this.reconcileWatch();
@@ -211,7 +226,8 @@ class SharedLocationEngine {
         (loc) => {
           const fix = normalizeFix(loc);
           if (!this.shouldAcceptFix(fix, merged.minAccuracyM)) {
-            this.emit({ status: "tracking", lastFix: this.currentFix() });
+            // Keep the last good fix. Re-emitting the same object wakes every
+            // subscriber (map, duty ping, nav) on GPS noise — idle heat.
             return;
           }
           this.emit({ status: "tracking", lastFix: fix });
@@ -275,12 +291,12 @@ export function createSharedForegroundLocationTracker(opts?: {
 }): LocationTracker {
   const engine = getSharedLocationEngine();
   const profileId = opts?.profileId ?? `fg_${++fgSeq}`;
-  const profile: Partial<LocationEngineProfile> = {
+  const profile = compactPartialProfile({
     timeIntervalMs: opts?.timeIntervalMs,
     distanceIntervalM: opts?.distanceIntervalM,
     minAccuracyM: opts?.minAccuracyM,
     accuracy: opts?.accuracy,
-  };
+  });
 
   return {
     getState: () => engine.getState(),

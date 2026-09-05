@@ -8,21 +8,18 @@
  */
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { AppText } from "@/components/AppText";
 
 import {
   AppState,
   Modal,
   Platform,
-  Pressable,
-  StyleSheet,
+  Alert,
   type AppStateStatus,
 } from "react-native";
 import Constants from "expo-constants";
 import * as Device from "expo-device";
 import * as Localization from "expo-localization";
 import { useRouter } from "expo-router";
-import { Image } from "expo-image";
 import {
   navigateFromPushData,
   usePushPermissionController,
@@ -37,7 +34,6 @@ import { useAuthStore } from "@/store/authStore";
 import { useOrderStore } from "@/store/orderStore";
 import { buildPrepDelayMessage } from "@/lib/order-eta-display";
 import { getConfig } from "@/config/env";
-import { colors } from "@/theme";
 import { applyLiveProgressFromPush } from "@/components/LiveOrderProgressNotification";
 import { liveProgressHandlerResult } from "@/lib/customerLiveOrderNotificationNative";
 import { playCustomerNotificationSound } from "@/lib/playCustomerNotificationSound";
@@ -50,6 +46,15 @@ import { useQueryClient } from "@tanstack/react-query";
 import { setCustomerPushUnregister } from "@/lib/customerPushUnregister";
 import { setNotificationPushAllowHandler } from "@/lib/notificationPushAllow";
 import { useNotificationPushPromptStore } from "@/store/notificationPushPromptStore";
+import { CampaignAnnouncementCard } from "@/components/campaign/CampaignAnnouncementCard";
+import {
+  announcementDedupeKey,
+  isCustomerAnnouncementData,
+  parseAnnouncementCampaign,
+  shouldShowRichCampaignCard,
+  OFFER_EXPIRED_MESSAGE,
+  type AnnouncementCampaignPayload,
+} from "@/lib/announcementCampaign";
 
 /**
  * Ride-only CX chime channel (sound is immutable after first Android create).
@@ -83,11 +88,9 @@ function PushNotificationBootstrapInner() {
   const hydrated = useAuthStore((s) => s.hydrated);
   const showPrepDelayBanner = useOrderStore((s) => s.showPrepDelayBanner);
 
-  const [richModal, setRichModal] = useState<{
-    title: string;
-    body: string;
-    imageUrl: string;
-  } | null>(null);
+  const [campaignCard, setCampaignCard] = useState<AnnouncementCampaignPayload | null>(null);
+  const campaignCardDataRef = useRef<Record<string, unknown> | null>(null);
+  const routedKeysRef = useRef(new Set<string>());
 
   const handlePrepDelayPush = useCallback(
     (data: Record<string, unknown>) => {
@@ -111,6 +114,72 @@ function PushNotificationBootstrapInner() {
     [showPrepDelayBanner]
   );
 
+  const { apiBaseUrl } = getConfig();
+
+  const routeCampaignOnce = useCallback(
+    async (data: Record<string, unknown>, source: "open" | "cta") => {
+      const isAnnouncement = isCustomerAnnouncementData(data);
+      if (isAnnouncement) {
+        const key = announcementDedupeKey(data);
+        if (routedKeysRef.current.has(key)) return;
+        routedKeysRef.current.add(key);
+        setTimeout(() => routedKeysRef.current.delete(key), 10_000);
+      }
+
+      if (!authRef.current.hydrated) {
+        const started = Date.now();
+        while (Date.now() - started < 4000) {
+          await new Promise((r) => setTimeout(r, 150));
+          if (authRef.current.hydrated) break;
+        }
+      }
+
+      const nid =
+        typeof data.notification_id === "string"
+          ? data.notification_id
+          : typeof data.message_id === "string"
+            ? data.message_id
+            : "";
+      const token = authRef.current.session?.accessToken;
+      if (isAnnouncement && nid && /^[0-9a-f-]{36}$/i.test(nid) && token) {
+        try {
+          const res = await fetch(
+            `${apiBaseUrl.replace(/\/$/, "")}/v1/notifications/${nid}/resolve-campaign`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ source }),
+            },
+          );
+          if (res.ok) {
+            const j = (await res.json()) as {
+              expired?: boolean;
+              deepLink?: string;
+              fallbackDeepLink?: string;
+              message?: string | null;
+            };
+            if (j.expired) {
+              Alert.alert("Offer expired", j.message || OFFER_EXPIRED_MESSAGE);
+              router.push((j.fallbackDeepLink || "/home") as never);
+              return;
+            }
+            if (typeof j.deepLink === "string" && j.deepLink.startsWith("/")) {
+              router.push(j.deepLink as never);
+              return;
+            }
+          }
+        } catch {
+          /* offline — still try local resolve */
+        }
+      }
+      navigateFromPushData(router, data);
+    },
+    [apiBaseUrl, router],
+  );
+
   const handleOpen = useCallback(
     (payload: PushNotificationOpenPayload) => {
       handlePrepDelayPush(payload.data);
@@ -118,31 +187,16 @@ function PushNotificationBootstrapInner() {
       if (isWalletAffectingPush(payload.data)) {
         void refreshCustomerWallet(queryClient);
       }
-      navigateFromPushData(router, payload.data);
-      const gmType = typeof payload.data.gmType === "string" ? payload.data.gmType : "";
-      const imageUrl =
-        typeof payload.data.imageUrl === "string"
-          ? payload.data.imageUrl.trim()
-          : typeof payload.data.image_url === "string"
-            ? payload.data.image_url.trim()
-            : "";
-      const showRich =
-        imageUrl.length > 0 &&
-        (gmType === "RICH" || gmType === "CUSTOMER_ANNOUNCEMENT");
-      if (showRich) {
-        setRichModal({
-          title: typeof payload.data.gmTitle === "string" ? payload.data.gmTitle : "",
-          body: typeof payload.data.gmMessage === "string" ? payload.data.gmMessage : "",
-          imageUrl,
-        });
-      }
+      const isCta =
+        Boolean(payload.actionIdentifier) &&
+        payload.actionIdentifier !== "expo.modules.notifications.actions.DEFAULT";
+      void routeCampaignOnce(payload.data, isCta ? "cta" : "open");
     },
-    [handlePrepDelayPush, queryClient, router]
+    [handlePrepDelayPush, queryClient, routeCampaignOnce]
   );
 
   const handleForeground = useCallback(
     (payload: PushNotificationOpenPayload) => {
-      // CX chime only for ride-service floating updates (accept / nearby / drop / …).
       if (isRideServicePush(payload.data)) {
         void playCustomerNotificationSound();
       }
@@ -152,28 +206,18 @@ function PushNotificationBootstrapInner() {
         void refreshCustomerWallet(queryClient);
       }
       enqueueInAppBannerFromPush(payload);
-      const gmType = typeof payload.data.gmType === "string" ? payload.data.gmType : "";
-      const imageUrl =
-        typeof payload.data.imageUrl === "string"
-          ? payload.data.imageUrl.trim()
-          : typeof payload.data.image_url === "string"
-            ? payload.data.image_url.trim()
-            : "";
-      const showRich =
-        imageUrl.length > 0 &&
-        (gmType === "RICH" || gmType === "CUSTOMER_ANNOUNCEMENT");
-      if (showRich) {
-        setRichModal({
-          title: typeof payload.data.gmTitle === "string" ? payload.data.gmTitle : "",
-          body: typeof payload.data.gmMessage === "string" ? payload.data.gmMessage : "",
-          imageUrl,
-        });
-      }
+      if (!isCustomerAnnouncementData(payload.data)) return;
+      const parsed = parseAnnouncementCampaign(
+        payload.data,
+        payload.title ?? "",
+        payload.body ?? "",
+      );
+      if (!shouldShowRichCampaignCard(parsed)) return;
+      campaignCardDataRef.current = payload.data;
+      setCampaignCard(parsed);
     },
     [handlePrepDelayPush, queryClient]
   );
-
-  const { apiBaseUrl } = getConfig();
   const authRef = useRef({ session, hydrated });
   authRef.current = { session, hydrated };
   const foregroundSyncAtRef = useRef(0);
@@ -472,54 +516,33 @@ function PushNotificationBootstrapInner() {
     <>
       <FloatingInAppBannerHost
         onPressBanner={(item) => {
-          if (item.data) navigateFromPushData(router, item.data);
+          if (!item.data) return;
+          void routeCampaignOnce(item.data, "open");
         }}
       />
-      <Modal visible={!!richModal} transparent animationType="fade" onRequestClose={() => setRichModal(null)}>
-      {richModal ? (
-        <Pressable style={styles.backdrop} onPress={() => setRichModal(null)}>
-          <Pressable style={styles.card} onPress={() => {}}>
-            <Image source={{ uri: richModal.imageUrl }} style={styles.image} contentFit="cover" />
-            {richModal.title ? <AppText style={styles.title}>{richModal.title}</AppText> : null}
-            {richModal.body ? <AppText style={styles.body}>{richModal.body}</AppText> : null}
-            <Pressable style={styles.closeBtn} onPress={() => setRichModal(null)}>
-              <AppText style={styles.closeText}>Close</AppText>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      ) : null}
-    </Modal>
+      <Modal
+        visible={!!campaignCard}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCampaignCard(null)}
+      >
+        {campaignCard ? (
+          <CampaignAnnouncementCard
+            campaign={campaignCard}
+            onClose={() => setCampaignCard(null)}
+            onOpenTarget={() => {
+              const data = campaignCardDataRef.current;
+              setCampaignCard(null);
+              if (data) void routeCampaignOnce(data, "open");
+            }}
+            onCta={() => {
+              const data = campaignCardDataRef.current;
+              setCampaignCard(null);
+              if (data) void routeCampaignOnce(data, "cta");
+            }}
+          />
+        ) : null}
+      </Modal>
     </>
   );
 }
-
-const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    justifyContent: "center",
-    padding: 24,
-  },
-  card: {
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    overflow: "hidden",
-    elevation: 6,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-  },
-  image: { width: "100%", height: 200, backgroundColor: "#f4f4f5" },
-  title: { fontSize: 18, fontWeight: "700", paddingHorizontal: 16, paddingTop: 14, color: "#0f172a" },
-  body: { fontSize: 15, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12, color: "#475569" },
-  closeBtn: {
-    marginHorizontal: 16,
-    marginBottom: 16,
-    paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: colors.primary[500],
-    alignItems: "center",
-  },
-  closeText: { color: "#fff", fontWeight: "600", fontSize: 16 },
-});

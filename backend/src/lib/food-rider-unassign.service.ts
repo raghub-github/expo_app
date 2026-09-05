@@ -31,6 +31,8 @@ export type UnassignFoodRiderInput = {
   removedBy?: string | null;
   actorType?: string;
   actorId?: string;
+  /** When false, return after unassign/audit; matching restart continues in background. */
+  awaitDispatchRestart?: boolean;
 };
 
 export type AdminCancelFoodRiderMode = "hold" | "reassign";
@@ -76,7 +78,14 @@ async function clearFoodRiderAssignment(
 
     const foodUpper = foodSt.trim().toUpperCase();
     const reopenAfterPickup =
-      foodUpper === "OUT_FOR_DELIVERY" || foodUpper === "DISPATCHED" || foodUpper === "PICKED_UP";
+      foodUpper === "OUT_FOR_DELIVERY" ||
+      foodUpper === "DISPATCHED" ||
+      foodUpper === "PICKED_UP" ||
+      foodUpper === "IN_TRANSIT" ||
+      foodUpper === "ON_THE_WAY" ||
+      foodUpper === "REACHED_CUSTOMER" ||
+      foodUpper === "AT_CUSTOMER" ||
+      foodUpper === "RIDER_AT_DROP";
     const nextFoodStatus = reopenAfterPickup ? "READY_FOR_PICKUP" : undefined;
     const nextCoreStatus = reopenAfterPickup
       ? "READY_FOR_PICKUP"
@@ -265,6 +274,13 @@ export async function unassignFoodRiderAndRestartDispatch(
     actorType: input.actorType ?? "system",
     reasonCode: input.reasonCode,
   });
+
+  if (input.awaitDispatchRestart === false) {
+    void restartOrderDispatch(input.orderCorePk).catch((err) => {
+      console.warn("[unassignFoodRiderAndRestartDispatch] dispatch restart failed", err);
+    });
+    return;
+  }
 
   await restartOrderDispatch(input.orderCorePk);
 }

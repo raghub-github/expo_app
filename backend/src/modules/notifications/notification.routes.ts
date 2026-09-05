@@ -58,18 +58,39 @@ import {
 } from "./campaignTarget.js";
 import { validateAnnouncementTarget } from "./announcementTarget.js";
 import type { NotificationRole, TargetFilter, TemplateVariables } from "./types.js";
+import {
+  campaignValidity,
+  parseCustomerAnnouncementFields,
+  validityUserMessage,
+  FALLBACK_DEEP_LINK,
+} from "./customerAnnouncementCampaign.js";
 
 async function enrichCustomerAnnouncementCampaign(b: {
   templateCode: string;
   variables?: TemplateVariables;
   overrideDeepLink?: string | null;
   overrideImage?: string | null;
+  overrideTitle?: string | null;
+  overrideBody?: string | null;
+  ctaLabel?: string | null;
+  countdownEnabled?: boolean;
+  startsAt?: string | null;
+  endsAt?: string | null;
 }): Promise<
   | {
       ok: true;
       variables: TemplateVariables;
       overrideDeepLink: string | null;
       metadataExtra: Record<string, unknown>;
+      campaignFields: {
+        ctaLabel: string | null;
+        countdownEnabled: boolean;
+        startsAt: string | null;
+        endsAt: string | null;
+        announcementTargetType: string | null;
+        announcementTargetId: string | null;
+        announcementTargetPayload: Record<string, unknown> | null;
+      };
     }
   | { ok: false; error: string }
 > {
@@ -79,17 +100,45 @@ async function enrichCustomerAnnouncementCampaign(b: {
       variables: (b.variables ?? {}) as TemplateVariables,
       overrideDeepLink: b.overrideDeepLink ?? null,
       metadataExtra: {},
+      campaignFields: {
+        ctaLabel: null,
+        countdownEnabled: false,
+        startsAt: null,
+        endsAt: null,
+        announcementTargetType: null,
+        announcementTargetId: null,
+        announcementTargetPayload: null,
+      },
     };
   }
   const vars = { ...(b.variables ?? {}) } as Record<string, unknown>;
+  if (b.ctaLabel != null) vars.cta_label = b.ctaLabel;
+  if (b.countdownEnabled != null) vars.countdown_enabled = b.countdownEnabled;
+  if (b.startsAt) vars.starts_at = b.startsAt;
+  if (b.endsAt) vars.ends_at = b.endsAt;
+  if (b.overrideImage) vars.image_url = b.overrideImage;
+  if (b.overrideTitle) vars.title = b.overrideTitle;
+  if (b.overrideBody) vars.body = b.overrideBody;
+
+  const parsed = parseCustomerAnnouncementFields(vars);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+
   const validated = await validateAnnouncementTarget(vars);
   if (!validated.ok) return { ok: false, error: validated.error };
   const r = validated.resolved;
+  vars.title = parsed.fields.title;
+  vars.body = parsed.fields.body;
   vars.deepLink = r.deepLink;
   vars.target_type = r.target_type;
+  vars.target_id = r.target_id;
   vars.target_service_id = r.target_service_id;
   vars.target_category_id = r.target_category_id;
   vars.target_store_id = r.target_store_id;
+  vars.cta_label = parsed.fields.ctaLabel;
+  vars.countdown_enabled = parsed.fields.countdownEnabled;
+  vars.starts_at = parsed.fields.startsAt?.toISOString() ?? null;
+  vars.ends_at = parsed.fields.endsAt?.toISOString() ?? null;
+  if (parsed.fields.imageUrl) vars.image_url = parsed.fields.imageUrl;
   const overrideDeepLink =
     (b.overrideDeepLink && String(b.overrideDeepLink).trim()) || r.deepLink;
   return {
@@ -97,11 +146,28 @@ async function enrichCustomerAnnouncementCampaign(b: {
     variables: vars as TemplateVariables,
     overrideDeepLink,
     metadataExtra: {
+      notification_type: "CUSTOMER_ANNOUNCEMENT",
       target_type: r.target_type,
+      ...(r.target_id ? { target_id: r.target_id } : {}),
       ...(r.target_service_id ? { target_service_id: r.target_service_id } : {}),
       ...(r.target_category_id ? { target_category_id: r.target_category_id } : {}),
       ...(r.target_store_id ? { target_store_id: r.target_store_id } : {}),
-      ...(b.overrideImage ? { imageUrl: b.overrideImage } : {}),
+      ...(parsed.fields.ctaLabel ? { cta_label: parsed.fields.ctaLabel } : {}),
+      countdown_enabled: parsed.fields.countdownEnabled,
+      ...(parsed.fields.startsAt ? { starts_at: parsed.fields.startsAt.toISOString() } : {}),
+      ...(parsed.fields.endsAt ? { ends_at: parsed.fields.endsAt.toISOString() } : {}),
+      ...(parsed.fields.imageUrl
+        ? { imageUrl: parsed.fields.imageUrl, image_url: parsed.fields.imageUrl }
+        : {}),
+    },
+    campaignFields: {
+      ctaLabel: parsed.fields.ctaLabel,
+      countdownEnabled: parsed.fields.countdownEnabled,
+      startsAt: parsed.fields.startsAt?.toISOString() ?? null,
+      endsAt: parsed.fields.endsAt?.toISOString() ?? null,
+      announcementTargetType: r.target_type,
+      announcementTargetId: r.target_id,
+      announcementTargetPayload: r.target_payload,
     },
   };
 }
@@ -380,6 +446,15 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       }
       b.variables = enriched.variables;
       b.overrideDeepLink = enriched.overrideDeepLink ?? undefined;
+      const announcementColumns = {
+        ctaLabel: enriched.campaignFields.ctaLabel,
+        countdownEnabled: enriched.campaignFields.countdownEnabled,
+        startsAt: enriched.campaignFields.startsAt,
+        endsAt: enriched.campaignFields.endsAt,
+        announcementTargetType: enriched.campaignFields.announcementTargetType,
+        announcementTargetId: enriched.campaignFields.announcementTargetId,
+        announcementTargetPayload: enriched.campaignFields.announcementTargetPayload,
+      };
 
       // Immediate send path — create as running, send synchronously, then finalize status.
       if (b.status === "running") {
@@ -396,6 +471,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           variables: b.variables as Record<string, unknown> | undefined,
           status: "running",
           createdBy: req.auth?.sub ?? null,
+          ...announcementColumns,
         });
         await markCampaignStarted(campaign.id);
         try {
@@ -514,6 +590,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           overrideBody: b.overrideBody ?? null,
           overrideImage: b.overrideImage ?? null,
           overrideDeepLink: b.overrideDeepLink ?? null,
+          ...announcementColumns,
         });
         return reply.send(scheduled);
       }
@@ -531,6 +608,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         variables: b.variables as Record<string, unknown> | undefined,
         status: "draft",
         createdBy: req.auth?.sub ?? null,
+        ...announcementColumns,
       });
       return reply.send({ campaignId: campaign.id, status: "draft" });
     });
@@ -1194,6 +1272,93 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
   await app.register(async (user) => {
     await user.register(auth, { required: true });
 
+    user.post<{
+      Params: { notificationId: string };
+      Body: { source?: string };
+    }>("/:notificationId/resolve-campaign", async (req, reply) => {
+      const nid = req.params.notificationId;
+      if (!/^[0-9a-f-]{36}$/i.test(nid)) return reply.code(400).send({ error: "invalid_id" });
+      const source = String(req.body?.source ?? "").toLowerCase() === "cta" ? "cta" : "open";
+      const sql = getSql();
+      const rows = (await sql`
+        SELECT campaign_id, deep_link, metadata, template_code
+        FROM public.notification_dispatch_logs
+        WHERE notification_id = ${nid}::uuid
+          AND recipient_user_id = ${req.auth!.sub}
+        LIMIT 1
+      `) as unknown as Array<{
+        campaign_id: number | null;
+        deep_link: string | null;
+        metadata: Record<string, unknown> | null;
+        template_code: string | null;
+      }>;
+      const log = rows[0];
+      if (!log) return reply.code(404).send({ error: "not_found" });
+      try {
+        await markClicked(nid, { source });
+      } catch {
+        /* analytics best-effort */
+      }
+      const now = new Date();
+      let cancelled = false;
+      let vars: Record<string, unknown> = { ...(log.metadata ?? {}) };
+      if (log.campaign_id) {
+        const campaign = await getCampaignById(log.campaign_id);
+        if (campaign) {
+          cancelled =
+            String(campaign.status).toLowerCase() === "cancelled" || Boolean(campaign.cancelled_at);
+          vars = { ...(campaign.variables ?? {}), ...vars };
+          if (campaign.cta_label) vars.cta_label = campaign.cta_label;
+          if (campaign.countdown_enabled != null) vars.countdown_enabled = campaign.countdown_enabled;
+          if (campaign.starts_at) vars.starts_at = campaign.starts_at;
+          if (campaign.ends_at) vars.ends_at = campaign.ends_at;
+        }
+      }
+      const parsed = parseCustomerAnnouncementFields({
+        title: vars.title ?? "Announcement",
+        body: vars.body ?? ".",
+        ...vars,
+      });
+      const fields = parsed.ok
+        ? parsed.fields
+        : {
+            ctaLabel: null,
+            countdownEnabled: false,
+            startsAt: null,
+            endsAt: null,
+            title: "",
+            body: "",
+            imageUrl: null,
+          };
+      const status = campaignValidity({
+        countdownEnabled: fields.countdownEnabled,
+        startsAt: fields.startsAt,
+        endsAt: fields.endsAt,
+        cancelled,
+        now,
+      });
+      const message = validityUserMessage(status);
+      const blocked = status === "expired" || status === "cancelled" || status === "not_started";
+      const deepLink = blocked
+        ? FALLBACK_DEEP_LINK
+        : (typeof log.deep_link === "string" && log.deep_link.startsWith("/")
+            ? log.deep_link
+            : FALLBACK_DEEP_LINK);
+      return {
+        ok: true,
+        expired: blocked,
+        cancelled,
+        deepLink,
+        fallbackDeepLink: FALLBACK_DEEP_LINK,
+        ctaLabel: fields.ctaLabel,
+        countdownEnabled: fields.countdownEnabled,
+        endsAt: fields.endsAt?.toISOString() ?? null,
+        serverNow: now.toISOString(),
+        remaining_ms: fields.endsAt ? Math.max(0, fields.endsAt.getTime() - now.getTime()) : 0,
+        message,
+      };
+    });
+
     // Paged inbox — prefer in_app rows; include push-only rows that have no in_app twin
     // (avoids showing duplicate cards when channel=all wrote both push + in_app).
     user.get<{ Querystring: { limit?: string; offset?: string } }>("/inbox", async (req) => {
@@ -1318,13 +1483,16 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
   // Click tracking — user JWT OR partnersite X-Internal-Secret (SW has no session).
   await app.register(async (click) => {
     await click.register(auth, { required: false });
-    click.post<{ Params: { notificationId: string } }>("/:notificationId/click", async (req, reply) => {
+    click.post<{ Params: { notificationId: string }; Body: { source?: string } }>(
+      "/:notificationId/click",
+      async (req, reply) => {
       if (!internalSecretGrantsAdmin(req) && !req.auth?.sub) {
         return reply.code(401).send({ error: "unauthorized" });
       }
       const nid = req.params.notificationId;
       if (!/^[0-9a-f-]{36}$/i.test(nid)) return reply.code(400).send({ error: "invalid_id" });
-      await markClicked(nid);
+      const source = String(req.body?.source ?? "").toLowerCase() === "cta" ? "cta" : "open";
+      await markClicked(nid, { source });
       return reply.code(204).send();
     });
   }, { prefix: "/v1/notifications" });

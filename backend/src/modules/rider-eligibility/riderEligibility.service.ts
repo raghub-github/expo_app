@@ -21,6 +21,7 @@ import {
   docStateFrom,
   ownershipFromVehicle,
   rcDocStateFromVehicle,
+  resolveOwnershipProofState,
   vehicleClassFromCategory,
 } from "./riderEligibilityInputs.js";
 import { resolveEffectiveEligibilityPolicy } from "./riderEligibility.repository.js";
@@ -162,7 +163,13 @@ export async function loadRiderEligibilityAttributes(
     dl: docStateFrom({ ...dl, expired: isDocExpired(dlRow) }),
     rc,
     evProof: stateFor("ev_proof"),
-    ownershipProof: stateFor("ownership_proof"),
+    ownershipProof: resolveOwnershipProofState({
+      dedicated: stateFor("ownership_proof"),
+      rcDocument: stateFor("rc"),
+      vehicleRc: rc,
+      rentalProof: stateFor("rental_proof"),
+      evOwnershipProof: stateFor("ev_ownership_proof"),
+    }),
     commercialProof: stateFor("commercial_proof"),
   };
 }

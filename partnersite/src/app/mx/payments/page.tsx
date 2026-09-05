@@ -10,6 +10,7 @@ import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers'
 import { Restaurant } from '@/lib/types'
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord'
 import { DEMO_RESTAURANT_ID } from '@/lib/constants'
+import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared'
 import {
   useMerchantWallet,
   useMerchantLedger,
@@ -391,9 +392,11 @@ function PaymentsContent() {
       searchParams?.get('storeId') ??
       (typeof window !== 'undefined'
         ? localStorage.getItem('selectedStoreId') ?? localStorage.getItem('selectedRestaurantId')
-        : null) ??
-      DEMO_RESTAURANT_ID
-    setStoreId(id)
+        : null)
+    // Never fall back to DEMO GMM0001 for live wallet/payout APIs — it is blocked
+    // by isValidPartnerStoreId and is not a real merchant_stores row.
+    const trimmed = (id ?? '').trim()
+    setStoreId(isValidPartnerStoreId(trimmed) ? trimmed : null)
   }, [searchParams])
 
   useEffect(() => {

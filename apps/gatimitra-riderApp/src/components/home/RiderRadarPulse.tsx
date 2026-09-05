@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { View, Animated, StyleSheet, Easing } from "react-native";
+import { View, Animated, StyleSheet, Easing, AppState } from "react-native";
 import Svg, { Circle, Path } from "react-native-svg";
 
 const RADAR_SIZE = 128;
@@ -11,10 +11,21 @@ export function RiderRadarPulse() {
 }
 
 /** MagicFleet-style radar target with rotating red sweep. */
-export function RadarTargetIcon({ size = 26 }: { size?: number }) {
+export function RadarTargetIcon({
+  size = 26,
+  enabled = true,
+}: {
+  size?: number;
+  enabled?: boolean;
+}) {
   const spin = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    if (!enabled) {
+      spin.stopAnimation();
+      spin.setValue(0);
+      return;
+    }
     const anim = Animated.loop(
       Animated.timing(spin, {
         toValue: 1,
@@ -23,9 +34,21 @@ export function RadarTargetIcon({ size = 26 }: { size?: number }) {
         useNativeDriver: true,
       })
     );
-    anim.start();
-    return () => anim.stop();
-  }, [spin]);
+    const start = () => {
+      spin.setValue(0);
+      anim.start();
+    };
+    const stop = () => anim.stop();
+    if (AppState.currentState === "active") start();
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active") start();
+      else stop();
+    });
+    return () => {
+      stop();
+      sub.remove();
+    };
+  }, [spin, enabled]);
 
   const rotate = spin.interpolate({
     inputRange: [0, 1],

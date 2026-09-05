@@ -42,7 +42,9 @@ type Props = {
   onRouteOverviewLongPress?: () => void;
 };
 
-export function FoodNavigationMapChrome({
+const NOOP = () => {};
+
+export function FoodNavigationMapChromeInner({
   headerTitle,
   mapControlsBottom = 20,
   onBackPress,
@@ -120,12 +122,14 @@ export function FoodNavigationMapChrome({
         bottom={mapControlsBottom}
         onRecenter={onRecenter}
         onRecenterLongPress={onRouteOverviewLongPress}
-        onZoomIn={onZoomIn ?? (() => {})}
-        onZoomOut={onZoomOut ?? (() => {})}
+        onZoomIn={onZoomIn ?? NOOP}
+        onZoomOut={onZoomOut ?? NOOP}
       />
     </>
   );
 }
+
+export const FoodNavigationMapChrome = React.memo(FoodNavigationMapChromeInner);
 
 const styles = StyleSheet.create({
   headerBar: {

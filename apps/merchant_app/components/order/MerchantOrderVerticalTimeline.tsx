@@ -15,6 +15,7 @@ import {
   type TimelineEntryLike,
 } from "@/lib/merchantVisibleTimeline";
 import { GatiMitraMerchant } from "@/constants/theme";
+import { isTerminalOrderStatus } from "@/components/tracking/MerchantRiderTrackingModal";
 
 const DOT_SIZE = 20;
 const RAIL_WIDTH = 2;
@@ -62,10 +63,16 @@ function actorDetailForStep(
     return parseActorDetailFromAction(act);
   }
   const act = findActionForStep(actions, ["CANCELLED"]);
-  return parseActorDetailFromAction(act, order.cancelled_by_label ?? order.rejected_reason);
+  return parseActorDetailFromAction(act, order.cancelled_by_label ?? order.rejected_reason, {
+    cancelledByType: order.cancelled_by_type,
+    rejectedReason: order.rejected_reason,
+  });
 }
 
-function expandedMeta(detail: ReturnType<typeof parseActorDetailFromAction>): {
+function expandedMeta(
+  detail: ReturnType<typeof parseActorDetailFromAction>,
+  hideContact: boolean
+): {
   email?: string;
   source?: string;
   extra?: string;
@@ -77,7 +84,7 @@ function expandedMeta(detail: ReturnType<typeof parseActorDetailFromAction>): {
   return {
     email: detail.email,
     source: timelineSourceShort(detail.source),
-    extra: detail.name || detail.phone || undefined,
+    extra: detail.name || (hideContact ? undefined : detail.phone) || undefined,
   };
 }
 
@@ -118,7 +125,10 @@ export function MerchantOrderVerticalTimeline({
         const canExpand = step.showView && !!step.actorAction;
         const expanded = canExpand && expandedKey === step.key;
         const detail = canExpand ? actorDetailForStep(step, order, actions) : null;
-        const meta = expanded && detail ? expandedMeta(detail) : null;
+        const meta =
+          expanded && detail
+            ? expandedMeta(detail, isTerminalOrderStatus(order.order_status))
+            : null;
         const timeLabel = step.at ? formatTimelineClock(step.at) : "—";
 
         return (

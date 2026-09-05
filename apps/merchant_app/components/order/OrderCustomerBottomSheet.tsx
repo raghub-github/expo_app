@@ -8,6 +8,7 @@ import {
   formatOrderCardCustomerLabel,
 } from "@/components/order/orderFormatters";
 import { callCustomer } from "@/lib/orderCardActions";
+import { isLiveFoodOrderForContact } from "@/lib/orderRecord";
 import { GatiMitraMerchant, CARD_RADIUS } from "@/constants/theme";
 
 type Props = {
@@ -72,13 +73,13 @@ export function OrderCustomerBottomSheet({ visible, order, onClose }: Props) {
           </Text>
         </View>
 
-        {order.customerPhone ? (
+        {order.customerPhone && isLiveFoodOrderForContact(order.pipelineStatus) ? (
           <Pressable
             onPress={() => void callCustomer(order.customerPhone)}
-            style={({ pressed }) => [styles.phoneRow, pressed && styles.pressed]}
+            style={({ pressed }) => [styles.callIconBtn, pressed && styles.pressed]}
+            accessibilityLabel="Call customer"
           >
-            <Ionicons name="call-outline" size={18} color="#2563EB" />
-            <Text style={styles.phone}>{order.customerPhone}</Text>
+            <Ionicons name="call" size={18} color="#FFFFFF" />
           </Pressable>
         ) : null}
 
@@ -167,10 +168,15 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 16,
   },
-  phone: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#2563EB",
+  callIconBtn: {
+    alignSelf: "center",
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: GatiMitraMerchant.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
   },
   stats: {
     gap: 10,

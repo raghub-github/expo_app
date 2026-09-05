@@ -13,11 +13,19 @@ function apiErrorText(err: ApiError): string {
 /** True only when backend confirms another rider won the dispatch race. */
 export function isOrderTakenByAnotherRiderError(err: unknown): boolean {
   if (!(err instanceof ApiError) || err.status !== 409) return false;
+  const payload = err.payload;
+  const code =
+    payload && typeof payload === "object"
+      ? String((payload as { code?: unknown }).code ?? "")
+      : "";
+  if (code === "ORDER_ALREADY_ASSIGNED") return true;
   const msg = apiErrorText(err).toLowerCase();
   return (
     msg.includes("already taken") ||
+    msg.includes("already assigned") ||
     msg.includes("accepted by another") ||
-    msg.includes("accepted_by_other_rider")
+    msg.includes("accepted_by_other_rider") ||
+    msg.includes("order_assigned_to_other_rider")
   );
 }
 

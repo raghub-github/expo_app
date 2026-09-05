@@ -9,6 +9,7 @@ import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { PageSkeletonGeneric } from '@/components/PageSkeleton';
 import { DEMO_RESTAURANT_ID } from '@/lib/constants';
+import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord';
 import { useMerchantLedger, useMerchantWallet, usePayoutSettlement, usePayoutCycles, useMerchantPayoutRequests } from '@/hooks/useMerchantApi';
 import {
@@ -66,7 +67,8 @@ function PayoutHistoryContent() {
     const id =
       searchParams?.get('storeId') ??
       (typeof window !== 'undefined' ? localStorage.getItem('selectedStoreId') : null);
-    setStoreId(id || DEMO_RESTAURANT_ID);
+    const trimmed = (id ?? '').trim();
+    setStoreId(isValidPartnerStoreId(trimmed) ? trimmed : null);
   }, [searchParams]);
 
   const { data: storeRecord } = usePartnerStoreRecord(storeId);

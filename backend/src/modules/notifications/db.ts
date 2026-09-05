@@ -138,20 +138,62 @@ export async function updateLogStatus(
  * Mark a click — flips status to 'clicked' and increments
  * the campaign's clicked_count if applicable.
  */
-export async function markClicked(notificationId: string): Promise<void> {
+export async function markClicked(
+  notificationId: string,
+  opts?: { source?: "open" | "cta" },
+): Promise<void> {
   const sql = getSql();
+  const source = opts?.source === "cta" ? "cta" : "open";
   await sql.begin(async (tx) => {
-    const updated = (await tx`
-      UPDATE public.notification_dispatch_logs
-      SET status = 'clicked', clicked_at = COALESCE(clicked_at, now())
+    const prev = (await tx`
+      SELECT campaign_id, status, metadata
+      FROM public.notification_dispatch_logs
       WHERE notification_id = ${notificationId}::uuid
-        AND status NOT IN ('clicked','expired')
-      RETURNING campaign_id
-    `) as unknown as Array<{ campaign_id: number | null }>;
-    const campaignId = updated[0]?.campaign_id;
-    if (campaignId) {
-      await tx`UPDATE public.notification_campaigns SET clicked_count = clicked_count + 1 WHERE id = ${campaignId}`;
+      LIMIT 1
+    `) as unknown as Array<{
+      campaign_id: number | null;
+      status: string;
+      metadata: Record<string, unknown> | null;
+    }>;
+    const row = prev[0];
+    if (!row) return;
+    await tx`
+      UPDATE public.notification_dispatch_logs
+      SET status = CASE
+            WHEN status IN ('queued', 'sent', 'delivered') THEN 'clicked'
+            ELSE status
+          END,
+          clicked_at = COALESCE(clicked_at, now())
+      WHERE notification_id = ${notificationId}::uuid
+        AND status NOT IN ('expired')
+    `;
+    const campaignId = row.campaign_id;
+    if (!campaignId) return;
+    const meta = row.metadata ?? {};
+    if (source === "cta") {
+      if (meta.cta_clicked === true || meta.cta_clicked === "true") return;
+      await tx`
+        UPDATE public.notification_dispatch_logs
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({ cta_clicked: true })}::text::jsonb
+        WHERE notification_id = ${notificationId}::uuid
+      `;
+      await tx`
+        UPDATE public.notification_campaigns
+        SET
+          cta_click_count = cta_click_count + 1,
+          target_open_count = target_open_count + 1
+        WHERE id = ${campaignId}
+      `;
+      return;
     }
+    if (String(row.status) === "clicked") return;
+    await tx`
+      UPDATE public.notification_campaigns
+      SET
+        clicked_count = clicked_count + 1,
+        target_open_count = target_open_count + 1
+      WHERE id = ${campaignId}
+    `;
   });
 }
 
@@ -168,6 +210,13 @@ export type CampaignInsert = {
   scheduledAt?: string | null;
   status?: "draft" | "scheduled" | "running";
   createdBy?: string | null;
+  ctaLabel?: string | null;
+  countdownEnabled?: boolean;
+  startsAt?: string | null;
+  endsAt?: string | null;
+  announcementTargetType?: string | null;
+  announcementTargetId?: string | null;
+  announcementTargetPayload?: Record<string, unknown> | null;
 };
 
 export type CampaignRow = {
@@ -183,6 +232,13 @@ export type CampaignRow = {
   variables: Record<string, unknown>;
   status: string;
   scheduled_at: string | null;
+  cancelled_at?: string | null;
+  cta_label?: string | null;
+  countdown_enabled?: boolean | null;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  announcement_target_type?: string | null;
+  announcement_target_id?: string | null;
 };
 
 export async function getCampaignById(campaignId: number): Promise<CampaignRow | null> {
@@ -190,7 +246,9 @@ export async function getCampaignById(campaignId: number): Promise<CampaignRow |
   const rows = (await sql`
     SELECT id, name, description, template_code,
            override_title, override_body, override_image, override_deep_link,
-           target_filter, variables, status, scheduled_at
+           target_filter, variables, status, scheduled_at, cancelled_at,
+           cta_label, countdown_enabled, starts_at, ends_at,
+           announcement_target_type, announcement_target_id
     FROM public.notification_campaigns
     WHERE id = ${campaignId}
     LIMIT 1
@@ -228,11 +286,14 @@ export async function createCampaign(c: CampaignInsert): Promise<{ id: number }>
   // `::text::jsonb` binds as text first, avoiding the re-encode.
   const targetFilterStr = JSON.stringify(c.targetFilter ?? {});
   const variablesStr = JSON.stringify(c.variables ?? {});
+  const targetPayloadStr = JSON.stringify(c.announcementTargetPayload ?? null);
   const rows = (await sql`
     INSERT INTO public.notification_campaigns (
       name, description, template_code,
       override_title, override_body, override_image, override_deep_link,
-      target_filter, variables, scheduled_at, status, created_by
+      target_filter, variables, scheduled_at, status, created_by,
+      cta_label, countdown_enabled, starts_at, ends_at,
+      announcement_target_type, announcement_target_id, announcement_target_payload
     )
     VALUES (
       ${c.name}, ${c.description ?? null}, ${c.templateCode},
@@ -241,7 +302,14 @@ export async function createCampaign(c: CampaignInsert): Promise<{ id: number }>
       ${variablesStr}::text::jsonb,
       ${c.scheduledAt ?? null},
       ${c.status ?? "draft"},
-      ${c.createdBy ?? null}
+      ${c.createdBy ?? null},
+      ${c.ctaLabel ?? null},
+      ${c.countdownEnabled === true},
+      ${c.startsAt ?? null},
+      ${c.endsAt ?? null},
+      ${c.announcementTargetType ?? null},
+      ${c.announcementTargetId ?? null},
+      ${c.announcementTargetPayload ? targetPayloadStr : null}::text::jsonb
     )
     RETURNING id
   `) as unknown as Array<{ id: number }>;

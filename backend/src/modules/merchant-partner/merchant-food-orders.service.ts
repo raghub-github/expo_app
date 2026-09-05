@@ -1857,6 +1857,8 @@ export async function loadMerchantFoodOrderRidersLog(
   }
   if (coreOrderId == null) return [];
 
+  const orderIdText = String(food.core_order_id ?? "").trim();
+
   const assignments = await sql<
     Array<{
       rider_id: number;
@@ -1880,6 +1882,10 @@ export async function loadMerchantFoodOrderRidersLog(
     FROM order_rider_assignments
     WHERE order_core_id = ${coreOrderId}
        OR order_id = ${coreOrderId}
+       OR (
+         ${orderIdText} <> ''
+         AND order_id_text = ${orderIdText}
+       )
     ORDER BY assignment_sequence DESC NULLS LAST, assigned_at DESC NULLS LAST
   `;
   if (!assignments.length) return [];

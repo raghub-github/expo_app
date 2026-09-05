@@ -42,7 +42,10 @@ import {
 } from '@gatimitra/financial-rules';
 import { resolveMerchantOfferBadge } from '@/lib/merchant-offer-display';
 import { OrderMixedText, OrderNum } from '@/components/orders/orders-typography';
-import { itemRefundBalances } from '@/lib/orders/item-refund-balances';
+import {
+  itemRefundBalances,
+  mergeOrderAlreadyIntoItemTotals,
+} from '@/lib/orders/item-refund-balances';
 import { resolveAttachmentProxyUrl } from '@/lib/attachments/resolve-attachment-proxy-url';
 import { ITEM_PLACEHOLDER_SVG } from '@/app/dashboard/merchants/stores/[id]/menu/menu-types';
 import { OrderPageOverlay } from '@/components/orders/OrderPageOverlay';
@@ -68,6 +71,7 @@ type RiderPenaltyPreviewData = {
   ledgerDescription: string;
   skipped?: string;
   skippedLabel?: string;
+  alreadyApplied?: boolean;
 };
 
 interface ItemsRefundModalProps {
@@ -545,12 +549,13 @@ function RefundCustomerPreviewPanel({
   const isCancelWithoutRefund = refundType === 'cancel_without_refund';
   const isFullCancelRefund = refundType === 'refund_with_cancellation';
   const isFullCtcRefund = refundType === 'refund_full_ctc';
-  const isPartialRefund = refundType === 'refund_without_cancellation';
-  const showCtcControls = isFullCancelRefund || isFullCtcRefund;
+  const isPartialCtcRefund = refundType === 'refund_partial_ctc';
+  const isItemLevelRefund = refundType === 'refund_without_cancellation';
+  const showCtcControls = isFullCancelRefund || isFullCtcRefund || isPartialCtcRefund;
   const allItemsSelected =
     totalItemCount > 0 && selectedItemCount >= totalItemCount;
 
-  const displayAmount = isPartialRefund
+  const displayAmount = isItemLevelRefund
     ? itemRefundTotal
     : isCancelWithoutRefund
       ? 0
@@ -564,9 +569,9 @@ function RefundCustomerPreviewPanel({
       <p className="mt-0.5 text-[10px] text-slate-500">
         {isCancelWithoutRefund
           ? 'No amount will be refunded to the customer.'
-          : isPartialRefund
-            ? 'Based on selected item refund percentages.'
-            : isFullCtcRefund
+          : isItemLevelRefund
+            ? 'Based on selected item totals (exact line price).'
+            : isFullCtcRefund || isPartialCtcRefund
               ? 'Based on remaining refundable customer bill (CTC).'
               : allItemsSelected
                 ? 'Based on customer bill total (CTC).'
@@ -577,7 +582,9 @@ function RefundCustomerPreviewPanel({
         <div className="mt-2 space-y-2">
           <div className="flex flex-nowrap items-center justify-between gap-2 text-[11px] whitespace-nowrap min-w-0">
             <span className="text-slate-600 shrink-0">
-              {isFullCtcRefund ? 'Remaining refundable (CTC)' : 'Order total (CTC)'}
+              {isFullCtcRefund || isPartialCtcRefund
+                ? 'Remaining refundable (CTC)'
+                : 'Order total (CTC)'}
             </span>
             <span className="font-semibold tabular-nums text-slate-800 orders-num shrink-0">
               {formatInrWithGap(ctcTotal)}
@@ -1335,9 +1342,29 @@ export default function ItemsRefundModal({
     return customerCtcTotal;
   }, [refundRemainingRefundable, customerCtcTotal]);
 
+  /** Order-level already refunded (CTC) — authoritative vs per-item attribution. */
+  const orderAlreadyRefundedCtc = useMemo(
+    () => roundMoney(Math.max(0, customerCtcTotal - remainingCtcRefundable)),
+    [customerCtcTotal, remainingCtcRefundable]
+  );
+
   const customerCtcItemCaps = useMemo(
     () => computeCustomerCtcItemCaps(refundItems, customerCtcTotal),
     [refundItems, customerCtcTotal, itemsFetchSettled]
+  );
+
+  /**
+   * Prior full-CTC / order-level refunds often have no item rows. Fold that gap
+   * into per-item "Already" so Remaining matches the banner (e.g. ₹71.50 not ₹108).
+   */
+  const effectiveItemAlreadyRefunded = useMemo(
+    () =>
+      mergeOrderAlreadyIntoItemTotals({
+        itemCaps: customerCtcItemCaps,
+        alreadyById: itemAlreadyRefunded,
+        orderAlreadyRefunded: orderAlreadyRefundedCtc,
+      }),
+    [customerCtcItemCaps, itemAlreadyRefunded, orderAlreadyRefundedCtc]
   );
 
   const selectedCustomerCtcTotal = useMemo(
@@ -1364,9 +1391,17 @@ export default function ItemsRefundModal({
   }, [catalogGrouped]);
 
   useEffect(() => {
-    if (refundType !== 'refund_with_cancellation' && refundType !== 'refund_full_ctc') return;
+    if (
+      refundType !== 'refund_with_cancellation' &&
+      refundType !== 'refund_full_ctc' &&
+      refundType !== 'refund_partial_ctc'
+    ) {
+      return;
+    }
     const base =
-      refundType === 'refund_full_ctc' ? remainingCtcRefundable : selectedCustomerCtcTotal;
+      refundType === 'refund_full_ctc' || refundType === 'refund_partial_ctc'
+        ? remainingCtcRefundable
+        : selectedCustomerCtcTotal;
     if (base <= 0) {
       setCustomerRefundAmount(0);
       return;
@@ -1409,7 +1444,9 @@ export default function ItemsRefundModal({
     const next = Math.min(100, Math.max(10, pct));
     setCustomerRefundPercent(next);
     const base =
-      refundType === 'refund_full_ctc' ? remainingCtcRefundable : selectedCustomerCtcTotal;
+      refundType === 'refund_full_ctc' || refundType === 'refund_partial_ctc'
+        ? remainingCtcRefundable
+        : selectedCustomerCtcTotal;
     if (base > 0) {
       setCustomerRefundAmount(roundMoney((base * next) / 100));
     }
@@ -1419,7 +1456,9 @@ export default function ItemsRefundModal({
     const next = roundMoney(Math.max(0, amount));
     setCustomerRefundAmount(next);
     const base =
-      refundType === 'refund_full_ctc' ? remainingCtcRefundable : selectedCustomerCtcTotal;
+      refundType === 'refund_full_ctc' || refundType === 'refund_partial_ctc'
+        ? remainingCtcRefundable
+        : selectedCustomerCtcTotal;
     if (base > 0) {
       const pct = Math.round((next / base) * 100);
       const snapped = Math.min(100, Math.max(10, Math.round(pct / 10) * 10));
@@ -1478,7 +1517,8 @@ export default function ItemsRefundModal({
     if (
       (value === 'refund_with_cancellation' ||
         value === 'refund_without_cancellation' ||
-        value === 'refund_full_ctc') &&
+        value === 'refund_full_ctc' ||
+        value === 'refund_partial_ctc') &&
       blockAllRefunds
     ) {
       onToast?.('This order is already fully refunded — no further refund is allowed.');
@@ -1513,12 +1553,21 @@ export default function ItemsRefundModal({
         setCustomerRefundPercent(100);
         setCustomerRefundAmount(remainingCtcRefundable);
       }
+      if (value === 'refund_partial_ctc' && remainingCtcRefundable > 0) {
+        setCustomerRefundPercent(50);
+        setCustomerRefundAmount(roundMoney((remainingCtcRefundable * 50) / 100));
+      }
     }
     if (value === 'refund_without_cancellation') {
-      setRefundItems(prev => prev.map(item => ({
-        ...item,
-        selectedQuantity: !isDeliveryFeeRow(item) ? 1 : 0
-      })));
+      setRefundItems((prev) =>
+        prev.map((item) => ({
+          ...item,
+          selectedQuantity: !isDeliveryFeeRow(item) ? 1 : 0,
+          refundPercentage: 0,
+          customAmount: 0,
+          refundType: 'NONE' as const,
+        }))
+      );
     }
   };
 
@@ -1599,14 +1648,26 @@ export default function ItemsRefundModal({
     setRefundItems(prev => prev.map(item => item.id === itemId ? { ...item, remark } : item));
   };
 
+  const isItemLevelRefund = refundType === 'refund_without_cancellation';
+
   const getItemBalances = useCallback(
     (item: RefundItem) =>
       itemRefundBalances({
         itemId: item.id,
-        originalTotal: customerCtcItemCaps.get(item.id) ?? originalItemCtcTotal(item),
-        alreadyById: itemAlreadyRefunded,
+        // Item Level: exact line Item Total. CTC modes use allocated CTC share.
+        originalTotal: isItemLevelRefund
+          ? originalItemCtcTotal(item)
+          : (customerCtcItemCaps.get(item.id) ?? originalItemCtcTotal(item)),
+        alreadyById: isItemLevelRefund
+          ? itemAlreadyRefunded
+          : effectiveItemAlreadyRefunded,
       }),
-    [itemAlreadyRefunded, customerCtcItemCaps]
+    [
+      isItemLevelRefund,
+      itemAlreadyRefunded,
+      effectiveItemAlreadyRefunded,
+      customerCtcItemCaps,
+    ]
   );
 
   /** Remaining for selected qty (proportional share of line remaining). */
@@ -1625,7 +1686,7 @@ export default function ItemsRefundModal({
     setRefundItems((prev) =>
       prev.map((item) => {
         if (item.id !== itemId) return item;
-        const cap = customerCtcItemCaps.get(item.id) ?? originalItemCtcTotal(item);
+        const cap = originalItemCtcTotal(item);
         const bal = itemRefundBalances({
           itemId: item.id,
           originalTotal: cap,
@@ -1718,7 +1779,7 @@ export default function ItemsRefundModal({
     setRefundItems((prev) =>
       prev.map((item) => {
         if (item.id !== itemId) return item;
-        const cap = customerCtcItemCaps.get(item.id) ?? originalItemCtcTotal(item);
+        const cap = originalItemCtcTotal(item);
         const bal = itemRefundBalances({
           itemId: item.id,
           originalTotal: cap,
@@ -1757,21 +1818,27 @@ export default function ItemsRefundModal({
    */
   const calculateCustomerPayableRefund = (): number => {
     if (refundType === 'refund_without_cancellation') {
-      return roundMoney(calculateTotalPercentageRefundAmount());
+      return roundMoney(
+        Math.min(calculateTotalPercentageRefundAmount(), remainingCtcRefundable)
+      );
     }
     const selected = calculateTotalRefundAmount();
     const itemBillTotal = refundItems.reduce(
       (sum, i) => sum + i.amountPerQuantity * (isDeliveryFeeRow(i) ? 1 : i.quantity),
       0
     );
-    if (itemBillTotal <= 0 || customerCtcTotal <= 0) return roundMoney(selected);
-    return roundMoney((selected / itemBillTotal) * customerCtcTotal);
+    if (itemBillTotal <= 0 || customerCtcTotal <= 0) {
+      return roundMoney(Math.min(selected, remainingCtcRefundable));
+    }
+    return roundMoney(
+      Math.min((selected / itemBillTotal) * customerCtcTotal, remainingCtcRefundable)
+    );
   };
 
   const calculateMerchantDebitAmount = (): number => {
     if (merchantDebit === 'no_debit' || !merchantDebit) return 0;
     const merchantTotal = pricing?.totalOrderAmount ?? 0;
-    if (refundType === 'refund_full_ctc') {
+    if (refundType === 'refund_full_ctc' || refundType === 'refund_partial_ctc') {
       if (merchantDebit === 'full_debit') {
         return roundMoney(Math.max(0, merchantTotal));
       }
@@ -1848,7 +1915,11 @@ export default function ItemsRefundModal({
         return;
       }
     }
-    if (refundType === 'refund_with_cancellation' || refundType === 'refund_full_ctc') {
+    if (
+      refundType === 'refund_with_cancellation' ||
+      refundType === 'refund_full_ctc' ||
+      refundType === 'refund_partial_ctc'
+    ) {
       if (!(customerRefundAmount > 0)) {
         onToast?.('Customer refund amount must be greater than 0.');
         return;
@@ -1869,13 +1940,15 @@ export default function ItemsRefundModal({
         } else if (showEnginePreviewInConfirm) {
           const totalAmount = calculateTotalRefundAmount();
           const previewAmount =
-            refundType === 'refund_with_cancellation' || refundType === 'refund_full_ctc'
+            refundType === 'refund_with_cancellation' ||
+            refundType === 'refund_full_ctc' ||
+            refundType === 'refund_partial_ctc'
               ? customerRefundAmount
               : refundType === 'refund_without_cancellation'
                 ? calculateCustomerPayableRefund()
                 : totalAmount;
           const fullCtcRefundCatalog =
-            refundType === 'refund_full_ctc'
+            refundType === 'refund_full_ctc' || refundType === 'refund_partial_ctc'
               ? buildFullCtcRefundCatalog(refundItems, itemAlreadyRefunded)
               : [];
           const res = await fetch(`/api/orders/${orderId}/refunds/preview`, {
@@ -1911,12 +1984,13 @@ export default function ItemsRefundModal({
                         ctcTotal: selectedCustomerCtcTotal,
                         customerRefundAmount: customerRefundAmount,
                       }
-                    : refundType === 'refund_full_ctc'
+                    : refundType === 'refund_full_ctc' || refundType === 'refund_partial_ctc'
                       ? {
                           refundPercentage: customerRefundPercent,
                           ctcTotal: remainingCtcRefundable,
                           customerRefundAmount: customerRefundAmount,
-                          fullCtcRefund: true,
+                          fullCtcRefund: refundType === 'refund_full_ctc',
+                          partialCtcRefund: refundType === 'refund_partial_ctc',
                           refundItemsCatalog: fullCtcRefundCatalog,
                         }
                       : undefined,
@@ -1988,7 +2062,9 @@ export default function ItemsRefundModal({
     const totalAmount =
       refundType === 'refund_without_cancellation'
         ? calculateCustomerPayableRefund()
-        : refundType === 'refund_full_ctc' || refundType === 'refund_with_cancellation'
+        : refundType === 'refund_full_ctc' ||
+            refundType === 'refund_partial_ctc' ||
+            refundType === 'refund_with_cancellation'
           ? customerRefundAmount
           : calculateTotalRefundAmount();
     const mxDebitAmount = calculateMerchantDebitAmount();
@@ -2002,7 +2078,8 @@ export default function ItemsRefundModal({
     const movesRefund =
       refundType === 'refund_with_cancellation' ||
       refundType === 'refund_without_cancellation' ||
-      refundType === 'refund_full_ctc';
+      refundType === 'refund_full_ctc' ||
+      refundType === 'refund_partial_ctc';
     if (cancelsOrder && blockCancellation) {
       onToast?.('This order is already cancelled — it cannot be cancelled again.');
       return;
@@ -2035,7 +2112,7 @@ export default function ItemsRefundModal({
         }
         if (amt - bal.remainingRefundable > 0.01) {
           onToast?.(
-            `Item #${item.id}: ₹${amt.toFixed(2)} exceeds this item's remaining CTC share ₹${bal.remainingRefundable.toFixed(2)}.`
+            `Item #${item.id}: ₹${amt.toFixed(2)} exceeds this item's remaining total ₹${bal.remainingRefundable.toFixed(2)}.`
           );
           return;
         }
@@ -2045,8 +2122,9 @@ export default function ItemsRefundModal({
     const notificationMessages: Record<string, string> = {
       cancel_without_refund: 'Order has been cancelled successfully without refund.',
       refund_with_cancellation: 'Order has been cancelled and refund processed successfully.',
-      refund_without_cancellation: `Refund of ₹${totalAmount.toFixed(2)} has been processed successfully.`,
-      refund_full_ctc: `CTC refund of ₹${totalAmount.toFixed(2)} has been processed successfully.`,
+      refund_without_cancellation: `Item-level refund of ₹${totalAmount.toFixed(2)} has been processed successfully.`,
+      refund_full_ctc: `Full CTC refund of ₹${totalAmount.toFixed(2)} has been processed successfully.`,
+      refund_partial_ctc: `Partial CTC refund of ₹${totalAmount.toFixed(2)} has been processed successfully.`,
     };
 
     if (refundType === 'cancel_without_refund') {
@@ -2090,7 +2168,9 @@ export default function ItemsRefundModal({
       return;
     }
     const refundAmount =
-      refundType === 'refund_with_cancellation' || refundType === 'refund_full_ctc'
+      refundType === 'refund_with_cancellation' ||
+      refundType === 'refund_full_ctc' ||
+      refundType === 'refund_partial_ctc'
         ? customerRefundAmount
         : roundMoney(calculateCustomerPayableRefund());
 
@@ -2117,7 +2197,7 @@ export default function ItemsRefundModal({
     }
 
     const fullCtcRefundCatalog =
-      refundType === 'refund_full_ctc'
+      refundType === 'refund_full_ctc' || refundType === 'refund_partial_ctc'
         ? buildFullCtcRefundCatalog(refundItems, itemAlreadyRefunded)
         : [];
 
@@ -2162,12 +2242,13 @@ export default function ItemsRefundModal({
                   ctcTotal: customerCtcTotal,
                   customerRefundAmount: customerRefundAmount,
                 }
-              : refundType === 'refund_full_ctc'
+              : refundType === 'refund_full_ctc' || refundType === 'refund_partial_ctc'
                 ? {
                     refundPercentage: customerRefundPercent,
                     ctcTotal: remainingCtcRefundable,
                     customerRefundAmount: customerRefundAmount,
-                    fullCtcRefund: true,
+                    fullCtcRefund: refundType === 'refund_full_ctc',
+                    partialCtcRefund: refundType === 'refund_partial_ctc',
                     refundItemsCatalog: fullCtcRefundCatalog,
                   }
                 : undefined,
@@ -2275,7 +2356,10 @@ export default function ItemsRefundModal({
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-semibold text-amber-950 m-0 leading-tight">3PL Fault — Rider penalty</p>
                       <p className="mt-0.5 text-[11px] text-slate-500 leading-snug m-0">
-                        Penalty will be debited from the selected rider&apos;s wallet when you confirm.
+                        {riderPenaltyPreview?.alreadyApplied ||
+                        riderPenaltyPreview?.skipped === 'already_applied'
+                          ? 'Is order pe is rider ki wallet se penalty pehle hi debit ho chuki hai — confirm pe dobara nahi lagegi.'
+                          : "Penalty will be debited from the selected rider's wallet when you confirm."}
                       </p>
                     </div>
                   </div>
@@ -2346,6 +2430,48 @@ export default function ItemsRefundModal({
                                 </div>
                                 <span className="text-sm text-slate-600">Ledger</span>
                               </div>
+                              <span className="text-xs text-slate-700 text-right max-w-[55%] leading-snug">
+                                {riderPenaltyPreview.ledgerTitle}
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : riderPenaltyPreview?.alreadyApplied ||
+                        riderPenaltyPreview?.skipped === 'already_applied' ? (
+                        <div className="mt-2.5 overflow-hidden rounded-md border border-emerald-200 bg-emerald-50/80 divide-y divide-emerald-100">
+                          <div className="flex items-start gap-2.5 px-3 py-2.5">
+                            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+                              <Shield className="h-3.5 w-3.5" strokeWidth={2.25} />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-semibold text-emerald-900 m-0 leading-tight">
+                                Already penalized for this order
+                              </p>
+                              <p className="mt-0.5 text-[11px] text-emerald-800/90 leading-snug m-0">
+                                {riderPenaltyPreview.skippedLabel ??
+                                  'Is order ke liye is rider pe already penalty lag chuki hai. Dobara debit nahi hoga.'}
+                              </p>
+                            </div>
+                          </div>
+                          {riderPenaltyPreview.penaltyAmount > 0 ? (
+                            <div className="flex items-center justify-between gap-3 px-3 py-2 bg-white/60">
+                              <span className="text-sm text-slate-600">Penalty already debited</span>
+                              <span className="text-sm font-bold text-emerald-700 tabular-nums shrink-0">
+                                ₹{riderPenaltyPreview.penaltyAmount.toFixed(2)}
+                              </span>
+                            </div>
+                          ) : null}
+                          {riderPenaltyPreview.scenarioLabel ? (
+                            <div className="flex items-center justify-between gap-3 px-3 py-2 bg-white/60">
+                              <span className="text-sm text-slate-600">Scenario</span>
+                              <span className="text-xs text-slate-700 text-right max-w-[55%] leading-snug">
+                                {riderPenaltyPreview.scenarioLabel}
+                              </span>
+                            </div>
+                          ) : null}
+                          {riderPenaltyPreview.ledgerTitle ? (
+                            <div className="flex items-center justify-between gap-3 px-3 py-2 bg-white/60">
+                              <span className="text-sm text-slate-600">Ledger</span>
                               <span className="text-xs text-slate-700 text-right max-w-[55%] leading-snug">
                                 {riderPenaltyPreview.ledgerTitle}
                               </span>
@@ -2730,10 +2856,10 @@ export default function ItemsRefundModal({
                     <label className="block text-xs font-medium text-slate-700 mb-1.5">Refund type</label>
                     {blockCancellation && !blockAllRefunds ? (
                       <p className="mb-2 text-[11px] text-slate-600">
-                        Order is already cancelled — refund the remaining customer bill (CTC) below.
+                        Order is already cancelled — choose Full CTC, Partial CTC, or Item Level.
                         {remainingCtcRefundable > 0 ? (
                           <span className="ml-1 font-semibold text-emerald-700">
-                            Remaining: {formatInrWithGap(remainingCtcRefundable)}
+                            Remaining CTC: {formatInrWithGap(remainingCtcRefundable)}
                           </span>
                         ) : null}
                       </p>
@@ -2780,6 +2906,7 @@ export default function ItemsRefundModal({
                         </>
                       ) : null}
                       {blockCancellation ? (
+                        <>
                         <label
                           className={`flex items-center gap-1.5 border px-2 py-1.5 rounded bg-white min-w-[140px] text-[11px] ${
                             blockAllRefunds
@@ -2799,7 +2926,46 @@ export default function ItemsRefundModal({
                           />
                           Full CTC refund
                         </label>
-                      ) : null}
+                        <label
+                          className={`flex items-center gap-1.5 border px-2 py-1.5 rounded bg-white min-w-[140px] text-[11px] ${
+                            blockAllRefunds
+                              ? 'opacity-50 cursor-not-allowed border-slate-200 bg-slate-50'
+                              : `cursor-pointer hover:bg-emerald-50 ${refundType === 'refund_partial_ctc' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`
+                          }`}
+                          title={blockAllRefunds ? 'Order is already fully refunded' : undefined}
+                        >
+                          <input
+                            type="radio"
+                            name="refundType"
+                            value="refund_partial_ctc"
+                            checked={refundType === 'refund_partial_ctc'}
+                            disabled={blockAllRefunds}
+                            onChange={(e) => handleRefundTypeChange(e.target.value)}
+                            className="w-3 h-3 text-emerald-600 cursor-pointer disabled:cursor-not-allowed"
+                          />
+                          Partial CTC refund
+                        </label>
+                        <label
+                          className={`flex items-center gap-1.5 border px-2 py-1.5 rounded bg-white min-w-[140px] text-[11px] ${
+                            blockAllRefunds
+                              ? 'opacity-50 cursor-not-allowed border-slate-200 bg-slate-50'
+                              : `cursor-pointer hover:bg-emerald-50 ${refundType === 'refund_without_cancellation' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`
+                          }`}
+                          title={blockAllRefunds ? 'Order is already fully refunded' : undefined}
+                        >
+                          <input
+                            type="radio"
+                            name="refundType"
+                            value="refund_without_cancellation"
+                            checked={refundType === 'refund_without_cancellation'}
+                            disabled={blockAllRefunds}
+                            onChange={(e) => handleRefundTypeChange(e.target.value)}
+                            className="w-3 h-3 text-emerald-600 cursor-pointer disabled:cursor-not-allowed"
+                          />
+                          Item Level refund
+                        </label>
+                        </>
+                      ) : (
                       <label
                         className={`flex items-center gap-1.5 border px-2 py-1.5 rounded bg-white min-w-[140px] text-[11px] ${
                           blockAllRefunds
@@ -2809,14 +2975,15 @@ export default function ItemsRefundModal({
                         title={blockAllRefunds ? 'Order is already fully refunded' : undefined}
                       >
                         <input type="radio" name="refundType" value="refund_without_cancellation" checked={refundType === 'refund_without_cancellation'} disabled={blockAllRefunds} onChange={(e) => handleRefundTypeChange(e.target.value)} className="w-3 h-3 text-emerald-600 cursor-pointer disabled:cursor-not-allowed" />
-                        {blockCancellation ? 'Partial CTC refund' : 'Refund without cancellation'}
+                        Refund without cancellation
                       </label>
+                      )}
                     </div>
 
                     {refundType === 'refund_without_cancellation' && (
                       <div ref={refundItemsRef} className="mt-3 p-3 border border-slate-200 rounded-md bg-white">
                         <h5 className="text-xs font-medium text-slate-700 mb-2">
-                          {blockCancellation ? 'Partial CTC refund — select items' : 'Refund debit'}
+                          {blockCancellation ? 'Item Level refund — select items' : 'Refund debit'}
                         </h5>
                         <table className="w-full border-collapse text-[11px]">
                           <thead>
@@ -2825,7 +2992,9 @@ export default function ItemsRefundModal({
                               <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Cust.</th>
                               <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Remark</th>
                               <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Qty</th>
-                              <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Original</th>
+                              <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">
+                                Item Total
+                              </th>
                               <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Already</th>
                               <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Remaining</th>
                               <th className="px-1.5 py-1 border border-slate-200 text-center bg-emerald-50 font-semibold text-slate-800">Refund %</th>
@@ -2968,16 +3137,27 @@ export default function ItemsRefundModal({
                         </label>
                       ))}
                     </div>
+                    {merchantDebit ? (
+                      <p className="mt-1.5 text-[10px] text-slate-500 leading-snug max-w-xl">
+                        {merchantDebit === 'full_debit'
+                          ? 'Full Debit: Automatically recover 100% of the applicable CTM amount.'
+                          : merchantDebit === 'partial_debit'
+                            ? 'Partial Debit: Automatically recover 50% of the applicable CTM amount.'
+                            : 'No Debit: No CTM amount will be recovered.'}
+                      </p>
+                    ) : null}
                   </div>
                 )}
                 </div>
                 {showRefundType &&
-                (refundType === 'refund_with_cancellation' || refundType === 'refund_full_ctc') ? (
+                (refundType === 'refund_with_cancellation' ||
+                  refundType === 'refund_full_ctc' ||
+                  refundType === 'refund_partial_ctc') ? (
                   <div className="w-full lg:w-[300px] shrink-0 lg:sticky lg:top-20">
                     <RefundCustomerPreviewPanel
                       refundType={refundType}
                       ctcTotal={
-                        refundType === 'refund_full_ctc'
+                        refundType === 'refund_full_ctc' || refundType === 'refund_partial_ctc'
                           ? remainingCtcRefundable
                           : selectedCustomerCtcTotal
                       }
@@ -3000,7 +3180,8 @@ export default function ItemsRefundModal({
               const refunds =
                 refundType === 'refund_with_cancellation' ||
                 refundType === 'refund_without_cancellation' ||
-                refundType === 'refund_full_ctc';
+                refundType === 'refund_full_ctc' ||
+                refundType === 'refund_partial_ctc';
               const blockedReason =
                 cancels && blockCancellation
                   ? 'This order is already cancelled — it cannot be cancelled again.'

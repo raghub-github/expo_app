@@ -45,6 +45,19 @@ export function resolveMerchantCancellationActor(
     return { kind: "actor", label: CUSTOMER_LABEL };
   }
 
+  // Admin / GatiMitra before channel sources — action_source "website" must not
+  // rebrand a dashboard / ops cancel as "store".
+  if (
+    type === "admin" ||
+    type === "rider" ||
+    source === "admin_cancel" ||
+    source.includes("dashboard") ||
+    label.includes("gatimitra team") ||
+    label.includes("gatimitra")
+  ) {
+    return { kind: "actor", label: GATIMITRA_ADMIN_LABEL };
+  }
+
   if (
     type === "store" ||
     type === "merchant" ||
@@ -59,16 +72,6 @@ export function resolveMerchantCancellationActor(
     label.includes("cancelled by store")
   ) {
     return { kind: "actor", label: STORE_LABEL };
-  }
-
-  if (
-    type === "admin" ||
-    source === "admin_cancel" ||
-    source.includes("dashboard") ||
-    label.includes("gatimitra team") ||
-    label.includes("gatimitra")
-  ) {
-    return { kind: "actor", label: GATIMITRA_ADMIN_LABEL };
   }
 
   if (source.includes("merchant") || source.includes("partner")) {

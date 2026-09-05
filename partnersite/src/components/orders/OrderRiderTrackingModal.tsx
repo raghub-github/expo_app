@@ -2,12 +2,13 @@
 
 import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Bike, ExternalLink, Loader2, MapPin, X } from 'lucide-react';
+import { Bike, ExternalLink, Loader2, MapPin, Phone, X } from 'lucide-react';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { useMerchantRiderTracking } from '@/hooks/useMerchantRiderTracking';
 import type { MerchantMapPin, MerchantRiderTrackingPayload } from '@/lib/merchant-rider-tracking';
 import { resolveStoreMapLngLat, toLatLngPin } from '@/lib/parse-order-map-coords';
 import { MerchantRiderLiveMap } from '@/components/orders/MerchantRiderLiveMap';
+import { isPartnerOrderClosedForContact } from '@/lib/partner-orders-unify';
 
 export type OrderRiderTrackingModalProps = {
   open: boolean;
@@ -180,12 +181,13 @@ export function OrderRiderTrackingModal({
                   <p className="truncate font-semibold text-gray-900">
                     {data.rider.name || 'Delivery partner'}
                   </p>
-                  {data.rider.mobile ? (
+                  {data.rider.mobile && !isPartnerOrderClosedForContact(order.order_status) ? (
                     <a
                       href={`tel:${data.rider.mobile}`}
-                      className="text-sm text-blue-600 hover:underline"
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-emerald-600 text-white hover:bg-emerald-700"
+                      aria-label="Call rider"
                     >
-                      {data.rider.mobile}
+                      <Phone size={14} aria-hidden />
                     </a>
                   ) : null}
                 </div>

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { riderApi } from "@/src/services/api/riderApi";
 
@@ -13,23 +13,24 @@ export function useMilestoneGeoFence(
   orderId: string | undefined,
   gps?: { lat?: number; lng?: number }
 ) {
+  const gpsRef = useRef(gps);
+  gpsRef.current = gps;
+  const hasGps = gps?.lat != null && gps?.lng != null && Number.isFinite(gps.lat) && Number.isFinite(gps.lng);
+
   const query = useQuery({
-    queryKey: [
-      "rider-milestone-geo-fence",
-      orderId,
-      gps?.lat != null ? Math.round(gps.lat * 1e5) : null,
-      gps?.lng != null ? Math.round(gps.lng * 1e5) : null,
-    ],
+    queryKey: ["rider-milestone-geo-fence", orderId],
     queryFn: async () => {
       if (!orderId) throw new Error("orderId required");
-      return riderApi.getMilestoneGeoFence(orderId, gps);
+      return riderApi.getMilestoneGeoFence(orderId, gpsRef.current);
     },
-    enabled: Boolean(orderId),
-    refetchInterval: 10_000,
-    staleTime: 8_000,
+    enabled: Boolean(orderId) && hasGps,
+    refetchInterval: 20_000,
+    refetchIntervalInBackground: false,
+    staleTime: 15_000,
     /** Keep last geo while GPS / background refetch runs (same as food — no “checking” flash). */
     placeholderData: (previous) => previous,
     refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 
   const byMilestone = useMemo(() => {

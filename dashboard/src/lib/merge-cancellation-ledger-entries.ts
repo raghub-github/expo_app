@@ -28,12 +28,17 @@ type OrderBucket = {
   debits: MergeableLedgerEntry[];
 };
 
+function isNoDebitCancellationEntry(entry: MergeableLedgerEntry | undefined): boolean {
+  const mode = String((entry?.metadata ?? {}).merchant_debit_mode ?? "").toLowerCase();
+  return mode === "no_debit";
+}
+
 function isCancellationBalanceDebit(entry: MergeableLedgerEntry): boolean {
   const meta = (entry.metadata ?? {}) as Record<string, unknown>;
   return (
-    meta.entry_type === 'order_cancellation' &&
-    String(meta.balance_impact ?? '').toLowerCase() === 'debit' &&
-    String(entry.direction ?? '').toUpperCase() === 'DEBIT' &&
+    meta.entry_type === "order_cancellation" &&
+    String(meta.balance_impact ?? "").toLowerCase() === "debit" &&
+    String(entry.direction ?? "").toUpperCase() === "DEBIT" &&
     Number(entry.amount ?? 0) > 0
   );
 }
@@ -271,8 +276,9 @@ export function buildCancellationLedgerDisplayMap(
     }
 
     if (bucket.info) {
+      const noDebit = isNoDebitCancellationEntry(bucket.info);
       displayById.set(bucket.info.id, {
-        originalAmount: originalAmount || Math.max(0, Number(bucket.info.amount ?? 0)),
+        originalAmount: noDebit ? 0 : (originalAmount || Math.max(0, Number(bucket.info.amount ?? 0))),
         creditAmount: 0,
         showCancelledStatus: true,
       });

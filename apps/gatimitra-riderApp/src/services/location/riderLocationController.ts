@@ -1,5 +1,6 @@
 import {
   getBestEffortPosition,
+  getFastPosition,
   getDeviceLocationReadiness,
   requestForegroundLocationPermission,
   withTimeout,
@@ -51,6 +52,11 @@ export async function acquireAndCommitRiderLocation(options?: {
    * and waits longer for acceptable accuracy (app open / foreground).
    */
   requireFresh?: boolean;
+  /**
+   * Last-known / Balanced only — never Highest. Use for Home lifecycle so
+   * foregrounding does not start a second high-accuracy GPS session.
+   */
+  preferFast?: boolean;
 }): Promise<RiderLocationAcquisitionResult> {
   const store = useRiderLocationStore.getState();
   const seq = store.beginAcquisition();
@@ -77,16 +83,18 @@ export async function acquireAndCommitRiderLocation(options?: {
       }
     }
 
-    const coords = await getBestEffortPosition(
-      options?.requireFresh
-        ? {
-            lastKnownMaxAgeMs: 0,
-            acceptableAccuracyM: 35,
-            stableWaitMs: 12_000,
-            maxAttempts: 5,
-          }
-        : undefined
-    );
+    const coords = options?.preferFast
+      ? await getFastPosition({ lastKnownMaxAgeMs: 120_000, quickTimeoutMs: 4_000 })
+      : await getBestEffortPosition(
+          options?.requireFresh
+            ? {
+                lastKnownMaxAgeMs: 0,
+                acceptableAccuracyM: 35,
+                stableWaitMs: 12_000,
+                maxAttempts: 5,
+              }
+            : undefined
+        );
     const address = await geocodeOrFallback(coords);
     const committed = store.commitAcquisition(seq, { coords, address });
     if (!committed) {

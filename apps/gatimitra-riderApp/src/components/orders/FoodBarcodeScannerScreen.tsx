@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors } from "@/src/theme";
 import { LORA_BOLD, LORA_SEMIBOLD } from "@/src/theme/headerFonts";
 import { readCameraPermission } from "@/src/lib/cameraPermission";
+import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 
 type Props = {
   visible: boolean;
@@ -96,7 +97,7 @@ export function FoodBarcodeScannerScreen({
   );
 
   const topPad = Math.max(insets.top, Platform.OS === "android" ? 12 : 8);
-  const bottomPad = Math.max(insets.bottom, 16);
+  const bottomPad = resolveRiderBottomInset(insets.bottom);
   const hasCameraAccess = permissionPhase === "granted";
   const showPermissionLoading = permissionPhase === "loading" && !cameraGrantedHint;
 

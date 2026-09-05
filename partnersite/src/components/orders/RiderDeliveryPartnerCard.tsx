@@ -155,16 +155,6 @@ export function RiderDeliveryPartnerCard({
 
   const metaChips: ReactNode[] = [];
   if (variant === 'arrived') {
-    if (riderPhone) {
-      metaChips.push(
-        <span
-          key="phone"
-          className="inline-flex rounded-md bg-gray-50 px-2 py-0.5 font-mono text-[11px] font-semibold text-gray-800"
-        >
-          {riderPhone}
-        </span>
-      );
-    }
     if (pickupOtp) {
       metaChips.push(
         <span
@@ -265,9 +255,6 @@ export function RiderDeliveryPartnerCard({
               ) : null}
             </p>
           ) : null}
-          {(variant === 'picked_up' || (isTerminalVariant && riderPhone)) && riderPhone ? (
-            <p className="mt-1 text-xs text-gray-600 tabular-nums">{riderPhone}</p>
-          ) : null}
         </div>
       </div>
 
@@ -285,7 +272,7 @@ export function RiderDeliveryPartnerCard({
                   Track live
                 </button>
               ) : null}
-              {riderPhone ? (
+              {riderPhone && !isTerminalVariant ? (
                 <a
                   href={`tel:${riderPhone}`}
                   onClick={(e) => {
@@ -294,10 +281,10 @@ export function RiderDeliveryPartnerCard({
                       onCallRider();
                     }
                   }}
-                  className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-800 hover:bg-gray-50"
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white hover:bg-emerald-700"
+                  aria-label="Call rider"
                 >
                   <Phone size={14} aria-hidden />
-                  Call
                 </a>
               ) : null}
             </div>

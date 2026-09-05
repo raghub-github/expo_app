@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ImagePlus, Loader2, Replace, Trash2, Upload } from "lucide-react";
 import type { AnnouncementTargetType } from "@/lib/notifications/customer-home-services";
+import { isAllowedGatimitraDeepLink } from "@/lib/notifications/customer-home-services";
+import { CustomerAnnouncementPreview } from "@/components/notifications/CustomerAnnouncementPreview";
 
 type ServiceItem = {
   id: string;
@@ -20,21 +22,46 @@ export type AnnouncementExtrasValue = {
   serviceId: string;
   categoryId: string;
   storeId: string;
+  orderId: string;
+  customDeepLink: string;
   imageUrl: string | null;
+  ctaLabel: string;
+  countdownEnabled: boolean;
+  startsAt: string;
+  endsAt: string;
+};
+
+export const EMPTY_ANNOUNCEMENT_EXTRAS: AnnouncementExtrasValue = {
+  targetType: "NONE",
+  serviceId: "",
+  categoryId: "",
+  storeId: "",
+  orderId: "",
+  customDeepLink: "",
+  imageUrl: null,
+  ctaLabel: "",
+  countdownEnabled: false,
+  startsAt: "",
+  endsAt: "",
 };
 
 type Props = {
   value: AnnouncementExtrasValue;
   onChange: (next: AnnouncementExtrasValue) => void;
+  title?: string;
+  body?: string;
+  showPreview?: boolean;
 };
 
 function Field({
   label,
   required,
+  hint,
   children,
 }: {
   label: string;
   required?: boolean;
+  hint?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -44,11 +71,30 @@ function Field({
         {required ? <span className="text-rose-600"> *</span> : null}
       </span>
       {children}
+      {hint ? <span className="block text-[11px] text-slate-500">{hint}</span> : null}
     </label>
   );
 }
 
-export function CustomerAnnouncementExtras({ value, onChange }: Props) {
+const TARGET_OPTIONS: Array<{ type: AnnouncementTargetType; label: string; sub: string }> = [
+  { type: "NONE", label: "Default", sub: "Inbox / notifications" },
+  { type: "HOME", label: "Home", sub: "Customer app home" },
+  { type: "SERVICE", label: "Service", sub: "Food, Ride, Grocery…" },
+  { type: "CATEGORY", label: "Category", sub: "Service + category" },
+  { type: "STORE", label: "Store", sub: "Exact store detail" },
+  { type: "OFFER", label: "Offers", sub: "Offers tab" },
+  { type: "SUBSCRIPTION", label: "GMitra Plus", sub: "Subscription screen" },
+  { type: "ORDER", label: "Order", sub: "Selected order" },
+  { type: "CUSTOM_DEEP_LINK", label: "Custom", sub: "Approved GatiMitra route" },
+];
+
+export function CustomerAnnouncementExtras({
+  value,
+  onChange,
+  title = "",
+  body = "",
+  showPreview = true,
+}: Props) {
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [categories, setCategories] = useState<CategoryItem[]>([]);
   const [stores, setStores] = useState<StoreItem[]>([]);
@@ -176,25 +222,22 @@ export function CustomerAnnouncementExtras({ value, onChange }: Props) {
     value.targetType === "CATEGORY" ||
     value.targetType === "STORE";
 
+  const ctaTrimmed = value.ctaLabel.replace(/\s+/g, " ").trim();
+  const customLinkOk =
+    value.targetType !== "CUSTOM_DEEP_LINK" || isAllowedGatimitraDeepLink(value.customDeepLink);
+
   return (
     <div className="space-y-4">
       <div>
         <div className="text-sm font-semibold text-slate-900">Tap destination</div>
         <p className="mt-0.5 text-xs text-slate-500">
-          Where the customer lands after tapping this announcement. Category filters apply only for
-          this entry — customers can clear them afterward.
+          Where the customer lands after tapping the notification or CTA. Category filters apply only
+          for this entry — customers can clear them afterward.
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {(
-          [
-            { type: "NONE" as const, label: "Default", sub: "Inbox / notifications" },
-            { type: "SERVICE" as const, label: "Service", sub: "Open a home service" },
-            { type: "CATEGORY" as const, label: "Category", sub: "Service + category filter" },
-            { type: "STORE" as const, label: "Store", sub: "Exact store detail" },
-          ] as const
-        ).map((opt) => {
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {TARGET_OPTIONS.map((opt) => {
           const active = value.targetType === opt.type;
           return (
             <button
@@ -206,7 +249,9 @@ export function CustomerAnnouncementExtras({ value, onChange }: Props) {
                   targetType: opt.type,
                   categoryId: "",
                   storeId: "",
-                  serviceId: opt.type === "NONE" ? "" : value.serviceId,
+                  orderId: "",
+                  customDeepLink: "",
+                  serviceId: needsServiceFor(opt.type) ? value.serviceId : "",
                 })
               }
               className={
@@ -293,10 +338,106 @@ export function CustomerAnnouncementExtras({ value, onChange }: Props) {
         </div>
       ) : null}
 
+      {value.targetType === "ORDER" ? (
+        <Field label="Order id" required hint="Public order id the authenticated customer can open.">
+          <input
+            value={value.orderId}
+            onChange={(e) => patch({ orderId: e.target.value })}
+            placeholder="e.g. GM10000042"
+            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+          />
+        </Field>
+      ) : null}
+
+      {value.targetType === "CUSTOM_DEEP_LINK" ? (
+        <Field
+          label="Deep link"
+          required
+          hint="Must be an approved GatiMitra app route starting with /home, /offers, /orders, /profile, …"
+        >
+          <input
+            value={value.customDeepLink}
+            onChange={(e) => patch({ customDeepLink: e.target.value })}
+            placeholder="/home/crazy-deals"
+            className={
+              "w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-1 " +
+              (customLinkOk
+                ? "border-slate-200 focus:border-teal-600 focus:ring-teal-600"
+                : "border-rose-300 focus:border-rose-500 focus:ring-rose-500")
+            }
+          />
+        </Field>
+      ) : null}
+
+      <div className="border-t border-slate-100 pt-4">
+        <div className="text-sm font-semibold text-slate-900">CTA label (optional)</div>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Shown exactly as entered. Leave blank for a plain notification with no button — the
+          notification itself stays tappable.
+        </p>
+        <input
+          value={value.ctaLabel}
+          maxLength={32}
+          onChange={(e) => patch({ ctaLabel: e.target.value })}
+          placeholder="Order Now, Shop Now, Book Ride…"
+          className="mt-2 w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+        />
+        <div className="mt-1 text-[11px] text-slate-500">{ctaTrimmed.length}/32</div>
+      </div>
+
+      <div className="border-t border-slate-100 pt-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-slate-900">Countdown</div>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Remaining time from now until till. Times are in your local timezone (IST for India).
+              Stored as UTC. Customer validity always uses server time.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => patch({ countdownEnabled: !value.countdownEnabled })}
+            className={
+              "relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition " +
+              (value.countdownEnabled ? "bg-teal-600" : "bg-slate-300")
+            }
+            aria-pressed={value.countdownEnabled}
+          >
+            <span
+              className={
+                "inline-block h-5 w-5 rounded-full bg-white transition " +
+                (value.countdownEnabled ? "translate-x-6" : "translate-x-1")
+              }
+            />
+          </button>
+        </div>
+        {value.countdownEnabled ? (
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Valid from / start" required>
+              <input
+                type="datetime-local"
+                value={value.startsAt}
+                onChange={(e) => patch({ startsAt: e.target.value })}
+                className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+              />
+            </Field>
+            <Field label="Valid until / till" required>
+              <input
+                type="datetime-local"
+                value={value.endsAt}
+                onChange={(e) => patch({ endsAt: e.target.value })}
+                className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+              />
+            </Field>
+          </div>
+        ) : null}
+      </div>
+
       <div className="border-t border-slate-100 pt-4">
         <div className="text-sm font-semibold text-slate-900">Notification image (optional)</div>
         <p className="mt-0.5 text-xs text-slate-500">
-          Upload an image for Android rich push. Leave empty for a normal text notification.
+          HTTPS/CDN image for Android rich push. JPEG, PNG, WebP or GIF · max 5 MB · prefer ~1200×600.
+          Devices that cannot render rich image fall back to title + body.
         </p>
 
         {value.imageUrl ? (
@@ -356,6 +497,27 @@ export function CustomerAnnouncementExtras({ value, onChange }: Props) {
           <div className="mt-2 text-xs text-rose-700">{uploadError}</div>
         ) : null}
       </div>
+
+      {showPreview ? (
+        <div className="border-t border-slate-100 pt-4">
+          <div className="text-sm font-semibold text-slate-900">Live customer preview</div>
+          <p className="mt-0.5 mb-3 text-xs text-slate-500">
+            Renderer is automatic: blank CTA → plain; CTA and/or image → rich GatiMitra card.
+          </p>
+          <CustomerAnnouncementPreview
+            title={title}
+            body={body}
+            imageUrl={value.imageUrl}
+            ctaLabel={ctaTrimmed}
+            countdownEnabled={value.countdownEnabled}
+            endsAt={value.endsAt}
+          />
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function needsServiceFor(type: AnnouncementTargetType): boolean {
+  return type === "SERVICE" || type === "CATEGORY" || type === "STORE";
 }

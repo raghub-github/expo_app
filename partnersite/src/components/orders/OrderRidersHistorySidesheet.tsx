@@ -34,6 +34,8 @@ export type OrderRidersHistorySidesheetProps = {
   onRiderPhotoClick?: (url: string) => void;
   /** @deprecated Ignored — sheet matches Store status (covers header, inset-0). */
   topOffset?: string;
+  /** Hide call / number after the order is delivered or cancelled. */
+  allowCall?: boolean;
 };
 
 export function OrderRidersHistorySidesheet({
@@ -43,6 +45,7 @@ export function OrderRidersHistorySidesheet({
   loading = false,
   onClose,
   onRiderPhotoClick,
+  allowCall = false,
 }: OrderRidersHistorySidesheetProps) {
   if (!open || typeof document === 'undefined') return null;
 
@@ -130,7 +133,7 @@ export function OrderRidersHistorySidesheet({
                       <div className="min-w-0 flex-1 text-center">
                         <p className="truncate text-sm font-bold text-gray-900">{name}</p>
                       </div>
-                      {r.rider_mobile ? (
+                      {allowCall && r.rider_mobile ? (
                         <a
                           href={`tel:${r.rider_mobile}`}
                           className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-600 text-white hover:bg-violet-700"

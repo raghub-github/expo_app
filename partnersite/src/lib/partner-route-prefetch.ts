@@ -14,6 +14,7 @@ import {
   writeDashboardWalletCache,
 } from '@/lib/partner-dashboard-cache';
 import type { WalletSummary } from '@/hooks/useMerchantApi';
+import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 
 const PREFETCH_FETCH_TIMEOUT_MS = 18_000;
 
@@ -86,7 +87,7 @@ export function prefetchPartnerRouteData(
   href: string,
   storeId: string | null | undefined
 ): void {
-  if (!storeId) return;
+  if (!storeId || !isValidPartnerStoreId(storeId)) return;
   const path = href.split('?')[0];
 
   if (path.includes('/dashboard')) {

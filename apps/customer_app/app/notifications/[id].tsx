@@ -21,6 +21,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
+import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import {
   loadInbox,
@@ -177,7 +178,15 @@ export default function NotificationDetailScreen() {
 
   const type = item ? visualTypeFor(item) : "system";
   const deepLink = item?.deep_link?.trim() ?? "";
+  const metaCta = String(
+    (item?.metadata as { cta_label?: unknown; ctaLabel?: unknown } | null)?.cta_label ??
+      (item?.metadata as { ctaLabel?: unknown } | null)?.ctaLabel ??
+      "",
+  )
+    .replace(/\s+/g, " ")
+    .trim();
   const orderPath = item ? resolveActiveOrderPath(item) : null;
+  const openLabel = orderPath ? "View order" : deepLink.startsWith("http") ? "Open link" : metaCta || "Open";
   const canOpenLink = (() => {
     if (orderPath) return true;
     if (!deepLink) return false;
@@ -322,6 +331,13 @@ export default function NotificationDetailScreen() {
               <Text style={styles.title}>{displayNotificationTitle(item.title)}</Text>
             </View>
             {when ? <Text style={styles.time}>{when}</Text> : null}
+            {item.image_url ? (
+              <Image
+                source={{ uri: item.image_url }}
+                style={{ width: "100%", height: 180, borderRadius: 12, marginTop: 12, backgroundColor: "#e2e8f0" }}
+                contentFit="cover"
+              />
+            ) : null}
             <Text style={styles.body}>{item.body?.trim() || ""}</Text>
           </View>
 
@@ -333,7 +349,7 @@ export default function NotificationDetailScreen() {
             >
               <Ionicons name="open-outline" size={18} color={COLORS.primary} />
               <RNText style={styles.openLinkText}>
-                {orderPath ? "View order" : deepLink.startsWith("http") ? "Open link" : "Open"}
+                {openLabel}
               </RNText>
             </TouchableOpacity>
           ) : null}

@@ -131,7 +131,8 @@ export function YourSubscriptionScreen() {
   const listPrice = featured ? Math.round(featured.total * 11) : null;
   const payPrice = featured?.total ?? null;
 
-  const loading = plansLoading || statusLoading;
+  const loading =
+    (plansLoading && plans.length === 0) || (statusLoading && status == null);
   const autoRenewOn = Boolean(activePlan?.autoWalletDeduction);
 
   const handleAutoRenewToggle = async (enabled: boolean) => {

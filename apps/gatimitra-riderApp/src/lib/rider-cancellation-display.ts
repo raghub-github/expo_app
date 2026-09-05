@@ -19,7 +19,7 @@ export function riderCancellationTitle(actor: RiderCancellationActor): string {
     case "customer":
       return "Cancelled by User";
     case "rider":
-      return "Cancelled by You";
+      return "Cancelled by Me";
     case "admin":
     case "system":
       return "Cancelled by Gatimitra Team";

@@ -76,6 +76,10 @@ import {
 import { capturePlayInstallReferrerOnce } from "@/lib/playInstallReferrer";
 import { referralService } from "@/services/referral.service";
 import { extendStartupApiGate } from "@/lib/startup-api-gate";
+// Side-effect: sync-seed category metadata + last-good / local image maps before home mounts.
+import "@/lib/categoryImageLastGood";
+import "@/lib/categoryImageFileCache";
+import "@/lib/userAppCategoryCache";
 import { UserAppCategoriesPrefetch } from "@/components/UserAppCategoriesPrefetch";
 import { ProfilePrefetch } from "@/components/ProfilePrefetch";
 import { WalletBalancePrefetch } from "@/components/WalletBalancePrefetch";

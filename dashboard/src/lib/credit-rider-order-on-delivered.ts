@@ -22,9 +22,24 @@ function parseBillingAmount(snapshot: unknown, keys: string[]): number {
   const obj = snapshot as Record<string, unknown>;
   for (const key of keys) {
     const n = Number(obj[key]);
-    if (Number.isFinite(n) && n > 0) return n;
+    if (Number.isFinite(n) && n > 0) return round2(n);
   }
   return 0;
+}
+
+function riderPayoutHint(snapshot: unknown): number {
+  if (snapshot == null || typeof snapshot !== "object") return 0;
+  const snap = snapshot as Record<string, unknown>;
+  const raw = snap.rider_payout_snapshot;
+  if (raw == null || typeof raw !== "object") return 0;
+  const obj = raw as Record<string, unknown>;
+  const base = Math.max(0, Number(obj.baseEarning) || 0);
+  const waiting = Math.max(0, Number(obj.waitingEarning) || 0);
+  const surge = Math.max(0, Number(obj.surgeEarning) || 0);
+  const composed = round2(base + waiting + surge);
+  if (composed > 0) return composed;
+  const total = Number(obj.totalEarning);
+  return Number.isFinite(total) && total > 0 ? round2(total) : 0;
 }
 
 /** Rider payout is delivery fee — never order grand total. */
@@ -49,24 +64,124 @@ export function resolveRiderDeliveryFeeFromCore(row: {
     "finalDeliveryFee",
   ]);
   // Avoid treating corrupted customer fee (overwritten with rider payout) as base.
-  const snap =
-    row.billingSnapshot != null && typeof row.billingSnapshot === "object"
-      ? (row.billingSnapshot as Record<string, unknown>)
-      : null;
-  const payout =
-    snap?.rider_payout_snapshot != null && typeof snap.rider_payout_snapshot === "object"
-      ? Number((snap.rider_payout_snapshot as Record<string, unknown>).totalEarning)
-      : NaN;
+  const payout = riderPayoutHint(row.billingSnapshot);
   if (
     fromBilling > 0 &&
-    !(Number.isFinite(payout) && payout > 0 && Math.abs(fromBilling - payout) <= 0.51)
+    !(payout > 0 && Math.abs(fromBilling - payout) <= 0.51)
   ) {
     return round2(fromBilling);
   }
 
+  if (payout > 0) return payout;
+
   const fare = Number(row.fareAmount);
   if (Number.isFinite(fare) && fare > 0) return round2(fare);
 
+  return 0;
+}
+
+/** Rule amount-base DELIVERY_FARE: fare paid to the rider, not customer bill. */
+export function resolveDeliveryFarePaidToRider(row: {
+  riderEarning: unknown;
+  fareAmount: unknown;
+  billingSnapshot?: unknown;
+}): number {
+  const fromSnap = riderPayoutHint(row.billingSnapshot);
+  if (fromSnap > 0) return fromSnap;
+  return resolveRiderDeliveryFeeFromCore(row);
+}
+
+/** Rule amount-base COMPLETE_ORDER_VALUE: customer paid / CTC (cashin + GatiCash). */
+export function resolveCompleteOrderValuePaidByCustomer(row: {
+  grandTotal: unknown;
+  billingSnapshot?: unknown;
+}): number {
+  const snap =
+    row.billingSnapshot != null && typeof row.billingSnapshot === "object"
+      ? (row.billingSnapshot as Record<string, unknown>)
+      : typeof row.billingSnapshot === "string"
+        ? (() => {
+            try {
+              const p = JSON.parse(row.billingSnapshot) as unknown;
+              return p != null && typeof p === "object"
+                ? (p as Record<string, unknown>)
+                : null;
+            } catch {
+              return null;
+            }
+          })()
+        : null;
+
+  const gatiDirect =
+    Math.max(0, Number(snap?.gati_cash_applied) || 0) ||
+    Math.max(0, Number(snap?.gatiCashApplied) || 0) ||
+    Math.max(0, Number(snap?.gati_cash_amount) || 0) ||
+    Math.max(0, Number(snap?.gatiCashAmount) || 0);
+  let gati = round2(gatiDirect);
+  if (!(gati > 0.005) && snap) {
+    const adj = snap.checkout_adjustments ?? snap.checkoutAdjustments;
+    if (adj && typeof adj === "object") {
+      const a = adj as Record<string, unknown>;
+      gati = round2(
+        Math.max(0, Number(a.gatiCashApplied) || Number(a.gati_cash_applied) || 0)
+      );
+    }
+  }
+
+  const netCore = Number(row.grandTotal);
+  const netSnap = parseBillingAmount(snap, [
+    "final_amount",
+    "finalAmount",
+    "customer_payable",
+    "customerPayable",
+    "payable_total",
+    "payableTotal",
+    "grand_total",
+    "grandTotal",
+  ]);
+  const netPayable =
+    Number.isFinite(netCore) && netCore > 0
+      ? round2(netCore)
+      : netSnap > 0
+        ? netSnap
+        : Number.isFinite(netCore) && netCore === 0
+          ? 0
+          : 0;
+
+  const settlementCtc = round2(Math.max(0, netPayable) + Math.max(0, gati));
+  const composed = snap
+    ? round2(
+        Math.max(0, Number(snap.item_total) || Number(snap.itemTotal) || 0) +
+          Math.max(0, Number(snap.addon_total) || Number(snap.addonTotal) || 0) +
+          Math.max(0, Number(snap.delivery_fee) || Number(snap.deliveryFee) || 0) +
+          Math.max(0, Number(snap.platform_fee) || Number(snap.platformFee) || 0) +
+          Math.max(0, Number(snap.packaging_fee) || Number(snap.packagingFee) || 0) +
+          Math.max(0, Number(snap.surge_fee) || Number(snap.surgeFee) || 0) +
+          Math.max(0, Number(snap.tax_total) || Number(snap.taxTotal) || 0) +
+          Math.max(0, Number(snap.tip_amount) || Number(snap.tipAmount) || 0) -
+          Math.max(0, Number(snap.discount_total) || Number(snap.discountTotal) || 0)
+      )
+    : 0;
+
+  if (settlementCtc > 0.005) {
+    const deliveryOnly = parseBillingAmount(snap, [
+      "delivery_fee",
+      "final_delivery_fee",
+      "deliveryFee",
+      "finalDeliveryFee",
+      "delivery_fee_gross",
+      "deliveryFeeGross",
+    ]);
+    if (
+      composed > settlementCtc + 1 &&
+      deliveryOnly > 0 &&
+      Math.abs(settlementCtc - deliveryOnly) <= 1.01
+    ) {
+      return composed;
+    }
+    return settlementCtc;
+  }
+  if (composed > 0) return composed;
   return 0;
 }
 

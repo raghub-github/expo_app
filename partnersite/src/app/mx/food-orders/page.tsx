@@ -60,6 +60,7 @@ import {
   isPartnerSelfPickupOrder,
   partnerFulfillmentLabel,
 } from '@/lib/partner-delivery-type';
+import { isPartnerOrderClosedForContact } from '@/lib/partner-orders-unify';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import {
   PARTNER_MANAGED_STORES_CHANGED,
@@ -2712,6 +2713,7 @@ function OrdersPageContent() {
         orderLabel={ridersLogModalOrderLabel}
         riders={ridersLogList}
         loading={ridersLogLoading}
+        allowCall={!isPartnerOrderClosedForContact(selectedOrder?.order_status) && !selectedOrder?.delivered_at && !selectedOrder?.cancelled_at}
         onClose={() => {
           setRidersLogModalOrderId(null);
           setRidersLogModalOrderLabel(null);
@@ -3282,6 +3284,11 @@ function OrderDetailMobile({
   const fulfillmentLabel = partnerFulfillmentLabel(order);
   const isSelfPickup = isPartnerSelfPickupOrder(order);
   const otps = resolveOrderOtps(order, otpCache);
+  const hideContact =
+    isPartnerOrderClosedForContact(status) ||
+    Boolean(order.delivered_at) ||
+    Boolean(order.cancelled_at) ||
+    Boolean(order.is_rto);
   const orderItems = Array.isArray(order.items) ? order.items : [];
   const previewItems = orderItems.slice(0, ORDER_ITEMS_PREVIEW_MAX);
   const moreItemsCount = Math.max(0, orderItems.length - ORDER_ITEMS_PREVIEW_MAX);
@@ -3353,9 +3360,13 @@ function OrderDetailMobile({
                     </span>
                   )}
                 </div>
-                {order.customer_phone && (
-                  <a href={`tel:${order.customer_phone}`} className="flex items-center gap-1.5 text-blue-600 text-xs font-medium hover:text-blue-700">
-                    <Phone size={12} /> {order.customer_phone}
+                {order.customer_phone && !hideContact && (
+                  <a
+                    href={`tel:${order.customer_phone}`}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-white hover:bg-emerald-700"
+                    aria-label="Call customer"
+                  >
+                    <Phone size={12} aria-hidden />
                   </a>
                 )}
                 {(order.drop_address_raw || order.drop_address_normalized) && (
@@ -3426,9 +3437,13 @@ function OrderDetailMobile({
                       </span>
                     )}
                   </div>
-                  {order.rider_details?.mobile && (
-                    <a href={`tel:${order.rider_details.mobile}`} className="flex items-center gap-1.5 text-purple-600 text-xs font-medium hover:text-purple-700">
-                      <Phone size={12} /> {order.rider_details.mobile}
+                  {order.rider_details?.mobile && !hideContact && (
+                    <a
+                      href={`tel:${order.rider_details.mobile}`}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600 text-white hover:bg-emerald-700"
+                      aria-label="Call rider"
+                    >
+                      <Phone size={12} aria-hidden />
                     </a>
                   )}
                   {order.rider_details?.city && (

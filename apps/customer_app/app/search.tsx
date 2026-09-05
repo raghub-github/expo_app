@@ -459,7 +459,7 @@ export default function SearchScreen() {
                   <View style={styles.gridImageWrap}>
                     <UserAppCategoryImage
                       imageUrl={cat.imageUrl}
-                      cacheKey={`category-${cat.id}`}
+                      cacheKey={`tab-category-${cat.id}`}
                       style={styles.gridImage}
                       contentFit="cover"
                     />

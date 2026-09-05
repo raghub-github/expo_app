@@ -12,6 +12,7 @@ import {
   analyzeRiderOnRoute,
   resolveDisplayRiderPosition,
   rerouteDebounceMs,
+  shouldRequestReroute,
   trackDebug,
 } from "@gatimitra/map-tracking-engine";
 
@@ -36,6 +37,7 @@ export function useRiderToPickupLiveRoute(
   const requestIdRef = useRef(0);
   const rerouteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastDestKeyRef = useRef<string>("");
+  const lastRerouteAtRef = useRef(0);
 
   useEffect(() => {
     hasRouteRef.current = false;
@@ -86,12 +88,15 @@ export function useRiderToPickupLiveRoute(
       headingDeg: riderHeading ?? null,
     });
     if (!deviation?.shouldReroute) return;
+    if (!shouldRequestReroute(deviation, lastRerouteAtRef.current)) return;
 
     trackDebug("off_route_detected", {
       rideId,
       offRouteM: Math.round(deviation.offRouteM),
       wrongWay: deviation.wrongWay,
     });
+
+    lastRerouteAtRef.current = Date.now();
 
     if (rerouteTimerRef.current) clearTimeout(rerouteTimerRef.current);
     const debounceMs = rerouteDebounceMs(deviation);

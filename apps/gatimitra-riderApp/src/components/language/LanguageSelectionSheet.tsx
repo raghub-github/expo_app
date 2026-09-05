@@ -19,7 +19,9 @@ type LanguageSelectionSheetProps = {
 
 export function LanguageSelectionSheet({ visible, onClose }: LanguageSelectionSheetProps) {
   const { i18n } = useTranslation();
-  const { selectedLanguage, languageSelected, setSelectedLanguage } = useLanguageStore();
+  const selectedLanguage = useLanguageStore((s) => s.selectedLanguage);
+  const languageSelected = useLanguageStore((s) => s.languageSelected);
+  const setSelectedLanguage = useLanguageStore((s) => s.setSelectedLanguage);
 
   const activeCode: LanguageCode =
     (languageSelected && SUPPORTED_LANGUAGES.some((l) => l.code === selectedLanguage)

@@ -306,7 +306,6 @@ export function UserInsightsOrderDetailsSidesheet({
                   <User size={14} /> Customer
                 </p>
                 <DetailRow label="Name" value={order.customer_name} />
-                <DetailRow label="Phone" value={order.customer_phone} />
                 <DetailRow label="Email" value={order.customer_email} />
                 {order.customer_order_count != null ? (
                   <DetailRow
@@ -376,7 +375,6 @@ export function UserInsightsOrderDetailsSidesheet({
                     <Bike size={14} /> Rider
                   </p>
                   <DetailRow label="Name" value={order.rider_name} />
-                  <DetailRow label="Phone" value={order.rider_phone} />
                 </section>
               )}
 

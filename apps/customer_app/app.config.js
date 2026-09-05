@@ -136,7 +136,7 @@ module.exports = {
       [
         "expo-notifications",
         {
-          // White "GatiMitra" wordmark — status bar / shade small icon (merchant uses "GM").
+          // White stacked "GatiMitra" wordmark — status-bar small icon (fills slot like Zomato).
           icon: "./assets/notification-icon.png",
           color: "#14b8a6",
           defaultChannel: "customer_default",

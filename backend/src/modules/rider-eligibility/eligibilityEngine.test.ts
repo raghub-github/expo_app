@@ -53,9 +53,10 @@ test("FOOD (default): DL + RC are OPTIONAL — a 2-wheeler with no documents is 
   assert.equal(resolveRiderServiceEligibility(input({ dl: "failed", rc: "missing" }), food).eligible, true);
 });
 
-test("FOOD (admin override): setting DL required makes a missing DL block again", () => {
-  const food = { ...defaultPolicyForService("food"), dlRequirement: "required" as const };
-  assert.deepEqual(codes(food, input({ dl: "missing" })), ["DL_REQUIRED_NOT_VERIFIED"]);
+test("FOOD (admin override): ownership proof required is satisfied when RC/ownership is verified", () => {
+  const food = { ...defaultPolicyForService("food"), ownershipProofRequirement: "required" as const };
+  assert.deepEqual(codes(food, input({ ownershipProof: "missing" })), ["OWNERSHIP_PROOF_REQUIRED_NOT_VERIFIED"]);
+  assert.equal(resolveRiderServiceEligibility(input({ ownershipProof: "verified" }), food).eligible, true);
 });
 
 // ── PARCEL ──────────────────────────────────────────────────────────────

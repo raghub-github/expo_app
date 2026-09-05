@@ -9,7 +9,6 @@ import {
   orderHasAssignedRider,
 } from "@/lib/orderAssignedRider";
 import {
-  formatMaskedRiderContact,
   resolveRiderCardVariant,
   riderDisplayName,
   riderStatusHeadline,
@@ -115,11 +114,18 @@ export function MerchantAssignedRiderRow({
           : "Waiting at your store for pickup"
       : riderStatusSubline(variant, riderName, enrichment.arrivalSubtitle, null);
   const mobile = (enrichment.riderMobile ?? order.riderMobile ?? "").trim() || null;
-  const maskedContact = formatMaskedRiderContact(mobile);
+  // Delivered record: show a privacy-masked contact line (all but the last 2 digits hidden) —
+  // consistent with never revealing full digits after a terminal order.
+  const maskedContact = mobile ? mobile.replace(/\d(?=\d{2})/g, "•") : null;
   const isOutForDelivery = variant === "picked_up";
+  const liveForContact =
+    order.status === "created" ||
+    order.status === "preparing" ||
+    order.status === "ready" ||
+    order.status === "picked_up";
   const trackEnabled = showTrack && canTrackAssignedRider(order);
-  // After delivery / cancel / RTO: show details only — no Call button.
-  const showCallBtn = showCall && !!mobile && !isTerminal;
+  // After delivery / cancel / RTO: icon only on live orders — never reveal digits.
+  const showCallBtn = showCall && !!mobile && !isTerminal && liveForContact;
   const showArrivedMeta = variant === "arrived" && !isOutForDelivery;
   const showActions = !isOutForDelivery && !showArrivedMeta && !isTerminal && (trackEnabled || showCallBtn);
 
@@ -187,11 +193,6 @@ export function MerchantAssignedRiderRow({
                     numberOfLines={2}
                   >
                     {subline}
-                  </Text>
-                ) : null}
-                {(isTerminal || isOutForDelivery) && maskedContact ? (
-                  <Text style={styles.phoneLine} numberOfLines={1}>
-                    {maskedContact}
                   </Text>
                 ) : null}
               </>

@@ -12,6 +12,7 @@ import {
   beginPartnerSessionBackgroundRefresh,
   endPartnerSessionBackgroundRefresh,
 } from "@/lib/auth/partner-session-focus-gate";
+import { isValidPartnerStoreId } from "@/lib/partner-store-id-shared";
 
 interface MerchantSessionUser {
   id: string;
@@ -288,6 +289,8 @@ export function useMerchantSession(): MerchantSessionContextValue | null {
 export function usePartnerMerchantQueriesEnabled(storeId?: string | null): boolean {
   const session = useMerchantSession();
   if (!storeId) return false;
+  // Demo / placeholder store ids must never hit live wallet/payout APIs.
+  if (!isValidPartnerStoreId(storeId)) return false;
   if (!session) return false;
   // Once authenticated, keep queries enabled during background session refresh so
   // cached dashboard data paints immediately (stale-while-revalidate).

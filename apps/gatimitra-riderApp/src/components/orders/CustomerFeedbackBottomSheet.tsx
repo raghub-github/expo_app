@@ -14,6 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors } from "@/src/theme";
+import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 
 const SUBMIT_GREEN = colors.success[500];
 const SKIP_PINK = "#E85D75";
@@ -81,7 +82,7 @@ export function CustomerFeedbackBottomSheet({
   const [comment, setComment] = useState("");
 
   const availableTags = useMemo(() => tagsForRating(rating), [rating]);
-  const bottomPad = Math.max(insets.bottom, Platform.OS === "android" ? 20 : 16);
+  const bottomPad = resolveRiderBottomInset(insets.bottom) + 12;
 
   useEffect(() => {
     if (!visible) return;
@@ -405,6 +406,7 @@ const styles = StyleSheet.create({
   },
   submitBtn: {
     marginTop: 8,
+    marginBottom: 4,
     backgroundColor: SUBMIT_GREEN,
     borderRadius: 14,
     paddingVertical: 16,

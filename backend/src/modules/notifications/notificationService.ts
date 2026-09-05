@@ -164,6 +164,14 @@ function mustShowWhenKilled(row: {
   return metaType === "merchant_new_order" || metaType === "rider_dispatch_offer";
 }
 
+function announcementCollapseKey(row: CreateLogRow): string | null {
+  if (!isAnnouncementTemplateCode(row.templateCode)) return null;
+  const cid = row.campaignId != null ? String(row.campaignId) : "";
+  const nid = String(row.notificationId ?? "").replace(/-/g, "").slice(0, 16);
+  const key = cid && nid ? `gm_ca_${cid}_${nid}` : nid ? `gm_ca_${nid}` : "";
+  return key ? key.slice(0, 64) : null;
+}
+
 function buildFcmV1InputForRow(
   row: CreateLogRow,
   templateSilent: boolean,
@@ -194,7 +202,7 @@ function buildFcmV1InputForRow(
     data: args.data ?? fcmDataForRow(row),
     priority: row.priority as never,
     silent,
-    collapseKey: live.collapseKey,
+    collapseKey: live.collapseKey ?? announcementCollapseKey(row),
   };
 }
 
@@ -214,7 +222,20 @@ function channelIdForRecipient(
     if (priority === "critical" || priority === "high") return "merchant_new_orders";
     return "merchant_default";
   }
-  if (recipient.role === "rider") return "default";
+  if (recipient.role === "rider") {
+    const code = String(row?.templateCode ?? "").toUpperCase();
+    const metaType = String(row?.metadata?.type ?? "").toLowerCase();
+    const gmType = String(row?.metadata?.gmType ?? "").toUpperCase();
+    if (
+      code === "RIDER_DISPATCH_OFFER" ||
+      metaType === "dispatch_offer" ||
+      metaType === "rider_dispatch_offer" ||
+      gmType === "DISPATCH_OFFER"
+    ) {
+      return "rider_dispatch_offers_alert";
+    }
+    return "rider_default";
+  }
   if (row && isCustomerLiveOrderProgressRow(row)) return "customer_live_order";
   // Ride lifecycle → CX custom chime channel (immutable after first Android create).
   if (row && isRideCustomerPush(row)) return "customer_ride_cx";
@@ -233,6 +254,19 @@ function soundForRecipient(
     const metaType = String(row?.metadata?.type ?? "").toLowerCase();
     if (code === "MERCHANT_NEW_ORDER" || metaType === "merchant_new_order") {
       // Matches apps/merchant_app assets/sounds/notification.wav → res/raw/notification
+      return "notification";
+    }
+  }
+  if (recipient.role === "rider") {
+    const code = String(row?.templateCode ?? "").toUpperCase();
+    const metaType = String(row?.metadata?.type ?? "").toLowerCase();
+    const gmType = String(row?.metadata?.gmType ?? "").toUpperCase();
+    if (
+      code === "RIDER_DISPATCH_OFFER" ||
+      metaType === "dispatch_offer" ||
+      metaType === "rider_dispatch_offer" ||
+      gmType === "DISPATCH_OFFER"
+    ) {
       return "notification";
     }
   }
@@ -342,11 +376,37 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
     (typeof metadata.image_url === "string" && metadata.image_url.trim()) ||
     (row.imageUrl && String(row.imageUrl).trim()) ||
     "";
+  const ctaLabel =
+    (typeof metadata.cta_label === "string" && metadata.cta_label.trim()) ||
+    (typeof metadata.ctaLabel === "string" && metadata.ctaLabel.trim()) ||
+    "";
+  const countdownEnabled =
+    metadata.countdown_enabled === true ||
+    metadata.countdown_enabled === "true" ||
+    metadata.countdownEnabled === true;
+  const startsAt =
+    (typeof metadata.starts_at === "string" && metadata.starts_at) ||
+    (typeof metadata.startsAt === "string" && metadata.startsAt) ||
+    "";
+  const endsAt =
+    (typeof metadata.ends_at === "string" && metadata.ends_at) ||
+    (typeof metadata.endsAt === "string" && metadata.endsAt) ||
+    "";
+  const targetId =
+    (typeof metadata.target_id === "string" && metadata.target_id.trim()) ||
+    (typeof metadata.target_store_id === "string" && metadata.target_store_id.trim()) ||
+    (typeof metadata.target_category_id === "string" && metadata.target_category_id.trim()) ||
+    "";
+  const serverNow = new Date().toISOString();
   return {
     notification_id: row.notificationId,
     campaign_id: row.campaignId ?? undefined,
+    message_id: row.notificationId,
     template_code: row.templateCode,
     gmType: row.templateCode,
+    notification_type: isAnnouncementTemplateCode(row.templateCode)
+      ? String(row.templateCode).toUpperCase()
+      : undefined,
     // Rendered template copy — powers floating in-app banners without hardcoded strings.
     title: row.title,
     body: row.body,
@@ -359,9 +419,19 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
           image_url: imageUrl,
         }
       : {}),
+    ...(ctaLabel ? { cta_label: ctaLabel, ctaLabel } : {}),
+    ...(countdownEnabled
+      ? {
+          countdown_enabled: "true",
+          ...(startsAt ? { starts_at: startsAt } : {}),
+          ...(endsAt ? { ends_at: endsAt } : {}),
+          server_now: serverNow,
+        }
+      : {}),
     ...(typeof metadata.target_type === "string" && metadata.target_type
       ? {
           target_type: String(metadata.target_type),
+          ...(targetId ? { target_id: targetId } : {}),
           ...(metadata.target_service_id != null
             ? { target_service_id: String(metadata.target_service_id) }
             : {}),
@@ -386,6 +456,14 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
           screen: deepLink,
           deepLink,
           deep_link: deepLink,
+        }
+      : {}),
+    ...(ctaLabel ? { cta_label: ctaLabel } : {}),
+    ...(countdownEnabled
+      ? {
+          countdown_enabled: "true",
+          server_now: serverNow,
+          ...(endsAt ? { ends_at: endsAt } : {}),
         }
       : {}),
     appRole: row.recipient.role,
@@ -477,7 +555,7 @@ async function dispatchExpoRow(
     priority: row.priority,
     forceInline: opts?.forceInline === true,
     contentAvailable: liveDelivery.dataOnly ? true : undefined,
-    collapseKey: liveDelivery.collapseKey ?? undefined,
+    collapseKey: liveDelivery.collapseKey ?? announcementCollapseKey(row) ?? undefined,
   });
   if (!result.ok) {
     const errBlob = `${result.error ?? ""}`.toLowerCase();
@@ -701,7 +779,18 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     if (cid) meta.target_category_id = cid;
     const stid = pick("target_store_id");
     if (stid) meta.target_store_id = stid;
+    const tid = pick("target_id");
+    if (tid) meta.target_id = tid;
+    const cta = pick("cta_label");
+    if (cta) meta.cta_label = cta;
+    const cd = pick("countdown_enabled");
+    if (cd) meta.countdown_enabled = cd === "true" || cd === "1" || cd.toLowerCase() === "on" || cd === "TRUE";
+    const starts = pick("starts_at");
+    if (starts) meta.starts_at = starts;
+    const ends = pick("ends_at");
+    if (ends) meta.ends_at = ends;
     if (rendered.imageUrl) meta.imageUrl = rendered.imageUrl;
+    meta.notification_type = "CUSTOMER_ANNOUNCEMENT";
     intent.metadata = meta;
   }
 
@@ -1196,6 +1285,13 @@ export async function schedule(opts: {
   overrideBody?: string | null;
   overrideImage?: string | null;
   overrideDeepLink?: string | null;
+  ctaLabel?: string | null;
+  countdownEnabled?: boolean;
+  startsAt?: string | null;
+  endsAt?: string | null;
+  announcementTargetType?: string | null;
+  announcementTargetId?: string | null;
+  announcementTargetPayload?: Record<string, unknown> | null;
 }): Promise<{ campaignId: number }> {
   const c = await createCampaign({
     name: opts.name,
@@ -1209,6 +1305,13 @@ export async function schedule(opts: {
     scheduledAt: opts.scheduledAt.toISOString(),
     status: "scheduled",
     createdBy: opts.createdBy ?? null,
+    ctaLabel: opts.ctaLabel ?? null,
+    countdownEnabled: opts.countdownEnabled === true,
+    startsAt: opts.startsAt ?? null,
+    endsAt: opts.endsAt ?? null,
+    announcementTargetType: opts.announcementTargetType ?? null,
+    announcementTargetId: opts.announcementTargetId ?? null,
+    announcementTargetPayload: opts.announcementTargetPayload ?? null,
   });
   return { campaignId: c.id };
 }

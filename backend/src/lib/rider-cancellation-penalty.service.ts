@@ -1,7 +1,10 @@
 import { and, eq, sql } from "drizzle-orm";
 import { getDb, getSql } from "../db/client.js";
 import { riders, riderPenalties, riderWallet, walletLedger } from "../db/schema.js";
-import { resolveRiderDeliveryFeeFromCore } from "./credit-rider-order-on-delivered.js";
+import {
+  resolveCompleteOrderValuePaidByCustomer,
+  resolveDeliveryFarePaidToRider,
+} from "./rider-fare-basis.js";
 import { syncNegativeWalletBlocks } from "./rider-negative-wallet-blocks.js";
 
 export type RiderPenaltyScenarioCode = "AFTER_ACCEPT_DISPATCH" | "AFTER_MARK_PICKUP";
@@ -342,6 +345,7 @@ async function resolvePenaltyAmount(args: {
       rider_earning: string | null;
       fare_amount: string | null;
       billing_snapshot: unknown;
+      checkout_metadata: unknown;
     }[]
   >(
     `
@@ -349,7 +353,8 @@ async function resolvePenaltyAmount(args: {
         grand_total::text,
         rider_earning::text,
         fare_amount::text,
-        billing_snapshot
+        billing_snapshot,
+        checkout_metadata
       FROM orders_core
       WHERE id = $1
       LIMIT 1
@@ -359,17 +364,31 @@ async function resolvePenaltyAmount(args: {
   const core = rows[0];
   if (!core) return 0;
 
-  if (args.amountBase === "COMPLETE_ORDER_VALUE") {
-    const grand = Number(core.grand_total ?? 0);
-    return round2(Math.max(0, Number.isFinite(grand) ? grand : 0));
+  const billingSnap = core.billing_snapshot ?? core.checkout_metadata;
+  const normalizedBase = String(args.amountBase ?? "")
+    .trim()
+    .toUpperCase();
+
+  // Financial Rule Engine: COMPLETE_ORDER_VALUE = customer CTC (cashin + GatiCash).
+  if (normalizedBase === "COMPLETE_ORDER_VALUE" || normalizedBase === "CTC") {
+    return resolveCompleteOrderValuePaidByCustomer({
+      grandTotal: core.grand_total,
+      billingSnapshot: billingSnap,
+    });
   }
 
-  const deliveryFee = resolveRiderDeliveryFeeFromCore({
+  const fromBilling = resolveDeliveryFarePaidToRider({
     riderEarning: core.rider_earning,
     fareAmount: core.fare_amount,
     billingSnapshot: core.billing_snapshot,
   });
-  return round2(Math.max(0, deliveryFee));
+  if (fromBilling > 0) return fromBilling;
+
+  return resolveDeliveryFarePaidToRider({
+    riderEarning: core.rider_earning,
+    fareAmount: core.fare_amount,
+    billingSnapshot: core.checkout_metadata,
+  });
 }
 
 async function ledgerRefExists(riderId: number, ref: string): Promise<boolean> {

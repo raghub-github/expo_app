@@ -101,7 +101,7 @@ export const useLanguageStore = create<LanguageState>((set, get) => ({
         // Validate language code
         if (SUPPORTED_LANGUAGES.some(l => l.code === langJson)) {
           set({ selectedLanguage: langJson as LanguageCode });
-          console.log(`[LanguageStore] Hydrated language: ${langJson}`);
+          if (__DEV__) console.log(`[LanguageStore] Hydrated language: ${langJson}`);
         } else {
           console.warn(`[LanguageStore] Invalid stored language: ${langJson}, using default 'en'`);
           set({ selectedLanguage: "en" });

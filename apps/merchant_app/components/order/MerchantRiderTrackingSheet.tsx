@@ -54,6 +54,14 @@ export function MerchantRiderTrackingSheet({
 
   const variant: RiderCardVariant =
     data?.rider_display_variant ?? resolveRiderCardVariant(order);
+  const isTerminal =
+    variant === "delivered" ||
+    variant === "cancelled" ||
+    variant === "rto" ||
+    order.status === "delivered" ||
+    order.status === "rejected" ||
+    order.status === "rto";
+  const showContact = Boolean(riderMobile) && !isTerminal;
   const arrivalSubtitle =
     enrichment.arrivalSubtitle ??
     (data?.approach?.remaining_distance_m != null
@@ -157,15 +165,10 @@ export function MerchantRiderTrackingSheet({
               {subline}
             </Text>
           ) : null}
-          {riderMobile ? (
-            <Text style={styles.footerPhone} numberOfLines={1}>
-              {riderMobile}
-            </Text>
-          ) : null}
         </View>
-        {riderMobile ? (
+        {showContact ? (
           <Pressable
-            onPress={() => void callRider(riderMobile)}
+            onPress={() => void callRider(riderMobile!)}
             style={({ pressed }) => [styles.footerCallBtn, pressed && styles.pressed]}
             accessibilityLabel={`Call ${riderName}`}
           >

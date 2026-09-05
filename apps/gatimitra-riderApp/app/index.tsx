@@ -7,11 +7,9 @@ import { useOnboardingGate } from "@/src/hooks/useOnboardingGate";
 import { RiderBootstrapScreen } from "@/src/components/RiderBootstrapScreen";
 import { useEffect, useRef } from "react";
 
-const MIN_SPLASH_MS = 900;
-
 /**
- * Cold-start router. Keep the branded splash on screen until the root navigator
- * is mounted, then replace into login / onboarding / tabs.
+ * Cold-start router. Keep the branded splash until hydration is done, then
+ * replace once into login / onboarding / tabs (never into a wrong screen first).
  */
 export default function Index() {
   const nav = useRootNavigationState();
@@ -24,7 +22,6 @@ export default function Index() {
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
   const { ready: onboardingGateReady, href: onboardingHref, canAccessTabs } = useOnboardingGate();
   const lastReplaceTargetRef = useRef<string | null>(null);
-  const splashShownAtRef = useRef(Date.now());
 
   useEffect(() => {
     void hydrateLanguage().catch((err) => {
@@ -55,17 +52,13 @@ export default function Index() {
     }
 
     if (!target || lastReplaceTargetRef.current === String(target)) return;
-    const wait = Math.max(0, MIN_SPLASH_MS - (Date.now() - splashShownAtRef.current));
-    const timer = setTimeout(() => {
-      lastReplaceTargetRef.current = String(target);
-      try {
-        router.replace(target);
-      } catch (err) {
-        lastReplaceTargetRef.current = null;
-        console.warn("[Index] Navigation not ready yet:", err);
-      }
-    }, wait);
-    return () => clearTimeout(timer);
+    lastReplaceTargetRef.current = String(target);
+    try {
+      router.replace(target);
+    } catch (err) {
+      lastReplaceTargetRef.current = null;
+      console.warn("[Index] Navigation not ready yet:", err);
+    }
   }, [
     nav?.key,
     hydrated,

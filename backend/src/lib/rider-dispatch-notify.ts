@@ -83,97 +83,152 @@ function attachEarnings(
   };
 }
 
-/** Notify one eligible rider via push + rider websocket channel. */
+/** Notify one eligible rider via push + rider websocket channel. Never throws. */
 export async function notifyRiderDispatchOffer(
   target: DispatchOrderTarget,
   rider: EligibleDispatchRider
 ): Promise<void> {
-  const displayId = target.formattedOrderId?.trim() || target.orderId;
-  const label = SERVICE_LABEL[target.serviceType];
-  const dist = formatDistanceKm(rider.distanceMeters);
-
-  let earnings: DispatchOfferRiderEarnings | null = null;
   try {
-    earnings = await buildDispatchOfferRiderEarnings({
-      orderCoreId: target.orderCoreId,
-      serviceType: target.serviceType,
-      riderId: rider.riderId,
-      riderLat: rider.lat,
-      riderLng: rider.lng,
-      pickupDistanceMeters: rider.distanceMeters,
+    const displayId = target.formattedOrderId?.trim() || target.orderId;
+    const label = SERVICE_LABEL[target.serviceType];
+    const dist = formatDistanceKm(rider.distanceMeters);
+
+    let earnings: DispatchOfferRiderEarnings | null = null;
+    try {
+      earnings = await buildDispatchOfferRiderEarnings({
+        orderCoreId: target.orderCoreId,
+        serviceType: target.serviceType,
+        riderId: rider.riderId,
+        riderLat: rider.lat,
+        riderLng: rider.lng,
+        pickupDistanceMeters: rider.distanceMeters,
+      });
+    } catch (err) {
+      console.warn(
+        "[dispatch] offer payout failed",
+        target.orderId,
+        rider.riderId,
+        (err as Error).message
+      );
+    }
+
+    const payload = attachEarnings(
+      {
+        type: "dispatch_offer",
+        orderId: target.orderId,
+        formattedOrderId: target.formattedOrderId,
+        serviceType: target.serviceType,
+        category: toCategory(target.serviceType),
+        waveNumber: target.waveNumber,
+        pickupDistanceMeters: Math.round(rider.distanceMeters),
+        effectiveRadiusMeters: target.effectiveRadiusMeters,
+      },
+      earnings
+    );
+
+    await publishRiderEvent(rider.riderId, {
+      ...payload,
     });
+    console.info(
+      "[dispatch] WS_SEND",
+      JSON.stringify({
+        rider: rider.riderId,
+        order: target.orderId,
+        type: "dispatch_offer",
+      })
+    );
+
+    const earningLabel =
+      earnings != null && earnings.estimatedEarning > 0
+        ? `₹${earnings.estimatedEarning}`
+        : "";
+
+    try {
+      await sendNotification({
+        templateCode: "RIDER_DISPATCH_OFFER",
+        variables: {
+          orderId: target.orderId,
+          formattedOrderId: target.formattedOrderId ?? "",
+          serviceLabel: label,
+          displayId,
+          pickupDistance: dist,
+          serviceType: target.serviceType,
+          waveNumber: target.waveNumber,
+          estimatedEarning: earningLabel,
+          earningAmount: earnings?.estimatedEarning != null ? String(earnings.estimatedEarning) : "",
+        },
+        target: { user_id: `usr_${rider.riderId}` },
+        priority: "high",
+        metadata: {
+          type: "dispatch_offer",
+          gmType: "DISPATCH_OFFER",
+          orderId: target.orderId,
+          pickupDistanceMeters: String(Math.round(rider.distanceMeters)),
+          category: toCategory(target.serviceType),
+          ...(earnings?.estimatedEarning != null
+            ? {
+                estimatedEarning: String(earnings.estimatedEarning),
+                pricingEngine: "rider_percentage_v3",
+              }
+            : {}),
+        },
+      });
+      console.info(
+        "[dispatch] FCM_SEND",
+        JSON.stringify({
+          rider: rider.riderId,
+          order: target.orderId,
+          serviceType: target.serviceType,
+          waveNumber: target.waveNumber,
+          template: "RIDER_DISPATCH_OFFER",
+        })
+      );
+    } catch (err) {
+      console.warn(
+        "[dispatch] PUSH_FAILED",
+        JSON.stringify({
+          riderId: rider.riderId,
+          orderId: target.orderId,
+          reason: (err as Error).message,
+        })
+      );
+    }
   } catch (err) {
     console.warn(
-      "[dispatch] offer payout failed",
-      target.orderId,
-      rider.riderId,
-      (err as Error).message
+      "[dispatch] NOTIFY_RIDER_FAILED",
+      JSON.stringify({
+        riderId: rider.riderId,
+        orderId: target.orderId,
+        reason: err instanceof Error ? err.message : String(err),
+      })
     );
   }
-
-  const payload = attachEarnings(
-    {
-      type: "dispatch_offer",
-      orderId: target.orderId,
-      formattedOrderId: target.formattedOrderId,
-      serviceType: target.serviceType,
-      category: toCategory(target.serviceType),
-      waveNumber: target.waveNumber,
-      pickupDistanceMeters: Math.round(rider.distanceMeters),
-      effectiveRadiusMeters: target.effectiveRadiusMeters,
-    },
-    earnings
-  );
-
-  await publishRiderEvent(rider.riderId, {
-    ...payload,
-  });
-
-  const earningLabel =
-    earnings != null && earnings.estimatedEarning > 0
-      ? `₹${earnings.estimatedEarning}`
-      : "";
-
-  await sendNotification({
-    templateCode: "RIDER_DISPATCH_OFFER",
-    variables: {
-      orderId: target.orderId,
-      formattedOrderId: target.formattedOrderId ?? "",
-      serviceLabel: label,
-      displayId,
-      pickupDistance: dist,
-      serviceType: target.serviceType,
-      waveNumber: target.waveNumber,
-      estimatedEarning: earningLabel,
-      earningAmount: earnings?.estimatedEarning != null ? String(earnings.estimatedEarning) : "",
-    },
-    target: { user_id: `usr_${rider.riderId}` },
-    priority: "high",
-    metadata: {
-      type: "dispatch_offer",
-      gmType: "DISPATCH_OFFER",
-      orderId: target.orderId,
-      pickupDistanceMeters: String(Math.round(rider.distanceMeters)),
-      category: toCategory(target.serviceType),
-      ...(earnings?.estimatedEarning != null
-        ? {
-            estimatedEarning: String(earnings.estimatedEarning),
-            pricingEngine: "rider_percentage_v3",
-          }
-        : {}),
-    },
-  });
 }
 
-/** Notify all riders in the engine-filtered eligible set (same result set as pool API). */
+/**
+ * Fan-out to every engine-eligible rider in this wave.
+ * One rider's WS/FCM failure must not block the others.
+ * Offer rows are already persisted as offer_sent before this runs.
+ */
 export async function notifyEligibleRidersDispatchOffer(
   target: DispatchOrderTarget,
   riders: EligibleDispatchRider[]
 ): Promise<number> {
-  let sent = 0;
-  for (const rider of riders) {
-    await notifyRiderDispatchOffer(target, rider);
-    sent += 1;
+  if (riders.length === 0) return 0;
+  const { isOrderStillDispatchable } = await import("./order-dispatch.service.js");
+  if (!(await isOrderStillDispatchable(target.orderCoreId))) {
+    console.info(
+      "[dispatch] WAVE_STOPPED",
+      JSON.stringify({
+        order: target.orderId,
+        reason: "ORDER_ASSIGNED",
+      })
+    );
+    return 0;
   }
-  return sent;
+
+  const results = await Promise.allSettled(
+    riders.map((rider) => notifyRiderDispatchOffer(target, rider))
+  );
+  return results.filter((r) => r.status === "fulfilled").length;
 }

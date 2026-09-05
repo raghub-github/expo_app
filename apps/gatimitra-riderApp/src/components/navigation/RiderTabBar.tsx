@@ -4,8 +4,6 @@ import { Ionicons } from "@expo/vector-icons";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { resolveRiderTabBarBottomInset } from "@/src/hooks/useRiderBottomInset";
-import { useEarningsBankSheetStore } from "@/src/stores/earningsBankSheetStore";
-import { useProfileSelfieSheetStore } from "@/src/stores/profileSelfieSheetStore";
 import { colors } from "@/src/theme";
 import { TAB_LABEL_SIZE } from "@/src/theme/headerFonts";
 
@@ -29,13 +27,9 @@ const TABS: TabConfig[] = [
 export function RiderTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const bottomPad = resolveRiderTabBarBottomInset(insets.bottom);
-  const bankSheetOpen = useEarningsBankSheetStore((s) => s.visible);
-  const selfieSheetOpen = useProfileSelfieSheetStore((s) => s.visible);
-
-  if (bankSheetOpen || selfieSheetOpen) return null;
 
   return (
-    <View style={[styles.shell, { paddingBottom: bottomPad }]}>
+    <View style={[styles.shell, { paddingBottom: bottomPad }]} collapsable={false}>
       <View style={styles.bar}>
         {state.routes.map((route) => {
           if (route.name === "index") return null;

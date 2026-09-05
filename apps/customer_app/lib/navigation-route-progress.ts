@@ -117,10 +117,21 @@ export function trimRouteEndBeforePoint(route: MapLatLng[], end: MapLatLng, stop
   return [...route.slice(0, -1), trimmedEnd];
 }
 
+/** Trim first segment so line starts after rider marker. */
+export function trimRouteStartAfterPoint(route: MapLatLng[], start: MapLatLng, startAfterM = 16): MapLatLng[] {
+  if (route.length < 2) return route;
+  const next = route[1]!;
+  const depart = bearingDegrees(start, next);
+  const trimmedStart = offsetPoint(start, depart, startAfterM);
+  return [trimmedStart, ...route.slice(1)];
+}
+
 function buildRemainingOnRoad(remainingRaw: MapLatLng[]): MapLatLng[] {
   if (remainingRaw.length < 2) return remainingRaw;
+  const start = remainingRaw[0]!;
   const dest = remainingRaw[remainingRaw.length - 1]!;
-  const trimmed = trimRouteEndBeforePoint(remainingRaw, dest);
+  const afterStart = trimRouteStartAfterPoint(remainingRaw, start, 16);
+  const trimmed = trimRouteEndBeforePoint(afterStart, dest);
   return trimmed.length >= 2 ? trimmed : remainingRaw;
 }
 

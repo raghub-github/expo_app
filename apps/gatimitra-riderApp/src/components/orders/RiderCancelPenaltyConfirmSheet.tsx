@@ -45,19 +45,29 @@ export function RiderCancelPenaltyConfirmSheet({
   const bottomInset = useRiderBottomInset();
   const isFood = variant === "food";
 
-  const { data: preview, isLoading: previewLoading, isError: previewError } =
+  const { data: preview, isPending, isError: previewError } =
     useRiderCancellationPenaltyPreview(orderId, reasonCode, visible);
 
   const penaltyAmount = preview?.penaltyAmount ?? 0;
-  const appliesPenalty = Boolean(preview?.appliesPenalty);
+  const appliesPenalty = Boolean(preview?.appliesPenalty) && penaltyAmount > 0;
   const afterPickup = preview?.scenarioCode === "AFTER_MARK_PICKUP";
+  /** Only block UI when we have nothing to show yet — never flash spinner over cached data. */
+  const previewLoading = isPending && !preview;
   const busy = loading || previewLoading;
+  const amountUnresolved =
+    Boolean(preview?.appliesPenalty) &&
+    penaltyAmount <= 0 &&
+    (preview?.skipped === "penalty_amount_unresolved" ||
+      preview?.scenarioCode === "AFTER_MARK_PICKUP");
 
   const penaltyAmountLabel =
     penaltyAmount > 0
       ? formatInr(penaltyAmount)
       : afterPickup
-        ? t("orders.cancel.deliveryFarePenalty", "Delivery fare")
+        ? t(
+            "orders.cancel.completeOrderValuePending",
+            "Full order value (as paid by customer)"
+          )
         : t("orders.cancel.flatPenaltyPending", "Configured penalty");
 
   const title = isFood
@@ -99,7 +109,7 @@ export function RiderCancelPenaltyConfirmSheet({
                   {t("orders.cancel.checkingPenalty", "Checking penalty…")}
                 </Text>
               </View>
-            ) : appliesPenalty ? (
+            ) : appliesPenalty || amountUnresolved ? (
               <View style={styles.penaltyBox}>
                 <Ionicons name="wallet-outline" size={22} color={colors.error[700]} />
                 <View style={styles.penaltyInner}>
@@ -181,7 +191,7 @@ export function RiderCancelPenaltyConfirmSheet({
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <Text style={styles.btnDangerText}>
-                    {appliesPenalty
+                    {appliesPenalty || amountUnresolved
                       ? t("orders.cancel.proceedWithPenalty", "Proceed")
                       : isFood
                         ? t("orders.activeFood.confirmCancel", "Cancel delivery")

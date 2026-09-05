@@ -11,10 +11,34 @@ export function subscribeDispatchOfferWithdrawn(listener: (orderId: string) => v
   };
 }
 
+/** Close incoming modal listeners without a toast. */
+export function notifyIncomingOfferClosed(orderId: string): void {
+  const key = String(orderId ?? "").trim();
+  if (!key) return;
+  for (const listener of listeners) {
+    try {
+      listener(key);
+    } catch {
+      /* ignore listener errors */
+    }
+  }
+}
+
 export function acceptedByAnotherRiderMessage(): string {
   return i18n.t(
     "orders.incoming.acceptedByAnotherRider",
     "Accepted by another rider"
+  );
+}
+
+function isTakenByAnotherRiderReason(reason: string | null | undefined): boolean {
+  const r = String(reason ?? "")
+    .trim()
+    .toLowerCase();
+  return (
+    r.includes("accepted_by_other") ||
+    r.includes("order_assigned_to_other") ||
+    r === "order_already_assigned"
   );
 }
 
@@ -26,12 +50,23 @@ export function showAcceptedByAnotherRiderToast(orderId: string): boolean {
   setTimeout(() => recentlyNotified.delete(key), 60_000);
 
   useRiderToastStore.getState().showToast(acceptedByAnotherRiderMessage());
-  for (const listener of listeners) {
-    try {
-      listener(key);
-    } catch {
-      /* ignore listener errors */
-    }
-  }
+  notifyIncomingOfferClosed(key);
   return true;
+}
+
+/**
+ * Close the incoming offer UI. Only toast "Accepted by another rider" when
+ * that is the proven reason — customer cancel / expire must close silently.
+ */
+export function closeIncomingOfferFromRealtime(
+  orderId: string,
+  reason?: string | null
+): void {
+  const key = String(orderId ?? "").trim();
+  if (!key) return;
+  if (isTakenByAnotherRiderReason(reason)) {
+    showAcceptedByAnotherRiderToast(key);
+    return;
+  }
+  notifyIncomingOfferClosed(key);
 }

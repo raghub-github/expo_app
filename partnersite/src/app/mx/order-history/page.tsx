@@ -1074,6 +1074,7 @@ function OrderHistoryInner() {
         orderLabel={ridersLogModalOrderLabel}
         riders={ridersLogList}
         loading={ridersLogLoading}
+        allowCall={false}
         onClose={() => {
           setRidersLogModalOrderId(null);
           setRidersLogModalOrderLabel(null);

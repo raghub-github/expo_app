@@ -63,8 +63,15 @@ export async function loadInbox(cfg: NotificationApiConfig, opts: { limit?: numb
   return authedFetch<InboxPage>(cfg, `/v1/notifications/inbox?${qs.toString()}`);
 }
 
-export async function markClickedRemote(cfg: NotificationApiConfig, notificationId: string): Promise<void> {
-  await authedFetch<void>(cfg, `/v1/notifications/${notificationId}/click`, { method: "POST" });
+export async function markClickedRemote(
+  cfg: NotificationApiConfig,
+  notificationId: string,
+  opts?: { source?: "open" | "cta" },
+): Promise<void> {
+  await authedFetch<void>(cfg, `/v1/notifications/${notificationId}/click`, {
+    method: "POST",
+    body: JSON.stringify({ source: opts?.source === "cta" ? "cta" : "open" }),
+  });
 }
 
 export async function markReadRemote(cfg: NotificationApiConfig, notificationId: string): Promise<void> {

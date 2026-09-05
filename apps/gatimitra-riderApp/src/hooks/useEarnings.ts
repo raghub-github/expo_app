@@ -35,7 +35,7 @@ export function useEarningsSummary() {
     placeholderData: (previous) => previous ?? DEFAULT_EARNINGS_SUMMARY,
     staleTime: 60_000,
     gcTime: 10 * 60_000,
-    refetchInterval: 30_000,
+    refetchInterval: 60_000,
     retry: 2,
   });
 }

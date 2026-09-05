@@ -86,6 +86,21 @@ async function writeBaselines(entries: BaselineEntry[]): Promise<void> {
   await setItem(ORDER_TIP_BASELINES_KEY, JSON.stringify(entries));
 }
 
+const tipBaselineListeners = new Set<() => void>();
+
+export function subscribeTipBaselineRecorded(listener: () => void): () => void {
+  tipBaselineListeners.add(listener);
+  return () => {
+    tipBaselineListeners.delete(listener);
+  };
+}
+
+export async function hasRecentOrderTipBaseline(maxAgeMs: number): Promise<boolean> {
+  const now = Date.now();
+  const entries = await readBaselines();
+  return entries.some((row) => now - row.recordedAt < maxAgeMs);
+}
+
 export async function recordOrderTipBaseline(
   orderId: string,
   tipAmount: number,
@@ -107,6 +122,7 @@ export async function recordOrderTipBaseline(
     recordedAt: Date.now(),
   });
   await writeBaselines(without);
+  for (const listener of tipBaselineListeners) listener();
 }
 
 export async function getOrderTipBaseline(orderId: string): Promise<number> {

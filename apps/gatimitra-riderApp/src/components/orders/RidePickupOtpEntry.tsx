@@ -92,8 +92,8 @@ export function RidePickupOtpEntry({
   useEffect(() => {
     resetOtpState();
     if (usesKeypad) return;
-    const timer = setTimeout(() => inputRef.current?.focus(), 280);
-    return () => clearTimeout(timer);
+    const timer = requestAnimationFrame(() => inputRef.current?.focus());
+    return () => cancelAnimationFrame(timer);
   }, [resetKey, resetOtpState, usesKeypad]);
 
   useEffect(() => {

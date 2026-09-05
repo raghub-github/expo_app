@@ -30,7 +30,7 @@ import { PROFILE_CARD_RADIUS } from "@/src/components/profile/ProfilePromoCard";
 import { profileHeroShadow } from "@/src/components/profile/profileCardShadow";
 import { RiderRatingBadge } from "@/src/components/profile/RiderRatingBadge";
 import { formatRiderRatingDisplay } from "@/src/lib/format-rider-rating";
-import { toAbsoluteImageUrl } from "@/src/utils/mediaUrl";
+import { resolveRiderSelfieDisplayUrl, withImageCacheBust } from "@/src/utils/mediaUrl";
 import { fetchRiderReferralConfig } from "@/src/services/referral.service";
 import { ProfileSelfieUpdateSheet } from "@/src/components/profile/ProfileSelfieUpdateSheet";
 import { ProfileAvatarCameraBadge } from "@/src/components/profile/ProfileAvatarCameraBadge";
@@ -69,12 +69,20 @@ export function ProfilePage() {
   const session = useSessionStore((s) => s.session);
   const onboardingData = useOnboardingStore((s) => s.data);
   const riderId = session?.riderId ?? session?.userId;
-  const { data: riderStatus } = useRiderStatus(riderId);
+  const { data: riderStatus, refetch: refetchRiderStatus } = useRiderStatus(riderId);
   const { data: vehicleStatus } = useRiderVehicle();
   const [avatarError, setAvatarError] = useState(false);
+  const [localSelfieUrl, setLocalSelfieUrl] = useState<string | null>(null);
+  const [avatarBust, setAvatarBust] = useState(0);
   const openLogoutSheet = useLogoutSheetStore((s) => s.open);
   const [languageSheetVisible, setLanguageSheetVisible] = useState(false);
   const [selfieSheetOpen, setSelfieSheetOpen] = useState(false);
+
+  // Always pull latest selfie_url from backend when Profile opens (status cache is sticky).
+  useEffect(() => {
+    if (!riderId) return;
+    void refetchRiderStatus();
+  }, [riderId, refetchRiderStatus]);
 
   const riderName =
     riderStatus?.name?.trim() ||
@@ -84,13 +92,17 @@ export function ProfilePage() {
   const firstName = firstNameFrom(riderName);
   const displayId = riderDisplayId(riderId, session?.userId);
 
-  const rawAvatarUri =
-    riderStatus?.selfieUrl ||
-    onboardingData.selfieSignedUrl ||
-    onboardingData.selfieUri ||
-    null;
+  const rawAvatarUri = resolveRiderSelfieDisplayUrl({
+    localSelfieUrl,
+    serverSelfieUrl: riderStatus?.selfieUrl,
+    onboardingSignedUrl: onboardingData.selfieSignedUrl,
+    onboardingLocalUri: onboardingData.selfieUri,
+  });
 
-  const avatarUri = useMemo(() => toAbsoluteImageUrl(rawAvatarUri), [rawAvatarUri]);
+  const avatarUri = useMemo(
+    () => withImageCacheBust(rawAvatarUri, avatarBust || null),
+    [rawAvatarUri, avatarBust]
+  );
 
   useEffect(() => {
     setAvatarError(false);
@@ -175,9 +187,17 @@ export function ProfilePage() {
                 <Pressable onPress={openProfile} style={styles.avatarCircle}>
                   {showAvatar && avatarUri ? (
                     <Image
+                      key={avatarUri}
                       source={{ uri: avatarUri }}
                       style={styles.avatarImg}
-                      onError={() => setAvatarError(true)}
+                      onError={() => {
+                        setAvatarError(true);
+                        // Server URL may have been stale signed R2 — refetch status once.
+                        void refetchRiderStatus().then(() => {
+                          setAvatarError(false);
+                          setAvatarBust(Date.now());
+                        });
+                      }}
                     />
                   ) : (
                     <Text style={styles.avatarLetters}>{avatarInitials}</Text>
@@ -262,7 +282,11 @@ export function ProfilePage() {
       <ProfileSelfieUpdateSheet
         visible={selfieSheetOpen}
         onClose={() => setSelfieSheetOpen(false)}
-        onSaved={() => setAvatarError(false)}
+        onSaved={(url) => {
+          setAvatarError(false);
+          setLocalSelfieUrl(url);
+          setAvatarBust(Date.now());
+        }}
       />
 
     </View>

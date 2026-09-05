@@ -2,8 +2,9 @@
 
 import React, { useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { User, X } from 'lucide-react';
+import { Phone, User, X } from 'lucide-react';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
+import { isPartnerOrderClosedForContact } from '@/lib/partner-orders-unify';
 
 function ordinalLabel(n: number | null | undefined): string | null {
   if (n == null || n < 1) return null;
@@ -107,12 +108,17 @@ export function OrderCustomerSidesheet({ open, onClose, order }: OrderCustomerSi
                 </div>
               )}
 
-              {order.customer_phone && (
-                <p className="text-center text-sm text-gray-700 pt-2">
-                  <span className="text-gray-500">Phone: </span>
-                  <span className="font-semibold tabular-nums">{order.customer_phone}</span>
-                </p>
-              )}
+              {order.customer_phone && !isPartnerOrderClosedForContact(order.order_status) ? (
+                <div className="flex justify-center pt-2">
+                  <a
+                    href={`tel:${order.customer_phone}`}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-emerald-600 text-white hover:bg-emerald-700"
+                    aria-label="Call customer"
+                  >
+                    <Phone size={16} aria-hidden />
+                  </a>
+                </div>
+              ) : null}
 
               {(order.drop_address_normalized || order.drop_address_raw) && (
                 <p className="text-xs text-gray-600 leading-relaxed text-center pt-1">

@@ -437,12 +437,15 @@ export const en = {
       adminCancelled: "Order cancelled by admin",
     },
     cancel: {
+      successTitle: "Cancelled by Me",
       penaltyDebitedTitle: "Penalty applied",
       penaltyDebitedMessage: "₹{{amount}} has been debited from your wallet as a penalty.",
       penaltyHint: "This amount will be debited from your wallet as a penalty.",
     },
     adminCancelled: {
       title: "Cancelled by Gatimitra Team",
+      titleByMe: "Cancelled by Me",
+      titleByUser: "Cancelled by User",
       orderId: "Order {{id}}",
       message:
         "This order is no longer active. You can accept new orders from the home screen.",

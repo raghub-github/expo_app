@@ -82,7 +82,7 @@ export function RiderVehiclesCard({ riderId }: { riderId: number }) {
     <div className="rounded-xl border border-blue-200 bg-white">
       <div className="border-b border-blue-100 px-5 py-3">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-blue-700">Vehicles ({data.vehicles.length}/2)</p>
-        <p className="text-xs text-slate-500">Per-vehicle service eligibility · backend-authoritative</p>
+        <p className="text-xs text-slate-500">Per-vehicle service eligibility · approved RC counts as ownership proof</p>
       </div>
 
       <div className="grid gap-3 px-5 py-4 sm:grid-cols-2">

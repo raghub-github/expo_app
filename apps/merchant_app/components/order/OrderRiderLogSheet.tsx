@@ -14,9 +14,19 @@ type Props = {
   visible: boolean;
   riders: FoodOrderRiderLogEntry[];
   onClose: () => void;
+  pickupRiderId?: number | null;
+  allowCall?: boolean;
 };
 
-function HistoryRiderRow({ rider }: { rider: FoodOrderRiderLogEntry }) {
+function HistoryRiderRow({
+  rider,
+  isPickup,
+  allowCall,
+}: {
+  rider: FoodOrderRiderLogEntry;
+  isPickup: boolean;
+  allowCall: boolean;
+}) {
   const [selfieOpen, setSelfieOpen] = useState(false);
   const inactive = isInactiveRiderAssignment(
     rider.assignment_status,
@@ -27,7 +37,7 @@ function HistoryRiderRow({ rider }: { rider: FoodOrderRiderLogEntry }) {
   const mobile = (rider.rider_mobile ?? "").trim();
 
   return (
-    <View style={[styles.card, inactive ? styles.cardMuted : null]}>
+    <View style={[styles.card, inactive ? styles.cardMuted : isPickup ? styles.cardPickup : null]}>
       <View style={styles.row}>
         <RiderSelfieAvatar
           selfieUrl={rider.selfie_url}
@@ -39,8 +49,14 @@ function HistoryRiderRow({ rider }: { rider: FoodOrderRiderLogEntry }) {
           <Text style={styles.name} numberOfLines={1}>
             {name}
           </Text>
+          {isPickup ? (
+            <View style={styles.pickupBadge}>
+              <Ionicons name="checkmark-circle" size={12} color="#047857" />
+              <Text style={styles.pickupBadgeText}>Picked up this order</Text>
+            </View>
+          ) : null}
         </View>
-        {mobile ? (
+        {allowCall && mobile ? (
           <Pressable
             onPress={() => void Linking.openURL(`tel:${mobile}`)}
             style={({ pressed }) => [styles.callBtn, pressed && styles.pressed]}
@@ -53,7 +69,7 @@ function HistoryRiderRow({ rider }: { rider: FoodOrderRiderLogEntry }) {
 
       <RiderAssignmentHorizontalTimeline rider={rider} />
 
-      {inactive ? (
+      {inactive && !isPickup && !rider.picked_up_at?.trim() ? (
         <View style={styles.warnBanner}>
           <Ionicons name="warning-outline" size={14} color="#991B1B" />
           <Text style={styles.warnText}>
@@ -71,13 +87,13 @@ function HistoryRiderRow({ rider }: { rider: FoodOrderRiderLogEntry }) {
   );
 }
 
-export function OrderRiderLogSheet({ visible, riders, onClose }: Props) {
+export function OrderRiderLogSheet({ visible, riders, onClose, pickupRiderId, allowCall = false }: Props) {
   return (
     <MerchantBottomSheetShell visible={visible} onClose={onClose} maxHeightPercent="86%">
       <View style={styles.header}>
-        <Text style={styles.title}>Old rider's log</Text>
+        <Text style={styles.title}>All riders</Text>
         <Text style={styles.subtitle}>
-          Previously assigned partners for this order (current assignee excluded)
+          Every delivery partner assigned to this order
         </Text>
       </View>
 
@@ -89,7 +105,7 @@ export function OrderRiderLogSheet({ visible, riders, onClose }: Props) {
         {riders.length === 0 ? (
           <View style={styles.empty}>
             <Ionicons name="bicycle-outline" size={36} color={GatiMitraMerchant.textTertiary} />
-            <Text style={styles.emptyText}>No previous rider assignments yet</Text>
+            <Text style={styles.emptyText}>No rider assignments yet</Text>
           </View>
         ) : (
           riders.map((r, idx) => (
@@ -97,7 +113,14 @@ export function OrderRiderLogSheet({ visible, riders, onClose }: Props) {
               key={`${r.rider_id}-${r.assigned_at ?? r.cancelled_at ?? idx}`}
               style={idx > 0 ? styles.gap : null}
             >
-              <HistoryRiderRow rider={r} />
+              <HistoryRiderRow
+                rider={r}
+                allowCall={allowCall}
+                isPickup={
+                  Boolean(r.picked_up_at?.trim()) &&
+                  (pickupRiderId == null || Number(r.rider_id) === Number(pickupRiderId))
+                }
+              />
             </View>
           ))
         )}
@@ -157,6 +180,21 @@ const styles = StyleSheet.create({
     backgroundColor: "#FAFAFA",
     borderColor: "#FECACA",
   },
+  cardPickup: {
+    borderColor: "#A7F3D0",
+    backgroundColor: "#F0FDF4",
+  },
+  pickupBadge: {
+    marginTop: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  pickupBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#047857",
+  },
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -167,7 +205,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
-    textAlign: "center",
   },
   warnBanner: {
     marginTop: 10,

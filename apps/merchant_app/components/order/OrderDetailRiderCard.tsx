@@ -6,9 +6,12 @@ import type { FoodOrderRiderLogEntry } from "@/services/ordersApi";
 import type { OrderRecord, OrderStage } from "@/hooks/useOrders";
 import {
   isInactiveRiderAssignment,
+  logRowsAreSameAssignment,
   orderHasAssignedRider,
   pendingRiderStatusLabel,
-  resolveRiderHistoryExcludingCurrent,
+  resolvePickupRiderFromLog,
+  shouldShowAllRidersButton,
+  sortRidersLogForDisplay,
 } from "@/lib/orderAssignedRider";
 import { RiderSelfieAvatar } from "@/components/order/RiderSelfieAvatar";
 import { RiderSelfieViewerModal } from "@/components/order/RiderSelfieViewerModal";
@@ -16,6 +19,7 @@ import { RiderAssignPendingCard } from "@/components/order/RiderAssignPendingCar
 import type { NearbyDispatchRiderSummary } from "@/components/order/RiderAssignPendingCard";
 import { OrderRiderLogSheet } from "@/components/order/OrderRiderLogSheet";
 import { MerchantAssignedRiderRow } from "@/components/order/MerchantAssignedRiderRow";
+import { RiderAssignmentHorizontalTimeline } from "@/components/order/RiderAssignmentHorizontalTimeline";
 import { GatiMitraMerchant, CARD_RADIUS, CARD_PADDING, FONT_SECONDARY } from "@/constants/theme";
 
 type Props = {
@@ -29,6 +33,8 @@ type Props = {
   orderStage?: OrderStage;
   showPendingAssign?: boolean;
   nearbySummary?: NearbyDispatchRiderSummary | null;
+  /** Hide rider call / number after the order is delivered or cancelled. */
+  allowCall?: boolean;
 };
 
 function riderStatusLabel(
@@ -40,7 +46,7 @@ function riderStatusLabel(
     return pendingRiderStatusLabel(orderStage ?? "created");
   }
   if (isInactiveRiderAssignment(rider.assignment_status, rider.cancelled_at, rider.rejected_at)) {
-    if (rider.picked_up_at) return "Cancelled after pickup — do not handover";
+    if (rider.picked_up_at) return "Cancelled after pickup";
     return "Assignment cancelled — do not handover";
   }
   if (rider.delivered_at) return "Delivered by rider";
@@ -55,15 +61,18 @@ function CancelledRiderRow({
   rider,
   reachedAt,
   orderStage,
+  allowCall,
 }: {
   rider: FoodOrderRiderLogEntry;
   reachedAt?: string | null;
   orderStage?: OrderStage;
+  allowCall: boolean;
 }) {
   const [selfieModalOpen, setSelfieModalOpen] = useState(false);
   const status = riderStatusLabel(rider, reachedAt, orderStage);
   const name = (rider.rider_name ?? "").trim() || "Delivery partner";
   const mobile = (rider.rider_mobile ?? "").trim();
+  const pickedUp = Boolean(rider.picked_up_at?.trim());
 
   return (
     <View style={[styles.card, styles.cardMuted]}>
@@ -79,8 +88,14 @@ function CancelledRiderRow({
             {name}
           </Text>
           <Text style={[styles.status, styles.statusCancelled]}>{status}</Text>
+          {pickedUp ? (
+            <View style={styles.pickupBadge}>
+              <Ionicons name="checkmark-circle" size={12} color="#047857" />
+              <Text style={styles.pickupBadgeText}>Picked up this order</Text>
+            </View>
+          ) : null}
         </View>
-        {mobile ? (
+        {allowCall && mobile ? (
           <Pressable
             onPress={() => void Linking.openURL(`tel:${mobile}`)}
             style={({ pressed }) => [styles.callBtn, pressed && styles.pressed]}
@@ -90,13 +105,66 @@ function CancelledRiderRow({
           </Pressable>
         ) : null}
       </View>
-      <View style={styles.warnBanner}>
-        <Ionicons name="warning-outline" size={14} color="#991B1B" />
-        <Text style={styles.warnText}>
-          Previously assigned — cancelled. Do not hand over this order to this rider.
-        </Text>
-      </View>
+      <RiderAssignmentHorizontalTimeline rider={rider} />
+      {!pickedUp ? (
+        <View style={styles.warnBanner}>
+          <Ionicons name="warning-outline" size={14} color="#991B1B" />
+          <Text style={styles.warnText}>
+            Previously assigned — cancelled. Do not hand over this order to this rider.
+          </Text>
+        </View>
+      ) : null}
 
+      <RiderSelfieViewerModal
+        visible={selfieModalOpen}
+        imageUrl={rider.selfie_url ?? null}
+        riderName={name}
+        onClose={() => setSelfieModalOpen(false)}
+      />
+    </View>
+  );
+}
+
+function PickupRecordRow({
+  rider,
+  allowCall,
+}: {
+  rider: FoodOrderRiderLogEntry;
+  allowCall: boolean;
+}) {
+  const [selfieModalOpen, setSelfieModalOpen] = useState(false);
+  const name = (rider.rider_name ?? "").trim() || "Delivery partner";
+  const mobile = (rider.rider_mobile ?? "").trim();
+
+  return (
+    <View style={[styles.card, styles.cardPickup]}>
+      <View style={styles.row}>
+        <RiderSelfieAvatar
+          selfieUrl={rider.selfie_url}
+          riderName={name}
+          size={44}
+          onPress={() => setSelfieModalOpen(true)}
+        />
+        <View style={styles.body}>
+          <Text style={styles.name} numberOfLines={1}>
+            {name}
+          </Text>
+          <View style={styles.pickupBadge}>
+            <Ionicons name="checkmark-circle" size={12} color="#047857" />
+            <Text style={styles.pickupBadgeText}>Picked up this order</Text>
+          </View>
+        </View>
+        {allowCall && mobile ? (
+          <Pressable
+            onPress={() => void Linking.openURL(`tel:${mobile}`)}
+            style={({ pressed }) => [styles.callBtn, pressed && styles.pressed]}
+            accessibilityLabel={`Call ${name}`}
+          >
+            <Ionicons name="call" size={18} color="#FFFFFF" />
+          </Pressable>
+        ) : null}
+      </View>
+      <RiderAssignmentHorizontalTimeline rider={rider} />
       <RiderSelfieViewerModal
         visible={selfieModalOpen}
         imageUrl={rider.selfie_url ?? null}
@@ -116,52 +184,22 @@ export function OrderDetailRiderCard({
   orderStage,
   showPendingAssign = false,
   nearbySummary = null,
+  allowCall = false,
 }: Props) {
   const [logOpen, setLogOpen] = useState(false);
   const deliveryTypeUpper = String(deliveryType).toUpperCase();
   const isGatiMitra = deliveryTypeUpper === "GATIMITRA_RIDER";
   const isSelfPickup = deliveryTypeUpper === "SELF_PICKUP";
 
-  if (isSelfPickup) {
-    return (
-      <View style={styles.wrap}>
-        <Text style={styles.fulfillmentHeading}>Fulfillment</Text>
-        <View style={styles.selfPickupCard}>
-          <View style={styles.selfPickupIcon}>
-            <Ionicons name="walk-outline" size={16} color="#92400E" />
-          </View>
-          <View style={styles.selfPickupBody}>
-            <Text style={styles.selfPickupTitle} numberOfLines={1}>
-              Self-Pick-Up
-            </Text>
-            <Text style={styles.selfPickupSub} numberOfLines={2}>
-              Customer will come to the store and pick up this order.
-            </Text>
-          </View>
-        </View>
-      </View>
-    );
-  }
-
-  const historyRiders = useMemo(
-    () => resolveRiderHistoryExcludingCurrent(ridersLog, rider),
-    [ridersLog, rider]
-  );
-
-  /** "View old" only when more than one distinct rider was involved. */
-  const showLogButton = useMemo(() => {
-    if (historyRiders.length === 0) return false;
-    const ids = new Set<number>();
-    for (const r of ridersLog) {
-      const id = Number(r.rider_id);
-      if (Number.isFinite(id) && id > 0) ids.add(id);
+  const allRiders = useMemo(() => {
+    const merged = [...ridersLog];
+    if (rider && !merged.some((r) => logRowsAreSameAssignment(r, rider))) {
+      merged.push(rider);
     }
-    if (rider?.rider_id != null) {
-      const id = Number(rider.rider_id);
-      if (Number.isFinite(id) && id > 0) ids.add(id);
-    }
-    return ids.size > 1;
-  }, [historyRiders.length, ridersLog, rider]);
+    return sortRidersLogForDisplay(merged);
+  }, [ridersLog, rider]);
+  const pickupRider = useMemo(() => resolvePickupRiderFromLog(allRiders), [allRiders]);
+  const showAllRidersButton = shouldShowAllRidersButton(allRiders);
 
   const assignedOrder = useMemo(() => {
     if (!orderRecord) return null;
@@ -215,18 +253,50 @@ export function OrderDetailRiderCard({
     };
   }, [orderRecord, rider, riderReachedAt, ridersLog]);
 
-  if (!isGatiMitra && !rider && historyRiders.length === 0 && !assignedOrder) return null;
+  if (isSelfPickup) {
+    return (
+      <View style={styles.wrap}>
+        <Text style={styles.fulfillmentHeading}>Fulfillment</Text>
+        <View style={styles.selfPickupCard}>
+          <View style={styles.selfPickupIcon}>
+            <Ionicons name="walk-outline" size={16} color="#92400E" />
+          </View>
+          <View style={styles.selfPickupBody}>
+            <Text style={styles.selfPickupTitle} numberOfLines={1}>
+              Self-Pick-Up
+            </Text>
+            <Text style={styles.selfPickupSub} numberOfLines={2}>
+              Customer will come to the store and pick up this order.
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
+  if (!isGatiMitra && !rider && allRiders.length === 0 && !assignedOrder) return null;
 
   const activeInactive =
     rider != null &&
     isInactiveRiderAssignment(rider.assignment_status, rider.cancelled_at, rider.rejected_at);
 
   const showLiveAssigned = assignedOrder != null;
+  const pickupOnLiveCard =
+    pickupRider != null &&
+    assignedOrder != null &&
+    Number(assignedOrder.riderId) === Number(pickupRider.rider_id) &&
+    Boolean(assignedOrder.riderPickedUpAt);
+  const pickupOnCancelledCard =
+    pickupRider != null && rider != null && logRowsAreSameAssignment(rider, pickupRider);
+  const showSeparatePickupCard =
+    pickupRider != null && !pickupOnLiveCard && !pickupOnCancelledCard;
+
   const hasContent =
     (showPendingAssign && !showLiveAssigned) ||
     showLiveAssigned ||
     (!showLiveAssigned && rider != null && activeInactive) ||
-    showLogButton;
+    showSeparatePickupCard ||
+    showAllRidersButton;
 
   if (!hasContent) return null;
 
@@ -234,16 +304,16 @@ export function OrderDetailRiderCard({
     <View style={styles.wrap}>
       <View style={styles.headingRow}>
         <Text style={styles.heading}>Delivery partner</Text>
-        {showLogButton ? (
+        {showAllRidersButton ? (
           <Pressable
             onPress={() => setLogOpen(true)}
             hitSlop={8}
-            style={({ pressed }) => [styles.logBtn, pressed && styles.pressed]}
+            style={({ pressed }) => [styles.headingAllBtn, pressed && styles.pressed]}
             accessibilityRole="button"
-            accessibilityLabel="View old riders"
+            accessibilityLabel="View all riders"
           >
-            <Ionicons name="time-outline" size={14} color={GatiMitraMerchant.primary} />
-            <Text style={styles.logBtnText}>View old</Text>
+            <Ionicons name="people-outline" size={15} color={GatiMitraMerchant.primary} />
+            <Text style={styles.headingAllBtnText}>View all riders</Text>
           </Pressable>
         ) : null}
       </View>
@@ -256,17 +326,51 @@ export function OrderDetailRiderCard({
 
       {showLiveAssigned && assignedOrder ? (
         <View style={styles.card}>
-          <MerchantAssignedRiderRow order={assignedOrder} embedded alwaysVisibleTracking />
+          <MerchantAssignedRiderRow
+            order={assignedOrder}
+            embedded
+            alwaysVisibleTracking
+            showCall={allowCall}
+          />
+          {pickupOnLiveCard && pickupRider ? (
+            <RiderAssignmentHorizontalTimeline rider={pickupRider} />
+          ) : null}
         </View>
       ) : null}
 
       {!showLiveAssigned && rider && activeInactive ? (
-        <CancelledRiderRow rider={rider} reachedAt={riderReachedAt} orderStage={orderStage} />
+        <CancelledRiderRow
+          rider={rider}
+          reachedAt={riderReachedAt}
+          orderStage={orderStage}
+          allowCall={allowCall}
+        />
+      ) : null}
+
+      {showSeparatePickupCard && pickupRider ? (
+        <View style={showLiveAssigned || (rider && activeInactive) ? styles.stackGap : undefined}>
+          <PickupRecordRow rider={pickupRider} allowCall={allowCall} />
+        </View>
+      ) : null}
+
+      {showAllRidersButton ? (
+        <Pressable
+          onPress={() => setLogOpen(true)}
+          style={({ pressed }) => [styles.allRidersBtn, pressed && styles.pressed]}
+          accessibilityRole="button"
+          accessibilityLabel="View all riders"
+        >
+          <Ionicons name="people-outline" size={16} color={GatiMitraMerchant.primary} />
+          <Text style={styles.allRidersBtnText}>View all riders</Text>
+          <Text style={styles.allRidersCount}>{allRiders.length}</Text>
+        </Pressable>
       ) : null}
 
       <OrderRiderLogSheet
         visible={logOpen}
-        riders={historyRiders}
+        riders={allRiders}
+        pickupRiderId={pickupRider?.rider_id ?? null}
+        allowCall={allowCall}
         onClose={() => setLogOpen(false)}
       />
     </View>
@@ -335,19 +439,52 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
   },
-  logBtn: {
+  headingAllBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
     paddingVertical: 4,
     paddingHorizontal: 2,
     flexShrink: 0,
-    maxWidth: "52%",
+    maxWidth: "58%",
   },
-  logBtnText: {
+  headingAllBtnText: {
     fontSize: 12,
     fontWeight: "700",
     color: GatiMitraMerchant.primary,
+  },
+  allRidersBtn: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    minHeight: 42,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#99F6E4",
+    backgroundColor: "#F0FDFA",
+    paddingHorizontal: 12,
+  },
+  allRidersBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: GatiMitraMerchant.primary,
+  },
+  allRidersCount: {
+    minWidth: 20,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    overflow: "hidden",
+    backgroundColor: "#CCFBF1",
+    fontSize: 11,
+    fontWeight: "800",
+    color: GatiMitraMerchant.primary,
+    textAlign: "center",
+  },
+  stackGap: {
+    marginTop: 10,
   },
   card: {
     backgroundColor: "#FFFFFF",
@@ -359,6 +496,21 @@ const styles = StyleSheet.create({
   cardMuted: {
     backgroundColor: "#FAFAFA",
     borderColor: "#FECACA",
+  },
+  cardPickup: {
+    borderColor: "#A7F3D0",
+    backgroundColor: "#F0FDF4",
+  },
+  pickupBadge: {
+    marginTop: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  pickupBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#047857",
   },
   pendingCard: {
     backgroundColor: "#FFFFFF",

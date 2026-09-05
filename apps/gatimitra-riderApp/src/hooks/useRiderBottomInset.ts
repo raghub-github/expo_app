@@ -9,7 +9,7 @@ export const ANDROID_SYSTEM_NAV_FALLBACK_DP = 48;
 
 /** Reliable bottom inset: safe area + Android fallback when inset is missing. */
 export function resolveRiderBottomInset(safeBottomInset: number): number {
-  if (Platform.OS === "android" && safeBottomInset < 20) {
+  if (Platform.OS === "android" && safeBottomInset < 28) {
     return Math.max(safeBottomInset, ANDROID_SYSTEM_NAV_FALLBACK_DP);
   }
   return Math.max(safeBottomInset, Platform.OS === "ios" ? 0 : 8);
