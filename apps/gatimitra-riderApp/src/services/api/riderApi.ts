@@ -1410,6 +1410,41 @@ export const riderApi = {
   },
 
   /**
+   * Onboarding: which services THIS vehicle (being entered in the form) can deliver. Runs the
+   * backend eligibility engine with the form's vehicle attributes merged over the rider's real
+   * DL/RC verification + geo policy. The "Services you will deliver" picker offers only the
+   * eligible services and explains why the rest are blocked. The app never computes this.
+   */
+  async previewEligibleServices(input: {
+    vehicleType?: string | null;
+    vehicleCategory?: string | null;
+    fuelKind?: string | null;
+    isCommercial?: boolean | null;
+    ownership?: "commercial" | "non_commercial" | null;
+    lat?: number | null;
+    lng?: number | null;
+  }) {
+    const client = createApiClient();
+    const body: Record<string, unknown> = {};
+    if (input.vehicleType) body.vehicleType = input.vehicleType;
+    if (input.vehicleCategory) body.vehicleCategory = input.vehicleCategory;
+    if (input.fuelKind) body.fuelKind = input.fuelKind;
+    if (input.isCommercial != null) body.isCommercial = input.isCommercial;
+    if (input.ownership != null) body.ownership = input.ownership;
+    if (input.lat != null && Number.isFinite(input.lat)) body.lat = input.lat;
+    if (input.lng != null && Number.isFinite(input.lng)) body.lng = input.lng;
+    return client.request<z.infer<typeof RiderEligibilityStatusSchema>>(
+      "/v1/rider/eligibility/preview-services",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        responseSchema: RiderEligibilityStatusSchema,
+      }
+    );
+  },
+
+  /**
    * Backend-authoritative onboarding + eligibility summary (§25, §26). The onboarding UI,
    * payment gate, and Profile → Documents render this — never a client formula.
    */

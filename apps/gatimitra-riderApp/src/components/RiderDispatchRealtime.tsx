@@ -332,9 +332,9 @@ export function RiderDispatchRealtime() {
             ) {
               const oid = String(
                 payload.orderId ??
-                  payload.order_id ??
-                  payload.offerId ??
-                  payload.offer_id ??
+                  (payload as { order_id?: string }).order_id ??
+                  (payload as { offerId?: string }).offerId ??
+                  (payload as { offer_id?: string }).offer_id ??
                   ""
               ).trim();
               riderDispatchLog("REALTIME EVENT RECEIVED", {

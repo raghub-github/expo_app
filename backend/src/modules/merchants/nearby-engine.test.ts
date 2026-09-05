@@ -45,27 +45,27 @@ describe("effectiveServiceRadiusKm", () => {
 });
 
 describe("bbox math — sanity checks", () => {
-  // The engine uses:
-  //   latDelta = ROUGH_RADIUS_KM / 111.32
-  //   lngDelta = ROUGH_RADIUS_KM / (111.32 × cos(lat))
+  // The engine sizes the bbox to `globalCap` (the air ceiling, default MAX_RADIUS_KM = 15 km):
+  //   latDelta = globalCap / 111.32
+  //   lngDelta = globalCap / (111.32 × cos(lat))
   // Pin those numbers so any change shows up in review.
-  it("latDelta at 12 km is about 0.108 degrees", () => {
-    const latDelta = 12 / 111.32;
-    assert.ok(Math.abs(latDelta - 0.1078) < 0.001);
+  it("latDelta at 15 km is about 0.135 degrees", () => {
+    const latDelta = 15 / 111.32;
+    assert.ok(Math.abs(latDelta - 0.1347) < 0.001);
   });
 
-  it("lngDelta at Bengaluru (12.97°N) is about 0.110 degrees", () => {
+  it("lngDelta at Bengaluru (12.97°N) is about 0.138 degrees", () => {
     const lat = 12.9716;
     const cosLat = Math.cos((lat * Math.PI) / 180);
-    const lngDelta = 12 / (111.32 * cosLat);
-    assert.ok(Math.abs(lngDelta - 0.1107) < 0.002);
+    const lngDelta = 15 / (111.32 * cosLat);
+    assert.ok(Math.abs(lngDelta - 0.1383) < 0.002);
   });
 
-  it("lngDelta at Srinagar (34.08°N) is wider (~0.130) — cos shrinks", () => {
+  it("lngDelta at Srinagar (34.08°N) is wider (~0.163) — cos shrinks", () => {
     const lat = 34.0837;
     const cosLat = Math.cos((lat * Math.PI) / 180);
-    const lngDelta = 12 / (111.32 * cosLat);
-    assert.ok(lngDelta > 0.125 && lngDelta < 0.135);
+    const lngDelta = 15 / (111.32 * cosLat);
+    assert.ok(lngDelta > 0.158 && lngDelta < 0.168);
   });
 
   it("near-pole guard: clamps cos(lat) to 0.1 so lngDelta never explodes", () => {

@@ -214,7 +214,7 @@ export async function executeRiderAction<T>(args: ExecuteArgs<T>): Promise<T> {
       dropActiveOrderCaches(args.orderId);
     }
     if (result && typeof result === "object" && "id" in result) {
-      const order = result as RiderOrderSummary;
+      const order = result as unknown as RiderOrderSummary;
       if (typeof order.id === "string" && order.id) {
         seedOrderCaches(order);
         if (args.actionType === "accept") dropOfferCaches(order, args.orderId);

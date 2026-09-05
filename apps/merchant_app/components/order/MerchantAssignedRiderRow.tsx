@@ -114,6 +114,9 @@ export function MerchantAssignedRiderRow({
           : "Waiting at your store for pickup"
       : riderStatusSubline(variant, riderName, enrichment.arrivalSubtitle, null);
   const mobile = (enrichment.riderMobile ?? order.riderMobile ?? "").trim() || null;
+  // Delivered record: show a privacy-masked contact line (all but the last 2 digits hidden) —
+  // consistent with never revealing full digits after a terminal order.
+  const maskedContact = mobile ? mobile.replace(/\d(?=\d{2})/g, "•") : null;
   const isOutForDelivery = variant === "picked_up";
   const liveForContact =
     order.status === "created" ||
