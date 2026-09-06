@@ -697,13 +697,13 @@ export default function AadhaarScreen() {
               mediaTypes: ImagePicker.MediaTypeOptions.Images,
               allowsEditing: true,
               aspect: [3, 2],
-              quality: 0.9,
+              quality: 0.5,
             })
           : await ImagePicker.launchImageLibraryAsync({
               mediaTypes: ImagePicker.MediaTypeOptions.Images,
               allowsEditing: true,
               aspect: [3, 2],
-              quality: 0.9,
+              quality: 0.5,
             });
 
       if (!result.canceled && result.assets[0]) {
