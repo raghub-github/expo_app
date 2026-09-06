@@ -15,6 +15,7 @@ import {
 } from "@gatimitra/contracts";
 import { getEnv } from "../../config/env.js";
 import { deliverSupabaseOtpViaMsg91 } from "../../services/otp/msg91DeliverSupabaseOtp.js";
+import { checkAndRecordOtpSend } from "./otpSendGuard.js";
 import { issueSupabaseCompatibleJwt } from "./jwt.js";
 import {
   createReviewBypasses,
@@ -447,6 +448,18 @@ export async function authRoutes(app: FastifyInstance) {
           return reply.code(400).send({ error: "Missing phone or otp" });
         }
 
+        // Per-phone SEND guard (cooldown + daily cap) — the universal stop for SMS-bombing /
+        // billing runaway. This is the path EVERY app hits via supabase.signInWithOtp, so a
+        // client retry loop or auto-resend can never spend repeated real SMS on a number.
+        const sendGuard = await checkAndRecordOtpSend(phoneTrimmed);
+        if (!sendGuard.allowed) {
+          request.log.warn(
+            { phoneTail: phoneTrimmed.slice(-4), reason: sendGuard.reason },
+            "[supabase-send-sms] per-phone rate limit — SMS NOT sent",
+          );
+          return reply.code(429).send({ error: "otp_rate_limited", reason: sendGuard.reason });
+        }
+
         const delivered = await deliverSupabaseOtpViaMsg91(env, phoneTrimmed, otpTrimmed);
         if (!delivered.ok) {
           request.log.error({ err: delivered.error }, "[supabase-send-sms] MSG91 delivery failed");
@@ -830,6 +843,24 @@ export async function authRoutes(app: FastifyInstance) {
       });
 
       req.log?.info?.({ requestId, expiresInSec }, "[OTP] Generated");
+
+      // Per-phone SEND guard (cooldown + daily cap) — same universal limit as the Supabase
+      // hook, so this direct path also cannot be looped into an SMS/billing storm.
+      const sendGuard = await checkAndRecordOtpSend(phoneE164);
+      if (!sendGuard.allowed) {
+        otpStore.delete(requestId);
+        req.log?.warn?.(
+          { phoneTail, reason: sendGuard.reason },
+          "[OTP] per-phone rate limit — SMS NOT sent",
+        );
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).code(429).send({
+          error: "otp_rate_limited",
+          reason: sendGuard.reason,
+          retryAfterSec: sendGuard.retryAfterSec,
+          message: "Too many OTP requests for this number. Please wait a bit and try again.",
+        });
+      }
 
       // Send SMS via MSG91 using the SAME channel order as the Supabase Send SMS
       // hook (v5/otp first) — the path the customer app uses and that actually
