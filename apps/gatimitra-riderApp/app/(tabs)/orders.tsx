@@ -8,7 +8,9 @@ import {
   Platform,
   AppState,
   Alert,
+  TouchableOpacity,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import * as Location from "expo-location";
 import { useSessionStore } from "@/src/stores/sessionStore";
@@ -20,6 +22,7 @@ import { useIsFocused } from "@react-navigation/native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEarningsSummary } from "@/src/hooks/useEarnings";
 import { useHotZones } from "@/src/hooks/useHotZones";
+import { useNearbyStores } from "@/src/hooks/useNearbyStores";
 import { hotZonesToPanelZones } from "@/src/lib/hot-zones";
 import { HighDemandZonesPanel } from "@/src/components/home/HighDemandZonesPanel";
 import { resolveRiderHomeChrome } from "@/src/lib/rider-home-chrome";
@@ -367,6 +370,17 @@ export default function OrdersScreen() {
     [hotZones, demandFix]
   );
 
+  // Nearby Stores discovery layer — a rider-toggled map layer, INDEPENDENT of hot zones. Shows
+  // where food stores actually exist within 20km so the rider can move toward them even when no
+  // zone is hot. Off by default (keeps the map clean); only fetches while ON + on duty.
+  const [showNearbyStores, setShowNearbyStores] = useState(false);
+  const { stores: nearbyStores } = useNearbyStores({
+    riderLat: demandFix?.lat,
+    riderLng: demandFix?.lng,
+    enabled: showNearbyStores && homeChrome.fetchDemandZones,
+    radiusKm: 20,
+  });
+
   useFocusEffect(
     useCallback(() => {
       // Light refresh only — avoid invalidating everything on every Orders focus (tab lag).
@@ -692,8 +706,31 @@ export default function OrdersScreen() {
           showRadar={homeChrome.showSearchingRadar && mapHasPin && !gpsBlocked}
           demandZones={[]}
           hotZones={homeChrome.fetchDemandZones ? hotZones : []}
+          nearbyStores={nearbyStores}
           isOnDuty={isOnDuty}
         />
+
+        {/* Nearby Stores map-layer toggle — independent of hot zones. */}
+        {homeChrome.fetchDemandZones && !gpsBlocked ? (
+          <View style={styles.storeToggleHost} pointerEvents="box-none">
+            <TouchableOpacity
+              style={[styles.storeToggle, showNearbyStores && styles.storeToggleOn]}
+              onPress={() => setShowNearbyStores((v) => !v)}
+              accessibilityRole="button"
+              accessibilityLabel={t("home.nearbyStores", "Nearby stores")}
+              activeOpacity={0.85}
+            >
+              <Ionicons
+                name="storefront"
+                size={16}
+                color={showNearbyStores ? "#ffffff" : "#EA580C"}
+              />
+              <Text style={[styles.storeToggleText, showNearbyStores && styles.storeToggleTextOn]}>
+                {t("home.stores", "Stores")}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         {homeChrome.showSearchingPill && !gpsBlocked && homeFocused ? <SearchingOrdersPill /> : null}
 
@@ -813,6 +850,41 @@ const styles = StyleSheet.create({
     bottom: 0,
     zIndex: 40,
     elevation: 24,
+  },
+  storeToggleHost: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    zIndex: 45,
+    elevation: 26,
+  },
+  storeToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#FED7AA",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  storeToggleOn: {
+    backgroundColor: "#EA580C",
+    borderColor: "#EA580C",
+  },
+  storeToggleText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#EA580C",
+  },
+  storeToggleTextOn: {
+    color: "#ffffff",
   },
   offDutyHost: {
     position: "absolute",

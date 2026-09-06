@@ -61,7 +61,7 @@ export const SERVICE_LABEL: Record<HotZoneService, string> = {
 
 const STATUS_RANK: Record<ZoneStatus, number> = { NORMAL: 0, WARM: 1, HOT: 2, CRITICAL: 3 };
 
-/** Highest-severity status across a cell's services — drives the hexagon fill. */
+/** Highest-severity status across a cell's services — drives the hexagon fill OPACITY. */
 export function dominantStatus(cell: HotZoneCell): ZoneStatus {
   let best: ZoneStatus = "NORMAL";
   for (const s of cell.services) {
@@ -70,9 +70,31 @@ export function dominantStatus(cell: HotZoneCell): ZoneStatus {
   return best;
 }
 
+/**
+ * The service that most defines this cell (highest-severity status, then highest pressure) —
+ * drives the hexagon fill COLOUR (Food green / Parcel blue / Ride violet) so overlapping-service
+ * areas are distinguishable. A cell's full service mix is still carried in `services` for the tap
+ * sheet / side panel.
+ */
+export function dominantService(cell: HotZoneCell): HotZoneService | null {
+  let best: HotZoneServiceCell | null = null;
+  for (const s of cell.services) {
+    if (
+      best == null ||
+      STATUS_RANK[s.status] > STATUS_RANK[best.status] ||
+      (STATUS_RANK[s.status] === STATUS_RANK[best.status] && s.pressure > best.pressure)
+    ) {
+      best = s;
+    }
+  }
+  return best?.service ?? null;
+}
+
 export type HotZoneFeatureProps = {
   h3: string;
   status: ZoneStatus;
+  /** Dominant service code ("food" | "parcel" | "person_ride") — drives the fill colour. */
+  service: string;
   /** Comma-joined service codes present (elevated) in this cell, e.g. "food,parcel". */
   services: string;
   serviceCount: number;
@@ -114,6 +136,7 @@ export function hotZonesToGeoJson(cells: HotZoneCell[]): HotZoneFeatureCollectio
         properties: {
           h3: c.h3Index,
           status,
+          service: dominantService(c) ?? services[0] ?? "food",
           services: services.join(","),
           serviceCount: services.length,
         },
