@@ -1020,13 +1020,13 @@ export default function DlRcScreen() {
               mediaTypes: ["images"],
               allowsEditing: true,
               aspect: [3, 2],
-              quality: 0.9,
+              quality: 0.5,
             })
           : await ImagePicker.launchImageLibraryAsync({
               mediaTypes: ["images"],
               allowsEditing: true,
               aspect: [3, 2],
-              quality: 0.9,
+              quality: 0.5,
             });
 
       if (!result.canceled && result.assets[0]) {
