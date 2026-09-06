@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   dominantStatus,
+  dominantService,
   hotZonesToGeoJson,
   hotZonesToDisplayList,
   hotZonesToPanelZones,
@@ -91,6 +92,20 @@ test("panel zones carry status + service mix in the label, storeCount 0", () => 
   assert.match(row!.label, /Hot/); // dominant status word
   assert.match(row!.label, /Food/);
   assert.match(row!.label, /Ride/);
+});
+
+test("dominantService = highest-severity service (drives fill colour); geojson emits it", () => {
+  const cell2 = cell({
+    h3Index: "svc",
+    services: [
+      { service: "food", status: "WARM", demandScore: 4, supplyScore: 3, pressure: 1.3 },
+      { service: "person_ride", status: "HOT", demandScore: 10, supplyScore: 2, pressure: 5 },
+    ],
+  });
+  assert.equal(dominantService(cell2), "person_ride");
+  const fc = hotZonesToGeoJson([cell2]);
+  assert.equal(fc.features[0]!.properties.service, "person_ride");
+  assert.equal(fc.features[0]!.properties.services, "food,person_ride");
 });
 
 test("panel zones sort strongest-first (same order as the display list)", () => {

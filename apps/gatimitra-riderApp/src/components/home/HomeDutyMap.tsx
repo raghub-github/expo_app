@@ -4,6 +4,7 @@ import { RiderMapView, type RiderMapViewHandle } from "@/src/components/RiderMap
 import { useHomeMapLocationStore } from "@/src/stores/homeMapLocationStore";
 import type { DemandZone } from "@/src/lib/demand-zones";
 import type { HotZoneCell } from "@/src/lib/hot-zones";
+import type { NearbyStore } from "@/src/lib/nearby-stores";
 
 type OrderPin = {
   id: string;
@@ -23,6 +24,7 @@ type Props = {
   showRadar: boolean;
   demandZones?: DemandZone[];
   hotZones?: HotZoneCell[];
+  nearbyStores?: NearbyStore[];
   isOnDuty?: boolean;
 };
 
@@ -31,7 +33,7 @@ type Props = {
  */
 export const HomeDutyMap = memo(
   forwardRef<RiderMapViewHandle, Props>(function HomeDutyMap(
-    { orders, style, paused, showRadar, demandZones, hotZones, isOnDuty },
+    { orders, style, paused, showRadar, demandZones, hotZones, nearbyStores, isOnDuty },
     ref
   ) {
     const fix = useHomeMapLocationStore((s) => s.fix);
@@ -55,6 +57,7 @@ export const HomeDutyMap = memo(
         showRadar={showRadar && !!riderLocation}
         demandZones={demandZones}
         hotZones={hotZones}
+        nearbyStores={nearbyStores}
         isOnDuty={isOnDuty}
       />
     );

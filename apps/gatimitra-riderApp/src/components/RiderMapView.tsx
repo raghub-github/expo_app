@@ -15,8 +15,18 @@ import {
   type DemandZone,
 } from "@/src/lib/demand-zones";
 import { hotZonesToGeoJson, type HotZoneCell } from "@/src/lib/hot-zones";
+import { nearbyStoresToGeoJson, type NearbyStore } from "@/src/lib/nearby-stores";
 
 const BRAND = colors.primary[500];
+/** Service → light translucent fill colour (Food green / Parcel blue / Ride violet). */
+const SERVICE_FILL = {
+  food: "#16A34A",
+  parcel: "#2563EB",
+  person_ride: "#7C3AED",
+} as const;
+/** Store marker + cluster colours (kept distinct from hot-zone service colours). */
+const STORE_COLOR = "#EA580C";
+const STORE_CLOSED_COLOR = "#9CA3AF";
 /** Last successful camera center — never jump to a hardcoded city while waiting for GPS. */
 let lastCameraCenter: { lat: number; lng: number } | null = null;
 const DEMAND_FILL = "rgba(239, 68, 68, 0.22)";
@@ -53,6 +63,8 @@ interface RiderMapViewProps {
   demandZones?: DemandZone[];
   /** Backend-authoritative H3 hot zones (preferred over legacy demandZones). */
   hotZones?: HotZoneCell[];
+  /** Nearby-stores discovery layer (independent of hot zones; clustered store markers). */
+  nearbyStores?: NearbyStore[];
   isOnDuty?: boolean;
 }
 
@@ -100,6 +112,14 @@ function riderMapPropsAreEqual(prev: RiderMapViewProps, next: RiderMapViewProps)
       return false;
     }
   }
+  const prevStores = prev.nearbyStores ?? [];
+  const nextStores = next.nearbyStores ?? [];
+  if (prevStores.length !== nextStores.length) return false;
+  for (let i = 0; i < prevStores.length; i++) {
+    if (prevStores[i].id !== nextStores[i].id || prevStores[i].isOpen !== nextStores[i].isOpen) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -122,6 +142,7 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
     paused = false,
     demandZones = [],
     hotZones = [],
+    nearbyStores = [],
     isOnDuty = false,
   }: RiderMapViewProps,
   ref: React.Ref<RiderMapViewHandle>
@@ -168,6 +189,12 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
   const hotGeoJson = useMemo(
     () => (hotZones.length > 0 ? hotZonesToGeoJson(hotZones) : null),
     [hotZones]
+  );
+
+  // Nearby-stores point layer (Mapbox native clustering). Independent of hot zones.
+  const storesGeoJson = useMemo(
+    () => (nearbyStores.length > 0 ? nearbyStoresToGeoJson(nearbyStores) : null),
+    [nearbyStores]
   );
 
   const recenter = useCallback(() => {
@@ -313,31 +340,33 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
 
         {hotGeoJson ? (
           <Mapbox.ShapeSource id="hot-zones" shape={hotGeoJson}>
-            {/* H3 hexagons (NOT circles), coloured/weighted by pressure status. */}
+            {/* H3 hexagons (NOT circles). COLOUR = dominant service (Food green / Parcel blue /
+                Ride violet) so overlapping-service areas are distinguishable; light translucent
+                so the map stays readable. OPACITY = pressure status (hotter = stronger). */}
             <Mapbox.FillLayer
               id="hot-zones-fill"
               style={{
                 fillColor: [
                   "match",
-                  ["get", "status"],
-                  "CRITICAL",
-                  "#DC2626",
-                  "HOT",
-                  "#F97316",
-                  "WARM",
-                  "#F59E0B",
+                  ["get", "service"],
+                  "food",
+                  SERVICE_FILL.food,
+                  "parcel",
+                  SERVICE_FILL.parcel,
+                  "person_ride",
+                  SERVICE_FILL.person_ride,
                   "#9CA3AF",
                 ],
                 fillOpacity: [
                   "match",
                   ["get", "status"],
                   "CRITICAL",
-                  0.38,
+                  0.34,
                   "HOT",
-                  0.3,
+                  0.26,
                   "WARM",
-                  0.22,
-                  0.12,
+                  0.18,
+                  0.1,
                 ],
               }}
             />
@@ -346,17 +375,63 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
               style={{
                 lineColor: [
                   "match",
-                  ["get", "status"],
-                  "CRITICAL",
-                  "#B91C1C",
-                  "HOT",
-                  "#EA580C",
-                  "WARM",
-                  "#D97706",
+                  ["get", "service"],
+                  "food",
+                  SERVICE_FILL.food,
+                  "parcel",
+                  SERVICE_FILL.parcel,
+                  "person_ride",
+                  SERVICE_FILL.person_ride,
                   "#6B7280",
                 ],
-                lineWidth: 1.5,
-                lineOpacity: 0.9,
+                lineWidth: 1.4,
+                lineOpacity: 0.85,
+              }}
+            />
+          </Mapbox.ShapeSource>
+        ) : null}
+
+        {storesGeoJson ? (
+          <Mapbox.ShapeSource
+            id="nearby-stores"
+            shape={storesGeoJson}
+            cluster
+            clusterRadius={50}
+            clusterMaxZoomLevel={14}
+          >
+            {/* Cluster bubbles (zoomed out) */}
+            <Mapbox.CircleLayer
+              id="store-clusters"
+              filter={["has", "point_count"]}
+              style={{
+                circleColor: STORE_COLOR,
+                circleOpacity: 0.9,
+                circleRadius: ["step", ["get", "point_count"], 14, 10, 18, 50, 24],
+                circleStrokeWidth: 2,
+                circleStrokeColor: "#ffffff",
+              }}
+            />
+            <Mapbox.SymbolLayer
+              id="store-cluster-count"
+              filter={["has", "point_count"]}
+              style={{
+                textField: ["get", "point_count_abbreviated"],
+                textSize: 12,
+                textColor: "#ffffff",
+                textFont: ["DIN Offc Pro Medium", "Arial Unicode MS Bold"],
+                textAllowOverlap: true,
+              }}
+            />
+            {/* Individual store markers (zoomed in) — colour by open/closed */}
+            <Mapbox.CircleLayer
+              id="store-points"
+              filter={["!", ["has", "point_count"]]}
+              style={{
+                circleColor: ["case", ["get", "isOpen"], STORE_COLOR, STORE_CLOSED_COLOR],
+                circleOpacity: 0.95,
+                circleRadius: 7,
+                circleStrokeWidth: 2,
+                circleStrokeColor: "#ffffff",
               }}
             />
           </Mapbox.ShapeSource>
