@@ -70,6 +70,8 @@ export type MerchantSummary = {
   isPureVeg?: boolean;
   /** FOOD | GROCERY | … from merchant_stores.store_type */
   storeType?: string | null;
+  /** SEO slug for https://gatimitra.com/restaurant/{slug} shares. */
+  publicSlug?: string | null;
 };
 
 export type MenuItem = {
@@ -106,6 +108,9 @@ export type MenuItem = {
   hasVariants?: boolean;
   /** False when item is out of stock; omitted means available. */
   inStock?: boolean;
+  sizeValue?: string | null;
+  sizeUnit?: string | null;
+  sizePreset?: string | null;
   /**
    * Optional stable row identifier used by the merchant menu list when the
    * same MenuItem appears under multiple sections (recommended + category).
@@ -130,6 +135,7 @@ export type MenuItemFullConfig = {
     hasVariants: boolean;
     sizeValue?: string | null;
     sizeUnit?: string | null;
+    sizePreset?: string | null;
   };
   variants: Array<{
     id: string;
@@ -137,6 +143,7 @@ export type MenuItemFullConfig = {
     type: string | null;
     sizeValue?: string | null;
     sizeUnit?: string | null;
+    sizePreset?: string | null;
     price: number;
     isDefault: boolean;
     displayOrder: number;
@@ -156,6 +163,7 @@ export type MenuItemFullConfig = {
       imageUrl: string | null;
       sizeValue?: string | null;
       sizeUnit?: string | null;
+      sizePreset?: string | null;
       displayOrder: number;
       isMostOrdered?: boolean;
     }>;
@@ -215,6 +223,8 @@ export type MerchantAbout = {
   store_name: string;
   store_display_name: string | null;
   legal_name?: string | null;
+  owner_name?: string | null;
+  public_slug?: string | null;
   full_address: string | null;
   city: string | null;
   state?: string | null;
@@ -345,10 +355,15 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
       const n = Number(raw);
       return Number.isFinite(n) ? n : item.packagingChargeAmount;
     })(),
-    isPureVeg:
-      item.isPureVeg === true ||
-      (item as Record<string, unknown>).is_pure_veg === true ||
-      (item as Record<string, unknown>).isPureVeg === true,
+    isPureVeg: (() => {
+      const raw =
+        item.isPureVeg ??
+        (item as Record<string, unknown>).is_pure_veg ??
+        (item as Record<string, unknown>).isPureVeg;
+      if (raw === true || raw === "true" || raw === 1) return true;
+      if (raw === false || raw === "false" || raw === 0) return false;
+      return undefined;
+    })(),
     storeType: (() => {
       const raw =
         item.storeType ??
@@ -357,6 +372,13 @@ function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknow
       if (typeof raw !== "string" || !raw.trim()) return item.storeType ?? null;
       return raw.trim().toUpperCase();
     })(),
+    publicSlug:
+      (typeof item.publicSlug === "string" && item.publicSlug.trim()) ||
+      (typeof (item as Record<string, unknown>).public_slug === "string"
+        ? String((item as Record<string, unknown>).public_slug).trim()
+        : "") ||
+      item.publicSlug ||
+      null,
     avgPreparationTimeMinutes: (() => {
       const raw =
         item.avgPreparationTimeMinutes ??
@@ -570,6 +592,10 @@ function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
       return Number.isFinite(n) && n > 0 ? n : (data.storeNumericId ?? null);
     })(),
     fssaiNumber: pickFirstString(data.fssaiNumber, r.fssaiNumber, r.fssai_number) ?? null,
+    publicSlug:
+      pickFirstString(data.publicSlug, r.publicSlug, r.public_slug) ||
+      data.publicSlug ||
+      data.id,
     storeType: (() => {
       const raw = data.storeType ?? r.storeType ?? r.store_type;
       if (typeof raw !== "string" || !raw.trim()) return data.storeType ?? null;

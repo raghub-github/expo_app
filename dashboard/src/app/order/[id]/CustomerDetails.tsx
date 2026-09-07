@@ -68,6 +68,8 @@ interface Order {
   accountStatus?: string | null;
   riskFlag?: string | null;
   locationMismatch?: boolean | null;
+  totalDelivered?: number | null;
+  totalCancelled?: number | null;
 }
 
 interface CustomerDetailsProps {
@@ -493,11 +495,11 @@ export default function CustomerDetails({
           </div>
 
           {/* Cx Notifications */}
-          <div className="grid grid-cols-[120px_1fr] items-start min-h-[22px]">
+          <div className="grid grid-cols-[120px_1fr] items-center min-h-[22px]">
             <div className="text-[12px] text-gati-text-secondary font-medium">
               Cx Notifications:
             </div>
-            <div className="text-[12px] text-gati-text-primary font-normal">
+            <div className="min-w-0">
               <a
                 href="#"
                 target="_blank"

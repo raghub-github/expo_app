@@ -160,6 +160,7 @@ const cuisineLinkBodySchema = z.object({
 const nutritionalFields = {
   item_size_value: z.number().min(0).optional().nullable(),
   item_size_unit: z.string().max(50).optional().nullable(),
+  size_preset: z.enum(["REGULAR", "STANDARD", "PREMIUM"]).optional().nullable(),
   available_for_delivery: z.boolean().optional(),
   serves_label: z.string().max(50).optional().nullable(),
   weight_per_serving: z.number().min(0).optional().nullable(),
@@ -249,6 +250,9 @@ const variantCreateSchema = z.object({
   variant_price: z.number().min(0),
   is_default: z.boolean().optional(),
   display_order: z.number().int().min(0).optional(),
+  variant_size_value: z.union([z.string(), z.number()]).optional().nullable(),
+  variant_size_unit: z.string().max(50).optional().nullable(),
+  size_preset: z.enum(["REGULAR", "STANDARD", "PREMIUM"]).optional().nullable(),
   attributes: z.record(z.string(), z.any()).optional(),
 });
 
@@ -259,6 +263,9 @@ const variantUpdateSchema = z.object({
   is_default: z.boolean().optional(),
   display_order: z.number().int().min(0).optional(),
   in_stock: z.boolean().optional(),
+  variant_size_value: z.union([z.string(), z.number()]).optional().nullable(),
+  variant_size_unit: z.string().max(50).optional().nullable(),
+  size_preset: z.enum(["REGULAR", "STANDARD", "PREMIUM"]).optional().nullable(),
   attributes: z.record(z.string(), z.any()).optional(),
 });
 
@@ -284,6 +291,9 @@ const customizationOptionCreateSchema = z.object({
   addon_price: z.number().min(0).optional(),
   addon_image_url: z.string().url().max(2000).optional().nullable(),
   display_order: z.number().int().min(0).optional(),
+  addon_size_value: z.union([z.string(), z.number()]).optional().nullable(),
+  addon_size_unit: z.string().max(50).optional().nullable(),
+  size_preset: z.enum(["REGULAR", "STANDARD", "PREMIUM"]).optional().nullable(),
 });
 
 const customizationOptionUpdateSchema = z.object({
@@ -292,6 +302,9 @@ const customizationOptionUpdateSchema = z.object({
   addon_image_url: z.string().url().max(2000).optional().nullable(),
   display_order: z.number().int().min(0).optional(),
   in_stock: z.boolean().optional(),
+  addon_size_value: z.union([z.string(), z.number()]).optional().nullable(),
+  addon_size_unit: z.string().max(50).optional().nullable(),
+  size_preset: z.enum(["REGULAR", "STANDARD", "PREMIUM"]).optional().nullable(),
 });
 
 export async function merchantMenuRoutes(app: FastifyInstance) {

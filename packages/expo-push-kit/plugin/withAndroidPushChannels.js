@@ -66,7 +66,7 @@ ${creates}
     if (soundRaw != null && !soundRaw.isEmpty()) {
       Uri soundUri = Uri.parse("android.resource://" + context.getPackageName() + "/raw/" + soundRaw);
       AudioAttributes attrs = new AudioAttributes.Builder()
-          .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+          .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
           .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
           .build();
       channel.setSound(soundUri, attrs);

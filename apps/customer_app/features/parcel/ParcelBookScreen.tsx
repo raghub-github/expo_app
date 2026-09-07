@@ -180,7 +180,6 @@ export function ParcelBookScreen() {
   const {
     data: availability,
     isLoading: availabilityLoading,
-    isFetching: availabilityFetching,
     isError: availabilityError,
   } = useNearbyRideAvailability(
     pickupPoint?.latitude ?? null,
@@ -293,7 +292,7 @@ export function ParcelBookScreen() {
   /** Same gate as ride-book: no book UI / searching until supply + fares allow it. */
   const noVehiclesAvailable = useMemo(() => {
     if (!pickupPoint || !dropPoint) return false;
-    if (!routeSettled || availabilityLoading || availabilityFetching) return false;
+    if (!routeSettled || availabilityLoading) return false;
     if (nearbyRiders.length > 0) return false;
 
     // No nearby on-duty captains that can serve parcel categories (ride-parity).
@@ -311,7 +310,6 @@ export function ParcelBookScreen() {
     dropPoint,
     routeSettled,
     availabilityLoading,
-    availabilityFetching,
     availabilityError,
     faresLoading,
     faresSettled,
@@ -329,13 +327,14 @@ export function ParcelBookScreen() {
   }, [fareTripKm]);
 
   useEffect(() => {
-    if (!noVehiclesAvailable) {
+    if (nearbyRiders.length > 0 || hasCaptainSupply) {
       setServiceUnavailableVisible(false);
       return;
     }
+    if (!noVehiclesAvailable) return;
     const t = setTimeout(() => setServiceUnavailableVisible(true), 800);
     return () => clearTimeout(t);
-  }, [noVehiclesAvailable]);
+  }, [nearbyRiders.length, hasCaptainSupply, noVehiclesAvailable]);
 
   useEffect(() => {
     if (displayVehicles.length === 0) return;

@@ -16,8 +16,10 @@
  * "Customer-visible item" mirrors the canonical predicate used by the menu endpoints
  * (see customer-menu-item-visibility.ts): not deleted AND approval_status is
  * APPROVED or PENDING. Food type is matched with the same `LOWER(...) LIKE 'veg%'`
- * test the menu queries use, and an item with a NULL/blank food_type is treated as
- * NON-veg (fail-closed) so we never over-claim a store as veg on missing data.
+ * test the menu queries use. Food type must be an explicit veg token
+ * (`veg` / `vegan` / `pure_veg` / `vegetarian`) — `LIKE 'veg%'` is too loose.
+ * An item with a NULL/blank/EGG/NON_VEG food_type is treated as NON-veg
+ * (fail-closed) so we never over-claim a store as veg on missing data.
  */
 
 import type postgres from "postgres";
@@ -69,7 +71,11 @@ export async function resolveVegEligibleStoreIds(
       ms.id AS id,
       ms.is_pure_veg AS is_pure_veg,
       COUNT(mmi.id) AS visible_count,
-      bool_and(LOWER(COALESCE(mmi.food_type, '')) LIKE 'veg%') AS all_veg
+      bool_and(
+        LOWER(TRIM(COALESCE(mmi.food_type::text, ''))) IN (
+          'veg', 'vegan', 'pure_veg', 'pure veg', 'vegetarian'
+        )
+      ) AS all_veg
     FROM merchant_stores ms
     LEFT JOIN merchant_menu_items mmi
       ON mmi.store_id = ms.id

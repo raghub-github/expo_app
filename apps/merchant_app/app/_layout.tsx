@@ -1,18 +1,19 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import "react-native-gesture-handler";
 import { LogBox, Platform, StatusBar as RNStatusBar, View } from "react-native";
-import { Stack, usePathname } from "expo-router";
+import { Stack, usePathname, useRouter } from "expo-router";
 import { useFonts } from "expo-font";
 import { Lora_400Regular, Lora_700Bold } from "@expo-google-fonts/lora";
 import { Poppins_600SemiBold, Poppins_700Bold } from "@expo-google-fonts/poppins";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { GatiMitraMerchant } from "@/constants/theme";
 import { StoreStatusProvider } from "@/context/StoreStatusContext";
-import { AuthProvider } from "@/context/AuthContext";
+import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { merchantQueryClient } from "@/lib/merchantQueryClient";
 import { SelectedStoreProvider } from "@/context/SelectedStoreContext";
 import { StoreSettingsProvider } from "@/context/StoreSettingsContext";
 import { ActiveTabProvider } from "@/context/ActiveTabContext";
@@ -39,6 +40,7 @@ import NewOrderAutoOpenHandler from "../components/NewOrderAutoOpenHandler";
 import { AppAssetsPrefetch } from "@/components/AppAssetsPrefetch";
 import { ensureMerchantAppAssetsLoaded } from "@/store/appAssetsStore";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
+import StoreStatusPushHandler from "../components/StoreStatusPushHandler";
 import WaitingForOrderNotifier from "../components/WaitingForOrderNotifier";
 import StoreOnlineStatusNotifier from "../components/StoreOnlineStatusNotifier";
 import { NetworkStatusProvider } from "@/context/NetworkStatusContext";
@@ -61,22 +63,6 @@ LogBox.ignoreLogs([
   "[expo-av]",
 ]);
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 60 * 1000,
-      gcTime: 15 * 60 * 1000,
-      retry: 1,
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: true,
-      throwOnError: false,
-    },
-    mutations: {
-      throwOnError: false,
-    },
-  },
-});
-
 /** Don't hold splash forever if font download/cache stalls (common with --offline). */
 const FONTS_READY_FALLBACK_MS = 8000;
 /** Keep the branded splash on screen long enough to actually be read. */
@@ -91,12 +77,88 @@ function AndroidStatusBarSync({ color }: { color: string }) {
   return null;
 }
 
-function MerchantStackRecovery({ children }: { children: React.ReactNode }) {
+function MerchantStackRecovery({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   return (
     <AppErrorBoundary source="merchant-stack" resetKey={pathname}>
       {children}
     </AppErrorBoundary>
+  );
+}
+
+function AuthenticatedAppHosts() {
+  return (
+    <AppErrorBoundary source="merchant-hosts" fallback={() => null}>
+      <NotificationSetup />
+      <AppAssetsPrefetch />
+      <BackgroundOrderPermissionsGate />
+      <NewOrderAutoOpenHandler />
+      <OrderAlertPushHandler />
+      <StoreStatusPushHandler />
+      <LiveOrdersStickyPushRefresh />
+      <WaitingForOrderNotifier />
+      <StoreOnlineStatusNotifier />
+      <LiveOrdersOngoingNotification />
+      <FloatingLiveSupportTicket />
+      <IncomingOrderModal />
+      <IncomingOrderNotificationBridge />
+      <AcceptanceTimeoutSync />
+      <PreventServicesRealtime />
+      <LearningCentreRealtime />
+      <ServiceRestrictedNotice />
+      <SessionRevokedGate />
+      <MerchantReferralAttribution />
+    </AppErrorBoundary>
+  );
+}
+
+function MerchantNavigator() {
+  const { authState } = useAuth();
+  const router = useRouter();
+  const prevStatus = useRef(authState.status);
+
+  useEffect(() => {
+    const wasAuthenticated = prevStatus.current === "authenticated";
+    prevStatus.current = authState.status;
+    if (wasAuthenticated && authState.status === "unauthenticated") {
+      router.replace("/(auth)/welcome");
+    }
+  }, [authState.status, router]);
+
+  if (authState.status === "loading") {
+    return <MerchantBootstrapScreen />;
+  }
+
+  const signedIn = authState.status === "authenticated";
+
+  return (
+    <>
+      {signedIn ? <AuthenticatedAppHosts /> : <AppAssetsPrefetch />}
+      <MerchantStackRecovery>
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            contentStyle: { backgroundColor: GatiMitraMerchant.background },
+            animation: "slide_from_right",
+          }}
+        >
+          <Stack.Screen name="index" />
+          <Stack.Screen name="(auth)" />
+          {signedIn ? (
+            <>
+              <Stack.Screen name="(tabs)" />
+              <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
+              <Stack.Screen name="order-review/[id]" options={{ headerShown: false }} />
+              <Stack.Screen name="feedback-reply/[id]" options={{ headerShown: false }} />
+              <Stack.Screen name="order-history" options={{ headerShown: false }} />
+              <Stack.Screen name="restaurant-status" options={{ headerShown: false }} />
+              <Stack.Screen name="support/chat/[ticketId]" options={{ headerShown: false }} />
+            </>
+          ) : null}
+        </Stack>
+      </MerchantStackRecovery>
+      {signedIn ? <OfflineNetworkChrome /> : null}
+    </>
   );
 }
 
@@ -147,7 +209,6 @@ export default function RootLayout() {
 
   // Prefer real font registration; only soft-timeout so login is never blocked forever.
   const ready = typographyReady;
-  const appReady = ready && minSplashElapsed;
 
   /** Native splash must drop as soon as the branded JS splash has painted. */
   const handleSplashReady = useCallback(() => {
@@ -160,108 +221,106 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <QueryClientProvider client={queryClient}>
+    <QueryClientProvider client={merchantQueryClient}>
       <GestureHandlerRootView style={{ flex: 1 }}>
         <SafeAreaProvider>
-          <View
-            style={{
-              flex: 1,
-              backgroundColor: splashExited
-                ? GatiMitraMerchant.background
-                : MERCHANT_SPLASH_BG,
-            }}
-          >
-          {ready ? (
-          <NetworkStatusProvider>
           <AuthProvider>
-            <SelectedStoreProvider>
-              <LiveSupportTicketProvider>
-                <StoreStatusProvider>
-                  <StoreSettingsProvider>
-                    <ActiveTabProvider>
+            <MerchantAppShell
+              typographyReady={ready}
+              fontsLoaded={fontsLoaded}
+              fontsTimedOut={fontsTimedOut}
+              minSplashElapsed={minSplashElapsed}
+              splashExited={splashExited}
+              onSplashReady={handleSplashReady}
+              onSplashExitComplete={handleSplashExitComplete}
+            />
+          </AuthProvider>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    </QueryClientProvider>
+  );
+}
+
+function MerchantAppShell({
+  typographyReady,
+  fontsLoaded,
+  fontsTimedOut,
+  minSplashElapsed,
+  splashExited,
+  onSplashReady,
+  onSplashExitComplete,
+}: {
+  typographyReady: boolean;
+  fontsLoaded: boolean;
+  fontsTimedOut: boolean;
+  minSplashElapsed: boolean;
+  splashExited: boolean;
+  onSplashReady: () => void;
+  onSplashExitComplete: () => void;
+}) {
+  const { authState } = useAuth();
+  const authReady = authState.status !== "loading";
+  const appReady = typographyReady && minSplashElapsed && authReady;
+
+  return (
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: splashExited ? GatiMitraMerchant.background : MERCHANT_SPLASH_BG,
+      }}
+    >
+      {typographyReady ? (
+        <NetworkStatusProvider>
+          <SelectedStoreProvider>
+            <LiveSupportTicketProvider>
+              <StoreStatusProvider>
+                <StoreSettingsProvider>
+                  <ActiveTabProvider>
                     <OrdersProvider>
                       <ProfileNavProvider>
                         <NotificationProvider>
                           <NotificationPermissionGateProvider>
-                          <SubscriptionProvider>
-                            <StatusBar
-                              style="dark"
-                              backgroundColor={GatiMitraMerchant.surfaceWarm}
-                              translucent={false}
-                              hidden={false}
-                            />
-                            {Platform.OS === "android" ? (
-                              <AndroidStatusBarSync color={GatiMitraMerchant.surfaceWarm} />
-                            ) : null}
-                            <IncomingOrderSheetProvider>
-                              <AppErrorBoundary source="merchant-hosts" fallback={() => null}>
-                              <NotificationSetup />
-                              <AppAssetsPrefetch />
-                              <BackgroundOrderPermissionsGate />
-                              <NewOrderAutoOpenHandler />
-                              <OrderAlertPushHandler />
-                              <LiveOrdersStickyPushRefresh />
-                              <WaitingForOrderNotifier />
-                              <StoreOnlineStatusNotifier />
-                              <LiveOrdersOngoingNotification />
-                              <FloatingLiveSupportTicket />
-                              <IncomingOrderModal />
-                              <IncomingOrderNotificationBridge />
-                              <AcceptanceTimeoutSync />
-                              <PreventServicesRealtime />
-                              <LearningCentreRealtime />
-                              <ServiceRestrictedNotice />
-                              <SessionRevokedGate />
-                              <MerchantReferralAttribution />
-                              </AppErrorBoundary>
-                              <MerchantStackRecovery>
-                              <Stack
-                                screenOptions={{
-                                  headerShown: false,
-                                  contentStyle: { backgroundColor: GatiMitraMerchant.background },
-                                  animation: "slide_from_right",
-                                }}
-                              >
-                                <Stack.Screen name="index" />
-                                <Stack.Screen name="(auth)" />
-                                <Stack.Screen name="(tabs)" />
-                                <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
-                                <Stack.Screen name="order-review/[id]" options={{ headerShown: false }} />
-                                <Stack.Screen name="feedback-reply/[id]" options={{ headerShown: false }} />
-                                <Stack.Screen name="order-history" options={{ headerShown: false }} />
-                                <Stack.Screen name="restaurant-status" options={{ headerShown: false }} />
-                              </Stack>
-                              </MerchantStackRecovery>
-                              <OfflineNetworkChrome />
-                              <PlayInAppUpdateBootstrap />
-                            </IncomingOrderSheetProvider>
-                          </SubscriptionProvider>
+                            <SubscriptionProvider>
+                              <StatusBar
+                                style="dark"
+                                backgroundColor={GatiMitraMerchant.surfaceWarm}
+                                translucent={false}
+                                hidden={false}
+                              />
+                              {Platform.OS === "android" ? (
+                                <AndroidStatusBarSync color={GatiMitraMerchant.surfaceWarm} />
+                              ) : null}
+                              <IncomingOrderSheetProvider>
+                                {authReady && minSplashElapsed ? <MerchantNavigator /> : null}
+                                <PlayInAppUpdateBootstrap />
+                              </IncomingOrderSheetProvider>
+                            </SubscriptionProvider>
                           </NotificationPermissionGateProvider>
                         </NotificationProvider>
                       </ProfileNavProvider>
                     </OrdersProvider>
-                    </ActiveTabProvider>
-                  </StoreSettingsProvider>
-                </StoreStatusProvider>
-              </LiveSupportTicketProvider>
-            </SelectedStoreProvider>
-          </AuthProvider>
-          </NetworkStatusProvider>
-          ) : null}
-          {!splashExited && typographyReady ? (
-            <MerchantBootstrapScreen
-              variant="root"
-              appReady={appReady}
-              statusMessage={
-                fontsTimedOut && !fontsLoaded ? "Starting GatiMitra Partner..." : null
-              }
-              onSplashReady={handleSplashReady}
-              onExitComplete={handleSplashExitComplete}
-            />
-          ) : null}
-          </View>
-        </SafeAreaProvider>
-      </GestureHandlerRootView>
-    </QueryClientProvider>
+                  </ActiveTabProvider>
+                </StoreSettingsProvider>
+              </StoreStatusProvider>
+            </LiveSupportTicketProvider>
+          </SelectedStoreProvider>
+        </NetworkStatusProvider>
+      ) : null}
+      {!splashExited && typographyReady ? (
+        <MerchantBootstrapScreen
+          variant="root"
+          appReady={appReady}
+          statusMessage={
+            fontsTimedOut && !fontsLoaded
+              ? "Starting GatiMitra Partner..."
+              : !authReady
+                ? "Checking your session..."
+                : null
+          }
+          onSplashReady={onSplashReady}
+          onExitComplete={onSplashExitComplete}
+        />
+      ) : null}
+    </View>
   );
 }

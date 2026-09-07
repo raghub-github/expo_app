@@ -1,4 +1,4 @@
-import { Platform } from "react-native";
+import { Appearance, Platform } from "react-native";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 /**
@@ -16,6 +16,12 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 export const DEFAULT_STATUS_BAR_HEIGHT = 24;
 
 /**
+ * Gesture-nav / home-indicator reserve on Android while WindowInsets are still 0.
+ * Avoids the first-entry tab bar sitting on the system line, then jumping up.
+ */
+export const DEFAULT_ANDROID_NAV_BOTTOM_INSET = 24;
+
+/**
  * Top safe inset that never collapses to 0 on Android (avoids content falling
  * under the status bar while SafeAreaProvider is still settling).
  */
@@ -24,11 +30,41 @@ export function resolveTopSafeInset(insetsTop: number): number {
   return DEFAULT_STATUS_BAR_HEIGHT;
 }
 
-/** GatiMitra mint for Android system navigation bar (matches native splash / nav chrome). */
+/**
+ * Bottom inset that never collapses to 0 on the first Android frame.
+ * `live` is SafeAreaInsets.bottom; `seed` is initialWindowMetrics when available.
+ */
+export function resolveStableBottomInset(liveBottom: number, seedBottom = 0): number {
+  const n = Math.max(0, liveBottom, seedBottom);
+  if (n > 0) return n;
+  if (Platform.OS === "android") return DEFAULT_ANDROID_NAV_BOTTOM_INSET;
+  return 0;
+}
+
+/** @deprecated Brand mint — do not use for system navigation bar. */
 export const CUSTOMER_SYSTEM_NAV_MINT = GatiMitraColors.splashMint;
 
-/** @deprecated Use CUSTOMER_SYSTEM_NAV_MINT */
+/** @deprecated Use resolveAndroidSystemNavBackground() */
 export const ANDROID_SYSTEM_NAV_COLOR = CUSTOMER_SYSTEM_NAV_MINT;
+
+/**
+ * Android 3-button / gesture nav bar fill — follows the device light/dark theme
+ * (not brand mint). Light → white; dark → near-black.
+ */
+export function resolveAndroidSystemNavBackground(
+  colorScheme?: "light" | "dark" | null
+): string {
+  const scheme = colorScheme ?? Appearance.getColorScheme();
+  return scheme === "dark" ? "#000000" : "#FFFFFF";
+}
+
+/** Icon/button style for the Android nav bar under the current theme. */
+export function resolveAndroidSystemNavButtonStyle(
+  colorScheme?: "light" | "dark" | null
+): "light" | "dark" {
+  const scheme = colorScheme ?? Appearance.getColorScheme();
+  return scheme === "dark" ? "light" : "dark";
+}
 
 /**
  * Bottom safe inset for scroll content / floating UI.
@@ -157,3 +193,9 @@ export const HEADER_PADDING_TOP = 0;
 
 /** Gap below root status-bar strip before screen header content (root already reserves insets.top). */
 export const STATUS_BAR_TO_HEADER_GAP = 8;
+
+/** Tabs Home only — gap under the status bar before header content. */
+export const HOME_HEADER_BELOW_STATUS_GAP = 2;
+
+/** Reserved weather-chip block on tabs Home — must match HomeWeatherBanner shell. */
+export const HOME_WEATHER_BANNER_H = 56;

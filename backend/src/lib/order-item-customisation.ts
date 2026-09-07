@@ -3,6 +3,7 @@
  */
 
 import { readOrderItemSpecialInstructions } from "./order-item-special-instructions.js";
+import { formatMenuSize } from "./menu-size-preset.js";
 
 export type OrderItemAddonDetail = {
   name: string;
@@ -303,18 +304,19 @@ export function buildCustomisationDetail(args: {
       "serving_size",
       "servingSize",
     ]) ?? null;
-  if (!variantSize && snap) {
-    const val = readSnapString(snap, ["variant_size_value", "variantSizeValue"]);
-    const unit = readSnapString(snap, ["variant_size_unit", "variantSizeUnit"]);
-    if (val && unit) variantSize = `${val} ${unit}`;
-    else if (val) variantSize = val;
-  }
-  if (!variantSize && args.cartLine) {
-    const val = readSnapString(args.cartLine, ["variant_size_value", "variantSizeValue"]);
-    const unit = readSnapString(args.cartLine, ["variant_size_unit", "variantSizeUnit"]);
-    if (val && unit) variantSize = `${val} ${unit}`;
-    else if (val) variantSize = val;
-  }
+  const preset =
+    readSnapString(snap, ["variant_size_preset", "variantSizePreset", "size_preset", "sizePreset"]) ??
+    (args.cartLine
+      ? readSnapString(args.cartLine, ["variant_size_preset", "variantSizePreset", "size_preset", "sizePreset"])
+      : null);
+  const val =
+    readSnapString(snap, ["variant_size_value", "variantSizeValue"]) ??
+    (args.cartLine ? readSnapString(args.cartLine, ["variant_size_value", "variantSizeValue"]) : null);
+  const unit =
+    readSnapString(snap, ["variant_size_unit", "variantSizeUnit"]) ??
+    (args.cartLine ? readSnapString(args.cartLine, ["variant_size_unit", "variantSizeUnit"]) : null);
+  const formatted = formatMenuSize(preset, val, unit);
+  if (formatted) variantSize = formatted;
 
   const variantPrice =
     asNum(snap?.variant_price) ??
@@ -356,6 +358,14 @@ export function buildCustomisationDetail(args: {
       quantity: qty,
       unitPrice,
       totalPrice: unitPrice * qty,
+    });
+  } else if (variantSize) {
+    lines.push({
+      label: "Size",
+      name: variantSize,
+      quantity: 1,
+      unitPrice: 0,
+      totalPrice: 0,
     });
   }
 

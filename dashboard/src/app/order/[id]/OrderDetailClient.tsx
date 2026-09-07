@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef, type WheelEvent } from "react";
 import OrderTimeline, { type OrderTimelineEntry } from "./OrderTimeline";
 import OrderActionBanner from "./OrderActionBanner";
+import OrderNthUserBanner from "./OrderNthUserBanner";
 import OrderRightSidebar from "./OrderRightSidebar";
 import {
   fetchOrderItemsCached,
@@ -52,7 +53,7 @@ import {
 } from "@/lib/orders/parse-order-map-coords";
 import { resolveOrderDetailsDistanceKm } from "@/lib/orders/order-distance-display";
 import { isHardPageReload } from "@/lib/navigation/is-hard-page-reload";
-import { formatDeliveredByLabel } from "@/lib/orders/order-detail-display";
+import { formatDeliveredByLabel, formatOrderHeaderDateTime } from "@/lib/orders/order-detail-display";
 import { OrderNotFoundState } from "@/components/orders/OrderNotFoundState";
 import {
   prefetchRiderActivityLog,
@@ -77,6 +78,10 @@ import { hasOrderCancellationOnProgressTimeline } from "@/lib/orders/order-timel
 import type { PersonRideOrderDetail } from "@/lib/orders/person-ride-order-types";
 import PersonRideOrderSections from "./PersonRideOrderSections";
 import { formatRiderOrderStatusDisplayLabel, titleCaseStatusWords } from "@/lib/riders/rider-order-status-display";
+import {
+  EMPTY_CUSTOMER_ORDER_STATS,
+  type CustomerOrderStats,
+} from "@/lib/orders/customer-order-stats";
 import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
 import { OrderPageOverlay } from "@/components/orders/OrderPageOverlay";
 
@@ -251,6 +256,9 @@ interface OrderDetail {
   riderRestaurantWaitAnchorAt?: string | null;
   deliveryProofImageUrl?: string | null;
   rideDetail?: PersonRideOrderDetail | null;
+  customerOrderOrdinal?: number | null;
+  customerDeliveredCount?: number | null;
+  customerCancelledCount?: number | null;
 }
 
 /** Merchant summary from order API for MX card (show immediately on load) */
@@ -538,6 +546,9 @@ function mapOrderCoreApiRowToDetail(row: Record<string, unknown>): OrderDetail {
       row.rideDetail && typeof row.rideDetail === "object"
         ? (row.rideDetail as PersonRideOrderDetail)
         : null,
+    customerOrderOrdinal: toNumberOrNull(row.customerOrderOrdinal),
+    customerDeliveredCount: toNumberOrNull(row.customerDeliveredCount),
+    customerCancelledCount: toNumberOrNull(row.customerCancelledCount),
   };
 }
 
@@ -588,12 +599,14 @@ interface OrderDetailClientProps {
   orderPublicId: string;
   onLoadingChange?: (loading: boolean) => void;
   onNotFoundChange?: (notFound: boolean) => void;
+  onCustomerOrderStats?: (stats: CustomerOrderStats) => void;
 }
 
 export default function OrderDetailClient({
   orderPublicId,
   onLoadingChange,
   onNotFoundChange,
+  onCustomerOrderStats,
 }: OrderDetailClientProps) {
   const isHardReloadRef = useRef(false);
   const fetchGenerationRef = useRef(0);
@@ -784,6 +797,24 @@ export default function OrderDetailClient({
       /temporarily unavailable|retrying/i.test(error ?? "");
     onNotFoundChange?.(!loading && !authPending && !transient && Boolean(error || !order));
   }, [loading, error, order, onNotFoundChange, auth?.authReady]);
+
+  useEffect(() => {
+    if (!order) {
+      onCustomerOrderStats?.(EMPTY_CUSTOMER_ORDER_STATS);
+      return;
+    }
+    onCustomerOrderStats?.({
+      ordinal: order.customerOrderOrdinal ?? null,
+      deliveredCount: order.customerDeliveredCount ?? null,
+      cancelledCount: order.customerCancelledCount ?? null,
+    });
+  }, [
+    order,
+    order?.customerOrderOrdinal,
+    order?.customerDeliveredCount,
+    order?.customerCancelledCount,
+    onCustomerOrderStats,
+  ]);
 
   useEffect(() => {
     if (!order?.id) {
@@ -1817,27 +1848,7 @@ export default function OrderDetailClient({
   }
 
   const statusLabel = order.currentStatus ?? order.status;
-  const orderTimeLabel = order.orderTimeIso
-    ? new Date(order.orderTimeIso).toLocaleString("en-IN", {
-        day: "numeric",
-        month: "numeric",
-        year: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: true,
-      }).replace(/\//g, "-")
-    : order.createdAt
-      ? new Date(order.createdAt).toLocaleString("en-IN", {
-          day: "numeric",
-          month: "numeric",
-          year: "numeric",
-          hour: "numeric",
-          minute: "2-digit",
-          second: "2-digit",
-          hour12: true,
-        }).replace(/\//g, "-")
-      : "—";
+  const orderTimeLabel = formatOrderHeaderDateTime(order.orderTimeIso || order.createdAt);
   const createdLabel = orderTimeLabel;
   const updatedLabel = order.updatedAt
     ? new Date(order.updatedAt).toLocaleString()
@@ -1845,9 +1856,6 @@ export default function OrderDetailClient({
 
   const rawId = displayId === "—" ? "" : String(displayId);
   const normalizedId = rawId.replace(/^#/, "");
-  const idPrefix = normalizedId.length > 4 ? normalizedId.slice(0, -4) : normalizedId;
-  const idLast4 = normalizedId.length > 4 ? normalizedId.slice(-4) : "";
-  const idLast4Chars = idLast4.split("");
 
   const orderStatusLabel = formatRiderOrderStatusDisplayLabel(statusLabel, order.orderType);
 
@@ -2017,54 +2025,40 @@ export default function OrderDetailClient({
   return (
     <>
       <div
-        className="orders-typo flex h-full min-h-0 flex-1 flex-col gap-3 text-[12px] text-slate-700 md:text-[13px] lg:flex-row lg:items-stretch lg:gap-4 lg:overflow-hidden"
+        className="orders-typo relative flex h-full min-h-0 flex-1 flex-col text-[12px] text-slate-700 md:text-[13px] lg:overflow-hidden"
         onWheel={onGutterWheel}
       >
+      <OrderNthUserBanner
+        ordinal={order.customerOrderOrdinal ?? null}
+        customerName={order.customerName}
+      />
+      <div className="flex min-h-0 flex-1 flex-col gap-2 px-3 pt-3 sm:px-4 md:px-6 lg:flex-row lg:items-stretch lg:gap-3 lg:overflow-hidden">
       <div
         ref={leftColRef}
-        className="w-full min-w-0 space-y-3 bg-[#F8FAFC] lg:min-h-0 lg:flex-[4] lg:overflow-y-auto lg:overscroll-none lg:pr-3"
+        className="w-full min-w-0 space-y-2 bg-[#F8FAFC] pt-0 lg:min-h-0 lg:flex-[4] lg:overflow-y-auto lg:overscroll-none lg:pr-3"
       >
         {/* Primary order summary just below main header */}
-        <section className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-slate-100 pb-2">
-          <div>
-            <h1 className="flex items-center gap-1.5 text-[16px] font-medium text-slate-900">
-              <span className="text-slate-700">#</span>
-              <span className="font-mono text-[15px] text-emerald-700 tracking-wide">
-                {idLast4
-                  ? (
-                      <>
-                        <span>{idPrefix}</span>
-                        <span className="font-medium text-[15px]">
-                          {idLast4Chars[0]}
-                        </span>
-                        <span className="font-semibold text-[16px]">
-                          {idLast4Chars[1]}
-                        </span>
-                        <span className="font-semibold text-[17px]">
-                          {idLast4Chars[2]}
-                        </span>
-                        <span className="font-bold text-[18px]">
-                          {idLast4Chars[3]}
-                        </span>
-                      </>
-                    )
-                  : normalizedId || "—"}
+        <section className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1 border-b border-slate-100 pb-1.5">
+          <div className="flex flex-col items-start">
+            <h1 className="m-0 flex items-center gap-2">
+              <span className="inline-flex items-center rounded-md border-0 bg-emerald-50/15 px-0 py-0.5 font-mono text-[16px] font-extrabold tracking-wide text-emerald-800">
+                #{normalizedId || "—"}
               </span>
               <button
                 type="button"
                 onClick={handleCopyId}
-                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-slate-500 transition hover:bg-transparent hover:text-slate-700 cursor-pointer"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-slate-500 transition hover:bg-transparent hover:text-slate-700 cursor-pointer"
                 aria-label={copiedOrderId ? "Copied" : "Copy order ID"}
               >
                 {copiedOrderId ? (
-                  <Check className="h-3 w-3 text-emerald-600" />
+                  <Check className="h-3.5 w-3.5 text-emerald-600" />
                 ) : (
-                  <Copy className="h-3 w-3 text-gati-primary" />
+                  <Copy className="h-3.5 w-3.5 text-gati-primary" />
                 )}
               </button>
             </h1>
-            <p className="mt-0.5 text-[11px] text-slate-600">
-              <OrderNum className="text-slate-800">{createdLabel}</OrderNum>
+            <p className="mt-1 pl-0 text-[12px] font-bold tabular-nums text-slate-800">
+              <OrderNum className="font-bold text-slate-800">{createdLabel}</OrderNum>
             </p>
           </div>
           <div className="flex flex-col items-end gap-1 text-[11px]">
@@ -2306,6 +2300,8 @@ export default function OrderDetailClient({
                 locationMismatch: isLocationMismatch,
                 accountStatus: order.customerAccountStatus,
                 riskFlag: order.customerRiskFlag,
+                totalDelivered: order.customerDeliveredCount,
+                totalCancelled: order.customerCancelledCount,
               }}
               onCopy={handleCopy}
               onPhoneClick={handleCustomerPhoneClick}
@@ -2482,7 +2478,7 @@ export default function OrderDetailClient({
         {/* Right sidebar — keep compact (was stretched to 320/360) */}
       <div
         ref={rightColRef}
-        className="w-full min-w-0 bg-[#F8FAFC] lg:min-h-0 lg:w-[260px] lg:max-w-[260px] lg:flex-none lg:overflow-y-auto lg:overscroll-none lg:pl-2 xl:w-[280px] xl:max-w-[280px]"
+        className="w-full min-w-0 bg-[#F8FAFC] pt-0 lg:min-h-0 lg:w-[260px] lg:max-w-[260px] lg:flex-none lg:overflow-y-auto lg:overscroll-none lg:pl-2 xl:w-[280px] xl:max-w-[280px]"
       >
         <OrderRightSidebar
           order={{ ...order, distanceKm: displayDistanceKm }}
@@ -2529,6 +2525,7 @@ export default function OrderDetailClient({
           refundActionsDisabled={refundLock.noActionsLeft}
           refundRemainingRefundable={refundLock.remainingRefundable}
         />
+      </div>
       </div>
     </div>
 

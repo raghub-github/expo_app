@@ -15,6 +15,10 @@ type StoreStatusState = {
   setStatus: (storeId: string, status: LiveStatus) => void;
   /** Batch seed from list/menu API (isOpen or liveStatus). */
   setStatusFromApi: (storeId: string, isOpen?: boolean, liveStatus?: LiveStatus) => void;
+  /** One Zustand write for a listing payload — avoids N Home re-renders on seed. */
+  seedStatusesFromApi: (
+    rows: Array<{ storeId: string; isOpen?: boolean; liveStatus?: LiveStatus }>
+  ) => void;
   /** Get current status; null means use API fallback. */
   getStatus: (storeId: string) => LiveStatus | null;
   /** Callback when a store is set to CLOSED (e.g. show toast if it's the cart merchant). */
@@ -44,6 +48,22 @@ export const useStoreStatusStore = create<StoreStatusState>((set, get) => ({
     set((s) => ({
       statusMap: { ...s.statusMap, [storeId]: status },
     }));
+  },
+
+  seedStatusesFromApi: (rows) => {
+    if (rows.length === 0) return;
+    const prev = get().statusMap;
+    let changed = false;
+    const next: Record<string, LiveStatus> = { ...prev };
+    for (const row of rows) {
+      const status: LiveStatus =
+        row.liveStatus ?? (row.isOpen === true ? "OPEN" : "CLOSED");
+      if (next[row.storeId] !== status) {
+        next[row.storeId] = status;
+        changed = true;
+      }
+    }
+    if (changed) set({ statusMap: next });
   },
 
   getStatus: (storeId) => {

@@ -144,7 +144,7 @@ export async function playOrderAlertSound(
     if (trimmed) {
       played = await playSingleChime({ uri: trimmed }, volume, myRun);
     }
-    if (!played && !trimmed) {
+    if (!played) {
       played = await playSingleChime(BUNDLED_NOTIFICATION, volume, myRun);
     }
     if (played) anyPlayed = true;
@@ -180,7 +180,7 @@ export async function playIncomingOrderAlert(
       : resolveIncomingOrderChimeUrl(settings, device);
   await playOrderAlertSound(
     chimeUrl,
-    settings.alert_sound_repeat_count ?? 1,
+    Math.max(5, settings.alert_sound_repeat_count ?? 8),
     volumeStepTo01(device.volumeStep),
     device.ringInSilent
   );

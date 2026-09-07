@@ -39,13 +39,14 @@ export type MerchantStoreAccessResult =
 
 /** Dashboard store URL id = merchant_stores.id (internal bigint). */
 export async function ensureMerchantStoreDashboardAccess(
-  storeIdParam: number
+  storeIdParam: number,
+  request?: Parameters<typeof getAuthenticatedApiUser>[0]
 ): Promise<MerchantStoreAccessResult> {
   if (!Number.isFinite(storeIdParam)) {
     return { error: "Invalid store id", status: 404 };
   }
 
-  const actor = await resolveMerchantApiActor();
+  const actor = await resolveMerchantApiActor(request);
   if (!actor.ok) {
     return { error: actor.error, status: actor.status };
   }

@@ -84,6 +84,12 @@ function routeAllowsImmersiveStatusBar(
     return true;
   }
 
+  // Tabs Home pads its own header under a visible status bar. Never add the root
+  // spacer here — that stacked with header insets.top into a large white gap.
+  if (root === "(tabs)" && (leaf === "" || leaf === "index")) {
+    return hideStatusBarSpacer;
+  }
+
   return false;
 }
 

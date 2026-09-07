@@ -216,11 +216,17 @@ export function isRiderWithinPickupRadiusMeters(
 
 function normalizeServiceType(raw: string): DispatchServiceType | null {
   const s = raw.trim().toLowerCase();
-  if (s === "ride") return "person_ride";
+  if (s === "ride" || s === "person") return "person_ride";
   if (VALID_DISPATCH_SERVICES.has(s as DispatchServiceType)) {
     return s as DispatchServiceType;
   }
   return null;
+}
+
+/** Aliases stored in duty_logs.service_types that mean the same dispatch service. */
+export function dutyServiceAliases(service: DispatchServiceType): string[] {
+  if (service === "person_ride") return ["person_ride", "ride", "person"];
+  return [service];
 }
 
 function normalizeDispatchServices(raw: unknown): DispatchServiceType[] {
@@ -659,14 +665,37 @@ async function loadOnDutyRiderIds(
       LIMIT 1
     ) ld ON true
     WHERE rcl.updated_at >= NOW() - (${riderDispatchLocationStaleMaxAgeSeconds()} * INTERVAL '1 second')
-      AND r.status = 'ACTIVE'
-      AND r.onboarding_stage = 'ACTIVE'
+      AND r.status NOT IN ('BLOCKED', 'BANNED')
       AND r.deleted_at IS NULL
       AND ld.status = 'ON'
+      AND jsonb_typeof(COALESCE(ld.service_types, '[]'::jsonb)) = 'array'
       AND jsonb_array_length(COALESCE(ld.service_types, '[]'::jsonb)) > 0
       AND (
         ${serviceJson}::text IS NULL
-        OR COALESCE(ld.service_types, '[]'::jsonb) @> ${serviceJson}::text::jsonb
+        OR (
+          ${requiredService ?? ""}::text = 'person_ride'
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements_text(COALESCE(ld.service_types, '[]'::jsonb)) AS st(val)
+            WHERE lower(trim(st.val)) IN ('person_ride', 'ride', 'person')
+          )
+        )
+        OR (
+          ${requiredService ?? ""}::text = 'food'
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements_text(COALESCE(ld.service_types, '[]'::jsonb)) AS st(val)
+            WHERE lower(trim(st.val)) IN ('food')
+          )
+        )
+        OR (
+          ${requiredService ?? ""}::text = 'parcel'
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements_text(COALESCE(ld.service_types, '[]'::jsonb)) AS st(val)
+            WHERE lower(trim(st.val)) IN ('parcel')
+          )
+        )
       )
   `) as Array<{ rider_id: number }>;
 
@@ -1045,9 +1074,7 @@ export async function resolveRiderAssignmentContext(
     .where(eq(riders.id, riderId))
     .limit(1);
 
-  if (!rider || rider.onboardingStage !== "ACTIVE") return null;
-  if (rider.status === "BLOCKED" || rider.status === "BANNED") return null;
-  if (rider.status !== "ACTIVE") return null;
+  if (!rider || rider.status === "BLOCKED" || rider.status === "BANNED") return null;
 
   if (!options?.ignoreActiveOrder && !options?.skipAssignmentCheck) {
     if (options?.serviceTypeForDispatch) {

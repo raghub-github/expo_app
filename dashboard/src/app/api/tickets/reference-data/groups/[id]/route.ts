@@ -104,22 +104,117 @@ export async function PATCH(
       return NextResponse.json({ success: false, error: "Group not found" }, { status: 404 });
     }
     if (Array.isArray(body.titles)) {
-      await sqlClient.unsafe("UPDATE ticket_titles SET is_active = false, updated_at = NOW() WHERE group_id = $1", [groupId]);
-      const groupCode = row.group_code ?? body.groupCode ?? "GRP";
       const serviceTypeVal = row.service_type ?? body.serviceType ?? "other";
       const ticketSectionVal = row.ticket_section ?? body.ticketSection ?? "other";
       const sourceRoleVal = row.source_role ?? body.sourceRole ?? "system";
+      const keepIds: number[] = [];
+      const seenText = new Set<string>();
+
+      const slugCode = (raw: string) => {
+        const s = String(raw)
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "")
+          .slice(0, 80);
+        return s || "TITLE";
+      };
+
+      const uniqueCode = async (base: string, excludeId?: number | null) => {
+        const slug = slugCode(base);
+        let code = slug;
+        let n = 0;
+        while (n < 500) {
+          const existing = excludeId
+            ? await sqlClient.unsafe(
+                `SELECT 1 FROM ticket_titles WHERE title_code = $1 AND id <> $2 LIMIT 1`,
+                [code, excludeId]
+              )
+            : await sqlClient.unsafe(`SELECT 1 FROM ticket_titles WHERE title_code = $1 LIMIT 1`, [code]);
+          if (!existing?.length) return code;
+          n += 1;
+          code = `${slug}_${n}`;
+        }
+        return `${slug}_${Date.now().toString(36).toUpperCase()}`;
+      };
+
       for (let i = 0; i < body.titles.length; i++) {
         const t = body.titles[i];
-        const titleCode = t?.titleCode ?? t?.title_code;
-        const titleText = t?.titleText ?? t?.title_text;
-        if (!titleCode?.trim() || !titleText?.trim()) continue;
-        const uniqueCode = `${String(groupCode).trim().toUpperCase()}_${String(titleCode).trim().toUpperCase()}_${groupId}_${i}`;
+        const titleText = String(t?.titleText ?? t?.title_text ?? "").trim();
+        if (!titleText) continue;
+        const textKey = titleText.toLowerCase();
+        if (seenText.has(textKey)) continue;
+        seenText.add(textKey);
+
+        const incomingId = Number(t?.id ?? t?.title_id ?? 0);
+        const requestedCode = String(t?.titleCode ?? t?.title_code ?? "").trim().toUpperCase();
+
+        let rowId: number | null = Number.isFinite(incomingId) && incomingId > 0 ? incomingId : null;
+        if (rowId) {
+          const owned = await sqlClient.unsafe(
+            `SELECT id FROM ticket_titles WHERE id = $1 AND group_id = $2 LIMIT 1`,
+            [rowId, groupId]
+          );
+          if (!owned?.length) rowId = null;
+        }
+        if (!rowId) {
+          const match = await sqlClient.unsafe(
+            `SELECT id FROM ticket_titles
+             WHERE group_id = $1 AND lower(trim(title_text)) = lower(trim($2))
+             ORDER BY is_active DESC, id ASC
+             LIMIT 1`,
+            [groupId, titleText]
+          );
+          if (match?.[0]?.id != null) rowId = Number(match[0].id);
+        }
+
+        if (rowId) {
+          const current = await sqlClient.unsafe(
+            `SELECT title_code FROM ticket_titles WHERE id = $1 LIMIT 1`,
+            [rowId]
+          );
+          const currentCode = String(current?.[0]?.title_code ?? "");
+          const nextCode =
+            requestedCode && requestedCode !== currentCode
+              ? await uniqueCode(requestedCode, rowId)
+              : currentCode || (await uniqueCode(requestedCode || titleText, rowId));
+          await sqlClient.unsafe(
+            `UPDATE ticket_titles SET
+               title_text = $1,
+               title_code = $2,
+               display_order = $3,
+               is_active = true,
+               service_type = $4,
+               ticket_section = $5,
+               source_role = $6,
+               updated_at = NOW()
+             WHERE id = $7 AND group_id = $8`,
+            [titleText, nextCode, i, serviceTypeVal, ticketSectionVal, sourceRoleVal, rowId, groupId]
+          );
+          keepIds.push(rowId);
+        } else {
+          const nextCode = await uniqueCode(requestedCode || titleText);
+          const ins = await sqlClient.unsafe(
+            `INSERT INTO ticket_titles (group_id, service_type, ticket_section, source_role, title_code, title_text, display_order, is_active)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+             RETURNING id`,
+            [groupId, serviceTypeVal, ticketSectionVal, sourceRoleVal, nextCode, titleText, i]
+          );
+          const newId = Number(ins?.[0]?.id);
+          if (Number.isFinite(newId)) keepIds.push(newId);
+        }
+      }
+
+      if (keepIds.length > 0) {
         await sqlClient.unsafe(
-          `INSERT INTO ticket_titles (group_id, service_type, ticket_section, source_role, title_code, title_text, display_order, is_active)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, true)
-           ON CONFLICT (title_code) DO UPDATE SET title_text = EXCLUDED.title_text, display_order = EXCLUDED.display_order, is_active = true, updated_at = NOW()`,
-          [groupId, serviceTypeVal, ticketSectionVal, sourceRoleVal, uniqueCode, String(titleText).trim(), i]
+          `UPDATE ticket_titles SET is_active = false, updated_at = NOW()
+           WHERE group_id = $1 AND NOT (id = ANY($2))`,
+          [groupId, keepIds]
+        );
+      } else {
+        await sqlClient.unsafe(
+          `UPDATE ticket_titles SET is_active = false, updated_at = NOW() WHERE group_id = $1`,
+          [groupId]
         );
       }
     }

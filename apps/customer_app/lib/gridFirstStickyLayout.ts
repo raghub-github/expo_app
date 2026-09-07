@@ -4,12 +4,25 @@ import { GRID_FIRST_LOCATION_ROW_H } from "@/components/home/FoodHomeGridFirstHe
 /** Default search row height (pill + veg toggle). */
 export const GRID_FIRST_SEARCH_ROW_H = 44;
 
-/** Small gap between pinned search and category icons — avoids visual overlap. */
+/** Gap between pinned search and category icons — same at rest and after scroll-up. */
 export const GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP = 6;
 
-/** Default category tabs block height incl. section padding. */
+/**
+ * Snap sticky chrome this many px early so JS scroll lag does not flash a gap.
+ * Must stay smaller than typical search-stick offset or the rail paints over search at rest.
+ * Keep the numeric literal in worklets too — Reanimated cannot read JS module consts on the UI thread.
+ */
+export const GRID_FIRST_STICK_EARLY_PX = 8;
+/** @deprecated Same value as GRID_FIRST_STICK_EARLY_PX — keep exported for stale worklet closures. */
+export const GRID_FIRST_STICKY_EARLY_PX = GRID_FIRST_STICK_EARLY_PX;
+/** Never snap sticky chrome in the first N px of a stick threshold (avoids y=0 overlap). */
+export const GRID_FIRST_STICK_REST_PX = 8;
+
+/** Default category tabs block height incl. section padding + meals-under card. */
 export function gridFirstCategoryBlockHeight(circle: number): number {
-  return circle + 32;
+  const mealsH = Math.round(circle * 1.34);
+  const tabH = circle + 38;
+  return Math.max(mealsH, tabH) + 16;
 }
 
 /** Gold subscription strip approximate height when visible. */
@@ -22,7 +35,7 @@ export const GRID_FIRST_FILTER_ROW_H = 48;
 export const GRID_FIRST_FILTER_SHOW_SCROLL_Y = 8;
 
 /** Header row + search overlay height on hero (excl. status bar). */
-export const GRID_FIRST_HEADER_OVERLAY_H = 122;
+export const GRID_FIRST_HEADER_OVERLAY_H = 130;
 /**
  * Compact hero media band as a fraction of screen width.
  * Tuned to food-delivery reference proportions (~1/3 width), not device pixels.
@@ -48,6 +61,23 @@ export const GRID_FIRST_HERO_VISIBLE_H = 142;
 /** Crossfade window for in-flow ↔ sticky handoff (keep tight to avoid double-ghosting). */
 const STICK_HANDOFF_PX = 4;
 
+/** Scroll Y when sticky chrome should appear. Never returns 0 for a positive stickAt. */
+export function gridFirstStickySnapY(stickAt: number, earlyPx?: number): number {
+  "worklet";
+  // Literals only — default-arg module consts crash Reanimated ("Property doesn't exist").
+  const earlyDefault = 8;
+  const restPx = 8;
+  const usedEarly = earlyPx == null ? earlyDefault : earlyPx;
+  if (stickAt <= 1) return Number.MAX_SAFE_INTEGER;
+  const early = Math.min(usedEarly, Math.max(0, stickAt - restPx));
+  return stickAt - early;
+}
+
+export function gridFirstStickyOn(y: number, stickAt: number): boolean {
+  "worklet";
+  return y >= gridFirstStickySnapY(stickAt);
+}
+
 export type GridFirstStickyMetrics = {
   topInset: number;
   heroHeight: number;
@@ -63,9 +93,7 @@ export type GridFirstStickyMetrics = {
 
 /** Default full header content height below the status bar (location + search). */
 export function gridFirstDefaultHeaderBlockHeight(): number {
-  return (
-    GRID_FIRST_HEADER_OVERLAY_H - STATUS_BAR_TO_HEADER_GAP
-  );
+  return GRID_FIRST_LOCATION_ROW_H + GRID_FIRST_SEARCH_ROW_H;
 }
 
 export function defaultGridFirstStickyMetrics(

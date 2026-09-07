@@ -46,7 +46,7 @@ export default function HistoryPage() {
   if (status) qs.set("status", status);
 
   const { data, isLoading } = useSWR<{ items: LogRow[] }>(
-    "/api/super-admin/notifications/logs?" + qs.toString(),
+    "/api/super-admin/notifications/dispatch-logs?" + qs.toString(),
     fetcher,
     { refreshInterval: 20_000 },
   );

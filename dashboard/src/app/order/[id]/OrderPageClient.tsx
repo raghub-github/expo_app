@@ -11,7 +11,7 @@ import ParcelOrderDetailClient from "./parcel/ParcelOrderDetailClient";
 const ORDER_PAGE_SHELL =
   "orders-typo flex h-dvh max-h-dvh flex-col overflow-hidden overscroll-none";
 const ORDER_PAGE_MAIN =
-  "flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none px-3 pb-3 pt-2 sm:px-4 sm:pb-4 md:px-6 lg:overflow-hidden";
+  "flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none pb-3 pt-0 sm:pb-4 lg:overflow-hidden";
 const ORDER_PAGE_MAIN_NOT_FOUND = "flex min-h-0 flex-1 flex-col overflow-y-auto";
 
 interface OrderPageClientProps {
@@ -60,11 +60,14 @@ export default function OrderPageClient({ orderPublicId }: OrderPageClientProps)
     };
   }, []);
 
+  const header = !orderNotFound ? <OrderHeader forceSkeleton={orderLoading} /> : null;
+  const mainClass = orderNotFound ? ORDER_PAGE_MAIN_NOT_FOUND : ORDER_PAGE_MAIN;
+
   if (isPersonRide) {
     return (
       <div className={`${ORDER_PAGE_SHELL} bg-[#FAFAFA]`}>
-        {!orderNotFound && <OrderHeader forceSkeleton={orderLoading} />}
-        <main className={orderNotFound ? ORDER_PAGE_MAIN_NOT_FOUND : ORDER_PAGE_MAIN}>
+        {header}
+        <main className={mainClass}>
           <PersonRideOrderDetailClient
             orderPublicId={orderPublicId}
             onLoadingChange={setOrderLoading}
@@ -78,8 +81,8 @@ export default function OrderPageClient({ orderPublicId }: OrderPageClientProps)
   if (isParcel) {
     return (
       <div className={`${ORDER_PAGE_SHELL} bg-[#FAFAFA]`}>
-        {!orderNotFound && <OrderHeader forceSkeleton={orderLoading} />}
-        <main className={orderNotFound ? ORDER_PAGE_MAIN_NOT_FOUND : ORDER_PAGE_MAIN}>
+        {header}
+        <main className={mainClass}>
           <ParcelOrderDetailClient
             orderPublicId={orderPublicId}
             onLoadingChange={setOrderLoading}
@@ -92,8 +95,8 @@ export default function OrderPageClient({ orderPublicId }: OrderPageClientProps)
 
   return (
     <div className={`${ORDER_PAGE_SHELL} bg-[#F8FAFC]`}>
-      {!orderNotFound && <OrderHeader forceSkeleton={orderLoading} />}
-      <main className={orderNotFound ? ORDER_PAGE_MAIN_NOT_FOUND : ORDER_PAGE_MAIN}>
+      {header}
+      <main className={mainClass}>
         <OrderDetailClient
           orderPublicId={orderPublicId}
           onLoadingChange={setOrderLoading}

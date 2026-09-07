@@ -21,6 +21,15 @@ const OrderSummarySchema = z.object({
     lat: z.number(),
     lng: z.number(),
   }),
+  stops: z
+    .array(
+      z.object({
+        address: z.string(),
+        lat: z.number(),
+        lng: z.number(),
+      })
+    )
+    .optional(),
   distanceKm: z.number().optional(),
   pickupDistanceKm: z.number().optional(),
   tripDistanceKm: z.number().optional(),

@@ -31,7 +31,6 @@ function isMerchantNewOrderData(data) {
 if (!isExpoGo()) {
   try {
     const Notifications = require("expo-notifications");
-    const { AppState } = require("react-native");
     Notifications.setNotificationHandler({
       handleNotification: async (notification) => {
         const data = notification?.request?.content?.data ?? {};
@@ -48,10 +47,33 @@ if (!isExpoGo()) {
             shouldShowList: false,
           };
         }
+        const isStoreStatus = (() => {
+          const typ = String(data.type ?? data.notificationType ?? data.event ?? "").toUpperCase();
+          return (
+            typ === "STORE_STATUS" ||
+            typ === "STORE_ONLINE" ||
+            typ === "STORE_OUT_OF_TIMINGS" ||
+            typ === "STORE_RECONNECT_REQUIRED" ||
+            typ === "MERCHANT_OUTSIDE_DELIVERY" ||
+            typ === "MERCHANT_GO_ONLINE"
+          );
+        })();
         const isNewOrder = isMerchantNewOrderData(data);
+        const AppState = require("react-native").AppState;
         const appActive = AppState.currentState === "active";
-        // Active: in-app alert owns the chime. Background: allow OS/channel sound.
-        // Killed: OS uses merchant_new_orders_alert channel sound from FCM.
+        if (isStoreStatus) {
+          return {
+            shouldShowAlert: !appActive,
+            shouldPlaySound: false,
+            shouldSetBadge: false,
+            shouldShowBanner: !appActive,
+            shouldShowList: !appActive,
+          };
+        }
+        // Killed: this handler never runs; OS uses merchant_new_orders_alert
+        // from the FCM notification block (must stay audible).
+        // Background/cached: this handler MAY run — still allow OS sound.
+        // Active: mute OS; Incoming Order Modal / NewOrderAlertManager plays.
         return {
           shouldShowAlert: true,
           shouldPlaySound: !(isNewOrder && appActive),

@@ -36,6 +36,7 @@ export type IncomingDispatchOrder = {
   itemCount?: number;
   pickup: { address: string; lat: number; lng: number };
   delivery: { address: string; lat: number; lng: number };
+  stops?: { address: string; lat: number; lng: number }[];
   storeImageUrl?: string | null;
   dropAddressImageUrl?: string | null;
   distanceKm?: number;
@@ -151,6 +152,7 @@ function IncomingOrderModalInner({
     pickupKm != null && tripKm != null
       ? pickupKm + tripKm
       : order.totalDistanceKm ?? tripKm ?? pickupKm;
+  const rideStops = (order.stops ?? []).filter((stop) => stop.address.trim().length > 0);
 
   return (
     <Modal
@@ -342,6 +344,22 @@ function IncomingOrderModalInner({
                     </Text>
                   </View>
                 </View>
+                {rideStops.map((stop, index) => (
+                  <View key={`stop-${index}-${stop.address}`} style={styles.routeRow}>
+                    <View style={styles.routeDotCol}>
+                      <View style={[styles.routeDot, styles.stopDot]} />
+                      <View style={styles.routeConnector} />
+                    </View>
+                    <View style={styles.routeTextWrap}>
+                      <View style={styles.routeLabelRow}>
+                        <Text style={styles.routeLabel}>
+                          {`Stop ${index + 1}`}
+                        </Text>
+                      </View>
+                      <Text style={styles.routeAddress}>{compactAddress(stop.address)}</Text>
+                    </View>
+                  </View>
+                ))}
                 <View style={styles.routeRow}>
                   <View style={styles.routeDotCol}>
                     <View style={[styles.routeDot, styles.dropDot]} />
@@ -414,6 +432,7 @@ export const IncomingOrderModal = memo(IncomingOrderModalInner, (prev, next) => 
     a.rideType === b.rideType &&
     a.pickup.address === b.pickup.address &&
     a.delivery.address === b.delivery.address &&
+    JSON.stringify(a.stops ?? []) === JSON.stringify(b.stops ?? []) &&
     a.storeImageUrl === b.storeImageUrl &&
     a.dropAddressImageUrl === b.dropAddressImageUrl &&
     a.offerShownAtMs === b.offerShownAtMs
@@ -745,6 +764,7 @@ const styles = StyleSheet.create({
     borderRadius: 5,
   },
   pickupDot: { backgroundColor: colors.success[500] },
+  stopDot: { backgroundColor: "#F59E0B" },
   dropDot: { backgroundColor: colors.error[500] },
   routeConnector: {
     width: 2,

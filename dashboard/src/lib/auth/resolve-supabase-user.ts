@@ -63,10 +63,6 @@ function markAuthNetworkDown(): void {
   authNetworkDownUntil = Date.now() + AUTH_NETWORK_COOLDOWN_MS;
 }
 
-function isAuthNetworkCoolingDown(): boolean {
-  return Date.now() < authNetworkDownUntil;
-}
-
 /**
  * REMOVED cross-admin identity cache. This used to return "the last user any
  * request resolved" and was the root cause of admins seeing each other's
@@ -308,28 +304,9 @@ export async function resolveSupabaseUser(options?: {
 
   // Fast path: any identifiable cookie user — never block API routes on Auth refresh.
   // Parallel getUser()/refresh under ticket list load was the main 503 storm source.
-  // Soft-refresh in the background when the access JWT is expired/near-expiry.
+  // Do NOT background-getUser() when the access JWT is near expiry: that refresh
+  // races across parallel APIs and logs AuthApiError refresh_token_not_found.
   if (!forceRemote && cookieSession?.user?.id) {
-    const uid = cookieSession.user.id;
-    if (
-      !isCookieAccessTokenUsable(cookieSession) &&
-      !refreshInFlightByUser.has(uid) &&
-      !isAuthNetworkCoolingDown()
-    ) {
-      const softRefresh = resolveWithRemoteValidation(supabase, {
-        maxAttempts: 1,
-        retryDelayMs,
-        cookieReader,
-      });
-      refreshInFlightByUser.set(
-        uid,
-        softRefresh.finally(() => {
-          refreshInFlightByUser.delete(uid);
-        })
-      );
-      // Background only — never surface AbortError/timeout to this request.
-      void softRefresh.catch(() => undefined);
-    }
     return ok(cookieSession.user, supabase, true);
   }
 

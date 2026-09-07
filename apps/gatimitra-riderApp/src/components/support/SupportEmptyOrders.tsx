@@ -1,8 +1,12 @@
 import React from "react";
-import { View, Text, StyleSheet, Platform } from "react-native";
+import { View, Text, StyleSheet } from "react-native";
 import { useTranslation } from "react-i18next";
+import { router } from "expo-router";
 import { AppAssetImage } from "@/src/components/AppAssetImage";
 import { RX } from "@/src/lib/appAssetKeys";
+import { RiderFonts } from "@/src/theme/fonts";
+import { RIDER_AUTH_INK } from "@/src/theme/riderAuthTheme";
+import { AuthPrimaryButton } from "@/src/components/auth/AuthPrimaryButton";
 
 type Props = {
   variant: "active" | "completed" | "all";
@@ -12,6 +16,10 @@ export function SupportEmptyOrders({ variant }: Props) {
   const { t } = useTranslation();
   const isActive = variant === "active";
   const isAll = variant === "all";
+
+  const openSupport = () => {
+    router.push({ pathname: "/raise-ticket" });
+  };
 
   return (
     <View style={styles.shell}>
@@ -40,6 +48,12 @@ export function SupportEmptyOrders({ variant }: Props) {
                   "You have not completed any orders to report an issue.",
                 )}
         </Text>
+        <Text style={styles.needSupport}>
+          {t("login.needSupportQuestion", "Need Support?")}
+        </Text>
+        <View style={styles.reachWrap}>
+          <AuthPrimaryButton label={t("login.reachUs", "Reach us")} onPress={openSupport} />
+        </View>
       </View>
     </View>
   );
@@ -55,30 +69,32 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 24,
     paddingVertical: 32,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0F172A",
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.06,
-        shadowRadius: 10,
-      },
-      android: { elevation: 2 },
-      default: {},
-    }),
   },
   illus: { width: 140, height: 120 },
   title: {
     marginTop: 12,
     fontSize: 18,
-    fontWeight: "800",
-    color: "#0F172A",
+    fontFamily: RiderFonts.loraBold,
+    color: RIDER_AUTH_INK,
     textAlign: "center",
   },
   sub: {
     marginTop: 8,
     fontSize: 14,
-    color: "#64748B",
+    fontFamily: RiderFonts.loraBold,
+    color: RIDER_AUTH_INK,
     textAlign: "center",
     lineHeight: 20,
+  },
+  needSupport: {
+    marginTop: 20,
+    fontFamily: RiderFonts.loraBold,
+    fontSize: 16,
+    color: RIDER_AUTH_INK,
+    textAlign: "center",
+  },
+  reachWrap: {
+    width: "100%",
+    marginTop: 12,
   },
 });

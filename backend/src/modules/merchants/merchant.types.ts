@@ -26,6 +26,9 @@ export type MerchantMenuItemRow = {
   has_customizations?: boolean | null;
   has_addons?: boolean | null;
   has_variants?: boolean | null;
+  item_size_value?: string | number | null;
+  item_size_unit?: string | null;
+  size_preset?: string | null;
   /** Distinct non-cancelled orders that included this item at this store. */
   order_count?: number | null;
   category_image_url?: string | null;
@@ -40,6 +43,7 @@ export type MenuItemVariantRow = {
   variant_type: string | null;
   variant_size_value?: string | number | null;
   variant_size_unit?: string | null;
+  size_preset?: string | null;
   variant_price: string;
   price_difference: string | null;
   in_stock: boolean | null;
@@ -68,6 +72,7 @@ export type MenuItemAddonRow = {
   addon_image_url: string | null;
   addon_size_value?: string | number | null;
   addon_size_unit?: string | null;
+  size_preset?: string | null;
   in_stock: boolean | null;
   display_order: number | null;
 };
@@ -100,6 +105,7 @@ export type MerchantStoreRow = {
   /** Parent merchant id; used by order creation (never from frontend). */
   parent_id?: number | null;
   store_type?: string | null;
+  public_slug?: string | null;
 };
 
 /** Fallback when DB live_status not available. OPEN only when all four conditions met. */

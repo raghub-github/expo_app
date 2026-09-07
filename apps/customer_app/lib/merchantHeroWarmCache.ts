@@ -33,6 +33,20 @@ export function prefetchMerchantHeroImageUri(uri: string | null | undefined): vo
     });
 }
 
+/** Warm the first visible list-card banners so they paint from memory-disk cache. */
+export function prefetchVisibleMerchantBanners(
+  merchants: Array<{ id?: string | null } & MerchantSummary> | null | undefined,
+  limit = 10
+): void {
+  if (!merchants?.length) return;
+  for (const merchant of merchants.slice(0, limit)) {
+    const uri = resolveMerchantCarouselBannerUri(merchant);
+    if (!uri) continue;
+    if (merchant.id) warmMerchantHeroImage(String(merchant.id), uri);
+    else prefetchMerchantHeroImageUri(uri);
+  }
+}
+
 /** Remember banner URI from list cards so detail page can render on frame 1. */
 export function warmMerchantHeroImage(
   merchantId: string,

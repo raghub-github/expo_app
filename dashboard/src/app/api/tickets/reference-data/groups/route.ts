@@ -175,17 +175,40 @@ export async function POST(request: NextRequest) {
     const ticketSectionVal = row.ticket_section ?? "other";
     const sourceRoleVal = row.source_role ?? "system";
     const titleList = Array.isArray(titles) ? titles : [];
+    const seenText = new Set<string>();
     for (let i = 0; i < titleList.length; i++) {
       const t = titleList[i];
-      const titleCode = t?.titleCode ?? t?.title_code;
-      const titleText = t?.titleText ?? t?.title_text;
-      if (!titleCode?.trim() || !titleText?.trim()) continue;
-      const uniqueCode = `${String(groupCode).trim().toUpperCase()}_${String(titleCode).trim().toUpperCase()}_${groupId}_${i}`;
+      const titleText = String(t?.titleText ?? t?.title_text ?? "").trim();
+      if (!titleText) continue;
+      const textKey = titleText.toLowerCase();
+      if (seenText.has(textKey)) continue;
+      seenText.add(textKey);
+      let titleCode = String(t?.titleCode ?? t?.title_code ?? "")
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 80);
+      if (!titleCode) {
+        titleCode = titleText
+          .toUpperCase()
+          .replace(/[^A-Z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "")
+          .slice(0, 80) || "TITLE";
+      }
+      let uniqueCode = titleCode;
+      let n = 0;
+      while (n < 500) {
+        const taken = await sqlClient.unsafe(`SELECT 1 FROM ticket_titles WHERE title_code = $1 LIMIT 1`, [uniqueCode]);
+        if (!taken?.length) break;
+        n += 1;
+        uniqueCode = `${titleCode}_${n}`;
+      }
       await sqlClient.unsafe(
         `INSERT INTO ticket_titles (group_id, service_type, ticket_section, source_role, title_code, title_text, display_order, is_active)
          VALUES ($1, $2, $3, $4, $5, $6, $7, true)
          ON CONFLICT (title_code) DO NOTHING`,
-        [groupId, serviceTypeVal, ticketSectionVal, sourceRoleVal, uniqueCode, String(titleText).trim(), i]
+        [groupId, serviceTypeVal, ticketSectionVal, sourceRoleVal, uniqueCode, titleText, i]
       );
     }
     const group = {

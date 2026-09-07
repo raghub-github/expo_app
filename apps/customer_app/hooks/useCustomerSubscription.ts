@@ -27,7 +27,6 @@ export function useCurrentSubscription(enabled = true) {
     staleTime: 30 * 1000,
     gcTime: SUBSCRIPTION_PLANS_GC_MS,
     retry: 1,
-    refetchOnMount: "always",
     refetchOnReconnect: true,
   });
 }

@@ -89,11 +89,10 @@ export const MapboxWebPannableMap = forwardRef<CustomerMapRef, Props>(function M
       if (!readyRef.current) return;
       if (!isValidMapCoordinate(lat, lng)) return;
       if (Date.now() < ignoreUntilMsRef.current) return;
-      if (lastPostedRef.current) {
+      if (phase === "change" && lastPostedRef.current) {
         const dLat = Math.abs(lat - lastPostedRef.current.lat);
         const dLng = Math.abs(lng - lastPostedRef.current.lng);
-        // ~11m — ignore camera jitter / map-resize idles that aren't a real pan.
-        if (dLat < 1e-4 && dLng < 1e-4) return;
+        if (dLat < 4e-5 && dLng < 4e-5) return;
       }
       lastPostedRef.current = { lat, lng };
       const region: MapRegion = { latitude: lat, longitude: lng };
@@ -102,6 +101,18 @@ export const MapboxWebPannableMap = forwardRef<CustomerMapRef, Props>(function M
     },
     [onRegionChange, onRegionChangeComplete]
   );
+
+  const readMapCenter = (e: { properties?: { center?: number[] }; geometry?: { coordinates?: number[] } } | null) => {
+    const c = e?.properties?.center;
+    if (Array.isArray(c) && c.length >= 2 && Number.isFinite(c[0]) && Number.isFinite(c[1])) {
+      return { lng: Number(c[0]), lat: Number(c[1]) };
+    }
+    const g = e?.geometry?.coordinates;
+    if (Array.isArray(g) && g.length >= 2 && Number.isFinite(g[0]) && Number.isFinite(g[1])) {
+      return { lng: Number(g[0]), lat: Number(g[1]) };
+    }
+    return null;
+  };
 
   useImperativeHandle(
     ref,
@@ -171,14 +182,14 @@ export const MapboxWebPannableMap = forwardRef<CustomerMapRef, Props>(function M
           onMapReady?.();
         }}
         onCameraChanged={(e) => {
-          const coords = e?.properties?.center;
-          if (!coords || coords.length < 2) return;
-          postRegion("change", coords[1], coords[0]);
+          const center = readMapCenter(e);
+          if (!center) return;
+          postRegion("change", center.lat, center.lng);
         }}
         onMapIdle={(e) => {
-          const coords = e?.properties?.center;
-          if (!coords || coords.length < 2) return;
-          postRegion("complete", coords[1], coords[0]);
+          const center = readMapCenter(e);
+          if (!center) return;
+          postRegion("complete", center.lat, center.lng);
         }}
       >
         <Mapbox.Camera

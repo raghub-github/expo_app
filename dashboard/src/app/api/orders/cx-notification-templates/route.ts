@@ -3,7 +3,10 @@ import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-ses
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
 import { backendFetch } from "@/lib/notif-backend";
-import { AUTO_ONLY_ADMIN_CX_CODES } from "@/lib/notifications/admin-cx-templates";
+import {
+  AUTO_ONLY_ADMIN_CX_CODES,
+  compareAdminCxDropdownItems,
+} from "@/lib/notifications/admin-cx-templates";
 
 export const runtime = "nodejs";
 
@@ -33,6 +36,8 @@ const FALLBACK_LABELS: Record<string, string> = {
   ADMIN_CX_PRE_PICKUP_RAIN: "Pre Pickup | Delay due to rain",
   ADMIN_CX_PRE_PICKUP_RIDER_CANT_FIND_STORE: "Pre Pickup | Rider is unable to find the store",
   ADMIN_CX_PRE_PICKUP_ITEM_SLOW: "Pre Pickup | Item is taking longer to prepare",
+  ADMIN_CX_ORDER_DELIVERED_DE: "Order Delivered — DE",
+  ADMIN_CX_ORDER_DELIVERED_SP: "Order Delivered — SP",
   ADMIN_CX_CUSTOM: "Custom Message",
 };
 
@@ -95,11 +100,7 @@ async function loadTemplatesFromDb() {
     });
   }
 
-  items.sort((a, b) => {
-    if (a.is_custom) return 1;
-    if (b.is_custom) return -1;
-    return a.label.localeCompare(b.label);
-  });
+  items.sort(compareAdminCxDropdownItems);
 
   return items;
 }

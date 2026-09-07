@@ -81,45 +81,52 @@ export default function RideMapPickerScreen() {
     setGeocoding(true);
     try {
       const result = await reverseGeocode(longitude, latitude);
-        const primary = result.primary;
-        const fullAddress = result.fullAddress || primary;
-        setAddress((prev) =>
-          prev.primary === primary && prev.fullAddress === fullAddress
-            ? prev
-            : { primary, fullAddress }
-        );
+      const primary = result.primary?.trim() || "Selected location";
+      const fullAddress = (result.fullAddress || primary).trim();
+      setAddress({ primary, fullAddress });
     } catch {
       const fullAddress = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
-      setAddress((prev) =>
-        prev.primary === "Selected location" && prev.fullAddress === fullAddress
-          ? prev
-          : { primary: "Selected location", fullAddress }
-      );
+      setAddress({ primary: "Selected location", fullAddress });
     } finally {
       setGeocoding(false);
     }
   }, []);
 
+  const scheduleGeocode = useCallback(
+    (latitude: number, longitude: number) => {
+      const last = lastGeocodedRef.current;
+      const dLat = (latitude - last.latitude) * 111_320;
+      const dLng = (longitude - last.longitude) * 111_320 * Math.cos((latitude * Math.PI) / 180);
+      if (Math.hypot(dLat, dLng) < 8) return;
+      if (geocodeTimeoutRef.current) clearTimeout(geocodeTimeoutRef.current);
+      geocodeTimeoutRef.current = setTimeout(() => {
+        geocodeTimeoutRef.current = null;
+        void updateAddressFromCoords(latitude, longitude);
+      }, 280);
+    },
+    [updateAddressFromCoords]
+  );
+
   useEffect(() => {
-    const hasLabel = Boolean(params.primary?.trim());
-    if (hasLabel) return;
-    updateAddressFromCoords(initialLat, initialLng);
-  }, [initialLat, initialLng, params.primary, updateAddressFromCoords]);
+    return () => {
+      if (geocodeTimeoutRef.current) clearTimeout(geocodeTimeoutRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    void updateAddressFromCoords(initialLat, initialLng);
+  }, [initialLat, initialLng, updateAddressFromCoords]);
 
   const handleRegionChangeComplete = useCallback(
     (region: { latitude: number; longitude: number }) => {
       const { latitude, longitude } = region;
       centerCoordRef.current = { latitude, longitude };
       setCenterCoord({ latitude, longitude });
-      const last = lastGeocodedRef.current;
-      const dLat = (latitude - last.latitude) * 111_320;
-      const dLng = (longitude - last.longitude) * 111_320 * Math.cos((latitude * Math.PI) / 180);
-      if (Math.hypot(dLat, dLng) < 14) return;
       if (geocodeTimeoutRef.current) {
         clearTimeout(geocodeTimeoutRef.current);
         geocodeTimeoutRef.current = null;
       }
-      updateAddressFromCoords(latitude, longitude);
+      void updateAddressFromCoords(latitude, longitude);
     },
     [updateAddressFromCoords]
   );
@@ -127,8 +134,10 @@ export default function RideMapPickerScreen() {
   const handleRegionChange = useCallback(
     (region: { latitude: number; longitude: number }) => {
       centerCoordRef.current = { latitude: region.latitude, longitude: region.longitude };
+      setCenterCoord({ latitude: region.latitude, longitude: region.longitude });
+      scheduleGeocode(region.latitude, region.longitude);
     },
-    []
+    [scheduleGeocode]
   );
 
   const handleMyLocation = useCallback(async () => {

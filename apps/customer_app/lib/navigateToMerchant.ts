@@ -21,8 +21,9 @@ export type NavigateToMerchantOptions = {
 };
 
 /**
- * Open restaurant detail with an instant full-screen shutter Modal.
- * show() first → one frame for Modal to present → then push/replace + prefetch.
+ * Open restaurant detail immediately.
+ * No full-screen shutter Modal — that painted a multi-second overlay on Food Home
+ * before the stack settled. Destination paints its own shell/skeleton if needed.
  */
 export function navigateToMerchant(
   router: Router,
@@ -34,50 +35,42 @@ export function navigateToMerchant(
   if (!merchantId) return;
   const now = Date.now();
   if (now < navigateLockUntil) return;
-  navigateLockUntil = now + 700;
+  navigateLockUntil = now + 320;
 
   const isGrocery = (merchant?.storeType ?? "").trim().toUpperCase() === "GROCERY";
   const discovery = !isGrocery && peekCachedFoodHomeLayoutKey() === "discovery";
   const replace = options?.replace === true;
 
-  // 1) Shutter Modal first — must beat the native stack paint.
-  useMerchantNavTransitionStore.getState().show(merchantId, { dark: discovery });
   useScreenChromeStore.setState({
     statusBarBackground: discovery ? "#121212" : "#FFFFFF",
     statusBarStyle: discovery ? "light" : "dark",
     hideStatusBarSpacer: false,
   });
 
-  // 2) Seed cached menu if we already have one. Never write an empty-menu
+  // Seed cached menu if we already have one. Never write an empty-menu
   // shell as query *data* — that marks the query successful, skips the fetch,
   // and the inner page paints a white blank instead of menu rows.
   seedMerchantMenuQueryIfCached(queryClient, merchantId);
 
-  // 3) Navigate after Modal can present this frame.
-  requestAnimationFrame(() => {
-    const route = {
-      pathname: "/home/merchant/[id]" as const,
-      params: buildMerchantDetailParams(merchantId, merchant),
-    };
-    if (replace) {
-      router.replace(route);
-    } else {
-      router.push(route);
-    }
-    prefetchMerchantDetail(queryClient, merchantId);
-  });
+  // Visit bookkeeping only — do NOT open the full-screen shutter Modal (Food Home blur).
+  useMerchantNavTransitionStore.getState().beginVisit(merchantId, { dark: discovery });
+
+  const route = {
+    pathname: "/home/merchant/[id]" as const,
+    params: buildMerchantDetailParams(merchantId, merchant),
+  };
+  if (replace) {
+    router.replace(route);
+  } else {
+    router.push(route);
+  }
+  prefetchMerchantDetail(queryClient, merchantId);
 }
 
-/** Warm / pressIn — show shutter immediately on intentional press-down. */
+/** @deprecated No-op — shutter overlay removed (caused Food Home blur/overlap). */
 export function showMerchantNavShutter(merchantId: string): void {
   if (!merchantId) return;
-  useMerchantNavTransitionStore.getState().show(merchantId);
-  const discovery = peekCachedFoodHomeLayoutKey() === "discovery";
-  useScreenChromeStore.setState({
-    statusBarBackground: discovery ? "#121212" : "#FFFFFF",
-    statusBarStyle: discovery ? "light" : "dark",
-    hideStatusBarSpacer: false,
-  });
+  useMerchantNavTransitionStore.getState().beginVisit(merchantId);
 }
 
 /** Cancel pressIn shutter if the gesture became a scroll. */

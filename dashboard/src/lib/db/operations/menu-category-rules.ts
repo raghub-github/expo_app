@@ -179,6 +179,20 @@ export async function getEffectivePlanLimits(storeIdNum: number): Promise<PlanLi
   };
 }
 
+/**
+ * Re-apply is_locked_by_plan so extras stay hidden on partner / merchant / customer apps.
+ * Control dashboard can still create beyond the plan.
+ */
+export async function enforceStorePlanLimits(storeIdNum: number): Promise<void> {
+  if (!Number.isFinite(storeIdNum) || storeIdNum <= 0) return;
+  try {
+    const sql = getSql();
+    await sql`SELECT enforce_plan_limits(${storeIdNum}::bigint)`;
+  } catch (e) {
+    console.warn("[enforceStorePlanLimits]", storeIdNum, e);
+  }
+}
+
 export async function countLiveCategories(storeIdNum: number): Promise<{
   total: number;
   subcategories: number;
@@ -297,13 +311,19 @@ export async function validateCategoryCreate(opts: {
   parent_category_id: number | null | undefined;
   cuisine_id: number | null | undefined;
   category_name: string;
+  /** Dashboard / control portal may create beyond plan; CX + partner apps still lock extras. */
+  skipPlanLimits?: boolean;
 }): Promise<{ cuisine_id: number | null }> {
   const limits = await getEffectivePlanLimits(opts.storeIdNum);
   const counts = await countLiveCategories(opts.storeIdNum);
   const cuisineEnabled = await isCuisineEnabledForStoreType(opts.storeType);
   const sql = getSql();
 
-  if (limits.max_menu_categories != null && counts.total >= limits.max_menu_categories) {
+  if (
+    !opts.skipPlanLimits &&
+    limits.max_menu_categories != null &&
+    counts.total >= limits.max_menu_categories
+  ) {
     throw new CategoryRuleError(
       "category_limit_exceeded",
       `Category limit reached (${limits.max_menu_categories}) for your plan`,
@@ -323,7 +343,11 @@ export async function validateCategoryCreate(opts: {
     if (p.parent_category_id != null) {
       throw new CategoryRuleError("parent_must_be_root", "Subcategories can only be created under a top-level category", 400);
     }
-    if (limits.max_menu_subcategories != null && counts.subcategories >= limits.max_menu_subcategories) {
+    if (
+      !opts.skipPlanLimits &&
+      limits.max_menu_subcategories != null &&
+      counts.subcategories >= limits.max_menu_subcategories
+    ) {
       throw new CategoryRuleError(
         "subcategory_limit_exceeded",
         `Subcategory limit reached (${limits.max_menu_subcategories}) for your plan`,

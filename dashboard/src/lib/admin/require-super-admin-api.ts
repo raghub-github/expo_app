@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authFailureResponse, getAuthenticatedApiUser } from "@/lib/auth/api-session";
-import { getUserPermissions } from "@/lib/permissions/engine";
+import { getSuperAdminPermissions } from "@/lib/permissions/engine";
 
 export async function requireSuperAdminApi(request?: NextRequest) {
   const auth = await getAuthenticatedApiUser(request);
@@ -18,7 +18,7 @@ export async function requireSuperAdminApi(request?: NextRequest) {
     };
   }
 
-  const perms = await getUserPermissions(user.id, user.email ?? "");
+  const perms = await getSuperAdminPermissions(user.id, user.email ?? "");
   if (!perms) {
     return {
       ok: false as const,

@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess, genId } from "../../../assert-store-access";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
+import { normalizeSizeWrite, numericSizeOrNull } from "@/lib/menu-size-preset";
 
 export const runtime = "nodejs";
 
@@ -44,29 +45,43 @@ export async function POST(
       body.addon_image_url != null && String(body.addon_image_url).trim() !== ""
         ? String(body.addon_image_url).trim()
         : null;
-    const sizeRaw = body.addon_size_value;
-    const addonSizeValue =
-      sizeRaw != null && sizeRaw !== "" && Number.isFinite(Number(sizeRaw))
-        ? Number(sizeRaw)
-        : null;
-    const addonSizeUnit =
-      body.addon_size_unit != null && String(body.addon_size_unit).trim() !== ""
-        ? String(body.addon_size_unit).trim()
-        : null;
+    const addonSize = normalizeSizeWrite({
+      size_preset: body.size_preset,
+      size_value: body.addon_size_value,
+      size_unit: body.addon_size_unit,
+    });
+    const addonSizeValue = numericSizeOrNull(addonSize.size_value);
+    const addonSizeUnit = addonSize.size_unit;
     const inStock = typeof body.in_stock === "boolean" ? body.in_stock : true;
     const displayOrderRaw = Number(body.display_order);
     const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
-    const [row] = await sql`
-      INSERT INTO merchant_menu_item_addons (
-        customization_id, addon_id, addon_name, addon_price,
-        addon_image_url, addon_size_value, addon_size_unit, in_stock, display_order
-      )
-      VALUES (
-        ${gId}, ${addonId}, ${addon_name}, ${addon_price},
-        ${addonImageUrl}, ${addonSizeValue}, ${addonSizeUnit}, ${inStock}, ${displayOrder}
-      )
-      RETURNING id
-    `;
+    let row: Record<string, unknown> | undefined;
+    try {
+      [row] = await sql`
+        INSERT INTO merchant_menu_item_addons (
+          customization_id, addon_id, addon_name, addon_price,
+          addon_image_url, addon_size_value, addon_size_unit, size_preset, in_stock, display_order
+        )
+        VALUES (
+          ${gId}, ${addonId}, ${addon_name}, ${addon_price},
+          ${addonImageUrl}, ${addonSizeValue}, ${addonSizeUnit}, ${addonSize.size_preset}, ${inStock}, ${displayOrder}
+        )
+        RETURNING id
+      `;
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code !== "42703") throw err;
+      [row] = await sql`
+        INSERT INTO merchant_menu_item_addons (
+          customization_id, addon_id, addon_name, addon_price,
+          addon_image_url, addon_size_value, addon_size_unit, in_stock, display_order
+        )
+        VALUES (
+          ${gId}, ${addonId}, ${addon_name}, ${addon_price},
+          ${addonImageUrl}, ${addonSizeValue}, ${addonSizeUnit}, ${inStock}, ${displayOrder}
+        )
+        RETURNING id
+      `;
+    }
     // Bump parent menu item so version fingerprint changes and customers see the new option.
     await sql`
       UPDATE merchant_menu_items mi

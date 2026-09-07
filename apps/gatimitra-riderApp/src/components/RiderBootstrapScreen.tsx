@@ -14,6 +14,8 @@ import {
 import * as SplashScreen from "expo-splash-screen";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { RiderFonts } from "@/src/theme/fonts";
+
 export const RIDER_SPLASH_BG = "#C4E8D1";
 const TITLE = "#0F172A";
 const SUBTITLE = "#115E59";
@@ -57,9 +59,19 @@ export function RiderBootstrapScreen({ statusMessage = null, onSplashReady }: Pr
         style={[styles.statusFill, { height: topBleed, backgroundColor: RIDER_SPLASH_BG }]}
       />
       <View style={styles.copy} pointerEvents="none">
-        <Text style={styles.title}>GatiMitra - Rider</Text>
+        <Text
+          style={styles.title}
+          numberOfLines={1}
+          ellipsizeMode="clip"
+          adjustsFontSizeToFit
+          minimumFontScale={0.55}
+        >
+          GatiMitra Rider
+        </Text>
         <View style={styles.divider} />
-        <Text style={styles.subtitle}>Moving India Forward</Text>
+        <Text style={styles.subtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
+          Moving India Forward
+        </Text>
       </View>
       <ActivityIndicator
         style={[styles.spinner, { bottom: spinnerBottom }]}
@@ -95,31 +107,35 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 28,
+    paddingHorizontal: 20,
     zIndex: 2,
   },
   title: {
+    fontFamily: RiderFonts.loraBold,
     fontSize: 32,
-    fontWeight: "800",
+    fontWeight: "700",
     color: TITLE,
-    letterSpacing: 0.2,
+    letterSpacing: -0.3,
     textAlign: "center",
+    width: "100%",
+    flexShrink: 0,
   },
   divider: {
     width: "72%",
     maxWidth: 240,
     height: 2.5,
     backgroundColor: ACCENT,
-    marginTop: 18,
+    marginTop: 16,
     marginBottom: 16,
   },
   subtitle: {
-    fontSize: 13,
+    fontFamily: RiderFonts.loraBold,
+    fontSize: 15,
     fontWeight: "700",
     color: SUBTITLE,
-    letterSpacing: 1.8,
+    letterSpacing: 0.4,
     textAlign: "center",
-    textTransform: "uppercase",
+    width: "100%",
   },
   spinner: {
     position: "absolute",

@@ -32,7 +32,11 @@ function meetsMin(current: number, minAmount: number): boolean {
   return Math.round(current * 100) >= Math.round(minAmount * 100);
 }
 
-/** Progress-fill withdraw CTA — solid full color once `current` reaches `minAmount`. */
+/**
+ * Progress-fill withdraw CTA.
+ * Background lives on an inner View — Pressable + overflow:hidden on Android
+ * Fabric often drops backgroundColor, leaving white label on a white page.
+ */
 export function WithdrawProgressButton({
   current,
   minAmount,
@@ -49,6 +53,7 @@ export function WithdrawProgressButton({
   const progress = met || min <= 0 ? 1 : Math.min(1, value / min);
   const shortfall = Math.max(0, Math.round((min - value) * 100) / 100);
   const isDisabled = disabled || loading || !met;
+  const ready = met && !disabled && !loading;
 
   const label = loading
     ? null
@@ -65,32 +70,38 @@ export function WithdrawProgressButton({
       accessibilityRole="button"
       accessibilityState={{ disabled: isDisabled }}
       accessibilityLabel={typeof label === "string" ? label : labelReady}
-      style={({ pressed }) => [
-        styles.btn,
-        { backgroundColor: met ? color : "#CBD5E1" },
-        pressed && met && !loading && styles.pressed,
-        style,
-      ]}
+      style={({ pressed }) => [style, pressed && ready && styles.pressed]}
     >
-      {!met ? (
-        <View
-          pointerEvents="none"
-          style={[
-            styles.fill,
-            {
-              width: `${Math.round(progress * 100)}%`,
-              backgroundColor: color,
-            },
-          ]}
-        />
-      ) : null}
-      {loading ? (
-        <ActivityIndicator color="#FFFFFF" />
-      ) : (
-        <Text style={styles.text} numberOfLines={1}>
-          {label}
-        </Text>
-      )}
+      <View
+        style={[
+          styles.btn,
+          ready ? { backgroundColor: color } : styles.btnPending,
+        ]}
+      >
+        {!ready && !met ? (
+          <View
+            pointerEvents="none"
+            style={[
+              styles.fill,
+              {
+                width: `${Math.round(progress * 100)}%`,
+                backgroundColor: color,
+                opacity: 0.85,
+              },
+            ]}
+          />
+        ) : null}
+        {loading ? (
+          <ActivityIndicator color={ready ? "#FFFFFF" : colors.primary[800]} />
+        ) : (
+          <Text
+            style={[styles.text, ready ? styles.textReady : styles.textPending]}
+            numberOfLines={1}
+          >
+            {label}
+          </Text>
+        )}
+      </View>
     </Pressable>
   );
 }
@@ -105,6 +116,11 @@ const styles = StyleSheet.create({
     position: "relative",
     paddingHorizontal: 14,
   },
+  btnPending: {
+    backgroundColor: "#E2E8F0",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#94A3B8",
+  },
   fill: {
     position: "absolute",
     left: 0,
@@ -112,10 +128,15 @@ const styles = StyleSheet.create({
     bottom: 0,
   },
   text: {
-    color: "#FFFFFF",
     fontWeight: "700",
     fontSize: 15,
     zIndex: 1,
+  },
+  textReady: {
+    color: "#FFFFFF",
+  },
+  textPending: {
+    color: "#0F766E",
   },
   pressed: {
     opacity: 0.92,

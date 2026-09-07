@@ -58,6 +58,7 @@ export type MenuItemRow = {
   serves_label: string | null;
   item_size_value: number | null;
   item_size_unit: string | null;
+  size_preset?: string | null;
   approval_status?: "PENDING" | "APPROVED" | "REJECTED" | null;
   primary_image_moderation_status?: "PENDING" | "APPROVED" | "REJECTED" | null;
   rejection_reason?: string | null;
@@ -744,6 +745,7 @@ export type MenuItemDetail = MenuItemRow & {
   nutritional_info: object | null;
   item_size_value: number | null;
   item_size_unit: string | null;
+  size_preset?: string | null;
   available_for_delivery: boolean;
   weight_per_serving: number | null;
   weight_per_serving_unit: string | null;
@@ -849,6 +851,7 @@ export type MenuItemPayload = {
   display_order?: number;
   item_size_value?: number | null;
   item_size_unit?: string | null;
+  size_preset?: string | null;
   available_for_delivery?: boolean;
   weight_per_serving?: number | null;
   weight_per_serving_unit?: string | null;

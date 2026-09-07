@@ -46,22 +46,32 @@ export type StoreProfile = {
 };
 
 async function fetchStore(storeId: string): Promise<StoreProfile | null> {
-  const res = await fetch(
-    `/api/merchant/stores/${storeId}?verification=1`,
-    { credentials: "include" }
-  );
-  const text = await res.text();
-  const data = text.trim()
-    ? (() => {
-        try {
-          return JSON.parse(text) as { success?: boolean; store?: StoreProfile };
-        } catch {
-          return null;
-        }
-      })()
-    : null;
-  if (!res.ok || !data?.success) return null;
-  return data.store ?? null;
+  let lastRes: Response | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(
+      `/api/merchant/stores/${storeId}?verification=1`,
+      { credentials: "include", cache: "no-store" }
+    );
+    lastRes = res;
+    if (res.status === 503 && attempt < 2) {
+      await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
+      continue;
+    }
+    const text = await res.text();
+    const data = text.trim()
+      ? (() => {
+          try {
+            return JSON.parse(text) as { success?: boolean; store?: StoreProfile };
+          } catch {
+            return null;
+          }
+        })()
+      : null;
+    if (!res.ok || !data?.success) return null;
+    return data.store ?? null;
+  }
+  if (lastRes && lastRes.status === 503) return null;
+  return null;
 }
 
 export const STORE_KEY = (id: string) => ["store", id] as const;

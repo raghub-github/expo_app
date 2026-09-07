@@ -111,8 +111,13 @@ export function DocumentEditModal({
 
     const docNumberChanged = docNumber !== (currentDocNumber || "");
     const fileChanged = selectedFile !== null;
+    const isNew = isPendingUrl(currentImageUrl) && !currentR2Key;
 
-    if (!docNumberChanged && !fileChanged) {
+    if (isNew && !fileChanged) {
+      newErrors.file = "Please upload a document image or PDF";
+    }
+
+    if (!docNumberChanged && !fileChanged && !isNew) {
       onClose();
       return;
     }
@@ -140,7 +145,11 @@ export function DocumentEditModal({
       rc: "RC (Registration Certificate)",
       selfie: "Selfie",
       rental_proof: "Rental Proof",
-      ev_proof: "EV Proof",
+      bank_proof: "Bank Proof",
+      insurance: "Insurance Certificate",
+      vehicle_image: "Vehicle Photo",
+      upi_qr_proof: "UPI QR Code Proof",
+      other: "Other Document",
     };
     return labels[type] || type;
   };
@@ -172,7 +181,7 @@ export function DocumentEditModal({
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Document number{" "}
-              {["selfie", "profile_photo", "bank_proof", "vehicle_image", "upi_qr_proof"].includes(docType)
+              {["selfie", "profile_photo", "bank_proof", "vehicle_image", "upi_qr_proof", "insurance", "rental_proof", "ev_proof"].includes(docType)
                 ? "(optional — not required)"
                 : "(optional)"}
             </label>

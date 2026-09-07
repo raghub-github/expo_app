@@ -42,6 +42,8 @@ type OrderLike = {
   distanceMismatchFlagged?: boolean;
   pickupAddressDeviationMeters?: number | null;
   dropAddressDeviationMeters?: number | null;
+  customerDeliveredCount?: number | null;
+  customerCancelledCount?: number | null;
 };
 
 function formatLabel(raw: string | null | undefined): string {
@@ -307,6 +309,8 @@ export default function PersonRideOrderSections({
             locationMismatch: isLocationMismatch,
             accountStatus: order.customerAccountStatus,
             riskFlag: order.customerRiskFlag,
+            totalDelivered: order.customerDeliveredCount,
+            totalCancelled: order.customerCancelledCount,
           }}
           onCopy={onCopy}
           onPhoneClick={onPhoneClick}

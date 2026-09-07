@@ -1632,9 +1632,18 @@ export async function updateMerchantStore(
   }  if (data.avg_preparation_time_minutes !== undefined) setClauses.push(sql`avg_preparation_time_minutes = ${data.avg_preparation_time_minutes}`);
   if (data.min_order_amount !== undefined) setClauses.push(sql`min_order_amount = ${data.min_order_amount}`);
   if (data.delivery_radius_km !== undefined) setClauses.push(sql`delivery_radius_km = ${data.delivery_radius_km}`);
-  if (data.is_pure_veg !== undefined) setClauses.push(sql`is_pure_veg = ${data.is_pure_veg}`);
-  if (data.accepts_online_payment !== undefined) setClauses.push(sql`accepts_online_payment = ${data.accepts_online_payment}`);
-  if (data.accepts_cash !== undefined) setClauses.push(sql`accepts_cash = ${data.accepts_cash}`);
+  // Nested postgres.js helpers drop JS `false`; use SQL literals so off actually persists.
+  if (data.is_pure_veg !== undefined) {
+    setClauses.push(data.is_pure_veg ? sql`is_pure_veg = TRUE` : sql`is_pure_veg = FALSE`);
+  }
+  if (data.accepts_online_payment !== undefined) {
+    setClauses.push(
+      data.accepts_online_payment ? sql`accepts_online_payment = TRUE` : sql`accepts_online_payment = FALSE`
+    );
+  }
+  if (data.accepts_cash !== undefined) {
+    setClauses.push(data.accepts_cash ? sql`accepts_cash = TRUE` : sql`accepts_cash = FALSE`);
+  }
   if (data.is_active !== undefined) setClauses.push(sql`is_active = ${data.is_active}`);
   if (data.is_accepting_orders !== undefined) setClauses.push(sql`is_accepting_orders = ${data.is_accepting_orders}`);
   if (data.is_available !== undefined) setClauses.push(sql`is_available = ${data.is_available}`);
@@ -1684,6 +1693,47 @@ export async function updateMerchantStore(
     }
   }
   return updated;
+}
+
+/** Direct write for Pure Veg — avoids the dynamic SET builder dropping boolean false. */
+export async function updateMerchantStorePureVeg(
+  id: number,
+  isPureVeg: boolean,
+  areaManagerId: number | null
+): Promise<{ id: number; store_id: string; is_pure_veg: boolean } | null> {
+  const sql = getSql();
+  const result =
+    areaManagerId != null
+      ? isPureVeg
+        ? await sql`
+            UPDATE merchant_stores
+            SET is_pure_veg = TRUE, updated_at = NOW()
+            WHERE id = ${id} AND deleted_at IS NULL AND area_manager_id = ${areaManagerId}
+            RETURNING id, store_id, is_pure_veg
+          `
+        : await sql`
+            UPDATE merchant_stores
+            SET is_pure_veg = FALSE, updated_at = NOW()
+            WHERE id = ${id} AND deleted_at IS NULL AND area_manager_id = ${areaManagerId}
+            RETURNING id, store_id, is_pure_veg
+          `
+      : isPureVeg
+        ? await sql`
+            UPDATE merchant_stores
+            SET is_pure_veg = TRUE, updated_at = NOW()
+            WHERE id = ${id} AND deleted_at IS NULL
+            RETURNING id, store_id, is_pure_veg
+          `
+        : await sql`
+            UPDATE merchant_stores
+            SET is_pure_veg = FALSE, updated_at = NOW()
+            WHERE id = ${id} AND deleted_at IS NULL
+            RETURNING id, store_id, is_pure_veg
+          `;
+  const row = (Array.isArray(result) ? result[0] : result) as
+    | { id: number; store_id: string; is_pure_veg: boolean }
+    | undefined;
+  return row ?? null;
 }
 
 export type MerchantTrendPoint = { date: string; count: number };

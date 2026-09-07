@@ -2,7 +2,7 @@
  * Parcel pickup / drop location search — same Mapbox + ranking path as ride-pickup.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import {
   View,
   TextInput,
@@ -23,11 +23,12 @@ import { LocationSearchSkeleton } from "@/components/location/LocationSearchSkel
 import { LocationSearchEmptyState } from "@/components/location/LocationSearchEmptyState";
 import { useAddresses } from "@/hooks/useAddresses";
 import { useLocationStore } from "@/store/locationStore";
-import { useRecentLocationStore } from "@/store/recentLocationStore";
+import { useRecentLocationStore, visibleRecentJourneys, type RideJourney } from "@/store/recentLocationStore";
 import { useFavoriteLocationsStore } from "@/store/favoriteLocationsStore";
 import { useRideMapPickerStore } from "@/store/rideMapPickerStore";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { useParcelBookingStore, type ParcelStop } from "./parcelBookingStore";
+import { RideJourneyShortcuts } from "@/features/ride/RideJourneyShortcuts";
 import {
   searchPlacesEnriched,
   resolveMapboxEnrichedPlace,
@@ -50,6 +51,16 @@ import { haversineKm } from "@/lib/billSummary";
 
 const HERO_MINT = GatiMitraColors.mintSoft;
 
+function stopToPlace(stop: ParcelStop, kind: "pickup" | "drop") {
+  return {
+    latitude: stop.latitude,
+    longitude: stop.longitude,
+    primary: stop.primary,
+    fullAddress: stop.fullAddress,
+    kind,
+  };
+}
+
 export function ParcelLocationSearchScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -64,6 +75,14 @@ export function ParcelLocationSearchScreen() {
   const hydrateRecents = useRecentLocationStore((s) => s.hydrate);
   const recentItems = useRecentLocationStore((s) => s.items);
   const getRecentLocationKeys = useRecentLocationStore((s) => s.getRecentLocationKeys);
+  const recentParcelJourneys = useRecentLocationStore((s) => s.recentParcelJourneys);
+  const lastCompletedParcelJourney = useRecentLocationStore((s) => s.lastCompletedParcelJourney);
+  const pruneExpiredJourneys = useRecentLocationStore((s) => s.pruneExpiredJourneys);
+  const clearRecentParcelJourneys = useRecentLocationStore((s) => s.clearRecentParcelJourneys);
+  const favoriteParcelJourneys = useRecentLocationStore((s) => s.favoriteParcelJourneys);
+  const rememberParcelJourney = useRecentLocationStore((s) => s.rememberParcelJourney);
+  const toggleFavoriteJourney = useRecentLocationStore((s) => s.toggleFavoriteJourney);
+  const isFavoriteJourney = useRecentLocationStore((s) => s.isFavoriteJourney);
   const favoriteItems = useFavoriteLocationsStore((s) => s.items);
   const hydrateFavorites = useFavoriteLocationsStore((s) => s.hydrate);
   const isFavorite = useFavoriteLocationsStore((s) => s.isFavorite);
@@ -71,6 +90,8 @@ export function ParcelLocationSearchScreen() {
   const setPickup = useParcelBookingStore((s) => s.setPickup);
   const setDrop = useParcelBookingStore((s) => s.setDrop);
   const pickupStop = useParcelBookingStore((s) => s.pickup);
+  const dropStop = useParcelBookingStore((s) => s.drop);
+  const swapStops = useParcelBookingStore((s) => s.swapStops);
   const consumePendingResult = useRideMapPickerStore((s) => s.consumePendingResult);
   const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
 
@@ -85,8 +106,14 @@ export function ParcelLocationSearchScreen() {
 
   useEffect(() => {
     void hydrateRecents();
+    pruneExpiredJourneys();
     void hydrateFavorites();
-  }, [hydrateRecents, hydrateFavorites]);
+  }, [hydrateRecents, pruneExpiredJourneys, hydrateFavorites]);
+
+  const { journeys: visibleParcelRecents, clearEnabled: parcelClearEnabled } = useMemo(
+    () => visibleRecentJourneys(recentParcelJourneys, lastCompletedParcelJourney),
+    [recentParcelJourneys, lastCompletedParcelJourney]
+  );
 
   // Keep mint status bar while this screen (and courier booking) is open.
   useFocusEffect(
@@ -116,6 +143,7 @@ export function ParcelLocationSearchScreen() {
         });
         const state = useParcelBookingStore.getState();
         if (state.pickup && state.drop) {
+          rememberParcelJourney(stopToPlace(state.pickup, "pickup"), stopToPlace(state.drop, "drop"));
           state.markVisitedInnerPage();
           state.markPreserveDraftOnNextFocus();
           router.replace("/home/service/parcel-book" as never);
@@ -129,7 +157,7 @@ export function ParcelLocationSearchScreen() {
       // Don't auto-focus when returning from map with a pending result.
       const t = setTimeout(() => inputRef.current?.focus(), 350);
       return () => clearTimeout(t);
-    }, [consumePendingResult, setPickup, setDrop, addRecentLocation, router])
+    }, [consumePendingResult, setPickup, setDrop, addRecentLocation, router, rememberParcelJourney])
   );
 
   const proximity = useCallback(() => {
@@ -276,6 +304,7 @@ export function ParcelLocationSearchScreen() {
       const nextPickup = isPickup ? stop : state.pickup;
       const nextDrop = isPickup ? state.drop : stop;
       if (nextPickup && nextDrop) {
+        rememberParcelJourney(stopToPlace(nextPickup, "pickup"), stopToPlace(nextDrop, "drop"));
         state.markVisitedInnerPage();
         state.markPreserveDraftOnNextFocus();
         router.replace("/home/service/parcel-book" as never);
@@ -284,7 +313,7 @@ export function ParcelLocationSearchScreen() {
       state.markPreserveDraftOnNextFocus();
       router.back();
     },
-    [isPickup, setPickup, setDrop, addRecentLocation, field, router]
+    [isPickup, setPickup, setDrop, addRecentLocation, field, router, rememberParcelJourney]
   );
 
   const onSelectPlace = useCallback(
@@ -334,18 +363,53 @@ export function ParcelLocationSearchScreen() {
   );
 
   const openMap = useCallback(() => {
+    const current = isPickup ? pickupStop : dropStop;
     const prox = proximity();
-    const lat = prox?.latitude ?? 28.6139;
-    const lng = prox?.longitude ?? 77.209;
+    const lat = current?.latitude ?? prox?.latitude ?? 28.6139;
+    const lng = current?.longitude ?? prox?.longitude ?? 77.209;
     router.push({
       pathname: "/home/service/ride-map",
       params: {
         field,
         latitude: String(lat),
         longitude: String(lng),
+        primary: current?.primary ?? "",
+        fullAddress: current?.fullAddress ?? "",
       },
     } as never);
-  }, [router, field, proximity]);
+  }, [router, field, proximity, isPickup, pickupStop, dropStop]);
+
+  const onSwapStops = useCallback(() => {
+    swapStops();
+    const next = useParcelBookingStore.getState();
+    const current = isPickup ? next.pickup : next.drop;
+    setQuery(current?.primary ?? current?.fullAddress ?? "");
+  }, [swapStops, isPickup]);
+
+  const applyJourney = useCallback(
+    (journey: RideJourney) => {
+      const pickup: ParcelStop = {
+        primary: journey.pickup.primary,
+        fullAddress: journey.pickup.fullAddress || journey.pickup.primary,
+        latitude: journey.pickup.latitude,
+        longitude: journey.pickup.longitude,
+      };
+      const drop: ParcelStop = {
+        primary: journey.drop.primary,
+        fullAddress: journey.drop.fullAddress || journey.drop.primary,
+        latitude: journey.drop.latitude,
+        longitude: journey.drop.longitude,
+      };
+      setPickup(pickup);
+      setDrop(drop);
+      rememberParcelJourney(stopToPlace(pickup, "pickup"), stopToPlace(drop, "drop"));
+      const state = useParcelBookingStore.getState();
+      state.markVisitedInnerPage();
+      state.markPreserveDraftOnNextFocus();
+      router.replace("/home/service/parcel-book" as never);
+    },
+    [setPickup, setDrop, rememberParcelJourney, router]
+  );
 
   const heartPlace = useCallback(
     (place: { latitude: number; longitude: number; primary: string; fullAddress?: string }) => {
@@ -376,6 +440,8 @@ export function ParcelLocationSearchScreen() {
   const minChars = isPincodeSearchMode(trimmed) ? 6 : RIDE_SEARCH_MIN_CHARS;
   const showEmpty = !loading && trimmed.length >= minChars && suggestions.length === 0;
   const showBrowseSaved = !trimmed && addresses.length > 0;
+  const showBrowseJourneys = !trimmed;
+  const canSwap = !!(pickupStop && dropStop);
 
   return (
     <KeyboardAvoidingView
@@ -416,6 +482,16 @@ export function ParcelLocationSearchScreen() {
             </TouchableOpacity>
           ) : null}
         </View>
+        {canSwap ? (
+          <TouchableOpacity
+            style={styles.swapBtn}
+            onPress={onSwapStops}
+            activeOpacity={0.85}
+            accessibilityLabel="Reverse pickup and drop"
+          >
+            <Ionicons name="swap-vertical" size={18} color="#111827" />
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       <TouchableOpacity style={styles.mapBtn} onPress={openMap} activeOpacity={0.85}>
@@ -431,6 +507,24 @@ export function ParcelLocationSearchScreen() {
         showsVerticalScrollIndicator={false}
       >
         {loading && trimmed.length >= minChars ? <LocationSearchSkeleton /> : null}
+
+        {showBrowseJourneys ? (
+          <View style={styles.journeyWrap}>
+            <RideJourneyShortcuts
+              recentJourneys={visibleParcelRecents}
+              favoriteJourneys={favoriteParcelJourneys}
+              recentTitle="Recent parcels"
+              favoriteTitle="Favorite journeys"
+              onSelect={applyJourney}
+              onToggleFavorite={(journey) =>
+                toggleFavoriteJourney({ ...journey, kind: "parcel" })
+              }
+              isFavorite={(journey) => isFavoriteJourney(journey.pickup, journey.drop, "parcel")}
+              onClearRecent={clearRecentParcelJourneys}
+              clearEnabled={parcelClearEnabled}
+            />
+          </View>
+        ) : null}
 
         {showBrowseSaved
           ? addresses.slice(0, 8).map((addr) => {
@@ -642,6 +736,21 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     color: GatiMitraColors.deepMintStart,
+  },
+  swapBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  journeyWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
   },
   list: {
     flex: 1,

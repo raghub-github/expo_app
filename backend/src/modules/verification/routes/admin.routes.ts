@@ -17,6 +17,7 @@
  *   POST /submit/cin                   — trigger CIN verify
  *   POST /submit/reverse-penny-drop    — create RPD link (returns UPI links + QR)
  *   POST /submit/digilocker            — create DigiLocker consent URL
+ *   POST /submit/aadhaar               — Aadhaar masking (if image) or DigiLocker
  *
  *   GET  /events/:verificationId       — full attempt history for one submission
  *   GET  /requests/subject/:type/:id   — recent attempts for a subject
@@ -31,7 +32,8 @@ import { getSql } from "../../../db/client.js";
 import {
   submitPan, submitBankAccount, submitUpiPennyDrop, submitIfsc, submitDrivingLicence,
   submitVehicleRc, submitPassport, submitGstin, submitCin,
-  submitReversePennyDrop, submitDigilocker, pollDigilockerForSubject,
+  submitReversePennyDrop, submitDigilocker, submitAadhaarForDashboard,
+  pollDigilockerForSubject,
   type SubmitOutcome,
 } from "../service.js";
 import { loadCashfreeConfig, CashfreeNotConfiguredError } from "../cashfree/config.js";
@@ -302,6 +304,48 @@ export const verificationAdminRoutes: FastifyPluginAsync = async (app) => {
             subjectType: s.type, subjectId: s.id, subjectFacts: b.subject_facts,
             createdBy: Number(req.auth?.sub) || null,
             redirectUrl: b.redirect_url, name: b.name,
+          });
+          return sendOutcome(reply, o);
+        } catch (e) { return catchSubmit(reply, e); }
+      });
+
+    admin.post<{
+      Body: {
+        subject_type: string;
+        subject_id: number;
+        aadhaar_number: string;
+        name?: string;
+        dob?: string;
+        image_key?: string;
+        redirect_url?: string;
+        subject_facts?: Record<string, unknown>;
+        defer_projection?: boolean;
+      };
+    }>(
+      "/submit/aadhaar", async (req, reply) => {
+        const b = req.body ?? ({} as never);
+        const s = validSubject(b.subject_type, b.subject_id);
+        if (!s.ok) return reply.code(400).send({ error: "invalid_subject" });
+        const aadhaarNumber = String(b.aadhaar_number ?? "").replace(/\D/g, "");
+        if (aadhaarNumber.length !== 12) {
+          return reply.code(400).send({ error: "invalid_aadhaar_number" });
+        }
+        const dob = String(b.dob ?? "").trim();
+        if (dob && !/^\d{4}-\d{2}-\d{2}$/.test(dob)) {
+          return reply.code(400).send({ error: "invalid_dob", hint: "YYYY-MM-DD" });
+        }
+        try {
+          const o = await submitAadhaarForDashboard({
+            subjectType: s.type,
+            subjectId: s.id,
+            subjectFacts: b.subject_facts,
+            createdBy: Number(req.auth?.sub) || null,
+            aadhaarNumber,
+            name: b.name?.trim() || undefined,
+            dob: dob || undefined,
+            imageKey: b.image_key,
+            redirectUrl: b.redirect_url,
+            deferProjection: !!b.defer_projection,
           });
           return sendOutcome(reply, o);
         } catch (e) { return catchSubmit(reply, e); }

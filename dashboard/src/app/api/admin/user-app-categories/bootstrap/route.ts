@@ -11,7 +11,7 @@ import { parseUserAppCategoryStoreType } from "@/lib/user-app-categories/shared"
 export const runtime = "nodejs";
 
 export async function GET(request: NextRequest) {
-  const gate = await requireSuperAdminApi();
+  const gate = await requireSuperAdminApi(request);
   if (!gate.ok) return gate.response;
 
   try {

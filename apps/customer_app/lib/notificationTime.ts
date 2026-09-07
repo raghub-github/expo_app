@@ -99,8 +99,8 @@ export function formatNotificationDateTime(raw: string | null | undefined): stri
  */
 export function displayNotificationTitle(raw: string | null | undefined): string {
   const cleaned = String(raw ?? "")
-    .replace(/^[\s\p{Extended_Pictographic}\p{Emoji_Presentation}\p{Emoji}\uFE0F\u200D]+/gu, "")
-    .replace(/^[\s•·\-–—|:]+/u, "")
+    .replace(/^[\s\uFE0F\u200D\uD800-\uDBFF\uDC00-\uDFFF]+/g, "")
+    .replace(/^[\s•·\-–—|:]+/, "")
     .replace(/\s+/g, " ")
     .trim();
   return cleaned || "Notification";

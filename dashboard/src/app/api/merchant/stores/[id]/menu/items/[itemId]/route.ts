@@ -18,6 +18,7 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
 import { deleteDocument } from "@/lib/services/r2";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
+import { normalizeSizeWrite, numericSizeOrNull } from "@/lib/menu-size-preset";
 import {
   fetchAddonsForCustomization,
   fetchVariantsForMenuItem,
@@ -115,7 +116,7 @@ export async function GET(
              is_popular, is_recommended,
              COALESCE(preparation_time_minutes, preparation_time, 15)::integer AS preparation_time_minutes,
              packaging_charges,
-             serves, serves_label, item_size_value, item_size_unit, available_for_delivery,
+             serves, serves_label, item_size_value, item_size_unit, size_preset, available_for_delivery,
              allergens,
              weight_per_serving, weight_per_serving_unit, calories_kcal,
              protein, protein_unit, carbohydrates, carbohydrates_unit,
@@ -306,21 +307,41 @@ export async function PUT(
 
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const sql = getSql();
-    const [existing] = await sql`
-      SELECT item_name, item_description, category_id, food_type, spice_level, cuisine_type,
-             base_price, selling_price, discount_percentage, tax_percentage,
-             preparation_time_minutes, packaging_charges, serves, serves_label,
-             short_name, display_order, item_size_value, item_size_unit, available_for_delivery,
-             in_stock, available_quantity, low_stock_threshold, expiry_date,
-             is_active, is_popular, is_recommended, allergens,
-             weight_per_serving, weight_per_serving_unit, calories_kcal,
-             protein, protein_unit, carbohydrates, carbohydrates_unit,
-             fat, fat_unit, fibre, fibre_unit, item_tags,
-             has_customizations, has_addons, has_variants
-      FROM merchant_menu_items
-      WHERE id = ${menuItemId} AND store_id = ${storeId}
-      LIMIT 1
-    `;
+    let existing: Record<string, unknown> | undefined;
+    try {
+      [existing] = await sql`
+        SELECT item_name, item_description, category_id, food_type, spice_level, cuisine_type,
+               base_price, selling_price, discount_percentage, tax_percentage,
+               preparation_time_minutes, packaging_charges, serves, serves_label,
+               short_name, display_order, item_size_value, item_size_unit, size_preset, available_for_delivery,
+               in_stock, available_quantity, low_stock_threshold, expiry_date,
+               is_active, is_popular, is_recommended, allergens,
+               weight_per_serving, weight_per_serving_unit, calories_kcal,
+               protein, protein_unit, carbohydrates, carbohydrates_unit,
+               fat, fat_unit, fibre, fibre_unit, item_tags,
+               has_customizations, has_addons, has_variants
+        FROM merchant_menu_items
+        WHERE id = ${menuItemId} AND store_id = ${storeId}
+        LIMIT 1
+      `;
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code !== "42703") throw err;
+      [existing] = await sql`
+        SELECT item_name, item_description, category_id, food_type, spice_level, cuisine_type,
+               base_price, selling_price, discount_percentage, tax_percentage,
+               preparation_time_minutes, packaging_charges, serves, serves_label,
+               short_name, display_order, item_size_value, item_size_unit, available_for_delivery,
+               in_stock, available_quantity, low_stock_threshold, expiry_date,
+               is_active, is_popular, is_recommended, allergens,
+               weight_per_serving, weight_per_serving_unit, calories_kcal,
+               protein, protein_unit, carbohydrates, carbohydrates_unit,
+               fat, fat_unit, fibre, fibre_unit, item_tags,
+               has_customizations, has_addons, has_variants
+        FROM merchant_menu_items
+        WHERE id = ${menuItemId} AND store_id = ${storeId}
+        LIMIT 1
+      `;
+    }
     if (!existing) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
     const e = existing as any;
     const item_name = body.item_name !== undefined ? String(body.item_name).trim() : e.item_name;
@@ -341,8 +362,14 @@ export async function PUT(
     const serves_label = mergeOptionalStr(body.serves_label, e.serves_label);
     const short_name = mergeOptionalStr(body.short_name, e.short_name);
     const display_order = mergeNum(body.display_order, e.display_order);
-    const item_size_value = mergeNumNullable(body.item_size_value, e.item_size_value);
-    const item_size_unit = mergeOptionalStr(body.item_size_unit, e.item_size_unit);
+    const itemSize = normalizeSizeWrite({
+      size_preset: body.size_preset !== undefined ? body.size_preset : e.size_preset,
+      size_value: body.item_size_value !== undefined ? body.item_size_value : e.item_size_value,
+      size_unit: body.item_size_unit !== undefined ? body.item_size_unit : e.item_size_unit,
+    });
+    const item_size_value = numericSizeOrNull(itemSize.size_value);
+    const item_size_unit = itemSize.size_unit;
+    const size_preset = itemSize.size_preset;
     const available_for_delivery = mergeBool(body.available_for_delivery, e.available_for_delivery);
     const in_stock = mergeBool(body.in_stock, e.in_stock);
     const is_active = mergeBool(body.is_active, e.is_active);
@@ -373,53 +400,105 @@ export async function PUT(
       expiry_date = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
     }
 
-    await sql`
-      UPDATE merchant_menu_items
-      SET item_name = ${item_name},
-          item_description = ${item_description},
-          category_id = ${category_id},
-          food_type = ${food_type},
-          spice_level = ${spice_level},
-          cuisine_type = ${cuisine_type},
-          base_price = ${base_price},
-          selling_price = ${selling_price},
-          discount_percentage = ${discount_percentage},
-          tax_percentage = ${tax_percentage},
-          preparation_time_minutes = ${preparation_time_minutes},
-          packaging_charges = ${packaging_charges},
-          serves = ${serves},
-          serves_label = ${serves_label},
-          short_name = ${short_name},
-          display_order = ${display_order},
-          item_size_value = ${item_size_value},
-          item_size_unit = ${item_size_unit},
-          available_for_delivery = ${available_for_delivery},
-          in_stock = ${in_stock},
-          available_quantity = ${available_quantity},
-          low_stock_threshold = ${low_stock_threshold},
-          expiry_date = ${expiry_date},
-          is_active = ${is_active},
-          is_popular = ${is_popular},
-          is_recommended = ${is_recommended},
-          allergens = ${allergens},
-          weight_per_serving = ${weight_per_serving},
-          weight_per_serving_unit = ${weight_per_serving_unit},
-          calories_kcal = ${calories_kcal},
-          protein = ${protein},
-          protein_unit = ${protein_unit},
-          carbohydrates = ${carbohydrates},
-          carbohydrates_unit = ${carbohydrates_unit},
-          fat = ${fat},
-          fat_unit = ${fat_unit},
-          fibre = ${fibre},
-          fibre_unit = ${fibre_unit},
-          item_tags = ${item_tags},
-          has_customizations = ${has_customizations},
-          has_addons = ${has_addons},
-          has_variants = ${has_variants},
-          updated_at = NOW()
-      WHERE id = ${menuItemId} AND store_id = ${storeId}
-    `;
+    try {
+      await sql`
+        UPDATE merchant_menu_items
+        SET item_name = ${item_name},
+            item_description = ${item_description},
+            category_id = ${category_id},
+            food_type = ${food_type},
+            spice_level = ${spice_level},
+            cuisine_type = ${cuisine_type},
+            base_price = ${base_price},
+            selling_price = ${selling_price},
+            discount_percentage = ${discount_percentage},
+            tax_percentage = ${tax_percentage},
+            preparation_time_minutes = ${preparation_time_minutes},
+            packaging_charges = ${packaging_charges},
+            serves = ${serves},
+            serves_label = ${serves_label},
+            short_name = ${short_name},
+            display_order = ${display_order},
+            item_size_value = ${item_size_value},
+            item_size_unit = ${item_size_unit},
+            size_preset = ${size_preset},
+            available_for_delivery = ${available_for_delivery},
+            in_stock = ${in_stock},
+            available_quantity = ${available_quantity},
+            low_stock_threshold = ${low_stock_threshold},
+            expiry_date = ${expiry_date},
+            is_active = ${is_active},
+            is_popular = ${is_popular},
+            is_recommended = ${is_recommended},
+            allergens = ${allergens},
+            weight_per_serving = ${weight_per_serving},
+            weight_per_serving_unit = ${weight_per_serving_unit},
+            calories_kcal = ${calories_kcal},
+            protein = ${protein},
+            protein_unit = ${protein_unit},
+            carbohydrates = ${carbohydrates},
+            carbohydrates_unit = ${carbohydrates_unit},
+            fat = ${fat},
+            fat_unit = ${fat_unit},
+            fibre = ${fibre},
+            fibre_unit = ${fibre_unit},
+            item_tags = ${item_tags},
+            has_customizations = ${has_customizations},
+            has_addons = ${has_addons},
+            has_variants = ${has_variants},
+            updated_at = NOW()
+        WHERE id = ${menuItemId} AND store_id = ${storeId}
+      `;
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code !== "42703") throw err;
+      await sql`
+        UPDATE merchant_menu_items
+        SET item_name = ${item_name},
+            item_description = ${item_description},
+            category_id = ${category_id},
+            food_type = ${food_type},
+            spice_level = ${spice_level},
+            cuisine_type = ${cuisine_type},
+            base_price = ${base_price},
+            selling_price = ${selling_price},
+            discount_percentage = ${discount_percentage},
+            tax_percentage = ${tax_percentage},
+            preparation_time_minutes = ${preparation_time_minutes},
+            packaging_charges = ${packaging_charges},
+            serves = ${serves},
+            serves_label = ${serves_label},
+            short_name = ${short_name},
+            display_order = ${display_order},
+            item_size_value = ${item_size_value},
+            item_size_unit = ${item_size_unit},
+            available_for_delivery = ${available_for_delivery},
+            in_stock = ${in_stock},
+            available_quantity = ${available_quantity},
+            low_stock_threshold = ${low_stock_threshold},
+            expiry_date = ${expiry_date},
+            is_active = ${is_active},
+            is_popular = ${is_popular},
+            is_recommended = ${is_recommended},
+            allergens = ${allergens},
+            weight_per_serving = ${weight_per_serving},
+            weight_per_serving_unit = ${weight_per_serving_unit},
+            calories_kcal = ${calories_kcal},
+            protein = ${protein},
+            protein_unit = ${protein_unit},
+            carbohydrates = ${carbohydrates},
+            carbohydrates_unit = ${carbohydrates_unit},
+            fat = ${fat},
+            fat_unit = ${fat_unit},
+            fibre = ${fibre},
+            fibre_unit = ${fibre_unit},
+            item_tags = ${item_tags},
+            has_customizations = ${has_customizations},
+            has_addons = ${has_addons},
+            has_variants = ${has_variants},
+            updated_at = NOW()
+        WHERE id = ${menuItemId} AND store_id = ${storeId}
+      `;
+    }
     try {
       const agentId = await getAgentIdForStore(storeId);
       await insertActivityLog({

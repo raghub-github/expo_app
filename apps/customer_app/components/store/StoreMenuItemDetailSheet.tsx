@@ -26,6 +26,7 @@ import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useCookingSheetKeyboardDock } from "@/hooks/useCookingSheetKeyboardDock";
 import { DietIndicator } from "./DietIndicator";
 import { getBasePrice, getItemDiet, getSellingPrice } from "./storeMenuUtils";
+import { formatMenuPortionLabel } from "@/lib/format-menu-portion-label";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 import {
   normalizeOrderItemSpecialInstructions,
@@ -231,6 +232,7 @@ export function StoreMenuItemDetailSheet({
   const catalogDiscountPct = computeCatalogDiscountPercent(basePrice, sellingPrice);
   const total = payablePrice * quantity;
   const diet = getItemDiet(item);
+  const portionLabel = formatMenuPortionLabel(item.sizeValue, item.sizeUnit, item.sizePreset);
 
   // Safe-area only — sheet background extends to the physical screen edge.
   const footerPadBottom = insets.bottom;
@@ -433,6 +435,9 @@ export function StoreMenuItemDetailSheet({
 
                     {item.description ? (
                       <AppText style={[styles.description, dark && styles.descriptionDark]}>{item.description}</AppText>
+                    ) : null}
+                    {portionLabel ? (
+                      <AppText style={[styles.description, dark && styles.descriptionDark]}>{portionLabel}</AppText>
                     ) : null}
                     {isCustomisable ? (
                       <AppText style={styles.customisable}>Customisable</AppText>

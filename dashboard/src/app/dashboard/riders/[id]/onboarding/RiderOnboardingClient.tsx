@@ -11,7 +11,7 @@ import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { DocumentStatusBadge } from "@/components/riders/DocumentStatusBadge";
 import { DocumentViewer } from "@/components/riders/DocumentViewer";
 import { DocumentEditModal } from "@/components/riders/DocumentEditModal";
-import { Edit, CheckCircle, XCircle, Eye, Loader2, AlertCircle, X } from "lucide-react";
+import { Edit, CheckCircle, XCircle, Eye, Loader2, AlertCircle, X, Upload } from "lucide-react";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { ONBOARDING_STAGE_LABELS } from "@/types/rider-dashboard";
 import { computeIdentityVerificationProgress } from "@/lib/rider-identity-doc-requirements";
@@ -465,11 +465,38 @@ export default function RiderOnboardingClient() {
     }
   };
 
+  const handleStartUpload = (docType: string) => {
+    if (isBlocked) return;
+    setEditingDoc({
+      id: 0,
+      docType,
+      fileUrl: "pending",
+      r2Key: null,
+      docNumber: null,
+      verificationMethod: "MANUAL_UPLOAD",
+      verified: false,
+      verifierUserId: null,
+      verifierName: null,
+      rejectedReason: null,
+      extractedName: null,
+      extractedDob: null,
+      extractedDataSummary: null,
+      lastVerificationId: null,
+      lastProviderReference: null,
+      metadata: null,
+      verifiedAt: null,
+      createdAt: new Date().toISOString(),
+    });
+    setEditModalOpen(true);
+  };
+
   const handleSaveEdit = async (data: { docNumber?: string; file?: File }) => {
     if (!editingDoc) return;
 
     try {
-      setActionLoading(documentActionKey(editingDoc));
+      setActionLoading(
+        editingDoc.id > 0 ? documentActionKey(editingDoc) : `upload:${editingDoc.docType}`,
+      );
 
       const formData = new FormData();
       formData.append("displayDocType", editingDoc.docType);
@@ -482,10 +509,13 @@ export default function RiderOnboardingClient() {
         formData.append("file", data.file);
       }
 
+      const isNew = editingDoc.id <= 0;
       const response = await fetch(
-        `/api/riders/${riderId}/documents/${editingDoc.id}`,
+        isNew
+          ? `/api/riders/${riderId}/documents`
+          : `/api/riders/${riderId}/documents/${editingDoc.id}`,
         {
-          method: "PUT",
+          method: isNew ? "POST" : "PUT",
           body: formData,
         }
       );
@@ -515,6 +545,11 @@ export default function RiderOnboardingClient() {
 
   const handleRemoveEdit = async () => {
     if (!editingDoc) return;
+    if (editingDoc.id <= 0) {
+      setEditModalOpen(false);
+      setEditingDoc(null);
+      return;
+    }
 
     try {
       setActionLoading(documentActionKey(editingDoc));
@@ -713,8 +748,9 @@ export default function RiderOnboardingClient() {
     setEvReviewDocId(doc.id);
   };
 
-  /** Empty bank_proof card: create stub doc, then same review → approve flow. */
-  const handleElectronicBankWithoutDoc = async (
+  /** Empty card: create stub doc, then same review → approve flow as the rider app. */
+  const handleElectronicWithoutDoc = async (
+    docType: string,
     data: Record<string, unknown>,
     meta?: {
       numberUsed: string;
@@ -725,29 +761,32 @@ export default function RiderOnboardingClient() {
     },
   ) => {
     try {
-      setActionLoading("bank_proof:ensure");
-      const res = await fetch(
-        `/api/riders/${riderId}/documents/ensure-bank-proof`,
-        { method: "POST" },
-      );
+      setActionLoading(`upload:${docType}`);
+      const res = await fetch(`/api/riders/${riderId}/documents/ensure`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayDocType: docType }),
+      });
       const result = await res.json();
       if (!result.success || !result.data) {
-        throw new Error(result.error || "Could not prepare bank proof");
+        throw new Error(result.error || "Could not prepare document");
       }
       const stub = result.data as Document;
       setRiderData((prev) => {
         if (!prev) return prev;
-        const exists = prev.documents.some((d) => d.id === stub.id);
+        const exists = prev.documents.some((d) => d.id === stub.id && d.docType === stub.docType);
         return {
           ...prev,
           documents: exists
-            ? prev.documents.map((d) => (d.id === stub.id ? { ...d, ...stub } : d))
+            ? prev.documents.map((d) =>
+                d.id === stub.id && d.docType === stub.docType ? { ...d, ...stub } : d,
+              )
             : [...prev.documents, stub],
         };
       });
       handleElectronicVerified(stub, data, meta);
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Bank electronic verify failed");
+      alert(err instanceof Error ? err.message : "Electronic verify failed");
     } finally {
       setActionLoading(null);
     }
@@ -901,7 +940,7 @@ export default function RiderOnboardingClient() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
+      <div className="flex items-center justify-center min-h-screen bg-[#C4E8D1]">
         <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
       </div>
     );
@@ -969,11 +1008,11 @@ export default function RiderOnboardingClient() {
   const isBlocked = riderData.rider.status === "BLOCKED" || riderData.rider.status === "BANNED";
 
   return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden p-6">
+    <div className="space-y-10 w-full max-w-full overflow-x-hidden p-6 min-h-screen bg-[#C4E8D1]">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Rider Onboarding Verification</h1>
+          <h1 className="text-2xl font-bold text-[#0A2342]">Rider Onboarding Verification</h1>
           <p className="text-sm text-gray-600 mt-1">
             Verify and approve rider documents for onboarding
           </p>
@@ -1019,7 +1058,7 @@ export default function RiderOnboardingClient() {
 
       {/* Rider Info Summary */}
       <div className="rounded-xl border border-gray-200/90 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold mb-4 text-gray-800">Rider Information</h2>
+        <h2 className="text-lg font-semibold mb-4 text-[#0A2342]">Rider Information</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           <div>
             <p className="text-xs text-gray-500 mb-1">Rider ID</p>
@@ -1161,7 +1200,7 @@ export default function RiderOnboardingClient() {
       {/* Verification Progress Summary */}
       <div className="rounded-xl border-2 border-blue-200/80 bg-gradient-to-br from-blue-50 to-indigo-50 p-6 shadow-md">
         <h2 className="text-lg font-bold mb-4 text-blue-900">Verification Progress</h2>
-        <div className="space-y-3">
+        <div className="space-y-5">
           {(() => {
             const allDocs = riderData.documents || [];
             const identityProgress = computeIdentityVerificationProgress(
@@ -1236,8 +1275,13 @@ export default function RiderOnboardingClient() {
 
       {/* Identity Documents */}
       <div className="rounded-xl border border-gray-200/90 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold mb-4 text-gray-800">Identity Documents</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <h2 className="text-lg font-semibold mb-3 text-[#0A2342]">Identity Documents</h2>
+        <p className="text-sm text-gray-500 mb-8">
+          If the rider is stuck in the app, upload and verify here. Manual approve and electronic
+          Cashfree verify write to the same <span className="font-medium text-gray-700">rider_documents</span> records as onboarding.
+          Aadhaar electronic verify is on the Front card (masking if a photo exists, otherwise DigiLocker).
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {DOCUMENT_SECTIONS.identity.map((docType) => {
             const doc = getLatestDocument(docType);
             // DigiLocker / app auto-verify: single Aadhaar card is enough — hide Back.
@@ -1260,6 +1304,8 @@ export default function RiderOnboardingClient() {
                 document={doc}
                 isOptional={docType === "pan"}
                 titleOverride={aadhaarFrontLabel}
+                riderDob={riderData?.rider?.dob ?? null}
+                riderAadhaarNumber={riderData?.rider?.aadhaarNumber ?? null}
                 fallbackPreviewUrl={
                   docType === "selfie" ? riderData?.rider?.selfieUrl ?? null : null
                 }
@@ -1277,12 +1323,15 @@ export default function RiderOnboardingClient() {
                   })
                 }
                 onEdit={() => doc && isManualUploadMethod(doc.verificationMethod) && !isBlocked && handleEditDocument(doc)}
+                onUpload={() => !isBlocked && handleStartUpload(docType)}
                 onApprove={() => doc && isManualUploadMethod(doc.verificationMethod) && !doc.verified && !isBlocked && handleApproveDocument(doc)}
                 onReject={() => doc && isManualUploadMethod(doc.verificationMethod) && !doc.verified && !isBlocked && handleRejectDocument(doc)}
                 onElectronicVerified={
                   doc
                     ? (data, meta) => handleElectronicVerified(doc, data, meta)
-                    : undefined
+                    : EV_KIND_BY_DOC_TYPE[docType]
+                      ? (data, meta) => handleElectronicWithoutDoc(docType, data, meta)
+                      : undefined
                 }
                 pendingElectronicReview={
                   doc ? pendingEvByDocId[doc.id] ?? null : null
@@ -1290,9 +1339,14 @@ export default function RiderOnboardingClient() {
                 onOpenPendingElectronicReview={
                   doc ? () => setEvReviewDocId(doc.id) : undefined
                 }
-                isLoading={doc ? actionLoading === documentActionKey(doc) : false}
+                isLoading={
+                  doc
+                    ? actionLoading === documentActionKey(doc)
+                    : actionLoading === `upload:${docType}`
+                }
                 isDisabled={isBlocked}
                 allVersions={getDocumentsByType(docType)}
+                allowEmptyElectronicVerify={Boolean(EV_KIND_BY_DOC_TYPE[docType])}
               />
             );
           })}
@@ -1301,8 +1355,11 @@ export default function RiderOnboardingClient() {
 
       {/* Vehicle Documents */}
       <div className="rounded-lg border border-gray-200 bg-white p-6">
-        <h2 className="text-lg font-semibold mb-4 text-gray-800">Vehicle Documents</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
+        <h2 className="text-lg font-semibold mb-3 text-[#0A2342]">Vehicle Documents</h2>
+        <p className="text-sm text-gray-500 mb-8">
+          Same DL / RC upload and Cashfree electronic verify as the rider app. Approved data is stored on the rider document row.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-stretch">
           {DOCUMENT_SECTIONS.vehicle.map((docType) => {
             const doc = getLatestDocument(docType);
             return (
@@ -1315,12 +1372,15 @@ export default function RiderOnboardingClient() {
                 riderDob={riderData?.rider?.dob ?? null}
                 onView={() => doc && hasDocumentPreview(doc) && handleViewDocument(doc)}
                 onEdit={() => doc && isManualUploadMethod(doc.verificationMethod) && !isBlocked && handleEditDocument(doc)}
+                onUpload={() => !isBlocked && handleStartUpload(docType)}
                 onApprove={() => doc && isManualUploadMethod(doc.verificationMethod) && !doc.verified && !isBlocked && handleApproveDocument(doc)}
                 onReject={() => doc && isManualUploadMethod(doc.verificationMethod) && !doc.verified && !isBlocked && handleRejectDocument(doc)}
                 onElectronicVerified={
                   doc
                     ? (data, meta) => handleElectronicVerified(doc, data, meta)
-                    : undefined
+                    : EV_KIND_BY_DOC_TYPE[docType]
+                      ? (data, meta) => handleElectronicWithoutDoc(docType, data, meta)
+                      : undefined
                 }
                 pendingElectronicReview={
                   doc ? pendingEvByDocId[doc.id] ?? null : null
@@ -1328,9 +1388,14 @@ export default function RiderOnboardingClient() {
                 onOpenPendingElectronicReview={
                   doc ? () => setEvReviewDocId(doc.id) : undefined
                 }
-                isLoading={doc ? actionLoading === documentActionKey(doc) : false}
+                isLoading={
+                  doc
+                    ? actionLoading === documentActionKey(doc)
+                    : actionLoading === `upload:${docType}`
+                }
                 isDisabled={isBlocked}
                 allVersions={getDocumentsByType(docType)}
+                allowEmptyElectronicVerify={Boolean(EV_KIND_BY_DOC_TYPE[docType])}
               />
             );
           })}
@@ -1339,8 +1404,11 @@ export default function RiderOnboardingClient() {
 
       {/* Additional Documents */}
       <div className="rounded-xl border border-gray-200/90 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold mb-4 text-gray-800">Additional Documents</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
+        <h2 className="text-lg font-semibold mb-3 text-[#0A2342]">Additional Documents</h2>
+        <p className="text-sm text-gray-500 mb-8">
+          Optional proofs (rental, EV, bank, insurance, vehicle photo, UPI). Bank can be verified electronically without a passbook scan.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-stretch">
           {DOCUMENT_SECTIONS.additional.map((docType) => {
             const doc = getLatestDocument(docType);
             const isSyntheticBank = docType === "bank_proof" && doc != null && doc.id < 0;
@@ -1370,6 +1438,7 @@ export default function RiderOnboardingClient() {
                   !isBlocked &&
                   handleEditDocument(realBankDoc)
                 }
+                onUpload={() => !isBlocked && handleStartUpload(docType)}
                 onApprove={() =>
                   realBankDoc &&
                   isManualUploadMethod(realBankDoc.verificationMethod) &&
@@ -1388,8 +1457,8 @@ export default function RiderOnboardingClient() {
                   realBankDoc
                     ? (data, meta) =>
                         handleElectronicVerified(realBankDoc, data, meta)
-                    : docType === "bank_proof"
-                      ? (data, meta) => handleElectronicBankWithoutDoc(data, meta)
+                    : EV_KIND_BY_DOC_TYPE[docType]
+                      ? (data, meta) => handleElectronicWithoutDoc(docType, data, meta)
                       : undefined
                 }
                 pendingElectronicReview={
@@ -1405,11 +1474,11 @@ export default function RiderOnboardingClient() {
                 isLoading={
                   realBankDoc
                     ? actionLoading === documentActionKey(realBankDoc)
-                    : actionLoading === "bank_proof:ensure"
+                    : actionLoading === `upload:${docType}`
                 }
                 isDisabled={isBlocked}
                 allVersions={getDocumentsByType(docType)}
-                allowEmptyElectronicVerify={docType === "bank_proof"}
+                allowEmptyElectronicVerify={Boolean(EV_KIND_BY_DOC_TYPE[docType])}
               />
             );
           })}
@@ -1524,8 +1593,10 @@ const DOC_TYPES_WITH_NUMBER = new Set([
 /** rider docType → verification-engine kind for agent electronic verify. */
 const EV_KIND_BY_DOC_TYPE: Record<
   string,
-  "pan" | "driving_licence" | "vehicle_rc" | "bank_account"
+  "pan" | "driving_licence" | "vehicle_rc" | "bank_account" | "aadhaar"
 > = {
+  aadhaar: "aadhaar",
+  aadhaar_front: "aadhaar",
   pan: "pan",
   dl: "driving_licence",
   dl_front: "driving_licence",
@@ -1541,11 +1612,13 @@ interface DocumentCardProps {
   isOptional?: boolean;
   titleOverride?: string;
   riderDob?: string | null;
+  riderAadhaarNumber?: string | null;
   /** Extra image URL (e.g. riders.selfie_url) when doc.fileUrl is missing/placeholder. */
   fallbackPreviewUrl?: string | null;
   imageRefreshKey?: number;
   onView: () => void;
   onEdit: () => void;
+  onUpload?: () => void;
   onApprove: () => void;
   onReject: () => void;
   onElectronicVerified?: (
@@ -1574,10 +1647,12 @@ function DocumentCard({
   isOptional = false,
   titleOverride,
   riderDob,
+  riderAadhaarNumber,
   fallbackPreviewUrl,
   imageRefreshKey,
   onView,
   onEdit,
+  onUpload,
   onApprove,
   onReject,
   onElectronicVerified,
@@ -1617,7 +1692,7 @@ function DocumentCard({
 
   return (
     <div className="border border-gray-200/90 rounded-xl p-5 bg-white shadow-sm hover:shadow-lg transition-all duration-200 h-full flex flex-col min-h-[340px]">
-      <div className="flex items-start justify-between gap-2 mb-3 min-h-[52px]">
+      <div className="flex items-start justify-between gap-2 mb-5 min-h-[56px]">
         <div className="flex-1 min-w-0">
           <h3 className="text-sm font-semibold text-gray-900">
             {titleOverride || DOCUMENT_LABELS[docType] || docType}
@@ -1780,12 +1855,13 @@ function DocumentCard({
               verified={document.verified}
               hasPendingReview={!!pendingElectronicReview}
               onOpenPendingReview={onOpenPendingElectronicReview}
+              imageKey={document.r2Key}
               prefill={{
                 number:
                   document.docNumber?.trim() &&
                   document.docNumber.trim() !== "?"
                     ? document.docNumber
-                    : null,
+                    : riderAadhaarNumber ?? null,
                 name: null,
                 dob: document.extractedDob || riderDob || null,
               }}
@@ -1799,12 +1875,26 @@ function DocumentCard({
             <p className="text-sm">
               {isOptional ? "Optional — not submitted" : "No document uploaded"}
             </p>
-            {allowEmptyElectronicVerify ? (
-              <p className="text-xs text-gray-500 mt-1">
-                Or verify the bank account electronically below.
-              </p>
-            ) : null}
+            <p className="text-xs text-gray-500 mt-1">
+              Upload and verify here if the rider cannot finish this step in the app.
+            </p>
           </div>
+          {onUpload && !isDisabled ? (
+            <button
+              type="button"
+              onClick={onUpload}
+              disabled={isLoading}
+              className="mb-2 inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-800 hover:bg-blue-100 disabled:opacity-50"
+            >
+              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              Upload document
+            </button>
+          ) : null}
+          {allowEmptyElectronicVerify ? (
+            <p className="text-xs text-gray-500 mb-1">
+              Or verify electronically below — same Cashfree check as the rider app.
+            </p>
+          ) : null}
           {allowEmptyElectronicVerify &&
           !isDisabled &&
           EV_KIND_BY_DOC_TYPE[docType] &&
@@ -1816,7 +1906,12 @@ function DocumentCard({
               verified={false}
               hasPendingReview={!!pendingElectronicReview}
               onOpenPendingReview={onOpenPendingElectronicReview}
-              prefill={{ number: null, name: null, dob: null, ifsc: null }}
+              prefill={{
+                number: riderAadhaarNumber ?? null,
+                name: null,
+                dob: riderDob || null,
+                ifsc: null,
+              }}
               onVerified={(data, meta) => onElectronicVerified?.(data, meta)}
             />
           ) : null}
@@ -1920,7 +2015,7 @@ function ProgressBar({
   
   return (
     <div>
-      <div className="flex justify-between items-center mb-1.5">
+      <div className="flex justify-between items-center mb-2.5">
         <span className="text-sm font-medium text-gray-700">{label}</span>
         <span className={`text-sm font-bold ${isComplete ? 'text-green-600' : 'text-gray-900'}`}>
           {current}/{total} verified

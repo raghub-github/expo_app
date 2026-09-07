@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { getRiderAppConfig } from "@/src/config/env";
 import { getJson } from "@/src/services/http";
 import { useSessionStore } from "@/src/stores/sessionStore";
@@ -40,8 +40,8 @@ export function useHotZones({
   const query = useQuery({
     queryKey: [
       ...RIDER_HOT_ZONES_QUERY_KEY,
-      hasFix ? riderLat!.toFixed(3) : null,
-      hasFix ? riderLng!.toFixed(3) : null,
+      hasFix ? riderLat!.toFixed(2) : null,
+      hasFix ? riderLng!.toFixed(2) : null,
     ],
     queryFn: async (): Promise<HotZoneCell[]> => {
       const base = getRiderAppConfig().apiBaseUrl;
@@ -53,6 +53,7 @@ export function useHotZones({
     },
     enabled: canFetch,
     staleTime: 60_000,
+    placeholderData: keepPreviousData,
     refetchInterval: canFetch ? 60_000 : false,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
@@ -60,7 +61,7 @@ export function useHotZones({
   });
 
   return {
-    zones: enabled && hasFix ? query.data ?? [] : [],
-    isLoading: Boolean(enabled && (!hasFix || (canFetch && query.isLoading))),
+    zones: query.data ?? [],
+    isLoading: Boolean(canFetch && query.isFetching && !query.data),
   };
 }

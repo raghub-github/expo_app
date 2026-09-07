@@ -124,8 +124,8 @@ export default function OrderHeader({ forceSkeleton = false }: OrderHeaderProps)
     (!authReady && !email && !systemUserId && !name);
 
   return (
-    <header className="sticky top-0 z-50 shrink-0 border-b border-slate-200 bg-white">
-      <div className="flex h-11 w-full items-center justify-between px-3 sm:h-12 sm:px-4 md:px-6">
+    <header className="sticky top-0 z-50 shrink-0 bg-white">
+      <div className="relative flex h-11 w-full items-center justify-between px-3 sm:h-12 sm:px-4 md:px-6">
         <div className="flex items-center gap-2">
           {showBrandSkeleton ? (
             <>

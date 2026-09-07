@@ -19,7 +19,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { shareReferralCode } from "@/lib/referralShare";
 import { presentReferralCopy } from "@/lib/referralCopy";
-import { isCustomProfileUploadUrl } from "@/lib/emailAvatar";
+import { isCustomProfileUploadUrl, resolveStoredProfileAvatarUri } from "@/lib/emailAvatar";
 import { getNameInitials } from "@/lib/nameInitials";
 import { useProfile } from "@/hooks/useProfile";
 import { useCurrentSubscription } from "@/hooks/useCustomerSubscription";
@@ -34,7 +34,6 @@ import { invalidateProfileCache, PROFILE_QUERY_KEY, writeCachedProfile } from "@
 import { CURRENT_SUBSCRIPTION_QUERY_KEY } from "@/lib/subscriptionCache";
 import { formatSubscriptionExpiryCountdown } from "@/services/subscription.service";
 import { resolveSubscriptionExpiryIso } from "@/lib/subscriptionExpiry";
-import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -127,10 +126,9 @@ export default function ProfileScreen() {
   const profileImageUrl = profile?.profile_image_url?.trim() || null;
   const hasCustomUpload = isCustomProfileUploadUrl(profileImageUrl);
   const avatarCandidates = useMemo(() => {
-    if (!hasCustomUpload || !profileImageUrl) return [];
-    const abs = toAbsoluteImageUrl(profileImageUrl);
+    const abs = resolveStoredProfileAvatarUri(profileImageUrl);
     return abs ? [abs] : [];
-  }, [hasCustomUpload, profileImageUrl]);
+  }, [profileImageUrl]);
   const [avatarIndex, setAvatarIndex] = useState(0);
   const [membershipSheetVisible, setMembershipSheetVisible] = useState(false);
   const [photoSourceSheetVisible, setPhotoSourceSheetVisible] = useState(false);

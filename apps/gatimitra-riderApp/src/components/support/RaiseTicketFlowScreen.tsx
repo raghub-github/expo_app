@@ -18,6 +18,7 @@ import {
   type RiderHelpSection,
   type RiderRecentOrder,
 } from "@/src/services/riderSupport.service";
+import { RIDER_AUTH_BG } from "@/src/theme/riderAuthTheme";
 
 type FlowStep = "pick_order" | "topics";
 type OrderScope = "active" | "completed" | "all";
@@ -278,6 +279,6 @@ export function RaiseTicketFlowScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#F1F5F9" },
-  scroll: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 32 },
+  root: { flex: 1, backgroundColor: RIDER_AUTH_BG },
+  scroll: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 32 },
 });

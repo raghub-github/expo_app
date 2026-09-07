@@ -1,10 +1,9 @@
-import React, { useEffect, useRef } from "react";
+import React from "react";
 import { AppText } from "@/components/AppText";
-import { View, StyleSheet, Animated, useWindowDimensions } from "react-native";
+import { View, StyleSheet, useWindowDimensions } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
-import { useMerchantLoadingMessage } from "@/hooks/useMerchantLoadingMessage";
-import { MerchantLoadingWave } from "@/components/merchant/MerchantLoadingWave";
 import { StoreTheme } from "@/constants/storeTheme";
 import { CATEGORY_RAIL_WIDTH } from "@/features/merchant-detail/constants/layout";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
@@ -39,8 +38,6 @@ function MasonryCardSkeleton({ dark }: { dark: boolean }) {
 
 /** Merchant loading skeleton — list rows for Classic/Grid First, masonry rail for Discovery. */
 export function MerchantMenuLoadingSkeleton({
-  merchantId,
-  startMessageIndex,
   variant = "screen",
   edgeToEdge = false,
   showRail,
@@ -48,53 +45,12 @@ export function MerchantMenuLoadingSkeleton({
   const insets = useSafeAreaInsets();
   const dark = useMerchantUiDark();
   const { height: windowH } = useWindowDimensions();
-  const message = useMerchantLoadingMessage(merchantId, startMessageIndex);
   const isScreen = variant === "screen";
   const renderRail = showRail ?? isScreen;
 
   const topPad = isScreen && edgeToEdge ? insets.top : isScreen ? 8 : 0;
-  const bottomPad = isScreen ? Math.max(insets.bottom, 14) : 16;
-
-  const fade = useRef(new Animated.Value(1)).current;
-  const isFirstMessageRef = useRef(true);
-  useEffect(() => {
-    if (isFirstMessageRef.current) {
-      isFirstMessageRef.current = false;
-      fade.setValue(1);
-      return;
-    }
-    fade.setValue(0);
-    const anim = Animated.timing(fade, {
-      toValue: 1,
-      duration: 320,
-      useNativeDriver: true,
-    });
-    anim.start();
-    return () => anim.stop();
-  }, [message, fade]);
-
-  const messageFooter = (
-    <View
-      style={[
-        styles.messageFooter,
-        dark && styles.messageFooterDark,
-        isScreen ? styles.messageFooterScreen : styles.messageFooterInline,
-        isScreen && dark ? styles.messageFooterScreenDark : null,
-        { paddingBottom: bottomPad },
-      ]}
-      pointerEvents="none"
-    >
-      <MerchantLoadingWave />
-      <Animated.View style={[styles.messageTextWrap, { opacity: fade }]}>
-        <AppText style={[styles.messageText, dark && styles.messageTextDark]} numberOfLines={3}>
-          {message || "Preparing your perfect menu."}
-        </AppText>
-      </Animated.View>
-    </View>
-  );
 
   if (!dark) {
-    const heroTopExtend = isScreen && edgeToEdge ? insets.top : 0;
     const rowCount = isScreen ? 5 : 3;
     return (
       <View
@@ -112,7 +68,25 @@ export function MerchantMenuLoadingSkeleton({
           ]}
         >
           {isScreen ? (
-            <GMSkeleton style={[styles.classicHero, { height: 168 + heroTopExtend }]} />
+            <View style={[styles.entryChrome, edgeToEdge ? { paddingTop: insets.top } : null]}>
+              <View style={styles.entrySearchRow}>
+                <View style={styles.entryBack}>
+                  <Ionicons name="chevron-back" size={22} color={StoreTheme.textPrimary} />
+                </View>
+                <View style={styles.entrySearchPill}>
+                  <Ionicons name="search" size={18} color={StoreTheme.searchIcon} />
+                  <AppText style={styles.entrySearchHint} numberOfLines={1}>
+                    Search menu
+                  </AppText>
+                </View>
+                <View style={styles.entryMore}>
+                  <Ionicons name="ellipsis-vertical" size={18} color={StoreTheme.textPrimary} />
+                </View>
+              </View>
+            </View>
+          ) : null}
+          {isScreen ? (
+            <GMSkeleton style={styles.classicHero} />
           ) : null}
           {Array.from({ length: rowCount }).map((_, i) => (
             <View key={i} style={[styles.classicRow, isScreen && styles.classicRowPad]}>
@@ -125,7 +99,6 @@ export function MerchantMenuLoadingSkeleton({
             </View>
           ))}
         </View>
-        {messageFooter}
       </View>
     );
   }
@@ -189,7 +162,6 @@ export function MerchantMenuLoadingSkeleton({
           </View>
         </View>
       </View>
-      {messageFooter}
     </View>
   );
 }
@@ -199,6 +171,50 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     overflow: "hidden",
     flexDirection: "column",
+  },
+  entryChrome: {
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    paddingTop: 4,
+  },
+  entrySearchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minHeight: 48,
+  },
+  entryBack: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: StoreTheme.searchBg,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  entrySearchPill: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: StoreTheme.searchBg,
+    paddingHorizontal: 14,
+  },
+  entrySearchHint: {
+    flex: 1,
+    fontSize: 14,
+    color: StoreTheme.textSecondary,
+  },
+  entryMore: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: StoreTheme.searchBg,
+    alignItems: "center",
+    justifyContent: "center",
   },
   classicRootInline: {
     minHeight: 420,
@@ -220,6 +236,7 @@ const styles = StyleSheet.create({
   },
   classicHero: {
     width: "100%",
+    height: 168,
     borderRadius: 0,
   },
   classicRow: {

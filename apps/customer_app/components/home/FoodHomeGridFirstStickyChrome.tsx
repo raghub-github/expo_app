@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { StyleSheet, View } from "react-native";
 import Animated, {
+  Extrapolation,
+  interpolate,
   runOnJS,
   useAnimatedReaction,
   useAnimatedStyle,
@@ -15,14 +17,10 @@ import {
   gridFirstStickyCategoryTop,
   gridFirstStickyFilterTop,
   gridFirstStickySearchTop,
+  gridFirstStickySnapY,
   type GridFirstStickyMetrics,
 } from "@/lib/gridFirstStickyLayout";
 
-/**
- * Snap sticky chrome on slightly early so JS-thread scroll lag never leaves a
- * transparent gap (content "overlapping" under a fading header).
- */
-const STICK_EARLY_PX = 24;
 const PAGE_BG = GatiMitraColors.softBackground;
 
 type Props = {
@@ -45,12 +43,19 @@ type Props = {
   enableCategorySticky?: boolean;
   /** When false, filter row stays in scroll flow only. */
   enableFilterSticky?: boolean;
+  /**
+   * No-hero mode: keep search + category pinned from scroll y=0 so there is no
+   * rest→sticky gap collapse jerk.
+   */
+  pinAtRest?: boolean;
+  onOpenVegPopover?: (anchor: import("@/components/home/VegModePopover").VegPopoverAnchor) => void;
 };
 
 function stickyOn(y: number, stickAt: number): boolean {
   "worklet";
   if (stickAt <= 1) return false;
-  return y >= Math.max(0, stickAt - STICK_EARLY_PX);
+  // Literals only — Reanimated cannot read JS module consts on the UI thread.
+  return y >= gridFirstStickySnapY(stickAt, 8);
 }
 
 export function FoodHomeGridFirstStickyChrome({
@@ -71,6 +76,9 @@ export function FoodHomeGridFirstStickyChrome({
   filters,
   enableCategorySticky = true,
   enableFilterSticky = true,
+  /** When true (no hero), pin search + category from y=0 — no rest→sticky gap jerk. */
+  pinAtRest = false,
+  onOpenVegPopover,
 }: Props) {
   const pinFullHeader = Boolean(locationPrimary || locationSecondary);
   const searchTop = gridFirstStickySearchTop(metrics);
@@ -84,24 +92,28 @@ export function FoodHomeGridFirstStickyChrome({
     ? categoryTop + metrics.categoryBlockHeight
     : gridFirstStickyFilterTop(metrics);
 
-  const [searchStickyOn, setSearchStickyOn] = useState(false);
-  const [categoryStickyOn, setCategoryStickyOn] = useState(false);
+  const [searchStickyOn, setSearchStickyOn] = useState(pinAtRest);
+  const [categoryStickyOn, setCategoryStickyOn] = useState(
+    pinAtRest && enableCategorySticky
+  );
   const [filterStickyOn, setFilterStickyOn] = useState(false);
 
   useAnimatedReaction(
-    () => stickyOn(scrollY.value, searchStickAt.value),
+    () => (pinAtRest ? true : stickyOn(scrollY.value, searchStickAt.value)),
     (on, prev) => {
       if (on !== prev) runOnJS(setSearchStickyOn)(on);
-    }
+    },
+    [pinAtRest]
   );
 
   useAnimatedReaction(
     () =>
-      enableCategorySticky && stickyOn(scrollY.value, categoryStickAt.value),
+      enableCategorySticky &&
+      (pinAtRest || stickyOn(scrollY.value, categoryStickAt.value)),
     (on, prev) => {
       if (on !== prev) runOnJS(setCategoryStickyOn)(on);
     },
-    [enableCategorySticky]
+    [enableCategorySticky, pinAtRest]
   );
 
   const hasFilters = Boolean(filters);
@@ -117,35 +129,74 @@ export function FoodHomeGridFirstStickyChrome({
   );
 
   const searchBarStyle = useAnimatedStyle(() => {
-    const on = stickyOn(scrollY.value, searchStickAt.value);
+    if (pinAtRest) {
+      return { opacity: 1, backgroundColor: PAGE_BG, zIndex: 32 };
+    }
+    const stickAt = searchStickAt.value;
+    if (stickAt <= 1) {
+      return { opacity: 0, backgroundColor: "transparent", zIndex: -1 };
+    }
+    const snapY = gridFirstStickySnapY(stickAt, 8);
+    const handoff = 4;
+    const opacity = interpolate(
+      scrollY.value,
+      [snapY - handoff, snapY + handoff],
+      [0, 1],
+      Extrapolation.CLAMP
+    );
     return {
-      opacity: on ? 1 : 0,
-      backgroundColor: on ? PAGE_BG : "transparent",
-      zIndex: on ? 32 : -1,
+      opacity,
+      backgroundColor: opacity > 0.05 ? PAGE_BG : "transparent",
+      zIndex: opacity > 0.05 ? 32 : -1,
     };
-  });
+  }, [pinAtRest]);
 
   const categoryBarStyle = useAnimatedStyle(() => {
     if (!enableCategorySticky) {
       return { opacity: 0, backgroundColor: "transparent", zIndex: -1 };
     }
-    const on = stickyOn(scrollY.value, categoryStickAt.value);
+    if (pinAtRest) {
+      return { opacity: 1, backgroundColor: PAGE_BG, zIndex: 31 };
+    }
+    const stickAt = categoryStickAt.value;
+    if (stickAt <= 1) {
+      return { opacity: 0, backgroundColor: "transparent", zIndex: -1 };
+    }
+    const snapY = gridFirstStickySnapY(stickAt, 8);
+    const handoff = 4;
+    const opacity = interpolate(
+      scrollY.value,
+      [snapY - handoff, snapY + handoff],
+      [0, 1],
+      Extrapolation.CLAMP
+    );
     return {
-      opacity: on ? 1 : 0,
-      backgroundColor: on ? PAGE_BG : "transparent",
-      zIndex: on ? 31 : -1,
+      opacity,
+      backgroundColor: opacity > 0.05 ? PAGE_BG : "transparent",
+      zIndex: opacity > 0.05 ? 31 : -1,
     };
-  });
+  }, [enableCategorySticky, pinAtRest]);
 
   const filterBarStyle = useAnimatedStyle(() => {
     if (!enableFilterSticky || !filters) {
       return { opacity: 0, backgroundColor: "transparent", zIndex: -1 };
     }
-    const on = stickyOn(scrollY.value, filterStickAt.value);
+    const stickAt = filterStickAt.value;
+    if (stickAt <= 1) {
+      return { opacity: 0, backgroundColor: "transparent", zIndex: -1 };
+    }
+    const snapY = gridFirstStickySnapY(stickAt, 8);
+    const handoff = 4;
+    const opacity = interpolate(
+      scrollY.value,
+      [snapY - handoff, snapY + handoff],
+      [0, 1],
+      Extrapolation.CLAMP
+    );
     return {
-      opacity: on ? 1 : 0,
-      backgroundColor: on ? PAGE_BG : "transparent",
-      zIndex: on ? 30 : -1,
+      opacity,
+      backgroundColor: opacity > 0.05 ? PAGE_BG : "transparent",
+      zIndex: opacity > 0.05 ? 30 : -1,
     };
   });
 
@@ -160,7 +211,7 @@ export function FoodHomeGridFirstStickyChrome({
         <View
           style={{
             paddingTop: searchTop,
-            paddingBottom: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
+            paddingBottom: 0,
             backgroundColor: PAGE_BG,
           }}
           pointerEvents="box-none"
@@ -176,6 +227,7 @@ export function FoodHomeGridFirstStickyChrome({
             onSearchPress={onSearchPress}
             vegOnly={vegOnly}
             onVegChange={onVegChange}
+            onOpenVegPopover={onOpenVegPopover}
             showVegToggle={showVegToggle}
             searchPlaceholders={searchPlaceholders}
           />
@@ -189,7 +241,11 @@ export function FoodHomeGridFirstStickyChrome({
           collapsable={false}
         >
           <View
-            style={[styles.categoryInner, { backgroundColor: PAGE_BG }]}
+            style={[
+              styles.categoryInner,
+              pinAtRest && styles.categoryInnerTight,
+              { backgroundColor: PAGE_BG },
+            ]}
             pointerEvents="box-none"
             collapsable={false}
           >
@@ -234,8 +290,13 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   categoryInner: {
+    // Same search→category gap at rest and after scroll-up (pinAtRest or sticky).
     paddingTop: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
-    paddingBottom: 4,
+    paddingBottom: 2,
+  },
+  categoryInnerTight: {
+    paddingTop: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
+    paddingBottom: 0,
   },
   filterLayer: {
     position: "absolute",

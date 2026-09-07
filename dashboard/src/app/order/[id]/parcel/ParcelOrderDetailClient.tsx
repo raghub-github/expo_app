@@ -22,6 +22,8 @@ import {
 } from "../person-ride/PersonRideDetailSections";
 import { PR_BLACK, PR_MUTED, PR_WHITE, normalizeStatus } from "../person-ride/person-ride-utils";
 import { isRideFarePaymentPending } from "@/lib/riders/ride-wallet-credit-pending";
+import { readCustomerOrderStats } from "@/lib/orders/customer-order-stats";
+import OrderNthUserBanner from "../OrderNthUserBanner";
 import {
   mapCoreRowToParcelDetail,
   type ParcelDetailOrder,
@@ -181,6 +183,7 @@ export default function ParcelOrderDetailClient({
   const [notFound, setNotFound] = useState(false);
   const [refundModalOpen, setRefundModalOpen] = useState(false);
   const [routedToLabel, setRoutedToLabel] = useState<string | null>(null);
+  const [nthOrdinal, setNthOrdinal] = useState<number | null>(null);
 
   const applyRoutedTo = useCallback((info: { email: string | null; name: string | null }) => {
     const label = routedToLabelFrom(info.name, info.email);
@@ -197,12 +200,14 @@ export default function ParcelOrderDetailClient({
         setNotFound(true);
         setOrder(null);
         onNotFoundChange?.(true);
+        setNthOrdinal(null);
         setError(body.error || "Parcel not found");
         return;
       }
       const row = body.data[0] as Record<string, unknown>;
       const mapped = mapCoreRowToParcelDetail(row);
       setOrder(mapped);
+      setNthOrdinal(readCustomerOrderStats(row).ordinal);
       setNotFound(false);
       onNotFoundChange?.(false);
       setError(null);
@@ -576,8 +581,10 @@ export default function ParcelOrderDetailClient({
 
   return (
     <>
-      <div className="person-ride-typo flex h-full min-h-0 flex-1 flex-col gap-3 text-[12px] text-slate-700 md:text-[13px] lg:flex-row lg:gap-4">
-        <div className="w-full min-w-0 space-y-3 bg-[#F8FAFC] lg:min-h-0 lg:flex-[4] lg:overflow-y-auto lg:overscroll-y-contain lg:pr-3">
+      <div className="person-ride-typo relative flex h-full min-h-0 flex-1 flex-col text-[12px] text-slate-700 md:text-[13px] lg:overflow-hidden">
+        <OrderNthUserBanner ordinal={nthOrdinal} customerName={order.customerName} />
+        <div className="flex min-h-0 flex-1 flex-col gap-2 px-3 pt-3 sm:px-4 md:px-6 lg:flex-row lg:gap-3 lg:overflow-hidden">
+        <div className="w-full min-w-0 space-y-2 bg-[#F8FAFC] pt-0 lg:min-h-0 lg:flex-[4] lg:overflow-y-auto lg:overscroll-y-contain lg:pr-3">
           <ParcelOrderHeader
             order={order}
             tickets={tickets}
@@ -610,7 +617,7 @@ export default function ParcelOrderDetailClient({
           </div>
         </div>
 
-        <div className="w-full min-w-0 space-y-3 bg-[#F8FAFC] lg:min-h-0 lg:w-[320px] lg:max-w-[320px] lg:flex-none lg:overflow-y-auto lg:overscroll-y-contain lg:pl-2 xl:w-[360px] xl:max-w-[360px]">
+        <div className="w-full min-w-0 space-y-3 bg-[#F8FAFC] pt-0 lg:min-h-0 lg:w-[320px] lg:max-w-[320px] lg:flex-none lg:overflow-y-auto lg:overscroll-y-contain lg:pl-2 xl:w-[360px] xl:max-w-[360px]">
           <ParcelRightSidebar
             order={order}
             stamps={stamps}
@@ -621,6 +628,7 @@ export default function ParcelOrderDetailClient({
             onRoutedTo={applyRoutedTo}
           />
         </div>
+      </div>
       </div>
 
       <PersonRideRefundModal

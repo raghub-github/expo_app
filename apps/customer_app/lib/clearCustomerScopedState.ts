@@ -31,8 +31,15 @@ import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
 import { useCartCheckoutGateStore } from "@/store/cartCheckoutGateStore";
 import { useRecentSearchStore } from "@/store/recentSearchStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
+import { useFavoriteLocationsStore } from "@/store/favoriteLocationsStore";
 import { useLocationStore } from "@/store/locationStore";
 import { useParcelBookingStore } from "@/features/parcel/parcelBookingStore";
+import { resetSavedPlacesPull } from "@/lib/savedPlacesSync";
+import { resetHiddenStoresMemory } from "@/lib/hiddenStores";
+import {
+  DIETARY_PREFERENCE_STORAGE_KEY,
+  useDietaryPreferenceStore,
+} from "@/store/dietaryPreferenceStore";
 
 /** In-memory customer state: active orders, carts, checkout handoffs. */
 function clearInMemoryCustomerStores(): void {
@@ -45,6 +52,10 @@ function clearInMemoryCustomerStores(): void {
   useCartCheckoutGateStore.getState().hide();
   useRecentSearchStore.getState().clearRecentSearches();
   useRecentLocationStore.getState().clearRecentLocations();
+  useFavoriteLocationsStore.getState().reset();
+  resetSavedPlacesPull();
+  void resetHiddenStoresMemory();
+  useDietaryPreferenceStore.getState().reset();
   useParcelBookingStore.getState().clear();
 }
 
@@ -83,6 +94,8 @@ async function clearPersistedCustomerCaches(): Promise<void> {
     AsyncStorage.multiRemove([
       STORAGE_KEYS.SUBSCRIPTION_PLANS_CACHE,
       STORAGE_KEYS.SAVED_DELIVERY_TIP,
+      STORAGE_KEYS.HIDDEN_STORES,
+      DIETARY_PREFERENCE_STORAGE_KEY,
     ]).catch(() => {}),
   ]);
 }

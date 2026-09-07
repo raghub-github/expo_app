@@ -9,6 +9,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
+import { normalizeSizeWrite } from "@/lib/menu-size-preset";
 
 export const runtime = "nodejs";
 
@@ -35,13 +36,27 @@ export async function PUT(
     if (!access.ok) return NextResponse.json({ success: false, error: access.error }, { status: access.status });
 
     const sql = getSql();
-    const [v] = await sql`
-      SELECT v.id, v.menu_item_id, v.variant_name, v.variant_type, v.variant_price, v.is_default, v.display_order, v.in_stock
-      FROM merchant_menu_item_variants v
-      INNER JOIN merchant_menu_items m ON m.id = v.menu_item_id AND m.store_id = ${storeId}
-      WHERE v.id = ${vId}
-      LIMIT 1
-    `;
+    let v: Record<string, unknown> | undefined;
+    try {
+      [v] = await sql`
+        SELECT v.id, v.menu_item_id, v.variant_name, v.variant_type, v.variant_price, v.is_default, v.display_order, v.in_stock,
+               v.variant_size_value::text, v.variant_size_unit, v.size_preset
+        FROM merchant_menu_item_variants v
+        INNER JOIN merchant_menu_items m ON m.id = v.menu_item_id AND m.store_id = ${storeId}
+        WHERE v.id = ${vId}
+        LIMIT 1
+      `;
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code !== "42703") throw err;
+      [v] = await sql`
+        SELECT v.id, v.menu_item_id, v.variant_name, v.variant_type, v.variant_price, v.is_default, v.display_order, v.in_stock,
+               v.variant_size_value::text, v.variant_size_unit
+        FROM merchant_menu_item_variants v
+        INNER JOIN merchant_menu_items m ON m.id = v.menu_item_id AND m.store_id = ${storeId}
+        WHERE v.id = ${vId}
+        LIMIT 1
+      `;
+    }
     if (!v) return NextResponse.json({ success: false, error: "Variant not found" }, { status: 404 });
 
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
@@ -57,21 +72,14 @@ export async function PUT(
     const is_default = mergeBool(body.is_default, e.is_default);
     const display_order = mergeNum(body.display_order, e.display_order);
     const in_stock = mergeBool(body.in_stock, e.in_stock);
-    const sizeRaw = body.variant_size_value;
-    const variant_size_value =
-      sizeRaw !== undefined
-        ? sizeRaw == null || String(sizeRaw).trim() === ""
-          ? null
-          : String(sizeRaw).trim()
-        : e.variant_size_value != null
-          ? String(e.variant_size_value).trim()
-          : null;
-    const variant_size_unit =
-      body.variant_size_unit !== undefined
-        ? body.variant_size_unit == null || String(body.variant_size_unit).trim() === ""
-          ? null
-          : String(body.variant_size_unit).trim()
-        : e.variant_size_unit;
+    const variantSize = normalizeSizeWrite({
+      size_preset: body.size_preset !== undefined ? body.size_preset : e.size_preset,
+      size_value: body.variant_size_value !== undefined ? body.variant_size_value : e.variant_size_value,
+      size_unit: body.variant_size_unit !== undefined ? body.variant_size_unit : e.variant_size_unit,
+    });
+    const variant_size_value = variantSize.size_value;
+    const variant_size_unit = variantSize.size_unit;
+    const size_preset = variantSize.size_preset;
 
     try {
       await sql`
@@ -81,6 +89,7 @@ export async function PUT(
             variant_price = ${variant_price},
             variant_size_value = ${variant_size_value},
             variant_size_unit = ${variant_size_unit},
+            size_preset = ${size_preset},
             is_default = ${is_default},
             display_order = ${display_order},
             in_stock = ${in_stock},

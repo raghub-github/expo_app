@@ -353,6 +353,73 @@ export async function submitAadhaarMasking(args: SubmitCommonArgs & {
   });
 }
 
+function usableR2Key(raw: unknown): string | null {
+  const key = String(raw ?? "").trim();
+  if (!key || key === "pending" || key.toLowerCase() === "n/a") return null;
+  return key;
+}
+
+/** Latest Aadhaar front/composite image on rider_documents (+ files) for Cashfree masking. */
+export async function resolveRiderAadhaarImageKey(
+  riderId: number,
+  explicit?: string | null,
+): Promise<string | null> {
+  const fromArg = usableR2Key(explicit);
+  if (fromArg) return fromArg;
+  if (!Number.isFinite(riderId) || riderId < 1) return null;
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT COALESCE(
+             NULLIF(btrim(f.r2_key), ''),
+             NULLIF(btrim(d.r2_key), '')
+           ) AS r2_key
+      FROM rider_documents d
+      LEFT JOIN rider_document_files f
+        ON f.document_id = d.id
+       AND f.r2_key IS NOT NULL
+       AND btrim(f.r2_key) <> ''
+     WHERE d.rider_id = ${riderId}
+       AND d.doc_type::text IN ('aadhaar', 'aadhaar_front')
+     ORDER BY CASE WHEN d.doc_type::text = 'aadhaar_front' THEN 0 ELSE 1 END,
+              d.id DESC,
+              f.sort_order ASC NULLS LAST
+     LIMIT 1
+  `) as unknown as Array<{ r2_key: string | null }>;
+  return usableR2Key(rows[0]?.r2_key);
+}
+
+/**
+ * Dashboard Aadhaar EV: masking when a card image exists (same as rider photo path),
+ * otherwise Cashfree DigiLocker (same as rider electronic path without a photo).
+ */
+export async function submitAadhaarForDashboard(
+  args: SubmitCommonArgs & {
+    aadhaarNumber: string;
+    name?: string;
+    dob?: string;
+    imageKey?: string;
+    redirectUrl?: string;
+  },
+): Promise<SubmitOutcome> {
+  const riderId = args.subjectType === "rider" ? args.subjectId : 0;
+  const imageKey = await resolveRiderAadhaarImageKey(riderId, args.imageKey);
+  if (imageKey) {
+    return submitAadhaarMasking({
+      ...args,
+      imageKey,
+      aadhaarNumber: args.aadhaarNumber,
+      name: args.name,
+      dob: args.dob,
+    });
+  }
+  return submitDigilocker({
+    ...args,
+    documents: ["AADHAAR"],
+    redirectUrl: args.redirectUrl,
+    userFlow: "signin",
+  });
+}
+
 /** Cashfree DigiLocker / RPD require redirect_url to start with https://. */
 function ensureCashfreeHttpsRedirectUrl(url?: string | null): string {
   const envFallback = String(

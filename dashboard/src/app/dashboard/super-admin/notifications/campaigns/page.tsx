@@ -538,13 +538,7 @@ function CampaignDetail({
   onResend: () => void;
   resendBusy: boolean;
 }) {
-  const { data: meta } = useSWR<{
-    target_filter?: Record<string, unknown>;
-    recipient_estimate?: number;
-    token_stats?: { expo_tokens?: number; merchant_store_tokens?: number };
-  }>(`/api/super-admin/notifications/campaigns/${campaign.id}`, fetcher);
-
-  const { data: logs } = useSWR<{ items: Array<{
+  type DispatchLogRow = {
     id: number;
     recipient_user_id: string;
     recipient_role: string;
@@ -555,11 +549,16 @@ function CampaignDetail({
     queued_at: string;
     delivered_at: string | null;
     clicked_at: string | null;
-  }> }>(
-    `/api/super-admin/notifications/logs?campaign=${campaign.id}&limit=100`,
-    fetcher,
-  );
-  const items = logs?.items ?? [];
+  };
+  const { data: meta, isLoading: metaLoading, error: metaError } = useSWR<{
+    target_filter?: Record<string, unknown>;
+    recipient_estimate?: number;
+    token_stats?: { expo_tokens?: number; merchant_store_tokens?: number };
+    dispatch_logs?: DispatchLogRow[];
+  }>(`/api/super-admin/notifications/campaigns/${campaign.id}`, fetcher, {
+    refreshInterval: campaign.status === "running" ? 4_000 : 0,
+  });
+  const items = Array.isArray(meta?.dispatch_logs) ? meta.dispatch_logs : [];
   const s = STATUS_STYLES[campaign.status] ?? { label: campaign.status, classes: "bg-slate-100 text-slate-700 border-slate-200" };
   const sent = campaignCount(campaign.sent_count);
   const delivered = campaignCount(campaign.delivered_count);
@@ -660,10 +659,17 @@ function CampaignDetail({
               <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Per-recipient log</div>
               <div className="text-[11px] text-slate-500">{items.length} row{items.length === 1 ? "" : "s"}</div>
             </div>
-            {items.length === 0 ? (
+            {metaLoading && items.length === 0 ? (
+              <div className="px-4 py-6 text-center text-xs text-slate-500">Loading recipient log…</div>
+            ) : metaError && items.length === 0 ? (
+              <div className="px-4 py-6 text-center text-xs text-rose-700">
+                Could not load recipient log. Close and reopen this campaign, or retry in a moment.
+              </div>
+            ) : items.length === 0 ? (
               <div className="px-4 py-6 text-center text-xs text-slate-500">
-                No deliveries yet. This campaign hasn't fanned out to any recipients — usually because the
-                target had no active push tokens.
+                {sent > 0
+                  ? "KPI counts are set, but no dispatch rows were returned for this campaign."
+                  : "No deliveries yet. This campaign hasn't fanned out to any recipients — usually because the target had no active push tokens."}
               </div>
             ) : (
               <div className="max-h-[360px] overflow-y-auto">

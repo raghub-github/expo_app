@@ -15,7 +15,6 @@ import { useIsFocused } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { useSharedValue } from "react-native-reanimated";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { merchantService, type MenuItem, type MerchantDetail, type MerchantSummary, type OrderedTogetherPair, setMenuItemBookmark } from "@/services/merchant.service";
 import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
 import { offersService, type MerchantOfferItem, type PlatformOfferItem } from "@/services/offers.service";
@@ -78,6 +77,13 @@ import { prefetchMenuItemImagesForMenu } from "@/lib/prefetchMenuItemImages";
 import { resolveMerchantLiveStatus } from "@/lib/merchantListing";
 import { GroupOrderStartSheet } from "@/components/GroupOrderStartSheet";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
+import { ReportFraudMenuIssueSheet } from "@/components/store/ReportFraudMenuIssueSheet";
+import { HiddenRestaurantAckModal } from "@/components/store/HiddenRestaurantAckModal";
+import { useHiddenStores } from "@/lib/hiddenStores";
+import {
+  buildRestaurantShareMessage,
+  buildRestaurantShareUrl,
+} from "@/lib/restaurantShareLink";
 import { StoreMenuItemDetailSheet } from "@/components/store/StoreMenuItemDetailSheet";
 import {
   prefetchMenuItemFullConfig,
@@ -131,6 +137,7 @@ import {
   DEFAULT_STATUS_BAR_HEIGHT,
   resolveTabBarBottomInset,
 } from "@/constants/layout";
+import { applyAndroidNavigationChrome } from "@/lib/androidEdgeToEdgeChrome";
 import { resolveStoreContinueBarHeight } from "@/components/store/MerchantMenuCartSheet";
 import { MerchantCartDock } from "@/components/store/MerchantCartDock";
 import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
@@ -164,8 +171,6 @@ import { useMerchantNavTransitionStore } from "@/store/merchantNavTransitionStor
 import { MERCHANT_NAV_SHUTTER_SLIDE_MS } from "@/components/MerchantNavTransitionShutter";
 import { tryNavigateToFoodCheckout } from "@/lib/cartCheckoutGate";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
-
-const MENU_SEARCH_DEBOUNCE_MS = 200;
 
 /**
  * Only latch the "late insert" suppression once the user has scrolled beyond this
@@ -277,11 +282,14 @@ export default function MerchantDetailScreen() {
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>("cat-all");
   const [selectedMenuOfferId, setSelectedMenuOfferId] = useState<string | null>(null);
   const [menuSearchQuery, setMenuSearchQuery] = useState("");
-  const debouncedMenuSearchQuery = useDebouncedValue(menuSearchQuery, MENU_SEARCH_DEBOUNCE_MS);
+  // Live filter — no debounce so each keystroke updates results immediately.
+  const debouncedMenuSearchQuery = menuSearchQuery;
   const [optionsSheetVisible, setOptionsSheetVisible] = useState(false);
   const [groupOrderSheetVisible, setGroupOrderSheetVisible] = useState(false);
   const [reportSheetVisible, setReportSheetVisible] = useState(false);
-  const [reportSubmitting, setReportSubmitting] = useState(false);
+  const [hideAckVisible, setHideAckVisible] = useState(false);
+  const [hideAckHidden, setHideAckHidden] = useState(true);
+  const { isHidden: isStoreHidden, hideStore, unhideStore } = useHiddenStores();
   const [customizationSheetVisible, setCustomizationSheetVisible] = useState(false);
   const [customizationItem, setCustomizationItem] = useState<MenuItem | null>(null);
   const [customizationInitialSelection, setCustomizationInitialSelection] = useState<{
@@ -325,12 +333,15 @@ export default function MerchantDetailScreen() {
       scrollFlashListToOffset(scrollListRef, 0, true);
     }
     setHeaderSearchExpanded(true);
-    const delay = y > 48 ? 340 : 80;
-    setTimeout(() => headerSearchInputRef.current?.focus(), delay);
+    // Focus same frame / next frame — no 80–340ms wait (that missed the first tap keyboard).
+    requestAnimationFrame(() => {
+      headerSearchInputRef.current?.focus();
+    });
   }, []);
   const closeMerchantSearch = useCallback(() => {
     setHeaderSearchExpanded(false);
     setMenuSearchQuery("");
+    headerSearchInputRef.current?.blur();
   }, []);
 
   const setStoreScrollOffset = useMerchantScrollStore((s) => s.setStoreScrollOffset);
@@ -458,6 +469,8 @@ export default function MerchantDetailScreen() {
   useFocusEffect(
     useCallback(() => {
       assertMerchantStatusBarChrome();
+      // Theme-aware system nav (not brand mint).
+      void applyAndroidNavigationChrome().catch(() => {});
       // Same freshness strategy as Food Home cards: refetch offers on focus (silent).
       if (merchantId) {
         void syncStoreOffersInBackground(queryClient, merchantId);
@@ -1145,6 +1158,7 @@ export default function MerchantDetailScreen() {
           : suppressLatePastOrdersRef.current
             ? "suppressed_late_insert_after_deep_scroll"
             : "visible";
+    if (!__DEV__) return;
     // eslint-disable-next-line no-console
     console.log("[your-orders] visibility decision", {
       merchantId,
@@ -1384,6 +1398,9 @@ export default function MerchantDetailScreen() {
           isVeg: item.isVeg,
           imageUrl: item.imageUrl ?? null,
           specialInstructions: specialInstructions ?? null,
+          variantSizePreset: item.sizePreset ?? null,
+          variantSizeValue: item.sizeValue ?? null,
+          variantSizeUnit: item.sizeUnit ?? null,
         },
         Math.max(1, quantity),
         cartMerchantBannerUrl,
@@ -1497,6 +1514,7 @@ export default function MerchantDetailScreen() {
       variantName?: string;
       variantSizeValue?: string | null;
       variantSizeUnit?: string | null;
+      variantSizePreset?: string | null;
       addons?: Array<{
         addonId: string;
         customizationId?: string;
@@ -1505,6 +1523,7 @@ export default function MerchantDetailScreen() {
         quantity: number;
         addonSizeValue?: string | null;
         addonSizeUnit?: string | null;
+        addonSizePreset?: string | null;
       }>;
       imageUrl?: string | null;
       specialInstructions?: string | null;
@@ -1527,6 +1546,7 @@ export default function MerchantDetailScreen() {
         variantName: params.variantName,
         variantSizeValue: params.variantSizeValue,
         variantSizeUnit: params.variantSizeUnit,
+        variantSizePreset: params.variantSizePreset,
         addons: params.addons,
         imageUrl: params.imageUrl ?? customizationItem?.imageUrl ?? null,
         specialInstructions: params.specialInstructions ?? null,
@@ -2033,37 +2053,37 @@ export default function MerchantDetailScreen() {
 
   const handleShareRestaurant = useCallback(async () => {
     closeOptionsSheet();
+    const name = merchant?.name ?? "Restaurant";
+    const slug = (merchant?.publicSlug ?? merchantId).trim() || merchantId;
+    const url = buildRestaurantShareUrl(slug);
     try {
       await Share.share({
-        message: `${merchant?.name ?? "Restaurant"} – order on GatiMitra`,
-        title: merchant?.name ?? "Restaurant",
+        message: buildRestaurantShareMessage(name, url),
+        url,
+        title: name,
       });
     } catch (_) {}
-  }, [merchant?.name, closeOptionsSheet]);
+  }, [merchant?.name, merchant?.publicSlug, merchantId, closeOptionsSheet]);
 
-  const handleReportSubmit = useCallback(
-    async (reportType: string) => {
-      if (!merchantId) return;
-      setReportSubmitting(true);
-      try {
-        await merchantService.reportRestaurant(merchantId, { report_type: reportType });
-        closeReportSheet();
-        Alert.alert("Thank you", "Your report has been submitted.");
-      } catch {
-        Alert.alert("Error", "Could not submit report. Try again.");
-      } finally {
-        setReportSubmitting(false);
-      }
-    },
-    [merchantId, closeReportSheet]
-  );
+  const storeIsHidden =
+    Boolean(merchantId) &&
+    (isStoreHidden(merchant?.id ?? merchantId) || isStoreHidden(merchantId));
 
-  const REPORT_OPTIONS = [
-    { id: "inaccurate_photos", label: "Inaccurate photos or descriptions" },
-    { id: "pricing_issues", label: "Pricing related issues" },
-    { id: "items_missing", label: "Items are missing in the menu" },
-    { id: "other", label: "I have some other issue" },
-  ] as const;
+  const handleToggleHideRestaurant = useCallback(async () => {
+    closeOptionsSheet();
+    const id = (merchant?.id ?? merchantId).trim();
+    if (!id) return;
+    if (storeIsHidden) {
+      await unhideStore(id);
+      if (merchantId && merchantId !== id) await unhideStore(merchantId);
+      setHideAckHidden(false);
+    } else {
+      await hideStore(id);
+      if (merchantId && merchantId !== id) await hideStore(merchantId);
+      setHideAckHidden(true);
+    }
+    setHideAckVisible(true);
+  }, [closeOptionsSheet, hideStore, merchant?.id, merchantId, storeIsHidden, unhideStore]);
 
   const menuSheetOfferRows = useMemo((): StoreMenuSheetOfferRow[] => {
     const menu = merchant?.menu ?? [];
@@ -2417,19 +2437,53 @@ export default function MerchantDetailScreen() {
         onRatingPress={isDiscoveryLayout ? openRatingSheet : undefined}
         searchRow={
           isDiscoveryLayout ? (
-            headerSearchExpanded ? (
-              <View style={[styles.stickySearchWrap, styles.stickySearchWrapDark, { flex: 1 }]}>
-                <Ionicons name="search" size={18} color={MerchantDarkPalette.textMuted} />
+            <View style={[styles.stickySearchWrap, styles.stickySearchWrapDark, { flex: 1 }]}>
+              <Ionicons name="search" size={18} color={MerchantDarkPalette.textMuted} />
+              <TextInput
+                ref={headerSearchInputRef}
+                style={[styles.stickySearchInput, styles.stickySearchInputDark]}
+                placeholder={stickySearchHint}
+                placeholderTextColor={MerchantDarkPalette.textDim}
+                value={menuSearchQuery}
+                onChangeText={(text) => {
+                  setMenuSearchQuery(text);
+                  if (!headerSearchExpanded) setHeaderSearchExpanded(true);
+                }}
+                onFocus={() => setHeaderSearchExpanded(true)}
+                returnKeyType="search"
+                autoCorrect={false}
+                autoCapitalize="none"
+                selectionColor={MerchantDarkPalette.accent}
+                multiline={false}
+                scrollEnabled={false}
+                {...Platform.select({
+                  android: {
+                    includeFontPadding: false,
+                    textAlignVertical: "center" as const,
+                  },
+                  ios: {},
+                })}
+              />
+            </View>
+          ) : (
+            <View style={styles.stickyHeaderRow}>
+              <View style={[styles.stickySearchWrap, { flex: 1 }]}>
+                <Ionicons name="search" size={18} color={StoreTheme.searchIcon} />
                 <TextInput
                   ref={headerSearchInputRef}
-                  style={[styles.stickySearchInput, styles.stickySearchInputDark]}
+                  style={styles.stickySearchInput}
                   placeholder={stickySearchHint}
-                  placeholderTextColor={MerchantDarkPalette.textDim}
+                  placeholderTextColor={StoreTheme.textSecondary}
                   value={menuSearchQuery}
-                  onChangeText={setMenuSearchQuery}
+                  onChangeText={(text) => {
+                    setMenuSearchQuery(text);
+                    if (!headerSearchExpanded) setHeaderSearchExpanded(true);
+                  }}
+                  onFocus={() => setHeaderSearchExpanded(true)}
                   returnKeyType="search"
-                  autoFocus
-                  selectionColor={MerchantDarkPalette.accent}
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                  selectionColor={StoreTheme.accentMint}
                   multiline={false}
                   scrollEnabled={false}
                   {...Platform.select({
@@ -2441,75 +2495,6 @@ export default function MerchantDetailScreen() {
                   })}
                 />
               </View>
-            ) : (
-              <TouchableOpacity
-                style={[styles.stickySearchWrap, styles.stickySearchWrapDark, { flex: 1 }]}
-                onPress={openMerchantSearch}
-                activeOpacity={0.88}
-                accessibilityRole="search"
-                accessibilityLabel={stickySearchHint}
-              >
-                <Ionicons name="search" size={18} color={MerchantDarkPalette.textMuted} />
-                <AppText
-                  style={[
-                    styles.stickySearchHintText,
-                    styles.stickySearchHintTextDark,
-                    menuSearchQuery.trim().length > 0 && styles.stickySearchHintTextFilledDark,
-                  ]}
-                  numberOfLines={1}
-                  ellipsizeMode="tail"
-                >
-                  {menuSearchQuery.trim().length > 0 ? menuSearchQuery : stickySearchHint}
-                </AppText>
-              </TouchableOpacity>
-            )
-          ) : (
-            <View style={styles.stickyHeaderRow}>
-              {headerSearchExpanded ? (
-                <View style={[styles.stickySearchWrap, { flex: 1 }]}>
-                  <Ionicons name="search" size={18} color={StoreTheme.searchIcon} />
-                  <TextInput
-                    ref={headerSearchInputRef}
-                    style={styles.stickySearchInput}
-                    placeholder={stickySearchHint}
-                    placeholderTextColor={StoreTheme.textSecondary}
-                    value={menuSearchQuery}
-                    onChangeText={setMenuSearchQuery}
-                    returnKeyType="search"
-                    autoFocus
-                    selectionColor={StoreTheme.accentMint}
-                    multiline={false}
-                    scrollEnabled={false}
-                    {...Platform.select({
-                      android: {
-                        includeFontPadding: false,
-                        textAlignVertical: "center" as const,
-                      },
-                      ios: {},
-                    })}
-                  />
-                </View>
-              ) : (
-                <TouchableOpacity
-                  style={[styles.stickySearchWrap, { flex: 1 }]}
-                  onPress={openMerchantSearch}
-                  activeOpacity={0.88}
-                  accessibilityRole="search"
-                  accessibilityLabel={stickySearchHint}
-                >
-                  <Ionicons name="search" size={18} color={StoreTheme.searchIcon} />
-                  <AppText
-                    style={[
-                      styles.stickySearchHintText,
-                      menuSearchQuery.trim().length > 0 && styles.stickySearchHintTextFilled,
-                    ]}
-                    numberOfLines={1}
-                    ellipsizeMode="tail"
-                  >
-                    {menuSearchQuery.trim().length > 0 ? menuSearchQuery : stickySearchHint}
-                  </AppText>
-                </TouchableOpacity>
-              )}
               <TouchableOpacity
                 onPress={openOptionsSheet}
                 style={styles.heroCircleBtnLight}
@@ -2685,11 +2670,27 @@ export default function MerchantDetailScreen() {
               <Ionicons name="chevron-forward" size={20} color={isDiscoveryLayout ? MerchantDarkPalette.textMuted : GatiMitraColors.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.optionRow, isDiscoveryLayout && styles.optionRowDark]}
-              onPress={() => { closeOptionsSheet(); setGroupOrderSheetVisible(true); }}
+              style={[
+                styles.optionRow,
+                isDiscoveryLayout && styles.optionRowDark,
+                isStoreClosedForStatus && { opacity: 0.45 },
+              ]}
+              disabled={isStoreClosedForStatus}
+              onPress={() => {
+                if (isStoreClosedForStatus) return;
+                closeOptionsSheet();
+                setGroupOrderSheetVisible(true);
+              }}
             >
               <Ionicons name="people-outline" size={22} color={isDiscoveryLayout ? MerchantDarkPalette.text : GatiMitraColors.textPrimary} />
-              <AppText style={[styles.optionRowText, isDiscoveryLayout && styles.optionRowTextDark]}>Group Order</AppText>
+              <View style={{ flex: 1 }}>
+                <AppText style={[styles.optionRowText, isDiscoveryLayout && styles.optionRowTextDark]}>Group Order</AppText>
+                {isStoreClosedForStatus ? (
+                  <AppText style={[styles.optionSheetFooter, isDiscoveryLayout && styles.optionSheetFooterDark, { marginTop: 2 }]}>
+                    Group ordering is disabled since the restaurant is currently unavailable.
+                  </AppText>
+                ) : null}
+              </View>
               <Ionicons name="chevron-forward" size={20} color={isDiscoveryLayout ? MerchantDarkPalette.textMuted : GatiMitraColors.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity
@@ -2705,9 +2706,11 @@ export default function MerchantDetailScreen() {
               <AppText style={[styles.optionRowText, isDiscoveryLayout && styles.optionRowTextDark]}>Share this restaurant</AppText>
               <Ionicons name="chevron-forward" size={20} color={isDiscoveryLayout ? MerchantDarkPalette.textMuted : GatiMitraColors.textSecondary} />
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.optionRow, isDiscoveryLayout && styles.optionRowDark]} onPress={closeOptionsSheet}>
-              <Ionicons name="eye-off-outline" size={22} color={isDiscoveryLayout ? MerchantDarkPalette.text : GatiMitraColors.textPrimary} />
-              <AppText style={[styles.optionRowText, isDiscoveryLayout && styles.optionRowTextDark]}>Hide this restaurant</AppText>
+            <TouchableOpacity style={[styles.optionRow, isDiscoveryLayout && styles.optionRowDark]} onPress={handleToggleHideRestaurant}>
+              <Ionicons name={storeIsHidden ? "eye-outline" : "eye-off-outline"} size={22} color={isDiscoveryLayout ? MerchantDarkPalette.text : GatiMitraColors.textPrimary} />
+              <AppText style={[styles.optionRowText, isDiscoveryLayout && styles.optionRowTextDark]}>
+                {storeIsHidden ? "Unhide this restaurant" : "Hide this restaurant"}
+              </AppText>
               <Ionicons name="chevron-forward" size={20} color={isDiscoveryLayout ? MerchantDarkPalette.textMuted : GatiMitraColors.textSecondary} />
             </TouchableOpacity>
             <TouchableOpacity style={[styles.optionRow, isDiscoveryLayout && styles.optionRowDark]} onPress={openReportSheet}>
@@ -2793,41 +2796,19 @@ export default function MerchantDetailScreen() {
         />
       )}
 
-      <Modal
+      <ReportFraudMenuIssueSheet
         visible={reportSheetVisible}
-        transparent
-        animationType="slide"
-        statusBarTranslucent
-        navigationBarTranslucent
-        presentationStyle="overFullScreen"
-        onShow={assertMerchantStatusBarChrome}
-      >
-        <Pressable style={styles.sheetOverlay} onPress={closeReportSheet}>
-          <Pressable
-            style={[
-              styles.reportSheet,
-              isDiscoveryLayout && styles.optionsSheetDark,
-              { paddingBottom: Math.max(insets.bottom, 12) },
-            ]}
-            onPress={(e) => e.stopPropagation()}
-          >
-            <View style={[styles.sheetHandle, isDiscoveryLayout && styles.sheetHandleDark]} />
-            <AppText style={[styles.reportSheetTitle, isDiscoveryLayout && styles.optionsSheetTitleDark]}>Report an issue with the menu</AppText>
-            <AppText style={[styles.reportSheetSub, isDiscoveryLayout && styles.optionSheetFooterDark]}>This feedback will be shared directly with the restaurant.</AppText>
-            {REPORT_OPTIONS.map((opt) => (
-              <TouchableOpacity
-                key={opt.id}
-                style={[styles.reportOptionRow, isDiscoveryLayout && styles.optionRowDark]}
-                onPress={() => handleReportSubmit(opt.id)}
-                disabled={reportSubmitting}
-              >
-                <AppText style={[styles.reportOptionText, isDiscoveryLayout && styles.optionRowTextDark]}>{opt.label}</AppText>
-                <Ionicons name="chevron-forward" size={20} color={isDiscoveryLayout ? MerchantDarkPalette.textMuted : GatiMitraColors.textSecondary} />
-              </TouchableOpacity>
-            ))}
-          </Pressable>
-        </Pressable>
-      </Modal>
+        storeId={merchantId}
+        storeNumericId={merchant?.storeNumericId ?? displayMerchant?.storeNumericId}
+        storeName={merchant?.name ?? displayMerchant?.name}
+        onClose={closeReportSheet}
+      />
+
+      <HiddenRestaurantAckModal
+        visible={hideAckVisible}
+        hidden={hideAckHidden}
+        onDismiss={() => setHideAckVisible(false)}
+      />
 
       <View style={styles.cartDock} pointerEvents="box-none">
         <MerchantCartDock

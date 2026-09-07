@@ -2,6 +2,8 @@ import React from "react";
 import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
+import { RiderFonts } from "@/src/theme/fonts";
+import { RIDER_AUTH_INK, RIDER_AUTH_MUTED } from "@/src/theme/riderAuthTheme";
 
 type Props = {
   title: string;
@@ -57,7 +59,7 @@ export function RaiseTicketCategoryCard({
 const styles = StyleSheet.create({
   shell: {
     width: "100%",
-    marginBottom: 12,
+    marginBottom: 0,
     borderRadius: 22,
     ...Platform.select({
       ios: {
@@ -71,7 +73,7 @@ const styles = StyleSheet.create({
     }),
   },
   shellCompact: {
-    marginBottom: 10,
+    marginBottom: 0,
     borderRadius: 18,
   },
   shellPressed: {
@@ -86,13 +88,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E8EDF2",
     paddingHorizontal: 16,
-    paddingVertical: 16,
-    minHeight: 88,
+    paddingVertical: 18,
+    minHeight: 92,
   },
   cardCompact: {
     borderRadius: 18,
-    paddingVertical: 14,
-    minHeight: 76,
+    paddingVertical: 16,
+    minHeight: 82,
   },
   iconGradient: {
     width: 52,
@@ -110,21 +112,23 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   title: {
+    fontFamily: RiderFonts.poppinsExtraBold,
     fontSize: 16,
     fontWeight: "800",
-    color: "#0F172A",
+    color: RIDER_AUTH_INK,
     letterSpacing: -0.2,
-    lineHeight: 21,
+    lineHeight: 22,
   },
   titleCompact: {
     fontSize: 15,
-    lineHeight: 20,
+    lineHeight: 21,
   },
   description: {
-    marginTop: 4,
+    marginTop: 8,
+    fontFamily: RiderFonts.poppinsSemiBold,
     fontSize: 13,
-    fontWeight: "500",
-    color: "#64748B",
+    fontWeight: "600",
+    color: RIDER_AUTH_MUTED,
     lineHeight: 18,
   },
   descriptionCompact: {

@@ -2,6 +2,8 @@ import React from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { RiderFonts } from "@/src/theme/fonts";
+import { RIDER_AUTH_BG, RIDER_AUTH_INK, RIDER_AUTH_MUTED } from "@/src/theme/riderAuthTheme";
 
 type Props = {
   title: string;
@@ -22,7 +24,7 @@ export function SupportScreenHeader({ title, subtitle, variant = "default", onBa
         accessibilityRole="button"
         accessibilityLabel="Back"
       >
-        <Ionicons name="arrow-back" size={22} color="#0F172A" />
+        <Ionicons name="arrow-back" size={22} color={RIDER_AUTH_INK} />
       </Pressable>
       <View style={styles.headerText}>
         <Text style={[styles.headerTitle, premium && styles.headerTitlePremium]}>{title}</Text>
@@ -46,8 +48,8 @@ const styles = StyleSheet.create({
     borderBottomColor: "#E2E8F0",
   },
   headerPremium: {
-    paddingVertical: 16,
-    backgroundColor: "#F1F5F9",
+    paddingVertical: 20,
+    backgroundColor: RIDER_AUTH_BG,
     borderBottomWidth: 0,
   },
   backBtn: {
@@ -67,17 +69,19 @@ const styles = StyleSheet.create({
   headerText: { flex: 1, minWidth: 0 },
   headerTitle: { fontSize: 20, fontWeight: "700", color: "#0F172A" },
   headerTitlePremium: {
-    fontSize: 24,
+    fontFamily: RiderFonts.poppinsExtraBold,
+    fontSize: 26,
     fontWeight: "800",
     letterSpacing: -0.4,
-    color: "#0F172A",
+    color: RIDER_AUTH_INK,
   },
   headerSub: { marginTop: 2, fontSize: 13, color: "#64748B" },
   headerSubPremium: {
-    marginTop: 4,
+    marginTop: 10,
+    fontFamily: RiderFonts.poppinsSemiBold,
     fontSize: 15,
-    fontWeight: "500",
-    color: "#64748B",
-    lineHeight: 20,
+    fontWeight: "600",
+    color: RIDER_AUTH_MUTED,
+    lineHeight: 22,
   },
 });

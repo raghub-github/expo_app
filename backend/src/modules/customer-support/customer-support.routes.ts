@@ -40,6 +40,7 @@ import {
 import { normalizeTicketAttachmentsForDb } from "../../lib/ticket-attachments-for-db.js";
 import { insertSatisfactionRatingAudit } from "../../lib/ticket-satisfaction-audit.js";
 import { notifyMerchantNewComplaint } from "../../lib/merchant-push-notify.js";
+import { resolveTicketTitleForUnifiedTicketsInsert } from "../merchant-partner/unified-ticket-title-for-insert.js";
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Helpers                                                                     */
@@ -1299,11 +1300,13 @@ export async function customerSupportRoutes(app: FastifyInstance) {
 
   /**
    * POST /tickets — raise a new customer ticket.
-   * Body: { ticket_title_id?, section_code?, subject, description, order_id? }
+   * Body: { ticket_title_id?, section_code?, subject, description, order_id?,
+   *         store_id?, merchant_store_id? }
    * If ticket_title_id is set, group_id / priority / category / tags are
    * pulled from the catalog row. order_id (when present) flips ticket_type
    * to ORDER_RELATED and resolves merchant_store_id/merchant_parent_id from
    * orders_core so the order shows up in the agent dashboard sidebar.
+   * store_id / merchant_store_id attach a restaurant report with no order.
    */
   app.post<{
     Body: {
@@ -1312,6 +1315,8 @@ export async function customerSupportRoutes(app: FastifyInstance) {
       subject?: string;
       description?: string;
       order_id?: number | string | null;
+      store_id?: string | null;
+      merchant_store_id?: number | string | null;
     };
   }>("/tickets", async (req, reply) => {
     if (req.auth?.role !== "customer" || !req.auth?.sub) {
@@ -1360,7 +1365,7 @@ export async function customerSupportRoutes(app: FastifyInstance) {
           : null;
 
     let orderContext: {
-      orderInternalId: number;
+      orderInternalId: number | null;
       merchantStoreId: number | null;
       merchantParentId: number | null;
       riderId: number | null;
@@ -1400,11 +1405,48 @@ export async function customerSupportRoutes(app: FastifyInstance) {
       };
     }
 
-    const ticketType = orderContext ? "ORDER_RELATED" : "NON_ORDER_RELATED";
-    const ticketTitle = titleRow?.intake_unified_title?.trim() || "CUSTOMER_GENERAL_QUERY";
+    if (!orderContext) {
+      const rawStorePk = body.merchant_store_id;
+      const storePk =
+        typeof rawStorePk === "number" && Number.isInteger(rawStorePk) && rawStorePk > 0
+          ? rawStorePk
+          : typeof rawStorePk === "string" && /^\d+$/.test(rawStorePk.trim())
+            ? Number(rawStorePk.trim())
+            : null;
+      const publicStoreId =
+        typeof body.store_id === "string" && body.store_id.trim() ? body.store_id.trim() : "";
+      if (storePk != null || publicStoreId) {
+        const storeRows =
+          storePk != null
+            ? await sql`
+                SELECT id, parent_id
+                FROM merchant_stores
+                WHERE id = ${storePk}
+                LIMIT 1
+              `
+            : await sql`
+                SELECT id, parent_id
+                FROM merchant_stores
+                WHERE store_id = ${publicStoreId}
+                LIMIT 1
+              `;
+        const store = (storeRows as Array<Record<string, unknown>>)[0];
+        if (!store) return reply.code(404).send({ error: "store_not_found" });
+        orderContext = {
+          orderInternalId: null,
+          merchantStoreId: Number(store.id),
+          merchantParentId: store.parent_id != null ? Number(store.parent_id) : null,
+          riderId: null,
+        };
+      }
+    }
+
+    const ticketType = orderContext?.orderInternalId != null ? "ORDER_RELATED" : "NON_ORDER_RELATED";
+    const intakeTitleCode = titleRow?.intake_unified_title?.trim() || "CUSTOMER_GENERAL_QUERY";
+    const ticketTitle = await resolveTicketTitleForUnifiedTicketsInsert(sql, intakeTitleCode);
     const effectiveTicketTitleId = titleRow?.id ?? ticketTitleId;
     const ticketCategory = normCategory(
-      titleRow?.intake_unified_category || (orderContext ? "ORDER" : "OTHER")
+      titleRow?.intake_unified_category || (orderContext?.orderInternalId != null ? "ORDER" : "OTHER")
     );
     const priority = normPriority(titleRow?.intake_unified_priority || "MEDIUM");
     const serviceType = normServiceType(titleRow?.intake_unified_service_type || "GENERAL");
@@ -1432,6 +1474,11 @@ export async function customerSupportRoutes(app: FastifyInstance) {
             ? body.display_order_id.trim().slice(0, 64)
             : null,
         selected_issue_label: selectedIssueLabel,
+        store_id:
+          typeof body.store_id === "string" && body.store_id.trim()
+            ? body.store_id.trim().slice(0, 64)
+            : null,
+        merchant_store_id: orderContext?.merchantStoreId ?? null,
       },
     });
 

@@ -11,6 +11,7 @@ import {
   upsertItemAttributes,
   type UnifiedAttributes,
 } from "./unifiedCatalogAttributes.js";
+import { normalizeSizeWrite, numericSizeOrNull } from "../../lib/menu-size-preset.js";
 export type ReviewRequestType = "ADD" | "EDIT" | "DELETE";
 export type ReviewRequestStatus = "PENDING" | "APPROVED" | "REJECTED";
 export type ReviewSource = "MERCHANT_APP" | "PARTNER_SITE" | "DASHBOARD" | "OTHER";
@@ -47,6 +48,7 @@ export const REVIEW_EDITABLE_SCALAR_FIELDS = [
   "allergens",
   "item_size_value",
   "item_size_unit",
+  "size_preset",
   "available_for_delivery",
   "weight_per_serving",
   "weight_per_serving_unit",
@@ -105,7 +107,7 @@ async function loadItemSnapshot(
            base_price, selling_price, discount_percentage, tax_percentage,
            preparation_time_minutes, packaging_charges, serves, serves_label, short_name,
            display_order, is_active, allergens,
-           item_size_value, item_size_unit, available_for_delivery,
+           item_size_value, item_size_unit, size_preset, available_for_delivery,
            weight_per_serving, weight_per_serving_unit, calories_kcal,
            protein, protein_unit, carbohydrates, carbohydrates_unit,
            fat, fat_unit, fibre, fibre_unit, item_tags, approval_status::text AS approval_status
@@ -567,12 +569,19 @@ async function applyNestedFromPayload(
       const name = String(v.variant_name ?? v.name ?? "").trim();
       if (!name) continue;
       const price = Number(v.variant_price ?? v.price ?? 0);
+      const variantSize = normalizeSizeWrite({
+        size_preset: v.size_preset,
+        size_value: v.variant_size_value ?? v.size_value,
+        size_unit: v.variant_size_unit ?? v.size_unit,
+      });
       await trx`
         INSERT INTO merchant_menu_item_variants (
-          menu_item_id, variant_name, variant_type, variant_price, display_order, is_default, in_stock
+          menu_item_id, variant_name, variant_type, variant_price, display_order, is_default, in_stock,
+          variant_size_value, variant_size_unit, size_preset
         ) VALUES (
           ${menuItemId}, ${name}, ${String(v.variant_type ?? "SIZE")},
-          ${price}, ${Number(v.display_order ?? i)}, ${Boolean(v.is_default)}, true
+          ${price}, ${Number(v.display_order ?? i)}, ${Boolean(v.is_default)}, true,
+          ${variantSize.size_value}, ${variantSize.size_unit}, ${variantSize.size_preset}
         )
       `;
     }
@@ -600,11 +609,18 @@ async function applyNestedFromPayload(
         const a = addons[j] as Record<string, unknown>;
         const addonName = String(a.addon_name ?? a.name ?? "").trim();
         if (!addonName) continue;
+        const addonSize = normalizeSizeWrite({
+          size_preset: a.size_preset,
+          size_value: a.addon_size_value ?? a.size_value,
+          size_unit: a.addon_size_unit ?? a.size_unit,
+        });
         await trx`
           INSERT INTO merchant_menu_item_addons (
-            customization_id, addon_name, addon_price, display_order, in_stock
+            customization_id, addon_name, addon_price, display_order, in_stock,
+            addon_size_value, addon_size_unit, size_preset
           ) VALUES (
-            ${groupId}, ${addonName}, ${Number(a.addon_price ?? a.price ?? 0)}, ${j}, true
+            ${groupId}, ${addonName}, ${Number(a.addon_price ?? a.price ?? 0)}, ${j}, true,
+            ${numericSizeOrNull(addonSize.size_value)}, ${addonSize.size_unit}, ${addonSize.size_preset}
           )
         `;
       }
@@ -697,13 +713,18 @@ export async function approveReviewRequest(
       } else if (r.request_type === "ADD") {
         const payload = (r.add_payload ?? {}) as Record<string, unknown>;
         const itemId = `mi_${ulid().toLowerCase()}`;
+        const itemSize = normalizeSizeWrite({
+          size_preset: payload.size_preset,
+          size_value: payload.item_size_value,
+          size_unit: payload.item_size_unit,
+        });
         const [created] = await trx`
           INSERT INTO merchant_menu_items (
             store_id, category_id, item_id, item_name, item_description, item_image_url,
             food_type, spice_level, cuisine_type,
             base_price, selling_price, preparation_time_minutes, packaging_charges,
             serves, serves_label, short_name, display_order,
-            item_size_value, item_size_unit, available_for_delivery,
+            item_size_value, item_size_unit, size_preset, available_for_delivery,
             weight_per_serving, weight_per_serving_unit, calories_kcal,
             protein, protein_unit, carbohydrates, carbohydrates_unit,
             fat, fat_unit, fibre, fibre_unit, allergens, item_tags,
@@ -726,8 +747,9 @@ export async function approveReviewRequest(
             ${payload.serves_label != null ? String(payload.serves_label) : null},
             ${payload.short_name != null ? String(payload.short_name) : null},
             ${payload.display_order != null ? Number(payload.display_order) : 0},
-            ${payload.item_size_value != null ? Number(payload.item_size_value) : null},
-            ${payload.item_size_unit != null ? String(payload.item_size_unit) : null},
+            ${numericSizeOrNull(itemSize.size_value)},
+            ${itemSize.size_unit},
+            ${itemSize.size_preset},
             ${payload.available_for_delivery !== false},
             ${payload.weight_per_serving != null ? Number(payload.weight_per_serving) : null},
             ${payload.weight_per_serving_unit != null ? String(payload.weight_per_serving_unit) : null},

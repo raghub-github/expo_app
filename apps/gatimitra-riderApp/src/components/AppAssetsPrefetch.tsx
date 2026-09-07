@@ -1,30 +1,11 @@
 import { useEffect } from "react";
-import { fetchRiderAppAssets } from "@/src/services/appAssets.service";
-import { useAppAssetsStore } from "@/src/stores/appAssetsStore";
+import { bootstrapRiderAppAssets } from "@/src/lib/riderAppAssetsDisk";
 
-/** Load rider app static images from backend on startup. */
+/** Load rider CMS images; keep last catalog + login hero on disk for offline. */
 export function AppAssetsPrefetch() {
-  const setAssets = useAppAssetsStore((s) => s.setAssets);
-  const setLoading = useAppAssetsStore((s) => s.setLoading);
-  const loaded = useAppAssetsStore((s) => s.loaded);
-
   useEffect(() => {
-    if (loaded) return;
-    let cancelled = false;
-    setLoading(true);
-    void (async () => {
-      try {
-        const res = await fetchRiderAppAssets();
-        if (cancelled) return;
-        setAssets(res.assets ?? {});
-      } catch {
-        if (!cancelled) setAssets({});
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [loaded, setAssets, setLoading]);
+    void bootstrapRiderAppAssets();
+  }, []);
 
   return null;
 }

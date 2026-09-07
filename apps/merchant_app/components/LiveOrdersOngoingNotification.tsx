@@ -1,74 +1,105 @@
 /**
- * Android ongoing tray: "🟢 {store} is online · Waiting for orders" (Zomato-style).
- * Updates when active-order breakdown changes; dismissed when store goes offline.
+ * Keeps the single STORE STATUS tray notification in sync with backend
+ * store availability. Clearing the notification does not change store status;
+ * the next app open re-posts if the store is still ONLINE / out of timings.
  */
-
 import { useEffect, useRef } from "react";
-import { isAppForeground } from "@/lib/appForeground";
 import { AppState, Platform, type AppStateStatus } from "react-native";
 import Constants from "expo-constants";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useStoreStatus } from "@/context/StoreStatusContext";
+import { dismissLiveOrdersOngoingNotification } from "@/lib/liveOrdersOngoingNotification";
 import {
-  dismissLiveOrdersOngoingNotification,
-  refreshLiveOrdersOngoingNotification,
-  setKitchenStickyAllowed,
-} from "@/lib/liveOrdersOngoingNotification";
-
-const REFRESH_MS = 120_000;
+  reconcileStoreStatusNotification,
+  removeStoreStatusNotification,
+} from "@/lib/storeStatusNotification";
 
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
 }
 
 export default function LiveOrdersOngoingNotification() {
-  const { token, isAuthenticated } = useAuth();
+  const { token, isAuthenticated, partner } = useAuth();
   const { selectedStore } = useSelectedStore();
-  const { isOnline } = useStoreStatus();
+  const { isOnline, statusReason, unavailableReason, loading } = useStoreStatus();
   const storeId = selectedStore?.id ?? null;
   const storeName = selectedStore?.store_name ?? null;
-  const refreshRef = useRef(refreshLiveOrdersOngoingNotification);
-  refreshRef.current = refreshLiveOrdersOngoingNotification;
+  const merchantId = partner?.parent?.parent_merchant_id ?? null;
+  const prevStoreId = useRef<number | null>(null);
+  const didStartRef = useRef(false);
 
   useEffect(() => {
     if (Platform.OS !== "android" || isExpoGo()) return;
+    void dismissLiveOrdersOngoingNotification();
+  }, []);
 
-    const allowed = Boolean(isAuthenticated && token && storeId && isOnline);
-    setKitchenStickyAllowed(allowed);
-
-    if (!allowed) {
-      void dismissLiveOrdersOngoingNotification();
+  useEffect(() => {
+    if (Platform.OS !== "android" || isExpoGo()) return;
+    if (!isAuthenticated) {
+      void removeStoreStatusNotification("LOGOUT");
       return;
     }
+    if (loading) return;
 
-    void refreshRef.current({
-      storeId: storeId!,
-      token: token!,
+    const prev = prevStoreId.current;
+    if (prev != null && storeId != null && prev !== storeId) {
+      void removeStoreStatusNotification("STORE_SWITCH");
+    }
+    prevStoreId.current = storeId;
+
+    const source = didStartRef.current ? "STATUS_CHANGE" : "APP_START";
+    didStartRef.current = true;
+
+    void reconcileStoreStatusNotification({
+      authenticated: true,
+      storeId,
+      merchantId,
       storeName,
-      force: true,
+      isOnline,
+      statusReason,
+      unavailableReason,
+      source,
     });
-  }, [isAuthenticated, token, storeId, storeName, isOnline]);
+  }, [
+    isAuthenticated,
+    loading,
+    storeId,
+    storeName,
+    merchantId,
+    isOnline,
+    statusReason,
+    unavailableReason,
+  ]);
 
   useEffect(() => {
     if (Platform.OS !== "android" || isExpoGo()) return;
-    if (!isAuthenticated || !token || !storeId || !isOnline) return;
+    if (!isAuthenticated || !token || storeId == null) return;
 
-    const tick = () => {
-      if (!isAppForeground()) return;
-      void refreshRef.current({ storeId, token, storeName });
-    };
-
-    const interval = setInterval(tick, REFRESH_MS);
     const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
-      if (state === "active") tick();
+      if (state !== "active") return;
+      void reconcileStoreStatusNotification({
+        authenticated: true,
+        storeId,
+        merchantId,
+        storeName,
+        isOnline,
+        statusReason,
+        unavailableReason,
+        source: "APP_RESUME",
+      });
     });
-
-    return () => {
-      clearInterval(interval);
-      sub.remove();
-    };
-  }, [isAuthenticated, token, storeId, storeName, isOnline]);
+    return () => sub.remove();
+  }, [
+    isAuthenticated,
+    token,
+    storeId,
+    storeName,
+    merchantId,
+    isOnline,
+    statusReason,
+    unavailableReason,
+  ]);
 
   return null;
 }

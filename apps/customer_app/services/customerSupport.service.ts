@@ -270,6 +270,8 @@ export const customerSupportService = {
     display_order_id?: string | null;
     selected_issue_label?: string | null;
     chat_session_id?: number | null;
+    store_id?: string | null;
+    merchant_store_id?: number | null;
   }): Promise<{ id: number; ticket_id: string; status: string; priority: string }> {
     const { data } = await api.post<{
       ok: boolean;
@@ -280,7 +282,7 @@ export const customerSupportService = {
 
   /** Create ticket, upload up to 3 photos, and post opening message with attachment rows. */
   async createTicketWithPhotos(payload: {
-    ticket_title_id: number;
+    ticket_title_id?: number;
     section_code?: string;
     subject: string;
     description: string;
@@ -289,10 +291,20 @@ export const customerSupportService = {
     selected_issue_label?: string | null;
     photo_uris?: string[];
     chat_session_id?: number | null;
+    store_id?: string | null;
+    merchant_store_id?: number | null;
+    /**
+     * When true, return as soon as the ticket row exists; photo upload + opening
+     * message continue in the background (instant Submit UX).
+     */
+    deferAttachments?: boolean;
   }): Promise<{ id: number; ticket_id: string; status: string; priority: string }> {
     const photoUris = (payload.photo_uris ?? []).filter((uri) => uri.trim().length > 0).slice(0, 3);
     const ticket = await customerSupportService.createTicket({
-      ticket_title_id: payload.ticket_title_id,
+      ticket_title_id:
+        payload.ticket_title_id != null && payload.ticket_title_id > 0
+          ? payload.ticket_title_id
+          : null,
       section_code: payload.section_code,
       subject: payload.subject,
       description: payload.description,
@@ -300,54 +312,64 @@ export const customerSupportService = {
       display_order_id: payload.display_order_id,
       selected_issue_label: payload.selected_issue_label,
       chat_session_id: payload.chat_session_id,
+      store_id: payload.store_id,
+      merchant_store_id: payload.merchant_store_id,
     });
 
-    const attachments: TicketAttachment[] = [];
-    for (let i = 0; i < photoUris.length; i++) {
-      const uri = photoUris[i];
-      const meta = guessPhotoFileMeta(uri, i);
-      try {
-        const uploaded = await customerSupportService.uploadAttachment(ticket.id, {
-          uri,
-          name: meta.name,
-          mimeType: meta.mimeType,
-        });
-        attachments.push({
-          storageKey: uploaded.storageKey,
-          url: uploaded.url,
-          name: uploaded.name || meta.name,
-          mimeType: uploaded.mimeType || meta.mimeType,
-        });
-      } catch (err) {
-        if (__DEV__) {
-          console.warn("[customer-support] photo upload failed", err);
+    const finishAttachments = async () => {
+      const attachments: TicketAttachment[] = [];
+      for (let i = 0; i < photoUris.length; i++) {
+        const uri = photoUris[i];
+        const meta = guessPhotoFileMeta(uri, i);
+        try {
+          const uploaded = await customerSupportService.uploadAttachment(ticket.id, {
+            uri,
+            name: meta.name,
+            mimeType: meta.mimeType,
+          });
+          attachments.push({
+            storageKey: uploaded.storageKey,
+            url: uploaded.url,
+            name: uploaded.name || meta.name,
+            mimeType: uploaded.mimeType || meta.mimeType,
+          });
+        } catch (err) {
+          if (__DEV__) {
+            console.warn("[customer-support] photo upload failed", err);
+          }
         }
       }
-    }
 
-    const desc = payload.description.trim();
-    const issueLabel = (payload.selected_issue_label ?? "").trim();
-    // Skip opening chat message when body is only the catalog issue title (already on ticket subject).
-    const descIsIssueTitleOnly =
-      issueLabel.length > 0 && desc.toLowerCase() === issueLabel.toLowerCase();
-    if ((desc && !descIsIssueTitleOnly) || attachments.length > 0) {
-      try {
-        await customerSupportService.sendMessage(ticket.id, {
-          message_text:
-            desc && !descIsIssueTitleOnly
-              ? desc
-              : attachments.length > 1
-                ? "Shared attachments"
-                : "Shared an attachment",
-          attachments: attachments.length ? attachments : undefined,
-        });
-      } catch (err) {
-        if (__DEV__) {
-          console.warn("[customer-support] opening message failed", err);
+      const desc = payload.description.trim();
+      const issueLabel = (payload.selected_issue_label ?? "").trim();
+      // Skip opening chat message when body is only the catalog issue title (already on ticket subject).
+      const descIsIssueTitleOnly =
+        issueLabel.length > 0 && desc.toLowerCase() === issueLabel.toLowerCase();
+      if ((desc && !descIsIssueTitleOnly) || attachments.length > 0) {
+        try {
+          await customerSupportService.sendMessage(ticket.id, {
+            message_text:
+              desc && !descIsIssueTitleOnly
+                ? desc
+                : attachments.length > 1
+                  ? "Shared attachments"
+                  : "Shared an attachment",
+            attachments: attachments.length ? attachments : undefined,
+          });
+        } catch (err) {
+          if (__DEV__) {
+            console.warn("[customer-support] opening message failed", err);
+          }
         }
       }
+    };
+
+    if (payload.deferAttachments) {
+      void finishAttachments();
+      return ticket;
     }
 
+    await finishAttachments();
     return ticket;
   },
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -15,7 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
-import { SelfieAutoCapture } from "@/src/components/onboarding/SelfieAutoCapture";
+import { SelfieAutoCapture, type SelfieAutoCaptureHandle } from "@/src/components/onboarding/SelfieAutoCapture";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { uploadRiderSelfieDocument } from "@/src/lib/upload-rider-selfie";
@@ -44,6 +44,7 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
   const queryClient = useQueryClient();
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const captureRef = useRef<SelfieAutoCaptureHandle>(null);
 
   const riderIdRaw = session?.riderId ?? session?.userId;
   const riderIdNum =
@@ -216,10 +217,12 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
             </View>
 
             <SelfieAutoCapture
+              ref={captureRef}
               uri={selfieUri}
               active={visible}
               disabled={uploading}
               liveProbe={false}
+              hideManualCapture
               onCaptured={async (uri) => setSelfieUri(uri)}
               onRemove={() => setSelfieUri(null)}
               onRejected={(message) => notifyOnboardingToast(message)}
@@ -232,6 +235,30 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
             />
           </View>
         </ScrollView>
+
+        {!selfieUri ? (
+          <View
+            collapsable={false}
+            style={[styles.stickyFooter, { paddingBottom: Math.max(insets.bottom, 16) }]}
+          >
+            <TouchableOpacity
+              activeOpacity={uploading ? 1 : 0.88}
+            onPress={() => {
+              if (uploading) return;
+              captureRef.current?.capture();
+            }}
+              disabled={uploading}
+              accessibilityRole="button"
+              accessibilityLabel={t("profile.selfieUpdate.capture", "Capture selfie")}
+              style={[styles.stickyCaptureBtn, uploading && styles.stickyCaptureBtnDisabled]}
+            >
+              <Ionicons name="camera-outline" size={22} color="#FFFFFF" />
+              <Text style={styles.stickyCaptureText}>
+                {t("profile.selfieUpdate.capture", "Capture selfie")}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
       </View>
     </Modal>
   );
@@ -343,6 +370,32 @@ const styles = StyleSheet.create({
   },
   saveBtnText: {
     marginLeft: 8,
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  stickyFooter: {
+    width: "100%",
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    backgroundColor: "#F4F6F8",
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+  },
+  stickyCaptureBtn: {
+    width: "100%",
+    minHeight: 56,
+    borderRadius: 14,
+    backgroundColor: "#0D9488",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  stickyCaptureBtnDisabled: {
+    backgroundColor: "#94A3B8",
+  },
+  stickyCaptureText: {
     fontSize: 16,
     fontWeight: "700",
     color: "#FFFFFF",

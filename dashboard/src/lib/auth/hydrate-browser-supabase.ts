@@ -23,6 +23,21 @@ async function applyServerTokensToClient(
 ): Promise<boolean> {
   if (readUsableClientSessionFromStorage()?.access_token) return true;
 
+  // Expired access + dead refresh: setSession() calls Auth and logs
+  // AuthApiError refresh_token_not_found. Skip — cookies still authenticate APIs.
+  try {
+    const parts = accessToken.split(".");
+    if (parts.length >= 2) {
+      const json = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"));
+      const claims = JSON.parse(json) as { exp?: number };
+      if (typeof claims.exp === "number" && claims.exp * 1000 <= Date.now() + 60_000) {
+        return false;
+      }
+    }
+  } catch {
+    return false;
+  }
+
   const { error } = await supabase.auth.setSession({
     access_token: accessToken,
     refresh_token: refreshToken,

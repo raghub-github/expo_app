@@ -3,7 +3,7 @@
   "main": "index.js",
   "version": "1.0.0",
   "scripts": {
-    "test": "node --import tsx --test src/services/auth/sessionConflict.test.ts src/lib/incomingDispatchOffers.test.ts src/lib/riderDispatchLifecycle.test.ts src/lib/singleWinnerDispatch.test.ts src/lib/rider-action-kind.test.ts",
+    "test": "node --import tsx --test src/services/auth/sessionConflict.test.ts src/lib/incomingDispatchOffers.test.ts src/lib/riderDispatchLifecycle.test.ts src/lib/singleWinnerDispatch.test.ts src/lib/rider-action-kind.test.ts src/lib/readLatestRiderGps.test.ts src/lib/sanitizeRiderAuthError.test.ts src/lib/onboarding-routes.test.ts",
     "start": "node scripts/expo-start.js",
     "start:clear": "node scripts/expo-start.js --clear",
     "start:clean": "node scripts/clear-metro-cache.js && node scripts/expo-start.js --clear",
@@ -46,6 +46,7 @@
     "expo-dev-client": "~6.0.20",
     "expo-device": "~8.0.10",
     "expo-face-detector": "~13.0.2",
+    "expo-file-system": "~19.0.21",
     "expo-font": "~14.0.12",
     "expo-image-picker": "~17.0.11",
     "expo-intent-launcher": "^13.0.8",

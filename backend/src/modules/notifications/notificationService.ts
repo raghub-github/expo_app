@@ -63,6 +63,7 @@ import type {
 } from "./types.js";
 import {
   expectedRoleFromTarget,
+  expandCampaignUserIdCandidates,
   softSkipWarningForTarget,
   templateRoleMatchesTarget,
 } from "./campaignTarget.js";
@@ -173,7 +174,11 @@ function mustShowWhenKilled(row: {
     return true;
   }
   const metaType = String(row.metadata?.type ?? "").toLowerCase();
-  return metaType === "merchant_new_order" || metaType === "rider_dispatch_offer";
+  return (
+    metaType === "merchant_new_order" ||
+    metaType === "rider_dispatch_offer" ||
+    metaType === "dispatch_offer"
+  );
 }
 
 function announcementCollapseKey(row: CreateLogRow): string | null {
@@ -367,6 +372,14 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
     metadata.skip_in_app_banner = true;
   }
   if (row.recipient.role === "merchant") {
+    metadata.skip_in_app_banner = true;
+  }
+  if (
+    row.recipient.role === "rider" &&
+    (String(row.templateCode ?? "").toUpperCase() === "RIDER_DISPATCH_OFFER" ||
+      String(metadata.type ?? "").toLowerCase() === "dispatch_offer" ||
+      String(metadata.gmType ?? "").toUpperCase() === "DISPATCH_OFFER")
+  ) {
     metadata.skip_in_app_banner = true;
   }
   // Announcements must land in the system tray, not the floating in-app pill.
@@ -628,14 +641,25 @@ async function lookupNativeFcmToken(
   role: string,
 ): Promise<string | null> {
   if (!userId || userId.startsWith("__")) return null;
+  const candidates = expandCampaignUserIdCandidates(userId);
+  if (candidates.length === 0) return null;
   try {
     const sql = getSql();
     // Prefer app Android tokens; allow any FCM token for this user if source/platform
     // were never set (older register rows) so Expo InvalidCredentials can still fall back.
+    // Match usr_N / GMRN / numeric ids — tokens are stored under whichever form the app sent.
+    const roleClause =
+      role && role !== "all"
+        ? sql`AND (
+            lower(coalesce(role, ${role.toLowerCase()})) = ${role.toLowerCase()}
+            OR role IS NULL
+            OR trim(role) = ''
+          )`
+        : sql``;
     const rows = (await sql`
       SELECT native_token
       FROM public.native_device_push_tokens
-      WHERE user_id = ${userId}
+      WHERE user_id = ANY(${candidates}::text[])
         AND token_type = 'fcm'
         AND (last_seen_at IS NULL OR last_seen_at >= now() - interval '90 days')
         AND (
@@ -644,7 +668,7 @@ async function lookupNativeFcmToken(
           OR trim(platform) = ''
         )
         AND lower(coalesce(source, 'app')) <> 'web'
-        ${role && role !== "all" ? sql`AND lower(role) = ${role.toLowerCase()}` : sql``}
+        ${roleClause}
       ORDER BY
         CASE WHEN lower(coalesce(source, 'app')) = 'app' THEN 0 ELSE 1 END,
         updated_at DESC NULLS LAST

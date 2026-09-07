@@ -105,6 +105,7 @@ export async function authorizeMerchantStoreRoute(
   opts?: {
     requireAvailability?: boolean;
     requireTiming?: boolean;
+    request?: NextRequest;
   }
 ): Promise<MerchantStoreRouteAuth | NextResponse> {
   const storeId = parseInt(rawStoreId, 10);
@@ -112,7 +113,7 @@ export async function authorizeMerchantStoreRoute(
     return NextResponse.json({ success: false, error: "Invalid store id" }, { status: 400 });
   }
 
-  const operator = await authenticateMerchantStoreOperator();
+  const operator = await authenticateMerchantStoreOperator(opts?.request);
   if (!operator.ok) return operator.response;
   const user = { id: operator.user.id, email: operator.user.email ?? "" };
 

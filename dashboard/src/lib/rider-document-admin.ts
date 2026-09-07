@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { riderDocuments, riderDocumentFiles, riders } from "@/lib/db/schema";
 import { deleteDocument, uploadWithKey } from "@/lib/services/r2";
@@ -236,4 +236,139 @@ export async function uploadRiderDocumentImage(params: {
     .limit(1);
 
   return updated ?? doc;
+}
+
+const ALLOWED_DISPLAY_DOC_TYPES = new Set([
+  "aadhaar_front",
+  "aadhaar_back",
+  "pan",
+  "selfie",
+  "dl_front",
+  "dl_back",
+  "rc",
+  "rental_proof",
+  "ev_proof",
+  "bank_proof",
+  "insurance",
+  "vehicle_image",
+  "upi_qr_proof",
+]);
+
+export function isAllowedAdminDisplayDocType(displayDocType: string): boolean {
+  return ALLOWED_DISPLAY_DOC_TYPES.has(displayDocType);
+}
+
+/** Rider app stores composite docs as `aadhaar` / `dl`; dashboard UI uses `_front` / `_back`. */
+export function storedDocTypeForDisplay(displayDocType: string): string {
+  const { baseType } = parseDisplayDocType(displayDocType);
+  if (isMultiSideBaseType(baseType)) return baseType;
+  return displayDocType;
+}
+
+export function serializeRiderDocumentForDashboard(
+  row: typeof riderDocuments.$inferSelect,
+  displayDocType: string,
+) {
+  return {
+    id: row.id,
+    docType: displayDocType,
+    fileUrl: row.fileUrl,
+    r2Key: row.r2Key,
+    docNumber: row.docNumber,
+    verificationMethod: row.verificationMethod,
+    verified: row.verified,
+    verifierUserId: row.verifierUserId,
+    verifierName: null as string | null,
+    rejectedReason: row.rejectedReason,
+    extractedName: row.extractedName,
+    extractedDob: row.extractedDob ? String(row.extractedDob).slice(0, 10) : null,
+    extractedDataSummary: row.extractedDataSummary ?? null,
+    lastVerificationId: row.lastVerificationId ?? null,
+    lastProviderReference: row.lastProviderReference ?? null,
+    metadata: row.metadata ?? null,
+    verifiedAt: row.verifiedAt?.toISOString?.() ?? null,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+/**
+ * Find or create the same rider_documents row the rider app uses, so dashboard
+ * upload / electronic verify persist in one place.
+ */
+export async function ensureRiderDocumentRow(params: {
+  riderId: number;
+  displayDocType: string;
+}): Promise<{ row: typeof riderDocuments.$inferSelect; created: boolean }> {
+  const { riderId, displayDocType } = params;
+  if (!isAllowedAdminDisplayDocType(displayDocType)) {
+    throw new Error("Invalid document type");
+  }
+
+  const storedType = storedDocTypeForDisplay(displayDocType);
+  const db = getDb();
+  const candidates = Array.from(new Set([storedType, displayDocType]));
+
+  const existing = await db
+    .select()
+    .from(riderDocuments)
+    .where(and(eq(riderDocuments.riderId, riderId), inArray(riderDocuments.docType, candidates as never)))
+    .orderBy(desc(riderDocuments.updatedAt));
+
+  const preferred =
+    existing.find((d) => d.docType === storedType) ?? existing[0] ?? null;
+  if (preferred) return { row: preferred, created: false };
+
+  const [created] = await db
+    .insert(riderDocuments)
+    .values({
+      riderId,
+      docType: storedType as never,
+      fileUrl: PENDING_FILE_URL,
+      verificationMethod: "MANUAL_UPLOAD",
+      verificationStatus: "pending",
+      verified: false,
+      requiresManualReview: true,
+      metadata: { createdFromDashboard: true },
+    })
+    .returning();
+
+  if (!created) throw new Error("Could not create document row");
+  return { row: created, created: true };
+}
+
+export async function createOrUpdateRiderDocumentFromAdmin(params: {
+  riderId: number;
+  displayDocType: string;
+  file?: File | null;
+  docNumber?: string;
+}): Promise<ReturnType<typeof serializeRiderDocumentForDashboard>> {
+  const { riderId, displayDocType, file, docNumber } = params;
+  const { row } = await ensureRiderDocumentRow({ riderId, displayDocType });
+
+  if (file && file.size > 0) {
+    const updated = await uploadRiderDocumentImage({
+      riderId,
+      documentId: row.id,
+      displayDocType,
+      file,
+      docNumber,
+    });
+    const merged = { ...row, ...updated } as typeof riderDocuments.$inferSelect;
+    return serializeRiderDocumentForDashboard(merged, displayDocType);
+  }
+
+  if (docNumber !== undefined) {
+    const db = getDb();
+    const [updated] = await db
+      .update(riderDocuments)
+      .set({
+        docNumber: docNumber.trim() || null,
+        updatedAt: new Date(),
+      })
+      .where(eq(riderDocuments.id, row.id))
+      .returning();
+    return serializeRiderDocumentForDashboard(updated ?? row, displayDocType);
+  }
+
+  return serializeRiderDocumentForDashboard(row, displayDocType);
 }

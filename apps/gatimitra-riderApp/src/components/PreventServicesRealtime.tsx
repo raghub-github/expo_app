@@ -9,13 +9,16 @@
  * table is published to Supabase Realtime — so this refetches within ~1s
  * without the rider pulling to refresh or restarting the app.
  *
- * No-ops when the Supabase URL / anon key are not configured.
+ * No-ops when the Supabase URL / anon key are not configured, and while logged out
+ * (so login never crashes if a stale channel is still subscribed).
  */
 
 import { useEffect, useRef } from "react";
+import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { useQueryClient } from "@tanstack/react-query";
 import { getSupabaseAuth } from "@/src/lib/supabaseClient";
 import { emitPreventServicesSignal } from "@/src/lib/preventServicesSignalBus";
+import { useSessionStore } from "@/src/stores/sessionStore";
 
 /** Query key prefixes whose answers depend on an active blocking rule. */
 const AFFECTED_QUERY_KEYS = [
@@ -24,16 +27,35 @@ const AFFECTED_QUERY_KEYS = [
   ["rider", "orders", "available"],
 ] as const;
 
+const CHANNEL_PREFIX = "prevent-services-signal";
+
+function channelNameOf(topic: string): string {
+  return topic.startsWith("realtime:") ? topic.slice("realtime:".length) : topic;
+}
+
+async function dropStaleChannels(supabase: SupabaseClient): Promise<void> {
+  const stale = supabase.getChannels().filter((ch) => {
+    const name = channelNameOf(ch.topic);
+    return name === CHANNEL_PREFIX || name.startsWith(`${CHANNEL_PREFIX}:`);
+  });
+  if (stale.length === 0) return;
+  await Promise.all(stale.map((ch) => supabase.removeChannel(ch)));
+}
+
 export function PreventServicesRealtime() {
   const queryClient = useQueryClient();
+  const hasSession = useSessionStore((s) => Boolean(s.session?.accessToken));
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    if (!hasSession) return;
+
     const supabase = getSupabaseAuth();
     if (!supabase) return;
 
-    // One admin save touches rules + services + locations, so several row
-    // triggers fire back to back. Coalesce them into a single refetch.
+    let cancelled = false;
+    let channel: RealtimeChannel | null = null;
+
     const scheduleInvalidate = () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
@@ -47,26 +69,46 @@ export function PreventServicesRealtime() {
       }, 150);
     };
 
-    const channel = supabase
-      .channel("prevent-services-signal")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "prevent_service_signals",
-        },
-        () => scheduleInvalidate()
-      )
-      .subscribe();
+    const setup = async () => {
+      try {
+        await dropStaleChannels(supabase);
+        if (cancelled) return;
+        // Unique topic so React remount cannot reuse a joined channel
+        // (supabase-js throws if postgres_changes is added after subscribe()).
+        const topic = `${CHANNEL_PREFIX}:${Date.now().toString(36)}`;
+        channel = supabase
+          .channel(topic)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "prevent_service_signals",
+            },
+            () => scheduleInvalidate()
+          )
+          .subscribe();
+      } catch (error) {
+        channel = null;
+        if (__DEV__) {
+          console.warn("[PreventServicesRealtime] subscribe skipped", error);
+        }
+      }
+    };
+
+    void setup();
 
     return () => {
+      cancelled = true;
       if (debounceRef.current) clearTimeout(debounceRef.current);
-      try {
-        supabase.removeChannel(channel);
-      } catch {}
+      debounceRef.current = null;
+      if (channel) {
+        try {
+          void supabase.removeChannel(channel);
+        } catch {}
+      }
     };
-  }, [queryClient]);
+  }, [queryClient, hasSession]);
 
   return null;
 }

@@ -14,8 +14,8 @@ export const runtime = "nodejs";
 
 type RouteCtx = { params: Promise<{ stateId: string }> };
 
-export async function GET(_request: NextRequest, ctx: RouteCtx) {
-  const gate = await requireSuperAdminApi();
+export async function GET(request: NextRequest, ctx: RouteCtx) {
+  const gate = await requireSuperAdminApi(request);
   if (!gate.ok) return gate.response;
 
   const { stateId } = await ctx.params;

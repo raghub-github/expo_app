@@ -56,7 +56,13 @@ async function restoreRemoteSelection(
   queryClient?: QueryClient
 ): Promise<boolean> {
   try {
-    const addresses = await addressService.getAddresses();
+    const addresses = queryClient
+      ? await queryClient.fetchQuery({
+          queryKey: ["addresses"],
+          queryFn: () => addressService.getAddresses(),
+          staleTime: 30_000,
+        })
+      : await addressService.getAddresses();
     const saved = addresses.find((a) => a.id === addressId);
     if (!saved) return false;
     await addressService.setActiveLocation({
@@ -78,9 +84,8 @@ async function restoreRemoteSelection(
       { source: "selected", selectionKind: "remote", boundAddressId: saved.id }
     );
     if (queryClient) {
+      queryClient.setQueryData(["addresses"], addresses);
       await queryClient.invalidateQueries({ queryKey: ["active-location"] });
-      await queryClient.invalidateQueries({ queryKey: ["addresses"] });
-      void invalidateFoodHomeLocationQueries(queryClient);
     }
     if (__DEV__) {
       console.log("[active-location] restore_remote_session", {
@@ -104,6 +109,13 @@ async function applyReconcileResult(
   const prior = useLocationStore.getState();
   const priorKind = prior.sessionSelectionKind;
   const priorBoundId = prior.sessionBoundAddressId;
+  const priorPin = {
+    lat: prior.coords?.latitude ?? null,
+    lng: prior.coords?.longitude ?? null,
+    pincode: prior.address?.pincode?.trim() || null,
+    boundAddressId: prior.sessionBoundAddressId,
+    source: prior.locationSource,
+  };
 
   // Resume / in-session: keep intentional remote Saved Address (order for someone else).
   if (
@@ -147,15 +159,28 @@ async function applyReconcileResult(
   }
 
   if (queryClient) {
-    await queryClient.invalidateQueries({ queryKey: ["active-location"] });
-    await queryClient.invalidateQueries({ queryKey: ["addresses"] });
-    if (result.switchedToCurrent) {
-      debouncedInvalidateFoodHomeListingQueries(queryClient);
-    } else if (result.source === "selected") {
-      void invalidateFoodHomeLocationQueries(queryClient);
-    }
-    if (result.switchedToCurrent || result.source === "selected") {
-      void promptCartIfLocationBrokeServiceability(queryClient);
+    const next = useLocationStore.getState();
+    const pinUnchanged =
+      priorPin.lat != null &&
+      next.coords != null &&
+      Math.abs(priorPin.lat - next.coords.latitude) < 1e-5 &&
+      Math.abs((priorPin.lng ?? 0) - next.coords.longitude) < 1e-5 &&
+      priorPin.pincode === (next.address?.pincode?.trim() || null) &&
+      priorPin.boundAddressId === next.sessionBoundAddressId &&
+      priorPin.source === next.locationSource;
+
+    // Same delivery pin — don't refetch geo/offers/merchants/addresses again.
+    if (!pinUnchanged) {
+      await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      await queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      if (result.switchedToCurrent) {
+        debouncedInvalidateFoodHomeListingQueries(queryClient);
+      } else if (result.source === "selected") {
+        void invalidateFoodHomeLocationQueries(queryClient);
+      }
+      if (result.switchedToCurrent || result.source === "selected") {
+        void promptCartIfLocationBrokeServiceability(queryClient);
+      }
     }
   }
 

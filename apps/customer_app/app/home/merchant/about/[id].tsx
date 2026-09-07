@@ -13,9 +13,16 @@ import { Ionicons, Feather } from "@expo/vector-icons";
 import { merchantService, setStoreBookmark } from "@/services/merchant.service";
 import { useStoreBookmarkMutations, useStoreBookmarks } from "@/hooks/useStoreBookmarks";
 import { StoreTheme } from "@/constants/storeTheme";
+import { ReportFraudMenuIssueSheet } from "@/components/store/ReportFraudMenuIssueSheet";
+import { HiddenRestaurantAckModal } from "@/components/store/HiddenRestaurantAckModal";
+import { useHiddenStores } from "@/lib/hiddenStores";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { buildStoreOpenStatusLabel } from "@/lib/storeOpenStatusLabel";
 import { formatNextOpenTime, toTimestamp } from "@/lib/storeScheduleUi";
+import {
+  buildRestaurantShareMessage,
+  buildRestaurantShareUrl,
+} from "@/lib/restaurantShareLink";
 
 function formatCloseLabel(nextCloseAt: string | number | null | undefined, nowMs: number): string | null {
   const ts = toTimestamp(nextCloseAt);
@@ -51,6 +58,10 @@ export default function MerchantAboutScreen() {
   const { bookmarkSet } = useStoreBookmarks();
   const { syncBookmark } = useStoreBookmarkMutations();
   const [hoursExpanded, setHoursExpanded] = useState(false);
+  const [reportSheetVisible, setReportSheetVisible] = useState(false);
+  const [hideAckVisible, setHideAckVisible] = useState(false);
+  const [hideAckHidden, setHideAckHidden] = useState(true);
+  const { isHidden: isStoreHidden, hideStore, unhideStore } = useHiddenStores();
   const saved = Boolean(storeId) && bookmarkSet.has(storeId);
 
   const { data: about, isLoading: aboutLoading, error: aboutError } = useQuery({
@@ -65,11 +76,16 @@ export default function MerchantAboutScreen() {
     enabled: !!storeId,
   });
 
+  const canonicalStoreId = (merchant?.id ?? storeId).trim();
+  const storeIsHidden =
+    Boolean(canonicalStoreId) &&
+    (isStoreHidden(canonicalStoreId) || isStoreHidden(storeId));
+
   const scheduleNow = useScheduleTick(true);
   const isLoading = aboutLoading || merchantLoading;
 
   const displayName = about?.store_display_name ?? about?.store_name ?? merchant?.name ?? "Restaurant";
-  const legalName = displayName;
+  const legalName = (about?.owner_name ?? about?.legal_name ?? "").trim() || null;
   const cuisines = Array.isArray(about?.cuisine_types) ? about.cuisine_types.filter(Boolean) : merchant?.cuisines ?? [];
 
   const priceForOne = useMemo(() => {
@@ -104,16 +120,20 @@ export default function MerchantAboutScreen() {
   const liveSince = formatLiveSinceYear(about?.created_at ?? null);
   const fullAddress = about?.full_address ?? merchant?.address ?? null;
   const storePhone = about?.store_phone ?? null;
-  const isCloudKitchen = about?.is_cloud_kitchen === true;
 
   const handleShare = useCallback(async () => {
+    const slug =
+      (about?.public_slug ?? merchant?.publicSlug ?? storeId).trim() || storeId;
+    const url = buildRestaurantShareUrl(slug);
+    const message = buildRestaurantShareMessage(displayName, url);
     try {
       await Share.share({
-        message: `${displayName}${fullAddress ? `\n${fullAddress}` : ""} – order on GatiMitra`,
+        message,
+        url,
         title: displayName,
       });
     } catch (_) {}
-  }, [displayName, fullAddress]);
+  }, [about?.public_slug, displayName, merchant?.publicSlug, storeId]);
 
   const handleBookmark = useCallback(async () => {
     try {
@@ -126,6 +146,21 @@ export default function MerchantAboutScreen() {
       Alert.alert("Sign in required", "Please log in to save restaurants to your collection.");
     }
   }, [saved, storeId, syncBookmark]);
+
+  const handleToggleHideRestaurant = useCallback(async () => {
+    const id = (merchant?.id ?? storeId).trim();
+    if (!id) return;
+    if (storeIsHidden) {
+      await unhideStore(id);
+      if (storeId && storeId !== id) await unhideStore(storeId);
+      setHideAckHidden(false);
+    } else {
+      await hideStore(id);
+      if (storeId && storeId !== id) await hideStore(storeId);
+      setHideAckHidden(true);
+    }
+    setHideAckVisible(true);
+  }, [hideStore, merchant?.id, storeId, storeIsHidden, unhideStore]);
 
   const handleCall = useCallback(() => {
     if (!storePhone) {
@@ -226,16 +261,14 @@ export default function MerchantAboutScreen() {
           >
             <Ionicons name="time-outline" size={17} color="#828282" style={styles.rowIcon} />
             <AppText style={styles.hoursText} numberOfLines={2}>
-              {isOpen ? (
-                <>
-                  <AppText style={styles.openNow}>Open now</AppText>
-                  {closeTimeLabel ? (
-                    <AppText style={styles.hoursMuted}>{` · Closes ${closeTimeLabel}`}</AppText>
-                  ) : null}
-                </>
-              ) : (
-                <AppText style={styles.hoursMuted}>{openStatus.label}</AppText>
-              )}
+              <AppText style={isOpen ? styles.openNow : styles.closedNow}>
+                {isOpen ? "Open Now" : "Closed Now"}
+              </AppText>
+              {isOpen && closeTimeLabel ? (
+                <AppText style={styles.hoursMuted}>{` · Closes ${closeTimeLabel}`}</AppText>
+              ) : !isOpen && openStatus.label && openStatus.label !== "Closed" ? (
+                <AppText style={styles.hoursMuted}>{` · ${openStatus.label}`}</AppText>
+              ) : null}
             </AppText>
             <Ionicons
               name={hoursExpanded ? "chevron-up" : "chevron-down"}
@@ -259,21 +292,6 @@ export default function MerchantAboutScreen() {
             </View>
           ) : null}
 
-          <View style={styles.cardDivider} />
-
-          <View style={styles.infoRow}>
-            <Ionicons name="bicycle-outline" size={17} color="#828282" style={styles.rowIcon} />
-            <View style={styles.infoTextCol}>
-              <AppText style={styles.infoBold}>This is a delivery-only kitchen</AppText>
-              <AppText style={styles.infoSub}>
-                {isCloudKitchen
-                  ? "There are multiple brands delivering from this kitchen"
-                  : "Orders are prepared fresh for doorstep delivery"}
-              </AppText>
-            </View>
-            <Ionicons name="chevron-forward" size={15} color="#828282" />
-          </View>
-
           {liveSince ? (
             <>
               <View style={styles.cardDivider} />
@@ -287,9 +305,24 @@ export default function MerchantAboutScreen() {
 
         <View style={styles.card}>
           <AppText style={styles.experienceTitle}>Had a bad experience here?</AppText>
-          <TouchableOpacity style={styles.infoRow} activeOpacity={0.8} onPress={() => router.back()}>
-            <Ionicons name="eye-off-outline" size={17} color="#828282" style={styles.rowIcon} />
-            <AppText style={styles.infoRowText}>Hide this restaurant</AppText>
+          <TouchableOpacity style={styles.infoRow} activeOpacity={0.8} onPress={() => void handleToggleHideRestaurant()}>
+            <Ionicons name={storeIsHidden ? "eye-outline" : "eye-off-outline"} size={17} color="#828282" style={styles.rowIcon} />
+            <AppText style={styles.infoRowText}>
+              {storeIsHidden ? "Unhide this restaurant" : "Hide this restaurant"}
+            </AppText>
+            <Ionicons name="chevron-forward" size={15} color="#828282" />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.card}>
+          <AppText style={styles.experienceTitle}>Report fraud or bad practices</AppText>
+          <TouchableOpacity
+            style={styles.infoRow}
+            activeOpacity={0.8}
+            onPress={() => setReportSheetVisible(true)}
+          >
+            <Ionicons name="alert-circle-outline" size={17} color="#828282" style={styles.rowIcon} />
+            <AppText style={styles.infoRowText}>Inaccurate photos, missing items, or other issues</AppText>
             <Ionicons name="chevron-forward" size={15} color="#828282" />
           </TouchableOpacity>
         </View>
@@ -316,6 +349,19 @@ export default function MerchantAboutScreen() {
           <AppText style={styles.backMenuText}>Go back to menu</AppText>
         </TouchableOpacity>
       </View>
+
+      <ReportFraudMenuIssueSheet
+        visible={reportSheetVisible}
+        storeId={storeId}
+        storeNumericId={merchant?.storeNumericId}
+        storeName={displayName}
+        onClose={() => setReportSheetVisible(false)}
+      />
+      <HiddenRestaurantAckModal
+        visible={hideAckVisible}
+        hidden={hideAckHidden}
+        onDismiss={() => setHideAckVisible(false)}
+      />
     </View>
   );
 }
@@ -426,6 +472,10 @@ const styles = StyleSheet.create({
   openNow: {
     fontWeight: "700",
     color: StoreTheme.ratingGreen,
+  },
+  closedNow: {
+    fontWeight: "700",
+    color: StoreTheme.accentRed,
   },
   hoursMuted: {
     fontWeight: "500",

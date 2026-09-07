@@ -42,6 +42,7 @@ import {
 import { buildManeuverArrowCollection } from "@/src/lib/navigation-route-arrows";
 import {
   mapStyleForNavViewMode,
+  NAV_MAP_ZOOM,
   type NavMapViewMode,
 } from "@/src/lib/map-assets";
 import {
@@ -68,6 +69,12 @@ import {
   useSmoothedRiderPosition,
 } from "@/src/hooks/useSmoothedRiderPosition";
 import { resolveDisplayRiderPosition } from "@/src/lib/navigation-route-progress";
+import { mapLog } from "@/src/lib/map-debug";
+import {
+  isUsableMapCoordinate,
+  readLastMapCameraCenter,
+  rememberMapCameraCenter,
+} from "@/src/lib/readLatestRiderGps";
 
 const PICKUP_ANCHOR = { x: 0.5, y: 1 } as const;
 const RIDER_ANCHOR = { x: 0.5, y: 0.5 } as const;
@@ -105,6 +112,8 @@ type Props = {
   /** Optional storefront thumbnail for destination callout. */
   destinationImageUrl?: string | null;
   remainingCoordinates: LatLng[];
+  /** Bumps Mapbox route source when a reroute replaces geometry. */
+  routeRevision?: number;
   /** Lighter alternate paths (Google Maps style). */
   alternativeRoutes?: NavigationAlternativeRoute[];
   /** Dashed front wheel → route join (Google Maps style). */
@@ -158,6 +167,7 @@ export const ActiveRideNavigationMap = memo(
       riderLocation,
       pickup,
       remainingCoordinates,
+      routeRevision = 0,
       alternativeRoutes = [],
       offRouteConnectorGeoJson = null,
       routeDeviationWrongWay = false,
@@ -183,6 +193,8 @@ export const ActiveRideNavigationMap = memo(
     const cameraRef = useRef<{ setCamera: (opts: object) => void } | null>(null);
     const edge = navigationEdgePadding(mapEdgeInsets ?? defaultMapEdge());
     const [mapReady, setMapReady] = useState(false);
+    const initialCameraDoneRef = useRef(false);
+    const fitCameraRef = useRef<(...args: never[]) => void>(() => {});
 
     /** Smooth GPS only inside the map — does not re-render the screen shell / sheets. */
     const smoothDurationMs = resolveSmoothDurationMs(riderLocation?.speedMps);
@@ -266,6 +278,23 @@ export const ActiveRideNavigationMap = memo(
       [displayRiderLocation?.lat, displayRiderLocation?.lng]
     );
 
+    if (riderCoord && isUsableMapCoordinate(riderCoord.latitude, riderCoord.longitude)) {
+      rememberMapCameraCenter(riderCoord.latitude, riderCoord.longitude);
+    } else if (isUsableMapCoordinate(pickup.lat, pickup.lng)) {
+      rememberMapCameraCenter(pickup.lat, pickup.lng);
+    }
+
+    const cameraSeed = riderCoord
+      ? { latitude: riderCoord.latitude, longitude: riderCoord.longitude }
+      : isUsableMapCoordinate(pickup.lat, pickup.lng)
+        ? { latitude: pickup.lat, longitude: pickup.lng }
+        : readLastMapCameraCenter()
+          ? {
+              latitude: readLastMapCameraCenter()!.lat,
+              longitude: readLastMapCameraCenter()!.lng,
+            }
+          : null;
+
     const routeLineCoordinates = useMemo(
       () => resolveRoadRouteCoordinates(remainingCoordinates, fullRouteCoordinates),
       [remainingCoordinates, fullRouteCoordinates]
@@ -325,12 +354,12 @@ export const ActiveRideNavigationMap = memo(
     const altRouteLayers = useMemo(
       () =>
         alternativeRoutes.map((alt, index) => ({
-          id: `nav-alt-route-${index}`,
+          id: `nav-alt-route-${routeRevision}-${index}`,
           geoJson: lineStringGeoJson(alt.coordinates),
           label: alt.label,
           midpoint: routeMidpoint(alt.coordinates),
         })),
-      [alternativeRoutes]
+      [alternativeRoutes, routeRevision]
     );
 
     const followNavigationCamera = useCallback(
@@ -444,6 +473,7 @@ export const ActiveRideNavigationMap = memo(
     const fitCamera = useCallback(() => {
       applyBoundsCamera(fitPoints);
     }, [applyBoundsCamera, fitPoints]);
+    fitCameraRef.current = fitCamera;
 
     const showRouteOverviewCamera = useCallback(() => {
       followEngagedRef.current = false;
@@ -503,12 +533,39 @@ export const ActiveRideNavigationMap = memo(
     );
 
     useEffect(() => {
+      if (!mapReady || !cameraRef.current || initialCameraDoneRef.current) return;
+      const seed = cameraSeed;
+      if (!seed || !isUsableMapCoordinate(seed.latitude, seed.longitude)) return;
+      initialCameraDoneRef.current = true;
+      mapLog("MAP_CAMERA", {
+        action: "FOLLOW",
+        reason: "INITIAL_LOCATION",
+        lat: seed.latitude,
+        lng: seed.longitude,
+      });
+      try {
+        cameraRef.current.setCamera({
+          centerCoordinate: [seed.longitude, seed.latitude],
+          zoomLevel: showRemaining ? NAV_FOLLOW_ZOOM : NAV_MAP_ZOOM,
+          pitch: navigationFollowMode ? NAV_FOLLOW_PITCH : 0,
+          animationDuration: 0,
+          animationMode: "none",
+        });
+      } catch {
+        // ignore
+      }
+    }, [mapReady, cameraSeed?.latitude, cameraSeed?.longitude, showRemaining, navigationFollowMode]);
+
+    // Fit only on map-ready / explicit trigger (dest or first route).
+    // Do not depend on navigationFollowMode: user pan sets follow false and
+    // must not snap the camera back to route bounds 200ms later.
+    useEffect(() => {
       if (!mapReady || navigationFollowMode) return;
-      followEngagedRef.current = false;
-      lastFollowCameraRef.current = null;
-      const t = setTimeout(fitCamera, 200);
+      const t = setTimeout(() => {
+        fitCameraRef.current?.();
+      }, 200);
       return () => clearTimeout(t);
-    }, [mapReady, fitCameraTrigger, fitCamera, navigationFollowMode]);
+    }, [mapReady, fitCameraTrigger]);
 
     useEffect(() => {
       if (!mapReady || !hideRouteLine || !cameraRef.current) return;
@@ -685,14 +742,29 @@ export const ActiveRideNavigationMap = memo(
           zoomEnabled
           pitchEnabled
           rotateEnabled
-          onDidFinishLoadingMap={() => setMapReady(true)}
+          onDidFinishLoadingMap={() => {
+            setMapReady(true);
+            mapLog("MAP", { screen: "ACTIVE_RIDE", mapReady: true, touchLayerDetected: false });
+          }}
           onRegionIsChanging={(feature: { properties?: { isUserInteraction?: boolean } }) => {
             if (feature?.properties?.isUserInteraction) {
               onUserMapGesture?.();
             }
           }}
         >
-          <Mapbox.Camera ref={cameraRef} animationMode="none" animationDuration={0} />
+          <Mapbox.Camera
+            ref={cameraRef}
+            animationMode="none"
+            animationDuration={0}
+            {...(cameraSeed && isUsableMapCoordinate(cameraSeed.latitude, cameraSeed.longitude)
+              ? {
+                  defaultSettings: {
+                    centerCoordinate: [cameraSeed.longitude, cameraSeed.latitude] as [number, number],
+                    zoomLevel: NAV_MAP_ZOOM,
+                  },
+                }
+              : {})}
+          />
 
           {!hideRouteLine &&
             altRouteLayers.map((alt) => (
@@ -725,7 +797,7 @@ export const ActiveRideNavigationMap = memo(
           ) : null}
 
           {showRemaining ? (
-            <Mapbox.ShapeSource id="nav-route-remaining" shape={remainingGeoJson}>
+            <Mapbox.ShapeSource key={`nav-route-remaining-${routeRevision}`} id="nav-route-remaining" shape={remainingGeoJson}>
               <Mapbox.LineLayer
                 id="nav-route-glow"
                 style={{

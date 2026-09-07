@@ -1,10 +1,10 @@
-import { View, TouchableOpacity, StyleSheet, Platform, type LayoutChangeEvent } from "react-native";
+import { View, TouchableOpacity, StyleSheet, type LayoutChangeEvent } from "react-native";
 import { AppText } from "@/components/AppText";
 
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { resolveTabBarBottomInset } from "@/constants/layout";
+import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 
 export type RideServiceTab = "all" | "intercity";
 
@@ -13,20 +13,19 @@ const TRACK_MARGIN_TOP = 8;
 const TRACK_PADDING = 4;
 const TAB_MIN_H = 48;
 const TRACK_MARGIN_BOTTOM = 8;
-/** Visible gap between nav chrome and screen/home-indicator edge. */
-const BOTTOM_GAP = 10;
+/** Extra visual gap above the system nav / home indicator. */
+const BOTTOM_GAP = 8;
 
 const RIDE_NAV_CONTENT_HEIGHT =
   TRACK_MARGIN_TOP + TRACK_PADDING * 2 + TAB_MIN_H + TRACK_MARGIN_BOTTOM + BOTTOM_GAP;
 
 /**
- * Keep a short clearance above the system gesture/nav area, plus a deliberate
- * visual gap so the pill row does not sit flush on the bottom edge.
+ * Full system bottom inset (same as main tab bar) — never cap.
+ * Capping at 12px made All Services / Intercity sit on top of Android system nav.
  */
 function resolveRideNavBottomPad(rawBottomInset: number): number {
   const inset = resolveTabBarBottomInset(rawBottomInset);
-  if (Platform.OS === "android") return Math.max(BOTTOM_GAP, Math.min(inset, 12));
-  return Math.max(BOTTOM_GAP, Math.min(inset, 14));
+  return Math.max(BOTTOM_GAP, inset);
 }
 
 export function getRideServiceBottomNavHeight(bottomInset = 0): number {
@@ -44,7 +43,7 @@ type Props = {
 };
 
 export function RideServiceBottomNav({ activeTab, onTabChange, onHeightChange }: Props) {
-  const { bottom: rawBottom } = useSafeAreaInsets();
+  const { bottom: rawBottom } = useAppSafeAreaInsets();
   const bottomPad = resolveRideNavBottomPad(rawBottom);
 
   const onLayout = (e: LayoutChangeEvent) => {
@@ -90,7 +89,6 @@ export function RideServiceBottomNav({ activeTab, onTabChange, onHeightChange }:
     </View>
   );
 }
-
 const styles = StyleSheet.create({
   wrapper: {
     position: "absolute",

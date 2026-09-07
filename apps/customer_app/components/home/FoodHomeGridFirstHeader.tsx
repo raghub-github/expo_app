@@ -2,7 +2,7 @@
  * Grid-first food home header — reference layout (location, wallet, profile, search, veg).
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { View, TouchableOpacity, StyleSheet, Platform } from "react-native";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
@@ -29,6 +29,7 @@ import { useAuthStore } from "@/store/authStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { AppText } from "@/components/AppText";
+import type { VegPopoverAnchor } from "@/components/home/VegModePopover";
 
 /** Location row height in grid-first hero header (search sits below). */
 export const GRID_FIRST_LOCATION_ROW_H = 56;
@@ -64,6 +65,8 @@ type Props = {
   onSearchPress: () => void;
   vegOnly: boolean;
   onVegChange: (value: boolean) => void;
+  /** Open veg-mode popover when turning ON (same as discovery / classic header). */
+  onOpenVegPopover?: (anchor: VegPopoverAnchor) => void;
   /** Hide veg switch (e.g. grocery home). */
   showVegToggle?: boolean;
   /** Rotating search hints — defaults to food placeholders. */
@@ -88,6 +91,7 @@ export function FoodHomeGridFirstHeader({
   onSearchPress,
   vegOnly,
   onVegChange,
+  onOpenVegPopover,
   showVegToggle = true,
   searchPlaceholders = PLACEHOLDERS,
   highlightSearchPill = false,
@@ -112,6 +116,7 @@ export function FoodHomeGridFirstHeader({
       : "";
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
   const micScale = useSharedValue(1);
+  const vegToggleRef = useRef<View>(null);
 
   const displayName = profile?.full_name?.trim() || "Customer";
   const initials = useMemo(() => getNameInitials(displayName), [displayName]);
@@ -304,18 +309,52 @@ export function FoodHomeGridFirstHeader({
         </TouchableOpacity>
 
         {showVegToggle ? (
-        <View style={styles.vegCol}>
-          <View style={styles.vegLabelBadge}>
-            <AppText style={styles.vegLabel}>VEG</AppText>
-          </View>
+        <View ref={vegToggleRef} collapsable={false}>
           <TouchableOpacity
-            style={[styles.vegToggle, vegOnly && styles.vegToggleOn]}
-            onPress={() => onVegChange(!vegOnly)}
+            style={[styles.vegCol, styles.vegColRow]}
+            onPress={() => {
+              if (vegOnly) {
+                onVegChange(false);
+                return;
+              }
+              if (onOpenVegPopover) {
+                const openFromMeasure = () => {
+                  try {
+                    vegToggleRef.current?.measureInWindow((x, y, width, height) => {
+                      onOpenVegPopover({
+                        x: Number.isFinite(x) ? x : 0,
+                        y: Number.isFinite(y) ? y : 0,
+                        width: width > 0 ? width : 72,
+                        height: height > 0 ? height : 28,
+                      });
+                    });
+                  } catch {
+                    onOpenVegPopover({ x: 0, y: 0, width: 72, height: 28 });
+                  }
+                };
+                openFromMeasure();
+                // First tap can race layout on sticky chrome — retry next frame.
+                requestAnimationFrame(openFromMeasure);
+                return;
+              }
+              // No popover wired — do not auto-enable Veg Mode.
+            }}
             activeOpacity={0.85}
+            delayPressIn={0}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
             accessibilityRole="switch"
             accessibilityState={{ checked: vegOnly }}
+            accessibilityLabel="Veg mode"
           >
-            <View style={[styles.vegThumb, vegOnly && styles.vegThumbOn]} />
+            <AppText style={styles.vegLabelInline} numberOfLines={1}>
+              VEG
+            </AppText>
+            <View
+              style={[styles.vegToggle, styles.vegToggleCompact, vegOnly && styles.vegToggleOn]}
+              pointerEvents="none"
+            >
+              <View style={[styles.vegThumb, styles.vegThumbCompact, vegOnly && styles.vegThumbOn]} />
+            </View>
           </TouchableOpacity>
         </View>
         ) : null}
@@ -483,6 +522,17 @@ const styles = StyleSheet.create({
     width: 38,
     gap: 4,
   },
+  vegColRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "auto",
+    minWidth: 68,
+    maxWidth: 86,
+    gap: 5,
+    paddingHorizontal: 2,
+    flexWrap: "nowrap",
+  },
   vegLabelBadge: {
     paddingHorizontal: 6,
     paddingVertical: 2,
@@ -504,6 +554,13 @@ const styles = StyleSheet.create({
     color: "#374151",
     letterSpacing: 0.4,
   },
+  vegLabelInline: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#374151",
+    letterSpacing: 0.35,
+    flexShrink: 0,
+  },
   vegToggle: {
     width: 34,
     height: 18,
@@ -511,6 +568,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#D1D5DB",
     padding: 2,
     justifyContent: "center",
+  },
+  vegToggleCompact: {
+    width: 30,
+    height: 16,
+    borderRadius: 8,
+    padding: 1.5,
+    flexShrink: 0,
   },
   vegToggleOn: {
     backgroundColor: GatiMitraColors.primaryMint,
@@ -520,6 +584,11 @@ const styles = StyleSheet.create({
     height: 14,
     borderRadius: 7,
     backgroundColor: "#FFFFFF",
+  },
+  vegThumbCompact: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
   },
   vegThumbOn: {
     alignSelf: "flex-end",

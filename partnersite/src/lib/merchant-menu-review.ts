@@ -25,6 +25,7 @@ const EDITABLE = new Set([
   'allergens',
   'item_size_value',
   'item_size_unit',
+  'size_preset',
   'available_for_delivery',
   'weight_per_serving',
   'weight_per_serving_unit',

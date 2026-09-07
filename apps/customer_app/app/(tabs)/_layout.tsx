@@ -25,6 +25,8 @@ export default function TabsLayout() {
           options={{
             title: "Home",
             headerShown: false,
+            // freezeOnBlur + AppState resume can leave Home cards/buttons untappable.
+            freezeOnBlur: false,
           }}
         />
         <Tabs.Screen

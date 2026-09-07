@@ -9,7 +9,7 @@ import { Animated, View, StyleSheet, ScrollView, Pressable, Modal, Image, Platfo
 import { LinearGradient } from "expo-linear-gradient";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets, SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useRouter, Redirect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
@@ -25,9 +25,11 @@ import {
 import type { ChildStore } from "@/context/AuthContext";
 import { canEnterMerchantApp, enterableStoresOf } from "@/lib/merchantStoreEntry";
 
-const LOGO_SIZE = 72;
+import { LogoutConfirmModal } from "@/components/LogoutConfirmModal";
+import { MerchantBootstrapScreen } from "@/components/MerchantBootstrapScreen";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { MX } from "@/lib/appAssetKeys";
+const LOGO_SIZE = 72;
 const STORE_CARD_WIDTH = 188;
 const LORA = "Lora_400Regular";
 const LORA_BOLD = "Lora_700Bold";
@@ -156,7 +158,7 @@ function StoreScrollCard({
 export default function PartnerHomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { partner, token, supabaseUserId, signOut, isAuthenticated } = useAuth();
+  const { partner, token, supabaseUserId, signOut, isAuthenticated, authState } = useAuth();
   const { setSelectedStore, selectedStore } = useSelectedStore();
   const { openPermissionGate } = useNotificationPermissionGate();
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
@@ -298,12 +300,16 @@ export default function PartnerHomeScreen() {
     }
   };
 
+  if (authState.status === "loading") {
+    return <MerchantBootstrapScreen />;
+  }
+
+  if (authState.status !== "authenticated") {
+    return <Redirect href="/(auth)/welcome" />;
+  }
+
   if (!partner) {
-    return (
-      <View style={styles.centered}>
-        <Text style={styles.muted}>Loading...</Text>
-      </View>
-    );
+    return <MerchantBootstrapScreen />;
   }
 
   // Avoid flashing the picker while we auto-enter the only child store.
@@ -350,30 +356,12 @@ export default function PartnerHomeScreen() {
       {/* White/light status bar + dark icons; teal card sits below (2nd image match) */}
       <StatusBar style="dark" backgroundColor="#F4F7F8" translucent={false} />
 
-      <Modal
+      <LogoutConfirmModal
         visible={logoutModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setLogoutModalVisible(false)}
-      >
-        <Pressable style={styles.modalOverlay} onPress={() => setLogoutModalVisible(false)}>
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>Log out?</Text>
-            <Text style={styles.modalMessage}>Are you sure you want to log out of your account?</Text>
-            <View style={styles.modalActions}>
-              <Pressable
-                style={[styles.modalBtn, styles.modalBtnCancel]}
-                onPress={() => setLogoutModalVisible(false)}
-              >
-                <Text style={styles.modalBtnCancelText}>Cancel</Text>
-              </Pressable>
-              <Pressable style={[styles.modalBtn, styles.modalBtnLogout]} onPress={handleLogoutConfirm}>
-                <Text style={styles.modalBtnLogoutText}>Log out</Text>
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
+        token={token}
+        onStay={() => setLogoutModalVisible(false)}
+        onCompleteSignOut={handleLogoutConfirm}
+      />
 
       <Modal
         visible={accountSheetVisible}

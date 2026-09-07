@@ -39,6 +39,12 @@ function isRetryableRequest(err: AxiosError): boolean {
   if (method === "post" && typeof config.url === "string" && config.url.includes("/distance/store-quote")) {
     return true;
   }
+  if (method === "post" && typeof config.url === "string" && config.url.includes("/v1/rides/quote-batch")) {
+    return true;
+  }
+  if (method === "post" && typeof config.url === "string" && config.url.includes("/v1/rides/quote")) {
+    return true;
+  }
   if (method === "post" && typeof config.url === "string" && config.url.includes("/me/active-location/reconcile")) {
     return true;
   }

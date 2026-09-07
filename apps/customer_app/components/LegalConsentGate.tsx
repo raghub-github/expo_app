@@ -20,11 +20,13 @@ export function LegalConsentGate() {
   const router = useRouter();
   const segments = useSegments() as string[];
   const isAuthenticated = useAuthStore((s) => Boolean(s.session?.accessToken));
-  const triedOnce = useRef(false);
+  const userId = useAuthStore((s) => s.session?.userId ?? null);
+  /** One network/local check per authenticated user — not on every route change. */
+  const checkedForUser = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!isAuthenticated) {
-      triedOnce.current = false;
+    if (!isAuthenticated || !userId) {
+      checkedForUser.current = null;
       return;
     }
 
@@ -34,24 +36,27 @@ export function LegalConsentGate() {
     // Skip while user is still in the (auth) stack.
     if (segments[0] === "(auth)") return;
 
+    if (checkedForUser.current === userId) return;
+    checkedForUser.current = userId;
+
     let cancelled = false;
     (async () => {
       try {
         const ok = await hasCurrentConsent();
         if (cancelled) return;
-        if (!ok && !triedOnce.current) {
-          triedOnce.current = true;
+        if (!ok) {
           router.push("/(onboarding)/consent" as never);
         }
       } catch {
-        // Storage/API read failed — retry on next navigation.
+        // Allow a retry on next auth cycle if storage/API read failed.
+        if (!cancelled) checkedForUser.current = null;
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [isAuthenticated, segments, router]);
+  }, [isAuthenticated, userId, segments, router]);
 
   return null;
 }

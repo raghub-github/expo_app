@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -7,17 +7,16 @@ import {
   StyleSheet,
   Image,
   Pressable,
-  useWindowDimensions,
-  ActivityIndicator,
   Keyboard,
-  TouchableOpacity,
+  KeyboardAvoidingView,
   Linking,
   type KeyboardEvent,
 } from "react-native";
+import * as WebBrowser from "expo-web-browser";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import { useTranslation } from "react-i18next";
 import {
   isRiderAuthError,
@@ -29,122 +28,191 @@ import { resetSessionRevokedFlag } from "@/src/services/sessionEvents";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { getRiderLoginGeoFromDevice } from "@/src/lib/getRiderLoginGeoFromDevice";
 import { AnotherDeviceLoggedInSheet } from "@/src/components/auth/AnotherDeviceLoggedInSheet";
+import { LanguageSelectionSheet } from "@/src/components/language/LanguageSelectionSheet";
+import { AuthPrimaryButton } from "@/src/components/auth/AuthPrimaryButton";
+import { useRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 import type { Session } from "@gatimitra/contracts";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useAppAssetSource } from "@/src/components/AppAssetImage";
 import { RX } from "@/src/lib/appAssetKeys";
+import { RiderFonts } from "@/src/theme/fonts";
+import {
+  RIDER_AUTH_ACCENT,
+  RIDER_AUTH_BG,
+  RIDER_AUTH_HINT,
+  RIDER_AUTH_INK,
+  RIDER_AUTH_LINK,
+  RIDER_AUTH_MUTED,
+  RIDER_AUTH_SURFACE,
+} from "@/src/theme/riderAuthTheme";
+import { keyboardInsetFromEvent } from "@/src/hooks/useKeyboardBottomInset";
+import { sanitizeRiderAuthError } from "@/src/lib/sanitizeRiderAuthError";
 
-const ACCENT = "#39d353";
-const ACCENT_DARK = "#22a745";
 const OTP_LENGTH = 6;
+const RIDER_TERMS_URL = "https://rider.gatimitra.com/terms";
 
-function StatBadge({
-  icon,
-  label,
-  compact = false,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  label: string;
-  compact?: boolean;
-}) {
+function AuthBrandHeader() {
   return (
-    <View style={[styles.statBadge, compact && styles.statBadgeCompact]}>
-      <View style={[styles.statIconWrap, compact && styles.statIconWrapCompact]}>
-        <Ionicons name={icon} size={compact ? 13 : 15} color={ACCENT} />
-      </View>
-      <Text style={[styles.statLabel, compact && styles.statLabelCompact]} numberOfLines={1}>
-        {label}
+    <View style={styles.brandWrap}>
+      <Text style={styles.brandTitle} numberOfLines={1}>
+        GatiMitra
+      </Text>
+      <Text style={styles.brandSubtitle} numberOfLines={1}>
+        Moving India Forward
       </Text>
     </View>
   );
 }
 
-function TrustItem({
-  icon,
-  label,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  label: string;
-}) {
+function NeedSupportLine() {
+  const { t } = useTranslation();
   return (
-    <View style={styles.trustItem}>
-      <View style={styles.trustIconWrap}>
-        <Ionicons name={icon} size={18} color={ACCENT_DARK} />
-      </View>
-      <Text style={styles.trustLabel}>{label}</Text>
+    <View style={styles.supportRow}>
+      <Text style={styles.supportText}>
+        {t("login.needSupportQuestion", "Need Support?")}{" "}
+      </Text>
+      <Pressable
+        onPress={() => router.push({ pathname: "/raise-ticket", params: { prelogin: "1" } })}
+        hitSlop={10}
+        accessibilityRole="link"
+        accessibilityLabel={t("login.reachUs", "Reach Us")}
+      >
+        <Text style={styles.supportLink}>{t("login.reachUs", "Reach Us")}</Text>
+      </Pressable>
     </View>
-  );
-}
-
-function ContinueButton({
-  label,
-  onPress,
-  disabled,
-  loading,
-}: {
-  label: string;
-  onPress: () => void;
-  disabled?: boolean;
-  loading?: boolean;
-}) {
-  const isInactive = Boolean(disabled || loading);
-
-  return (
-    <TouchableOpacity
-      activeOpacity={isInactive ? 1 : 0.85}
-      onPress={() => {
-        if (!isInactive) onPress();
-      }}
-      accessibilityRole="button"
-      accessibilityState={{ disabled: isInactive }}
-      style={[styles.continueBtn, isInactive ? styles.continueBtnDisabled : null]}
-    >
-      {loading ? (
-        <ActivityIndicator color={ACCENT_DARK} />
-      ) : (
-        <>
-          <Text style={[styles.continueBtnText, isInactive && styles.continueBtnTextDisabled]}>
-            {label}
-          </Text>
-          <Ionicons
-            name="arrow-forward"
-            size={18}
-            color={isInactive ? "#7cb889" : "#ffffff"}
-          />
-        </>
-      )}
-    </TouchableOpacity>
   );
 }
 
 function LegalTermsLine() {
   const { t } = useTranslation();
-  const prefix = t("login.termsPrefix");
-  const link = t("login.termsLink");
+  const prefix = t("login.termsPrefix", "By continuing, you agree to our ");
+  const link = t("login.termsLink", "Terms and Conditions");
 
   const openLegal = () => {
-    Linking.openURL("https://gatimitra.com/terms").catch(() => {});
+    void WebBrowser.openBrowserAsync(RIDER_TERMS_URL).catch(() => {
+      void Linking.openURL(RIDER_TERMS_URL).catch(() => {});
+    });
   };
 
-  if (!prefix || prefix === "login.termsPrefix" || !link || link === "login.termsLink") {
-    return <Text style={styles.legalText}>{t("login.terms")}</Text>;
-  }
+  return (
+    <View style={styles.legalRow}>
+      <Text style={styles.legalTextMuted}>{prefix}</Text>
+      <Pressable
+        onPress={openLegal}
+        hitSlop={12}
+        accessibilityRole="link"
+        accessibilityLabel={link}
+      >
+        <Text style={styles.legalLink}>{link}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function PhoneField({
+  value,
+  onChange,
+  error,
+}: {
+  value: string;
+  onChange: (text: string) => void;
+  error?: boolean;
+}) {
+  const { t } = useTranslation();
+  const inputRef = useRef<TextInput>(null);
 
   return (
-    <Text style={styles.legalText}>
-      <Text style={styles.legalTextMuted}>{prefix}</Text>
-      <Text style={styles.legalLink} onPress={openLegal}>
-        {link}
-      </Text>
-    </Text>
+    <Pressable
+      onPress={() => inputRef.current?.focus()}
+      style={[styles.phoneField, error ? styles.phoneFieldError : null]}
+      collapsable={false}
+      accessibilityRole="none"
+    >
+      <View style={styles.phonePrefix} pointerEvents="none">
+        <Text style={styles.flagEmoji}>🇮🇳</Text>
+        <Text style={styles.prefixCode}>+91</Text>
+      </View>
+      <View style={styles.phoneDivider} pointerEvents="none" />
+      <TextInput
+        ref={inputRef}
+        value={value}
+        onChangeText={(text) => onChange(text.replace(/\D/g, "").slice(0, 10))}
+        placeholder={t("login.phonePlaceholder", "Enter mobile number")}
+        placeholderTextColor={RIDER_AUTH_HINT}
+        keyboardType="phone-pad"
+        maxLength={10}
+        editable
+        showSoftInputOnFocus
+        underlineColorAndroid="transparent"
+        pointerEvents="auto"
+        style={styles.phoneInput}
+      />
+      {value.length > 0 ? (
+        <Pressable onPress={() => onChange("")} hitSlop={8} accessibilityLabel="Clear">
+          <Ionicons name="close-circle" size={18} color={RIDER_AUTH_HINT} />
+        </Pressable>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function OtpBoxes({
+  value,
+  onChange,
+  error,
+}: {
+  value: string;
+  onChange: (text: string) => void;
+  error?: boolean;
+}) {
+  const inputRef = useRef<TextInput>(null);
+  const focusedIndex = Math.min(value.length, OTP_LENGTH - 1);
+
+  return (
+    <Pressable
+      onPress={() => inputRef.current?.focus()}
+      style={styles.otpRow}
+      accessibilityLabel={`One-time code, ${OTP_LENGTH} digits`}
+    >
+      {Array.from({ length: OTP_LENGTH }).map((_, index) => {
+        const digit = value.charAt(index);
+        const active = index === focusedIndex;
+        return (
+          <View
+            key={index}
+            style={[
+              styles.otpBox,
+              active && styles.otpBoxActive,
+              digit ? styles.otpBoxFilled : null,
+              error ? styles.otpBoxError : null,
+            ]}
+            pointerEvents="none"
+          >
+            <Text style={styles.otpDigit}>{digit}</Text>
+          </View>
+        );
+      })}
+      <TextInput
+        ref={inputRef}
+        value={value}
+        onChangeText={(text) => onChange(text.replace(/[^0-9]/g, "").slice(0, OTP_LENGTH))}
+        keyboardType="number-pad"
+        maxLength={OTP_LENGTH}
+        autoComplete={Platform.OS === "android" ? "sms-otp" : "one-time-code"}
+        textContentType="oneTimeCode"
+        autoFocus
+        caretHidden
+        style={styles.otpHiddenInput}
+      />
+    </Pressable>
   );
 }
 
 export default function LoginScreen() {
   const { t } = useTranslation();
-  const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const bottomInset = useRiderBottomInset();
 
   const setSession = useSessionStore((s) => s.setSession);
   const setOnboardingData = useOnboardingStore((s) => s.setData);
@@ -156,30 +224,26 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
   const [deviceSessionRetry, setDeviceSessionRetry] = useState(false);
-  // Single-device conflict (§5/§6): set when OTP succeeded but another device is active.
   const [sessionConflict, setSessionConflict] = useState<RiderSessionConflict | null>(null);
   const [takeoverBusy, setTakeoverBusy] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [keyboardLift, setKeyboardLift] = useState(0);
+  const [languageSheetOpen, setLanguageSheetOpen] = useState(false);
   const riderHero = useAppAssetSource(RX.auth.hero);
 
   const phoneDigits = phoneE164.replace(/\D/g, "");
   const phoneValid = phoneDigits.length >= 10;
   const otpValid = otp.trim().length === OTP_LENGTH;
-  const heroMinHeight = Math.round(windowHeight * 0.46);
-  const sheetMinHeight = keyboardVisible ? undefined : heroMinHeight;
-  const safeBottom = Math.max(insets.bottom, 12);
-  const sheetBottomPad = keyboardVisible ? 20 : safeBottom;
-  const keyboardOffset = keyboardVisible && keyboardHeight > 0 ? keyboardHeight : 0;
+  const showSignupHero = step === "phone" && !keyboardVisible;
 
   useEffect(() => {
     const onShow = (event: KeyboardEvent) => {
       setKeyboardVisible(true);
-      setKeyboardHeight(event.endCoordinates.height);
+      setKeyboardLift(keyboardInsetFromEvent(event));
     };
     const onHide = () => {
       setKeyboardVisible(false);
-      setKeyboardHeight(0);
+      setKeyboardLift(0);
     };
 
     const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
@@ -217,25 +281,13 @@ export default function LoginScreen() {
     setError(null);
     try {
       const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
-      // Timeout is handled inside riderAuthService.fetchWithTimeout — do not race
-      // a second AbortController here (that produced opaque AbortError with no URL).
       await riderAuthService.sendOtp({ phoneE164: normalizedPhone });
 
       setDeviceSessionRetry(false);
       setStep("otp");
       startCountdown();
-      // Do not Alert here — success is entering the OTP step (same UX as merchant app).
     } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e));
-      let errorMessage = err.message || "Unable to send OTP. Please try again.";
-      // Keep timeout diagnostics (they include the API URL). Only collapse pure network failures.
-      if (/network request failed|failed to fetch|network error/i.test(errorMessage)) {
-        errorMessage = "Unable to send OTP. Please try again.";
-      } else if (/^Aborted$/i.test(errorMessage) || err.name === "AbortError") {
-        errorMessage =
-          "Unable to reach the auth server. Check your connection and that the backend is running on this network.";
-      }
-      setError(errorMessage);
+      setError(sanitizeRiderAuthError(e, t("login.highTraffic")));
       if (__DEV__) {
         console.warn("OTP request error:", e);
       }
@@ -244,7 +296,6 @@ export default function LoginScreen() {
     }
   };
 
-  /** Shared post-session handoff — store the session and route by onboarding status. */
   const proceedAfterSession = async (session: Session) => {
     resetSessionRevokedFlag();
     await setSession(session);
@@ -271,8 +322,6 @@ export default function LoginScreen() {
       status.onboardingStatus === "not_started" ||
       status.onboardingStatus == null
     ) {
-      // Fresh rider — always enter via referral screen (self-gates on dashboard toggle).
-      // Clear a stale auto-skip so Rider Referral ON is not permanently bypassed.
       await setOnboardingData({
         ...(riderId ? { riderId } : {}),
         referralPromptHandled: false,
@@ -280,7 +329,6 @@ export default function LoginScreen() {
       });
       router.replace("/(onboarding)/referral");
     } else {
-      // Mid-onboarding resume (in_progress, etc.)
       router.replace("/");
     }
   };
@@ -313,15 +361,12 @@ export default function LoginScreen() {
           throw verifyError;
         }
         if (isRiderAuthError(verifyError) && verifyError.code === "device_change_limit_exceeded") {
-          // Retrying the device-session-only exchange can't bypass the rate limit —
-          // never offer that button for this error, even if a prior attempt set it.
           setDeviceSessionRetry(false);
           throw verifyError;
         }
         throw verifyError;
       }
 
-      // OTP verified. Another device active → show the confirmation sheet, do NOT log in (§1, §36).
       if (isRiderSessionConflict(result)) {
         setSessionConflict(result);
         return;
@@ -329,13 +374,12 @@ export default function LoginScreen() {
 
       await proceedAfterSession(result);
     } catch (e) {
-      setError(e instanceof Error ? e.message : t("login.failedVerify"));
+      setError(sanitizeRiderAuthError(e, t("login.highTraffic")));
     } finally {
       setBusy(false);
     }
   };
 
-  /** "Mark Logout" (§8): confirmed takeover — revoke the other device, activate this one. */
   const onMarkLogout = async () => {
     if (!sessionConflict || takeoverBusy) return;
     setTakeoverBusy(true);
@@ -351,19 +395,16 @@ export default function LoginScreen() {
       setSessionConflict(null);
       await proceedAfterSession(session);
     } catch (e) {
-      // Keep the sheet open with a retryable error — never falsely log in (§35).
-      setError(e instanceof Error ? e.message : "Could not switch devices. Please try again.");
+      setError(sanitizeRiderAuthError(e, t("login.highTraffic")));
     } finally {
       setTakeoverBusy(false);
     }
   };
 
-  /** "Cancel" (§7): abort — no session created, old device untouched. */
   const onCancelConflict = () => {
     if (takeoverBusy) return;
     setSessionConflict(null);
     setError(null);
-    // The OTP was consumed server-side; require a fresh code to try again.
     setOtp("");
   };
 
@@ -377,7 +418,7 @@ export default function LoginScreen() {
       await riderAuthService.sendOtp({ phoneE164: normalizedPhone });
       startCountdown();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Unable to send OTP. Please try again.");
+      setError(sanitizeRiderAuthError(e, t("login.highTraffic")));
     } finally {
       setBusy(false);
     }
@@ -409,7 +450,7 @@ export default function LoginScreen() {
       if (isRiderAuthError(e) && e.code === "device_change_limit_exceeded") {
         setDeviceSessionRetry(false);
       }
-      setError(e instanceof Error ? e.message : t("login.failedVerify"));
+      setError(sanitizeRiderAuthError(e, t("login.highTraffic")));
     } finally {
       setBusy(false);
     }
@@ -423,205 +464,201 @@ export default function LoginScreen() {
     setCountdown(0);
   };
 
-  const phoneForm = (
-    <View style={[styles.sheetInner, sheetMinHeight ? styles.sheetInnerExpanded : null]}>
-      <View style={styles.sheetMain}>
-        {!keyboardVisible ? (
-          <>
-            <Text style={styles.formTitle}>Enter your mobile number</Text>
-            <Text style={styles.formDescription}>{t("login.phoneDescription")}</Text>
-          </>
-        ) : (
-          <>
-            <Text style={styles.formTitleCompact}>Enter your mobile number</Text>
-            <Text style={styles.formDescriptionCompact}>{t("login.phoneDescription")}</Text>
-          </>
-        )}
+  const onChromeBack = () => {
+    if (step === "otp") {
+      resetToPhone();
+      return;
+    }
+    if (keyboardVisible) {
+      Keyboard.dismiss();
+      return;
+    }
+    if (router.canGoBack()) router.back();
+  };
 
-        <View style={[styles.phoneField, error ? styles.phoneFieldError : null]}>
-          <View style={styles.phonePrefix}>
-            <Text style={styles.flagEmoji}>🇮🇳</Text>
-            <Text style={styles.prefixCode}>+91</Text>
-            <Ionicons name="chevron-down" size={14} color="#9ca3af" />
-          </View>
-          <View style={styles.phoneDivider} />
-          <Ionicons name="phone-portrait-outline" size={18} color="#9ca3af" style={styles.phoneFieldIcon} />
-          <TextInput
-            value={phoneE164}
-            onChangeText={(text) => {
-              setPhoneE164(text.replace(/\D/g, "").slice(0, 10));
-              setError(null);
-            }}
-            placeholder="9876543210"
-            placeholderTextColor="#9ca3af"
-            keyboardType="phone-pad"
-            maxLength={10}
-            style={styles.phoneInput}
-          />
-        </View>
+  const updatePhone = (text: string) => {
+    setPhoneE164(text);
+    setError(null);
+  };
 
-        {error ? (
-          <View style={styles.errorBox}>
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        ) : null}
-
-        <ContinueButton
-          label="Continue"
-          onPress={onRequestOtp}
-          disabled={!phoneValid}
-          loading={busy}
-        />
-      </View>
-
-      {!keyboardVisible ? (
-        <>
-          <View style={styles.trustRow}>
-            <TrustItem icon="shield-checkmark-outline" label={"Secure OTP\nVerification"} />
-            <View style={styles.trustDivider} />
-            <TrustItem icon="ribbon-outline" label={"No Hidden\nCharges"} />
-            <View style={styles.trustDivider} />
-            <TrustItem icon="time-outline" label={"Instant\nApproval"} />
-          </View>
-          <LegalTermsLine />
-        </>
-      ) : null}
+  const errorBanner = error ? (
+    <View style={styles.errorBox}>
+      <Text style={styles.errorText}>{error}</Text>
     </View>
-  );
+  ) : null;
 
-  const otpForm = (
-    <View style={styles.sheetMain}>
-      {!keyboardVisible ? (
-        <>
-          <Text style={styles.formTitle}>{t("login.enterOtp")}</Text>
-          <Text style={styles.formDescription}>
-            Enter the {OTP_LENGTH}-digit code sent to +91 {phoneDigits}
-          </Text>
-        </>
+  const sheetBottomPad = keyboardVisible ? 8 : bottomInset + 20;
+  const androidKeyboardPad = Platform.OS === "android" && keyboardLift > 0 ? keyboardLift : 0;
+
+  return (
+    <KeyboardAvoidingView
+      style={styles.root}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
+      <View style={[styles.root, androidKeyboardPad > 0 ? { paddingBottom: androidKeyboardPad } : null]}>
+      <StatusBar style="dark" />
+
+      {showSignupHero ? (
+        <View style={styles.hero}>
+          {riderHero ? (
+            <Image
+              source={riderHero}
+              style={[styles.heroImage, { top: insets.top + 10 }]}
+              resizeMode="contain"
+            />
+          ) : null}
+          <SafeAreaView edges={["top"]} style={styles.heroChrome} pointerEvents="box-none">
+            <View style={styles.heroTopRow} pointerEvents="box-none">
+              {router.canGoBack() ? (
+                <Pressable
+                  onPress={() => router.back()}
+                  hitSlop={12}
+                  style={styles.iconBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("common.back", "Back")}
+                >
+                  <Ionicons name="arrow-back" size={24} color={RIDER_AUTH_INK} />
+                </Pressable>
+              ) : (
+                <View style={styles.iconBtn} />
+              )}
+              <Pressable
+                onPress={() => setLanguageSheetOpen(true)}
+                style={styles.langChip}
+                accessibilityRole="button"
+                accessibilityLabel={t("topbar.selectLanguage", "Select language")}
+              >
+                <Text style={styles.langChipText}>अA</Text>
+              </Pressable>
+            </View>
+          </SafeAreaView>
+        </View>
       ) : (
         <>
-          <Text style={styles.formTitleCompact}>{t("login.enterOtp")}</Text>
-          <Text style={styles.formDescriptionCompact}>
-            Enter the {OTP_LENGTH}-digit code sent to +91 {phoneDigits}
-          </Text>
+          <SafeAreaView edges={["top"]} style={styles.chromeSafe}>
+            <View style={styles.chromeTop}>
+              <Pressable
+                onPress={onChromeBack}
+                hitSlop={12}
+                style={styles.iconBtn}
+                accessibilityRole="button"
+                accessibilityLabel={t("common.back", "Back")}
+              >
+                <Ionicons name="arrow-back" size={24} color={RIDER_AUTH_INK} />
+              </Pressable>
+            </View>
+            <AuthBrandHeader />
+          </SafeAreaView>
         </>
       )}
 
-      <TextInput
-        value={otp}
-        onChangeText={(text) => {
-          setOtp(text.replace(/[^0-9]/g, "").slice(0, OTP_LENGTH));
-          setError(null);
-        }}
-        placeholder="000000"
-        placeholderTextColor="#9ca3af"
-        keyboardType="number-pad"
-        maxLength={OTP_LENGTH}
-        autoComplete={Platform.OS === "android" ? "sms-otp" : "one-time-code"}
-        textContentType="oneTimeCode"
-        autoFocus
-        style={[
-          styles.otpInput,
-          otpValid ? styles.otpInputReady : null,
-          error ? styles.phoneFieldError : null,
-        ]}
-      />
-
-      {error ? (
-        <View style={styles.errorBox}>
-          <Text style={styles.errorText}>{error}</Text>
-        </View>
-      ) : null}
-
-      {deviceSessionRetry ? (
-        <Pressable onPress={onRetryDeviceSession} disabled={busy || !otpValid} style={styles.retrySessionBtn}>
-          <Text style={styles.linkText}>Try again without re-entering OTP</Text>
-        </Pressable>
-      ) : null}
-
-      <ContinueButton
-        label={t("login.verifyOtp")}
-        onPress={onVerifyOtp}
-        disabled={!otpValid}
-        loading={busy}
-      />
-
-      <View style={styles.otpActions}>
-        <Text style={styles.resendHint}>
-          {t("login.didntReceive")}{" "}
-          {countdown > 0 ? (
-            <Text style={styles.resendCountdown}>{t("login.resendIn", { count: countdown })}</Text>
-          ) : null}
-        </Text>
-        {countdown === 0 ? (
-          <Pressable onPress={onRetryOtp} disabled={busy} hitSlop={8}>
-            <Text style={styles.linkText}>{t("login.resendOtp")}</Text>
-          </Pressable>
-        ) : null}
-        <Pressable onPress={resetToPhone} hitSlop={8}>
-          <Text style={styles.linkTextMuted}>{t("login.changePhone")}</Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-
-  return (
-    <View style={[styles.root, keyboardOffset > 0 ? { marginBottom: keyboardOffset } : null]}>
       <View
         style={[
-          styles.hero,
-          keyboardVisible
-            ? styles.heroKeyboard
-            : { flex: 1, minHeight: heroMinHeight },
+          styles.sheet,
+          !showSignupHero && styles.sheetFill,
+          { paddingBottom: sheetBottomPad },
         ]}
       >
-        {riderHero ? <Image source={riderHero} style={styles.heroImage} resizeMode="cover" /> : null}
-        <LinearGradient
-          colors={["rgba(0,0,0,0.12)", "rgba(0,0,0,0.5)", "rgba(0,0,0,0.92)"]}
-          locations={[0, 0.5, 1]}
-          style={StyleSheet.absoluteFill}
-        />
+        {step === "phone" ? (
+          <>
+            {showSignupHero ? (
+              <Text style={[styles.formTitle, styles.formTitleCentered]}>
+                {t("login.signupTitle", "Start your journey with")}
+                {"\n"}
+                {t("login.signupBrand", "GatiMitra")}
+              </Text>
+            ) : (
+              <>
+                <Text style={styles.signInTitle}>
+                  {t("login.signInTitle", "Sign in to your account")}
+                </Text>
+                <Text style={styles.signInSubtitle}>
+                  {t("login.signInSubtitle", "Login or create an account")}
+                </Text>
+              </>
+            )}
 
-        <SafeAreaView
-          edges={["top"]}
-          style={[styles.heroSafe, keyboardVisible && styles.heroSafeCompact]}
-        >
-          <View style={[styles.heroBottom, keyboardVisible && styles.heroBottomCompact]}>
-            <Text style={[styles.heroHeadline, keyboardVisible && styles.heroHeadlineCompact]}>
-              Deliver Smiles.{"\n"}
-              <Text style={styles.heroHeadlineAccent}>Earn More.</Text>
-            </Text>
-            <Text style={[styles.heroSubline, keyboardVisible && styles.heroSublineCompact]}>
-              Join GatiMitra & grow your income on every delivery.
-            </Text>
+            <PhoneField
+              value={phoneE164}
+              onChange={updatePhone}
+              error={Boolean(error)}
+            />
+            {!showSignupHero ? (
+              <Text style={styles.hintText}>
+                {t("login.validMobileHint", "Enter a valid 10 digit mobile number")}
+              </Text>
+            ) : null}
+            {!showSignupHero ? <NeedSupportLine /> : null}
+            {errorBanner}
 
-            <View style={styles.statsColumn}>
-              <StatBadge icon="star" label="4.8  Partner Rating" compact={keyboardVisible} />
-              <StatBadge icon="wallet-outline" label="Earn upto ₹700–1,200 /day" compact={keyboardVisible} />
-              <StatBadge icon="flash-outline" label="Instant Payouts" compact={keyboardVisible} />
+            {!showSignupHero ? <View style={styles.sheetSpacer} /> : null}
+
+            <View style={[styles.ctaBlock, showSignupHero && styles.ctaBlockCompact]}>
+              <AuthPrimaryButton
+                label={t("login.continue", "Continue")}
+                onPress={onRequestOtp}
+                disabled={!phoneValid}
+                loading={busy}
+              />
+              <LegalTermsLine />
             </View>
-          </View>
-        </SafeAreaView>
+          </>
+        ) : (
+          <>
+            <Text style={styles.formTitle}>{t("login.enterOtp", "Enter OTP")}</Text>
+            <Text style={styles.formSubtitle}>
+              {t("login.otpSentTo", "OTP sent to {{phone}}", { phone: phoneDigits })}
+            </Text>
+
+            <OtpBoxes
+              value={otp}
+              onChange={(text) => {
+                setOtp(text);
+                setError(null);
+              }}
+              error={Boolean(error)}
+            />
+
+            <Text style={styles.resendHint}>
+              {countdown > 0
+                ? t("login.resendSmsIn", "Didn't get the OTP? Resend SMS in {{count}}s", {
+                    count: countdown,
+                  })
+                : t("login.didntReceive")}
+            </Text>
+            {countdown === 0 ? (
+              <Pressable onPress={onRetryOtp} disabled={busy} hitSlop={8} style={styles.resendBtn}>
+                <Text style={styles.linkText}>{t("login.resendOtp")}</Text>
+              </Pressable>
+            ) : null}
+
+            {errorBanner}
+
+            {deviceSessionRetry ? (
+              <Pressable onPress={onRetryDeviceSession} disabled={busy || !otpValid} style={styles.retrySessionBtn}>
+                <Text style={styles.linkText}>Try again without re-entering OTP</Text>
+              </Pressable>
+            ) : null}
+
+            <View style={styles.sheetSpacer} />
+
+            <View style={styles.ctaBlock}>
+              <AuthPrimaryButton
+                label={t("login.submit", "Submit")}
+                onPress={onVerifyOtp}
+                disabled={!otpValid}
+                loading={busy}
+              />
+            </View>
+          </>
+        )}
       </View>
 
-      <View style={styles.sheetFill}>
-        <View
-          style={[
-            styles.sheet,
-            sheetMinHeight ? { minHeight: sheetMinHeight } : null,
-            keyboardVisible ? styles.sheetCompact : null,
-            { paddingBottom: sheetBottomPad },
-          ]}
-        >
-          <View style={[styles.sheetHandle, keyboardVisible && styles.sheetHandleCompact]} />
-
-          {step === "phone" ? (
-            phoneForm
-          ) : (
-            otpForm
-          )}
-        </View>
-      </View>
+      <LanguageSelectionSheet
+        visible={languageSheetOpen}
+        onClose={() => setLanguageSheetOpen(false)}
+        applyImmediately
+      />
 
       <AnotherDeviceLoggedInSheet
         visible={sessionConflict != null}
@@ -630,7 +667,8 @@ export default function LoginScreen() {
         onMarkLogout={onMarkLogout}
         onCancel={onCancelConflict}
       />
-    </View>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -638,188 +676,159 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     width: "100%",
-    backgroundColor: "#0a0a0a",
+    backgroundColor: RIDER_AUTH_BG,
   },
   hero: {
-    width: "100%",
-    backgroundColor: "#0a0a0a",
-  },
-  heroKeyboard: {
     flex: 1,
-    minHeight: 200,
+    width: "100%",
+    minHeight: 0,
+    backgroundColor: RIDER_AUTH_BG,
+  },
+  heroFill: {
+    flex: 1,
+    minHeight: 0,
   },
   heroImage: {
-    ...StyleSheet.absoluteFillObject,
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
     width: "100%",
-    height: "100%",
   },
-  heroSafe: {
-    flex: 1,
-    justifyContent: "flex-end",
-    paddingHorizontal: 20,
-    paddingBottom: 16,
+  heroChrome: {
+    ...StyleSheet.absoluteFillObject,
   },
-  heroSafeCompact: {
-    justifyContent: "flex-end",
-    paddingBottom: 10,
-  },
-  heroBottom: {
-    gap: 6,
-    paddingBottom: 4,
-  },
-  heroBottomCompact: {
-    gap: 4,
-    paddingBottom: 2,
-  },
-  heroHeadline: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: "#ffffff",
-    lineHeight: 34,
-    letterSpacing: -0.5,
-  },
-  heroHeadlineCompact: {
-    fontSize: 22,
-    lineHeight: 28,
-  },
-  heroHeadlineAccent: {
-    color: ACCENT,
-  },
-  heroSubline: {
-    fontSize: 13,
-    color: "rgba(255,255,255,0.8)",
-    lineHeight: 19,
-    marginBottom: 2,
-    maxWidth: 290,
-  },
-  heroSublineCompact: {
-    fontSize: 11,
-    lineHeight: 15,
-    marginBottom: 0,
-  },
-  statsColumn: {
-    gap: 6,
-  },
-  statBadge: {
+  heroTopRow: {
     flexDirection: "row",
     alignItems: "center",
-    alignSelf: "flex-start",
-    backgroundColor: "rgba(0,0,0,0.58)",
-    borderRadius: 999,
-    paddingVertical: 6,
-    paddingHorizontal: 11,
-    borderWidth: 1,
-    borderColor: "rgba(57,211,83,0.3)",
-    gap: 8,
-    maxWidth: "100%",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingTop: 14,
   },
-  statBadgeCompact: {
-    paddingVertical: 5,
-    paddingHorizontal: 9,
-    gap: 6,
+  chromeSafe: {
+    paddingBottom: 0,
   },
-  statIconWrap: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: "rgba(57,211,83,0.18)",
+  chromeTop: {
+    paddingHorizontal: 12,
+    minHeight: 44,
+    justifyContent: "center",
+  },
+  iconBtn: {
+    width: 40,
+    height: 40,
+    alignItems: "flex-start",
+    justifyContent: "center",
+  },
+  langChip: {
+    minWidth: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: RIDER_AUTH_ACCENT,
+    borderWidth: 2,
+    borderColor: "#111111",
     alignItems: "center",
     justifyContent: "center",
-    flexShrink: 0,
+    paddingHorizontal: 8,
   },
-  statIconWrapCompact: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+  langChipText: {
+    fontFamily: RiderFonts.loraBold,
+    fontSize: 15,
+    color: RIDER_AUTH_INK,
   },
-  statLabel: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#ffffff",
-    flexShrink: 1,
+  brandWrap: {
+    alignItems: "center",
+    marginTop: 0,
+    marginBottom: 4,
   },
-  statLabelCompact: {
-    fontSize: 11,
+  brandTitle: {
+    fontFamily: RiderFonts.poppinsExtraBold,
+    fontSize: 40,
+    color: "#000000",
+    letterSpacing: 0.2,
   },
-  sheetFill: {
-    width: "100%",
-    flexShrink: 0,
+  brandSubtitle: {
+    fontFamily: RiderFonts.poppinsBold,
+    fontSize: 16,
+    color: "#000000",
+    letterSpacing: 0.4,
+    marginTop: 4,
   },
   sheet: {
     width: "100%",
-    backgroundColor: "#ffffff",
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    paddingTop: 10,
+    flexGrow: 0,
+    flexShrink: 0,
+    backgroundColor: RIDER_AUTH_BG,
     paddingHorizontal: 22,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(57,211,83,0.25)",
-  },
-  sheetCompact: {
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
     paddingTop: 8,
-    marginTop: -12,
   },
-  sheetHandle: {
-    alignSelf: "center",
-    width: 44,
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: ACCENT,
-    marginBottom: 14,
+  sheetFill: {
+    flex: 1,
+    flexGrow: 1,
+    paddingTop: 36,
   },
-  sheetHandleCompact: {
-    marginBottom: 10,
+  sheetSpacer: {
+    flex: 1,
+    minHeight: 16,
   },
-  sheetInner: {
+  ctaBlock: {
     width: "100%",
+    marginTop: 8,
+    flexShrink: 0,
   },
-  sheetInnerExpanded: {
-    minHeight: 280,
-    justifyContent: "space-between",
-  },
-  sheetMain: {
-    width: "100%",
+  ctaBlockCompact: {
+    marginTop: 12,
   },
   formTitle: {
-    fontSize: 21,
-    fontWeight: "800",
-    color: "#111827",
+    fontFamily: RiderFonts.poppinsExtraBold,
+    fontSize: 26,
+    color: "#000000",
+    letterSpacing: 0.2,
+    marginBottom: 14,
+    marginTop: 0,
+  },
+  formTitleCentered: {
+    textAlign: "center",
+    fontSize: 24,
+    lineHeight: 30,
+    marginTop: 0,
+    marginBottom: 8,
+  },
+  signInTitle: {
+    fontFamily: RiderFonts.poppinsExtraBold,
+    fontSize: 28,
+    lineHeight: 34,
+    color: "#000000",
+    letterSpacing: -0.2,
+    marginTop: 8,
     marginBottom: 4,
   },
-  formTitleCompact: {
-    fontSize: 19,
-    fontWeight: "800",
-    color: "#111827",
-    marginBottom: 2,
+  signInSubtitle: {
+    fontFamily: RiderFonts.poppinsSemiBold,
+    fontSize: 15,
+    color: RIDER_AUTH_MUTED,
+    marginBottom: 20,
   },
-  formDescription: {
-    fontSize: 13,
-    color: "#6b7280",
-    lineHeight: 18,
-    marginBottom: 14,
-  },
-  formDescriptionCompact: {
-    fontSize: 12,
-    color: "#6b7280",
-    lineHeight: 16,
-    marginBottom: 10,
+  formSubtitle: {
+    fontFamily: RiderFonts.poppinsBold,
+    fontSize: 15,
+    color: RIDER_AUTH_MUTED,
+    marginBottom: 22,
   },
   phoneField: {
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1.5,
-    borderColor: "#e5e7eb",
-    borderRadius: 14,
-    backgroundColor: "#f9fafb",
+    borderColor: RIDER_AUTH_INK,
+    borderRadius: 12,
+    backgroundColor: RIDER_AUTH_SURFACE,
     paddingHorizontal: 12,
-    minHeight: 54,
-    marginBottom: 14,
+    minHeight: 56,
+    marginTop: 6,
+    marginBottom: 8,
   },
   phoneFieldError: {
-    borderColor: "#fca5a5",
-    backgroundColor: "#fef2f2",
+    borderColor: "#DC2626",
+    backgroundColor: "#FEF2F2",
   },
   phonePrefix: {
     flexDirection: "row",
@@ -831,173 +840,141 @@ const styles = StyleSheet.create({
     fontSize: 18,
   },
   prefixCode: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#111827",
+    fontFamily: RiderFonts.poppinsBold,
+    fontSize: 18,
+    color: "#000000",
   },
   phoneDivider: {
     width: 1,
-    height: 28,
-    backgroundColor: "#e5e7eb",
+    height: 32,
+    backgroundColor: RIDER_AUTH_INK,
     marginRight: 10,
-  },
-  phoneFieldIcon: {
-    marginRight: 8,
+    opacity: 0.28,
   },
   phoneInput: {
     flex: 1,
-    fontSize: 19,
-    fontWeight: "bold",
-    color: "#111827",
-    paddingVertical: 12,
-    letterSpacing: 0.8,
+    fontFamily: RiderFonts.poppinsBold,
+    fontSize: 18,
+    color: "#000000",
+    fontWeight: Platform.OS === "ios" ? "700" : "normal",
+    paddingVertical: 14,
     ...(Platform.OS === "android" ? { includeFontPadding: false, textAlignVertical: "center" } : {}),
   },
-  continueBtn: {
-    width: "100%",
-    height: 52,
+  hintText: {
+    fontFamily: RiderFonts.poppinsBold,
+    fontSize: 14,
+    color: RIDER_AUTH_INK,
+    marginBottom: 8,
+  },
+  supportRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
+    marginBottom: 4,
+  },
+  supportText: {
+    fontFamily: RiderFonts.poppinsBold,
+    fontSize: 15,
+    color: "#000000",
+  },
+  supportLink: {
+    fontFamily: RiderFonts.poppinsBold,
+    fontSize: 15,
+    color: RIDER_AUTH_LINK,
+    textDecorationLine: "underline",
+  },
+  legalRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "center",
-    gap: 8,
-    backgroundColor: ACCENT,
-    borderRadius: 999,
-    paddingHorizontal: 20,
-    marginTop: 4,
-    shadowColor: ACCENT_DARK,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  continueBtnDisabled: {
-    backgroundColor: "#edf8f0",
-    borderWidth: 1.5,
-    borderColor: "#c2e8cb",
-    shadowOpacity: 0,
-    elevation: 0,
-  },
-  continueBtnText: {
-    fontSize: 17,
-    fontWeight: "800",
-    color: "#ffffff",
-  },
-  continueBtnTextDisabled: {
-    color: "#6aab78",
-  },
-  trustRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    marginTop: 22,
-    marginBottom: 6,
-    paddingTop: 18,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#eef0f2",
-  },
-  trustItem: {
-    flex: 1,
     alignItems: "center",
+    marginTop: 10,
+    marginBottom: 0,
     paddingHorizontal: 4,
   },
-  trustIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "rgba(57,211,83,0.12)",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 6,
-  },
-  trustLabel: {
-    fontSize: 11,
-    lineHeight: 15,
-    textAlign: "center",
-    color: "#6b7280",
-    fontWeight: "500",
-  },
-  trustDivider: {
-    width: 1,
-    height: 44,
-    backgroundColor: "#e5e7eb",
-    marginTop: 6,
-  },
-  legalText: {
-    fontSize: 11,
-    lineHeight: 17,
-    textAlign: "center",
-    marginTop: 20,
-    paddingHorizontal: 8,
-    paddingBottom: 4,
-  },
   legalTextMuted: {
-    color: "#9ca3af",
+    fontFamily: RiderFonts.poppinsBold,
+    fontSize: 14,
+    lineHeight: 20,
+    color: RIDER_AUTH_INK,
+    textAlign: "center",
   },
   legalLink: {
-    color: ACCENT_DARK,
-    fontWeight: "600",
+    fontFamily: RiderFonts.poppinsBold,
+    fontSize: 14,
+    lineHeight: 20,
+    color: RIDER_AUTH_LINK,
     textDecorationLine: "underline",
-    textDecorationStyle: "dotted",
-    textDecorationColor: ACCENT_DARK,
   },
-  otpInput: {
-    borderWidth: 1.5,
-    borderColor: "#e5e7eb",
-    borderRadius: 16,
-    backgroundColor: "#f9fafb",
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    fontSize: 28,
-    fontWeight: "bold",
-    color: "#111827",
-    textAlign: "center",
-    letterSpacing: 10,
+  otpRow: {
+    position: "relative",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 8,
     marginBottom: 14,
-    ...(Platform.OS === "android" ? { includeFontPadding: false } : {}),
+    marginTop: 4,
   },
-  otpInputReady: {
-    borderColor: ACCENT,
-    backgroundColor: "rgba(57,211,83,0.08)",
+  otpBox: {
+    flex: 1,
+    height: 62,
+    borderRadius: 12,
+    backgroundColor: RIDER_AUTH_SURFACE,
+    borderWidth: 1.5,
+    borderColor: RIDER_AUTH_INK,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  otpBoxActive: {
+    borderColor: RIDER_AUTH_INK,
+    borderWidth: 2,
+  },
+  otpBoxFilled: {
+    borderColor: RIDER_AUTH_INK,
+  },
+  otpBoxError: {
+    borderColor: "#DC2626",
+  },
+  otpDigit: {
+    fontFamily: RiderFonts.poppinsBold,
+    fontSize: 24,
+    color: "#000000",
+    fontWeight: Platform.OS === "ios" ? "700" : "normal",
+  },
+  otpHiddenInput: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: Platform.OS === "android" ? 0.02 : 0.01,
+    color: "transparent",
+  },
+  resendHint: {
+    fontFamily: RiderFonts.loraBold,
+    fontSize: 15,
+    color: RIDER_AUTH_INK,
+    marginBottom: 8,
+  },
+  resendBtn: {
+    marginBottom: 12,
   },
   errorBox: {
     marginBottom: 12,
     padding: 12,
-    backgroundColor: "#fef2f2",
+    backgroundColor: "#FEF2F2",
     borderWidth: 1,
-    borderColor: "#fecaca",
+    borderColor: "#FECACA",
     borderRadius: 12,
   },
   errorText: {
-    fontSize: 13,
-    color: "#dc2626",
+    fontFamily: RiderFonts.loraBold,
+    fontSize: 14,
+    color: "#DC2626",
     lineHeight: 18,
   },
-  otpActions: {
-    marginTop: 16,
-    alignItems: "center",
-    gap: 10,
-  },
-  resendHint: {
-    fontSize: 14,
-    color: "#6b7280",
-    textAlign: "center",
-  },
-  resendCountdown: {
-    fontWeight: "700",
-    color: "#374151",
-  },
   retrySessionBtn: {
-    alignSelf: "center",
+    alignSelf: "flex-start",
     marginBottom: 10,
   },
   linkText: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: ACCENT_DARK,
-  },
-  linkTextMuted: {
-    fontSize: 14,
-    fontWeight: "500",
-    color: "#9ca3af",
+    fontFamily: RiderFonts.loraBold,
+    fontSize: 16,
+    color: RIDER_AUTH_INK,
   },
 });

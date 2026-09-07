@@ -1411,6 +1411,10 @@ export default function RideSearchingScreen() {
             rideName={rideName}
             pickupLabel={pickupLabel}
             dropLabel={dropLabel}
+            stops={stopsForApi.map((stop, index) => ({
+              label: `Stop ${index + 1}`,
+              address: stop.address,
+            }))}
             tripKm={fareTripKm ?? tripKm}
             pickupDistanceKm={pickupDistanceKm}
             routeEtaMins={routeEtaMins}
@@ -1463,7 +1467,10 @@ export default function RideSearchingScreen() {
         rideImage={rideImage}
         pickupAddress={pickupLabel || pickupAddress || "—"}
         dropAddress={dropLabel || dropAddress || "—"}
-        stops={stops.map((_, index) => ({ label: `Stop ${index + 1}` }))}
+        stops={stopsForApi.map((stop, index) => ({
+          label: `Stop ${index + 1}`,
+          address: stop.address,
+        }))}
         totalFare={totalFare}
         listFare={strikeFare}
         tipAmount={activeTipAmount}

@@ -10,6 +10,7 @@ import {
 import { prefetchEmailAvatar } from "@/lib/emailAvatar";
 import { hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
 import { STORAGE_KEYS } from "@/constants";
+import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
 
 /** Warm profile cache after login so home avatar / profile tab open instantly. */
 export function ProfilePrefetch() {
@@ -28,6 +29,7 @@ export function ProfilePrefetch() {
       }
       await hydrateProfileCache(queryClient);
       await prefetchProfile(queryClient);
+      void useDietaryPreferenceStore.getState().hydrate();
     })();
   }, [hydrated, session, queryClient]);
 

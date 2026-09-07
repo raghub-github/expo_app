@@ -1,6 +1,9 @@
 /**
  * Dedicated Android channel for new-order FCM (MAX + bundled alert sound).
  * Sound is immutable after first create — use a versioned id when changing sound.
+ *
+ * Killed/background: OS plays this channel sound (`notification` = bundled
+ * incoming-order wav). Remote merchant URLs cannot play while JS is dead.
  */
 export const MERCHANT_NEW_ORDER_CHANNEL_ID = "merchant_new_orders_alert";
 /** res/raw name from assets/sounds/notification.wav (expo-notifications sounds). */

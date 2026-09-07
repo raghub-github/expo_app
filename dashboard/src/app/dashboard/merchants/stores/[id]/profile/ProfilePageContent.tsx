@@ -93,6 +93,7 @@ export type ProfilePageContentProps = {
   stopEditing: () => void;
   setEditData: React.Dispatch<React.SetStateAction<Partial<StoreProfile> | null>>;
   handleSaveField: (field: string) => Promise<void>;
+  onTogglePureVeg: (next: boolean) => Promise<void>;
   revertAlternatePhone: () => void;
   canStoreVerify: boolean;
   /** Store management / banner / address / phone edits */
@@ -142,6 +143,7 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
     stopEditing,
     setEditData,
     handleSaveField,
+    onTogglePureVeg,
     revertAlternatePhone,
     canStoreVerify,
     canEditProfile = false,
@@ -259,10 +261,39 @@ export function ProfilePageContent(props: ProfilePageContentProps) {
                     {/* Store Details */}
                     <div className="min-w-0 flex min-h-0 lg:h-full">
                       <div className="bg-gray-50 rounded-lg p-3 border border-gray-200 flex flex-col min-h-0 h-full w-full min-w-0">
-                        <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2 mb-1.5 shrink-0">
-                          <Building size={16} className="text-blue-600" />
-                          Store Details
-                        </h3>
+                        <div className="flex items-center justify-between mb-1.5 shrink-0 gap-2">
+                          <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2 m-0">
+                            <Building size={16} className="text-blue-600" />
+                            Store Details
+                          </h3>
+                          <div className="inline-flex items-center ml-2">
+                            <span className="text-xs font-medium text-gray-700 mr-2">Pure Veg</span>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={!!editData?.is_pure_veg}
+                              aria-label="Pure Veg"
+                              disabled={!canEditProfile || savingField === "is_pure_veg"}
+                              onClick={() => {
+                                if (!canEditProfile || savingField === "is_pure_veg") return;
+                                void onTogglePureVeg(!editData?.is_pure_veg);
+                              }}
+                              className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                                editData?.is_pure_veg ? "bg-green-500" : "bg-gray-200"
+                              } ${
+                                canEditProfile && savingField !== "is_pure_veg"
+                                  ? "cursor-pointer"
+                                  : "cursor-not-allowed opacity-70"
+                              }`}
+                            >
+                              <span
+                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                                  editData?.is_pure_veg ? "translate-x-4" : "translate-x-0.5"
+                                }`}
+                              />
+                            </button>
+                          </div>
+                        </div>
                         <div className="space-y-1.5 text-sm flex-1 min-h-0 overflow-y-auto pr-0.5">
                           <CompactLockedRow label="Store Name" value={displayStore.store_name ?? null} />
                           <CompactLockedRow

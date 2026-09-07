@@ -1,7 +1,7 @@
-import { Image } from "expo-image";
 import type { AppAssetItem } from "@/services/appAssets.service";
 import { CX } from "@/lib/appAssetKeys";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { enqueueImagePrefetchFront, prefetchImagesNow } from "@/lib/prefetchQueue";
 
 /** CMS images required for a fully painted home tab (no placeholder flash). */
 export const HOME_CRITICAL_ASSET_KEYS = [
@@ -16,9 +16,7 @@ export const HOME_CRITICAL_ASSET_KEYS = [
   CX.home.promoOffer2,
 ] as const;
 
-const prefetchedUris = new Set<string>();
-
-function prefetchUrisForAsset(item: AppAssetItem | undefined): void {
+function collectUrisForAsset(item: AppAssetItem | undefined, into: string[]): void {
   if (!item) return;
   // Stable proxy URL hits expo-image disk cache; signed URLs rotate and miss.
   const candidates = [item.proxyUrl, item.url];
@@ -26,25 +24,32 @@ function prefetchUrisForAsset(item: AppAssetItem | undefined): void {
     const trimmed = raw?.trim();
     if (!trimmed) continue;
     const uri = toAbsoluteImageUrl(trimmed) ?? trimmed;
-    if (!uri || prefetchedUris.has(uri)) continue;
-    prefetchedUris.add(uri);
-    void Image.prefetch(uri, { cachePolicy: "memory-disk" });
+    if (!uri || into.includes(uri)) continue;
+    into.push(uri);
   }
+}
+
+export function collectCriticalHomeAssetUris(assets: Record<string, AppAssetItem>): string[] {
+  const uris: string[] = [];
+  for (const key of HOME_CRITICAL_ASSET_KEYS) {
+    collectUrisForAsset(assets[key], uris);
+  }
+  return uris;
 }
 
 export async function prefetchCriticalHomeAssetImages(
   assets: Record<string, AppAssetItem>
 ): Promise<void> {
-  for (const key of HOME_CRITICAL_ASSET_KEYS) {
-    prefetchUrisForAsset(assets[key]);
-  }
+  const uris = collectCriticalHomeAssetUris(assets);
+  if (uris.length === 0) return;
+  await prefetchImagesNow(uris, uris.length);
 }
 
 /** Sync warm when assets are already in the store (home services grid mount). */
 export function prefetchCriticalHomeAssetImagesSync(
   assets: Record<string, AppAssetItem>
 ): void {
-  for (const key of HOME_CRITICAL_ASSET_KEYS) {
-    prefetchUrisForAsset(assets[key]);
-  }
+  const uris = collectCriticalHomeAssetUris(assets);
+  if (uris.length === 0) return;
+  enqueueImagePrefetchFront(uris, uris.length);
 }

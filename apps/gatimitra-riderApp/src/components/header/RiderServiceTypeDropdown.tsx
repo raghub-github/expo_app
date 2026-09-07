@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { useRiderDutyServiceFilter } from "@/src/hooks/useRiderDutyServiceFilter";
 import { selectionMatchesPool } from "@/src/lib/rider-duty-service-types";
@@ -431,6 +432,14 @@ export function RiderServiceTypeDropdown({
         serviceLabel={reasonSheet ? serviceLabel(reasonSheet.service, t) : ""}
         reasons={reasonSheet?.reasons ?? []}
         onClose={() => setReasonSheet(null)}
+        onCheckVehicles={() => {
+          setReasonSheet(null);
+          closeMenu();
+          router.push({
+            pathname: "/(onboarding)/dl-rc",
+            params: { reupload: "1" },
+          });
+        }}
       />
     </View>
   );

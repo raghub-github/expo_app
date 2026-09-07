@@ -1,20 +1,27 @@
-import { Platform, StyleSheet, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { CUSTOMER_SYSTEM_NAV_MINT } from "@/constants/layout";
+import { Platform, StyleSheet, useColorScheme, View } from "react-native";
+import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
+import { resolveAndroidSystemNavBackground } from "@/constants/layout";
 
 /**
- * Paints the Android system navigation bar zone mint-green on 3-button nav devices.
- * Uses live WindowInsets (safe-area bottom) — height is 0 on gesture nav, so no
- * artificial strip is added. pointerEvents none so Back/Home/Recents stay tappable.
+ * Paints the Android system navigation inset with the device theme color
+ * (white in light mode, black in dark). pointerEvents none so Back/Home/Recents
+ * stay tappable. Height is 0 on gesture nav.
  */
 export function AndroidSystemNavigationFill() {
-  const { bottom } = useSafeAreaInsets();
+  const { bottom } = useAppSafeAreaInsets();
+  const colorScheme = useColorScheme();
   if (Platform.OS !== "android" || bottom <= 0) return null;
 
   return (
     <View
       pointerEvents="none"
-      style={[styles.fill, { height: bottom }]}
+      style={[
+        styles.fill,
+        {
+          height: bottom,
+          backgroundColor: resolveAndroidSystemNavBackground(colorScheme),
+        },
+      ]}
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
     />
@@ -27,7 +34,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: CUSTOMER_SYSTEM_NAV_MINT,
-    zIndex: 0,
+    zIndex: 100000,
+    elevation: 100000,
   },
 });

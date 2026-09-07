@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -35,18 +35,11 @@ type CaptureStatus =
   | "capturing"
   | "done";
 
-export function SelfieAutoCapture({
-  uri,
-  active,
-  disabled,
-  onCaptured,
-  onRemove,
-  onRejected,
-  hint,
-  tips,
-  liveProbe = true,
-  capturedAction,
-}: {
+export type SelfieAutoCaptureHandle = {
+  capture: () => void;
+};
+
+type SelfieAutoCaptureProps = {
   uri: string | null;
   active: boolean;
   disabled?: boolean;
@@ -59,7 +52,27 @@ export function SelfieAutoCapture({
   liveProbe?: boolean;
   /** Rendered after a successful capture (e.g. Upload selfie). */
   capturedAction?: React.ReactNode;
-}) {
+  /** Hide the in-card button when the parent renders a sticky Capture selfie footer. */
+  hideManualCapture?: boolean;
+};
+
+export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoCaptureProps>(
+  function SelfieAutoCapture(
+    {
+      uri,
+      active,
+      disabled,
+      onCaptured,
+      onRemove,
+      onRejected,
+      hint,
+      tips,
+      liveProbe = true,
+      capturedAction,
+      hideManualCapture = false,
+    },
+    ref
+  ) {
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [status, setStatus] = useState<CaptureStatus>("starting");
@@ -75,11 +88,11 @@ export function SelfieAutoCapture({
   const eyesUnknownStreakRef = useRef(0);
   const [eyesObscured, setEyesObscured] = useState(false);
 
-  const captureFinal = useCallback(async (devManual = false) => {
+  const captureFinal = useCallback(async (manual = false) => {
     if (capturingRef.current || disabled || uri) return;
-    const expoGoBypass = devManual && ALLOW_EXPO_GO_MANUAL_CAPTURE;
-    const tapCapture = !liveProbe || expoGoBypass;
-    if (!tapCapture && !facePresentRef.current) return;
+    const expoGoBypass = manual && ALLOW_EXPO_GO_MANUAL_CAPTURE;
+    // Blink auto-capture still needs a face. Manual tap is always allowed (blink fallback).
+    if (!manual && liveProbe && !expoGoBypass && !facePresentRef.current) return;
     capturingRef.current = true;
     setStatus("capturing");
     try {
@@ -96,7 +109,9 @@ export function SelfieAutoCapture({
           return;
         }
 
-        const validation = await validateSelfieFace(photo.uri);
+        const validation = await validateSelfieFace(photo.uri, {
+          allowWithoutDetector: manual,
+        });
         if (!validation.ok) {
           setRejection(validation.message);
           onRejected?.(validation.message);
@@ -127,6 +142,16 @@ export function SelfieAutoCapture({
       capturingRef.current = false;
     }
   }, [disabled, liveProbe, onCaptured, onRejected, uri]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      capture: () => {
+        void captureFinal(true);
+      },
+    }),
+    [captureFinal]
+  );
 
   useEffect(() => {
     if (!active || uri || disabled) return;
@@ -368,24 +393,6 @@ export function SelfieAutoCapture({
           </View>
         ) : null}
 
-        {!uri &&
-        permission?.granted &&
-        status !== "capturing" &&
-        (!liveProbe || ALLOW_EXPO_GO_MANUAL_CAPTURE) ? (
-          <Pressable
-            onPress={() => void captureFinal(true)}
-            disabled={disabled || !cameraReady}
-            style={({ pressed }) => [
-              styles.devCaptureBtn,
-              pressed && styles.devCaptureBtnPressed,
-              (disabled || !cameraReady) && styles.devCaptureBtnDisabled,
-            ]}
-          >
-            <Ionicons name="camera-outline" size={18} color="#ffffff" />
-            <Text style={styles.devCaptureBtnText}>{liveProbe ? "Capture" : "Capture selfie"}</Text>
-          </Pressable>
-        ) : null}
-
         {uri ? (
           <View style={styles.removeBtnAnchor} pointerEvents="box-none">
             <Pressable
@@ -442,9 +449,35 @@ export function SelfieAutoCapture({
           ))}
         </View>
       )}
+
+      {!uri && !hideManualCapture ? (
+        <View collapsable={false} style={styles.captureSelfieBtnWrap}>
+          <Pressable
+            onPress={() => void captureFinal(true)}
+            disabled={disabled || !cameraReady || !permission?.granted || status === "capturing"}
+            style={({ pressed }) => [
+              styles.captureSelfieBtn,
+              pressed && styles.devCaptureBtnPressed,
+              (disabled || !cameraReady || !permission?.granted || status === "capturing") &&
+                styles.devCaptureBtnDisabled,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Capture selfie"
+          >
+            {status === "capturing" ? (
+              <ActivityIndicator color="#ffffff" />
+            ) : (
+              <>
+                <Ionicons name="camera-outline" size={20} color="#ffffff" />
+                <Text style={styles.captureSelfieBtnText}>Capture selfie</Text>
+              </>
+            )}
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   section: {
@@ -650,6 +683,28 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: colors.gray[700],
     ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
+  },
+  captureSelfieBtnWrap: {
+    alignSelf: "stretch",
+    width: "100%",
+    marginTop: 4,
+  },
+  captureSelfieBtn: {
+    alignSelf: "stretch",
+    width: "100%",
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 20,
+    borderRadius: 14,
+    backgroundColor: ACCENT_DARK,
+  },
+  captureSelfieBtnText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#ffffff",
   },
   devCaptureBtn: {
     flexDirection: "row",

@@ -1,10 +1,16 @@
 /** Synthetic variant id for the parent menu item's own size/price row. */
+
+import { parseSizePreset } from "./menu-size-preset.js";
+
 export const BASE_MENU_ITEM_VARIANT_ID = "0";
 
 function normalizeSizeKey(
+  preset: string | null | undefined,
   value: string | null | undefined,
   unit: string | null | undefined
 ): string {
+  const p = parseSizePreset(preset);
+  if (p) return `preset:${p}`;
   const v = value != null ? String(value).trim() : "";
   const u = unit != null ? String(unit).trim().toLowerCase() : "";
   if (!v && !u) return "";
@@ -20,17 +26,19 @@ export function variantRepresentsBaseItem(
     name: string;
     sizeValue?: string | null;
     sizeUnit?: string | null;
+    sizePreset?: string | null;
     price: number;
   },
   base: {
     name: string;
     sizeValue?: string | null;
     sizeUnit?: string | null;
+    sizePreset?: string | null;
     price: number;
   }
 ): boolean {
-  const sizeA = normalizeSizeKey(variant.sizeValue, variant.sizeUnit);
-  const sizeB = normalizeSizeKey(base.sizeValue, base.sizeUnit);
+  const sizeA = normalizeSizeKey(variant.sizePreset, variant.sizeValue, variant.sizeUnit);
+  const sizeB = normalizeSizeKey(base.sizePreset, base.sizeValue, base.sizeUnit);
   if (sizeA && sizeB && sizeA === sizeB && pricesMatch(variant.price, base.price)) {
     return true;
   }
@@ -45,6 +53,7 @@ export type MenuItemVariantOption = {
   type?: string | null;
   sizeValue?: string | null;
   sizeUnit?: string | null;
+  sizePreset?: string | null;
   price: number;
   isDefault: boolean;
   displayOrder: number;
@@ -57,6 +66,7 @@ export function prependBaseMenuItemVariant(
     price: number;
     sizeValue?: string | null;
     sizeUnit?: string | null;
+    sizePreset?: string | null;
     shortName?: string | null;
   },
   variants: MenuItemVariantOption[]
@@ -68,6 +78,7 @@ export function prependBaseMenuItemVariant(
     name: baseName,
     sizeValue: item.sizeValue ?? null,
     sizeUnit: item.sizeUnit ?? null,
+    sizePreset: item.sizePreset ?? null,
     price: item.price,
   };
 
@@ -84,6 +95,7 @@ export function prependBaseMenuItemVariant(
     type: null,
     sizeValue: base.sizeValue,
     sizeUnit: base.sizeUnit,
+    sizePreset: base.sizePreset,
     price: item.price,
     isDefault: !anyDefault,
     displayOrder: minOrder - 1,

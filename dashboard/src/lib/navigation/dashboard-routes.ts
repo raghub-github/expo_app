@@ -496,7 +496,7 @@ export const notificationDashboardRoutes: DashboardSubRoute[] = [
   },
   {
     name: "Logs / Failures",
-    href: "/dashboard/super-admin/notifications/logs",
+    href: "/dashboard/super-admin/notifications/dispatch-logs",
     icon: ListChecks,
     description: "Dispatch logs and failures",
   },

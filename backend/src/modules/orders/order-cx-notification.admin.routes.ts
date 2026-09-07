@@ -35,6 +35,13 @@ const AUTO_ONLY_ADMIN_CX_CODES = new Set([
   "ADMIN_CX_SUPPORT_WORKING",
 ]);
 
+/** Post-delivery rating prompts — last in the dropdown (before Custom Message). */
+const BOTTOM_ADMIN_CX_CODES = [
+  "ADMIN_CX_ORDER_DELIVERED_DE",
+  "ADMIN_CX_ORDER_DELIVERED_SP",
+] as const;
+const BOTTOM_ADMIN_CX_CODE_SET = new Set<string>(BOTTOM_ADMIN_CX_CODES);
+
 function internalSecretGrantsAdmin(req: FastifyRequest): boolean {
   const secret = getEnv().BACKEND_SCHEDULE_TICK_SECRET;
   if (!secret) return false;
@@ -239,10 +246,18 @@ export const orderCxNotificationAdminRoutes: FastifyPluginAsync = async (app) =>
       allow_edit: true,
       is_custom: t.code === "ADMIN_CX_CUSTOM",
     }));
-    // Stable PRD order via labels map insertion is not guaranteed — sort by label.
     items.sort((a, b) => {
       if (a.is_custom) return 1;
       if (b.is_custom) return -1;
+      const aBottom = BOTTOM_ADMIN_CX_CODE_SET.has(a.code);
+      const bBottom = BOTTOM_ADMIN_CX_CODE_SET.has(b.code);
+      if (aBottom !== bBottom) return aBottom ? 1 : -1;
+      if (aBottom && bBottom) {
+        return (
+          BOTTOM_ADMIN_CX_CODES.indexOf(a.code as (typeof BOTTOM_ADMIN_CX_CODES)[number]) -
+          BOTTOM_ADMIN_CX_CODES.indexOf(b.code as (typeof BOTTOM_ADMIN_CX_CODES)[number])
+        );
+      }
       return a.label.localeCompare(b.label);
     });
     return { items };

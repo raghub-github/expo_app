@@ -58,6 +58,7 @@ interface MenuItem {
   expiry_date?: string | null;
   item_size_value?: number | string | null;
   item_size_unit?: string | null;
+  size_preset?: 'REGULAR' | 'STANDARD' | 'PREMIUM' | null;
   preparation_time_minutes?: number | null;
   packaging_charges?: number | null;
   serves?: number;
@@ -150,6 +151,7 @@ interface Variant {
   /** Optional packaging-size display (e.g. "500 ml") rendered next to the name. */
   variant_size_value?: string | number | null;
   variant_size_unit?: string | null;
+  size_preset?: 'REGULAR' | 'STANDARD' | 'PREMIUM' | null;
 }
 
 type MenuCombo = {
@@ -222,6 +224,8 @@ import {
   itemPhotoRejected,
 } from '@/lib/catalog-photo-helpers'
 import { markPlanEnforceRan, shouldRunPlanEnforce } from '@/lib/plan-usage-cache'
+import { SizeTypeFields } from '@/components/menu/SizeTypeFields'
+import { formatMenuSize, normalizeSizeWrite, parseSizePreset, type SizePreset } from '@/lib/menu-size-preset'
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue'
 import { linkItemCuisineSelectionsToStoreProfile } from '@/lib/linkItemCuisinesToStore'
 import { normalizeMenuItemImageFile, validateMenuItemImageFile } from '@/lib/menuItemImageValidationClient'
@@ -339,8 +343,18 @@ function mxNutritionPayloadFromForm(form: Record<string, unknown>, opts?: { omit
     fibre: parseOpt(form.fibre),
     fibre_unit: (form.fibre_unit as string) || 'mg',
     item_tags: tags.length ? tags : null,
-    item_size_value: parseOpt(form.item_size_value),
-    item_size_unit: (form.item_size_unit as string) || null,
+    ...(() => {
+      const itemSize = normalizeSizeWrite({
+        size_preset: form.size_preset,
+        size_value: form.item_size_value,
+        size_unit: form.item_size_unit,
+      });
+      return {
+        item_size_value: parseOpt(itemSize.size_value),
+        item_size_unit: itemSize.size_unit,
+        size_preset: itemSize.size_preset,
+      };
+    })(),
   };
 }
 
@@ -1373,36 +1387,47 @@ function ItemForm(props: ItemFormProps) {
               ) : null}
               {isGrocery ? (
               <div>
-                <label className="text-xs font-medium text-gray-600">Item size</label>
-                <div className="flex gap-1.5">
-                  <input
-                    type="number"
-                    min={0}
-                    readOnly={readOnly}
-                    className={`w-1/2 px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
-                    value={formData.item_size_value || ''}
-                    onChange={(e) => !readOnly && setFormData({ ...formData, item_size_value: e.target.value })}
-                    placeholder="e.g. 500"
-                  />
-                  <select
-                    disabled={readOnly}
-                    className={`w-1/2 px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
-                    value={formData.item_size_unit || ''}
-                    onChange={(e) => !readOnly && setFormData({ ...formData, item_size_unit: e.target.value })}
-                  >
-                    <option value="">Unit</option>
-                    {SIZE_UNITS.map((u) => (
-                      <option key={u} value={u}>{u}</option>
-                    ))}
-                  </select>
-                </div>
+                <SizeTypeFields
+                  disabled={readOnly}
+                  sizePreset={parseSizePreset(formData.size_preset)}
+                  sizeValue={formData.item_size_value || ''}
+                  sizeUnit={formData.item_size_unit || ''}
+                  onChange={(next) =>
+                    !readOnly &&
+                    setFormData({
+                      ...formData,
+                      size_preset: next.size_preset,
+                      item_size_value: next.size_value,
+                      item_size_unit: next.size_unit,
+                    })
+                  }
+                />
               </div>
               ) : null}
               {showFoodAttrs ? (
+              <>
               <div>
                 <label className="text-xs font-medium text-gray-600">Serves</label>
                 <input type="number" min="1" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.serves ?? 1} onChange={e => !readOnly && setFormData({ ...formData, serves: Number(e.target.value) || 1 })} />
               </div>
+              <div className="sm:col-span-2">
+                <SizeTypeFields
+                  disabled={readOnly}
+                  sizePreset={parseSizePreset(formData.size_preset)}
+                  sizeValue={formData.item_size_value || ''}
+                  sizeUnit={formData.item_size_unit || ''}
+                  onChange={(next) =>
+                    !readOnly &&
+                    setFormData({
+                      ...formData,
+                      size_preset: next.size_preset,
+                      item_size_value: next.size_value,
+                      item_size_unit: next.size_unit,
+                    })
+                  }
+                />
+              </div>
+              </>
               ) : null}
             </div>
             {showFoodAttrs ? (
@@ -2014,6 +2039,7 @@ function MenuContent() {
     expiry_date: '',
     item_size_value: '',
     item_size_unit: '',
+    size_preset: null as SizePreset | null,
     has_customizations: false,
     has_addons: false,
     has_variants: false,
@@ -2061,6 +2087,7 @@ function MenuContent() {
     expiry_date: '',
     item_size_value: '',
     item_size_unit: '',
+    size_preset: null as SizePreset | null,
     has_customizations: false,
     has_addons: false,
     has_variants: false,
@@ -3085,6 +3112,7 @@ function MenuContent() {
           expiry_date: '',
           item_size_value: '',
           item_size_unit: '',
+          size_preset: null as SizePreset | null,
           has_customizations: false,
           has_addons: false,
           has_variants: false,
@@ -3318,6 +3346,7 @@ function MenuContent() {
         expiry_date: '',
         item_size_value: '',
         item_size_unit: '',
+        size_preset: null as SizePreset | null,
         has_customizations: false,
         has_addons: false,
         has_variants: false,
@@ -3486,6 +3515,7 @@ function MenuContent() {
           ? String((item as { item_size_value: number | string }).item_size_value)
           : '',
       item_size_unit: (item as { item_size_unit?: string | null }).item_size_unit ?? '',
+      size_preset: parseSizePreset((item as { size_preset?: unknown }).size_preset),
       has_customizations: customizationsWithAddons.length > 0,
       has_addons: customizationsWithAddons.some(c => (c.addons?.length ?? 0) > 0),
       has_variants: variantsList.length > 0,
@@ -4768,8 +4798,8 @@ function MenuContent() {
                             >
                               <span className="min-w-0 flex-1 text-gray-800">
                                 {v.variant_name || v.variant_type || 'Variant'}
-                                {v.variant_size_value && v.variant_size_unit
-                                  ? ` (${v.variant_size_value} ${v.variant_size_unit})`
+                                {formatMenuSize(v.size_preset, v.variant_size_value, v.variant_size_unit)
+                                  ? ` (${formatMenuSize(v.size_preset, v.variant_size_value, v.variant_size_unit)})`
                                   : ''}
                               </span>
                               <span className="font-semibold tabular-nums text-gray-900 shrink-0">₹{v.variant_price ?? 0}</span>
@@ -5526,7 +5556,7 @@ function MenuContent() {
               item_name: '', item_description: '', item_image_url: '', image: null,
               food_type: '', spice_level: '', cuisine_type: '', base_price: '', selling_price: '',
               discount_percentage: '0', tax_percentage: '0', in_stock: true, available_quantity: '',
-              low_stock_threshold: '', expiry_date: '', item_size_value: '', item_size_unit: '', has_customizations: false, has_addons: false, has_variants: false,
+              low_stock_threshold: '', expiry_date: '', item_size_value: '', item_size_unit: '', size_preset: null, has_customizations: false, has_addons: false, has_variants: false,
               is_popular: false, is_recommended: false, preparation_time_minutes: 15,
               packaging_enabled: false, packaging_charges: '', serves: 1,
               is_active: true, allergens: '',
@@ -5585,6 +5615,7 @@ function MenuContent() {
                   expiry_date: '',
                   item_size_value: '',
                   item_size_unit: '',
+                  size_preset: null as SizePreset | null,
                   has_customizations: false,
                   has_addons: false,
                   has_variants: false,
@@ -5691,6 +5722,7 @@ function MenuContent() {
                   expiry_date: '',
                   item_size_value: '',
                   item_size_unit: '',
+                  size_preset: null as SizePreset | null,
                   has_customizations: false,
                   has_addons: false,
                   has_variants: false,

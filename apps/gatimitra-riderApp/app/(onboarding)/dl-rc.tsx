@@ -15,7 +15,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useTranslation } from "react-i18next";
 import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
@@ -365,7 +365,19 @@ export default function DlRcScreen() {
   const saveStep = useSaveOnboardingStep();
   const saveDocument = useSaveDocument();
   const { data: riderStatus } = useRiderStatus(data.riderId);
-  useOnboardingEstablishedRedirect(riderStatus);
+  const reuploadParam = useLocalSearchParams<{ reupload?: string | string[] }>().reupload;
+  const isReupload =
+    (Array.isArray(reuploadParam) ? reuploadParam[0] : reuploadParam) === "1";
+  // Approved riders are normally bounced off this screen — keep them here to re-upload DL/RC.
+  useOnboardingEstablishedRedirect(isReupload ? null : riderStatus);
+
+  const leaveReuploadFlow = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace("/(tabs)/orders");
+  }, []);
   const { data: vehicleTypes = [], isLoading: vehicleTypesLoading, isError: vehicleTypesError } =
     useOnboardingVehicleTypes();
   const {
@@ -373,7 +385,7 @@ export default function DlRcScreen() {
     isLoading: vehicleCategoriesLoading,
     isError: vehicleCategoriesError,
   } = useOnboardingVehicleCategories();
-  const { data: documentCatalog = [] } = useOnboardingDocumentTypes();
+  const { data: documentCatalog = [], isFetched: documentCatalogFetched } = useOnboardingDocumentTypes();
 
   const catalogLoading = vehicleTypesLoading || vehicleCategoriesLoading;
   const catalogError = vehicleTypesError || vehicleCategoriesError;
@@ -397,6 +409,7 @@ export default function DlRcScreen() {
   );
 
   useEffect(() => {
+    if (isReupload) return;
     const next = riderStatus?.nextOnboardingStep as ServerOnboardingStep | undefined;
     // Don't auto-skip payment from mid-wizard; only leave when server is clearly past vehicle docs
     // to a non-vehicle destination we aren't editing (rare). Prefer Continue tap for payment.
@@ -406,10 +419,13 @@ export default function DlRcScreen() {
       router.replace(onboardingStepToRoute(next));
       return;
     }
-    if (shouldForwardFromOnboardingScreen("dl_rc", next) && next === "rental_ev") {
+    if (
+      shouldForwardFromOnboardingScreen("dl_rc", next) &&
+      (next === "rental_ev" || next === "bank_account" || next === "payment")
+    ) {
       router.replace(onboardingStepToRoute(next));
     }
-  }, [riderStatus?.nextOnboardingStep]);
+  }, [isReupload, riderStatus?.nextOnboardingStep]);
 
   const [categoryChoice, setCategoryChoice] = useState<string>("");
   const [vehicleChoice, setVehicleChoice] = useState<string>("");
@@ -480,6 +496,22 @@ export default function DlRcScreen() {
     if (data.vehicleModelLabel) setVehicleModelLabel(data.vehicleModelLabel);
     if (vehicleWizardBootstrappedRef.current) return;
 
+    if (isReupload) {
+      if (data.vehicleChoice && !documentCatalogFetched && session?.accessToken) return;
+      vehicleWizardBootstrappedRef.current = true;
+      const vehicle = findVehicleType(sortedVehicleTypes, data.vehicleChoice);
+      const docs = resolveVehicleOnboardingDocs(vehicle, documentCatalog);
+      if (docs.length > 0 && data.vehicleChoice) {
+        const rc = docs.find((d) => d.code === "rc");
+        setWizardStep(rc?.code ?? docs[0]!.code);
+      } else if (data.vehicleCategoryCode) {
+        setWizardStep("vehicle");
+      } else {
+        setWizardStep("category");
+      }
+      return;
+    }
+
     // Fresh Step 3 entry (post-selfie): stay on category until user Continues.
     if (!data.vehicleCategoryCode) {
       vehicleWizardBootstrappedRef.current = true;
@@ -505,6 +537,9 @@ export default function DlRcScreen() {
     data.vehicleOnboardingSubmittedFor,
     data.documentUploads,
     data.skippedOnboardingDocs,
+    isReupload,
+    documentCatalogFetched,
+    session?.accessToken,
   ]);
 
   useEffect(() => {
@@ -1071,15 +1106,27 @@ export default function DlRcScreen() {
         setWizardStep(vehicleOnboardingDocs[idx - 1]!.code);
         return;
       }
+      if (isReupload) {
+        leaveReuploadFlow();
+        return;
+      }
       setWizardStep("vehicle");
       return;
     }
     if (wizardStep === "vehicle") {
+      if (isReupload) {
+        leaveReuploadFlow();
+        return;
+      }
       setWizardStep("category");
       return;
     }
+    if (isReupload) {
+      leaveReuploadFlow();
+      return;
+    }
     goBackOrReplace("/(onboarding)/pan-selfie");
-  }, [wizardStep, vehicleOnboardingDocs]);
+  }, [wizardStep, vehicleOnboardingDocs, isReupload, leaveReuploadFlow]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -1229,6 +1276,11 @@ export default function DlRcScreen() {
       });
     }
     const nextDocStep = resolveVehicleWizardDocStep(mergedData, docs);
+    if (isReupload) {
+      const rc = docs.find((d) => d.code === "rc");
+      setWizardStep(rc?.code ?? nextDocStep ?? docs[0]!.code);
+      return;
+    }
     if (nextDocStep) setWizardStep(nextDocStep);
   };
 
@@ -1302,6 +1354,10 @@ export default function DlRcScreen() {
     if (data.riderId) {
       await queryClient.refetchQueries({ queryKey: ["rider", data.riderId] });
     }
+    if (isReupload) {
+      leaveReuploadFlow();
+      return;
+    }
     router.replace("/(onboarding)/bank-account");
   };
 
@@ -1313,6 +1369,10 @@ export default function DlRcScreen() {
     const isLastDoc = currentDocIndex >= vehicleOnboardingDocs.length - 1;
     if (!isLastDoc) {
       setWizardStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
+      return;
+    }
+    if (isReupload) {
+      leaveReuploadFlow();
       return;
     }
     setSubmitting(true);
@@ -1335,6 +1395,10 @@ export default function DlRcScreen() {
     if (docAlreadyComplete) {
       if (!isLastDoc) {
         setWizardStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
+        return;
+      }
+      if (isReupload) {
+        leaveReuploadFlow();
         return;
       }
       if (!data.riderId) {
@@ -1452,6 +1516,11 @@ export default function DlRcScreen() {
         setDocDraftUri(null);
         setDocDraftBackUri(null);
         setWizardStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
+        return;
+      }
+
+      if (isReupload) {
+        leaveReuploadFlow();
         return;
       }
 

@@ -9,6 +9,7 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import { useFonts } from "expo-font";
 import { Lora_400Regular, Lora_700Bold } from "@expo-google-fonts/lora";
 import { Poppins_600SemiBold, Poppins_700Bold } from "@expo-google-fonts/poppins";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as SplashScreen from "expo-splash-screen";
 import * as Location from "expo-location";
 import { StatusBar } from "expo-status-bar";
@@ -19,11 +20,12 @@ import {
   Alert,
   AppState,
   Platform,
+  Dimensions,
   StatusBar as NativeStatusBar,
   type AppStateStatus,
 } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaProvider, initialWindowMetrics, useSafeAreaInsets } from "react-native-safe-area-context";
 import { QueryClientProvider, focusManager, useQueryClient } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useAuthStore } from "@/store/authStore";
@@ -32,6 +34,7 @@ import { useLanguageStore } from "@/store/languageStore";
 import { useLocationStore, getDeviceLocationReadiness, coordsMovedSignificantly } from "@/store/locationStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { useFavoriteLocationsStore } from "@/store/favoriteLocationsStore";
+import { pullSavedPlacesFromServer } from "@/lib/savedPlacesSync";
 import { debouncedInvalidateFoodHomeListingQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import { reconcileActiveLocationFromGps } from "@/lib/reconcileActiveLocationFromGps";
 import { runExclusiveActiveLocationReconcile } from "@/lib/activeLocationReconcileGate";
@@ -72,6 +75,7 @@ import * as Linking from "expo-linking";
 import { resumePendingAddressShare, storePendingAddressShareToken, peekPendingAddressShareToken } from "@/lib/pendingAddressShare";
 import { peekPendingCheckoutPayment } from "@/lib/pendingCheckoutPayment";
 import { extractAddressShareToken } from "@/lib/addressShareLink";
+import { extractRestaurantShareSlug } from "@/lib/restaurantShareLink";
 import {
   clearPendingReferral,
   peekPendingReferral,
@@ -96,7 +100,7 @@ import {
 } from "@/lib/device-permissions";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { colors } from "@/theme";
-import { resolveTopSafeInset } from "@/constants/layout";
+import { resolveTopSafeInset, DEFAULT_STATUS_BAR_HEIGHT, DEFAULT_ANDROID_NAV_BOTTOM_INSET } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import "@/lib/i18n";
 import { setAppLanguage } from "@/lib/i18n";
@@ -111,6 +115,7 @@ import { resolveNearbyRiderMarkerImage } from "@/features/ride/rideOptionAssets"
 import { AppErrorBoundary, AppErrorFallback } from "@/components/AppErrorBoundary";
 import { installGlobalErrorHandlers, reportHandledError } from "@/lib/crashReporting";
 import { installReleaseConsoleSilencer } from "@/lib/releaseConsole";
+import { subscribeConfirmedAppState } from "@/lib/confirmedAppState";
 
 // Installed at module scope so a throw in the very first render is already covered.
 installGlobalErrorHandlers();
@@ -118,6 +123,21 @@ installReleaseConsoleSilencer();
 
 /** Storage key used by the in-app "Configure API URL" sheet on the login screen. */
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
+
+function getSafeAreaInitialMetrics() {
+  if (initialWindowMetrics?.insets) return initialWindowMetrics;
+  if (Platform.OS !== "android") return undefined;
+  const { width, height } = Dimensions.get("window");
+  return {
+    frame: { x: 0, y: 0, width, height },
+    insets: {
+      top: NativeStatusBar.currentHeight ?? DEFAULT_STATUS_BAR_HEIGHT,
+      left: 0,
+      right: 0,
+      bottom: DEFAULT_ANDROID_NAV_BOTTOM_INSET,
+    },
+  };
+}
 const SPLASH_CHROME_COLOR = "#14b8a6";
 
 /**
@@ -163,18 +183,15 @@ void (async () => {
   }
 })();
 
-// Prime Android launch chrome as early as JS can run so slow startup / offline
-// sessions never fall back to the platform's default white nav background.
+// Prime Android launch chrome as early as JS can run.
+// Splash may briefly use brand mint; CustomerSystemChrome switches to system theme after bootstrap.
 void (async () => {
   if (Platform.OS !== "android") return;
   try {
     NativeStatusBar.setHidden(false, "none");
     NativeStatusBar.setBarStyle("light-content", true);
     const { applyAndroidNavigationChrome } = await import("@/lib/androidEdgeToEdgeChrome");
-    await applyAndroidNavigationChrome({
-      buttonStyle: "dark",
-      backgroundColor: SPLASH_CHROME_COLOR,
-    });
+    await applyAndroidNavigationChrome();
   } catch {
     // Keep startup resilient; config-plugin defaults still apply natively.
   }
@@ -202,6 +219,8 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
+    ...Ionicons.font,
+    ...MaterialCommunityIcons.font,
     Lora_400Regular,
     Lora_700Bold,
     Poppins_600SemiBold,
@@ -231,9 +250,15 @@ export default function RootLayout() {
   const appReady = criticalReady;
 
   const handleSplashReady = useCallback(() => {
-    // Reveal the JS splash immediately; don't wait for hydration or door exit.
+    // Native splash stays until Lora is on the JS wordmark — no thin-system-font flash.
+    if (!fontsLoaded) return;
     void SplashScreen.hideAsync().catch(() => {});
-  }, []);
+  }, [fontsLoaded]);
+
+  useEffect(() => {
+    if (!fontsLoaded) return;
+    void SplashScreen.hideAsync().catch(() => {});
+  }, [fontsLoaded]);
 
   const handleSplashExitComplete = useCallback(() => {
     setSplashExited(true);
@@ -250,6 +275,11 @@ export default function RootLayout() {
     void hydrateRecentLocations();
     void hydrateFavoriteLocations();
   }, [hydrateAuth, hydrateCart, hydrateLanguage, hydrateLocation, hydrateRecentLocations, hydrateFavoriteLocations]);
+
+  useEffect(() => {
+    if (!session?.userId) return;
+    void pullSavedPlacesFromServer(session.userId);
+  }, [session?.userId]);
 
   useEffect(() => {
     if (!criticalReady || !session) {
@@ -362,7 +392,7 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AppErrorBoundary source="app-root">
       <QueryClientProvider client={queryClient}>
-        <SafeAreaProvider>
+        <SafeAreaProvider initialMetrics={getSafeAreaInitialMetrics()}>
           <View
             style={{
               flex: 1,
@@ -392,7 +422,6 @@ export default function RootLayout() {
                 <AuthNavigationGate />
                 <AddressShareLinkCapture />
                 <CustomerSystemChrome />
-                <AndroidSystemNavigationFill />
                 <StatusBarRouteChromeGuard />
                 <NavigatorWithRecovery>
                   <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
@@ -413,6 +442,9 @@ export default function RootLayout() {
                   {/* Absolute shutter over home — no Modal fade; drops when store page is ready */}
                   <MerchantNavTransitionShutter />
                 </AppErrorBoundary>
+                {/* Above navigator content so mint paints in the system-nav inset (tab bar
+                    already draws this on main Home; Food / merchant pages need this layer). */}
+                <AndroidSystemNavigationFill />
                 {/* Fire-and-forget prefetch/bootstrap — never user-visible. */}
                 <AppErrorBoundary source="prefetch" fallback={() => null}>
                   <PushNotificationBootstrap />
@@ -436,6 +468,7 @@ export default function RootLayout() {
               <GatiMitraBootstrapScreen
                 variant="root"
                 appReady={appReady}
+                fontsReady={fontsLoaded}
                 statusMessage={startupTimedOut ? "Initializing GatiMitra..." : null}
                 onSplashReady={handleSplashReady}
                 onExitComplete={handleSplashExitComplete}
@@ -470,10 +503,11 @@ function OrderRealtimeSync() {
 /** Lets React Query refetch on app foreground (required on React Native). */
 function ReactQueryFocusSync() {
   useEffect(() => {
-    const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
-      focusManager.setFocused(state === "active");
+    const unsubscribe = subscribeConfirmedAppState({
+      onSuspend: () => focusManager.setFocused(false),
+      onResume: () => focusManager.setFocused(true),
     });
-    return () => sub.remove();
+    return unsubscribe;
   }, []);
   return null;
 }
@@ -526,19 +560,29 @@ function AddressShareLinkCapture() {
   useEffect(() => {
     const apply = (url: string | null, isInitial: boolean) => {
       const token = extractAddressShareToken(url);
-      if (!token) return;
-      if (isInitial) {
-        if (initialHandledRef.current) return;
-        initialHandledRef.current = true;
-      }
-      void storePendingAddressShareToken(token).then(() => {
-        if (!useAuthStore.getState().hydrated) return;
-        if (!useAuthStore.getState().session?.accessToken) {
-          router.replace("/(auth)/login");
-          return;
+      if (token) {
+        if (isInitial) {
+          if (initialHandledRef.current) return;
+          initialHandledRef.current = true;
         }
-        router.replace(`/address/save?id=${encodeURIComponent(token)}`);
-      });
+        void storePendingAddressShareToken(token).then(() => {
+          if (!useAuthStore.getState().hydrated) return;
+          if (!useAuthStore.getState().session?.accessToken) {
+            router.replace("/(auth)/login");
+            return;
+          }
+          router.replace(`/address/save?id=${encodeURIComponent(token)}`);
+        });
+        return;
+      }
+      const restaurantSlug = extractRestaurantShareSlug(url);
+      if (restaurantSlug) {
+        if (isInitial) {
+          if (initialHandledRef.current) return;
+          initialHandledRef.current = true;
+        }
+        router.push(`/home/merchant/${encodeURIComponent(restaurantSlug)}`);
+      }
     };
 
     void Linking.getInitialURL().then((url) => apply(url, true));
@@ -822,11 +866,16 @@ function LocationPermissionResumeCheck() {
       );
     };
 
-    const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
-      if (nextState === "active") void syncOnForeground();
+    const unsubscribe = subscribeConfirmedAppState({
+      onSuspend: () => {},
+      onResume: () => {
+        void syncOnForeground().catch((err) => {
+          reportHandledError("location-resume", err);
+        });
+      },
     });
 
-    return () => sub.remove();
+    return () => unsubscribe();
   }, [requestPermissionAndFetch, promptLocationPermissionIfNeeded, queryClient]);
 
   // Re-prompt loop, but only while the modal is actually up. This used to be an
@@ -1005,7 +1054,13 @@ function RootStack({
           <Stack.Screen name="location" />
           <Stack.Screen name="location-map" />
           <Stack.Screen name="location-address" />
-          <Stack.Screen name="home" />
+          <Stack.Screen
+            name="home"
+            options={{
+              animation: "none",
+              animationDuration: 0,
+            }}
+          />
           <Stack.Screen
             name="checkout"
             options={{

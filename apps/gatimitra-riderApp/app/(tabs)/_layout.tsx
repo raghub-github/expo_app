@@ -84,7 +84,7 @@ export default function TabLayout() {
           lazy: false,
           freezeOnBlur: true,
         }}>
-        <Tabs.Screen name="orders" options={{ title: t('tabs.orders', 'Orders') }} />
+        <Tabs.Screen name="orders" options={{ title: t('tabs.orders', 'Orders'), freezeOnBlur: false }} />
         <Tabs.Screen name="ledger" options={{ title: t('tabs.ledger', 'Ledger') }} />
         <Tabs.Screen name="offers" options={{ title: t('tabs.offers', 'Offers') }} />
         <Tabs.Screen name="earnings" options={{ title: t('tabs.earnings', 'Earnings') }} />

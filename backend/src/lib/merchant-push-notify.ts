@@ -2,17 +2,23 @@
  * Merchant store push + in-app notifications (orders, ratings, rider pickup, online status).
  */
 import type { Sql } from "postgres";
+import { randomUUID } from "node:crypto";
+import { isExpoPushTokenString } from "@gatimitra/contracts";
+import { sendFcmV1 } from "../modules/notifications/fcmProvider.js";
 import {
   merchantAppOrderHref,
   merchantAppOrdersTabHref,
 } from "./merchant-app-deeplink.js";
-import { attachmentsProxyUrlFromKeyForApi } from "../utils/attachments-proxy-url.js";
 
 type PushPayload = {
   title: string;
   body: string;
   data?: Record<string, unknown>;
   channelId?: string;
+  collapseKey?: string;
+  tag?: string;
+  playSound?: boolean;
+  skipExpo?: boolean;
 };
 
 export async function getMerchantStorePushTokens(sql: Sql, storeId: number): Promise<string[]> {
@@ -48,11 +54,93 @@ export async function getMerchantStorePushTokens(sql: Sql, storeId: number): Pro
   return [...new Set([...storeTokens, ...parentTokens])];
 }
 
-async function sendMerchantExpoPush(tokens: string[], payload: PushPayload): Promise<void> {
+/** Native Android FCM tokens for this store (and parent merchant user). */
+export async function getMerchantStoreNativeFcmTokens(
+  sql: Sql,
+  storeId: number
+): Promise<string[]> {
+  try {
+    const rows = await sql`
+      SELECT DISTINCT nd.native_token AS token
+      FROM public.native_device_push_tokens nd
+      WHERE nd.token_type = 'fcm'
+        AND lower(nd.role) = 'merchant'
+        AND (
+          nd.store_id = ${storeId}
+          OR nd.user_id IN (
+            SELECT mp.parent_merchant_id::text
+            FROM public.merchant_stores ms
+            INNER JOIN public.merchant_parents mp ON mp.id = ms.parent_id
+            WHERE ms.id = ${storeId}
+              AND ms.deleted_at IS NULL
+          )
+        )
+        AND (nd.last_seen_at IS NULL OR nd.last_seen_at >= now() - interval '90 days')
+    `;
+    return [
+      ...new Set(
+        (rows as unknown as Array<{ token: string }>)
+          .map((r) => String(r.token ?? "").trim())
+          .filter((t) => t.length > 0 && !isExpoPushTokenString(t))
+      ),
+    ];
+  } catch {
+    return [];
+  }
+}
+
+function flattenPushData(data: Record<string, unknown> | undefined): Record<string, string> {
+  const out: Record<string, string> = { appRole: "merchant" };
+  if (!data) return out;
+  for (const [k, v] of Object.entries(data)) {
+    if (v === undefined || v === null) continue;
+    out[k] = typeof v === "string" ? v : JSON.stringify(v);
+  }
+  return out;
+}
+
+async function sendMerchantNativeFcm(tokens: string[], payload: PushPayload): Promise<void> {
   if (!tokens.length) return;
-  const messages = tokens.map((to) => ({
+  const data = flattenPushData(payload.data);
+  const deepLink =
+    typeof payload.data?.url === "string"
+      ? String(payload.data.url)
+      : typeof payload.data?.deepLink === "string"
+        ? String(payload.data.deepLink)
+        : typeof payload.data?.deep_link === "string"
+          ? String(payload.data.deep_link)
+          : null;
+  const isNewOrderAlert = payload.channelId === "merchant_new_orders_alert";
+  const playSound = payload.playSound !== false;
+  await Promise.all(
+    tokens.map((token) =>
+      sendFcmV1({
+        notificationId: randomUUID(),
+        token,
+        title: payload.title,
+        body: payload.body,
+        channelId: payload.channelId ?? "merchant_default",
+        sound: isNewOrderAlert ? "notification" : playSound ? "default" : null,
+        playSound,
+        appRole: "merchant",
+        priority: "high",
+        collapseKey: payload.collapseKey ?? null,
+        tag: payload.tag ?? null,
+        data,
+        deepLink,
+      }).catch(() => ({ ok: false as const }))
+    )
+  );
+}
+
+async function sendMerchantExpoPush(tokens: string[], payload: PushPayload): Promise<void> {
+  if (payload.skipExpo) return;
+  const expoTokens = tokens.filter((t) => isExpoPushTokenString(t));
+  if (!expoTokens.length) return;
+  const silent = payload.playSound === false;
+  const messages = expoTokens.map((to) => ({
     to,
-    sound: payload.channelId === "merchant_new_orders_alert" ? "notification" : "default",
+    sound: payload.channelId === "merchant_new_orders_alert" ? "notification" : silent ? null : "default",
     title: payload.title,
     body: payload.body,
     data: {
@@ -62,6 +150,7 @@ async function sendMerchantExpoPush(tokens: string[], payload: PushPayload): Pro
     },
     priority: "high",
     channelId: payload.channelId ?? "merchant_default",
+    collapseId: payload.collapseKey ?? undefined,
   }));
   try {
     await fetch("https://exp.host/--/api/v2/push/send", {
@@ -211,93 +300,222 @@ async function notifyMerchantStore(
     actionUrl?: string | null;
     pushData?: Record<string, unknown>;
     channelId?: string;
+    collapseKey?: string;
+    tag?: string;
+    playSound?: boolean;
+    skipExpo?: boolean;
     /** Skip merchant_store_notifications inbox (push-only). */
     skipInbox?: boolean;
+    /** Skip native FCM when another path (notificationService) already fans out. */
+    skipNative?: boolean;
   }
 ): Promise<void> {
   if (!args.skipInbox) {
     await insertMerchantStoreNotification(sql, args);
   }
   const tokens = await getMerchantStorePushTokens(sql, args.storeId);
-  await sendMerchantExpoPush(tokens, {
+  const pushPayload: PushPayload = {
     title: args.title,
     body: args.body,
     data: args.pushData,
     channelId: args.channelId,
-  });
+    collapseKey: args.collapseKey,
+    tag: args.tag,
+    playSound: args.playSound,
+    skipExpo: args.skipExpo,
+  };
+  await sendMerchantExpoPush(tokens, pushPayload);
+  if (args.skipNative) return;
+  const nativeTokens = [
+    ...new Set([
+      ...tokens.filter((t) => !isExpoPushTokenString(t)),
+      ...(await getMerchantStoreNativeFcmTokens(sql, args.storeId)),
+    ]),
+  ];
+  await sendMerchantNativeFcm(nativeTokens, pushPayload);
+}
+
+async function getMerchantStoreScopedNativeFcmTokens(
+  sql: Sql,
+  storeId: number
+): Promise<string[]> {
+  try {
+    const rows = await sql`
+      SELECT DISTINCT nd.native_token AS token
+      FROM public.native_device_push_tokens nd
+      WHERE nd.token_type = 'fcm'
+        AND lower(nd.role) = 'merchant'
+        AND nd.store_id = ${storeId}
+        AND (nd.last_seen_at IS NULL OR nd.last_seen_at >= now() - interval '90 days')
+    `;
+    const scoped = [
+      ...new Set(
+        (rows as unknown as Array<{ token: string }>)
+          .map((r) => String(r.token ?? "").trim())
+          .filter((t) => t.length > 0 && !isExpoPushTokenString(t))
+      ),
+    ];
+    if (scoped.length > 0) return scoped;
+  } catch {
+    /* fall through to parent-scoped tokens */
+  }
+  return getMerchantStoreNativeFcmTokens(sql, storeId);
+}
+
+const STORE_STATUS_FCM_TAG = "merchant-store-status";
+const STORE_STATUS_CHANNEL_ID = "merchant_store_status";
+
+type StoreStatusPushState = "ONLINE" | "OUT_OF_TIMINGS" | "RECONNECT";
+
+function withTheStoreName(name: string): string {
+  return /^the\s/i.test(name) ? name : `The ${name}`;
+}
+
+async function merchantStoreStatusContext(
+  sql: Sql,
+  storeId: number
+): Promise<{ storeName: string | null; merchantId: string | null }> {
+  const rows = await sql`
+    SELECT ms.store_name AS store_name, mp.parent_merchant_id AS merchant_id
+    FROM merchant_stores ms
+    LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
+    WHERE ms.id = ${storeId} AND ms.deleted_at IS NULL
+    LIMIT 1
+  `;
+  const row = rows[0] as { store_name?: string | null; merchant_id?: string | null } | undefined;
+  const storeName = String(row?.store_name ?? "").trim();
+  const merchantId = String(row?.merchant_id ?? "").trim();
+  return {
+    storeName: storeName.length > 0 ? storeName : null,
+    merchantId: merchantId.length > 0 ? merchantId : null,
+  };
+}
+
+function storeStatusCopy(
+  state: StoreStatusPushState,
+  storeName: string | null
+): { title: string; body: string; url: string; screen: string } {
+  if (state === "ONLINE") {
+    return {
+      title: storeName ? `🟢 ${withTheStoreName(storeName)} is online` : "🟢 Your store is online",
+      body: "Waiting for orders",
+      url: "/(tabs)/",
+      screen: "home",
+    };
+  }
+  if (state === "OUT_OF_TIMINGS") {
+    return {
+      title: storeName
+        ? `🔴 ${withTheStoreName(storeName)} is out of delivery timings`
+        : "🔴 Your store is out of delivery timings",
+      body: "Go online now to receive orders",
+      url: "/restaurant-status",
+      screen: "restaurant_status",
+    };
+  }
+  return {
+    title: "Reconnect to receive orders",
+    body: storeName
+      ? `${storeName}: Your device was restarted. Open the app to resume order notifications.`
+      : "Your device was restarted. Open the app to resume order notifications.",
+    url: "/",
+    screen: "home",
+  };
+}
+
+/**
+ * Persistent store-status tray (ONLINE / OUT_OF_TIMINGS / RECONNECT).
+ * Native FCM with a stable tag updates in place. Not a NEW_ORDER alert.
+ */
+export async function notifyMerchantStoreStatus(
+  sql: Sql,
+  storeId: number,
+  state: StoreStatusPushState,
+  opts?: { eventId?: string }
+): Promise<void> {
+  const { storeName, merchantId } = await merchantStoreStatusContext(sql, storeId);
+  const copy = storeStatusCopy(state, storeName);
+  const eventId = opts?.eventId ?? `STORE_STATUS:${state}:${storeId}:${Date.now()}`;
+  const timestamp = new Date().toISOString();
+  const nativeTokens = await getMerchantStoreScopedNativeFcmTokens(sql, storeId);
+  const expoTokens = nativeTokens.length > 0 ? [] : await getMerchantStorePushTokens(sql, storeId);
+  const pushPayload: PushPayload = {
+    title: copy.title,
+    body: copy.body,
+    channelId: STORE_STATUS_CHANNEL_ID,
+    collapseKey: `gm_store_status_${storeId}`,
+    tag: STORE_STATUS_FCM_TAG,
+    playSound: false,
+    skipExpo: nativeTokens.length > 0,
+    data: {
+      type: "STORE_STATUS",
+      notificationType: "STORE_STATUS",
+      state,
+      merchantId: merchantId ?? String(storeId),
+      storeId,
+      storeName: storeName ?? "",
+      eventId,
+      timestamp,
+      url: copy.url,
+      screen: copy.screen,
+    },
+  };
+  console.info(
+    `[STORE_STATUS_NOTIFICATION] merchantId=${merchantId ?? ""} storeId=${storeId} storeName=${storeName ?? "Your store"} state=${state} source=FCM notificationId=${STORE_STATUS_FCM_TAG} action=POSTED eventId=${eventId}`
+  );
+  if (nativeTokens.length > 0) {
+    await sendMerchantNativeFcm(nativeTokens, pushPayload);
+    return;
+  }
+  await sendMerchantExpoPush(expoTokens, pushPayload);
 }
 
 /** Idle / online reminder when store starts accepting orders — same copy as waiting-for-order inbox. */
 export async function notifyMerchantStoreOnline(sql: Sql, storeId: number): Promise<void> {
-  const { WAITING_FOR_ORDER_TITLE, WAITING_FOR_ORDER_BODY, ensureWaitingForOrderInbox } = await import(
-    "./merchant-waiting-for-order.js"
-  );
-  const ensured = await ensureWaitingForOrderInbox(storeId);
-  if (ensured.suppressed) return;
-  // Only push when the waiting-for-order inbox row is newly created (store just came online).
-  // Avoid re-pushing every schedule tick while already online.
-  if (!ensured.created) return;
-
-  await notifyMerchantStore(sql, {
-    storeId,
-    type: "system",
-    title: WAITING_FOR_ORDER_TITLE,
-    body: WAITING_FOR_ORDER_BODY,
-    actionUrl: "/(tabs)/",
-    pushData: {
-      type: "store_online",
-      notificationType: "store_online",
-      screen: "home",
-      merchantId: storeId,
-      url: "/(tabs)/",
-    },
-    channelId: "merchant_online",
-    // Inbox row already inserted by ensureWaitingForOrderInbox.
-    skipInbox: true,
-  });
+  const { ensureWaitingForOrderInbox } = await import("./merchant-waiting-for-order.js");
+  await ensureWaitingForOrderInbox(storeId);
+  // Tray FCM is independent of inbox idempotency — always update the same tag.
+  await notifyMerchantStoreStatus(sql, storeId, "ONLINE");
 }
 
-async function merchantStoreDisplayName(sql: Sql, storeId: number): Promise<string> {
-  const rows = await sql`
-    SELECT store_name FROM merchant_stores WHERE id = ${storeId} LIMIT 1
-  `;
-  const name = (rows[0] as { store_name?: string } | undefined)?.store_name?.trim();
-  return name && name.length > 0 ? name : "Your restaurant";
+async function merchantStoreDisplayName(sql: Sql, storeId: number): Promise<string | null> {
+  const { storeName } = await merchantStoreStatusContext(sql, storeId);
+  return storeName;
 }
 
 /** Outside scheduled delivery slot — opens restaurant status screen. */
 export async function notifyMerchantOutsideDeliveryTimings(sql: Sql, storeId: number): Promise<void> {
   const storeName = await merchantStoreDisplayName(sql, storeId);
-  const title = `🔴 ${storeName} is out of delivery timings`;
+  const titled = storeName
+    ? `🔴 ${withTheStoreName(storeName)} is out of delivery timings`
+    : "🔴 Your store is out of delivery timings";
   const body = "Go online now to receive orders";
   const recent = await sql`
     SELECT 1 FROM merchant_store_notifications
     WHERE store_id = ${storeId}
-      AND title = ${title}
+      AND title = ${titled}
       AND created_at > now() - interval '12 hours'
     LIMIT 1
   `;
-  if (recent.length > 0) return;
-  await notifyMerchantStore(sql, {
-    storeId,
-    type: "store",
-    title,
-    body,
-    actionUrl: "/restaurant-status",
-    pushData: {
-      type: "merchant_outside_delivery",
-      screen: "restaurant_status",
-      url: "/restaurant-status",
-      template_code: "MERCHANT_OUTSIDE_DELIVERY_TIMINGS",
-    },
-    channelId: "merchant_online",
-  });
+  if (recent.length === 0) {
+    await insertMerchantStoreNotification(sql, {
+      storeId,
+      type: "store",
+      title: titled,
+      body,
+      actionUrl: "/restaurant-status",
+    }).catch(() => undefined);
+  }
+  await notifyMerchantStoreStatus(sql, storeId, "OUT_OF_TIMINGS");
 }
 
 /** Delivery slot is active but store is still offline — prompt merchant to go online. */
+/** Delivery slot is active but store is still offline — inbox prompt (not the persistent status tray). */
 export async function notifyMerchantGoOnlinePrompt(sql: Sql, storeId: number): Promise<void> {
   const storeName = await merchantStoreDisplayName(sql, storeId);
-  const title = `🔴 ${storeName} is out of delivery timings`;
+  const title = storeName
+    ? `🔴 ${withTheStoreName(storeName)} is out of delivery timings`
+    : "🔴 Your store is out of delivery timings";
   const body = "Go online now to receive orders";
   const recent = await sql`
     SELECT 1 FROM merchant_store_notifications
@@ -319,7 +537,8 @@ export async function notifyMerchantGoOnlinePrompt(sql: Sql, storeId: number): P
       url: "/restaurant-status",
       template_code: "MERCHANT_GO_ONLINE_PROMPT",
     },
-    channelId: "merchant_online",
+    channelId: STORE_STATUS_CHANNEL_ID,
+    playSound: false,
   });
 }
 
@@ -353,6 +572,7 @@ export async function notifyMerchantNewRating(
     body,
     orderId: args.foodOrderId,
     actionUrl,
+    channelId: "merchant_order_lifecycle",
     pushData: {
       type: "merchant_rating",
       orderId: args.displayOrderId,
@@ -716,6 +936,8 @@ export async function notifyMerchantOrderLifecycle(
     // Cancel/delivered keep an inbox row; prep/ready/OFD are push + sticky only.
     skipInbox:
       stage !== "CANCELLED" && stage !== "DELIVERED",
+    // CANCELLED already fans out native FCM via MERCHANT_ORDER_CANCELLED.
+    skipNative: stage === "CANCELLED",
     pushData: {
       type: "merchant_order_lifecycle",
       stage,

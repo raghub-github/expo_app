@@ -143,7 +143,15 @@ function DashboardLayoutClient({
 }) {
   return (
     <DashboardSearchParamsProvider>
-      <Toaster position="top-right" richColors closeButton />
+      <Toaster
+        position="top-right"
+        richColors
+        closeButton
+        style={{ zIndex: 2147483646 }}
+        toastOptions={{
+          style: { zIndex: 2147483646 },
+        }}
+      />
       <TicketsNavPendingProvider>
         <DashboardLayoutClientInner>{children}</DashboardLayoutClientInner>
       </TicketsNavPendingProvider>

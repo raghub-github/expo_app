@@ -5,6 +5,8 @@ export type PushNotificationOpenPayload = {
   body: string | null;
   data: Record<string, unknown>;
   actionIdentifier?: string | null;
+  /** When the OS received the notification (ms). Used to resume alert progress. */
+  date?: number | null;
 };
 
 /**
@@ -39,6 +41,7 @@ export function subscribeToPushNotificationResponse(
         title: c.title ?? null,
         body: c.body ?? null,
         data,
+        date: response.notification.date,
       });
     });
   })();
@@ -62,6 +65,7 @@ export function subscribeToForegroundNotifications(
         title: c.title ?? null,
         body: c.body ?? null,
         data,
+        date: notification.date,
       });
     });
   })();
@@ -82,6 +86,7 @@ export async function getLastNotificationOpenPayload(): Promise<PushNotification
       title: c.title ?? null,
       body: c.body ?? null,
       data: (c.data ?? {}) as Record<string, unknown>,
+      date: last.notification.date,
     };
   } catch {
     return null;

@@ -314,7 +314,7 @@ export async function GET(
       : bankAccounts;
 
     // Merchant Partner app: Expo push token registered for this store ⇒ app installed.
-    let appInstalled = false;
+    let appInstalled: boolean | null = null;
     try {
       const sql = getSql();
       const tokenRows = await sql`

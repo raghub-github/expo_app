@@ -14,7 +14,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, TextInput, StyleSheet, Pressable, ActivityIndicator, KeyboardAvoidingView, Keyboard, Linking, Platform, ScrollView, BackHandler, type KeyboardEvent } from "react-native";
-import { useRouter, useNavigation } from "expo-router";
+import { useRouter, useNavigation, Redirect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
@@ -29,6 +29,7 @@ import { GatiMitraMerchant, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
 import { merchantOtpVerifyTheme } from "@/lib/otpVerifyTheme";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
+import { MerchantBootstrapScreen } from "@/components/MerchantBootstrapScreen";
 
 const OTP_LEN = 6;
 const legalUrls = getPartnerLegalUrls();
@@ -63,7 +64,7 @@ export default function LoginScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const { setTokenAndPartner } = useAuth();
+  const { setTokenAndPartner, authState } = useAuth();
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
   const [step, setStep] = useState<"phone" | "otp">("phone");
@@ -319,6 +320,13 @@ export default function LoginScreen() {
 
   const otpSheetError =
     step === "otp" && !deviceSessionMode && error.trim() ? error : null;
+
+  if (authState.status === "loading") {
+    return <MerchantBootstrapScreen />;
+  }
+  if (authState.status === "authenticated") {
+    return <Redirect href="/" />;
+  }
 
   return (
     <View style={styles.root}>

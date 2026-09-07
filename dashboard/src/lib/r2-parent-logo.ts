@@ -3,6 +3,8 @@
  * Same convention as partnersite: docs/merchants/{parent_code}/logo/{fileName}
  */
 
+import { toAttachmentProxyUrl } from "./r2-proxy-url";
+
 const R2_DOCS_PREFIX = "docs";
 const R2_MERCHANT_PREFIX = `${R2_DOCS_PREFIX}/merchants`;
 
@@ -30,6 +32,5 @@ export function toStoredDocumentUrl(key: string | null | undefined): string | nu
   if (!key || typeof key !== "string") return null;
   const trimmed = key.trim();
   if (!trimmed) return null;
-  const k = trimmed.replace(/^\/+/, "");
-  return `/api/attachments/proxy?key=${encodeURIComponent(k)}`;
+  return toAttachmentProxyUrl(trimmed);
 }

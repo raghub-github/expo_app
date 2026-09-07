@@ -16,6 +16,7 @@ export function expandCampaignUserIdCandidates(raw: string): string[] {
     if (Number.isFinite(pk) && pk > 0) {
       out.add(`usr_${pk}`);
       out.add(`GMR${pk}`);
+      out.add(String(pk));
     }
     return [...out];
   }
@@ -54,6 +55,12 @@ export function expectedRoleFromTarget(
   }
   if (Array.isArray(target.store_ids) && target.store_ids.length > 0) {
     return "merchant";
+  }
+  if (typeof target.user_id === "string" && target.user_id.trim()) {
+    const id = target.user_id.trim().toUpperCase();
+    if (/^GMR\d+$/.test(id) || /^USR_\d+$/.test(id)) return "rider";
+    if (/^GMMP\d+$/.test(id)) return "merchant";
+    if (/^GM\d+$/.test(id)) return "customer";
   }
   if (Array.isArray(target.user_ids) && target.user_ids.length > 0) {
     const roles = new Set<"customer" | "merchant" | "rider">();

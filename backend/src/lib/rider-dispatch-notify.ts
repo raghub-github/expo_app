@@ -142,9 +142,13 @@ export async function notifyRiderDispatchOffer(
       earnings != null && earnings.estimatedEarning > 0
         ? `₹${earnings.estimatedEarning}`
         : "";
+    const title = "🔔 New order received";
+    const bodyParts = [`${label} · ${displayId}`, `${dist} to pickup`];
+    if (earningLabel) bodyParts.push(earningLabel);
+    const body = `${bodyParts.join(" · ")} — tap to accept`;
 
     try {
-      await sendNotification({
+      const result = await sendNotification({
         templateCode: "RIDER_DISPATCH_OFFER",
         variables: {
           orderId: target.orderId,
@@ -158,13 +162,24 @@ export async function notifyRiderDispatchOffer(
           earningAmount: earnings?.estimatedEarning != null ? String(earnings.estimatedEarning) : "",
         },
         target: { user_id: `usr_${rider.riderId}` },
-        priority: "high",
+        priority: "critical",
+        deliverNow: true,
+        bypassQuietHours: true,
+        idempotencyKey: `RIDER_DISPATCH_OFFER:${target.orderId}:${rider.riderId}:${target.waveNumber}`,
+        overrides: {
+          title,
+          body,
+        },
         metadata: {
           type: "dispatch_offer",
           gmType: "DISPATCH_OFFER",
+          event: "NEW_ORDER",
           orderId: target.orderId,
           pickupDistanceMeters: String(Math.round(rider.distanceMeters)),
           category: toCategory(target.serviceType),
+          skip_in_app_banner: true,
+          alertStartedAt: String(Date.now()),
+          alertSessionId: `RIDER_DISPATCH_OFFER:${target.orderId}:${rider.riderId}:${target.waveNumber}`,
           ...(earnings?.estimatedEarning != null
             ? {
                 estimatedEarning: String(earnings.estimatedEarning),
@@ -173,16 +188,34 @@ export async function notifyRiderDispatchOffer(
             : {}),
         },
       });
-      console.info(
-        "[dispatch] FCM_SEND",
-        JSON.stringify({
-          rider: rider.riderId,
-          order: target.orderId,
-          serviceType: target.serviceType,
-          waveNumber: target.waveNumber,
-          template: "RIDER_DISPATCH_OFFER",
-        })
-      );
+      const delivered = (result.accepted ?? result.queued) > 0 && !result.skipReason;
+      if (!delivered) {
+        console.warn(
+          "[dispatch] FCM_SKIP",
+          JSON.stringify({
+            rider: rider.riderId,
+            order: target.orderId,
+            skipReason: result.skipReason ?? null,
+            warning: result.warning ?? null,
+            queued: result.queued,
+            accepted: result.accepted ?? 0,
+            skipped: result.skipped,
+            failedSync: result.failedSync,
+          })
+        );
+      } else {
+        console.info(
+          "[dispatch] FCM_SEND",
+          JSON.stringify({
+            rider: rider.riderId,
+            order: target.orderId,
+            serviceType: target.serviceType,
+            waveNumber: target.waveNumber,
+            template: "RIDER_DISPATCH_OFFER",
+            accepted: result.accepted ?? result.queued,
+          })
+        );
+      }
     } catch (err) {
       console.warn(
         "[dispatch] PUSH_FAILED",

@@ -139,7 +139,7 @@ export default function GroceryGridFirstHomeScreen() {
   const { data: addresses = [] } = useAddresses();
   const { data: activeLocation } = useActiveLocation();
   const statusMap = useStoreStatusStore((s) => s.statusMap);
-  const setStatusFromApi = useStoreStatusStore((s) => s.setStatusFromApi);
+  const seedStatusesFromApi = useStoreStatusStore((s) => s.seedStatusesFromApi);
   const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
   const setImmersiveStatusBarChrome = useScreenChromeStore((s) => s.setImmersiveStatusBarChrome);
   const floatingDockVisible = useFloatingDockUiStore((s) => s.dockVisible);
@@ -276,15 +276,17 @@ export default function GroceryGridFirstHomeScreen() {
 
   useLayoutEffect(() => {
     const list = Array.isArray(merchantsData) ? merchantsData : [];
-    for (const m of list) {
-      const live = resolveMerchantLiveStatus(m, {});
-      setStatusFromApi(m.id, live === "OPEN", live);
-    }
+    seedStatusesFromApi(
+      list.map((m) => {
+        const live = resolveMerchantLiveStatus(m, {});
+        return { storeId: m.id, isOpen: live === "OPEN", liveStatus: live };
+      })
+    );
     if (list.length > 0) {
       prefetchMerchantCardImages(list);
       prefetchMerchantBanners(list);
     }
-  }, [merchantsData, setStatusFromApi]);
+  }, [merchantsData, seedStatusesFromApi]);
 
   const merchants = Array.isArray(merchantsData) ? merchantsData : [];
 
@@ -737,11 +739,13 @@ export default function GroceryGridFirstHomeScreen() {
 
   const gridFirstCategoryFlowStyle = useAnimatedStyle(() => {
     const stickAt = gridFirstCategoryStickAtSv.value;
-    if (stickAt <= 1) return { opacity: 1 };
+    if (stickAt <= 24) return { opacity: 1 };
+    const early = Math.min(8, Math.max(0, stickAt - 8));
+    const snapAt = stickAt - early;
     return {
       opacity: interpolate(
         gridFirstScrollY.value,
-        [stickAt + 8, stickAt + 28],
+        [snapAt - 2, snapAt + 6],
         [1, 0],
         Extrapolation.CLAMP
       ),
@@ -790,9 +794,9 @@ export default function GroceryGridFirstHomeScreen() {
           data={showMerchantsSkeleton ? EMPTY_MERCHANTS : listMerchants}
           keyExtractor={(m) => m.id}
           renderItem={renderItem}
-          drawDistance={Math.max(2800, Math.round(windowHeight * 4))}
+          drawDistance={Math.max(1600, Math.round(windowHeight * 2.5))}
           removeClippedSubviews={false}
-          overrideProps={{ initialDrawBatchSize: 24 }}
+          overrideProps={{ initialDrawBatchSize: 14 }}
           contentInsetAdjustmentBehavior="never"
           overScrollMode="never"
           bounces={false}
@@ -942,7 +946,7 @@ export default function GroceryGridFirstHomeScreen() {
           searchPlaceholders={GROCERY_SEARCH_PLACEHOLDERS}
           categories={gridFirstStickyCategoryTabsEl}
           filters={undefined}
-          enableCategorySticky
+          enableCategorySticky={gridFirstCategoryStickAt > 24}
           enableFilterSticky={false}
         />
       </View>

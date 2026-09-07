@@ -112,9 +112,6 @@ export function resolveFirstIncompleteOnboardingStep(
   ) {
     return "dl_rc";
   }
-  if (!vehicleSubmitted && options?.vehicleOnboardingSubmittedFor !== options?.vehicleChoice) {
-    return "dl_rc";
-  }
   if (!isBankAccountOnboardingComplete(options)) {
     return "bank_account";
   }
@@ -130,26 +127,25 @@ export function canAccessOnboardingPaymentScreen(options?: {
   /** When true, skip bank gate (legacy callers / vehicle-only checks). */
   skipBankAccountCheck?: boolean;
 }): boolean {
-  if (!options?.vehicleChoice?.trim()) return false;
-  if (options.vehicleOnboardingSubmittedFor !== options.vehicleChoice) return false;
+  const completed = options?.completedOnboardingSteps;
+  const locallySubmitted =
+    Boolean(options?.vehicleChoice?.trim()) &&
+    options?.vehicleOnboardingSubmittedFor === options?.vehicleChoice;
+  const vehicleDone =
+    locallySubmitted ||
+    isOnboardingVehicleDocsComplete(completed, options?.vehicleOnboardingFlow) ||
+    options?.vehicleOnboardingFlow === "payment";
+  if (!vehicleDone) return false;
   if (
-    !options.skipBankAccountCheck &&
+    !options?.skipBankAccountCheck &&
     !isBankAccountOnboardingComplete(options)
   ) {
     return false;
   }
-  // Prefer local vehicle-submit flag; fall back to server completed steps when present.
-  const completed = options.completedOnboardingSteps;
   if (completed?.length) {
     const kycDone =
       completed.includes("aadhaar_name") && completed.includes("pan_selfie");
     if (!kycDone) return false;
-    if (
-      !isOnboardingVehicleDocsComplete(completed, options.vehicleOnboardingFlow) &&
-      options.vehicleOnboardingFlow !== "payment"
-    ) {
-      return false;
-    }
   }
   return true;
 }
@@ -161,8 +157,13 @@ export function canAccessOnboardingBankAccountScreen(options?: {
   completedOnboardingSteps?: string[] | null;
   vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment";
 }): boolean {
-  if (!options?.vehicleChoice?.trim()) return false;
-  if (options.vehicleOnboardingSubmittedFor === options.vehicleChoice) return true;
+  const locallySubmitted =
+    Boolean(options?.vehicleChoice?.trim()) &&
+    options?.vehicleOnboardingSubmittedFor === options?.vehicleChoice;
+  if (locallySubmitted) return true;
+  if (isOnboardingVehicleDocsComplete(options?.completedOnboardingSteps, options?.vehicleOnboardingFlow)) {
+    return true;
+  }
   return canAccessOnboardingPaymentScreen({
     ...options,
     skipBankAccountCheck: true,

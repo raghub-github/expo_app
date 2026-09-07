@@ -27,7 +27,7 @@ import {
 import { openRaiseTicketChat } from "@/src/lib/rider-support-navigation";
 import { riderSupportService } from "@/src/services/riderSupport.service";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { colors } from "@/src/theme";
+import { colors, RIDER_AUTH_BG } from "@/src/theme";
 
 const TEAL = colors.primary[600];
 
@@ -216,15 +216,15 @@ export function RaiseTicketHubScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#F1F5F9" },
+  root: { flex: 1, backgroundColor: RIDER_AUTH_BG },
   scroll: {
     paddingHorizontal: 16,
-    paddingTop: 8,
+    paddingTop: 12,
     paddingBottom: 28,
     flexGrow: 1,
   },
   categoryList: {
-    gap: 14,
+    gap: 22,
     paddingBottom: 8,
   },
   center: { paddingVertical: 48, alignItems: "center", gap: 12 },

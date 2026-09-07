@@ -30,9 +30,10 @@ import {
   persistRiderRejectedOrderId,
   pruneRiderRejectedOrderIds,
 } from "@/src/lib/riderRejectedOrders";
-import { readRiderDeviceOrderAlerts } from "@/src/lib/riderDeviceOrderAlerts";
+import { readRiderDeviceOrderAlerts, volumeStepTo01 } from "@/src/lib/riderDeviceOrderAlerts";
 import {
   playIncomingOrderAlert,
+  playOrderAlertSound,
   stopOrderAlertSound,
 } from "@/src/lib/playOrderAlertSound";
 import {
@@ -81,6 +82,7 @@ function toIncomingOrder(order: RiderOrderSummary, offerShownAtMs: number): Inco
     itemCount: order.itemCount,
     pickup: order.pickup,
     delivery: order.delivery,
+    stops: order.stops,
     storeImageUrl: order.storeImageUrl,
     dropAddressImageUrl: order.dropAddressImageUrl,
     distanceKm: order.distanceKm,
@@ -153,9 +155,9 @@ export function IncomingRideOrderHost() {
   const expiredRef = useRef(new Set<string>());
   const soundPlayedRef = useRef(new Set<string>());
   const locallyAcceptedRef = useRef(new Set<string>());
-  const prevAvailableRef = useRef<RiderOrderSummary[]>([]);
   const seenOfferIdsRef = useRef(new Set<string>());
   const offerShownAtRef = useRef(new Map<string, number>());
+  const stickyOfferRef = useRef<RiderOrderSummary | null>(null);
   const acceptingRef = useRef(false);
   const [rejectHydrated, setRejectHydrated] = useState(false);
   const [rejectSheetOpen, setRejectSheetOpen] = useState(false);
@@ -253,8 +255,11 @@ export function IncomingRideOrderHost() {
 
   const activeOrder = useMemo(() => {
     if (!activeOrderId) return null;
-    const hit = orders.find((o) => o.id === activeOrderId);
+    const hit =
+      orders.find((o) => o.id === activeOrderId) ??
+      (stickyOfferRef.current?.id === activeOrderId ? stickyOfferRef.current : null);
     if (!hit) return null;
+    stickyOfferRef.current = hit;
     const offerShownAtMs = offerShownAtRef.current.get(activeOrderId) ?? Date.now();
     return toIncomingOrder(hit, offerShownAtMs);
   }, [activeOrderId, orders]);
@@ -279,6 +284,7 @@ export function IncomingRideOrderHost() {
       if (activeOrderIdRef.current === id) {
         setModalVisible(false);
         setActiveOrderId(null);
+        stickyOfferRef.current = null;
       }
       bumpPool();
     },
@@ -300,27 +306,6 @@ export function IncomingRideOrderHost() {
   }, [activeOrderId, cancelEpoch, dismissTakenOffer]);
 
   useEffect(() => {
-    const prev = prevAvailableRef.current;
-    if (prev.length > 0) {
-      const currentIds = new Set(orders.map((o) => o.id));
-      for (const o of prev) {
-        if (currentIds.has(o.id)) continue;
-        if (rejectedRef.current.has(o.id)) continue;
-        if (expiredRef.current.has(o.id)) continue;
-        if (locallyAcceptedRef.current.has(o.id)) continue;
-        const wasOffered =
-          offerShownAtRef.current.has(o.id) || soundPlayedRef.current.has(o.id);
-        if (!wasOffered) continue;
-        // Offer vanished from pool — close modal silently. "Taken by another rider"
-        // is shown only via WS `accepted_by_other_rider` or accept API 409 proof.
-        dismissTakenOffer(o.id);
-        expiredRef.current.add(o.id);
-      }
-    }
-    prevAvailableRef.current = orders;
-  }, [orders, dismissTakenOffer]);
-
-  useEffect(() => {
     const liveIds = new Set(orders.map((o) => o.id));
     let changed = false;
     for (const id of [...expiredRef.current]) {
@@ -330,12 +315,12 @@ export function IncomingRideOrderHost() {
       }
     }
     for (const id of [...offerShownAtRef.current.keys()]) {
-      if (!liveIds.has(id)) {
+      if (!liveIds.has(id) && useIncomingDispatchOfferStore.getState().isCancelled(id)) {
         offerShownAtRef.current.delete(id);
       }
     }
     for (const id of [...soundPlayedRef.current]) {
-      if (!liveIds.has(id)) {
+      if (!liveIds.has(id) && useIncomingDispatchOfferStore.getState().isCancelled(id)) {
         soundPlayedRef.current.delete(id);
       }
     }
@@ -389,10 +374,21 @@ export function IncomingRideOrderHost() {
     }
 
     if (!poolHeadId) {
+      const stickyId = activeOrderIdRef.current;
+      if (stickyId) {
+        const cancelled = useIncomingDispatchOfferStore.getState().isCancelled(stickyId);
+        const snap = stickyOfferRef.current;
+        const deadlineMs = snap?.acceptDeadlineAt ? Date.parse(String(snap.acceptDeadlineAt)) : NaN;
+        const withinDeadline = !Number.isFinite(deadlineMs) || Date.now() < deadlineMs + 2000;
+        if (!cancelled && withinDeadline && !rejectedRef.current.has(stickyId) && !expiredRef.current.has(stickyId)) {
+          return;
+        }
+      }
       stopOrderAlertSound();
       setActiveOrderId(null);
       setModalVisible(false);
       modalOpenLoggedRef.current = null;
+      stickyOfferRef.current = null;
       return;
     }
 
@@ -447,10 +443,16 @@ export function IncomingRideOrderHost() {
   ]);
 
   useEffect(() => {
-    if (!isOnDuty || !modalVisible || !poolHeadId || !acceptanceSettings) return;
+    if (!isOnDuty || !modalVisible || !poolHeadId) return;
     if (soundPlayedRef.current.has(poolHeadId)) return;
     soundPlayedRef.current.add(poolHeadId);
-    void playIncomingOrderAlert(acceptanceSettings, readRiderDeviceOrderAlerts());
+    const device = readRiderDeviceOrderAlerts();
+    if (acceptanceSettings) {
+      void playIncomingOrderAlert(acceptanceSettings, device);
+      return;
+    }
+    if (!device.orderAlertsEnabled || !device.soundAlertsEnabled) return;
+    void playOrderAlertSound(null, 8, volumeStepTo01(device.volumeStep), device.ringInSilent);
   }, [isOnDuty, modalVisible, poolHeadId, acceptanceSettings]);
 
   useEffect(() => {

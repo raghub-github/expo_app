@@ -7,6 +7,7 @@ import {
   mapCustomizationsFromApi,
   mapVariantsFromApi,
 } from "@/lib/map-menu-item-options";
+import { parseSizePreset } from "@/lib/menu-size-preset";
 import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 
 export const DEFAULT_ITEM_FORM_DATA: ItemFormData = {
@@ -35,6 +36,7 @@ export const DEFAULT_ITEM_FORM_DATA: ItemFormData = {
   serves_label: "",
   item_size_value: "",
   item_size_unit: "",
+  size_preset: null,
   available_for_delivery: true,
   weight_per_serving: "",
   weight_per_serving_unit: "grams",
@@ -146,6 +148,7 @@ export function mapMenuItemToEditForm(
     item_size_value:
       source.item_size_value != null ? String(source.item_size_value) : "",
     item_size_unit: String(source.item_size_unit ?? ""),
+    size_preset: parseSizePreset(source.size_preset),
     available_for_delivery: source.available_for_delivery !== false,
     weight_per_serving:
       source.weight_per_serving != null ? String(source.weight_per_serving) : "",

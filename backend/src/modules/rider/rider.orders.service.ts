@@ -164,6 +164,8 @@ export type RiderOrderSummary = {
   category: "food" | "parcel" | "ride";
   pickup: { address: string; lat: number; lng: number };
   delivery: { address: string; lat: number; lng: number };
+  /** Intermediate ride stops (max 2). Omitted when the customer did not add any. */
+  stops?: { address: string; lat: number; lng: number }[];
   distanceKm?: number;
   /** Rider GPS → pickup */
   pickupDistanceKm?: number;
@@ -379,6 +381,12 @@ type RideRow = {
   /** orders_ride.pickup_address / drop_address — preferred over core raw lat/lng text */
   ridePickupAddress?: string | null;
   rideDropAddress?: string | null;
+  stop1Address?: string | null;
+  stop1Lat?: string | null;
+  stop1Lon?: string | null;
+  stop2Address?: string | null;
+  stop2Lat?: string | null;
+  stop2Lon?: string | null;
   checkoutMetadata?: unknown;
   billingSnapshot?: unknown;
   acceptPayoutSnapshot?: unknown;
@@ -387,6 +395,31 @@ type RideRow = {
   tipAmount?: string | null;
   adminRiderPaymentClearedAt?: Date | null;
 };
+
+const RIDE_STOP_SELECT = {
+  stop1Address: ordersRide.stop1Address,
+  stop1Lat: ordersRide.stop1Lat,
+  stop1Lon: ordersRide.stop1Lon,
+  stop2Address: ordersRide.stop2Address,
+  stop2Lat: ordersRide.stop2Lat,
+  stop2Lon: ordersRide.stop2Lon,
+};
+
+function rideStopsFromRow(row: RideRow): { address: string; lat: number; lng: number }[] {
+  const out: { address: string; lat: number; lng: number }[] = [];
+  const push = (address?: string | null, lat?: string | null, lon?: string | null) => {
+    const addr = address?.trim();
+    if (!addr) return;
+    out.push({
+      address: addr,
+      lat: parseCoord(lat ?? "0"),
+      lng: parseCoord(lon ?? "0"),
+    });
+  };
+  push(row.stop1Address, row.stop1Lat, row.stop1Lon);
+  push(row.stop2Address, row.stop2Lat, row.stop2Lon);
+  return out;
+}
 
 function resolveRideCustomer(row: RideRow): { name: string | null; phone: string | null } {
   const name = row.passengerName?.trim() || row.customerFullName?.trim() || null;
@@ -538,6 +571,7 @@ function mapRideRow(row: RideRow, ledgerTotal?: number | null): RiderOrderSummar
     customerPayable,
   });
   const customer = resolveRideCustomer(row);
+  const rideStops = rideStopsFromRow(row);
   const mapped: RiderOrderSummary = {
     id: canonicalId,
     status: "pending",
@@ -577,6 +611,7 @@ function mapRideRow(row: RideRow, ledgerTotal?: number | null): RiderOrderSummar
     customerPhone: customer.phone,
     pickupAddressGeocoded: row.pickupAddressGeocoded?.trim() || undefined,
     dropAddressGeocoded: row.dropAddressGeocoded?.trim() || undefined,
+    ...(rideStops.length > 0 ? { stops: rideStops } : {}),
     paymentMethod: payment.paymentMethod,
     paymentStatus: payment.paymentStatus,
     customerPayable,
@@ -1300,6 +1335,7 @@ async function hydrateDispatchPoolOrder(
         higherDispatchPriority: ordersRide.higherDispatchPriority,
         ridePickupAddress: ordersRide.pickupAddress,
         rideDropAddress: ordersRide.dropAddress,
+        ...RIDE_STOP_SELECT,
       })
       .from(ordersCore)
       .innerJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
@@ -1618,6 +1654,7 @@ export async function getActiveOrdersForRider(riderId: number): Promise<RiderOrd
         higherDispatchPriority: ordersRide.higherDispatchPriority,
         ridePickupAddress: ordersRide.pickupAddress,
         rideDropAddress: ordersRide.dropAddress,
+        ...RIDE_STOP_SELECT,
         customerFullName: customers.fullName,
         customerPrimaryMobile: customers.primaryMobile,
       })
@@ -2024,6 +2061,7 @@ async function fetchPersonRideOrderHistory(
       passengerPhone: ordersRide.passengerPhone,
       ridePickupAddress: ordersRide.pickupAddress,
       rideDropAddress: ordersRide.dropAddress,
+      ...RIDE_STOP_SELECT,
       customerFullName: customers.fullName,
       customerPrimaryMobile: customers.primaryMobile,
       riderAssignmentStatus: sqlRiderAssignmentStatusForHistory(riderId),
@@ -2339,6 +2377,7 @@ async function loadRideSummaryForRider(
       passengerPhone: ordersRide.passengerPhone,
       ridePickupAddress: ordersRide.pickupAddress,
       rideDropAddress: ordersRide.dropAddress,
+      ...RIDE_STOP_SELECT,
       customerFullName: customers.fullName,
       customerPrimaryMobile: customers.primaryMobile,
     })

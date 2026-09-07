@@ -19,6 +19,11 @@ import {
   createCustomCuisine as insertCustomCuisineRow,
   syncLegacyCuisineTypesToStoreLinks,
 } from "./categoryRules.js";
+import {
+  normalizeSizeWrite,
+  numericSizeOrNull,
+  parseSizePreset,
+} from "../../lib/menu-size-preset.js";
 
 export type StoreAccess = { storeIdNum: number; storeIdStr: string };
 
@@ -822,6 +827,7 @@ export async function listItems(
     serves_label: string | null;
     item_size_value: number | null;
     item_size_unit: string | null;
+    size_preset: string | null;
     approval_status: string | null;
     has_pending_change_request: boolean;
     pending_change_request_type: string | null;
@@ -942,6 +948,7 @@ export async function listItems(
            merchant_menu_items.serves_label,
            merchant_menu_items.item_size_value,
            merchant_menu_items.item_size_unit,
+           merchant_menu_items.size_preset,
            merchant_menu_items.available_quantity,
            merchant_menu_items.low_stock_threshold,
            merchant_menu_items.expiry_date,
@@ -1051,7 +1058,7 @@ export async function getItem(
            in_stock, is_active, is_deleted, display_order, has_customizations, has_addons, has_variants,
            is_popular, is_recommended,
            preparation_time_minutes, packaging_charges, serves, serves_label, allergens, nutritional_info,
-           item_size_value, item_size_unit, available_for_delivery,
+           item_size_value, item_size_unit, size_preset, available_for_delivery,
            weight_per_serving, weight_per_serving_unit, calories_kcal,
            protein, protein_unit, carbohydrates, carbohydrates_unit,
            fat, fat_unit, fibre, fibre_unit, item_tags,
@@ -1065,7 +1072,9 @@ export async function getItem(
 
   const [variants, customizationsRows, imagesRows] = await Promise.all([
     sql`
-      SELECT id, variant_id, variant_name, variant_type, variant_price, is_default, display_order, in_stock
+      SELECT id, variant_id, variant_name, variant_type, variant_price,
+             variant_size_value::text, variant_size_unit, size_preset,
+             is_default, display_order, in_stock
       FROM merchant_menu_item_variants WHERE menu_item_id = ${itemId} ORDER BY display_order ASC, id ASC
     `,
     sql`
@@ -1084,7 +1093,8 @@ export async function getItem(
   const optionRows = await Promise.all(
     customizations.map((c: any) =>
       sql`
-        SELECT id, addon_id, addon_name, addon_price, display_order, in_stock
+        SELECT id, addon_id, addon_name, addon_price, display_order, in_stock,
+               addon_size_value::text, addon_size_unit, size_preset
         FROM merchant_menu_item_addons WHERE customization_id = ${c.id} ORDER BY display_order ASC, id ASC
       `
     )
@@ -1105,6 +1115,9 @@ export async function getItem(
       addon_price: o.addon_price,
       display_order: o.display_order ?? 0,
       in_stock: o.in_stock ?? true,
+      addon_size_value: o.addon_size_value ?? null,
+      addon_size_unit: o.addon_size_unit ?? null,
+      size_preset: parseSizePreset(o.size_preset),
     })),
   }));
 
@@ -1251,6 +1264,9 @@ export async function getItem(
       variant_name: v.variant_name,
       variant_type: v.variant_type,
       variant_price: v.variant_price,
+      variant_size_value: v.variant_size_value ?? null,
+      variant_size_unit: v.variant_size_unit ?? null,
+      size_preset: parseSizePreset(v.size_preset),
       is_default: v.is_default ?? false,
       display_order: v.display_order ?? 0,
       in_stock: v.in_stock ?? true,
@@ -1296,6 +1312,7 @@ export type ItemBodyFields = {
   display_order?: number;
   item_size_value?: number | null;
   item_size_unit?: string | null;
+  size_preset?: string | null;
   available_for_delivery?: boolean;
   weight_per_serving?: number | null;
   weight_per_serving_unit?: string | null;
@@ -1333,12 +1350,20 @@ export async function createItem(
   const approvalStatus = isAgent ? "APPROVED" : "PENDING";
   const approvedAt = isAgent ? new Date() : null;
   const approvedBy = isAgent ? opts.createdBySub ?? null : null;
+  const itemSize = normalizeSizeWrite({
+    size_preset: body.size_preset,
+    size_value: body.item_size_value,
+    size_unit: body.item_size_unit,
+  });
+  const itemSizeValue = numericSizeOrNull(itemSize.size_value);
+  const itemSizeUnit = itemSize.size_unit;
+  const itemSizePreset = itemSize.size_preset;
 
   const [row] = await sql`
     INSERT INTO merchant_menu_items (
       store_id, category_id, item_id, item_name, item_description, food_type, spice_level, cuisine_type,
       base_price, selling_price, preparation_time_minutes, packaging_charges, serves, serves_label, short_name, display_order,
-      item_size_value, item_size_unit, available_for_delivery,
+      item_size_value, item_size_unit, size_preset, available_for_delivery,
       weight_per_serving, weight_per_serving_unit, calories_kcal,
       protein, protein_unit, carbohydrates, carbohydrates_unit,
       fat, fat_unit, fibre, fibre_unit, allergens, item_tags,
@@ -1350,7 +1375,7 @@ export async function createItem(
       ${body.food_type ?? null}, ${body.spice_level ?? null}, ${body.cuisine_type ?? null},
       ${body.base_price}, ${body.selling_price}, ${body.preparation_time_minutes ?? null}, ${body.packaging_charges ?? null}, ${body.serves ?? null},
       ${body.serves_label ?? null}, ${body.short_name ?? null}, ${body.display_order ?? 0},
-      ${body.item_size_value ?? null}, ${body.item_size_unit ?? null}, ${body.available_for_delivery ?? true},
+      ${itemSizeValue}, ${itemSizeUnit}, ${itemSizePreset}, ${body.available_for_delivery ?? true},
       ${body.weight_per_serving ?? null}, ${body.weight_per_serving_unit ?? null}, ${body.calories_kcal ?? null},
       ${body.protein ?? null}, ${body.protein_unit ?? null}, ${body.carbohydrates ?? null}, ${body.carbohydrates_unit ?? null},
       ${body.fat ?? null}, ${body.fat_unit ?? null}, ${body.fibre ?? null}, ${body.fibre_unit ?? null},
@@ -1386,7 +1411,7 @@ export async function updateItem(
     SELECT item_name, item_description, category_id, food_type, spice_level, cuisine_type,
            base_price, selling_price, preparation_time_minutes, packaging_charges, serves, serves_label, short_name,
            display_order, is_active, allergens,
-           item_size_value, item_size_unit, available_for_delivery,
+           item_size_value, item_size_unit, size_preset, available_for_delivery,
            weight_per_serving, weight_per_serving_unit, calories_kcal,
            protein, protein_unit, carbohydrates, carbohydrates_unit,
            fat, fat_unit, fibre, fibre_unit, item_tags,
@@ -1397,6 +1422,11 @@ export async function updateItem(
   const e = existing as any;
   const v = (field: keyof typeof body, fallback: any) =>
     (body as any)[field] !== undefined ? (body as any)[field] : fallback;
+  const itemSize = normalizeSizeWrite({
+    size_preset: body.size_preset !== undefined ? body.size_preset : e.size_preset,
+    size_value: body.item_size_value !== undefined ? body.item_size_value : e.item_size_value,
+    size_unit: body.item_size_unit !== undefined ? body.item_size_unit : e.item_size_unit,
+  });
   const result = await sql`
     UPDATE merchant_menu_items
     SET
@@ -1416,8 +1446,9 @@ export async function updateItem(
       display_order = ${body.display_order ?? e.display_order},
       is_active = ${body.is_active !== undefined ? body.is_active : e.is_active},
       allergens = ${v("allergens", e.allergens)},
-      item_size_value = ${v("item_size_value", e.item_size_value)},
-      item_size_unit = ${v("item_size_unit", e.item_size_unit)},
+      item_size_value = ${numericSizeOrNull(itemSize.size_value)},
+      item_size_unit = ${itemSize.size_unit},
+      size_preset = ${itemSize.size_preset},
       available_for_delivery = ${v("available_for_delivery", e.available_for_delivery)},
       weight_per_serving = ${v("weight_per_serving", e.weight_per_serving)},
       weight_per_serving_unit = ${v("weight_per_serving_unit", e.weight_per_serving_unit)},
@@ -1452,8 +1483,8 @@ export async function updateItem(
         cuisine_type: v("cuisine_type", e.cuisine_type),
         serves: v("serves", e.serves),
         serves_label: v("serves_label", e.serves_label),
-        item_size_value: v("item_size_value", e.item_size_value),
-        item_size_unit: v("item_size_unit", e.item_size_unit),
+        item_size_value: numericSizeOrNull(itemSize.size_value),
+        item_size_unit: itemSize.size_unit,
         available_for_delivery: v("available_for_delivery", e.available_for_delivery),
         weight_per_serving: v("weight_per_serving", e.weight_per_serving),
         weight_per_serving_unit: v("weight_per_serving_unit", e.weight_per_serving_unit),
@@ -1768,15 +1799,30 @@ export async function addVariant(
     variant_price: number;
     is_default?: boolean;
     display_order?: number;
+    variant_size_value?: string | number | null;
+    variant_size_unit?: string | null;
+    size_preset?: string | null;
     attributes?: UnifiedAttributes;
   }
 ): Promise<{ id: number }> {
   const sql = getSql();
   await assertItemOwnership(menuItemId, storeIdNum);
   const variantId = "VAR_" + ulid();
+  const variantSize = normalizeSizeWrite({
+    size_preset: body.size_preset,
+    size_value: body.variant_size_value,
+    size_unit: body.variant_size_unit,
+  });
   const [row] = await sql`
-    INSERT INTO merchant_menu_item_variants (menu_item_id, variant_id, variant_name, variant_type, variant_price, is_default, display_order)
-    VALUES (${menuItemId}, ${variantId}, ${body.variant_name}, ${body.variant_type ?? null}, ${body.variant_price}, ${body.is_default ?? false}, ${body.display_order ?? 0})
+    INSERT INTO merchant_menu_item_variants (
+      menu_item_id, variant_id, variant_name, variant_type, variant_price, is_default, display_order,
+      variant_size_value, variant_size_unit, size_preset
+    )
+    VALUES (
+      ${menuItemId}, ${variantId}, ${body.variant_name}, ${body.variant_type ?? null}, ${body.variant_price},
+      ${body.is_default ?? false}, ${body.display_order ?? 0},
+      ${variantSize.size_value}, ${variantSize.size_unit}, ${variantSize.size_preset}
+    )
     RETURNING id
   `;
   const createdVariantRowId = Number((row as any).id);
@@ -1804,17 +1850,26 @@ export async function updateVariant(
     is_default?: boolean;
     display_order?: number;
     in_stock?: boolean;
+    variant_size_value?: string | number | null;
+    variant_size_unit?: string | null;
+    size_preset?: string | null;
     attributes?: UnifiedAttributes;
   }
 ): Promise<boolean> {
   const sql = getSql();
   const [v] = await sql`
-    SELECT menu_item_id, variant_name, variant_type, variant_price, is_default, display_order, in_stock
+    SELECT menu_item_id, variant_name, variant_type, variant_price, is_default, display_order, in_stock,
+           variant_size_value::text, variant_size_unit, size_preset
     FROM merchant_menu_item_variants WHERE id = ${variantId}
   `;
   if (!v) return false;
   await assertItemOwnership(Number((v as any).menu_item_id), storeIdNum);
   const e = v as any;
+  const variantSize = normalizeSizeWrite({
+    size_preset: body.size_preset !== undefined ? body.size_preset : e.size_preset,
+    size_value: body.variant_size_value !== undefined ? body.variant_size_value : e.variant_size_value,
+    size_unit: body.variant_size_unit !== undefined ? body.variant_size_unit : e.variant_size_unit,
+  });
   const result = await sql`
     UPDATE merchant_menu_item_variants
     SET variant_name = ${body.variant_name ?? e.variant_name},
@@ -1823,6 +1878,9 @@ export async function updateVariant(
         is_default = ${body.is_default !== undefined ? body.is_default : e.is_default},
         display_order = ${body.display_order !== undefined ? body.display_order : e.display_order},
         in_stock = ${body.in_stock !== undefined ? body.in_stock : e.in_stock},
+        variant_size_value = ${variantSize.size_value},
+        variant_size_unit = ${variantSize.size_unit},
+        size_preset = ${variantSize.size_preset},
         updated_at = NOW()
     WHERE id = ${variantId}
   `;
@@ -1906,7 +1964,15 @@ export async function deleteCustomizationGroup(groupId: number, storeIdNum: numb
 export async function addCustomizationOption(
   customizationId: number,
   storeIdNum: number,
-  body: { addon_name: string; addon_price?: number; addon_image_url?: string | null; display_order?: number }
+  body: {
+    addon_name: string;
+    addon_price?: number;
+    addon_image_url?: string | null;
+    display_order?: number;
+    addon_size_value?: number | string | null;
+    addon_size_unit?: string | null;
+    size_preset?: string | null;
+  }
 ): Promise<{ id: number; addon_id: string }> {
   const sql = getSql();
   const [c] = await sql`
@@ -1916,9 +1982,20 @@ export async function addCustomizationOption(
   `;
   if (!c) throw new Error("CUSTOMIZATION_GROUP_NOT_FOUND");
   const addonId = "ADDON_" + ulid();
+  const addonSize = normalizeSizeWrite({
+    size_preset: body.size_preset,
+    size_value: body.addon_size_value,
+    size_unit: body.addon_size_unit,
+  });
   const [row] = await sql`
-    INSERT INTO merchant_menu_item_addons (customization_id, addon_id, addon_name, addon_price, addon_image_url, display_order)
-    VALUES (${customizationId}, ${addonId}, ${body.addon_name}, ${body.addon_price ?? 0}, ${body.addon_image_url ?? null}, ${body.display_order ?? 0})
+    INSERT INTO merchant_menu_item_addons (
+      customization_id, addon_id, addon_name, addon_price, addon_image_url, display_order,
+      addon_size_value, addon_size_unit, size_preset
+    )
+    VALUES (
+      ${customizationId}, ${addonId}, ${body.addon_name}, ${body.addon_price ?? 0}, ${body.addon_image_url ?? null},
+      ${body.display_order ?? 0}, ${numericSizeOrNull(addonSize.size_value)}, ${addonSize.size_unit}, ${addonSize.size_preset}
+    )
     RETURNING id, addon_id
   `;
   const r = row as any;
@@ -1928,11 +2005,21 @@ export async function addCustomizationOption(
 export async function updateCustomizationOption(
   optionId: number,
   storeIdNum: number,
-  body: { addon_name?: string; addon_price?: number; addon_image_url?: string | null; display_order?: number; in_stock?: boolean }
+  body: {
+    addon_name?: string;
+    addon_price?: number;
+    addon_image_url?: string | null;
+    display_order?: number;
+    in_stock?: boolean;
+    addon_size_value?: number | string | null;
+    addon_size_unit?: string | null;
+    size_preset?: string | null;
+  }
 ): Promise<boolean> {
   const sql = getSql();
   const [o] = await sql`
-    SELECT a.id, a.addon_name, a.addon_price, a.addon_image_url, a.display_order, a.in_stock
+    SELECT a.id, a.addon_name, a.addon_price, a.addon_image_url, a.display_order, a.in_stock,
+           a.addon_size_value::text, a.addon_size_unit, a.size_preset
     FROM merchant_menu_item_addons a
     INNER JOIN merchant_menu_item_customizations c ON c.id = a.customization_id
     INNER JOIN merchant_menu_items m ON m.id = c.menu_item_id AND m.store_id = ${storeIdNum}
@@ -1940,6 +2027,11 @@ export async function updateCustomizationOption(
   `;
   if (!o) return false;
   const e = o as any;
+  const addonSize = normalizeSizeWrite({
+    size_preset: body.size_preset !== undefined ? body.size_preset : e.size_preset,
+    size_value: body.addon_size_value !== undefined ? body.addon_size_value : e.addon_size_value,
+    size_unit: body.addon_size_unit !== undefined ? body.addon_size_unit : e.addon_size_unit,
+  });
   const result = await sql`
     UPDATE merchant_menu_item_addons
     SET addon_name = ${body.addon_name ?? e.addon_name},
@@ -1947,6 +2039,9 @@ export async function updateCustomizationOption(
         addon_image_url = ${body.addon_image_url !== undefined ? body.addon_image_url : e.addon_image_url},
         display_order = ${body.display_order ?? e.display_order},
         in_stock = ${body.in_stock !== undefined ? body.in_stock : e.in_stock},
+        addon_size_value = ${numericSizeOrNull(addonSize.size_value)},
+        addon_size_unit = ${addonSize.size_unit},
+        size_preset = ${addonSize.size_preset},
         updated_at = NOW()
     WHERE id = ${optionId}
   `;

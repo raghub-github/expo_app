@@ -38,6 +38,14 @@ const schema = z.discriminatedUnion("docKind", [
   z.object({ ...base, docKind: z.literal("driving_licence"), dlNumber: z.string().min(6).max(24), dob: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }),
   z.object({ ...base, docKind: z.literal("vehicle_rc"), vehicleNumber: z.string().min(4).max(16) }),
   z.object({ ...base, docKind: z.literal("ifsc"), ifsc: z.string().regex(/^[A-Za-z]{4}0[A-Za-z0-9]{6}$/) }),
+  z.object({
+    ...base,
+    docKind: z.literal("aadhaar"),
+    aadhaarNumber: z.string().regex(/^\d{12}$/),
+    name: z.string().max(120).optional(),
+    dob: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    imageKey: z.string().max(500).optional(),
+  }),
 ]);
 
 /** docKind → backend submit path + payload builder. */
@@ -72,6 +80,18 @@ function toBackendCall(d: z.infer<typeof schema>): { path: string; payload: Reco
       return { path: "/v1/verification/submit/vehicle-rc", payload: { ...subject, vehicle_number: d.vehicleNumber.toUpperCase(), defer_projection: true } };
     case "ifsc":
       return { path: "/v1/verification/submit/ifsc", payload: { ...subject, ifsc: d.ifsc.toUpperCase() } };
+    case "aadhaar":
+      return {
+        path: "/v1/verification/submit/aadhaar",
+        payload: {
+          ...subject,
+          aadhaar_number: d.aadhaarNumber,
+          ...(d.name?.trim() ? { name: d.name.trim() } : {}),
+          ...(d.dob ? { dob: d.dob } : {}),
+          ...(d.imageKey?.trim() ? { image_key: d.imageKey.trim() } : {}),
+          defer_projection: true,
+        },
+      };
   }
 }
 

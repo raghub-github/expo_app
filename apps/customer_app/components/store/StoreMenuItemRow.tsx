@@ -21,6 +21,7 @@ import {
   MENU_STEPPER_CONTROL_HEIGHT,
 } from "./StoreMenuCartControls";
 import { getBasePrice, getItemDiet, getSellingPrice, isItemSpicy } from "./storeMenuUtils";
+import { formatMenuPortionLabel } from "@/lib/format-menu-portion-label";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 import { isMenuItemImagePrefetched, isMenuItemImageReady, ensureMenuItemImageWarm } from "@/lib/prefetchMenuItemImages";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
@@ -204,7 +205,12 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   const diet = getItemDiet(item);
   const spicy = isItemSpicy(item);
   const displayName = item.name.replace(/\s+/g, " ").trim();
-  const descriptionText = formatRowDescription(item.description);
+  const portionLabel = formatMenuPortionLabel(item.sizeValue, item.sizeUnit, item.sizePreset);
+  const descriptionText = formatRowDescription(
+    portionLabel && item.description
+      ? `${item.description} · ${portionLabel}`
+      : item.description || portionLabel
+  );
 
   return (
     <View style={[styles.wrap, highlighted && styles.wrapHighlighted]}>

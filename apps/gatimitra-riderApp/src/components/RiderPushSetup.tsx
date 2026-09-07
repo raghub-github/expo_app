@@ -104,7 +104,6 @@ export function RiderPushSetup() {
         (typeof payload.data.gmMessage === "string" ? payload.data.gmMessage : "") ||
         "";
       useNotificationInboxStore.getState().add(notificationFromPushPayload(title, body, payload.data));
-      enqueueInAppBannerFromPush(payload);
 
       handleRiderWalletRelatedPush(
         queryClient,
@@ -119,15 +118,17 @@ export function RiderPushSetup() {
           typeof payload.data?.orderId === "string" ? payload.data.orderId : undefined,
           "push_foreground"
         );
-      } else {
-        const type = typeof payload.data.type === "string" ? payload.data.type : "";
-        if (
-          type === "new_order" ||
-          type === "order_assigned" ||
-          type.includes("order")
-        ) {
-          void queryClient.invalidateQueries({ queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY });
-        }
+        return;
+      }
+
+      enqueueInAppBannerFromPush(payload);
+      const type = typeof payload.data.type === "string" ? payload.data.type : "";
+      if (
+        type === "new_order" ||
+        type === "order_assigned" ||
+        type.includes("order")
+      ) {
+        void queryClient.invalidateQueries({ queryKey: RIDER_AVAILABLE_ORDERS_QUERY_KEY });
       }
     },
     [queryClient]
