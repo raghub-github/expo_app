@@ -155,6 +155,65 @@ test("funding: cap scales customer and company shares proportionally", () => {
   assert.equal(res.companyShareTotal, 20);
 });
 
+// Time-slot windows are evaluated in IST (Asia/Kolkata), not the server's local timezone.
+// 05:00 UTC == 10:30 IST on Tue 2025-01-07. A 10:00–11:00 window on Tuesday must be ACTIVE
+// (it would be inactive if the check used server-local UTC hours).
+const NOW_1030_IST = new Date("2025-01-07T05:00:00Z");
+
+function timedSlot(surgeId: number, startTime: string, endTime: string, days: number[]) {
+  return { id: surgeId * 10, stateSurgeId: surgeId, startTime, endTime, daysOfWeek: days, isEnabled: true };
+}
+
+test("time slot active when now is inside the window in IST (not UTC)", () => {
+  const cfg = surge({ id: 5, name: "Night", fundingMode: "COMPANY_100", amount: 20, manualActive: false });
+  const res = resolveStateSurges({
+    configs: [cfg],
+    timeSlotsBySurgeId: new Map([[5, [timedSlot(5, "10:00", "11:00", [2])]]]), // Tue
+    service: "ride",
+    pricingVehicle: "2_wheeler",
+    riderHasGmitraMax: false,
+    surgeWaitMaxOnly: false,
+    baseFareForPct: 100,
+    maxTotalSurgeAmount: null,
+    now: NOW_1030_IST,
+  });
+  assert.equal(res.surgeTotal, 20, "10:30 IST is inside 10:00–11:00 IST");
+});
+
+test("time slot inactive when the IST time falls outside the window", () => {
+  const cfg = surge({ id: 6, name: "Night", fundingMode: "COMPANY_100", amount: 20, manualActive: false });
+  const res = resolveStateSurges({
+    configs: [cfg],
+    timeSlotsBySurgeId: new Map([[6, [timedSlot(6, "06:00", "07:00", [2])]]]),
+    service: "ride",
+    pricingVehicle: "2_wheeler",
+    riderHasGmitraMax: false,
+    surgeWaitMaxOnly: false,
+    baseFareForPct: 100,
+    maxTotalSurgeAmount: null,
+    now: NOW_1030_IST,
+  });
+  assert.equal(res.surgeTotal, 0, "10:30 IST is outside 06:00–07:00 IST");
+});
+
+test("cross-midnight night window active in early IST morning", () => {
+  // 20:30 UTC == 02:00 IST next day (Wed 2025-01-08). A 20:00–06:00 window covering Wed
+  // must be active at 02:00 IST via the cross-midnight branch.
+  const cfg = surge({ id: 7, name: "Night", fundingMode: "COMPANY_100", amount: 20, manualActive: false });
+  const res = resolveStateSurges({
+    configs: [cfg],
+    timeSlotsBySurgeId: new Map([[7, [timedSlot(7, "20:00", "06:00", [3])]]]), // Wed
+    service: "ride",
+    pricingVehicle: "2_wheeler",
+    riderHasGmitraMax: false,
+    surgeWaitMaxOnly: false,
+    baseFareForPct: 100,
+    maxTotalSurgeAmount: null,
+    now: new Date("2025-01-07T20:30:00Z"),
+  });
+  assert.equal(res.surgeTotal, 20, "02:00 IST Wed is inside the 20:00–06:00 window");
+});
+
 test("funding: unknown funding_mode falls back to CUSTOMER_100 shape", () => {
   const applied: AppliedStateSurge = {
     surgeId: 1,
