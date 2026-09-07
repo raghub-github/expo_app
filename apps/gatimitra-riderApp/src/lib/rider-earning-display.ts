@@ -63,13 +63,22 @@ function buildRiderEarningBreakdownInternal(
   );
   const totalEarning = resolveRiderDisplayedEarning(order);
 
+  // Build a breakdown that ALWAYS sums to the total. The primary fare line is DERIVED as
+  // total − (waiting + surge + tip), NOT the raw `baseEarning` field: that field carries the
+  // legacy percentage-of-fare pool base, while `totalEarning` is the v3.2 distance-leg payout
+  // (first-mile + trip distance, company-funded). Showing the raw base alongside the leg total
+  // left an unexplained gap (e.g. "Base fare ₹39" but "Total ₹89"). The derived fare covers the
+  // first-mile + distance earning and, with the extras below, adds up exactly to the total.
+  const surgeShown = appliedSurges.length > 0
+    ? appliedSurges.reduce((sum, s) => sum + round0(s.amount), 0)
+    : surgeEarning;
+  const primaryFare = Math.max(0, totalEarning - waitingEarning - surgeShown - tipAmount);
+
   const lines: RiderEarningBreakdownLine[] = [];
-  if (baseEarning > 0) {
-    lines.push({
-      label: baseLabel,
-      amount: baseEarning,
-    });
-  }
+  lines.push({
+    label: baseLabel,
+    amount: primaryFare,
+  });
   if (waitingEarning > 0) {
     lines.push({
       label: t?.("orders.rideSuccess.waitingCharge", "Waiting charge") ?? "Waiting charge",
@@ -78,7 +87,7 @@ function buildRiderEarningBreakdownInternal(
   }
   if (appliedSurges.length > 0) {
     for (const surge of appliedSurges) {
-      lines.push({ label: surge.name, amount: surge.amount });
+      lines.push({ label: surge.name, amount: round0(surge.amount) });
     }
   } else if (surgeEarning > 0) {
     lines.push({
@@ -115,7 +124,7 @@ export function buildRiderRideEarningBreakdown(
 ): RiderEarningBreakdown {
   return buildRiderEarningBreakdownInternal(
     order,
-    t?.("orders.ridePaymentWait.baseFare", "Base fare") ?? "Base fare",
+    t?.("orders.ridePaymentWait.rideFare", "Ride fare") ?? "Ride fare",
     t
   );
 }
