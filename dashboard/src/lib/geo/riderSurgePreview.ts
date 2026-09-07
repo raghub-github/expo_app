@@ -44,10 +44,19 @@ function parseTimeToMinutes(value: string): number {
   return (h ?? 0) * 60 + (m ?? 0);
 }
 
+const IST_OFFSET_MIN = 330; // Asia/Kolkata, no DST
+
+/** Minutes-since-midnight + day-of-week (0=Sun) for `now` in IST — matches the backend. */
+function istClock(now: Date): { minutes: number; dow: number } {
+  const ist = new Date(now.getTime() + IST_OFFSET_MIN * 60_000);
+  return { minutes: ist.getUTCHours() * 60 + ist.getUTCMinutes(), dow: ist.getUTCDay() };
+}
+
 function isTimeInSlot(now: Date, slot: PreviewSurgeTimeSlot): boolean {
   if (!slot.isEnabled) return false;
-  if (!slot.daysOfWeek.includes(now.getDay())) return false;
-  const nowMin = now.getHours() * 60 + now.getMinutes();
+  // Evaluate in IST so the preview matches the backend regardless of the admin's browser tz.
+  const { minutes: nowMin, dow } = istClock(now);
+  if (!slot.daysOfWeek.includes(dow)) return false;
   const start = parseTimeToMinutes(slot.startTime);
   const end = parseTimeToMinutes(slot.endTime);
   if (start === end) return false;
@@ -86,10 +95,6 @@ export function resolvePreviewSurges(args: {
   const now = args.now ?? new Date();
   const forceIds = args.forceActiveSurgeIds ? new Set(args.forceActiveSurgeIds) : undefined;
 
-  if (args.surgeWaitMaxOnly && !args.riderHasGmitraMax) {
-    return { appliedSurges: [], rawSurgeTotal: 0, surgeTotal: 0, surgeCapped: false };
-  }
-
   const slotsBySurge = new Map<number, PreviewSurgeTimeSlot[]>();
   for (const slot of args.timeSlots) {
     const list = slotsBySurge.get(slot.surgeId) ?? [];
@@ -97,9 +102,10 @@ export function resolvePreviewSurges(args: {
     slotsBySurge.set(slot.surgeId, list);
   }
 
-  const applied: AppliedPreviewSurge[] = [];
+  // Highest-priority first so amount ties resolve to the higher-priority (then lower-id) surge.
   const sorted = [...args.definitions].sort((a, b) => b.priority - a.priority || a.id - b.id);
 
+  const eligible: { def: PreviewSurgeDefinition; amount: number }[] = [];
   for (const def of sorted) {
     if (!def.isEnabled) continue;
     if (args.service === "food" && !def.appliesFood) continue;
@@ -112,6 +118,8 @@ export function resolvePreviewSurges(args: {
       continue;
     }
 
+    // Eligibility is decided solely by the per-surge "GMitra Max riders only" checkbox — the
+    // legacy global surge_wait_max_only switch no longer blocks surges (mirrors the backend).
     if (def.gmitraMaxOnly && !args.riderHasGmitraMax) continue;
 
     const slots = slotsBySurge.get(def.id) ?? [];
@@ -132,25 +140,37 @@ export function resolvePreviewSurges(args: {
       def.surgeType === "percentage"
         ? round2(Math.max(0, args.baseFareForPct) * (def.amount / 100))
         : round2(Math.max(0, def.amount));
-
     if (appliedAmount <= 0) continue;
 
-    applied.push({
-      surgeId: def.id,
-      name: def.name,
-      surgeType: def.surgeType,
-      configAmount: def.amount,
-      amount: appliedAmount,
-    });
+    eligible.push({ def, amount: appliedAmount });
   }
 
-  const rawSurgeTotal = round2(applied.reduce((s, x) => s + x.amount, 0));
-  let surgeTotal = rawSurgeTotal;
+  // ONE surge per order: only the single highest-amount eligible surge applies.
+  let winner: { def: PreviewSurgeDefinition; amount: number } | null = null;
+  for (const cand of eligible) {
+    if (!winner || cand.amount > winner.amount) winner = cand;
+  }
+
+  const applied: AppliedPreviewSurge[] = [];
+  let rawSurgeTotal = 0;
+  let surgeTotal = 0;
   let surgeCapped = false;
-  const cap = args.maxTotalSurgeAmount;
-  if (cap != null && cap >= 0 && surgeTotal > cap) {
-    surgeTotal = round2(cap);
-    surgeCapped = true;
+
+  if (winner) {
+    rawSurgeTotal = winner.amount;
+    surgeTotal = winner.amount;
+    const cap = args.maxTotalSurgeAmount;
+    if (cap != null && cap >= 0 && surgeTotal > cap) {
+      surgeTotal = round2(cap);
+      surgeCapped = true;
+    }
+    applied.push({
+      surgeId: winner.def.id,
+      name: winner.def.name,
+      surgeType: winner.def.surgeType,
+      configAmount: winner.def.amount,
+      amount: surgeTotal,
+    });
   }
 
   return { appliedSurges: applied, rawSurgeTotal, surgeTotal, surgeCapped };
