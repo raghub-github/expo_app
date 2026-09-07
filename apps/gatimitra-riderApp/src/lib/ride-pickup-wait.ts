@@ -6,6 +6,8 @@ export type RidePickupWaitFields = {
   pickupWaitFinalized?: boolean;
   pickupTimerBudgetSeconds?: number | null;
   ridePickupWaitFreeMinutes?: number | null;
+  ridePickupWaitingChargePerMin?: number | null;
+  ridePickupWaitingMaxCharge?: number | null;
   pickupOtpVerified?: boolean;
 };
 
@@ -76,5 +78,33 @@ export function buildRidePickupWaitRiderLabel(order: RidePickupWaitFields, nowMs
     return `Free wait · ${formatRideWaitMmSs(remaining)} left`;
   }
   const billable = resolveRidePickupBillableSeconds(order, nowMs);
-  return `Waiting for OTP · ${formatRideWaitMmSs(billable)}`;
+  const charge = estimateRidePickupWaitingCharge(order, nowMs);
+  // Show the live ₹ the rider is earning once the free window is over (matches the customer app).
+  const chargeSuffix = charge > 0 ? ` · +₹${Math.round(charge)}` : "";
+  return `Waiting for OTP · ${formatRideWaitMmSs(billable)}${chargeSuffix}`;
+}
+
+/** ₹/min the rider earns after the free window (0 when not configured). */
+export function resolveRidePickupWaitingChargePerMin(order: RidePickupWaitFields): number {
+  const perMin = Number(order.ridePickupWaitingChargePerMin);
+  return Number.isFinite(perMin) && perMin > 0 ? perMin : 0;
+}
+
+/**
+ * Live estimated pickup-waiting ₹ from the billable seconds and per-minute rate, capped to the
+ * rule's max charge when present. Returns 0 while still within the free window. Mirrors the
+ * customer app's estimate so both sides show the same live number as the wait accrues.
+ */
+export function estimateRidePickupWaitingCharge(
+  order: RidePickupWaitFields,
+  nowMs = Date.now()
+): number {
+  const perMin = resolveRidePickupWaitingChargePerMin(order);
+  if (perMin <= 0) return 0;
+  const billableSec = resolveRidePickupBillableSeconds(order, nowMs);
+  if (billableSec <= 0) return 0;
+  const billableMinutes = Math.ceil(billableSec / 60);
+  const gross = Math.round(billableMinutes * perMin * 10) / 10;
+  const cap = Number(order.ridePickupWaitingMaxCharge);
+  return Number.isFinite(cap) && cap > 0 ? Math.min(gross, cap) : gross;
 }

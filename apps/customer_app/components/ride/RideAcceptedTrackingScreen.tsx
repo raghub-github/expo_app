@@ -1125,6 +1125,11 @@ export function RideAcceptedTrackingScreen({
                   <AppText style={styles.pickupWaitTime}>
                     {formatRideWaitHhMmSs(finalizedPickupWaitSec)}
                   </AppText>
+                  {waitFreeRemainingSec <= 0 && tripFareBreakdown.waitingCharge > 0 ? (
+                    <AppText style={styles.pickupWaitCharge}>
+                      +₹{Math.round(tripFareBreakdown.waitingCharge)}
+                    </AppText>
+                  ) : null}
                 </View>
               </View>
             ) : (
@@ -1255,6 +1260,7 @@ export function RideAcceptedTrackingScreen({
         waitingCharge={tripFareBreakdown.waitingCharge}
         totalFare={tripFareBreakdown.totalFare}
         hasPickupWait={tripFareBreakdown.hasPickupWait}
+        isEstimate={order.status !== "delivered"}
         onClose={closeTripDetails}
         showCancelRide={canCancelRide}
         onCancelRide={canCancelRide ? openCancelFlow : undefined}
@@ -1613,6 +1619,13 @@ const styles = StyleSheet.create({
     color: "#854D0E",
     fontVariant: ["tabular-nums"],
     letterSpacing: 0.2,
+  },
+  pickupWaitCharge: {
+    marginTop: 1,
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#B45309",
+    fontVariant: ["tabular-nums"],
   },
   etaTitle: {
     fontSize: 18,
