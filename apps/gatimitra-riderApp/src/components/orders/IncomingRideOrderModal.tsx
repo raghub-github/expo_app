@@ -126,7 +126,6 @@ function IncomingOrderModalInner({
   const acceptLabel = incomingOrderAcceptLabel(order.category);
   const bannerIcon = categoryBannerIcon(order.category);
   const isDeliveryOrder = order.category === "food" || order.category === "parcel";
-  const slabBase = Math.round(order.baseEarning ?? order.estimatedEarning ?? 0);
   const waitingAmount =
     order.waitingEarning != null && order.waitingEarning > 0
       ? Math.round(order.waitingEarning)
@@ -143,6 +142,16 @@ function IncomingOrderModalInner({
       ? Math.round(order.prePickupCompanyFunded)
       : 0;
   const totalEarning = Math.round(resolveRiderDisplayedEarning(order));
+  // Derive the base line so the breakdown ALWAYS sums to the displayed total (same fix as the
+  // Fare Pending screen, PR #224): order.baseEarning is the legacy pre-surge % pool while
+  // totalEarning is the leg-reconciled payout — showing the raw base beside it left an
+  // unexplained gap. Base = total − (waiting + surge + first-mile + tip), so e.g. a ₹75 offer
+  // with a ₹20 surge reads "Base ₹55 + Surge ₹20 = ₹75".
+  const surgeSum = surgeLines.reduce((sum, s) => sum + Math.round(s.amount), 0);
+  const slabBase = Math.max(
+    0,
+    totalEarning - waitingAmount - surgeSum - firstMileOnTop - tipAmount
+  );
   // Full-screen overlay covers the tab bar — only pad for the system nav / home indicator.
   const footerBottomInset = resolveNavScreenBottomInset(insets.bottom) + 2;
   const pickupKm = order.pickupDistanceKm;
