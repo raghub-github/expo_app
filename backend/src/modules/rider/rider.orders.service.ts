@@ -81,7 +81,7 @@ import {
 import {
   attachRidePickupWaitFields,
   computeRidePickupWaitSeconds,
-  resolveRidePickupFreeWaitMinutes,
+  resolveRidePickupWaitingConfig,
 } from "../../lib/ride-pickup-wait.js";
 import { applyFoodPickupWaitingToBilling } from "../../lib/food-pickup-wait.js";
 import { applyParcelPickupWaitingToBilling } from "../../lib/parcel-pickup-wait.js";
@@ -885,7 +885,7 @@ async function enrichRideOrderSummary(
   row: RidePickupWaitRow
 ): Promise<RiderOrderSummary> {
   if (summary.category !== "ride") return summary;
-  const freeMinutes = await resolveRidePickupFreeWaitMinutes({
+  const waitConfig = await resolveRidePickupWaitingConfig({
     checkoutMetadata: row.checkoutMetadata,
     pickupLat: Number(row.pickupLat),
     pickupLng: Number(row.pickupLon),
@@ -895,7 +895,9 @@ async function enrichRideOrderSummary(
     riderReachedPickupAt: row.riderReachedPickupAt,
     pickupWaitSeconds: row.pickupWaitSeconds,
     pickupOtpVerifiedAt: row.pickupOtpVerifiedAt,
-    pickupWaitFreeMinutes: freeMinutes,
+    pickupWaitFreeMinutes: waitConfig.freeMinutes,
+    pickupWaitingChargePerMin: waitConfig.chargePerMin,
+    pickupWaitingMaxCharge: waitConfig.maxCharge,
   });
 }
 
