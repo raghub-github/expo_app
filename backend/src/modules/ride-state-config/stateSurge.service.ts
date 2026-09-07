@@ -1,6 +1,7 @@
 import type { RideVehiclePricingType } from "../rider-payout-pricing/types.js";
 import { pricingVehicleMatchesScope } from "./catalogVehicleMap.js";
 import type { StateSurgeConfigRow, StateSurgeTimeSlotRow } from "./rideStateConfig.repository.js";
+import { istClock } from "../../lib/dynamic-pricing.js";
 
 function parseTimeToMinutes(value: string): number {
   const [h, m] = value.split(":").map((x) => Number(x));
@@ -9,8 +10,12 @@ function parseTimeToMinutes(value: string): number {
 
 function isTimeInSlot(now: Date, slot: StateSurgeTimeSlotRow): boolean {
   if (!slot.isEnabled) return false;
-  if (!slot.daysOfWeek.includes(now.getDay())) return false;
-  const nowMin = now.getHours() * 60 + now.getMinutes();
+  // Evaluate the slot window in IST (Asia/Kolkata) so the day-of-week and start/end times
+  // match what the admin sets in the dashboard, regardless of the server's own timezone.
+  // Mirrors the dynamic-pricing engine (istClock); server-local getDay()/getHours() would
+  // fire the window at the wrong wall-clock time on a UTC host.
+  const { minutes: nowMin, dow } = istClock(now);
+  if (!slot.daysOfWeek.includes(dow)) return false;
   const start = parseTimeToMinutes(slot.startTime);
   const end = parseTimeToMinutes(slot.endTime);
   if (start === end) return false;
