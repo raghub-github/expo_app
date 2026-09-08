@@ -1,76 +1,42 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { resolveOrderLegVehicleType } from "./resolve-rider-legs-for-order.js";
+import { decidePreLegResult } from "./resolve-rider-legs-for-order.js";
 
-// ── RIDE: catalog code -> pricing vehicle (same mapping already used for customer fare) ──
-test("ride: bike catalog code maps to 2_wheeler", () => {
-  assert.equal(
-    resolveOrderLegVehicleType({ service: "ride", rideCatalogCode: "bike" }),
-    "2_wheeler"
+const fallback = { amount: 5, funding: "company" as const };
+
+test("matched rule → pays the rule amount + funding (ignores fallback)", () => {
+  const r = decidePreLegResult(
+    { matched: true, rawAmount: 12, funding: "customer", ruleId: 7, ratePerKm: 4 },
+    fallback,
+    3
   );
+  assert.equal(r.amount, 12);
+  assert.equal(r.funding, "customer");
+  assert.equal(r.matched, true);
+  assert.equal(r.ruleId, 7);
 });
 
-test("ride: auto catalog code maps to 3_wheeler", () => {
-  assert.equal(
-    resolveOrderLegVehicleType({ service: "ride", rideCatalogCode: "auto" }),
-    "3_wheeler"
+test("rule exists but rider is below min_km → 0, NO legacy fallback", () => {
+  const r = decidePreLegResult(
+    { matched: false, belowConfiguredMinKm: true, rawAmount: 0, funding: "company", ruleId: null, ratePerKm: 0 },
+    fallback, // non-zero fallback must be ignored
+    0.5
   );
+  assert.equal(r.amount, 0, "inside the no-first-mile radius pays nothing");
+  assert.equal(r.matched, false);
 });
 
-test("ride: taxi catalog code maps to 4_wheeler_ac", () => {
-  assert.equal(
-    resolveOrderLegVehicleType({ service: "ride", rideCatalogCode: "taxi" }),
-    "4_wheeler_ac"
+test("no rule on the chain → legacy fallback allowance", () => {
+  const r = decidePreLegResult(
+    { matched: false, rawAmount: 0, funding: "company", ruleId: null, ratePerKm: 0 },
+    fallback,
+    9
   );
+  assert.equal(r.amount, 5, "far rider with no leg rule keeps the legacy fallback");
+  assert.equal(r.funding, "company");
 });
 
-test("ride: car catalog code maps to 4_wheeler_non_ac", () => {
-  assert.equal(
-    resolveOrderLegVehicleType({ service: "ride", rideCatalogCode: "car" }),
-    "4_wheeler_non_ac"
-  );
-});
-
-test("ride: unknown/null catalog code -> null (no vehicle rule can match, safe fallback)", () => {
-  assert.equal(resolveOrderLegVehicleType({ service: "ride", rideCatalogCode: null }), null);
-  assert.equal(
-    resolveOrderLegVehicleType({ service: "ride", rideCatalogCode: "totally-unknown-code" }),
-    null
-  );
-});
-
-// ── PARCEL: booked vehicle_category (already stored as the same enum strings) ──
-test("parcel: valid vehicle_category passes through unchanged", () => {
-  assert.equal(
-    resolveOrderLegVehicleType({ service: "parcel", parcelVehicleCategory: "3_wheeler" }),
-    "3_wheeler"
-  );
-  assert.equal(
-    resolveOrderLegVehicleType({ service: "parcel", parcelVehicleCategory: "2_wheeler" }),
-    "2_wheeler"
-  );
-});
-
-test("parcel: invalid/garbage vehicle_category -> null (never crashes, never mismatches)", () => {
-  assert.equal(
-    resolveOrderLegVehicleType({ service: "parcel", parcelVehicleCategory: "bogus" }),
-    null
-  );
-  assert.equal(resolveOrderLegVehicleType({ service: "parcel", parcelVehicleCategory: null }), null);
-  assert.equal(
-    resolveOrderLegVehicleType({ service: "parcel", parcelVehicleCategory: "" }),
-    null
-  );
-});
-
-// ── FOOD: no vehicle dimension — always null regardless of inputs ──
-test("food: always null (no vehicle dimension for food legs)", () => {
-  assert.equal(
-    resolveOrderLegVehicleType({
-      service: "food",
-      rideCatalogCode: "bike",
-      parcelVehicleCategory: "3_wheeler",
-    }),
-    null
-  );
+test("no rule and no fallback → 0", () => {
+  const r = decidePreLegResult(null, null, 3);
+  assert.equal(r.amount, 0);
 });
