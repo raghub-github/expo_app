@@ -49,9 +49,8 @@ export function isCompletedPersonRide(order: OrderSummary): boolean {
 }
 
 export function completedRideTimestampMs(order: OrderSummary): number {
-  const history = Array.isArray((order as { statusHistory?: Array<{ status?: string; at?: string }> }).statusHistory)
-    ? (order as { statusHistory?: Array<{ status?: string; at?: string }> }).statusHistory
-    : [];
+  const rawHistory = (order as { statusHistory?: Array<{ status?: string; at?: string }> }).statusHistory;
+  const history: Array<{ status?: string; at?: string }> = Array.isArray(rawHistory) ? rawHistory : [];
   for (let i = history.length - 1; i >= 0; i--) {
     const entry = history[i];
     if (normalizeCustomerOrderStatus(entry?.status) !== "DELIVERED") continue;
