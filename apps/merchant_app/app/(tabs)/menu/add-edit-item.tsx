@@ -18,6 +18,7 @@ import {
 } from "@/constants/theme";
 import { sizeModeFromPreset, normalizeSizeWrite, numericSizeOrNull, type SizeMode } from "@/lib/menu-size-preset";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useAuth } from "@/context/AuthContext";
 import {
   useMenuCategories,
   useMenuItem,
