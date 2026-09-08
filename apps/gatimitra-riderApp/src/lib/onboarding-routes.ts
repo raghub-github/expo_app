@@ -449,3 +449,91 @@ export function resolveOnboardingHref(
     completedOnboardingSteps: options?.completedOnboardingSteps,
   });
 }
+
+/* -------------------------------------------------------------------------- */
+/* Onboarding top-bar: back navigation + step meta (number / label)           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Linear order of onboarding SCREEN ROUTE NAMES (the `(onboarding)/<name>` segment), used only
+ * for the Back button and the "step N of M" label in the help ticket. Steps navigate with
+ * router.replace (no back stack), so Back must navigate to the previous route explicitly.
+ * Access guards on each screen redirect forward if a rider opens a step that doesn't apply to
+ * their flow, so a generic linear back is safe.
+ */
+export const ONBOARDING_FLOW_ROUTE_SEQUENCE = [
+  "language",
+  "location",
+  "welcome",
+  "referral",
+  "aadhaar",
+  "pan-selfie",
+  "dl-rc",
+  "rental-ev",
+  "bank-account",
+  "payment",
+  "review",
+] as const;
+
+export type OnboardingRouteName = (typeof ONBOARDING_FLOW_ROUTE_SEQUENCE)[number];
+
+/** Human label per onboarding route — shown in the help ticket ("stuck at <label>"). */
+const ONBOARDING_ROUTE_LABEL: Record<string, string> = {
+  language: "Language",
+  location: "Location",
+  welcome: "Welcome",
+  referral: "Referral",
+  aadhaar: "Aadhaar & name",
+  "pan-selfie": "PAN & selfie",
+  "dl-rc": "Driving licence & RC",
+  "rental-ev": "Rental / EV vehicle",
+  "bank-account": "Bank account",
+  payment: "Payment / subscription",
+  review: "Review",
+  kyc: "KYC",
+  profile: "Profile",
+  pending: "Under review",
+};
+
+/** Normalise a raw route (with or without the group prefix / leading slash) to its segment. */
+function onboardingRouteSegment(routeName: string): string {
+  return String(routeName ?? "")
+    .replace(/^\/?\(onboarding\)\//, "")
+    .replace(/^\//, "")
+    .trim();
+}
+
+/** Previous onboarding route for the Back button, or null on the first step. */
+export function previousOnboardingRoute(
+  currentRouteName: string
+): `/(onboarding)/${string}` | null {
+  const seg = onboardingRouteSegment(currentRouteName);
+  const idx = ONBOARDING_FLOW_ROUTE_SEQUENCE.indexOf(seg as OnboardingRouteName);
+  if (idx <= 0) return null;
+  return `/(onboarding)/${ONBOARDING_FLOW_ROUTE_SEQUENCE[idx - 1]}`;
+}
+
+/** True when the current onboarding route has a previous step to go back to. */
+export function canGoBackFromOnboardingRoute(currentRouteName: string): boolean {
+  return previousOnboardingRoute(currentRouteName) != null;
+}
+
+export type OnboardingStepMeta = {
+  /** 1-based position in the linear flow, or null for routes outside it (kyc/profile/pending). */
+  number: number | null;
+  total: number;
+  label: string;
+  routeName: string;
+};
+
+/** Step number / label for a route — used in the onboarding help ticket details. */
+export function onboardingStepMetaForRoute(currentRouteName: string): OnboardingStepMeta {
+  const seg = onboardingRouteSegment(currentRouteName);
+  const idx = ONBOARDING_FLOW_ROUTE_SEQUENCE.indexOf(seg as OnboardingRouteName);
+  return {
+    number: idx >= 0 ? idx + 1 : null,
+    total: ONBOARDING_FLOW_ROUTE_SEQUENCE.length,
+    label: ONBOARDING_ROUTE_LABEL[seg] ?? seg ?? "Onboarding",
+    routeName: seg,
+  };
+}
