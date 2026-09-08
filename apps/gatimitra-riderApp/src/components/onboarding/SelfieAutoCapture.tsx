@@ -260,6 +260,8 @@ export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoC
       capturingRef.current = false;
       return;
     }
+    // Remount path after re-capture — wait for onCameraReady again.
+    setCameraReady(false);
     blinkTrackerRef.current.reset();
     setBlinkPhase("align");
     setFacePresent(false);
@@ -332,7 +334,15 @@ export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoC
 
       <View style={styles.ringWrap}>
         <View style={styles.ringShell}>
-          {permission?.granted ? (
+          {uri ? (
+            <Image
+              key={uri}
+              source={{ uri }}
+              style={styles.preview}
+              resizeMode="cover"
+              accessibilityLabel="Captured selfie"
+            />
+          ) : permission?.granted ? (
             <>
               <CameraView
                 ref={cameraRef}
@@ -340,21 +350,17 @@ export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoC
                 mode="picture"
                 mirror
                 animateShutter={false}
-                style={[styles.camera, uri ? styles.cameraParked : null]}
+                style={styles.camera}
                 onCameraReady={() => setCameraReady(true)}
               />
-              {uri ? (
-                <Image source={{ uri }} style={styles.preview} resizeMode="cover" />
-              ) : (
-                <View style={styles.ringOverlay} pointerEvents="none">
-                  <View style={[styles.ringGuide, ringGuideStyle]} />
-                  {status === "waiting_blink" && facePresent ? (
-                    <View style={styles.blinkBadge}>
-                      <Ionicons name="eye-outline" size={22} color="#ffffff" />
-                    </View>
-                  ) : null}
-                </View>
-              )}
+              <View style={styles.ringOverlay} pointerEvents="none">
+                <View style={[styles.ringGuide, ringGuideStyle]} />
+                {status === "waiting_blink" && facePresent ? (
+                  <View style={styles.blinkBadge}>
+                    <Ionicons name="eye-outline" size={22} color="#ffffff" />
+                  </View>
+                ) : null}
+              </View>
             </>
           ) : (
             <View style={styles.permissionFallback}>
@@ -580,11 +586,10 @@ const styles = StyleSheet.create({
   camera: {
     ...StyleSheet.absoluteFillObject,
   },
-  cameraParked: {
-    opacity: 0,
-  },
   preview: {
-    ...StyleSheet.absoluteFillObject,
+    width: RING_SIZE,
+    height: RING_SIZE,
+    borderRadius: RING_SIZE / 2,
   },
   ringOverlay: {
     ...StyleSheet.absoluteFillObject,

@@ -2075,6 +2075,10 @@ export async function riderRoutes(app: FastifyInstance) {
             rating: z.number().nullable(),
             panNumber: z.string().nullable(),
             panVerified: z.boolean(),
+            panVerifiedData: z.record(z.string(), z.unknown()).nullable(),
+            aadhaarNumber: z.string().nullable(),
+            aadhaarVerified: z.boolean(),
+            aadhaarVerifiedData: z.record(z.string(), z.unknown()).nullable(),
             dob: z.string().nullable(),
             dlNumber: z.string().nullable(),
             dlFrontUrl: z.string().nullable(),
@@ -2176,6 +2180,10 @@ export async function riderRoutes(app: FastifyInstance) {
         rating,
         panNumber: progress.panNumber,
         panVerified: progress.panVerified,
+        panVerifiedData: progress.panVerifiedData,
+        aadhaarNumber: progress.aadhaarNumber,
+        aadhaarVerified: progress.aadhaarVerified,
+        aadhaarVerifiedData: progress.aadhaarVerifiedData,
         dob: progress.dob,
         dlNumber: progress.dlNumber,
         dlFrontUrl: toAbsoluteClientMediaUrl(progress.dlFrontUrl),
@@ -3131,7 +3139,11 @@ export async function riderRoutes(app: FastifyInstance) {
         );
         return summary;
       } catch (e) {
-        const err = e as Error & { statusCode?: number; code?: string };
+        const err = e as Error & {
+          statusCode?: number;
+          code?: string;
+          decision?: unknown;
+        };
         const status = err.statusCode ?? 500;
         const raw = err.message || "Accept failed";
         const safeMessage =
@@ -3145,6 +3157,9 @@ export async function riderRoutes(app: FastifyInstance) {
         return reply.status(status as 409).send({
           error: safeMessage,
           ...(typeof err.code === "string" && err.code ? { code: err.code } : {}),
+          ...(err.code === "rider_service_ineligible" && err.decision
+            ? { decision: err.decision }
+            : {}),
         });
       }
     }

@@ -23,6 +23,11 @@ import {
   buildRiderDetailUrl,
   buildRidersHomeUrl,
 } from '@/lib/riders/rider-dashboard-navigation';
+import {
+  classifyRiderDashboardSearch,
+  riderSearchMatchesLoadedRider,
+  supabaseRiderMobileOrFilter,
+} from '@/lib/riders/resolve-rider-search';
 import type { RiderSummaryParams } from '@/lib/queryKeys';
 import Link from 'next/link';
 import { CheckCircle, Circle, Filter, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, ShieldCheck, ShieldOff, Clock, User, Wallet, Lock, Unlock, History, Plus, RotateCcw, RefreshCw, MoreVertical, Banknote, Trash2, Check, X, ClipboardList, Search, Download, ShoppingBag, Package } from 'lucide-react';
@@ -717,29 +722,22 @@ export default function RidersPage() {
       }
       
       let query = supabase.from("riders").select("*");
-      
-      // Priority order: Mobile number (10+ digits) > Rider ID
-      const isPhoneWith91 = /^(\+91|91)\d{10}$/.test(searchValue);
-      const isPhone = /^\d{10,}$/.test(searchValue);
-      const isRiderId = /^GMR(\d+)$/i.test(searchValue);
-      const isNumericId = /^\d{1,9}$/.test(searchValue);
 
-      if (isPhoneWith91) {
-        let phone = searchValue.replace(/^\+?91/, "");
-        query = query.eq('mobile', phone);
-      } else if (isPhone) {
-        query = query.eq('mobile', searchValue);
-      } else if (isRiderId) {
-        const idNum = searchValue.replace(/^GMR/i, "");
-        if (/^\d+$/.test(idNum)) {
-          query = query.eq('id', Number(idNum));
-        } else {
-          query = query.eq('id', -1);
-        }
-      } else if (isNumericId) {
-        query = query.eq('id', Number(searchValue));
+      const classified = classifyRiderDashboardSearch(searchValue);
+      if (!classified) {
+        setRiders([]);
+        setError(null);
+        return;
+      }
+
+      if (classified.kind === "id") {
+        query = query.eq("id", classified.id);
+      } else if (classified.kind === "phone") {
+        query = query.or(
+          supabaseRiderMobileOrFilter(classified.last10, classified.variants),
+        );
       } else {
-        query = query.ilike('mobile', `%${searchValue}%`);
+        query = query.ilike("mobile", `%${classified.term}%`);
       }
 
       const { data, error: supabaseError } = await query;
@@ -807,10 +805,10 @@ export default function RidersPage() {
     const currentRider = riders[0];
     const matchesCurrentRider =
       currentRider &&
-      (searchValue === String(currentRider.id) ||
-        searchValue === `GMR${currentRider.id}` ||
-        currentRider.mobile === searchValue ||
-        currentRider.mobile === searchValue.replace(/^\+?91/, ''));
+      riderSearchMatchesLoadedRider(searchValue, {
+        id: currentRider.id,
+        mobile: currentRider.mobile || "",
+      });
 
     if (matchesCurrentRider) {
       lastRanSearchRef.current = searchValue;

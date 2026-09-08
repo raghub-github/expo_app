@@ -87,14 +87,25 @@ test("§51 MATRIX: bike active → food+parcel; car active → parcel+ride (per-
 
 test("§52 MATRIX: same rider+vehicle, Person Ride flips by location (state requires commercial, pincode overrides false)", () => {
   const carNonCommercial = input({ ...CAR, commercial: false });
-  // State rule: commercial required → non-commercial car NOT eligible.
-  const stateRule = policy("person_ride", { commercialRequired: true, resolvedGeo: { level: "state", refId: "s1" } });
+  // State rule: commercial required + commercial-only allowlist → non-commercial car NOT eligible.
+  const stateRule = policy("person_ride", {
+    commercialRequired: true,
+    allowedOwnership: ["commercial"],
+    resolvedGeo: { level: "state", refId: "s1" },
+  });
   const atState = resolveRiderServiceEligibility(carNonCommercial, stateRule);
   assert.equal(atState.eligible, false);
-  assert.ok(codes(atState).includes("COMMERCIAL_VEHICLE_REQUIRED"));
+  assert.ok(
+    codes(atState).includes("COMMERCIAL_VEHICLE_REQUIRED") ||
+      codes(atState).includes("OWNERSHIP_NOT_ALLOWED")
+  );
 
-  // Pincode override (nearest wins): commercial NOT required → same car now eligible.
-  const pincodeRule = policy("person_ride", { commercialRequired: false, resolvedGeo: { level: "pincode", refId: "p1" } });
+  // Pincode override: commercial NOT required + both ownerships → same car now eligible.
+  const pincodeRule = policy("person_ride", {
+    commercialRequired: false,
+    allowedOwnership: ["commercial", "non_commercial"],
+    resolvedGeo: { level: "pincode", refId: "p1" },
+  });
   const atPincode = resolveRiderServiceEligibility(carNonCommercial, pincodeRule);
   assert.equal(atPincode.eligible, true);
 });

@@ -9,7 +9,11 @@ import { useEffect, useRef } from "react";
 
 /**
  * Cold-start router. Keep the branded splash until hydration is done, then
- * replace once into login / onboarding / tabs (never into a wrong screen first).
+ * replace once into login / onboarding / tabs.
+ *
+ * Important: do NOT re-replace when onboardingHref churns (server step / cache
+ * sync). That fights the onboarding stack and triggers "Maximum update depth"
+ * inside React Navigation's useSyncState.
  */
 export default function Index() {
   const nav = useRootNavigationState();
@@ -21,7 +25,8 @@ export default function Index() {
   const languageHydrated = useLanguageStore((s) => s.hydrated);
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
   const { ready: onboardingGateReady, href: onboardingHref, canAccessTabs } = useOnboardingGate();
-  const lastReplaceTargetRef = useRef<string | null>(null);
+  /** First destination we committed — ignore later href flicker within the same bucket. */
+  const committedRef = useRef<string | null>(null);
 
   useEffect(() => {
     void hydrateLanguage().catch((err) => {
@@ -51,12 +56,31 @@ export default function Index() {
       target = "/(auth)/login";
     }
 
-    if (!target || lastReplaceTargetRef.current === String(target)) return;
-    lastReplaceTargetRef.current = String(target);
+    if (!target) return;
+
+    const next = String(target);
+    const prev = committedRef.current;
+
+    // Already committed this exact target.
+    if (prev === next) return;
+
+    // Stay inside onboarding once routed there — in-flow screens own further replaces.
+    if (
+      prev &&
+      prev.includes("/(onboarding)/") &&
+      next.includes("/(onboarding)/")
+    ) {
+      return;
+    }
+
+    // Stay on tabs once home is unlocked (unless signing out → login).
+    if (prev === "/(tabs)" && next === "/(tabs)") return;
+
+    committedRef.current = next;
     try {
       router.replace(target);
     } catch (err) {
-      lastReplaceTargetRef.current = null;
+      committedRef.current = null;
       console.warn("[Index] Navigation not ready yet:", err);
     }
   }, [

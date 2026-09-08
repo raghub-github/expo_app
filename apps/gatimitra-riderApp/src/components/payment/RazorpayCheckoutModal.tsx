@@ -1,5 +1,11 @@
 /**
  * Razorpay checkout via hosted backend page (expo-web-browser).
+ *
+ * Return URLs use the app scheme (`gatimitra-rider://pay-success|pay-cancel`).
+ * `openAuthSessionAsync` resolves with that URL for verification — AND Android
+ * may also deliver it as a deep link. `app/+native-intent.ts` rewrites those
+ * links to `/(onboarding)/payment` so Expo Router never shows Unmatched /
+ * "This screen doesn't exist" (which looked like a logout after failed pay).
  */
 
 import { useEffect, useRef } from "react";

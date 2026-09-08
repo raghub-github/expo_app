@@ -211,6 +211,10 @@ export function useRiderStatus(riderId: string | undefined) {
         rating?: number | null;
         panNumber?: string | null;
         panVerified?: boolean;
+        panVerifiedData?: Record<string, unknown> | null;
+        aadhaarNumber?: string | null;
+        aadhaarVerified?: boolean;
+        aadhaarVerifiedData?: Record<string, unknown> | null;
         dob?: string | null;
         dlNumber?: string | null;
         dlFrontUrl?: string | null;

@@ -1,9 +1,13 @@
 import { router, type Href } from "expo-router";
 import { useSessionStore } from "@/src/stores/sessionStore";
 
-/** Onboarding wizard steps use replace — not stack history (cold start / gate redirects). */
+/** Onboarding wizard steps use replace — not stack history (cold start / gate redirects).
+ * Defer one frame so Fabric can finish the press/layout pass before the surface unmounts
+ * (avoids "Unable to find viewState for tag"). */
 export function goBackOrReplace(fallback: Href) {
-  router.replace(fallback);
+  requestAnimationFrame(() => {
+    router.replace(fallback);
+  });
 }
 
 /**

@@ -107,9 +107,7 @@ export async function uploadToR2(
   }
   if (!uploadResponse) {
     throw new Error(
-      lastErr instanceof Error
-        ? `Upload failed after ${MAX_ATTEMPTS} attempts: ${lastErr.message}. Check your internet connection and try again.`
-        : "Upload failed. Check your internet connection and try again."
+      "Couldn't upload the document right now. Please check your internet connection and try again."
     );
   }
 

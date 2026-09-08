@@ -7,7 +7,7 @@
  * Fallback (hybrid fail): slim form like earnings withdraw — holder (Aadhaar),
  * account, confirm, IFSC (+ bank name from Cashfree when available).
  */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -16,7 +16,6 @@ import {
   StyleSheet,
   Platform,
   Pressable,
-  KeyboardAvoidingView,
   TouchableOpacity,
   ActivityIndicator,
 } from "react-native";
@@ -42,6 +41,7 @@ import {
   ContinueButton,
   FieldLabel,
   ErrorBanner,
+  SkipDocumentButton,
   onboardingFormStyles as form,
 } from "@/src/components/onboarding/OnboardingFormUi";
 import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
@@ -67,7 +67,7 @@ function maskAccount(raw: string): string {
 
 export default function BankAccountOnboardingScreen() {
   const { data, setData, hydrate } = useOnboardingStore();
-  const { data: riderStatus } = useRiderStatus(data.riderId);
+  const { data: riderStatus, isFetched: riderStatusFetched } = useRiderStatus(data.riderId);
   const createBank = useCreateRiderBankPaymentMethod();
   const bankQuery = useRiderBankPaymentMethod();
   const existingBank = bankQuery.data;
@@ -94,6 +94,7 @@ export default function BankAccountOnboardingScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [bankEv, setBankEv] = useState<EvState>({ phase: "idle" });
   const [showFallbackForm, setShowFallbackForm] = useState(!bankElectronic);
+  const bouncedToVehicleRef = useRef(false);
 
   useEffect(() => {
     void hydrate();
@@ -127,9 +128,13 @@ export default function BankAccountOnboardingScreen() {
       data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice.trim());
 
   useEffect(() => {
+    // Wait for status (or no riderId) so we don't bounce on empty hydrate → dl-rc → bank loop.
+    if (data.riderId && !riderStatusFetched) return;
     if (vehicleReady) return;
+    if (bouncedToVehicleRef.current) return;
+    bouncedToVehicleRef.current = true;
     router.replace("/(onboarding)/dl-rc");
-  }, [vehicleReady]);
+  }, [data.riderId, riderStatusFetched, vehicleReady]);
 
   const accountOk = ACCOUNT_RE.test(accountNumber);
   const ifscOk = IFSC_RE.test(ifsc.trim());
@@ -178,9 +183,26 @@ export default function BankAccountOnboardingScreen() {
     goBackOrReplace("/(onboarding)/dl-rc");
   };
 
-  const goToPayment = async () => {
-    await setData({ bankAccountOnboardingDone: true });
+  const goToPayment = async (opts?: { skipped?: boolean }) => {
+    await setData({
+      bankAccountOnboardingDone: true,
+      ...(opts?.skipped ? { bankAccountOnboardingSkipped: true } : { bankAccountOnboardingSkipped: false }),
+    });
     router.replace("/(onboarding)/payment");
+  };
+
+  const handleSkipBankAccount = async () => {
+    if (!vehicleReady || submitting || createBank.isPending) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      notifyOnboardingToast(
+        "Bank skipped. You can add it anytime from Earnings after onboarding.",
+      );
+      await goToPayment({ skipped: true });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const saveBankAndContinue = async (opts?: {
@@ -312,14 +334,12 @@ export default function BankAccountOnboardingScreen() {
   return (
     <View style={form.root}>
       <SafeAreaView style={form.safeArea} edges={["top", "bottom"]}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={form.flex}
-        >
+        <View style={form.flex}>
           <ScrollView
             contentContainerStyle={form.scrollContent}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
+            keyboardDismissMode="on-drag"
           >
             <LinearGradient
               colors={["#dff5e4", BG]}
@@ -339,8 +359,8 @@ export default function BankAccountOnboardingScreen() {
               <Text style={form.title}>Bank Account</Text>
               <Text style={form.subtitle}>
                 {bankElectronic
-                  ? "Enter account number + IFSC and verify instantly. Same name as Aadhaar works best."
-                  : "Add your bank account for payouts. Use the same name as on your Aadhaar."}
+                  ? "Enter account number + IFSC and verify instantly. Same name as Aadhaar works best. Or skip and add later from Earnings."
+                  : "Add your bank account for payouts, or skip and add it later from Earnings."}
               </Text>
             </LinearGradient>
 
@@ -602,9 +622,22 @@ export default function BankAccountOnboardingScreen() {
                 }
                 loading={submitting || createBank.isPending || bankQuery.isLoading}
               />
+
+              {!alreadyLinked && !data.bankAccountOnboardingDone ? (
+                <SkipDocumentButton
+                  label="Skip for now — add from Earnings later"
+                  onPress={() => void handleSkipBankAccount()}
+                  disabled={
+                    !vehicleReady ||
+                    submitting ||
+                    createBank.isPending ||
+                    bankEv.phase === "verifying"
+                  }
+                />
+              ) : null}
             </View>
           </ScrollView>
-        </KeyboardAvoidingView>
+        </View>
       </SafeAreaView>
     </View>
   );

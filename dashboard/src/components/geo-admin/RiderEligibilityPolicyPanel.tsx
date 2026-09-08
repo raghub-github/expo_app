@@ -56,6 +56,12 @@ type EligibilityDecision = {
   rcState: DocState;
   commercialRequired: boolean;
   blocking: EligibilityBlock[];
+  reasonCode?: string | null;
+  nextAction?: string | null;
+  policySource?: string | null;
+  matchedRuleId?: number | null;
+  requiredDocuments?: string[];
+  missingDocuments?: string[];
   resolvedGeo?: { level: string; refId: string } | null;
 };
 type EffectivePolicy = {
@@ -68,6 +74,8 @@ type EffectivePolicy = {
   allowedFuelKinds: string[];
   allowedOwnership: OwnershipType[];
   resolvedGeo?: { level: string; refId: string } | null;
+  ruleVersion?: string | null;
+  matchedRuleId?: number | null;
 };
 
 const SERVICES: { value: EligibilityService; label: string }[] = [
@@ -107,6 +115,7 @@ const btnSecondary =
   "inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-white disabled:opacity-50";
 
 function defaultsForService(service: EligibilityService) {
+  const commercialRequired = service === "person_ride";
   return {
     serviceEnabled: true,
     dlRequirement: (service === "food" ? "optional" : "required") as DocRequirement,
@@ -114,15 +123,26 @@ function defaultsForService(service: EligibilityService) {
     evProofRequirement: "exempt" as DocRequirement,
     ownershipProofRequirement: "exempt" as DocRequirement,
     commercialProofRequirement: "exempt" as DocRequirement,
-    commercialRequired: service === "person_ride",
+    commercialRequired,
     allowedVehicleClasses: (service === "food"
       ? ["2_wheeler"]
       : ["2_wheeler", "3_wheeler", "4_wheeler"]) as VehicleClass[],
     allowedFuelKinds: [] as string[],
-    allowedOwnership: ["commercial", "non_commercial"] as OwnershipType[],
+    // Phase B: commercial-required services default to commercial-only allowlist.
+    allowedOwnership: (commercialRequired
+      ? ["commercial"]
+      : ["commercial", "non_commercial"]) as OwnershipType[],
     priority: 100,
     isActive: true,
   };
+}
+
+/** Keep commercialRequired and ownership allowlist consistent before save / while editing. */
+function syncCommercialOwnership(form: RuleForm): RuleForm {
+  if (form.commercialRequired) {
+    return { ...form, allowedOwnership: ["commercial"] };
+  }
+  return form;
 }
 
 type RuleForm = ReturnType<typeof defaultsForService>;
@@ -286,12 +306,13 @@ export function RiderEligibilityPolicyPanel(props: { level: string; refId: strin
       toast.error(err);
       return;
     }
+    const payload = syncCommercialOwnership(addForm);
     setBusyId("new");
     try {
       const res = await fetch("/api/super-admin/geo/rider-eligibility-rules", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ level, refId, service, ...addForm }),
+        body: JSON.stringify({ level, refId, service, ...payload }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Failed to add rule");
@@ -312,12 +333,13 @@ export function RiderEligibilityPolicyPanel(props: { level: string; refId: strin
       toast.error(err);
       return;
     }
+    const payload = syncCommercialOwnership(editForm);
     setBusyId(id);
     try {
       const res = await fetch(`/api/super-admin/geo/rider-eligibility-rules/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(editForm),
+        body: JSON.stringify(payload),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Failed to save rule");
@@ -487,7 +509,9 @@ function RuleSummaryCard(props: {
           <Badge tone={r.isActive ? "green" : "slate"}>{r.isActive ? "Active" : "Inactive"}</Badge>
           <Badge tone={reqTone(r.dlRequirement)}>DL {r.dlRequirement}</Badge>
           <Badge tone={reqTone(r.rcRequirement)}>RC {r.rcRequirement}</Badge>
-          {r.commercialRequired ? <Badge tone="indigo">Commercial required</Badge> : null}
+          <Badge tone={r.commercialRequired ? "indigo" : "slate"}>
+            {r.commercialRequired ? "Commercial required" : "Commercial not required"}
+          </Badge>
           <span className="text-xs text-slate-500">Priority {r.priority}</span>
         </div>
         <div className="flex gap-2">
@@ -562,10 +586,28 @@ function RuleFormCard(props: {
           />
           <ToggleRow
             checked={form.commercialRequired}
-            onChange={(v) => setForm((f) => ({ ...f, commercialRequired: v }))}
+            onChange={(v) =>
+              setForm((f) =>
+                syncCommercialOwnership({
+                  ...f,
+                  commercialRequired: v,
+                  // Turning commercial off: restore both ownerships if currently commercial-only.
+                  allowedOwnership: v
+                    ? ["commercial"]
+                    : f.allowedOwnership.includes("non_commercial")
+                      ? f.allowedOwnership
+                      : ["commercial", "non_commercial"],
+                })
+              )
+            }
             label="Commercial vehicle required"
-            hint="Person-Ride often requires a commercial vehicle; location-configurable."
+            hint="When ON, only Commercial ownership is allowed. Turn OFF and select Non-commercial to permit private vehicles."
           />
+          {form.commercialRequired ? (
+            <p className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-[11px] leading-4 text-indigo-900">
+              Ownership allowlist is locked to <b>Commercial</b> while this is on. Turn off to allow Non-commercial.
+            </p>
+          ) : null}
           <ToggleRow
             checked={form.isActive}
             onChange={(v) => setForm((f) => ({ ...f, isActive: v }))}
@@ -677,8 +719,23 @@ function RuleFormCard(props: {
           <ChipMultiSelect
             options={OWNERSHIP}
             selected={form.allowedOwnership}
-            onToggle={(v) => toggleIn("allowedOwnership", v)}
+            onToggle={(v) =>
+              setForm((f) => {
+                const cur = f.allowedOwnership;
+                let next = cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v];
+                if (next.length === 0) next = ["commercial"];
+                return syncCommercialOwnership({
+                  ...f,
+                  allowedOwnership: next,
+                  // Selecting Non-commercial forces commercialRequired off.
+                  commercialRequired: next.includes("non_commercial") ? false : f.commercialRequired,
+                });
+              })
+            }
           />
+          <p className="mt-1 text-[11px] text-slate-500">
+            What you select here is what the engine accepts. Selecting Non-commercial turns off Commercial required.
+          </p>
         </div>
       </div>
 
@@ -752,7 +809,14 @@ function OnboardingSimulator(props: { level: string; refId: string }) {
         if (cancelled) return;
         if (!res.ok) {
           setResult(null);
-          setError(json?.error || json?.message || "Simulation failed");
+          setError(
+            json?.message ||
+              (json?.error === "auth_failed" || json?.error === "forbidden"
+                ? "Simulator auth failed — check BACKEND_SCHEDULE_TICK_SECRET / INTERNAL_API_TOKEN on dashboard + backend."
+                : null) ||
+              json?.error ||
+              "Simulation failed"
+          );
         } else {
           setResult(json as OnboardingSimResult);
         }
@@ -922,7 +986,14 @@ function EligibilitySimulator(props: { level: string; refId: string; service: El
         if (!res.ok) {
           setDecision(null);
           setPolicy(null);
-          setError(json?.error || json?.message || "Simulation failed");
+          setError(
+            json?.message ||
+              (json?.error === "auth_failed" || json?.error === "forbidden"
+                ? "Simulator auth failed — check BACKEND_SCHEDULE_TICK_SECRET / INTERNAL_API_TOKEN on dashboard + backend."
+                : null) ||
+              json?.error ||
+              "Simulation failed"
+          );
         } else {
           setDecision(json.decision ?? null);
           setPolicy(json.policy ?? null);
@@ -1060,6 +1131,26 @@ function EligibilitySimulator(props: { level: string; refId: string; service: El
                 <span>DL: <b>{policy.dlRequirement}</b></span>
                 <span>RC: <b>{policy.rcRequirement}</b></span>
                 <span>Commercial required: <b>{policy.commercialRequired ? "yes" : "no"}</b></span>
+                <span>
+                  Matched rule:{" "}
+                  <b>
+                    {decision.matchedRuleId != null
+                      ? `#${decision.matchedRuleId}`
+                      : policy.matchedRuleId != null
+                        ? `#${policy.matchedRuleId}`
+                        : (decision.policySource ?? "default")}
+                  </b>
+                </span>
+                {decision.reasonCode ? (
+                  <span>
+                    Reason code: <b>{decision.reasonCode}</b>
+                  </span>
+                ) : null}
+                {decision.nextAction ? (
+                  <span>
+                    Next action: <b>{decision.nextAction}</b>
+                  </span>
+                ) : null}
                 <span>
                   Vehicle classes:{" "}
                   <b>{policy.allowedVehicleClasses.length ? policy.allowedVehicleClasses.join(", ") : "none"}</b>

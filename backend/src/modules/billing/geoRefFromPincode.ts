@@ -42,6 +42,50 @@ function stateVariantsFor(canonical: string): string[] {
   return STATE_VARIANTS[canonical] ?? [canonical];
 }
 
+/**
+ * Expand a state name or RTO plate code (e.g. "HR", "WB") into candidate strings to
+ * match against `states.name`. Without this, eligibility/geo fall back to GLOBAL
+ * defaults when the only signal is a vehicle registration_state code.
+ */
+export function expandStateNameCandidates(raw: string | null | undefined): string[] {
+  const sn = sanitizeGeoText(raw);
+  if (!sn) return [];
+  const lower = sn.toLowerCase();
+  for (const [canonical, variants] of Object.entries(STATE_VARIANTS)) {
+    const all = [canonical, ...variants];
+    if (all.some((v) => v.toLowerCase() === lower)) {
+      return [...new Set([canonical, ...variants, sn])];
+    }
+  }
+  return [sn];
+}
+
+/** Resolve a states.id from a full name or RTO code. Best-effort; never throws. */
+export async function resolveStateIdByNameOrCode(
+  raw: string | null | undefined
+): Promise<string | null> {
+  const candidates = expandStateNameCandidates(raw);
+  if (candidates.length === 0) return null;
+  const sql = getSql();
+  for (const v of candidates) {
+    try {
+      const [exact] = await sql<{ id: string }[]>`
+        SELECT id FROM states WHERE LOWER(TRIM(name)) = LOWER(${v}) LIMIT 1
+      `;
+      if (exact?.id) return exact.id;
+      if (v.length >= 4) {
+        const [byLike] = await sql<{ id: string }[]>`
+          SELECT id FROM states WHERE LOWER(name) LIKE ${"%" + v.toLowerCase() + "%"} LIMIT 1
+        `;
+        if (byLike?.id) return byLike.id;
+      }
+    } catch {
+      /* best-effort */
+    }
+  }
+  return null;
+}
+
 function sanitizeGeoText(v: string | null | undefined): string | null {
   if (v == null) return null;
   const t = String(v).trim();
@@ -69,20 +113,10 @@ export async function resolveDropGeoRefsFromPincode(
 ): Promise<DropGeoRefByLevel | null> {
   const pc = sanitizeGeoText(pincode);
   if (!pc) {
-    // No usable pincode. Try state-only fallback so state-bound offers still work
-    // when the address was saved with placeholder pincode but a real state name.
-    const sn = sanitizeGeoText(stateName);
-    if (!sn) return null;
-    const sql = getSql();
-    try {
-      const [stateRow] = await sql<{ id: string }[]>`
-        SELECT id FROM states WHERE LOWER(TRIM(name)) = LOWER(${sn}) LIMIT 1
-      `;
-      if (stateRow?.id) return { state: stateRow.id } as DropGeoRefByLevel;
-    } catch {
-      // best-effort
-    }
-    return null;
+    // No usable pincode. Try state-only fallback so state-bound offers / eligibility
+    // still work when the only signal is a state name or RTO code (e.g. "HR").
+    const stateId = await resolveStateIdByNameOrCode(stateName);
+    return stateId ? ({ state: stateId } as DropGeoRefByLevel) : null;
   }
 
   /**
@@ -213,19 +247,10 @@ export async function resolveDropGeoRefsFromPincode(
    */
   let stateId: string | null = x?.state_id ?? null;
   if (stateId == null) {
-    const sn = sanitizeGeoText(stateName);
-    if (sn) {
-      try {
-        const [stateRow] = await withSqlRetry(async () => {
-          const sql = getSql();
-          return sql<{ id: string }[]>`
-          SELECT id FROM states WHERE LOWER(TRIM(name)) = LOWER(${sn}) LIMIT 1
-        `;
-        });
-        stateId = stateRow?.id ?? null;
-      } catch {
-        // ignore — state fallback is best-effort
-      }
+    try {
+      stateId = await resolveStateIdByNameOrCode(stateName);
+    } catch {
+      // ignore — state fallback is best-effort
     }
   }
   if (stateId == null && stateIdFromPrefix != null) {

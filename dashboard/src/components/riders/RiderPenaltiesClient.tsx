@@ -14,7 +14,11 @@ import { FilterSearchBar } from "./FilterSearchBar";
 import { TablePagination } from "./TablePagination";
 import { Plus, RotateCcw, RefreshCw, ChevronDown, X } from "lucide-react";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
-import { riderSearchMatchesLoadedRider } from "@/lib/riders/resolve-rider-search";
+import {
+  riderSearchMatchesLoadedRider,
+  classifyRiderDashboardSearch,
+  supabaseRiderMobileOrFilter,
+} from "@/lib/riders/resolve-rider-search";
 import { formatRiderOrderDisplayId } from "@/lib/riders/format-rider-order-display-id";
 import Link from "next/link";
 import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
@@ -210,27 +214,19 @@ export function RiderPenaltiesClient() {
             "id, name, mobile, city, state, status, onboarding_stage, kyc_status"
           );
 
-        const isPhoneWith91 = /^(\+91|91)\d{10}$/.test(value);
-        const isPhone = /^\d{10,}$/.test(value);
-        const isRiderId = /^GMR(\d+)$/i.test(value);
-        const isNumericId = /^\d{1,9}$/.test(value);
-
-        if (isPhoneWith91) {
-          let phone = value.replace(/^\+?91/, "");
-          query = query.eq("mobile", phone);
-        } else if (isPhone) {
-          query = query.eq("mobile", value);
-        } else if (isRiderId) {
-          const idNum = value.replace(/^GMR/i, "");
-          if (/^\d+$/.test(idNum)) {
-            query = query.eq("id", Number(idNum));
-          } else {
-            query = query.eq("id", -1);
-          }
-        } else if (isNumericId) {
-          query = query.eq("id", Number(value));
+        const classified = classifyRiderDashboardSearch(value);
+        if (!classified) {
+          setRider(null);
+          return;
+        }
+        if (classified.kind === "id") {
+          query = query.eq("id", classified.id);
+        } else if (classified.kind === "phone") {
+          query = query.or(
+            supabaseRiderMobileOrFilter(classified.last10, classified.variants),
+          );
         } else {
-          query = query.ilike("mobile", `%${value}%`);
+          query = query.ilike("mobile", `%${classified.term}%`);
         }
 
         const { data, error: supabaseError } = await query.limit(1);

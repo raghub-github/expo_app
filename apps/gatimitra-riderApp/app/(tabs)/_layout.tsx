@@ -1,6 +1,6 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
-import React, { useEffect, useRef } from 'react';
-import { Redirect, Tabs, router, useSegments } from 'expo-router';
+import React, { useEffect } from 'react';
+import { Redirect, Tabs, useSegments, usePathname } from 'expo-router';
 import { View } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -12,7 +12,7 @@ import { RIDER_DUTY_STATUS_QUERY_KEY } from '@/src/hooks/useDutyStatus';
 import { riderApi } from '@/src/services/api/riderApi';
 import { prefetchRiderBankPaymentMethod } from '@/src/hooks/useRiderBankAccount';
 import { prefetchRiderSubscriptionStatus } from '@/src/hooks/useRiderSubscription';
-import { GlobalTopBar } from '@/src/components/GlobalTopBar';
+import { TabAppChrome } from '@/src/components/header/TabAppChrome';
 import { RiderBootstrapScreen } from '@/src/components/RiderBootstrapScreen';
 import { RiderHomeLocationPrompt } from '@/src/components/home/RiderHomeLocationPrompt';
 import { RiderSubscriptionPrompt } from '@/src/components/subscription/RiderSubscriptionPrompt';
@@ -26,22 +26,17 @@ import { RiderTabBar } from '@/src/components/navigation/RiderTabBar';
 export default function TabLayout() {
   const { t } = useTranslation();
   const segments = useSegments();
+  const pathname = usePathname();
   const queryClient = useQueryClient();
   const hydrated = useSessionStore((s) => s.hydrated);
   const hasSession = useSessionStore((s) => Boolean(s.session));
   const accessToken = useSessionStore((s) => s.session?.accessToken);
-  const { ready: onboardingGateReady, href: onboardingHref, canAccessTabs } = useOnboardingGate();
-  const onboardingReplaceRef = useRef<string | null>(null);
+  const { ready: onboardingGateReady, canAccessTabs } = useOnboardingGate();
 
-  const onOrdersHome = segments[0] === '(tabs)' && segments[1] === 'orders';
-
-  useEffect(() => {
-    if (!hydrated || !onboardingGateReady || !hasSession || canAccessTabs || !onboardingHref) return;
-    const target = onboardingHref as string;
-    if (onboardingReplaceRef.current === target) return;
-    onboardingReplaceRef.current = target;
-    router.replace(onboardingHref);
-  }, [hydrated, onboardingGateReady, hasSession, canAccessTabs, onboardingHref]);
+  const onOrdersHome =
+    pathname === "/orders" ||
+    pathname.endsWith("/orders") ||
+    segments[1] === "orders";
 
   useEffect(() => {
     if (!accessToken || !canAccessTabs) return;
@@ -58,25 +53,21 @@ export default function TabLayout() {
   if (!hydrated && !hasSession) {
     return <RiderBootstrapScreen />;
   }
-  
+
   if (hydrated && !hasSession) {
     return <Redirect href="/(auth)/login" />;
   }
 
-  if (hasSession && !canAccessTabs && onboardingHref && onboardingGateReady) {
-    return <Redirect href={onboardingHref} />;
+  // Incomplete KYC: do NOT Redirect/replace from tabs — Index owns that hop.
+  // Dual navigators fighting over onboarding caused Maximum update depth.
+  if (hasSession && (!onboardingGateReady || !canAccessTabs)) {
+    return <RiderBootstrapScreen />;
   }
 
   return (
     <View style={{ flex: 1 }}>
       <RiderHomeLocationPrompt />
-      <View
-        pointerEvents={onOrdersHome ? "none" : "auto"}
-        style={onOrdersHome ? { display: "none" } : undefined}
-        collapsable={false}
-      >
-        <GlobalTopBar />
-      </View>
+      <TabAppChrome onOrdersHome={onOrdersHome} />
         <Tabs
         tabBar={(props) => <RiderTabBar {...props} />}
         screenOptions={{

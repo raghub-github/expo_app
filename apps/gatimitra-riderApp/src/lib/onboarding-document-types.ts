@@ -157,12 +157,17 @@ export function docRequiresBackPhoto(doc: OnboardingDocumentTypeDef): boolean {
 
 export function isDocStepComplete(
   data: import("@/src/stores/onboardingStore").OnboardingData,
-  doc: OnboardingDocumentTypeDef
+  doc: OnboardingDocumentTypeDef,
+  opts?: { electronicallyVerified?: boolean }
 ): boolean {
   const state = getDocUploadState(data, doc.code);
   const textOk =
     !doc.requiresTextField ||
     state.textValue.trim().length >= Math.max(doc.minTextLength, 1);
+  // Cashfree / DigiLocker electronic verify: number alone is enough — photos are not required.
+  if (opts?.electronicallyVerified) {
+    return textOk;
+  }
   const frontOk = Boolean(state.signedUrl || state.localUri);
   const backOk = !docRequiresBackPhoto(doc) || Boolean(state.backSignedUrl || state.backLocalUri);
   return textOk && frontOk && backOk;

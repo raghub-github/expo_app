@@ -33,7 +33,6 @@ import { colors } from "@/src/theme";
 import { Button } from "@/src/components/ui/Button";
 import { permissionManager } from "@/src/services/permissions/permissionManager";
 import { type RiderMapViewHandle } from "@/src/components/RiderMapView";
-import { HomeMapHeader, ORDERS_HEADER_BG } from "@/src/components/home/HomeMapHeader";
 import { AccountRestrictedBanner, PenaltyBanner, OffDutyBanner, RidePaymentHoldBanner } from "@/src/components/home/HomeAlertBanners";
 import {
   HomeAlertBannerCarousel,
@@ -711,10 +710,7 @@ export default function OrdersScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Header owns status-bar padding — avoids translucent leftover from splash. */}
-      <View style={styles.chrome}>
-        <HomeMapHeader />
-      </View>
+      {/* HomeMapHeader lives in (tabs)/_layout chrome slot — avoids jump on tab focus. */}
       <View style={styles.bannerHost}>
         <HomeAlertBannerCarousel slides={homeBannerSlides} />
       </View>
@@ -918,11 +914,6 @@ const styles = StyleSheet.create({
   },
   map: {
     flex: 1,
-  },
-  chrome: {
-    backgroundColor: ORDERS_HEADER_BG,
-    zIndex: 100,
-    elevation: 0,
   },
   bannerHost: {
     width: "100%",

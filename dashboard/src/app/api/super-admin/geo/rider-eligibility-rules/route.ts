@@ -98,7 +98,11 @@ export async function POST(req: NextRequest) {
       allowedVehicleClasses:
         d.allowedVehicleClasses ?? (d.service === "food" ? ["2_wheeler"] : ["2_wheeler", "3_wheeler", "4_wheeler"]),
       allowedFuelKinds: d.allowedFuelKinds ?? [],
-      allowedOwnership: d.allowedOwnership ?? ["commercial", "non_commercial"],
+      allowedOwnership:
+        d.allowedOwnership ??
+        ((d.commercialRequired ?? d.service === "person_ride")
+          ? ["commercial"]
+          : ["commercial", "non_commercial"]),
       priority: d.priority ?? 100,
       isActive: d.isActive ?? true,
       effectiveFrom: d.effectiveFrom ?? null,

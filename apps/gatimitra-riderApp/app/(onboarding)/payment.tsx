@@ -1,7 +1,7 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Platform,
   TouchableOpacity,
   ActivityIndicator,
+  Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
@@ -19,7 +20,12 @@ import { router } from "expo-router";
 import {
   openRazorpayCheckout,
   isNativeRazorpayAvailable,
+  extractRazorpayError,
+  isRazorpayUserCancel,
 } from "@/src/lib/razorpay-native";
+import { openHostedRazorpayCheckout } from "@/src/components/payment/RazorpayCheckoutModal";
+import { PaymentFailedBottomSheet } from "@/src/components/payment/PaymentFailedBottomSheet";
+import Constants from "expo-constants";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { colors } from "@/src/theme";
@@ -40,6 +46,7 @@ import {
   canAccessOnboardingPaymentScreen,
   type ServerOnboardingStep,
 } from "@/src/lib/onboarding-routes";
+import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
 import {
   formatRupeeFromPaise,
   useOnboardingFeeConfig,
@@ -130,46 +137,72 @@ export default function PaymentScreen() {
   // Backend-authoritative service impact for the payment gate (§7): which services will be
   // available after paying, and which stay blocked until documents are verified.
   const { summary: onboardingSummary } = useRiderOnboardingSummary();
-  const { data: riderStatus } = useRiderStatus(data.riderId);
+  const { data: riderStatus, isFetched: riderStatusFetched } = useRiderStatus(data.riderId);
   useOnboardingEstablishedRedirect(riderStatus);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [orderId, setOrderId] = useState<string | null>(null);
+  const [failureSheet, setFailureSheet] = useState<{
+    visible: boolean;
+    message: string;
+  }>({ visible: false, message: "" });
+  const [footerHeight, setFooterHeight] = useState(120);
+  const footerHeightRef = useRef(120);
+  const mountedRef = useRef(true);
+  const gateBounceRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     hydrate();
   }, [hydrate]);
 
   useEffect(() => {
+    if (data.riderId && !riderStatusFetched) return;
+
     const vehicleDone = isOnboardingVehicleDocsComplete(
       riderStatus?.completedOnboardingSteps,
       data.vehicleOnboardingFlow
     );
+    let target: `/(onboarding)/${string}` | null = null;
     if (!data.vehicleChoice?.trim() && !vehicleDone) {
-      router.replace("/(onboarding)/dl-rc");
-      return;
-    }
-    const locallySubmitted =
-      data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice?.trim();
-    if (!locallySubmitted && !vehicleDone) {
-      if (
-        !canAccessOnboardingPaymentScreen({
-          vehicleChoice: data.vehicleChoice,
-          vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
-          completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
-          vehicleOnboardingFlow: data.vehicleOnboardingFlow,
-          skipBankAccountCheck: true,
-        })
-      ) {
-        router.replace("/(onboarding)/dl-rc");
-        return;
+      target = "/(onboarding)/dl-rc";
+    } else {
+      const locallySubmitted =
+        data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice?.trim();
+      if (!locallySubmitted && !vehicleDone) {
+        if (
+          !canAccessOnboardingPaymentScreen({
+            vehicleChoice: data.vehicleChoice,
+            vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
+            completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
+            vehicleOnboardingFlow: data.vehicleOnboardingFlow,
+            skipBankAccountCheck: true,
+          })
+        ) {
+          target = "/(onboarding)/dl-rc";
+        }
       }
     }
-    if (!data.bankAccountOnboardingDone && !riderStatus?.bankAccountOnboardingDone) {
-      router.replace("/(onboarding)/bank-account");
+    if (
+      !target &&
+      !data.bankAccountOnboardingDone &&
+      !riderStatus?.bankAccountOnboardingDone
+    ) {
+      target = "/(onboarding)/bank-account";
     }
+    if (!target) return;
+    if (gateBounceRef.current === target) return;
+    gateBounceRef.current = target;
+    router.replace(target);
   }, [
+    data.riderId,
+    riderStatusFetched,
     data.vehicleChoice,
     data.vehicleOnboardingSubmittedFor,
     data.vehicleOnboardingFlow,
@@ -179,6 +212,7 @@ export default function PaymentScreen() {
   ]);
 
   useEffect(() => {
+    if (data.riderId && !riderStatusFetched) return;
     const next = riderStatus?.nextOnboardingStep;
     if (!next || next === "payment" || next === "bank_account") return;
     if (
@@ -191,8 +225,13 @@ export default function PaymentScreen() {
     ) {
       return;
     }
-    router.replace(onboardingStepToRoute(next as ServerOnboardingStep));
+    const href = onboardingStepToRoute(next as ServerOnboardingStep);
+    if (gateBounceRef.current === href) return;
+    gateBounceRef.current = href;
+    router.replace(href);
   }, [
+    data.riderId,
+    riderStatusFetched,
     riderStatus?.nextOnboardingStep,
     riderStatus?.completedOnboardingSteps,
     data.vehicleOnboardingFlow,
@@ -260,6 +299,19 @@ export default function PaymentScreen() {
 
   const isPaying = loading || createOrder.isPending;
 
+  const showPaymentFailedSheet = useCallback((message: string) => {
+    setLoading(false);
+    setError(null);
+    setFailureSheet({
+      visible: true,
+      message: message.trim() || "Payment was not completed. Please try again.",
+    });
+  }, []);
+
+  const dismissFailureSheet = useCallback(() => {
+    setFailureSheet({ visible: false, message: "" });
+  }, []);
+
   const handlePaymentSuccess = useCallback(() => {
     Alert.alert(
       "Payment Successful",
@@ -289,10 +341,12 @@ export default function PaymentScreen() {
       if (result.success) {
         handlePaymentSuccess();
       } else {
-        setError("Payment verification failed");
+        showPaymentFailedSheet("Payment verification failed. Please try again.");
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Payment verification failed");
+      showPaymentFailedSheet(
+        e instanceof Error ? e.message : "Payment verification failed. Please try again."
+      );
     } finally {
       setLoading(false);
     }
@@ -300,16 +354,16 @@ export default function PaymentScreen() {
 
   const handleSimulatePayment = async (razorpayOrderId: string) => {
     if (!__DEV__) {
-      setError("Simulation only available in development");
+      showPaymentFailedSheet("Simulation only available in development");
       return;
     }
     await handleVerifyPayment(razorpayOrderId, `pay_${Date.now()}`, "simulated_signature");
   };
 
-  // `react-native-razorpay` is a native module — present in dev-client / EAS
-  // builds, absent in Expo Go. Guard so the screen degrades to the dev
-  // simulator instead of crashing when the native module isn't linked.
+  // `react-native-razorpay` JS always loads, but the native bridge is absent in
+  // Expo Go — calling open() throws "Cannot read property 'open' of null".
   const nativeCheckoutAvailable = isNativeRazorpayAvailable();
+  const isExpoGo = Constants.appOwnership === "expo";
 
   const openNativeCheckout = useCallback(
     async (order: {
@@ -319,8 +373,6 @@ export default function PaymentScreen() {
       key: string;
     }) => {
       try {
-        // Resolves on success with the three verification tokens; rejects with
-        // { code, description } on user cancel or gateway failure.
         const result = await openRazorpayCheckout({
           order: {
             orderId: order.orderId,
@@ -339,27 +391,80 @@ export default function PaymentScreen() {
           result.razorpaySignature
         );
       } catch (rzpErr: unknown) {
-        const desc =
-          rzpErr && typeof rzpErr === "object" && "description" in rzpErr
-            ? String((rzpErr as { description?: unknown }).description ?? "")
-            : "";
-        const code =
-          rzpErr && typeof rzpErr === "object" && "code" in rzpErr
-            ? String((rzpErr as { code?: unknown }).code ?? "")
-            : "";
-        // Record the abandoned/failed attempt so the lifecycle is auditable
-        // server-side (best-effort — never block the UI on it).
-        void recordPaymentAttempt.mutateAsync({
-          riderId: data.riderId!,
-          razorpayOrderId: order.orderId,
-          status: "failed",
-          reason: desc || code || "cancelled",
-        }).catch(() => undefined);
-        setError(desc || "Payment was cancelled. You can try again.");
-        setLoading(false);
+        const reason = isRazorpayUserCancel(rzpErr)
+          ? "cancelled"
+          : extractRazorpayError(rzpErr).description ||
+            extractRazorpayError(rzpErr).code ||
+            "failed";
+        void recordPaymentAttempt
+          .mutateAsync({
+            riderId: data.riderId!,
+            razorpayOrderId: order.orderId,
+            status: "failed",
+            reason,
+          })
+          .catch(() => undefined);
+        showPaymentFailedSheet(
+          isRazorpayUserCancel(rzpErr)
+            ? "Payment was cancelled. You can try again."
+            : extractRazorpayError(rzpErr).description ||
+                "Payment failed. You can try again."
+        );
       }
     },
-    [data.fullName, data.riderId, session?.phoneE164, handleVerifyPayment, recordPaymentAttempt]
+    [
+      data.fullName,
+      data.riderId,
+      session?.phoneE164,
+      handleVerifyPayment,
+      recordPaymentAttempt,
+      showPaymentFailedSheet,
+    ]
+  );
+
+  const openHostedCheckout = useCallback(
+    async (order: { orderId: string; amount: number; key: string }) => {
+      try {
+        const hosted = await openHostedRazorpayCheckout({
+          orderParams: {
+            orderId: order.orderId,
+            keyId: order.key,
+            amount: order.amount,
+          },
+          prefill: { name: data.fullName?.trim(), contact: session?.phoneE164 },
+          themeColor: ACCENT,
+        });
+        if (!hosted) {
+          showPaymentFailedSheet("Payment was cancelled. You can try again.");
+          return;
+        }
+        await handleVerifyPayment(
+          hosted.razorpayOrderId,
+          hosted.razorpayPaymentId,
+          hosted.razorpaySignature
+        );
+      } catch {
+        showPaymentFailedSheet("Payment failed. You can try again.");
+      }
+    },
+    [data.fullName, session?.phoneE164, handleVerifyPayment, showPaymentFailedSheet]
+  );
+
+  const offerDevSimulate = useCallback(
+    (order: { orderId: string; amount: number }, reason: string) => {
+      Alert.alert(
+        "Payment (dev)",
+        `₹${formatRupeeFromPaise(order.amount)} onboarding fee.\n\n${reason}`,
+        [
+          { text: "Cancel", style: "cancel", onPress: () => setLoading(false) },
+          {
+            text: "Simulate Payment",
+            onPress: () => void handleSimulatePayment(order.orderId),
+          },
+        ]
+      );
+    },
+    []
   );
 
   const handleInitiatePayment = async () => {
@@ -377,171 +482,253 @@ export default function PaymentScreen() {
     }
 
     setError(null);
+    dismissFailureSheet();
     setLoading(true);
 
     try {
       const order = await createOrder.mutateAsync({ riderId: data.riderId });
-      setOrderId(order.orderId);
 
       const keyId = order.key?.trim();
       const backendUnconfigured = !keyId || keyId.startsWith("dummy");
 
-      // Real native checkout when the backend returned a live key AND the
-      // native module is linked. Otherwise fall back: dev → simulator, prod →
-      // surfaced error (should not happen once Razorpay keys are set on VPS).
-      if (!backendUnconfigured && nativeCheckoutAvailable) {
-        await openNativeCheckout({
+      if (!backendUnconfigured) {
+        if (nativeCheckoutAvailable) {
+          await openNativeCheckout({
+            orderId: order.orderId,
+            amount: order.amount,
+            currency: order.currency,
+            key: keyId!,
+          });
+          return;
+        }
+
+        // Expo Go: hosted checkout deep-links cause Unmatched / false logout.
+        // Prefer simulate in __DEV__; production APK without native still uses hosted.
+        if (isExpoGo || __DEV__) {
+          offerDevSimulate(
+            order,
+            isExpoGo
+              ? "Expo Go has no native Razorpay SDK. Simulate payment to continue onboarding, or use a dev-client / Play build for real checkout."
+              : "Native Razorpay is not linked in this build. Simulate payment, or use a production APK."
+          );
+          return;
+        }
+
+        await openHostedCheckout({
           orderId: order.orderId,
           amount: order.amount,
-          currency: order.currency,
           key: keyId!,
         });
         return;
       }
 
       if (__DEV__) {
-        Alert.alert(
-          "Payment (dev)",
-          `₹${formatRupeeFromPaise(order.amount)} onboarding fee.\nOrder: ${order.orderId}\n\n${
-            nativeCheckoutAvailable
-              ? "Backend has no live Razorpay key — set RAZORPAY_KEY_ID/SECRET to use real checkout."
-              : "Native Razorpay module not linked (Expo Go). Use a dev-client build for real checkout."
-          }`,
-          [
-            { text: "Cancel", style: "cancel", onPress: () => setLoading(false) },
-            { text: "Simulate Payment", onPress: () => handleSimulatePayment(order.orderId) },
-          ]
+        offerDevSimulate(
+          order,
+          "Backend has no live Razorpay key — set RAZORPAY_KEY_ID/SECRET to use real checkout."
         );
       } else {
-        setError("Payment is temporarily unavailable. Please try again shortly.");
-        setLoading(false);
+        showPaymentFailedSheet("Payment is temporarily unavailable. Please try again shortly.");
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to create payment order");
-      setLoading(false);
+      showPaymentFailedSheet(
+        e instanceof Error ? e.message : "Failed to create payment order"
+      );
     }
   };
+
+  const handleBack = useCallback(() => {
+    if (isPaying) return;
+    goBackOrReplace("/(onboarding)/bank-account");
+  }, [isPaying]);
 
   return (
     <View style={form.root}>
       <SafeAreaView style={form.safeArea} edges={["top", "bottom"]}>
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={form.scrollContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
-          <LinearGradient
-            colors={["#dff5e4", BG]}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-            style={[form.header, styles.headerExtra]}
+        <View style={styles.body}>
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={[
+              form.scrollContent,
+              styles.scrollContent,
+              { paddingBottom: Math.max(footerHeight + 40, 180) },
+            ]}
+            showsVerticalScrollIndicator
+            keyboardShouldPersistTaps="handled"
+            bounces
           >
-            <StepProgress steps={ONBOARDING_STEPS} currentIndex={macroStepIndex} />
+            <LinearGradient
+              colors={["#dff5e4", BG]}
+              start={{ x: 0.5, y: 0 }}
+              end={{ x: 0.5, y: 1 }}
+              style={[form.header, styles.headerExtra]}
+            >
+              <View style={form.headerTopRow}>
+                <Pressable
+                  onPress={handleBack}
+                  style={form.headerBackBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Go back"
+                >
+                  <Ionicons name="arrow-back" size={20} color={colors.gray[700]} />
+                </Pressable>
+                <View style={form.headerSkipSpacer} />
+              </View>
 
-            <View style={[form.stepPill, styles.stepPillSpaced]}>
-              <Ionicons name="card-outline" size={14} color={ACCENT_DARK} />
-              <Text style={form.stepPillText}>Step 5 · Payment</Text>
-            </View>
+              <StepProgress steps={ONBOARDING_STEPS} currentIndex={macroStepIndex} />
 
-            <Text style={form.title}>{feeConfig?.headline ?? "Onboarding Fee"}</Text>
-            <Text style={form.subtitle}>
-              {feeConfig?.subtitle ?? "Complete your onboarding by paying the registration fee"}
-            </Text>
-          </LinearGradient>
+              <View style={[form.stepPill, styles.stepPillSpaced]}>
+                <Ionicons name="card-outline" size={14} color={ACCENT_DARK} />
+                <Text style={form.stepPillText}>Payment</Text>
+              </View>
 
-          <View style={[form.formCard, styles.paymentCard]}>
-            <View style={styles.heroBlock}>
-              {discountPct != null ? (
-                <View style={styles.discountBadge}>
-                  <Ionicons name="pricetag" size={12} color="#b45309" />
-                  <Text style={styles.discountBadgeText}>{discountPct}% off</Text>
+              <Text style={form.title}>{feeConfig?.headline ?? "Onboarding Fee"}</Text>
+              <Text style={form.subtitle}>
+                {feeConfig?.subtitle ?? "Complete your onboarding by paying the registration fee"}
+              </Text>
+            </LinearGradient>
+
+            {/* Price card — keep short so eligibility stays above the fold when possible */}
+            <View style={[form.formCard, styles.paymentCard]}>
+              <View style={styles.heroBlock}>
+                {discountPct != null ? (
+                  <View style={styles.discountBadge}>
+                    <Ionicons name="pricetag" size={12} color="#b45309" />
+                    <Text style={styles.discountBadgeText}>{discountPct}% off</Text>
+                  </View>
+                ) : null}
+
+                <Text style={styles.heroAmount}>₹{totalDisplay}</Text>
+                <Text style={styles.heroLabel}>
+                  {feeConfig?.feeLabel ?? "One-time onboarding fee"}
+                  {standardDisplay !== feeConfig?.discountedOnboardingFee ? (
+                    <Text style={styles.heroStruckInline}>  ₹{standardDisplay}</Text>
+                  ) : null}
+                </Text>
+              </View>
+
+              <View style={styles.breakdownBox}>
+                <PriceRow label="Onboarding fee" value={`₹${subtotalDisplay}`} />
+                {gstPct > 0 ? (
+                  <PriceRow label={`GST (${gstPct}%)`} value={`₹${gstDisplay}`} />
+                ) : null}
+                <View style={styles.breakdownDivider} />
+                <PriceRow label="Total payable" value={`₹${totalDisplay}`} bold accent />
+              </View>
+
+              <View style={styles.infoBanner}>
+                <Ionicons name="information-circle-outline" size={18} color="#0369A1" />
+                <Text style={styles.infoBannerText}>
+                  {feeConfig?.infoMessage ??
+                    "This fee covers document verification and account setup"}
+                </Text>
+              </View>
+
+              {feeConfig?.alertNotice ? (
+                <View style={styles.alertBox}>
+                  <Ionicons name="shield-checkmark-outline" size={18} color={ACCENT_DARK} />
+                  <Text style={styles.alertText}>{feeConfig.alertNotice}</Text>
                 </View>
               ) : null}
 
-              <Text style={styles.heroAmount}>₹{totalDisplay}</Text>
-              <Text style={styles.heroLabel}>{feeConfig?.feeLabel ?? "One-time onboarding fee"}</Text>
-
-              {standardDisplay !== feeConfig?.discountedOnboardingFee ? (
-                <Text style={styles.heroStruck}>₹{standardDisplay}</Text>
-              ) : null}
+              {error ? <ErrorBanner message={error} /> : null}
             </View>
 
-            <View style={styles.breakdownBox}>
-              <PriceRow label="Onboarding fee" value={`₹${subtotalDisplay}`} />
-              {gstPct > 0 ? (
-                <PriceRow label={`GST (${gstPct}%)`} value={`₹${gstDisplay}`} />
-              ) : null}
-              <View style={styles.breakdownDivider} />
-              <PriceRow label="Total payable" value={`₹${totalDisplay}`} bold accent />
+            {/* Separate card below price — scrolls clear of sticky pay CTA */}
+            <View style={styles.eligibilityOutside}>
+              {onboardingSummary ? (
+                <>
+                  <Text style={styles.eligibilitySectionLabel}>Service access</Text>
+                  <ServiceEligibilityNotice summary={onboardingSummary} compact />
+                </>
+              ) : (
+                <View style={styles.eligibilityPlaceholder} />
+              )}
             </View>
+          </ScrollView>
 
-            <View style={styles.infoBanner}>
-              <Ionicons name="information-circle-outline" size={20} color="#0369A1" />
-              <Text style={styles.infoBannerText}>
-                {feeConfig?.infoMessage ?? "This fee covers document verification and account setup"}
-              </Text>
-            </View>
+          <View
+            style={styles.footer}
+            onLayout={(e) => {
+              const h = e.nativeEvent.layout.height;
+              if (!mountedRef.current || !(h > 0)) return;
+              if (Math.abs(h - footerHeightRef.current) <= 2) return;
+              footerHeightRef.current = h;
+              // Defer — sync setState from onLayout + ScrollView padding fights Fabric.
+              requestAnimationFrame(() => {
+                if (mountedRef.current) setFooterHeight(h);
+              });
+            }}
+          >
+            <PayButton
+              label={payButtonLabel}
+              onPress={handleInitiatePayment}
+              loading={isPaying}
+              disabled={isPaying || !documentsReadyForPayment}
+            />
 
-            {onboardingSummary ? (
-              <View style={{ marginTop: 4 }}>
-                <ServiceEligibilityNotice summary={onboardingSummary} />
-              </View>
-            ) : null}
-
-            {feeConfig?.alertNotice ? (
-              <View style={styles.alertBox}>
-                <Ionicons name="shield-checkmark-outline" size={18} color={ACCENT_DARK} />
-                <Text style={styles.alertText}>{feeConfig.alertNotice}</Text>
-              </View>
-            ) : null}
-
-            {error ? <ErrorBanner message={error} /> : null}
-
-            {orderId ? (
-              <View style={styles.orderBox}>
-                <Text style={styles.orderText}>Order ID: {orderId}</Text>
-                <Text style={styles.orderHint}>Dev mode — Razorpay checkout opens in production</Text>
-              </View>
+            {feeConfig?.footerNote ? (
+              <Text style={styles.footerNote}>{feeConfig.footerNote}</Text>
             ) : null}
           </View>
-        </ScrollView>
-
-        <View style={styles.footer}>
-          <PayButton
-            label={payButtonLabel}
-            onPress={handleInitiatePayment}
-            loading={isPaying}
-            disabled={isPaying || !documentsReadyForPayment}
-          />
-
-          {feeConfig?.footerNote ? (
-            <Text style={styles.footerNote}>{feeConfig.footerNote}</Text>
-          ) : null}
         </View>
       </SafeAreaView>
+
+      <PaymentFailedBottomSheet
+        visible={failureSheet.visible}
+        message={failureSheet.message}
+        onCancel={dismissFailureSheet}
+        onContinue={() => {
+          dismissFailureSheet();
+          void handleInitiatePayment();
+        }}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  body: {
+    flex: 1,
+  },
   scroll: {
     flex: 1,
   },
+  scrollContent: {
+    flexGrow: 1,
+  },
   headerExtra: {
-    paddingBottom: 24,
+    paddingBottom: 12,
   },
   stepPillSpaced: {
     marginTop: 8,
   },
   paymentCard: {
-    gap: 16,
-    marginBottom: 8,
+    gap: 12,
+    marginBottom: 12,
+    paddingVertical: 16,
+  },
+  eligibilityOutside: {
+    marginHorizontal: 16,
+    marginBottom: 12,
+    gap: 8,
+    minHeight: 96,
+  },
+  eligibilityPlaceholder: {
+    minHeight: 88,
+  },
+  eligibilitySectionLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: colors.gray[500],
+    letterSpacing: 0.3,
+    textTransform: "uppercase",
+    marginLeft: 2,
   },
   heroBlock: {
     alignItems: "center",
-    paddingVertical: 8,
-    gap: 4,
+    paddingVertical: 2,
+    gap: 2,
   },
   discountBadge: {
     flexDirection: "row",
@@ -553,7 +740,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 20,
-    marginBottom: 4,
+    marginBottom: 2,
   },
   discountBadgeText: {
     fontSize: 12,
@@ -561,27 +748,28 @@ const styles = StyleSheet.create({
     color: "#b45309",
   },
   heroAmount: {
-    fontSize: 48,
+    fontSize: 36,
     fontWeight: "800",
     color: ACCENT_DARK,
     letterSpacing: -1,
   },
   heroLabel: {
-    fontSize: 14,
+    fontSize: 13,
     color: colors.gray[500],
     fontWeight: "500",
+    textAlign: "center",
   },
-  heroStruck: {
-    fontSize: 15,
+  heroStruckInline: {
+    fontSize: 13,
     color: colors.gray[400],
     textDecorationLine: "line-through",
-    marginTop: 2,
+    fontWeight: "500",
   },
   breakdownBox: {
     backgroundColor: colors.gray[50],
     borderRadius: 14,
-    padding: 14,
-    gap: 10,
+    padding: 12,
+    gap: 8,
     borderWidth: 1,
     borderColor: colors.gray[100],
   },
@@ -618,55 +806,41 @@ const styles = StyleSheet.create({
   infoBanner: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 10,
+    gap: 8,
     backgroundColor: "#E0F2FE",
     borderRadius: 12,
-    padding: 12,
+    padding: 10,
     borderWidth: 1,
     borderColor: "#bae6fd",
   },
   infoBannerText: {
     flex: 1,
-    fontSize: 13,
-    lineHeight: 19,
+    flexShrink: 1,
+    fontSize: 12.5,
+    lineHeight: 18,
     color: "#0369A1",
   },
   alertBox: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 10,
+    gap: 8,
     backgroundColor: "#edf8f0",
     borderRadius: 12,
-    padding: 12,
+    padding: 10,
     borderWidth: 1,
     borderColor: "rgba(57, 211, 83, 0.2)",
   },
   alertText: {
     flex: 1,
-    fontSize: 13,
-    lineHeight: 19,
+    flexShrink: 1,
+    fontSize: 12.5,
+    lineHeight: 18,
     color: colors.gray[700],
-  },
-  orderBox: {
-    padding: 12,
-    backgroundColor: "#F0FDF4",
-    borderWidth: 1,
-    borderColor: "#BBF7D0",
-    borderRadius: 10,
-  },
-  orderText: {
-    fontSize: 12,
-    color: "#166534",
-    marginBottom: 4,
-  },
-  orderHint: {
-    fontSize: 11,
-    color: "#166534",
   },
   footer: {
     paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: Platform.OS === "ios" ? 4 : 12,
+    paddingTop: 10,
+    paddingBottom: Platform.OS === "ios" ? 4 : 10,
     backgroundColor: BG,
     borderTopWidth: 1,
     borderTopColor: "rgba(57, 211, 83, 0.15)",
@@ -684,27 +858,30 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
+    gap: 8,
     backgroundColor: ACCENT,
     borderRadius: 14,
-    paddingVertical: 16,
-    minHeight: 54,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    minHeight: 52,
     width: "100%",
   },
   payBtnDisabled: {
     opacity: 0.65,
   },
   payBtnText: {
-    fontSize: 17,
+    flexShrink: 1,
+    fontSize: 15,
     fontWeight: "800",
     color: "#ffffff",
     letterSpacing: 0.2,
+    textAlign: "center",
   },
   footerNote: {
     fontSize: 11,
-    lineHeight: 16,
+    lineHeight: 15,
     color: colors.gray[500],
     textAlign: "center",
-    marginTop: 10,
+    marginTop: 8,
   },
 });

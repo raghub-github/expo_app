@@ -1,11 +1,10 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   View,
   Text,
   TextInput,
   ScrollView,
-  KeyboardAvoidingView,
   Platform,
   Image,
   Alert,
@@ -31,12 +30,6 @@ import {
   useRiderStatus,
 } from "@/src/hooks/useOnboarding";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
-import {
-  onboardingStepToRoute,
-  resolveFirstIncompleteOnboardingStep,
-  shouldForwardFromOnboardingScreen,
-  type ServerOnboardingStep,
-} from "@/src/lib/onboarding-routes";
 import { goBackFromOnboardingEntry } from "@/src/lib/onboarding-navigation";
 import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
 import { useSessionStore } from "@/src/stores/sessionStore";
@@ -116,6 +109,51 @@ function formatAadhaar(value: string): string {
   if (digits.length <= 4) return digits;
   if (digits.length <= 8) return `${digits.slice(0, 4)}-${digits.slice(4)}`;
   return `${digits.slice(0, 4)}-${digits.slice(4, 8)}-${digits.slice(8)}`;
+}
+
+/** Last 4 digits from full or masked Aadhaar (XXXX-XXXX-1234). */
+function aadhaarLast4(value: string): string {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length >= 4) return digits.slice(-4);
+  const m = String(value || "")
+    .trim()
+    .toUpperCase()
+    .match(/XXXX-XXXX-(\d{4})/);
+  return m?.[1] ?? "";
+}
+
+function aadhaarNumbersMatch(a: string, b: string): boolean {
+  const da = String(a || "").replace(/\D/g, "");
+  const db = String(b || "").replace(/\D/g, "");
+  if (da.length === 12 && db.length === 12) return da === db;
+  const la = aadhaarLast4(a);
+  const lb = aadhaarLast4(b);
+  return Boolean(la && lb && la === lb);
+}
+
+function isMaskedAadhaarDisplay(value: string): boolean {
+  return /^XXXX-XXXX-\d{4}$/i.test(String(value || "").trim());
+}
+
+/** Prefer full 12-digit Aadhaar; otherwise DigiLocker masked XXXX-XXXX-#### for the input. */
+function resolveAadhaarInputValue(
+  ...sources: Array<string | null | undefined>
+): string {
+  let maskedFallback = "";
+  for (const raw of sources) {
+    const s = String(raw || "").trim();
+    if (!s) continue;
+    if (isMaskedAadhaarDisplay(s)) {
+      if (!maskedFallback) maskedFallback = s.toUpperCase();
+      continue;
+    }
+    const digits = s.replace(/\D/g, "");
+    if (digits.length === 12) return formatAadhaar(digits);
+    if (digits.length >= 4 && !maskedFallback) {
+      maskedFallback = `XXXX-XXXX-${digits.slice(-4)}`;
+    }
+  }
+  return maskedFallback;
 }
 
 function parseDobString(dob: string): Date | null {
@@ -313,34 +351,9 @@ export default function AadhaarScreen() {
   const { data: riderStatus } = useRiderStatus(data.riderId);
   useOnboardingEstablishedRedirect(riderStatus);
 
-  useEffect(() => {
-    const next = riderStatus?.nextOnboardingStep as ServerOnboardingStep | undefined;
-    const completed = riderStatus?.completedOnboardingSteps ?? [];
-
-    if (shouldForwardFromOnboardingScreen("aadhaar_name", next)) {
-      router.replace(onboardingStepToRoute(next));
-      return;
-    }
-
-    // DigiLocker may mark Aadhaar done while nextStep briefly lags — resume from completed.
-    if (completed.includes("aadhaar_name")) {
-      const resume = resolveFirstIncompleteOnboardingStep(completed, data.vehicleOnboardingFlow, {
-        vehicleChoice: data.vehicleChoice,
-        vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
-        bankAccountOnboardingDone: data.bankAccountOnboardingDone,
-      });
-      if (resume !== "aadhaar_name") {
-        router.replace(onboardingStepToRoute(resume));
-      }
-    }
-  }, [
-    riderStatus?.nextOnboardingStep,
-    riderStatus?.completedOnboardingSteps,
-    data.vehicleOnboardingFlow,
-    data.vehicleChoice,
-    data.vehicleOnboardingSubmittedFor,
-    data.bankAccountOnboardingDone,
-  ]);
+  // Do NOT auto-replace to pan-selfie/dl-rc when aadhaar is already done.
+  // Index routes cold starts to the correct step; Continue/DigiLocker navigate
+  // explicitly. Auto-forward here trapped Back from PAN → Aadhaar → PAN.
 
   const [aadhaarNumber, setAadhaarNumber] = useState(data.aadhaarNumber || "");
   const [fullName, setFullName] = useState(data.fullName || "");
@@ -402,10 +415,123 @@ export default function AadhaarScreen() {
   // Restore DigiLocker success if Aadhaar is already complete on the server (app reopen / remount).
   useEffect(() => {
     const completed = riderStatus?.completedOnboardingSteps ?? [];
-    if (!completed.includes("aadhaar_name")) return;
-    if (aadhaarEv.phase === "verified" || aadhaarEv.phase === "verifying") return;
-    setAadhaarEv({ phase: "verified", details: {} });
-  }, [riderStatus?.completedOnboardingSteps, aadhaarEv.phase]);
+    const serverVerified =
+      riderStatus?.aadhaarVerified === true || completed.includes("aadhaar_name");
+    if (!serverVerified) return;
+
+    const serverDetails =
+      riderStatus?.aadhaarVerifiedData &&
+      typeof riderStatus.aadhaarVerifiedData === "object"
+        ? { ...riderStatus.aadhaarVerifiedData }
+        : {};
+
+    const resolvedInput = resolveAadhaarInputValue(
+      data.aadhaarNumber,
+      riderStatus?.aadhaarNumber,
+      serverDetails.masked_aadhaar as string | undefined,
+      serverDetails.uid as string | undefined,
+      serverDetails.aadhaar_number as string | undefined
+    );
+
+    const serverMaskedOrDigits = String(
+      riderStatus?.aadhaarNumber || data.aadhaarNumber || resolvedInput || ""
+    ).trim();
+    const draft = String(aadhaarNumber || "").trim();
+    const draftDigits = draft.replace(/\D/g, "");
+
+    // Mid-edit different number → keep idle so Verify Instantly stays available.
+    if (draft && serverMaskedOrDigits && !aadhaarNumbersMatch(draft, serverMaskedOrDigits)) {
+      return;
+    }
+    // Typing a new number (partial, not yet matching last-4) → stay idle.
+    if (
+      draftDigits.length > 0 &&
+      draftDigits.length < 12 &&
+      !isMaskedAadhaarDisplay(draft) &&
+      serverMaskedOrDigits &&
+      aadhaarLast4(draft) !== aadhaarLast4(serverMaskedOrDigits)
+    ) {
+      return;
+    }
+
+    // Fill empty input with full number (if stored) or DigiLocker masked value.
+    if (!draft && resolvedInput) {
+      setAadhaarNumber(resolvedInput);
+    }
+
+    // Already verified — only enrich if Cashfree details arrived later.
+    if (aadhaarEv.phase === "verified") {
+      const missingFromUi = Object.keys(serverDetails).some((k) => {
+        const serverVal = serverDetails[k];
+        if (serverVal == null || String(serverVal).trim() === "") return false;
+        const uiVal = aadhaarEv.details?.[k];
+        return uiVal == null || String(uiVal).trim() === "";
+      });
+      if (missingFromUi) {
+        const merged = {
+          status: "SUCCESS",
+          digilocker_verified: "Yes",
+          ...aadhaarEv.details,
+          ...serverDetails,
+        };
+        if (resolvedInput && !merged.masked_aadhaar && !merged.uid) {
+          merged.masked_aadhaar = resolvedInput;
+        }
+        setAadhaarEv({ phase: "verified", details: merged });
+      }
+      return;
+    }
+    if (aadhaarEv.phase === "verifying") return;
+
+    const digits = String(
+      aadhaarNumber || resolvedInput || serverMaskedOrDigits || data.aadhaarNumber || ""
+    ).replace(/\D/g, "");
+    const masked =
+      resolveAadhaarInputValue(resolvedInput, serverMaskedOrDigits) ||
+      (digits.length >= 4 ? `XXXX-XXXX-${digits.slice(-4)}` : undefined);
+
+    const details: Record<string, unknown> = {
+      status: "SUCCESS",
+      digilocker_verified: "Yes",
+      ...serverDetails,
+    };
+    const name = String(
+      details.name ||
+        details.holder_name ||
+        details.registered_name ||
+        riderStatus?.name ||
+        data.fullName ||
+        ""
+    ).trim();
+    if (name) details.name = name;
+    const dobRaw = String(
+      details.dob || details.date_of_birth || riderStatus?.dob || data.dob || ""
+    ).trim();
+    const isoDob = dobRaw.match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+    if (isoDob) details.dob = isoDob;
+    if (masked && !details.masked_aadhaar && !details.uid) {
+      details.masked_aadhaar = masked;
+    }
+
+    setAadhaarEv({ phase: "verified", details });
+    if (name) setFullName((prev) => (prev?.trim() ? prev : name));
+    if (isoDob && parseDobString(isoDob)) {
+      setDob((prev) => (prev ? prev : isoDob));
+      setDobDate((prev) => prev ?? parseDobString(isoDob));
+    }
+  }, [
+    riderStatus?.completedOnboardingSteps,
+    riderStatus?.aadhaarVerified,
+    riderStatus?.aadhaarNumber,
+    riderStatus?.aadhaarVerifiedData,
+    riderStatus?.name,
+    riderStatus?.dob,
+    aadhaarEv.phase,
+    aadhaarNumber,
+    data.aadhaarNumber,
+    data.fullName,
+    data.dob,
+  ]);
 
   const applyVerifiedDetails = useCallback((details: Record<string, unknown>) => {
     const name = String(
@@ -429,10 +555,14 @@ export default function AadhaarScreen() {
       setDobDate(parseDobString(isoDob));
     }
 
-    const uidDigits = String(
-      details.uid ?? details.aadhaar_number ?? details.masked_aadhaar ?? ""
-    ).replace(/\D/g, "");
-    if (uidDigits.length === 12) setAadhaarNumber(formatAadhaar(uidDigits));
+    const display = resolveAadhaarInputValue(
+      details.uid as string | undefined,
+      details.aadhaar_number as string | undefined,
+      details.masked_aadhaar as string | undefined
+    );
+    if (display) {
+      setAadhaarNumber((prev) => (String(prev || "").trim() ? prev : display));
+    }
   }, []);
 
   const digilockerGenRef = React.useRef(0);
@@ -650,12 +780,20 @@ export default function AadhaarScreen() {
   }, [handleBack]);
 
   const handleAadhaarChange = (text: string) => {
-    setAadhaarNumber(formatAadhaar(text));
-    setAadhaarEv({ phase: "idle" });
-    setVerifiedFrontKey(null);
-    setVerifiedFrontProxy(null);
-    setVerifiedBackKey(null);
-    setVerifiedBackProxy(null);
+    const next = formatAadhaar(text);
+    const prevDigits = aadhaarNumber.replace(/\D/g, "");
+    const nextDigits = next.replace(/\D/g, "");
+    const prevLast4 = aadhaarLast4(aadhaarNumber);
+    const nextLast4 = aadhaarLast4(next);
+    setAadhaarNumber(next);
+    // Only clear verified state when the document number actually changes.
+    if (prevDigits !== nextDigits || prevLast4 !== nextLast4) {
+      setAadhaarEv({ phase: "idle" });
+      setVerifiedFrontKey(null);
+      setVerifiedFrontProxy(null);
+      setVerifiedBackKey(null);
+      setVerifiedBackProxy(null);
+    }
   };
 
   const handleDobChange = (selectedDate: Date) => {
@@ -945,10 +1083,7 @@ export default function AadhaarScreen() {
   return (
     <View style={styles.root}>
       <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.flex}
-        >
+        <View style={styles.flex}>
           <ScrollView
             contentContainerStyle={styles.scrollContent}
             keyboardShouldPersistTaps="handled"
@@ -1004,7 +1139,7 @@ export default function AadhaarScreen() {
                   <TextInput
                     value={aadhaarNumber}
                     onChangeText={handleAadhaarChange}
-                    placeholder="XXXX-XXXX-1234"
+                    placeholder="Enter 12-digit Aadhaar"
                     placeholderTextColor={colors.gray[400]}
                     keyboardType="number-pad"
                     maxLength={14}
@@ -1146,6 +1281,7 @@ export default function AadhaarScreen() {
                     state={aadhaarEv}
                     disabled={
                       !data.riderId ||
+                      aadhaarEv.phase === "verified" ||
                       (aadhaarValid && aadhaarAlreadyRegistered) ||
                       checkingAadhaar ||
                       uploading ||
@@ -1155,6 +1291,8 @@ export default function AadhaarScreen() {
                     onVerify={() => void runAadhaarElectronicVerify()}
                     verifyLabel={tx("verifyDigilocker")}
                     retryLabel={tx("retryDigilocker")}
+                    documentLabel="Aadhaar"
+                    verifiedTitle="Aadhaar is Verified"
                   />
                 </View>
               ) : null}
@@ -1193,7 +1331,7 @@ export default function AadhaarScreen() {
               />
             </View>
           </ScrollView>
-        </KeyboardAvoidingView>
+        </View>
       </SafeAreaView>
 
       <DigilockerInAppBrowser

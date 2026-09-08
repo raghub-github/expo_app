@@ -75,7 +75,10 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   const hydrateServiceFilter = useRiderServiceFilterStore((s) => s.hydrate);
   const syncDutyFromServer = useDutyStore((s) => s.syncFromServer);
   const hydrateOnboarding = useOnboardingStore((s) => s.hydrate);
+  const bindOnboardingOwner = useOnboardingStore((s) => s.bindOwner);
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
+  const sessionRiderId = useSessionStore((s) => s.session?.riderId);
+  const sessionUserId = useSessionStore((s) => s.session?.userId);
 
   useEffect(() => {
     void Promise.allSettled([
@@ -87,6 +90,28 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       hydrateLanguage(),
     ]);
   }, [hydrateSession, hydratePermissions, hydrateDuty, hydrateServiceFilter, hydrateOnboarding, hydrateLanguage]);
+
+  // CRITICAL: partition onboarding + invalidate caches whenever the signed-in rider changes.
+  useEffect(() => {
+    if (!sessionHydrated) return;
+    const owner = sessionRiderId?.trim() || sessionUserId?.trim() || null;
+    void bindOnboardingOwner(owner);
+    if (!owner) {
+      queryClient.removeQueries({ queryKey: ["onboarding"] });
+      queryClient.removeQueries({ queryKey: ["rider"] });
+      return;
+    }
+    // Drop other riders' cached status / check-* results from this device runtime.
+    queryClient.removeQueries({
+      predicate: (q) => {
+        const key = q.queryKey;
+        if (!Array.isArray(key) || key.length === 0) return false;
+        if (key[0] === "onboarding") return true;
+        if (key[0] === "rider" && key[1] != null && String(key[1]) !== owner) return true;
+        return false;
+      },
+    });
+  }, [sessionHydrated, sessionRiderId, sessionUserId, bindOnboardingOwner, queryClient]);
 
   useEffect(() => {
     bindRiderActionRuntime(queryClient);

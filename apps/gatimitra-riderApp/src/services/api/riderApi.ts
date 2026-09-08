@@ -118,10 +118,18 @@ const EligibilityReasonSchema = z.object({
   reason: z.string(),
   requiredAction: z.string().optional(),
 });
-const ServiceEligibilityDecisionSchema = z.object({
-  eligible: z.boolean(),
-  blocking: z.array(EligibilityReasonSchema),
-});
+const ServiceEligibilityDecisionSchema = z
+  .object({
+    eligible: z.boolean(),
+    blocking: z.array(EligibilityReasonSchema),
+    reasonCode: z.string().nullable().optional(),
+    missingDocuments: z.array(z.string()).optional().default([]),
+    requiredDocuments: z.array(z.string()).optional(),
+    nextAction: z.string().optional(),
+    policySource: z.string().optional(),
+    matchedRuleId: z.number().nullable().optional(),
+  })
+  .passthrough();
 export const RiderEligibilityStatusSchema = z.object({
   attributes: z
     .object({
@@ -144,12 +152,7 @@ export const RiderEligibilityStatusSchema = z.object({
   enforced: z.boolean().optional().default(false),
 });
 
-const ServiceDecisionWithMissingSchema = z.object({
-  eligible: z.boolean(),
-  blocking: z.array(EligibilityReasonSchema),
-  missingDocuments: z.array(z.string()).optional().default([]),
-});
-
+const ServiceDecisionWithMissingSchema = ServiceEligibilityDecisionSchema;
 const RiderVehicleViewSchema = z.object({
   id: z.number(),
   registrationNumber: z.string(),
@@ -189,6 +192,7 @@ export const RiderOnboardingSummarySchema = z.object({
     z.object({
       code: z.string(),
       requiredForSomeService: z.boolean(),
+      canSkipDuringOnboarding: z.boolean().optional().default(false),
       state: z.string(),
     })
   ),

@@ -4,16 +4,16 @@ import {
   View,
   Text,
   ScrollView,
-  KeyboardAvoidingView,
   Platform,
   Alert,
   Pressable,
   StyleSheet,
   ActivityIndicator,
   BackHandler,
+  Keyboard,
+  InteractionManager,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useTranslation } from "react-i18next";
@@ -29,17 +29,18 @@ import {
 } from "@/src/hooks/useOnboarding";
 import { ElectronicVerifyCard, type EvState } from "@/src/components/onboarding/ElectronicVerifyCard";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
-import { onboardingStepToRoute, shouldForwardFromOnboardingScreen, type ServerOnboardingStep } from "@/src/lib/onboarding-routes";
+import { onboardingStepToRoute, type ServerOnboardingStep } from "@/src/lib/onboarding-routes";
 import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
-import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
+import { notifyOnboardingToast, friendlyOnboardingError } from "@/src/lib/rider-onboarding-toast";
 import { extractApiErrorMessage } from "@/src/services/http";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { uploadToR2, deleteFromR2, buildRiderDocumentKey } from "@/src/services/storage/cloudflareR2";
 import { useSaveDocument } from "@/src/hooks/useDocuments";
+import { useRiderOnboardingSummary } from "@/src/hooks/useRiderOnboardingSummary";
 import {
   ContinueButton,
   ErrorBanner,
-  SkipDocumentButton,
+  HeaderSkipLink,
   onboardingFormStyles as form,
 } from "@/src/components/onboarding/OnboardingFormUi";
 import { useOnboardingVehicleTypes } from "@/src/hooks/useOnboardingVehicleTypes";
@@ -83,7 +84,6 @@ import { colors } from "@/src/theme";
 
 const ACCENT = "#39d353";
 const ACCENT_DARK = "#22a745";
-const BG = "#f4fbf6";
 
 type WizardStep = "category" | "vehicle" | string;
 
@@ -157,9 +157,11 @@ const COPY = {
   catalogLoading: "Loading vehicle categories…",
   catalogEmpty: "No vehicle categories are available right now. Please try again later.",
   catalogError: "Could not load vehicle categories. Check your connection and try again.",
-  dlAlreadyRegistered: "Driving License Already Registered , Please try with Diff one .",
-  rcAlreadyRegistered: "RC Already Registered , Please try with Diff one .",
-  skipOptionalDoc: "Skip this document",
+    dlAlreadyRegistered:
+      "This driving licence is already associated with another account. Please try a different one.",
+    rcAlreadyRegistered:
+      "This registration certificate is already associated with another account. Please try a different one.",
+  skipOptionalDoc: "Skip",
 } as const;
 
 function resolveVehicleIcon(icon?: string | null): keyof typeof Ionicons.glyphMap {
@@ -408,22 +410,19 @@ export default function DlRcScreen() {
     [vehicleCategories, sortedVehicleTypes]
   );
 
+  const forwardOnceRef = useRef<string | null>(null);
   useEffect(() => {
     if (isReupload) return;
     const next = riderStatus?.nextOnboardingStep as ServerOnboardingStep | undefined;
-    // Don't auto-skip payment from mid-wizard; only leave when server is clearly past vehicle docs
-    // to a non-vehicle destination we aren't editing (rare). Prefer Continue tap for payment.
     if (!next) return;
+    // Only send riders *back* to unfinished KYC steps. Never auto-jump forward to
+    // bank/payment — that raced bank-account's "vehicle not ready → dl-rc" bounce
+    // and caused Maximum update depth in the onboarding stack.
     if (next === "aadhaar_name" || next === "pan_selfie") {
-      // Gone backwards relative to vehicle step — send to the incomplete earlier step.
-      router.replace(onboardingStepToRoute(next));
-      return;
-    }
-    if (
-      shouldForwardFromOnboardingScreen("dl_rc", next) &&
-      (next === "rental_ev" || next === "bank_account" || next === "payment")
-    ) {
-      router.replace(onboardingStepToRoute(next));
+      const href = onboardingStepToRoute(next);
+      if (forwardOnceRef.current === href) return;
+      forwardOnceRef.current = href;
+      router.replace(href);
     }
   }, [isReupload, riderStatus?.nextOnboardingStep]);
 
@@ -472,7 +471,24 @@ export default function DlRcScreen() {
     [vehicleOnboardingDocs, wizardStep]
   );
 
-  const isOptionalDocStep = Boolean(currentDocStep?.optional);
+  const { summary: onboardingSummary } = useRiderOnboardingSummary();
+
+  /** Phase C: catalog optional OR geo policy allows skip (at least one service omits this doc). */
+  const geoAllowsDocSkip = useMemo(() => {
+    const step = String(wizardStep || "").toLowerCase();
+    let code: string | null = null;
+    if (step === "dl" || step === "driving_licence" || step === "driving_license") {
+      code = "DRIVING_LICENSE";
+    } else if (step === "rc" || step === "registration_certificate" || step === "vehicle_rc") {
+      code = "REGISTRATION_CERTIFICATE";
+    }
+    if (!code) return false;
+    return (
+      onboardingSummary?.documents?.find((d) => d.code === code)?.canSkipDuringOnboarding === true
+    );
+  }, [wizardStep, onboardingSummary?.documents]);
+
+  const isOptionalDocStep = Boolean(currentDocStep?.optional) || geoAllowsDocSkip;
 
   const currentDocDef = useMemo(() => {
     if (wizardStep === "category" || wizardStep === "vehicle") return undefined;
@@ -484,16 +500,21 @@ export default function DlRcScreen() {
     [vehicleOnboardingDocs, wizardStep]
   );
 
-  const docStepLabels = useMemo(
-    () => vehicleOnboardingDocs.map((d) => d.label),
-    [vehicleOnboardingDocs]
-  );
-
   useEffect(() => {
     if (!sortedVehicleTypes.length || !sortedCategories.length) return;
-    if (data.vehicleCategoryCode) setCategoryChoice(data.vehicleCategoryCode);
-    if (data.vehicleChoice) setVehicleChoice(data.vehicleChoice);
-    if (data.vehicleModelLabel) setVehicleModelLabel(data.vehicleModelLabel);
+    if (data.vehicleCategoryCode) {
+      setCategoryChoice((prev) =>
+        prev === data.vehicleCategoryCode ? prev : data.vehicleCategoryCode!
+      );
+    }
+    if (data.vehicleChoice) {
+      setVehicleChoice((prev) => (prev === data.vehicleChoice ? prev : data.vehicleChoice!));
+    }
+    if (data.vehicleModelLabel) {
+      setVehicleModelLabel((prev) =>
+        prev === data.vehicleModelLabel ? prev : data.vehicleModelLabel!
+      );
+    }
     if (vehicleWizardBootstrappedRef.current) return;
 
     if (isReupload) {
@@ -557,10 +578,25 @@ export default function DlRcScreen() {
 
   // Rehydrate DL/RC from server — always prefer last Cashfree/manual verified number
   // so an unverified edit that was never submitted does not stick after reopen.
+  // Reset once per rider so a previous account's hydrate flags cannot skip this rider.
   const dlHydratedRef = useRef(false);
   const rcHydratedRef = useRef(false);
+  const hydratedForRiderRef = useRef<string | null>(null);
+  useEffect(() => {
+    const owner = String(data.riderId || "").trim();
+    if (hydratedForRiderRef.current !== owner) {
+      hydratedForRiderRef.current = owner || null;
+      dlHydratedRef.current = false;
+      rcHydratedRef.current = false;
+    }
+  }, [data.riderId]);
+
   useEffect(() => {
     if (!riderStatus) return;
+    const bound = useOnboardingStore.getState().boundOwnerId;
+    const owner = String(data.riderId || "").trim();
+    // Never apply status hydrate if session owner no longer matches this screen's rider.
+    if (!bound || !owner || bound !== owner) return;
 
     const dobRaw = String(riderStatus.dob || data.dob || "").trim();
     const dobMatch = dobRaw.match(/^(\d{4}-\d{2}-\d{2})/);
@@ -641,6 +677,7 @@ export default function DlRcScreen() {
     data.rcNumber,
     data.rcPhotoSignedUrl,
     data.rcPhotoUri,
+    data.riderId,
     setData,
   ]);
 
@@ -700,19 +737,6 @@ export default function DlRcScreen() {
     if (m?.[1]) setDlVerifyDob(m[1]);
   }, [data.dob]);
 
-  // Backend-authoritative: when the document has been electronically verified
-  // (Cashfree auto/hybrid — the "Driving License is Valid" state, docEv.phase
-  // "verified"), NO image is required. The front/back photo requirement applies
-  // ONLY on the manual path. This is what fixes "auto-verified DL still asks for
-  // the back photo": the image requirement now follows the verification result
-  // instead of a static per-document flag.
-  const docVerifiedElectronically = docEv.phase === "verified";
-  const needsBackPhoto =
-    (currentDocDef ? docRequiresBackPhoto(currentDocDef) : false) && !docVerifiedElectronically;
-  const docFrontPhotoValid = docVerifiedElectronically || Boolean(docDraftUri);
-  const docBackPhotoValid = !needsBackPhoto || Boolean(docDraftBackUri);
-  const docPhotoValid = docFrontPhotoValid && docBackPhotoValid;
-
   // Last successfully verified numbers + details this session (also seeded from server).
   // Editing shows Verify again; typing the same verified number back restores details
   // without another Verify click (even without closing the app).
@@ -720,6 +744,39 @@ export default function DlRcScreen() {
   const lastVerifiedRcRef = useRef<string>("");
   const lastVerifiedDlDetailsRef = useRef<Record<string, unknown> | null>(null);
   const lastVerifiedRcDetailsRef = useRef<Record<string, unknown> | null>(null);
+  const docVerifyAttemptRef = useRef(0);
+  const docVerifyInFlightRef = useRef(false);
+  const docContinueInFlightRef = useRef(false);
+
+  // Backend-authoritative: when the document has been electronically verified
+  // (Cashfree auto/hybrid — the "Driving License is Valid" state, docEv.phase
+  // "verified"), NO image is required. The front/back photo requirement applies
+  // ONLY on the manual path. This is what fixes "auto-verified DL still asks for
+  // the back photo": the image requirement now follows the verification result
+  // instead of a static per-document flag.
+  const draftNormLive = normalizeCashfreeDocNumber(docDraftText);
+  const serverDlNormLive = String(riderStatus?.dlNumber || "")
+    .replace(/[^A-Z0-9]/gi, "")
+    .toUpperCase();
+  const serverRcNormLive = String(riderStatus?.rcNumber || "")
+    .replace(/[^A-Z0-9]/gi, "")
+    .toUpperCase();
+  const docVerifiedElectronically =
+    docEv.phase === "verified" ||
+    (wizardStep === "dl" &&
+      riderStatus?.dlVerified === true &&
+      Boolean(draftNormLive) &&
+      draftNormLive === (lastVerifiedDlRef.current || serverDlNormLive)) ||
+    (wizardStep === "rc" &&
+      riderStatus?.rcVerified === true &&
+      Boolean(draftNormLive) &&
+      draftNormLive === (lastVerifiedRcRef.current || serverRcNormLive));
+  const needsBackPhoto =
+    (currentDocDef ? docRequiresBackPhoto(currentDocDef) : false) && !docVerifiedElectronically;
+  const docFrontPhotoValid = docVerifiedElectronically || Boolean(docDraftUri);
+  const docBackPhotoValid = !needsBackPhoto || Boolean(docDraftBackUri);
+  const docPhotoValid = docFrontPhotoValid && docBackPhotoValid;
+
   useEffect(() => {
     const serverDl = String(riderStatus?.dlNumber || "")
       .replace(/[^A-Z0-9]/gi, "")
@@ -760,6 +817,9 @@ export default function DlRcScreen() {
   useEffect(() => {
     setDocNumberEditing(false);
     setDocEv({ phase: "idle" });
+    docVerifyAttemptRef.current += 1;
+    docVerifyInFlightRef.current = false;
+    docContinueInFlightRef.current = false;
   }, [wizardStep]);
 
   // Restore verified UI when input matches last verified number.
@@ -782,15 +842,27 @@ export default function DlRcScreen() {
         (riderStatus?.dlVerifiedData && typeof riderStatus.dlVerifiedData === "object"
           ? riderStatus.dlVerifiedData
           : null);
+      const serverSaysVerified =
+        riderStatus?.dlVerified === true &&
+        Boolean(verifiedNorm) &&
+        Boolean(draftNorm) &&
+        draftNorm === verifiedNorm;
       if (
         draftNorm &&
         verifiedNorm &&
         draftNorm === verifiedNorm &&
-        dlDetails &&
-        Object.keys(dlDetails).length > 0
+        (serverSaysVerified ||
+          (dlDetails && Object.keys(dlDetails).length > 0) ||
+          Boolean(lastVerifiedDlRef.current))
       ) {
         if (docEv.phase !== "verified") {
-          setDocEv({ phase: "verified", details: dlDetails });
+          setDocEv({
+            phase: "verified",
+            details:
+              dlDetails && Object.keys(dlDetails).length > 0
+                ? dlDetails
+                : { dl_number: verifiedNorm, status: "VALID" },
+          });
         }
         return;
       }
@@ -799,12 +871,15 @@ export default function DlRcScreen() {
         return;
       }
       if (docEv.phase !== "idle") return;
+      // Do not force "manual" merely because a server front URL exists after Cashfree
+      // verify — that incorrectly re-opens the photo path and blocks Continue.
       const hasManual =
         Boolean(docDraftUri) &&
         (Boolean(docDraftBackUri) || !needsBackPhoto) &&
         isValidCashfreeDlNumber(docDraftText) &&
-        (!verifiedNorm || draftNorm === verifiedNorm);
-      if (hasManual || (Boolean(riderStatus?.dlFrontUrl) && draftNorm === verifiedNorm)) {
+        (!verifiedNorm || draftNorm === verifiedNorm) &&
+        riderStatus?.dlVerified !== true;
+      if (hasManual) {
         setDocEv({ phase: "manual" });
       }
       return;
@@ -820,15 +895,27 @@ export default function DlRcScreen() {
       (riderStatus?.rcVerifiedData && typeof riderStatus.rcVerifiedData === "object"
         ? riderStatus.rcVerifiedData
         : null);
+    const serverSaysVerified =
+      riderStatus?.rcVerified === true &&
+      Boolean(verifiedNorm) &&
+      Boolean(draftNorm) &&
+      draftNorm === verifiedNorm;
     if (
       draftNorm &&
       verifiedNorm &&
       draftNorm === verifiedNorm &&
-      rcDetails &&
-      Object.keys(rcDetails).length > 0
+      (serverSaysVerified ||
+        (rcDetails && Object.keys(rcDetails).length > 0) ||
+        Boolean(lastVerifiedRcRef.current))
     ) {
       if (docEv.phase !== "verified") {
-        setDocEv({ phase: "verified", details: rcDetails });
+        setDocEv({
+          phase: "verified",
+          details:
+            rcDetails && Object.keys(rcDetails).length > 0
+              ? rcDetails
+              : { reg_no: verifiedNorm, status: "VALID" },
+        });
       }
       return;
     }
@@ -840,8 +927,9 @@ export default function DlRcScreen() {
     const hasManualRc =
       Boolean(docDraftUri) &&
       isValidCashfreeRcNumber(docDraftText) &&
-      (!verifiedNorm || draftNorm === verifiedNorm);
-    if (hasManualRc || (Boolean(riderStatus?.rcFrontUrl) && draftNorm === verifiedNorm)) {
+      (!verifiedNorm || draftNorm === verifiedNorm) &&
+      riderStatus?.rcVerified !== true;
+    if (hasManualRc) {
       setDocEv({ phase: "manual" });
     }
   }, [
@@ -863,8 +951,11 @@ export default function DlRcScreen() {
 
   const runDocElectronicVerify = async () => {
     if (!data.riderId || !docEvKind) return;
+    if (docVerifyInFlightRef.current || docEv.phase === "verifying") return;
     if (docEvKind === "driving_licence" && !isValidCashfreeDlNumber(docDraftText)) return;
     if (docEvKind === "vehicle_rc" && !isValidCashfreeRcNumber(docDraftText)) return;
+    const attemptId = ++docVerifyAttemptRef.current;
+    docVerifyInFlightRef.current = true;
     setDocEv({ phase: "verifying" });
     try {
       const normalized = normalizeCashfreeDocNumber(docDraftText);
@@ -874,6 +965,7 @@ export default function DlRcScreen() {
           ? (dlVerifyDob.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] ?? null)
           : null;
       if (docEvKind === "driving_licence" && !dob) {
+        if (attemptId !== docVerifyAttemptRef.current) return;
         setDocEv({
           phase: "failed",
           error:
@@ -891,25 +983,48 @@ export default function DlRcScreen() {
             }
           : { riderId: data.riderId, docKind: "vehicle_rc", vehicleNumber: normalized },
       );
+      if (attemptId !== docVerifyAttemptRef.current) return;
       if (res.outcome === "verified") {
         // Persist only after successful verify — unverified edits must not stick on reopen.
         setDocNumberEditing(false);
         const details = res.verifiedData ?? {};
+        // Drop any leftover photo drafts — electronic success must not trigger R2 upload on Continue.
+        setDocDraftUri(null);
+        setDocDraftBackUri(null);
         if (docEvKind === "driving_licence") {
           lastVerifiedDlRef.current = normalized;
           lastVerifiedDlDetailsRef.current =
             Object.keys(details).length > 0 ? details : lastVerifiedDlDetailsRef.current;
-          await setData(docUploadToStorePatch(data, "dl", { textValue: normalized }));
+          await setData(
+            docUploadToStorePatch(data, "dl", {
+              textValue: normalized,
+              localUri: null,
+              backLocalUri: null,
+            }),
+          );
         } else {
           lastVerifiedRcRef.current = normalized;
           lastVerifiedRcDetailsRef.current =
             Object.keys(details).length > 0 ? details : lastVerifiedRcDetailsRef.current;
-          await setData(docUploadToStorePatch(data, "rc", { textValue: normalized }));
+          await setData(
+            docUploadToStorePatch(data, "rc", {
+              textValue: normalized,
+              localUri: null,
+            }),
+          );
         }
         if (data.riderId) {
           void queryClient.invalidateQueries({ queryKey: ["rider", data.riderId] });
         }
         setDocEv({ phase: "verified", details });
+        if (__DEV__) {
+          console.log("[DL_VERIFY]", {
+            attemptId,
+            provider: "CASHFREE",
+            status: "SUCCESS",
+            docKind: docEvKind,
+          });
+        }
       } else if (res.outcome === "mismatch") {
         setDocEv({
           phase: "mismatch",
@@ -931,7 +1046,7 @@ export default function DlRcScreen() {
             ? `Cashfree status: ${res.providerStatus}`
             : "") ||
           (typeof res.reason === "string" && res.reason.trim()) ||
-          "Document could not be verified.";
+          "Couldn't verify this document automatically. You can try again or upload a photo for manual review.";
         setDocEv({
           phase: "failed",
           error: exact,
@@ -940,16 +1055,25 @@ export default function DlRcScreen() {
         });
       }
     } catch (e) {
-      let message = extractApiErrorMessage(e, "Verification failed.");
-      if (/dob_required/i.test(message)) {
+      if (attemptId !== docVerifyAttemptRef.current) return;
+      let message = friendlyOnboardingError(
+        e,
+        "Couldn't verify right now. Check your connection and try again."
+      );
+      const raw = extractApiErrorMessage(e, "");
+      if (/dob_required/i.test(raw)) {
         message =
           "Date of birth is required. Enter DOB as on your driving licence (DD/MM/YYYY).";
-      } else if (/invalid_dl/i.test(message)) {
+      } else if (/invalid_dl/i.test(raw)) {
         message = "Invalid DL format. Use a valid Indian DL number.";
-      } else if (/invalid_vehicle_number/i.test(message)) {
+      } else if (/invalid_vehicle_number/i.test(raw)) {
         message = "Invalid RC format. Use a valid vehicle registration number.";
       }
       setDocEv({ phase: "failed", error: message });
+    } finally {
+      if (attemptId === docVerifyAttemptRef.current) {
+        docVerifyInFlightRef.current = false;
+      }
     }
   };
 
@@ -961,19 +1085,22 @@ export default function DlRcScreen() {
     docEv.phase === "mismatch";
   const showDocPhotoBox = docPhotoRequiredNow || Boolean(docDraftUri);
 
+  /** Authoritative gate: Cashfree/session verified OR server verified for this number. */
+  const docIsElectronicallyVerified = docVerifiedElectronically;
+
   const canContinueDoc =
     docTextValid &&
     !docAlreadyRegistered &&
     !checkingDocDuplicate &&
     !uploading &&
     !submitting &&
-    (docElectronic
-      ? docEv.phase === "verified" ||
-        ((docEv.phase === "failed" ||
-          docEv.phase === "manual" ||
-          docEv.phase === "mismatch") &&
-          docPhotoValid)
-      : docPhotoValid);
+    (docIsElectronicallyVerified ||
+      (docElectronic
+        ? (docEv.phase === "failed" ||
+            docEv.phase === "manual" ||
+            docEv.phase === "mismatch") &&
+          docPhotoValid
+        : docPhotoValid));
   const canContinueCategory =
     Boolean(selectedCategory?.isActive) &&
     categoryHasActiveVehicles(sortedVehicleTypes, categoryChoice) &&
@@ -1099,11 +1226,34 @@ export default function DlRcScreen() {
     ]);
   };
 
+  /**
+   * Fabric (New Arch) crashes with "Unable to find viewState for tag" when we
+   * synchronously remount the heavy DL/RC subtree on Continue. Clear drafts now,
+   * then swap the wizard step after the press/layout pass finishes.
+   */
+  const advanceToDocStep = useCallback((nextCode: string) => {
+    Keyboard.dismiss();
+    setDocNumberEditing(false);
+    setDocDraftText("");
+    setDocDraftUri(null);
+    setDocDraftBackUri(null);
+    setDocEv({ phase: "idle" });
+    // Two frames after interactions — Fabric needs the Continue press mount
+    // batch to finish before we remount the DL/RC form subtree.
+    InteractionManager.runAfterInteractions(() => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setWizardStep(nextCode as WizardStep);
+        });
+      });
+    });
+  }, []);
+
   const handleBack = useCallback(() => {
     if (wizardStep !== "category" && wizardStep !== "vehicle") {
       const idx = vehicleOnboardingDocs.findIndex((d) => d.code === wizardStep);
       if (idx > 0) {
-        setWizardStep(vehicleOnboardingDocs[idx - 1]!.code);
+        advanceToDocStep(vehicleOnboardingDocs[idx - 1]!.code);
         return;
       }
       if (isReupload) {
@@ -1126,7 +1276,7 @@ export default function DlRcScreen() {
       return;
     }
     goBackOrReplace("/(onboarding)/pan-selfie");
-  }, [wizardStep, vehicleOnboardingDocs, isReupload, leaveReuploadFlow]);
+  }, [wizardStep, vehicleOnboardingDocs, isReupload, leaveReuploadFlow, advanceToDocStep]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -1368,7 +1518,7 @@ export default function DlRcScreen() {
     await setData({ skippedOnboardingDocs: skipped });
     const isLastDoc = currentDocIndex >= vehicleOnboardingDocs.length - 1;
     if (!isLastDoc) {
-      setWizardStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
+      advanceToDocStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
       return;
     }
     if (isReupload) {
@@ -1388,32 +1538,80 @@ export default function DlRcScreen() {
   const handleDocStepContinue = async () => {
     const doc = currentDocDef;
     if (!doc) return;
+    if (docContinueInFlightRef.current) return;
 
     const isLastDoc = currentDocIndex >= vehicleOnboardingDocs.length - 1;
-    const docAlreadyComplete = isDocStepComplete(data, doc);
+    const electronicallyVerified = docIsElectronicallyVerified;
+    const docAlreadyComplete = isDocStepComplete(data, doc, {
+      electronicallyVerified,
+    });
 
-    if (docAlreadyComplete) {
-      if (!isLastDoc) {
-        setWizardStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
+    if (docAlreadyComplete || electronicallyVerified) {
+      const textValue = doc.requiresTextField
+        ? normalizeCashfreeDocNumber(docDraftText) || docDraftText.trim().toUpperCase()
+        : "";
+      // Cashfree success path: never upload leftover drafts; navigate immediately.
+      if (electronicallyVerified && textValue) {
+        docContinueInFlightRef.current = true;
+        try {
+          await setData(
+            docUploadToStorePatch(data, doc.code, {
+              textValue,
+              localUri: null,
+              backLocalUri: null,
+            }),
+          );
+          if (!isLastDoc) {
+            advanceToDocStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
+            return;
+          }
+          if (isReupload) {
+            leaveReuploadFlow();
+            return;
+          }
+          if (!data.riderId) {
+            notifyOnboardingToast(tx("riderNotFound"));
+            return;
+          }
+          setSubmitting(true);
+          await finalizeVehicleOnboarding({
+            ...data,
+            ...docUploadToStorePatch(data, doc.code, { textValue }),
+          });
+        } catch (e) {
+          notifyOnboardingToast(
+            friendlyOnboardingError(e, tx("dlSaveError")),
+          );
+        } finally {
+          setSubmitting(false);
+          docContinueInFlightRef.current = false;
+        }
         return;
       }
-      if (isReupload) {
-        leaveReuploadFlow();
+
+      if (docAlreadyComplete) {
+        if (!isLastDoc) {
+          advanceToDocStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
+          return;
+        }
+        if (isReupload) {
+          leaveReuploadFlow();
+          return;
+        }
+        if (!data.riderId) {
+          notifyOnboardingToast(tx("riderNotFound"));
+          return;
+        }
+        setSubmitting(true);
+        try {
+          await finalizeVehicleOnboarding(data);
+        } catch (e) {
+          notifyOnboardingToast(friendlyOnboardingError(e, tx("rcSaveError")));
+        } finally {
+          setSubmitting(false);
+        }
         return;
       }
-      if (!data.riderId) {
-        notifyOnboardingToast(tx("riderNotFound"));
-        return;
-      }
-      setSubmitting(true);
-      try {
-        await finalizeVehicleOnboarding(data);
-      } catch (e) {
-        notifyOnboardingToast(e instanceof Error ? e.message : tx("rcSaveError"));
-      } finally {
-        setSubmitting(false);
-      }
-      return;
     }
 
     if (!docTextValid) {
@@ -1430,12 +1628,11 @@ export default function DlRcScreen() {
       );
       return;
     }
-    const docVerifiedElectronically = docElectronic && docEv.phase === "verified";
-    if (docElectronic && docEvMode === "auto" && docEv.phase !== "verified") {
+    if (docElectronic && docEvMode === "auto" && !electronicallyVerified) {
       notifyOnboardingToast("Please verify this document electronically to continue.");
       return;
     }
-    if (!docDraftUri && !docVerifiedElectronically) {
+    if (!docDraftUri && !electronicallyVerified) {
       notifyOnboardingToast(needsBackPhoto ? tx("dlFrontPhotoRequired") : tx("dlPhotoRequired"));
       return;
     }
@@ -1452,6 +1649,7 @@ export default function DlRcScreen() {
       return;
     }
 
+    docContinueInFlightRef.current = true;
     setUploading(true);
     const uploadedKeys: string[] = [];
 
@@ -1466,7 +1664,8 @@ export default function DlRcScreen() {
       let frontUpload: { proxyUrl: string; key: string } | undefined;
       let backUpload: { proxyUrl: string; key: string } | undefined;
 
-      if (docDraftUri) {
+      // Manual / hybrid fallback only — never upload when Cashfree already verified.
+      if (docDraftUri && !electronicallyVerified) {
         frontUpload = await uploadToR2(
           docDraftUri,
           "documents",
@@ -1494,15 +1693,13 @@ export default function DlRcScreen() {
           files: documentFileEntries(frontUpload, backUpload),
         });
       }
-      // Electronically verified without a photo: nothing to upload — the
-      // verification service already recorded + projected the verified doc.
 
       const mergedAfterUpload = {
         ...data,
         ...docUploadToStorePatch(data, doc.code, {
-          localUri: docDraftUri,
+          localUri: electronicallyVerified ? null : docDraftUri,
           signedUrl: frontUpload?.proxyUrl ?? null,
-          backLocalUri: docDraftBackUri,
+          backLocalUri: electronicallyVerified ? null : docDraftBackUri,
           backSignedUrl: backUpload?.proxyUrl ?? null,
           textValue,
         }),
@@ -1512,10 +1709,7 @@ export default function DlRcScreen() {
       await setData(mergedAfterUpload);
 
       if (!isLastDoc) {
-        setDocDraftText("");
-        setDocDraftUri(null);
-        setDocDraftBackUri(null);
-        setWizardStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
+        advanceToDocStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
         return;
       }
 
@@ -1534,50 +1728,63 @@ export default function DlRcScreen() {
           console.error(`[Rollback] Failed to delete R2 ${key}:`, rollbackError);
         }
       }
-      notifyOnboardingToast(e instanceof Error ? e.message : tx("dlSaveError"));
+      notifyOnboardingToast(friendlyOnboardingError(e, tx("dlSaveError")));
     } finally {
       setUploading(false);
       setSubmitting(false);
+      docContinueInFlightRef.current = false;
     }
   };
 
+  // Avoid KeyboardAvoidingView entirely — on Android New Architecture it can
+  // infinite-loop via _setBottom inside nested SafeAreaView/ScrollView.
+  // Header stays OUTSIDE ScrollView so DL→RC remounts don't reparent the header
+  // in the same Fabric mount batch (viewState crash).
   return (
     <View style={form.root}>
       <SafeAreaView style={form.safeArea} edges={["top", "bottom"]}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={form.flex}
-        >
-          <ScrollView
-            contentContainerStyle={form.scrollContent}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            <LinearGradient
-              colors={["#dff5e4", BG]}
-              start={{ x: 0.5, y: 0 }}
-              end={{ x: 0.5, y: 1 }}
-              style={form.header}
-            >
+        <View style={form.flex}>
+          <View style={[form.header, styles.headerSolid]} collapsable={false}>
+            <View style={form.headerTopRow}>
               <Pressable
                 onPress={handleBack}
-                style={form.backBtn}
+                style={form.headerBackBtn}
                 accessibilityRole="button"
                 accessibilityLabel="Go back"
               >
                 <Ionicons name="arrow-back" size={20} color={colors.gray[700]} />
               </Pressable>
 
-              <View style={form.stepPill}>
-                <Ionicons name={headerMeta.icon} size={14} color={ACCENT_DARK} />
-                <Text style={form.stepPillText}>{headerMeta.stepLabel}</Text>
-              </View>
+              {wizardStep !== "category" && wizardStep !== "vehicle" ? (
+                <HeaderSkipLink
+                  label={tx("skipOptionalDoc")}
+                  onPress={() => void handleDocStepSkip()}
+                  disabled={!isOptionalDocStep || uploading || submitting || saveStep.isPending}
+                  hidden={!isOptionalDocStep}
+                />
+              ) : (
+                <View style={form.headerSkipSpacer} />
+              )}
+            </View>
 
-              <Text style={form.title}>{headerMeta.title}</Text>
-              <Text style={form.subtitle}>{headerMeta.subtitle}</Text>
-            </LinearGradient>
+            <View style={form.stepPill}>
+              <Ionicons name={headerMeta.icon} size={14} color={ACCENT_DARK} />
+              <Text style={form.stepPillText}>{headerMeta.stepLabel}</Text>
+            </View>
 
-            <View style={form.formCard}>
+            <Text style={form.title}>{headerMeta.title}</Text>
+            <Text style={form.subtitle}>{headerMeta.subtitle}</Text>
+          </View>
+
+          <ScrollView
+            style={form.flex}
+            contentContainerStyle={form.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            keyboardDismissMode="on-drag"
+            removeClippedSubviews={false}
+          >
+            <View style={form.formCard} collapsable={false}>
               {wizardStep === "category" ? (
                 <>
                   {catalogLoading ? (
@@ -1676,10 +1883,10 @@ export default function DlRcScreen() {
               ) : null}
 
               {wizardStep !== "category" && wizardStep !== "vehicle" && currentDocDef ? (
-                <>
+                <View key={wizardStep} collapsable={false}>
                   <VehicleDocumentCaptureStep
                     doc={currentDocDef}
-                    stepLabels={docStepLabels}
+                    stepLabels={[]}
                     currentStepIndex={Math.max(currentDocIndex, 0)}
                     textValue={docDraftText}
                     photoUri={docDraftUri}
@@ -1755,7 +1962,7 @@ export default function DlRcScreen() {
                     }
                     hidePhotos={
                       docElectronic
-                        ? docEv.phase === "verified" ||
+                        ? docIsElectronicallyVerified ||
                           (docEv.phase === "idle" && !docDraftUri) ||
                           (docEv.phase === "verifying" && !docDraftUri)
                         : false
@@ -1766,7 +1973,13 @@ export default function DlRcScreen() {
                         <ElectronicVerifyCard
                           mode={docEvMode === "auto" ? "auto" : "hybrid"}
                           state={docEv}
-                          disabled={!docFormatValid || docAlreadyRegistered || checkingDocDuplicate}
+                          disabled={
+                            docIsElectronicallyVerified ||
+                            !docFormatValid ||
+                            docAlreadyRegistered ||
+                            checkingDocDuplicate ||
+                            docEv.phase === "verifying"
+                          }
                           onVerify={() => void runDocElectronicVerify()}
                           verifyLabel={
                             wizardStep === "rc"
@@ -1814,19 +2027,11 @@ export default function DlRcScreen() {
                     disabled={!canContinueDoc}
                     loading={submitting || uploading || saveStep.isPending}
                   />
-
-                  {isOptionalDocStep ? (
-                    <SkipDocumentButton
-                      label={tx("skipOptionalDoc")}
-                      onPress={() => void handleDocStepSkip()}
-                      disabled={uploading || submitting || saveStep.isPending}
-                    />
-                  ) : null}
-                </>
+                </View>
               ) : null}
             </View>
           </ScrollView>
-        </KeyboardAvoidingView>
+        </View>
       </SafeAreaView>
 
       <VehicleModelPickerSheet
@@ -1845,6 +2050,9 @@ export default function DlRcScreen() {
 }
 
 const styles = StyleSheet.create({
+  headerSolid: {
+    backgroundColor: "#dff5e4",
+  },
   vehicleList: {
     gap: 10,
   },

@@ -16,6 +16,26 @@ import { isPanAlreadyRegistered, normalizePan } from "../../lib/rider-pan-regist
 import { isDlAlreadyRegistered, normalizeDlNumber } from "../../lib/rider-dl-registration-check.js";
 import { isRcAlreadyRegistered, normalizeRcNumber } from "../../lib/rider-rc-registration-check.js";
 
+function parseRiderIdFromAuthSub(sub: string | undefined | null): number | null {
+  if (!sub) return null;
+  const match = String(sub).match(/usr_(\d+)/);
+  if (match) return parseInt(match[1]!, 10);
+  const asNum = parseInt(String(sub), 10);
+  return Number.isFinite(asNum) && asNum > 0 ? asNum : null;
+}
+
+/** Prefer JWT rider; only accept body riderId when it matches the token (never trust foreign IDs). */
+function resolveExcludeRiderId(
+  authSub: string | undefined | null,
+  bodyRiderId?: string,
+): number | undefined {
+  const fromAuth = parseRiderIdFromAuthSub(authSub);
+  if (fromAuth != null) return fromAuth;
+  if (!bodyRiderId) return undefined;
+  const fromBody = parseInt(bodyRiderId, 10);
+  return Number.isFinite(fromBody) && fromBody > 0 ? fromBody : undefined;
+}
+
 export async function onboardingRoutes(app: FastifyInstance) {
   await app.register(auth, { required: true });
 
@@ -447,11 +467,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
       if (!digits) {
         return { registered: false };
       }
-      const excludeId = riderId ? parseInt(riderId, 10) : undefined;
-      const registered = await isAadhaarAlreadyRegistered(
-        digits,
-        excludeId != null && !Number.isNaN(excludeId) ? excludeId : undefined
-      );
+      const excludeId = resolveExcludeRiderId(req.auth?.sub, riderId);
+      const registered = await isAadhaarAlreadyRegistered(digits, excludeId);
       return { registered };
     }
   );
@@ -480,11 +497,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
       if (!pan) {
         return { registered: false };
       }
-      const excludeId = riderId ? parseInt(riderId, 10) : undefined;
-      const registered = await isPanAlreadyRegistered(
-        pan,
-        excludeId != null && !Number.isNaN(excludeId) ? excludeId : undefined
-      );
+      const excludeId = resolveExcludeRiderId(req.auth?.sub, riderId);
+      const registered = await isPanAlreadyRegistered(pan, excludeId);
       return { registered };
     }
   );
@@ -513,11 +527,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
       if (!dl) {
         return { registered: false };
       }
-      const excludeId = riderId ? parseInt(riderId, 10) : undefined;
-      const registered = await isDlAlreadyRegistered(
-        dl,
-        excludeId != null && !Number.isNaN(excludeId) ? excludeId : undefined
-      );
+      const excludeId = resolveExcludeRiderId(req.auth?.sub, riderId);
+      const registered = await isDlAlreadyRegistered(dl, excludeId);
       return { registered };
     }
   );
@@ -546,11 +557,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
       if (!rc) {
         return { registered: false };
       }
-      const excludeId = riderId ? parseInt(riderId, 10) : undefined;
-      const registered = await isRcAlreadyRegistered(
-        rc,
-        excludeId != null && !Number.isNaN(excludeId) ? excludeId : undefined
-      );
+      const excludeId = resolveExcludeRiderId(req.auth?.sub, riderId);
+      const registered = await isRcAlreadyRegistered(rc, excludeId);
       return { registered };
     }
   );
@@ -593,6 +601,10 @@ export async function onboardingRoutes(app: FastifyInstance) {
         }),
         response: {
           200: z.object({ success: z.boolean() }),
+          403: z.object({
+            error: z.string(),
+            message: z.string(),
+          }),
           409: z.object({
             error: z.string(),
             message: z.string(),
@@ -615,6 +627,15 @@ export async function onboardingRoutes(app: FastifyInstance) {
         throw new Error("Invalid rider ID");
       }
 
+      // Never allow writing into another rider's onboarding via a spoofed body.riderId.
+      const authRiderId = parseRiderIdFromAuthSub(req.auth?.sub);
+      if (authRiderId != null && authRiderId !== riderIdInt) {
+        return reply.code(403).send({
+          error: "forbidden",
+          message: "Unable to update onboarding for this account.",
+        });
+      }
+
       // Verify rider exists
       const riderRows = await db.select().from(riders).where(eq(riders.id, riderIdInt)).limit(1);
       if (riderRows.length === 0) {
@@ -626,7 +647,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
         if (digits && (await isAadhaarAlreadyRegistered(digits, riderIdInt))) {
           return reply.code(409).send({
             error: "aadhaar_already_registered",
-            message: "Aadhar Already Registered , Please try with Diff one .",
+            message: "This Aadhaar is already associated with another account.",
           });
         }
       }
@@ -636,7 +657,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
         if (pan && (await isPanAlreadyRegistered(pan, riderIdInt))) {
           return reply.code(409).send({
             error: "pan_already_registered",
-            message: "PAN Already Registered , Please try with Diff one .",
+            message: "This PAN is already associated with another account.",
           });
         }
       }
@@ -647,7 +668,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
           if (dl && (await isDlAlreadyRegistered(dl, riderIdInt))) {
             return reply.code(409).send({
               error: "dl_already_registered",
-              message: "Driving License Already Registered , Please try with Diff one .",
+              message: "This driving licence is already associated with another account.",
             });
           }
         }
@@ -656,7 +677,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
           if (rc && (await isRcAlreadyRegistered(rc, riderIdInt))) {
             return reply.code(409).send({
               error: "rc_already_registered",
-              message: "RC Already Registered , Please try with Diff one .",
+              message: "This registration certificate is already associated with another account.",
             });
           }
         }

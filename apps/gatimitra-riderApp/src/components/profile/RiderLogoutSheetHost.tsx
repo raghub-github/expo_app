@@ -5,6 +5,7 @@ import { LogoutReasonBottomSheet } from "@/src/components/profile/LogoutReasonBo
 import { riderApi } from "@/src/services/api/riderApi";
 import { useLogoutSheetStore } from "@/src/stores/logoutSheetStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
+import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useDutyStore } from "@/src/stores/dutyStore";
 import type { RiderLogoutReasonCode } from "@/src/lib/rider-logout-reasons";
 
@@ -40,6 +41,8 @@ export function RiderLogoutSheetHost() {
       // Still clear local session so rider is not stuck signed-in on a dead token.
     }
     await useDutyStore.getState().setDutyStatus(false);
+    // Wipe in-memory onboarding so the next account cannot inherit RC/DL drafts.
+    await useOnboardingStore.getState().bindOwner(null);
     close();
     await setSession(null);
     router.replace("/(auth)/login");

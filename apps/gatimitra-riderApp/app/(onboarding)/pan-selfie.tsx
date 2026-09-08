@@ -5,7 +5,6 @@ import {
   Text,
   TextInput,
   ScrollView,
-  KeyboardAvoidingView,
   Platform,
   Image,
   Alert,
@@ -31,7 +30,7 @@ import {
 } from "@/src/hooks/useOnboarding";
 import { ElectronicVerifyCard, type EvState } from "@/src/components/onboarding/ElectronicVerifyCard";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
-import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
+import { resolveRiderSelfieDisplayUrl, toAbsoluteImageUrl } from "@/src/utils/mediaUrl";
 import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import {
@@ -47,6 +46,15 @@ import { colors } from "@/src/theme";
 const ACCENT = "#39d353";
 const ACCENT_DARK = "#22a745";
 const BG = "#f4fbf6";
+
+function isLocalSelfieUri(uri: string) {
+  return (
+    uri.startsWith("file:") ||
+    uri.startsWith("content:") ||
+    uri.startsWith("ph:") ||
+    uri.startsWith("assets-library:")
+  );
+}
 
 const PAN_COPY = {
   stepLabelPan: "Step 2 · PAN (1 of 2)",
@@ -314,19 +322,14 @@ export default function PanSelfieScreen() {
 
   const [panNumber, setPanNumber] = useState(data.panNumber || "");
   const [panPhotoUri, setPanPhotoUri] = useState<string | null>(data.panPhotoUri || null);
-  const [selfieUri, setSelfieUri] = useState<string | null>(data.selfieUri || null);
+  const [selfieUri, setSelfieUri] = useState<string | null>(
+    data.selfieUri || data.selfieSignedUrl || null
+  );
   /** When true, do not re-hydrate selfie from server/store after user hits X / re-capture. */
   const selfieClearedByUserRef = useRef(false);
-  const [wizardStep, setWizardStep] = useState<"pan" | "selfie">(() => {
-    if (data.selfieUri || data.selfieSignedUrl) return "selfie";
-    if (data.panSkipped && !data.selfieUri) return "selfie";
-    // Durable verified flag (electronic OR photo) — the electronic flow has no photo, so the
-    // old photo-only check bounced verified riders back to PAN on re-mount.
-    if (data.panVerified && !data.selfieUri) return "selfie";
-    const panReady = isValidPan(data.panNumber || "") && Boolean(data.panPhotoUri);
-    if (panReady && !data.selfieUri) return "selfie";
-    return "pan";
-  });
+  /** Fresh camera capture should show immediately even if an older server selfie exists. */
+  const [preferLocalSelfie, setPreferLocalSelfie] = useState(false);
+  const [wizardStep, setWizardStep] = useState<"pan" | "selfie">("pan");
   const [panSkipped, setPanSkipped] = useState(Boolean(data.panSkipped));
   const [panPhotoSignedUrl, setPanPhotoSignedUrl] = useState<string | null>(
     data.panPhotoSignedUrl || null
@@ -348,7 +351,15 @@ export default function PanSelfieScreen() {
     panCheckQuery.isSuccess &&
     panCheckQuery.data?.registered === false;
   const panPhotoValid = Boolean(panPhotoUri);
-  const selfieValid = Boolean(selfieUri);
+  const selfiePreviewUri = preferLocalSelfie && selfieUri
+    ? toAbsoluteImageUrl(selfieUri) ?? selfieUri
+    : resolveRiderSelfieDisplayUrl({
+        serverSelfieUrl: riderStatus?.selfieUrl,
+        onboardingSignedUrl: selfieSignedUrl,
+        onboardingLocalUri: selfieUri,
+        allowLocalFile: false,
+      });
+  const selfieValid = Boolean(selfiePreviewUri);
 
   // ── Electronic verification (Policy Center mode for rider PAN) ───────────
   //   manual → classic photo flow; auto → number-only, failure blocks;
@@ -450,8 +461,9 @@ export default function PanSelfieScreen() {
   }, [hydrate]);
 
   useEffect(() => {
-    // Do not auto-forward away from this screen when pan_selfie is already
-    // complete — riders must be able to go Back from Step 3 and re-capture.
+    // Hydrate PAN / selfie data only. Do NOT auto-jump wizardStep to "selfie"
+    // when a selfie already exists — after Back → Continue the rider must walk
+    // PAN → Selfie one Continue at a time (handlePanStepContinue advances).
     const serverPan = String(riderStatus?.panNumber || "")
       .replace(/[^A-Z0-9]/gi, "")
       .toUpperCase();
@@ -462,43 +474,72 @@ export default function PanSelfieScreen() {
       setPanNumber(serverPan);
       void setData({ panNumber: serverPan, panSkipped: false });
     }
-    if (serverPanVerified) {
+    if (
+      serverPanVerified &&
+      serverPanOk &&
+      isValidPan(panNumber) &&
+      panNumber.replace(/[^A-Z0-9]/gi, "").toUpperCase() === serverPan
+    ) {
       if (panEv.phase !== "verified" && panEv.phase !== "verifying") {
-        setPanEv({ phase: "verified", details: {} });
+        const serverDetails =
+          riderStatus?.panVerifiedData &&
+          typeof riderStatus.panVerifiedData === "object"
+            ? { ...riderStatus.panVerifiedData }
+            : {};
+        const details: Record<string, unknown> = {
+          pan: serverPan,
+          pan_status: "VALID",
+          ...serverDetails,
+        };
+        const name = String(
+          details.registered_name ||
+            details.name ||
+            riderStatus?.name ||
+            data.fullName ||
+            ""
+        ).trim();
+        if (name) details.registered_name = name;
+        setPanEv({ phase: "verified", details });
       }
       setPanSkipped(false);
-      if (!riderStatus?.selfieUrl && !data.selfieSignedUrl && !data.selfieUri) {
-        setWizardStep("selfie");
-      }
     }
 
-    // Prefer local draft selfie; only hydrate remote if we have no local capture yet.
-    // Skip when user explicitly cleared (X / re-capture) so preview actually empties.
     if (selfieClearedByUserRef.current) {
-      setWizardStep("selfie");
       return;
     }
-    if (data.selfieUri || data.selfieSignedUrl) {
-      setWizardStep("selfie");
-    } else if (riderStatus?.selfieUrl) {
-      setWizardStep("selfie");
-      if (!selfieSignedUrl) {
+    if (preferLocalSelfie && selfieUri) {
+      return;
+    }
+    // Load server/store selfie for preview without changing wizard step.
+    if (riderStatus?.selfieUrl) {
+      setPreferLocalSelfie(false);
+      if (selfieSignedUrl !== riderStatus.selfieUrl) {
         setSelfieSignedUrl(riderStatus.selfieUrl);
         void setData({ selfieSignedUrl: riderStatus.selfieUrl });
       }
-      if (!selfieUri) {
+      if (!selfieUri || isLocalSelfieUri(selfieUri)) {
         setSelfieUri(riderStatus.selfieUrl);
-        void setData({ selfieUri: riderStatus.selfieUrl });
       }
+    } else if (data.selfieSignedUrl) {
+      setPreferLocalSelfie(false);
+      if (!selfieSignedUrl) setSelfieSignedUrl(data.selfieSignedUrl);
+      if (!selfieUri || isLocalSelfieUri(selfieUri)) setSelfieUri(data.selfieSignedUrl);
+    } else if (data.selfieUri) {
+      if (!selfieUri) setSelfieUri(data.selfieUri);
     }
   }, [
     riderStatus?.selfieUrl,
     riderStatus?.panNumber,
     riderStatus?.panVerified,
+    riderStatus?.panVerifiedData,
+    riderStatus?.name,
     data.selfieSignedUrl,
     data.selfieUri,
+    data.panNumber,
+    data.fullName,
     selfieSignedUrl,
     selfieUri,
+    preferLocalSelfie,
     panNumber,
     panEv.phase,
     setData,
@@ -560,6 +601,7 @@ export default function PanSelfieScreen() {
   /** Local preview only — R2 + DB write happens on Continue. */
   const handleCaptureSelfie = async (capturedUri: string) => {
     selfieClearedByUserRef.current = false;
+    setPreferLocalSelfie(true);
     setSelfieUri(capturedUri);
     setSelfieSignedUrl(null);
     await setData({
@@ -570,16 +612,11 @@ export default function PanSelfieScreen() {
 
   const clearSelfieDraft = () => {
     selfieClearedByUserRef.current = true;
+    setPreferLocalSelfie(false);
     setSelfieUri(null);
     setSelfieSignedUrl(null);
     void setData({ selfieUri: undefined, selfieSignedUrl: undefined });
   };
-
-  const isLocalSelfieUri = (uri: string) =>
-    uri.startsWith("file:") ||
-    uri.startsWith("content:") ||
-    uri.startsWith("ph:") ||
-    uri.startsWith("assets-library:");
 
   const showPanPhotoOptions = () => {
     Alert.alert(tx("panPhotoPickerTitle"), tx("panPhotoPickerMessage"), [
@@ -700,7 +737,9 @@ export default function PanSelfieScreen() {
       setWizardStep("pan");
       return;
     }
-    goBackOrReplace("/(onboarding)/aadhaar");
+    // Always land on Aadhaar so the rider can review/edit — do not rely on
+    // stack history (onboarding uses replace for most hops).
+    router.replace("/(onboarding)/aadhaar");
   }, [wizardStep]);
 
   useEffect(() => {
@@ -712,7 +751,7 @@ export default function PanSelfieScreen() {
   }, [handleBack]);
 
   const handleContinue = async () => {
-    if (!selfieUri) {
+    if (!selfiePreviewUri) {
       notifyOnboardingToast(tx("selfieRequired"));
       return;
     }
@@ -744,9 +783,12 @@ export default function PanSelfieScreen() {
       let remoteSelfieUrl = selfieSignedUrl;
 
       // Upload selfie only when Continue is pressed (never on capture).
-      if (!remoteSelfieUrl || isLocalSelfieUri(selfieUri)) {
+      const localCaptureUri =
+        selfieUri && isLocalSelfieUri(selfieUri) ? selfieUri : null;
+      if (!remoteSelfieUrl || localCaptureUri) {
+        const uploadSource = localCaptureUri || selfiePreviewUri;
         const selfieUploadResult = await uploadToR2(
-          selfieUri,
+          uploadSource,
           "documents",
           session.accessToken,
           buildRiderSelfieKey(riderId)
@@ -825,10 +867,7 @@ export default function PanSelfieScreen() {
   return (
     <View style={styles.root}>
       <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.flex}
-        >
+        <View style={styles.flex}>
           <ScrollView
             contentContainerStyle={styles.scrollContent}
             keyboardShouldPersistTaps="handled"
@@ -971,10 +1010,16 @@ export default function PanSelfieScreen() {
                       <ElectronicVerifyCard
                         mode={panMode === "auto" ? "auto" : "hybrid"}
                         state={panEv}
-                        disabled={!panValid || panAlreadyRegistered || checkingPan}
+                        disabled={
+                          panEv.phase === "verified" ||
+                          !panValid ||
+                          panAlreadyRegistered ||
+                          checkingPan
+                        }
                         onVerify={() => void runPanElectronicVerify()}
                         verifyLabel="Verify PAN instantly"
                         documentLabel="PAN card"
+                        verifiedTitle="PAN is Valid"
                       />
                     ) : null}
                   </View>
@@ -1035,7 +1080,7 @@ export default function PanSelfieScreen() {
                   <View style={styles.fieldGroup}>
                     <FieldLabel label={tx("selfieLabel")} required />
                     <SelfieAutoCapture
-                      uri={selfieUri}
+                      uri={selfiePreviewUri}
                       active={wizardStep === "selfie"}
                       disabled={uploading || submitting}
                       onCaptured={handleCaptureSelfie}
@@ -1056,7 +1101,7 @@ export default function PanSelfieScreen() {
               )}
             </View>
           </ScrollView>
-        </KeyboardAvoidingView>
+        </View>
       </SafeAreaView>
     </View>
   );

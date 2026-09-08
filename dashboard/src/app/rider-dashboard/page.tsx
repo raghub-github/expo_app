@@ -3,6 +3,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { supabase } from '@/lib/rider-dashboard/supabaseClient';
+import {
+  classifyRiderDashboardSearch,
+  supabaseRiderMobileOrFilter,
+} from '@/lib/riders/resolve-rider-search';
 
 type Rider = {
   id: number;
@@ -69,34 +73,20 @@ export default function RiderDashboardPage() {
     try {
 
       let query = supabase.from("riders").select("*");
-      // Rider ID: starts with GMR, rest can be any digits/letters
-      // Phone: 10 digits, 91+10 digits, or +91+10 digits
-      const isRiderId = /^GMR(\d+)$/i.test(searchValue);
-      const isNumericId = /^\d+$/.test(searchValue);
-      const isPhone = /^\d{10}$/.test(searchValue);
-      const isPhoneWith91 = /^(\+91|91)\d{10}$/.test(searchValue);
-
-      if (isRiderId) {
-        // Extract numeric part for id
-        const idNum = searchValue.replace(/^GMR/i, "");
-        if (/^\d+$/.test(idNum)) {
-          query = query.eq('id', Number(idNum));
-        } else {
-          query = query.eq('id', -1); // unlikely to match
-        }
-      } else if (isNumericId) {
-        // Direct numeric id search
-        query = query.eq('id', Number(searchValue));
-      } else if (isPhone) {
-        // Exact match for 10-digit mobile
-        query = query.eq('mobile', searchValue);
-      } else if (isPhoneWith91) {
-        // Remove +91 or 91 prefix and exact match
-        let phone = searchValue.replace(/^\+?91/, "");
-        query = query.eq('mobile', phone);
+      const classified = classifyRiderDashboardSearch(searchValue);
+      if (!classified) {
+        setRiders([]);
+        setError(null);
+        return;
+      }
+      if (classified.kind === "id") {
+        query = query.eq("id", classified.id);
+      } else if (classified.kind === "phone") {
+        query = query.or(
+          supabaseRiderMobileOrFilter(classified.last10, classified.variants),
+        );
       } else {
-        // fallback: search mobile as ilike (id is integer, so skip ilike for id)
-        query = query.ilike('mobile', `%${searchValue}%`);
+        query = query.ilike("mobile", `%${classified.term}%`);
       }
 
       const { data, error: supabaseError } = await query;

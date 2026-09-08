@@ -6,9 +6,10 @@
  * resolves `react-native-razorpay`'s default export incorrectly, which made
  * `isNativeRazorpayAvailable()` return false and Pay buttons appear dead.
  *
- * Prefer native Android/iOS SDK only (no hosted browser checkout).
+ * Prefer native Android/iOS SDK; callers should fall back to hosted browser
+ * checkout when this returns unavailable (Expo Go / unlinked builds).
  */
-import { Platform } from "react-native";
+import { NativeModules, Platform } from "react-native";
 
 export type NativeRazorpayOrder = {
   orderId: string;
@@ -40,17 +41,28 @@ type RazorpayNativeModule = {
 
 let cachedModule: RazorpayNativeModule | null | undefined;
 
+/** True when the Android/iOS native bridge is linked (not Expo Go). */
+function hasNativeRazorpayBridge(): boolean {
+  const bridge = (NativeModules as { RNRazorpayCheckout?: { open?: unknown } | null })
+    .RNRazorpayCheckout;
+  return Boolean(bridge && typeof bridge.open === "function");
+}
+
 /**
  * Resolve the native module once. Handles both CJS shapes:
  *   module.exports = { open }
  *   module.exports.default = { open }
+ *
+ * IMPORTANT: `react-native-razorpay`'s JS file always exports `open`, even in
+ * Expo Go — but it then crashes with "Cannot read property 'open' of null"
+ * because `NativeModules.RNRazorpayCheckout` is missing. We require the bridge.
  */
 function resolveNativeModule(): RazorpayNativeModule | null {
-  if (cachedModule !== undefined) return cachedModule;
-  if (Platform.OS === "web") {
+  if (Platform.OS === "web" || !hasNativeRazorpayBridge()) {
     cachedModule = null;
     return null;
   }
+  if (cachedModule !== undefined) return cachedModule;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require("react-native-razorpay");
@@ -156,6 +168,16 @@ export async function openRazorpayCheckout(args: {
       razorpaySignature: signature,
     };
   } catch (rzpErr) {
+    const msg = rzpErr instanceof Error ? rzpErr.message : String(rzpErr ?? "");
+    // Expo Go / unlinked: JS wrapper exists but NativeModules.RNRazorpayCheckout is null.
+    if (/open['"]?\s+of\s+null/i.test(msg) || /RNRazorpayCheckout/i.test(msg)) {
+      cachedModule = null;
+      throw Object.assign(new Error("Native Razorpay module is not available"), {
+        code: "MODULE_MISSING",
+        description:
+          "Native Razorpay is not linked. Install a production/dev-client build (not Expo Go).",
+      });
+    }
     // Re-throw normalised shape so callers can Alert consistently.
     const extracted = extractRazorpayError(rzpErr);
     if (extracted.code || extracted.description) {

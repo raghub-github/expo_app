@@ -25,10 +25,26 @@ import {
   revokeOverride,
 } from "./riderEligibilityOverrides.repository.js";
 
+/**
+ * Dashboard proxies send X-Internal-Secret. Accept either shared internal token
+ * (most Next.js admin proxies) or the schedule-tick secret (ops / legacy callers).
+ */
 function requireInternalSecret(headers: Record<string, string | string[] | undefined>): boolean {
-  const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
-  if (!secret) return false;
-  return headers["x-internal-secret"] === secret;
+  const provided = String(headers["x-internal-secret"] ?? "").trim();
+  if (!provided) return false;
+  const candidates = [
+    process.env.INTERNAL_API_TOKEN?.trim(),
+    process.env.BACKEND_SCHEDULE_TICK_SECRET?.trim(),
+  ].filter((s): s is string => Boolean(s));
+  return candidates.includes(provided);
+}
+
+function authDenied(reply: { code: (n: number) => { send: (b: unknown) => unknown } }) {
+  return reply.code(403).send({
+    error: "auth_failed",
+    message:
+      "Internal secret rejected. Dashboard must send X-Internal-Secret matching INTERNAL_API_TOKEN or BACKEND_SCHEDULE_TICK_SECRET.",
+  });
 }
 
 const simulateSchema = z.object({
@@ -73,7 +89,7 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
   /** POST /v1/rider-eligibility/simulate — engine-authoritative eligibility preview. */
   app.post("/simulate", async (req, reply) => {
     if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
-      return reply.code(403).send({ error: "forbidden" });
+      return authDenied(reply);
     }
     const parsed = simulateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -131,7 +147,7 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
    */
   app.post("/simulate-onboarding", async (req, reply) => {
     if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
-      return reply.code(403).send({ error: "forbidden" });
+      return authDenied(reply);
     }
     const parsed = onboardingSimulateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -195,7 +211,7 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
    */
   app.post("/rider-summary", async (req, reply) => {
     if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
-      return reply.code(403).send({ error: "forbidden" });
+      return authDenied(reply);
     }
     const parsed = z.object({ riderId: z.number().int().positive() }).safeParse(req.body);
     if (!parsed.success) {
@@ -210,7 +226,7 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
    * service eligibility, for the agent/super-admin dashboard. Internal-secret gated. */
   app.post("/rider-vehicles", async (req, reply) => {
     if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
-      return reply.code(403).send({ error: "forbidden" });
+      return authDenied(reply);
     }
     const parsed = z.object({ riderId: z.number().int().positive() }).safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request" });
@@ -240,7 +256,7 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
 
   app.get("/rider-overrides", async (req, reply) => {
     if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
-      return reply.code(403).send({ error: "forbidden" });
+      return authDenied(reply);
     }
     const riderId = Number((req.query as { riderId?: string })?.riderId);
     if (!Number.isInteger(riderId) || riderId < 1) return reply.code(400).send({ error: "invalid_rider_id" });
@@ -249,7 +265,7 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
 
   app.post("/rider-overrides", async (req, reply) => {
     if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
-      return reply.code(403).send({ error: "forbidden" });
+      return authDenied(reply);
     }
     const parsed = z
       .object({
@@ -276,7 +292,7 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
    * internal-secret gated; idempotent, so safe to call repeatedly (e.g. daily). */
   app.post("/dl-expiry-tick", async (req, reply) => {
     if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
-      return reply.code(403).send({ error: "forbidden" });
+      return authDenied(reply);
     }
     const result = await processDlExpiryNotifications();
     return reply.send({ ok: true, ...result });
@@ -284,7 +300,7 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
 
   app.post("/rider-overrides/revoke", async (req, reply) => {
     if (!requireInternalSecret(req.headers as Record<string, string | string[] | undefined>)) {
-      return reply.code(403).send({ error: "forbidden" });
+      return authDenied(reply);
     }
     const parsed = z.object({ id: z.number().int().positive(), riderId: z.number().int().positive() }).safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_request" });

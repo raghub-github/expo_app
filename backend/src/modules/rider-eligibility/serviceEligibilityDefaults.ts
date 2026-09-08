@@ -8,7 +8,9 @@
  *          admin can set DL required per state. Matches rider-dispatch-service-rules food.)
  *  - PARCEL: 2W/3W/4W, DL required, RC required, commercial not required by default.
  *  - PERSON RIDE: 2W/3W/4W, DL required, RC required, COMMERCIAL REQUIRED by default
- *          (overridable to false per location — the key geo-configurable rule).
+ *          (allowedOwnership is commercial-only so the allowlist matches the gate;
+ *          a location that permits private vehicles sets commercialRequired=false and
+ *          adds non_commercial to the allowlist — both must then be accepted).
  *
  * NOTHING here is hard-coded in the rider app; these are the seed/fallback values the
  * geo resolver falls back to, and every field is overridable from the Super-Admin
@@ -58,7 +60,9 @@ export const DEFAULT_SERVICE_ELIGIBILITY: Record<
     commercialRequired: true,
     allowedVehicleClasses: ["2_wheeler", "3_wheeler", "4_wheeler"],
     allowedFuelKinds: [],
-    allowedOwnership: ["commercial", "non_commercial"],
+    // Honest with commercialRequired: commercial-only. Locations that allow private
+    // vehicles must set commercialRequired=false and include non_commercial explicitly.
+    allowedOwnership: ["commercial"],
   },
 };
 

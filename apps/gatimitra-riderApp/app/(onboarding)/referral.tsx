@@ -12,7 +12,6 @@ import {
   Text,
   TextInput,
   ScrollView,
-  KeyboardAvoidingView,
   Platform,
   StyleSheet,
   ActivityIndicator,
@@ -236,10 +235,7 @@ export default function OnboardingReferralScreen() {
   return (
     <View style={styles.root}>
       <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.flex}
-        >
+        <View style={styles.flex}>
           <View style={styles.topBar}>
             <TouchableOpacity
               onPress={onBack}
@@ -476,7 +472,7 @@ export default function OnboardingReferralScreen() {
               </View>
             </ScrollView>
           )}
-        </KeyboardAvoidingView>
+        </View>
       </SafeAreaView>
     </View>
   );

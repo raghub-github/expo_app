@@ -2558,6 +2558,8 @@ export async function acceptOrderForRider(
   const [meta] = await db
     .select({
       orderType: ordersCore.orderType,
+      pickupLat: ordersCore.pickupLat,
+      pickupLon: ordersCore.pickupLon,
     })
     .from(ordersCore)
     .where(orderRefWhere(orderRef))
@@ -2567,6 +2569,22 @@ export async function acceptOrderForRider(
     throw Object.assign(new Error("Order not found"), { statusCode: 404 });
   }
   const afterMetaMs = Date.now() - startedAt;
+
+  // Backend-authoritative eligibility at pickup (same engine as dispatch). Honors
+  // RIDER_ELIGIBILITY_MODE: shadow logs, enforce throws 403, off skips.
+  {
+    const { assertRiderEligibleForOrderAccept } = await import(
+      "../rider-eligibility/riderEligibility.service.js"
+    );
+    const pickupLat = meta.pickupLat != null ? Number(meta.pickupLat) : null;
+    const pickupLng = meta.pickupLon != null ? Number(meta.pickupLon) : null;
+    await assertRiderEligibleForOrderAccept({
+      riderId,
+      orderType: meta.orderType,
+      pickupLat: Number.isFinite(pickupLat) ? pickupLat : null,
+      pickupLng: Number.isFinite(pickupLng) ? pickupLng : null,
+    });
+  }
 
   const acceptOpts = { skipPickupRadius: true };
 

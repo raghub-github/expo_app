@@ -81,6 +81,43 @@ export function SkipDocumentButton({
   );
 }
 
+/** Top-right red Skip control — same pattern as PAN onboarding. */
+export function HeaderSkipLink({
+  label,
+  onPress,
+  disabled,
+  hidden,
+}: {
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  /** Keep mounted (Fabric-safe) but invisible — avoids viewState crashes on skip show/hide. */
+  hidden?: boolean;
+}) {
+  const inactive = Boolean(disabled) || Boolean(hidden);
+  return (
+    <TouchableOpacity
+      activeOpacity={inactive ? 1 : 0.7}
+      onPress={() => {
+        if (!inactive) onPress();
+      }}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: inactive }}
+      accessibilityElementsHidden={Boolean(hidden)}
+      importantForAccessibility={hidden ? "no-hide-descendants" : "yes"}
+      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+      style={[
+        styles.headerSkipBtn,
+        inactive && styles.headerSkipBtnDisabled,
+        hidden && styles.headerSkipHidden,
+      ]}
+    >
+      <Text style={styles.headerSkipText}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
 export function FieldLabel({ label, required }: { label: string; required?: boolean }) {
   return (
     <Text style={styles.fieldLabel}>
@@ -122,14 +159,14 @@ export function StepProgress({
   currentIndex: number;
 }) {
   return (
-    <View style={styles.stepProgress}>
+    <View style={styles.stepProgress} collapsable={false}>
       {steps.map((label, index) => {
         const isActive = index === currentIndex;
         const isDone = index < currentIndex;
         const isLast = index === steps.length - 1;
 
         return (
-          <React.Fragment key={label}>
+          <View key={label} style={styles.stepProgressSegment} collapsable={false}>
             <View style={styles.stepProgressItem}>
               <View
                 style={[
@@ -167,7 +204,7 @@ export function StepProgress({
                 ]}
               />
             ) : null}
-          </React.Fragment>
+          </View>
         );
       })}
     </View>
@@ -196,6 +233,13 @@ export const onboardingFormStyles = StyleSheet.create({
     paddingBottom: 20,
     alignItems: "center",
   },
+  headerTopRow: {
+    alignSelf: "stretch",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
   backBtn: {
     alignSelf: "flex-start",
     width: 40,
@@ -207,6 +251,38 @@ export const onboardingFormStyles = StyleSheet.create({
     marginBottom: 8,
     borderWidth: 1,
     borderColor: "rgba(0,0,0,0.06)",
+  },
+  /** Back button inside headerTopRow (no extra bottom margin — Fabric-safe stable style). */
+  headerBackBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+  },
+  headerSkipBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    minWidth: 48,
+    alignItems: "flex-end",
+  },
+  headerSkipBtnDisabled: {
+    opacity: 0.4,
+  },
+  headerSkipHidden: {
+    opacity: 0,
+  },
+  headerSkipText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#dc2626",
+  },
+  headerSkipSpacer: {
+    width: 48,
+    height: 40,
   },
   stepPill: {
     flexDirection: "row",
@@ -416,6 +492,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 4,
+  },
+  stepProgressSegment: {
+    flexDirection: "row",
+    alignItems: "center",
   },
   stepProgressItem: {
     alignItems: "center",

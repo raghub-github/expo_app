@@ -42,12 +42,14 @@ export function RiderSubscriptionPrompt() {
     return () => clearTimeout(timer);
   }, [shouldOffer, featured?.id]);
 
-  if (!featured || isSubscribed) return null;
+  // Never keep an absoluteFill host mounted while closed — on Android it steals
+  // header taps (duty / services / MAX / language) even with pointerEvents="box-none".
+  if (!featured || isSubscribed || !visible) return null;
 
   return (
     <View style={styles.host} pointerEvents="box-none">
       <SubscriptionBottomSheet
-        visible={visible}
+        visible
         onClose={() => {
           setVisible(false);
           setSessionDismissed(true);

@@ -124,9 +124,18 @@ export type RiderEligibilityRuleInput = {
   effectiveTo: string | null;
 };
 
+/** Phase B: commercial_required=true ⇒ ownership allowlist is commercial-only. */
+function normalizeOwnershipFields<T extends { commercialRequired: boolean; allowedOwnership: OwnershipType[] }>(
+  args: T
+): T {
+  if (!args.commercialRequired) return args;
+  return { ...args, allowedOwnership: ["commercial"] };
+}
+
 export async function insertRiderEligibilityRule(
   args: RiderEligibilityRuleInput
 ): Promise<RiderEligibilityRuleRow> {
+  const normalized = normalizeOwnershipFields(args);
   const sql = getSql();
   const rows = await sql`
     INSERT INTO rider_service_eligibility_rules (
@@ -137,12 +146,12 @@ export async function insertRiderEligibilityRule(
       allowed_vehicle_classes, allowed_fuel_kinds, allowed_ownership,
       priority, is_active, effective_from, effective_to
     ) VALUES (
-      ${args.level}::geo_pricing_level, ${args.refId}::uuid, ${args.service}, ${args.serviceEnabled},
-      ${args.dlRequirement}, ${args.rcRequirement},
-      ${args.evProofRequirement}, ${args.ownershipProofRequirement}, ${args.commercialProofRequirement},
-      ${args.commercialRequired},
-      ${args.allowedVehicleClasses}::text[], ${args.allowedFuelKinds}::text[], ${args.allowedOwnership}::text[],
-      ${args.priority}, ${args.isActive}, ${args.effectiveFrom}, ${args.effectiveTo}
+      ${normalized.level}::geo_pricing_level, ${normalized.refId}::uuid, ${normalized.service}, ${normalized.serviceEnabled},
+      ${normalized.dlRequirement}, ${normalized.rcRequirement},
+      ${normalized.evProofRequirement}, ${normalized.ownershipProofRequirement}, ${normalized.commercialProofRequirement},
+      ${normalized.commercialRequired},
+      ${normalized.allowedVehicleClasses}::text[], ${normalized.allowedFuelKinds}::text[], ${normalized.allowedOwnership}::text[],
+      ${normalized.priority}, ${normalized.isActive}, ${normalized.effectiveFrom}, ${normalized.effectiveTo}
     )
     RETURNING *
   `;
@@ -153,23 +162,24 @@ export async function updateRiderEligibilityRule(
   id: number,
   args: Omit<RiderEligibilityRuleInput, "level" | "refId" | "service">
 ): Promise<RiderEligibilityRuleRow | null> {
+  const normalized = normalizeOwnershipFields(args);
   const sql = getSql();
   const rows = await sql`
     UPDATE rider_service_eligibility_rules SET
-      service_enabled = ${args.serviceEnabled},
-      dl_requirement = ${args.dlRequirement},
-      rc_requirement = ${args.rcRequirement},
-      ev_proof_requirement = ${args.evProofRequirement},
-      ownership_proof_requirement = ${args.ownershipProofRequirement},
-      commercial_proof_requirement = ${args.commercialProofRequirement},
-      commercial_required = ${args.commercialRequired},
-      allowed_vehicle_classes = ${args.allowedVehicleClasses}::text[],
-      allowed_fuel_kinds = ${args.allowedFuelKinds}::text[],
-      allowed_ownership = ${args.allowedOwnership}::text[],
-      priority = ${args.priority},
-      is_active = ${args.isActive},
-      effective_from = ${args.effectiveFrom},
-      effective_to = ${args.effectiveTo},
+      service_enabled = ${normalized.serviceEnabled},
+      dl_requirement = ${normalized.dlRequirement},
+      rc_requirement = ${normalized.rcRequirement},
+      ev_proof_requirement = ${normalized.evProofRequirement},
+      ownership_proof_requirement = ${normalized.ownershipProofRequirement},
+      commercial_proof_requirement = ${normalized.commercialProofRequirement},
+      commercial_required = ${normalized.commercialRequired},
+      allowed_vehicle_classes = ${normalized.allowedVehicleClasses}::text[],
+      allowed_fuel_kinds = ${normalized.allowedFuelKinds}::text[],
+      allowed_ownership = ${normalized.allowedOwnership}::text[],
+      priority = ${normalized.priority},
+      is_active = ${normalized.isActive},
+      effective_from = ${normalized.effectiveFrom},
+      effective_to = ${normalized.effectiveTo},
       updated_at = now()
     WHERE id = ${id} AND deleted_at IS NULL
     RETURNING *
