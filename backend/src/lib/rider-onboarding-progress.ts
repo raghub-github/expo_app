@@ -5,8 +5,18 @@ import {
   riders,
   riderOnboardingVehicleTypes,
   onboardingPayments,
+  riderPaymentMethods,
 } from "../db/schema.js";
-import { desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import {
+  aadhaarOnboardingComplete,
+  adminCompletedVehicleOnboarding,
+  bankAccountOnboardingCompleteFromDocs,
+  dlRcOnboardingComplete,
+  isOnboardingDocUsable,
+  panSelfieOnboardingComplete,
+  rentalEvOnboardingComplete,
+} from "./rider-onboarding-progress-docs.js";
 import {
   computeOnboardingProgressPct,
   resolveLastAndNextProgressSteps,
@@ -49,47 +59,39 @@ function aadhaarComplete(
     fileUrl?: string | null;
     verified?: boolean | null;
     verificationMethod?: string | null;
+    verificationStatus?: string | null;
     metadata?: unknown;
   }[],
   filesByDocId: Map<number, { side: string | null }[]>
 ): boolean {
-  const row = docs.find((d) => d.docType === "aadhaar");
-  if (!row) return hasDocType(docs, "aadhaar_front") && hasDocType(docs, "aadhaar_back");
-
-  // DigiLocker / electronic verify: no photo sides required.
-  const meta =
-    row.metadata && typeof row.metadata === "object"
-      ? (row.metadata as Record<string, unknown>)
-      : {};
-  const method = String(row.verificationMethod || meta.verificationMethod || "").toUpperCase();
-  const fileUrl = String(row.fileUrl || "");
-  const electronicOk =
-    row.verified === true ||
-    method === "APP_VERIFIED" ||
-    method.startsWith("CASHFREE_") ||
-    method === "RAZORPAY_BANK" ||
-    meta.digilockerVerified === true ||
-    meta.aadhaarMaskingVerified === true ||
-    method.includes("DIGILOCKER") ||
-    method.includes("AADHAAR_MASKING") ||
-    fileUrl.includes("digilocker_verified") ||
-    fileUrl.includes("aadhaar_masking_verified") ||
-    fileUrl.includes("electronic_verified");
-  if (electronicOk) return true;
-
-  const files = filesByDocId.get(row.id) ?? [];
-  const hasFront = files.some((f) => f.side === "front");
-  const hasBack = files.some((f) => f.side === "back");
-  return hasFront && hasBack;
+  return aadhaarOnboardingComplete(docs, filesByDocId);
 }
 
-function dlRcComplete(docs: { docType: string }[]): boolean {
-  return hasDocType(docs, "dl") && hasDocType(docs, "rc");
+function dlRcComplete(
+  docs: {
+    docType: string;
+    fileUrl?: string | null;
+    verified?: boolean | null;
+    verificationMethod?: string | null;
+    verificationStatus?: string | null;
+    metadata?: unknown;
+  }[],
+): boolean {
+  return dlRcOnboardingComplete(docs);
 }
 
-function panSelfieComplete(docs: { docType: string }[]): boolean {
+function panSelfieComplete(
+  docs: {
+    docType: string;
+    fileUrl?: string | null;
+    verified?: boolean | null;
+    verificationMethod?: string | null;
+    verificationStatus?: string | null;
+    metadata?: unknown;
+  }[],
+): boolean {
   // PAN is optional during onboarding — selfie alone completes this step.
-  return hasDocType(docs, "selfie");
+  return panSelfieOnboardingComplete(docs);
 }
 
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
@@ -244,8 +246,17 @@ function panDocVerified(doc: {
   );
 }
 
-function rentalEvComplete(docs: { docType: string }[]): boolean {
-  return hasDocType(docs, "rental_proof") || hasDocType(docs, "ev_proof");
+function rentalEvComplete(
+  docs: {
+    docType: string;
+    fileUrl?: string | null;
+    verified?: boolean | null;
+    verificationMethod?: string | null;
+    verificationStatus?: string | null;
+    metadata?: unknown;
+  }[],
+): boolean {
+  return rentalEvOnboardingComplete(docs);
 }
 
 function readOnboardingVehicleFlow(
@@ -357,14 +368,37 @@ async function readRequiredDocsForVehicleChoice(
 }
 
 function vehicleStepCompleteByRequired(
-  docs: { docType: string }[],
+  docs: {
+    docType: string;
+    fileUrl?: string | null;
+    verified?: boolean | null;
+    verificationMethod?: string | null;
+    verificationStatus?: string | null;
+    metadata?: unknown;
+  }[],
   requiredDocs: string[]
 ): boolean {
-  return requiredDocs.every((code) => hasDocType(docs, code));
+  return requiredDocs.every((code) => {
+    if (code === "dl") {
+      return (
+        isOnboardingDocUsable(docs.find((d) => d.docType === "dl")) ||
+        (isOnboardingDocUsable(docs.find((d) => d.docType === "dl_front")) &&
+          isOnboardingDocUsable(docs.find((d) => d.docType === "dl_back")))
+      );
+    }
+    return isOnboardingDocUsable(docs.find((d) => d.docType === code));
+  });
 }
 
 function vehicleStepComplete(
-  docs: { docType: string; metadata: unknown }[],
+  docs: {
+    docType: string;
+    metadata: unknown;
+    fileUrl?: string | null;
+    verified?: boolean | null;
+    verificationMethod?: string | null;
+    verificationStatus?: string | null;
+  }[],
   flow: "dl_rc" | "rental_ev" | "payment" | null
 ): boolean {
   if (flow === "payment") return hasDocType(docs, "onboarding_vehicle_selection");
@@ -413,6 +447,11 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   onboardingProgressPct: number;
   macroStepIndex: number;
   paymentCompleted: boolean;
+  vehicleChoice: string | null;
+  vehicleCategoryCode: string | null;
+  vehicleOnboardingFlow: "dl_rc" | "rental_ev" | "payment" | null;
+  vehicleDocsSubmittedFor: string | null;
+  bankAccountOnboardingDone: boolean;
 }> {
   const emptyProgress: OnboardingProgressMap = {
     aadhaar: "not_started",
@@ -434,6 +473,13 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     rcVerified: false,
     rcVerifiedData: null as Record<string, unknown> | null,
   };
+  const emptyAppSync = {
+    vehicleChoice: null as string | null,
+    vehicleCategoryCode: null as string | null,
+    vehicleOnboardingFlow: null as "dl_rc" | "rental_ev" | "payment" | null,
+    vehicleDocsSubmittedFor: null as string | null,
+    bankAccountOnboardingDone: false,
+  };
   const db = getDb();
 
   const riderRows = await db.select().from(riders).where(eq(riders.id, riderId)).limit(1);
@@ -450,6 +496,7 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
       onboardingProgressPct: 0,
       macroStepIndex: 0,
       paymentCompleted: false,
+      ...emptyAppSync,
     };
   }
 
@@ -505,10 +552,12 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   const vehicleDocsSatisfied = configuredRequiredDocs?.length
     ? vehicleStepCompleteByRequired(docs, configuredRequiredDocs)
     : vehicleStepComplete(docs, vehicleFlow);
+  const adminVehicleDone = adminCompletedVehicleOnboarding(docs);
   const vehicleReadyForPayment =
-    vehicleDocsSatisfied &&
-    Boolean(vehicleChoice) &&
-    vehicleDocsSubmittedFor === vehicleChoice;
+    (vehicleDocsSatisfied &&
+      Boolean(vehicleChoice) &&
+      vehicleDocsSubmittedFor === vehicleChoice) ||
+    adminVehicleDone;
 
   if (configuredRequiredDocs?.length) {
     if (vehicleDocsSatisfied) {
@@ -519,14 +568,10 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
       );
       if (rentalRequired.length > 0) completed.push("rental_ev");
     } else {
-      const dlRcRequired = configuredRequiredDocs.filter((code) => code === "dl" || code === "rc");
-      if (dlRcRequired.length > 0 && dlRcRequired.every((code) => hasDocType(docs, code))) {
+      if (dlRcComplete(docs)) {
         completed.push("dl_rc");
       }
-      const rentalRequired = configuredRequiredDocs.filter(
-        (code) => code === "rental_proof" || code === "ev_proof"
-      );
-      if (rentalRequired.length > 0 && rentalRequired.every((code) => hasDocType(docs, code))) {
+      if (rentalEvComplete(docs)) {
         completed.push("rental_ev");
       }
     }
@@ -578,6 +623,28 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     .orderBy(desc(onboardingPayments.createdAt))
     .limit(1);
   const paymentCompleted = payment?.status === "completed";
+
+  const [bankMethod] = await db
+    .select({ verificationStatus: riderPaymentMethods.verificationStatus })
+    .from(riderPaymentMethods)
+    .where(
+      and(eq(riderPaymentMethods.riderId, riderId), isNull(riderPaymentMethods.deletedAt)),
+    )
+    .orderBy(desc(riderPaymentMethods.updatedAt))
+    .limit(1);
+  const bankStatus = String(bankMethod?.verificationStatus || "").toLowerCase();
+  const bankAccountOnboardingDone =
+    bankAccountOnboardingCompleteFromDocs(docs) ||
+    bankStatus === "verified" ||
+    bankStatus === "pending";
+
+  const appSyncFields = {
+    vehicleChoice,
+    vehicleCategoryCode: readVehicleCategoryCode(docs),
+    vehicleOnboardingFlow: vehicleFlow,
+    vehicleDocsSubmittedFor,
+    bankAccountOnboardingDone,
+  };
 
   const onboardingProgress = buildOnboardingProgressMap({
     docs,
@@ -632,6 +699,7 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
       onboardingProgressPct,
       macroStepIndex,
       paymentCompleted,
+      ...appSyncFields,
     };
   }
 
@@ -663,6 +731,7 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     onboardingProgressPct,
     macroStepIndex,
     paymentCompleted,
+    ...appSyncFields,
   };
 }
 

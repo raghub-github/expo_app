@@ -126,10 +126,15 @@ export async function notifyMerchantStoreNewOrder(
     },
     metadata: {
       type: "merchant_new_order",
+      event: "NEW_ORDER",
       orderId: orderIdText,
       foodOrderId: foodId,
+      storeId: merchantStoreId,
+      merchantId: merchantStoreId,
       url: href,
       skip_in_app_banner: true,
+      alertStartedAt: String(Date.now()),
+      alertSessionId: `MERCHANT_NEW_ORDER:${foodId ?? orderIdText}:${merchantStoreId}`,
     },
   }).catch((e) =>
     console.warn("[merchant-new-order] v2 send failed (tolerated)", (e as Error).message)

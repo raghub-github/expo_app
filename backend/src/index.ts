@@ -27,10 +27,13 @@ import { customerSupportRoutes } from "./modules/customer-support/customer-suppo
 import { merchantRoutes } from "./modules/merchants/merchant.routes.js";
 import { merchantReportRoutes } from "./modules/merchants/merchant-report.routes.js";
 import { bookmarkRoutes } from "./modules/bookmarks/bookmark.routes.js";
+import { hiddenStoresRoutes } from "./modules/hidden-stores/hidden-stores.routes.js";
+import { vegModeRoutes } from "./modules/veg-mode/veg-mode.routes.js";
 import { orderRoutes } from "./modules/orders/order.routes.js";
 import { rideRoutes } from "./modules/rides/ride.routes.js";
 import { billingModule } from "./modules/billing/billing.routes.js";
 import { addressRoutes } from "./modules/addresses/address.routes.js";
+import { savedPlacesRoutes } from "./modules/saved-places/saved-places.routes.js";
 import { locationSearchRoutes } from "./modules/location-search/location-search.routes.js";
 import { distanceRoutes, distanceModule } from "./modules/distance/distance.routes.js";
 import { geoRoutes } from "./modules/geo/geo.routes.js";
@@ -675,6 +678,7 @@ await app.register(meRoutes, { prefix: "/v1/me" });
 await app.register(meLegalConsentRoutes, { prefix: "/v1/me" });
 await app.register(meWalletRoutes, { prefix: "/v1/me" });
 await app.register(addressRoutes, { prefix: "/v1/me" });
+await app.register(savedPlacesRoutes, { prefix: "/v1/me" });
 const { addressShareMeRoutes, addressSharePublicRoutes } = await import(
   "./modules/addresses/address-share.routes.js"
 );
@@ -781,6 +785,8 @@ await app.register(billingDebugRoutes, { prefix: "/v1/billing-debug" });
 await app.register(merchantMenuRoutes, { prefix: "/v1" });
 await app.register(merchantReportRoutes, { prefix: "/v1/merchants" });
 await app.register(bookmarkRoutes, { prefix: "/v1/bookmarks" });
+await app.register(hiddenStoresRoutes, { prefix: "/v1/hidden-stores" });
+await app.register(vegModeRoutes, { prefix: "/v1/veg-mode" });
 await app.register(billingModule, { prefix: "/v1/billing" });
 await app.register(orderRoutes, { prefix: "/v1/orders" });
 const { tripShareRoutes } = await import("./modules/trip-share/trip-share.routes.js");

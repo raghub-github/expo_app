@@ -1,11 +1,11 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import { listActiveStates } from "@/lib/geo/list-active-states";
 
 export const runtime = "nodejs";
 
-export async function GET() {
-  const gate = await requireSuperAdminApi();
+export async function GET(request: NextRequest) {
+  const gate = await requireSuperAdminApi(request);
   if (!gate.ok) return gate.response;
 
   try {

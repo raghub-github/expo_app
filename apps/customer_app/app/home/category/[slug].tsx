@@ -460,15 +460,17 @@ export default function CategoryBrowseScreen() {
     });
   }, [merchants, searchQ]);
 
-  const setStatusFromApi = useStoreStatusStore((s) => s.setStatusFromApi);
+  const seedStatusesFromApi = useStoreStatusStore((s) => s.seedStatusesFromApi);
   const statusMap = useStoreStatusStore((s) => s.statusMap);
 
   useEffect(() => {
-    merchants.forEach((m) => {
-      const liveStatus = resolveMerchantLiveStatus(m, {});
-      setStatusFromApi(m.id, liveStatus === "OPEN", liveStatus);
-    });
-  }, [merchants, setStatusFromApi]);
+    seedStatusesFromApi(
+      merchants.map((m) => {
+        const liveStatus = resolveMerchantLiveStatus(m, {});
+        return { storeId: m.id, isOpen: liveStatus === "OPEN", liveStatus };
+      })
+    );
+  }, [merchants, seedStatusesFromApi]);
 
   const selectedCategoryLabel = useMemo(() => {
     if (activeCategory === "all") return null;

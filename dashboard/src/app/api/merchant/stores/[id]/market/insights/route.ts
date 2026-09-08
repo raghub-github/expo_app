@@ -3,7 +3,7 @@
  * Locality + competitor affinity from orders_core (merchant_store_competitor_snapshots).
  */
 import { NextRequest, NextResponse } from "next/server";
-import { assertStoreAccess } from "@/app/api/merchant/stores/[id]/menu/assert-store-access";
+import { authenticateMerchantStoreForId } from "@/lib/merchant-store-route-auth";
 import { getSql } from "@/lib/db/client";
 import { loadMerchantMarketInsights } from "@/lib/merchant-store-competitors";
 
@@ -19,10 +19,8 @@ export async function GET(
     if (!Number.isFinite(storeId)) {
       return NextResponse.json({ success: false, error: "Invalid store id" }, { status: 400 });
     }
-    const access = await assertStoreAccess(storeId);
-    if (!access.ok) {
-      return NextResponse.json({ success: false, error: access.error }, { status: access.status });
-    }
+    const access = await authenticateMerchantStoreForId(request, storeId);
+    if (!access.ok) return access.response;
     const scope = request.nextUrl.searchParams.get("scope");
     const limitRaw = parseInt(request.nextUrl.searchParams.get("limit") ?? "10", 10);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, limitRaw), 20) : 10;

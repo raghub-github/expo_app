@@ -10,6 +10,7 @@ import { Lora_400Regular, Lora_600SemiBold, Lora_700Bold } from "@expo-google-fo
 import {
   Poppins_600SemiBold,
   Poppins_700Bold,
+  Poppins_800ExtraBold,
 } from "@expo-google-fonts/poppins";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -38,8 +39,7 @@ import { RiderPostDeliveryTipHost } from "@/src/components/orders/RiderPostDeliv
 import { RiderToastHost } from "@/src/components/RiderToastHost";
 import { RiderOfflineBanner } from "@/src/components/RiderOfflineBanner";
 import { initializeMapbox } from "@/src/services/maps/mapbox";
-import { fetchRiderAppAssets } from "@/src/services/appAssets.service";
-import { useAppAssetsStore } from "@/src/stores/appAssetsStore";
+import { bootstrapRiderAppAssets } from "@/src/lib/riderAppAssetsDisk";
 import { hydrateRiderSubscriptionCache } from "@/src/lib/rider-subscription-cache";
 
 /** Local icon glyphs — short wait so lang/bell/tabs never paint as empty squares. */
@@ -68,6 +68,7 @@ export default function RootLayout() {
     Lora_700Bold,
     Poppins_600SemiBold,
     Poppins_700Bold,
+    Poppins_800ExtraBold,
     ...FontAwesome.font,
     ...Ionicons.font,
     ...MaterialIcons.font,
@@ -80,10 +81,7 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
-    if (useAppAssetsStore.getState().loaded) return;
-    void fetchRiderAppAssets()
-      .then((res) => useAppAssetsStore.getState().setAssets(res.assets ?? {}))
-      .catch(() => useAppAssetsStore.getState().setAssets({}));
+    void bootstrapRiderAppAssets();
   }, []);
 
   useEffect(() => {

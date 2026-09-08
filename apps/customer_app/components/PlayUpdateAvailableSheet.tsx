@@ -86,20 +86,25 @@ export function PlayUpdateAvailableSheet({
             </View>
           </View>
 
-          <View style={styles.whatsNewRow}>
+          <Pressable
+            onPress={onLearnMore}
+            style={({ pressed }) => [styles.whatsNewRow, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel="What's new on Google Play"
+          >
             <View style={{ flex: 1 }}>
               <Text style={styles.whatsNewLabel}>What&apos;s new</Text>
               <Text style={styles.whatsNewDate}>New version available on Google Play</Text>
             </View>
             <Ionicons name="chevron-down" size={18} color="#94A3B8" />
-          </View>
+          </Pressable>
 
           <View style={styles.actions}>
             <Pressable
               onPress={onLearnMore}
               style={({ pressed }) => [styles.learnBtn, pressed && styles.pressed]}
               accessibilityRole="button"
-              accessibilityLabel="Learn more"
+              accessibilityLabel="Learn more on Google Play"
             >
               <Text style={styles.learnText}>Learn more</Text>
             </Pressable>
@@ -111,7 +116,7 @@ export function PlayUpdateAvailableSheet({
                 pressed && styles.pressed,
               ]}
               accessibilityRole="button"
-              accessibilityLabel="Update"
+              accessibilityLabel="Update on Google Play"
             >
               <Text style={styles.updateText}>Update</Text>
             </Pressable>

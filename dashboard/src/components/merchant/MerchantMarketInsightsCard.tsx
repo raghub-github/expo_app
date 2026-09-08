@@ -11,6 +11,7 @@ import {
   buildCompetitorLeaderboard,
   displayPlaceLabel,
 } from "@/lib/merchant-store-competitors-shared";
+import { fetchMerchantStoreApi } from "@/lib/fetch-merchant-store-api";
 import {
   readMarketInsightsCache,
   writeMarketInsightsCache,
@@ -191,9 +192,8 @@ export function MerchantMarketInsightsCard({
     setError(null);
     try {
       const q = new URLSearchParams({ scope: matchScope, limit: String(TOP_N) });
-      const res = await fetch(
-        `/api/merchant/stores/${encodeURIComponent(storeId)}/market/insights?${q}`,
-        { credentials: "include" }
+      const res = await fetchMerchantStoreApi(
+        `/api/merchant/stores/${encodeURIComponent(storeId)}/market/insights?${q}`
       );
       const json = (await res.json()) as MerchantMarketInsights & { success?: boolean; error?: string };
       if (!res.ok) {

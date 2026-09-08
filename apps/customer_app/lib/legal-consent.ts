@@ -47,13 +47,27 @@ async function saveLocalConsent(state: ConsentState): Promise<void> {
   await SecureStore.setItemAsync(KEY, JSON.stringify(state));
 }
 
+let consentInFlight: Promise<LegalConsentStatus | null> | null = null;
+let consentMemory: { at: number; status: LegalConsentStatus } | null = null;
+const CONSENT_MEMORY_TTL_MS = 5 * 60 * 1000;
+
 export async function fetchServerConsentStatus(): Promise<LegalConsentStatus | null> {
-  try {
-    const { data } = await api.get<LegalConsentStatus>("/v1/me/legal-consent");
-    return data;
-  } catch {
-    return null;
+  if (consentMemory && Date.now() - consentMemory.at < CONSENT_MEMORY_TTL_MS) {
+    return consentMemory.status;
   }
+  if (consentInFlight) return consentInFlight;
+  consentInFlight = (async () => {
+    try {
+      const { data } = await api.get<LegalConsentStatus>("/v1/me/legal-consent");
+      if (data) consentMemory = { at: Date.now(), status: data };
+      return data;
+    } catch {
+      return null;
+    } finally {
+      consentInFlight = null;
+    }
+  })();
+  return consentInFlight;
 }
 
 export async function recordConsent(opts?: { appVersion?: string }): Promise<void> {
@@ -91,6 +105,12 @@ export async function clearConsent(): Promise<void> {
 
 /** True if the user has accepted the current pack version. */
 export async function hasCurrentConsent(): Promise<boolean> {
+  // Local cache first — avoids duplicate GETs on every route change / cold boot race.
+  const local = await loadConsent();
+  if (local?.packVersion === LEGAL_PACK_VERSION) {
+    return true;
+  }
+
   const server = await fetchServerConsentStatus();
   if (server?.has_current_consent) {
     await saveLocalConsent({
@@ -98,24 +118,6 @@ export async function hasCurrentConsent(): Promise<boolean> {
       acceptedAt: server.accepted_at ?? new Date().toISOString(),
       acceptedDocIds: ONBOARDING_CONSENT_DOCS.map((d) => d.id),
     });
-    return true;
-  }
-
-  const local = await loadConsent();
-  if (local?.packVersion === LEGAL_PACK_VERSION) {
-    // Backfill DB for users who accepted before server persistence shipped.
-    if (server && !server.has_current_consent) {
-      try {
-        await api.post<LegalConsentStatus>("/v1/me/legal-consent", {
-          pack_version: LEGAL_PACK_VERSION,
-          accepted_doc_ids: local.acceptedDocIds,
-          app_version: local.appVersion,
-        });
-        return true;
-      } catch {
-        /* keep local-only fallback below */
-      }
-    }
     return true;
   }
 

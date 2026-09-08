@@ -806,6 +806,7 @@ function HeaderComponent() {
       analytics: "Analytics",
       devices: "Devices",
       logs: "Logs / Failures",
+      "dispatch-logs": "Logs / Failures",
       settings: "Settings",
     };
     return segment ? labels[segment] ?? "Notifications" : "Dashboard";

@@ -235,27 +235,32 @@ export default function StaffScreen() {
     try {
       await logoutUserSessions(token, [sess.id]);
       setUserSessions((prev) => prev.filter((s) => s.id !== sess.id));
-      if (isCurrent) {
-        await signOut();
-        router.replace("/(auth)/login");
-      }
     } catch (e) {
-      Alert.alert("Failed", e instanceof Error ? e.message : "Could not logout device.");
+      if (!isCurrent) {
+        Alert.alert("Failed", e instanceof Error ? e.message : "Could not logout device.");
+        return;
+      }
+    }
+    if (isCurrent) {
+      await signOut();
+      router.replace("/(auth)/login");
     }
   };
 
   const handleLogoutAll = async () => {
-    if (!token) return;
-    try {
-      // includeCurrent = true so this device is also logged out at the backend level
-      await logoutAllUserSessions(token, true);
-      setUserSessions([]);
-      // Clear local auth state and return to auth flow
+    if (!token) {
       await signOut();
       router.replace("/(auth)/login");
-    } catch (e) {
-      Alert.alert("Failed", e instanceof Error ? e.message : "Could not logout all devices.");
+      return;
     }
+    try {
+      await logoutAllUserSessions(token, true);
+    } catch {
+      /* still sign out this device */
+    }
+    setUserSessions([]);
+    await signOut();
+    router.replace("/(auth)/login");
   };
 
   if (loading) {

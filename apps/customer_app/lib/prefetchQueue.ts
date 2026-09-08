@@ -18,7 +18,7 @@
 import { Image } from "expo-image";
 import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
 
-const MAX_IN_FLIGHT = 3;
+const MAX_IN_FLIGHT = 6;
 
 /**
  * Cap on the dedupe set. Without this, a long browsing session accumulates every
@@ -81,6 +81,27 @@ export function enqueueImagePrefetch(uris: readonly string[], limit: number): nu
   }
   if (added > 0) pump();
   return added;
+}
+
+/**
+ * Jump the queue — for tiles/banners the user is about to see.
+ * Already-completed URIs are skipped; in-progress downloads are left alone.
+ */
+export function enqueueImagePrefetchFront(uris: readonly string[], limit: number): number {
+  const front: string[] = [];
+  for (const raw of uris) {
+    if (front.length >= limit) break;
+    const uri = raw?.trim();
+    if (!uri || completed.has(uri)) continue;
+    requested.add(uri);
+    const idx = queue.indexOf(uri);
+    if (idx >= 0) queue.splice(idx, 1);
+    if (!front.includes(uri)) front.push(uri);
+  }
+  if (front.length === 0) return 0;
+  queue.unshift(...front);
+  pump();
+  return front.length;
 }
 
 /** True when this URI has already been queued or fetched this session. */

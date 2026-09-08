@@ -32,9 +32,11 @@ import {
   useRiderBankAddGate,
 } from "@/src/hooks/useRiderBankAccount";
 import {
+  useRiderStatus,
   useVerificationModes,
   useVerifyDocument,
 } from "@/src/hooks/useOnboarding";
+import { canAccessOnboardingBankAccountScreen } from "@/src/lib/onboarding-routes";
 import { extractApiErrorMessage } from "@/src/services/http";
 import {
   ContinueButton,
@@ -65,6 +67,7 @@ function maskAccount(raw: string): string {
 
 export default function BankAccountOnboardingScreen() {
   const { data, setData, hydrate } = useOnboardingStore();
+  const { data: riderStatus } = useRiderStatus(data.riderId);
   const createBank = useCreateRiderBankPaymentMethod();
   const bankQuery = useRiderBankPaymentMethod();
   const existingBank = bankQuery.data;
@@ -97,6 +100,12 @@ export default function BankAccountOnboardingScreen() {
   }, [hydrate]);
 
   useEffect(() => {
+    if (riderStatus?.bankAccountOnboardingDone && !data.bankAccountOnboardingDone) {
+      void setData({ bankAccountOnboardingDone: true });
+    }
+  }, [riderStatus?.bankAccountOnboardingDone, data.bankAccountOnboardingDone, setData]);
+
+  useEffect(() => {
     if (!existingBank) return;
     if (existingBank.verificationStatus === "rejected") return;
     if (data.bankAccountOnboardingDone) return;
@@ -108,14 +117,19 @@ export default function BankAccountOnboardingScreen() {
   }, [bankElectronic]);
 
   const vehicleReady =
-    Boolean(data.vehicleChoice?.trim()) &&
-    data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice.trim();
+    canAccessOnboardingBankAccountScreen({
+      vehicleChoice: data.vehicleChoice,
+      vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
+      completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
+      vehicleOnboardingFlow: data.vehicleOnboardingFlow,
+    }) ||
+    (Boolean(data.vehicleChoice?.trim()) &&
+      data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice.trim());
 
   useEffect(() => {
-    if (!data.vehicleChoice) {
-      router.replace("/(onboarding)/dl-rc");
-    }
-  }, [data.vehicleChoice]);
+    if (vehicleReady) return;
+    router.replace("/(onboarding)/dl-rc");
+  }, [vehicleReady]);
 
   const accountOk = ACCOUNT_RE.test(accountNumber);
   const ifscOk = IFSC_RE.test(ifsc.trim());

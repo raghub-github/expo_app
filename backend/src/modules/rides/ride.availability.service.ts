@@ -11,9 +11,9 @@ import {
   resolveRideStateIdFromCoords,
 } from "../ride-state-config/index.js";
 
-/** Default search radius for map pins / nearest-ETA (options still return with 0 riders). */
+/** Bounding-box candidate radius. Duty ON riders in-box are listed even if GPS is older. */
 export const DEFAULT_RIDE_SUPPLY_RADIUS_KM = 8;
-export const RIDER_LOCATION_MAX_AGE_MINUTES = 10;
+export const RIDER_LOCATION_MAX_AGE_MINUTES = 15;
 
 export type NearbySupplyRider = {
   riderId: number;
@@ -146,8 +146,8 @@ export async function getNearbyRideSupply(input: {
       .from(customerRideServiceCatalog)
       .where(eq(customerRideServiceCatalog.isActive, true))
       .orderBy(asc(customerRideServiceCatalog.sortOrder)),
-    // Start from recent GPS candidates, then LATERAL one latest duty row each
-    // (uses duty_logs_rider_created_desc_idx). Never scan all of duty_logs.
+    // GPS in the pickup bbox (any age while duty ON), plus duty-log / home coords
+    // when rider_current_locations is missing. LATERAL latest duty_logs per rider.
     sqlClient`
       SELECT
         rp.rider_id,
@@ -173,9 +173,56 @@ export async function getNearbyRideSupply(input: {
           rcl.lng,
           rcl.heading_deg AS heading
         FROM rider_current_locations rcl
-        WHERE rcl.updated_at >= NOW() - (${RIDER_LOCATION_MAX_AGE_MINUTES} * INTERVAL '1 minute')
-          AND rcl.lat BETWEEN ${minLat} AND ${maxLat}
+        WHERE rcl.lat BETWEEN ${minLat} AND ${maxLat}
           AND rcl.lng BETWEEN ${minLng} AND ${maxLng}
+          AND NOT (rcl.lat = 0 AND rcl.lng = 0)
+        UNION ALL
+        SELECT
+          latest.rider_id,
+          latest.lat,
+          latest.lng,
+          NULL::double precision AS heading
+        FROM (
+          SELECT DISTINCT ON (dl.rider_id)
+            dl.rider_id,
+            dl.lat,
+            dl.lon AS lng,
+            dl.status
+          FROM duty_logs dl
+          WHERE dl.timestamp >= NOW() - INTERVAL '24 hours'
+            AND dl.lat IS NOT NULL
+            AND dl.lon IS NOT NULL
+            AND NOT (dl.lat = 0 AND dl.lon = 0)
+            AND dl.lat BETWEEN ${minLat} AND ${maxLat}
+            AND dl.lon BETWEEN ${minLng} AND ${maxLng}
+          ORDER BY dl.rider_id, dl.timestamp DESC
+        ) latest
+        WHERE latest.status = 'ON'
+          AND NOT EXISTS (
+            SELECT 1 FROM rider_current_locations g
+            WHERE g.rider_id = latest.rider_id
+              AND NOT (g.lat = 0 AND g.lng = 0)
+          )
+        UNION ALL
+        SELECT
+          rhome.id AS rider_id,
+          rhome.lat,
+          rhome.lon AS lng,
+          NULL::double precision AS heading
+        FROM riders rhome
+        WHERE rhome.deleted_at IS NULL
+          AND rhome.status <> 'BLOCKED'
+          AND rhome.status <> 'BANNED'
+          AND rhome.lat IS NOT NULL
+          AND rhome.lon IS NOT NULL
+          AND NOT (rhome.lat = 0 AND rhome.lon = 0)
+          AND rhome.lat BETWEEN ${minLat} AND ${maxLat}
+          AND rhome.lon BETWEEN ${minLng} AND ${maxLng}
+          AND NOT EXISTS (
+            SELECT 1 FROM rider_current_locations g
+            WHERE g.rider_id = rhome.id
+              AND NOT (g.lat = 0 AND g.lng = 0)
+          )
       ) rp
       INNER JOIN riders r ON r.id = rp.rider_id
       INNER JOIN LATERAL (
@@ -188,8 +235,48 @@ export async function getNearbyRideSupply(input: {
       INNER JOIN rider_vehicles rv ON rv.rider_id = rp.rider_id
       WHERE r.deleted_at IS NULL
         AND r.status <> 'BLOCKED'
+        AND r.status <> 'BANNED'
         AND ld.status = 'ON'
-        AND ld.service_types @> ${JSON.stringify([dutyService])}::text::jsonb
+        AND (
+          (
+            ${dutyService}::text = 'parcel'
+            AND (
+              EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements_text(COALESCE(ld.service_types, '[]'::jsonb)) AS st(val)
+                WHERE lower(trim(st.val)) IN ('parcel')
+              )
+              OR (
+                jsonb_typeof(COALESCE(ld.service_types, '[]'::jsonb)) = 'array'
+                AND jsonb_array_length(COALESCE(ld.service_types, '[]'::jsonb)) = 0
+                AND EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements_text(COALESCE(rv.service_types, '[]'::jsonb)) AS vst(val)
+                  WHERE lower(trim(vst.val)) IN ('parcel')
+                )
+              )
+            )
+          )
+          OR (
+            ${dutyService}::text <> 'parcel'
+            AND (
+              EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements_text(COALESCE(ld.service_types, '[]'::jsonb)) AS st(val)
+                WHERE lower(trim(st.val)) IN ('person_ride', 'ride', 'person')
+              )
+              OR (
+                jsonb_typeof(COALESCE(ld.service_types, '[]'::jsonb)) = 'array'
+                AND jsonb_array_length(COALESCE(ld.service_types, '[]'::jsonb)) = 0
+                AND EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements_text(COALESCE(rv.service_types, '[]'::jsonb)) AS vst(val)
+                  WHERE lower(trim(vst.val)) IN ('person_ride', 'ride', 'person')
+                )
+              )
+            )
+          )
+        )
         AND rv.deleted_at IS NULL
         AND rv.is_active = true
         AND rv.verified = true

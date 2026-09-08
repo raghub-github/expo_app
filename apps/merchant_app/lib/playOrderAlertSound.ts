@@ -98,7 +98,8 @@ async function playChime(
   source: number | { uri: string },
   volume: number,
   repeats: number,
-  myRun: number
+  myRun: number,
+  opts?: Pick<PlayOrderAlertOptions, "alreadyCompleted" | "onRepeatComplete">
 ): Promise<boolean> {
   if (chimeRunId !== myRun) return false;
 
@@ -128,11 +129,14 @@ async function playChime(
     const clipMs = player.duration > 0 ? Math.round(player.duration * 1000) + 700 : PLAY_TIMEOUT_MS;
     const passWaitMs = Math.min(PLAY_TIMEOUT_MS, clipMs);
 
-    for (let i = 0; i < repeats; i += 1) {
+    const startAt = Math.max(0, Math.min(repeats, Math.floor(opts?.alreadyCompleted ?? 0)));
+    if (startAt >= repeats) return true;
+
+    for (let i = startAt; i < repeats; i += 1) {
       if (chimeRunId !== myRun) break;
       // expo-audio keeps the player parked at the end of the clip after each
       // pass, so every repeat has to rewind before playing again.
-      if (i > 0) {
+      if (i > startAt) {
         try {
           await player.seekTo(0);
         } catch {
@@ -143,6 +147,8 @@ async function playChime(
       const finished = waitUntilFinished(player, passWaitMs);
       player.play();
       await finished;
+      if (chimeRunId !== myRun) break;
+      opts?.onRepeatComplete?.(i + 1);
     }
     return true;
   } catch (err) {
@@ -156,6 +162,10 @@ async function playChime(
 export type PlayOrderAlertOptions = {
   /** Default true — incoming alerts vibrate; preview passes false. */
   vibrate?: boolean;
+  /** Skip this many already-played repeats (shared alert session). */
+  alreadyCompleted?: number;
+  /** Fired after each successful repeat (1-based completed count). */
+  onRepeatComplete?: (completedCount: number) => void;
 };
 
 /**
@@ -163,6 +173,10 @@ export type PlayOrderAlertOptions = {
  * The bundled notification.wav is the safety net: a missing, unreachable or
  * undecodable custom sound must never leave an incoming order silent.
  */
+export function isOrderAlertSoundPlaying(): boolean {
+  return activePlayer != null;
+}
+
 export async function playOrderAlertSound(
   url: string | null | undefined,
   repeatCount: number,
@@ -170,10 +184,15 @@ export async function playOrderAlertSound(
   ringInSilent = true,
   opts?: PlayOrderAlertOptions
 ): Promise<boolean> {
+  const safeRepeats = Math.max(1, Math.min(5, Math.floor(repeatCount || 1)));
+  const already = Math.max(0, Math.floor(opts?.alreadyCompleted ?? 0));
+  // Do not tear down an in-flight session when nothing remains to play.
+  if (already >= safeRepeats) return true;
+
   const myRun = ++chimeRunId;
   releasePlayer(activePlayer);
   const trimmed = resolveAlertSoundUrl(url) ?? "";
-  const shouldVibrate = opts?.vibrate !== false;
+  const shouldVibrate = opts?.vibrate !== false && already === 0;
 
   if (Platform.OS !== "web" && shouldVibrate) {
     Vibration.vibrate([0, 450, 120, 450, 120, 450]);
@@ -192,16 +211,19 @@ export async function playOrderAlertSound(
 
   if (chimeRunId !== myRun) return false;
 
-  const safeRepeats = Math.max(1, Math.min(5, Math.floor(repeatCount || 1)));
   const volume = Math.min(1, Math.max(0, volume01));
+  const chimeOpts = {
+    alreadyCompleted: already,
+    onRepeatComplete: opts?.onRepeatComplete,
+  };
 
   let played = false;
   if (trimmed) {
-    played = await playChime({ uri: trimmed }, volume, safeRepeats, myRun);
+    played = await playChime({ uri: trimmed }, volume, safeRepeats, myRun, chimeOpts);
     if (!played) warnAlert(`custom chime unusable, falling back: ${trimmed}`);
   }
   if (!played && chimeRunId === myRun) {
-    played = await playChime(BUNDLED_NOTIFICATION, volume, safeRepeats, myRun);
+    played = await playChime(BUNDLED_NOTIFICATION, volume, safeRepeats, myRun, chimeOpts);
   }
 
   return played;
@@ -236,7 +258,8 @@ export async function playIncomingOrderAlert(
     | "alert_sound_slot_choice"
     | "alert_sound_repeat_count"
   >,
-  device: DeviceOrderAlerts
+  device: DeviceOrderAlerts,
+  opts?: PlayOrderAlertOptions
 ): Promise<void> {
   if (!device.orderAlertsEnabled || !device.soundAlertsEnabled) {
     return;
@@ -249,6 +272,7 @@ export async function playIncomingOrderAlert(
     chimeUrl,
     settings.alert_sound_repeat_count ?? 1,
     volumeStepTo01(device.volumeStep),
-    device.ringInSilent
+    device.ringInSilent,
+    opts
   );
 }

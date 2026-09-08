@@ -17,7 +17,7 @@
  * verified) without the agent re-typing anything.
  */
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { Zap, Loader2, ShieldCheck, XCircle, ChevronDown } from "lucide-react";
+import { Zap, Loader2, ShieldCheck, XCircle, ChevronDown, Copy } from "lucide-react";
 
 export type EvDocKind =
   | "pan"
@@ -25,16 +25,18 @@ export type EvDocKind =
   | "bank_account"
   | "driving_licence"
   | "vehicle_rc"
-  | "ifsc";
+  | "ifsc"
+  | "aadhaar";
 
 export const EV_SUPPORTED_KINDS: ReadonlySet<string> = new Set([
-  "pan", "gstin", "bank_account", "driving_licence", "vehicle_rc", "ifsc",
+  "pan", "gstin", "bank_account", "driving_licence", "vehicle_rc", "ifsc", "aadhaar",
 ]);
 
 type EvOutcome =
   | { state: "verified"; data: Record<string, unknown> }
   | { state: "rejected"; reason: string }
-  | { state: "error"; message: string };
+  | { state: "error"; message: string }
+  | { state: "digilocker"; url: string; verificationId?: string | null };
 
 const FIELD_LABELS: Record<EvDocKind, { number: string; placeholder: string }> = {
   pan: { number: "PAN number", placeholder: "ABCDE1234F" },
@@ -43,6 +45,7 @@ const FIELD_LABELS: Record<EvDocKind, { number: string; placeholder: string }> =
   driving_licence: { number: "License Number", placeholder: "AS1820230007159" },
   vehicle_rc: { number: "Vehicle RC Number", placeholder: "Ex. PY01MW8769" },
   ifsc: { number: "IFSC", placeholder: "SBIN0001234" },
+  aadhaar: { number: "Aadhaar number", placeholder: "1234 5678 9012" },
 };
 
 /** Friendly labels for provider payload keys worth showing to the agent. */
@@ -62,6 +65,9 @@ const DETAIL_LABELS: Record<string, string> = {
   account_status: "Account status",
   dob: "Date of birth",
   holder_name: "Holder name",
+  masked_aadhaar: "Masked Aadhaar",
+  aadhaar_number: "Aadhaar",
+  uid: "UID",
   owner_name: "Owner name",
   vehicle_class: "Vehicle class",
   maker_model: "Maker / model",
@@ -105,6 +111,11 @@ function validateDocNumber(docKind: EvDocKind, raw: string): string | null {
     case "ifsc":
       if (!/^[A-Z]{4}0[A-Z0-9]{6}$/i.test(n)) return "Enter a valid IFSC.";
       return null;
+    case "aadhaar":
+      if (!/^\d{12}$/.test(n.replace(/\s+/g, ""))) {
+        return "Enter a valid 12-digit Aadhaar number.";
+      }
+      return null;
     default:
       return n.length >= 4 ? null : "Enter a valid document number.";
   }
@@ -118,6 +129,8 @@ export function ElectronicVerifyPanel(props: {
   verified: boolean;
   /** Prefills: doc number, name, dob (YYYY-MM-DD), ifsc. */
   prefill?: { number?: string | null; name?: string | null; dob?: string | null; ifsc?: string | null };
+  /** R2 object key when an Aadhaar photo is already on the document row. */
+  imageKey?: string | null;
   /**
    * Pending provider result awaiting Approve/Discard — blocks a new Cashfree call
    * and reopens the review UI instead.
@@ -143,6 +156,7 @@ export function ElectronicVerifyPanel(props: {
     onVerified,
     hasPendingReview,
     onOpenPendingReview,
+    imageKey,
   } = props;
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -167,11 +181,12 @@ export function ElectronicVerifyPanel(props: {
     }));
   }, [prefill?.number, prefill?.dob, prefill?.name, prefill?.ifsc]);
 
-  /** Rider dashboard: number-only for most docs. DL needs DOB; bank needs IFSC. */
+  /** Rider dashboard: number-only for most docs. DL/Aadhaar need DOB; bank needs IFSC. */
   const numberOnly =
     subjectType === "rider" &&
     docKind !== "driving_licence" &&
-    docKind !== "bank_account";
+    docKind !== "bank_account" &&
+    docKind !== "aadhaar";
 
   useEffect(() => {
     if (!open) return;
@@ -182,8 +197,8 @@ export function ElectronicVerifyPanel(props: {
   if (verified || !EV_SUPPORTED_KINDS.has(docKind)) return null;
 
   const needsName = !numberOnly && docKind === "pan";
-  const optionalName = docKind === "gstin" || docKind === "bank_account";
-  const needsDob = docKind === "driving_licence";
+  const optionalName = docKind === "gstin" || docKind === "bank_account" || docKind === "aadhaar";
+  const needsDob = docKind === "driving_licence" || docKind === "aadhaar";
   const needsIfsc = docKind === "bank_account";
 
   const numberError = validateDocNumber(docKind, form.number);
@@ -204,7 +219,11 @@ export function ElectronicVerifyPanel(props: {
       return;
     }
     if (needsDob && !/^\d{4}-\d{2}-\d{2}$/.test(form.dob.trim())) {
-      setFormError("Enter date of birth as YYYY-MM-DD (same as Cashfree Try DL).");
+      setFormError(
+        docKind === "aadhaar"
+          ? "Enter date of birth as YYYY-MM-DD (as on Aadhaar)."
+          : "Enter date of birth as YYYY-MM-DD (same as Cashfree Try DL).",
+      );
       return;
     }
     if (needsIfsc && !/^[A-Za-z]{4}0[A-Za-z0-9]{6}$/.test(form.ifsc.trim())) {
@@ -233,6 +252,11 @@ export function ElectronicVerifyPanel(props: {
         body.dob = form.dob.trim();
       } else if (docKind === "vehicle_rc") {
         body.vehicleNumber = n.toUpperCase().replace(/\s+/g, "");
+      } else if (docKind === "aadhaar") {
+        body.aadhaarNumber = n.replace(/\D/g, "");
+        body.dob = form.dob.trim() || undefined;
+        body.name = form.name.trim() || undefined;
+        if (imageKey?.trim()) body.imageKey = imageKey.trim();
       } else {
         body.ifsc = n.toUpperCase();
       }
@@ -260,9 +284,13 @@ export function ElectronicVerifyPanel(props: {
       };
       if (o.kind === "auto" && o.status === "verified") {
         const data = o.verified_data ?? {};
+        const numberUsed =
+          docKind === "bank_account" || docKind === "aadhaar"
+            ? n.replace(/\D/g, "")
+            : n.toUpperCase();
         setOutcome({ state: "verified", data });
         onVerified?.(data, {
-          numberUsed: docKind === "bank_account" ? n.replace(/\D/g, "") : n.toUpperCase(),
+          numberUsed,
           ifscUsed:
             docKind === "bank_account" ? form.ifsc.trim().toUpperCase() : null,
           verificationId: o.verification_id ?? null,
@@ -270,6 +298,20 @@ export function ElectronicVerifyPanel(props: {
           confidence: typeof o.confidence === "number" ? o.confidence : null,
         });
         setOpen(false);
+      } else if (o.kind === "auto" && o.status === "provider_processing") {
+        const url = String((o.verified_data as { url?: string } | undefined)?.url ?? "").trim();
+        if (url) {
+          setOutcome({
+            state: "digilocker",
+            url,
+            verificationId: o.verification_id ?? null,
+          });
+          return;
+        }
+        setOutcome({
+          state: "error",
+          message: o.status_reason || "DigiLocker link was not returned.",
+        });
       } else if (o.kind === "auto") {
         setOutcome({ state: "rejected", reason: o.status_reason || o.status || "rejected" });
       } else {
@@ -357,6 +399,38 @@ export function ElectronicVerifyPanel(props: {
                 <ShieldCheck className="h-4 w-4" /> Details fetched — open review to Approve or Discard
               </div>
             </div>
+          ) : outcome?.state === "digilocker" ? (
+            <div className="rounded-lg border border-indigo-200 bg-white p-2.5">
+              <p className="text-[11px] font-semibold text-indigo-900">
+                No Aadhaar photo on file — Cashfree DigiLocker link (same as the rider app).
+              </p>
+              <p className="mt-1 text-[11px] text-indigo-800/80">
+                Send this URL to the rider. After they finish consent, refresh this page.
+              </p>
+              <div className="mt-2 flex items-center gap-1.5">
+                <input
+                  readOnly
+                  value={outcome.url}
+                  className="min-w-0 flex-1 rounded-lg border border-indigo-200 bg-indigo-50/60 px-2 py-1.5 font-mono text-[10px] text-indigo-900"
+                />
+                <button
+                  type="button"
+                  onClick={() => void navigator.clipboard.writeText(outcome.url)}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-indigo-200 bg-white px-2 py-1.5 text-[11px] font-semibold text-indigo-800 hover:bg-indigo-50"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  Copy
+                </button>
+              </div>
+              <a
+                href={outcome.url}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-block text-[11px] font-semibold text-indigo-700 underline"
+              >
+                Open DigiLocker
+              </a>
+            </div>
           ) : (
             <>
               <p className="mb-2 text-[11px] text-indigo-800/80">
@@ -364,6 +438,8 @@ export function ElectronicVerifyPanel(props: {
                   ? "Same as Cashfree Try Driving License: enter License Number + Date of Birth, then verify."
                   : docKind === "vehicle_rc"
                     ? "Same as Cashfree Try Vehicle RC: enter Vehicle RC Number, then verify."
+                  : docKind === "aadhaar"
+                    ? "Enter 12-digit Aadhaar + date of birth. If a card photo is uploaded, Cashfree reads it; otherwise a DigiLocker link is generated for the rider."
                   : numberOnly
                     ? "Enter the document number, then run verification."
                     : "Enter the document number first. Verification runs only after a valid number is provided."}
@@ -376,7 +452,17 @@ export function ElectronicVerifyPanel(props: {
                   { required: true, inputRef: numberInputRef },
                 )}
                 {needsName ? input("name", "Name as on PAN", "Full name", { required: true }) : null}
-                {optionalName ? input("name", docKind === "gstin" ? "Business name (optional)" : "Holder name (optional)", "") : null}
+                {optionalName
+                  ? input(
+                      "name",
+                      docKind === "gstin"
+                        ? "Business name (optional)"
+                        : docKind === "aadhaar"
+                          ? "Name as on Aadhaar (optional)"
+                          : "Holder name (optional)",
+                      "",
+                    )
+                  : null}
                 {needsDob ? input("dob", "Date of Birth", "2001-05-17", { required: true }) : null}
                 {needsIfsc ? input("ifsc", "IFSC", "SBIN0001234", { required: true }) : null}
               </div>
@@ -395,7 +481,7 @@ export function ElectronicVerifyPanel(props: {
                 {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
                 {busy
                   ? "Verifying…"
-                  : docKind === "driving_licence" || docKind === "vehicle_rc"
+                  : docKind === "driving_licence" || docKind === "vehicle_rc" || docKind === "aadhaar"
                     ? "Verify"
                     : "Run verification"}
               </button>

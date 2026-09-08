@@ -114,6 +114,7 @@ export type ItemCustomizationSheetProps = {
     variantName?: string;
     variantSizeValue?: string | null;
     variantSizeUnit?: string | null;
+    variantSizePreset?: string | null;
     addons?: Array<{
       addonId: string;
       customizationId?: string;
@@ -122,6 +123,7 @@ export type ItemCustomizationSheetProps = {
       quantity: number;
       addonSizeValue?: string | null;
       addonSizeUnit?: string | null;
+      addonSizePreset?: string | null;
     }>;
     imageUrl?: string | null;
     specialInstructions?: string | null;
@@ -170,6 +172,7 @@ type CustomizationOptionRowProps = {
   name: string;
   sizeValue?: string | null;
   sizeUnit?: string | null;
+  sizePreset?: string | null;
   price: number;
   /** Catalog price to strike when Boost applies. */
   strikePrice?: number | null;
@@ -198,6 +201,7 @@ function CustomizationOptionRow({
   name,
   sizeValue,
   sizeUnit,
+  sizePreset,
   price,
   strikePrice = null,
   offerPrice = null,
@@ -224,8 +228,8 @@ function CustomizationOptionRow({
     offerPrice != null && strikePrice != null && strikePrice > offerPrice + 0.001;
   const displayPayable = showOfferStrike ? offerPrice! : price;
   const showPrice = displayPayable > 0 || price > 0;
-  const portionLabel = formatMenuPortionLabel(sizeValue, sizeUnit);
-  const a11yLabel = formatMenuOptionDisplayName(name, sizeValue, sizeUnit);
+  const portionLabel = formatMenuPortionLabel(sizeValue, sizeUnit, sizePreset);
+  const a11yLabel = formatMenuOptionDisplayName(name, sizeValue, sizeUnit, sizePreset);
 
   const control = singleSelect ? (
     <View style={[styles.radioOuter, dark && styles.radioOuterDark, selected && styles.radioOuterSelected]}>
@@ -605,7 +609,8 @@ export function ItemCustomizationSheet({
         ? formatMenuOptionDisplayName(
             selectedVariant.name,
             selectedVariant.sizeValue,
-            selectedVariant.sizeUnit
+            selectedVariant.sizeUnit,
+            selectedVariant.sizePreset
           )
         : null,
     [selectedVariant]
@@ -665,7 +670,8 @@ export function ItemCustomizationSheet({
             addonName: formatMenuOptionDisplayName(
               addon.name,
               addon.sizeValue,
-              addon.sizeUnit
+              addon.sizeUnit,
+              addon.sizePreset
             ),
             addonPrice: addon.price,
             quantity: 1,
@@ -693,6 +699,7 @@ export function ItemCustomizationSheet({
       variantName: selectedVariantDisplayName ?? variant?.name,
       variantSizeValue: variant?.sizeValue ?? null,
       variantSizeUnit: variant?.sizeUnit ?? null,
+      variantSizePreset: variant?.sizePreset ?? null,
       addons: addonsList.length
         ? addonsList.map((a) => {
             const src = displayConfig?.customizations
@@ -702,6 +709,7 @@ export function ItemCustomizationSheet({
               ...a,
               addonSizeValue: src?.sizeValue ?? null,
               addonSizeUnit: src?.sizeUnit ?? null,
+              addonSizePreset: src?.sizePreset ?? null,
             };
           })
         : undefined,
@@ -980,6 +988,7 @@ export function ItemCustomizationSheet({
                               name={v.name}
                               sizeValue={v.sizeValue}
                               sizeUnit={v.sizeUnit}
+                              sizePreset={v.sizePreset}
                               price={v.price}
                               strikePrice={showStrike ? Math.round(v.price) : null}
                               offerPrice={showStrike ? boostUnit : null}
@@ -1066,6 +1075,7 @@ export function ItemCustomizationSheet({
                               name={a.name}
                               sizeValue={a.sizeValue}
                               sizeUnit={a.sizeUnit}
+                              sizePreset={a.sizePreset}
                               price={a.price}
                               selected={selected}
                               disabled={disabled}

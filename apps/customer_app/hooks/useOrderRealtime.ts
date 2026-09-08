@@ -46,6 +46,7 @@ import {
   shouldCatchUpAfterWsOpen,
   shouldSuspendRealtimeTransport,
 } from "@/lib/realtime-lifecycle";
+import { subscribeConfirmedAppState } from "@/lib/confirmedAppState";
 import { thermalAudit } from "@/lib/thermalAudit";
 
 /**
@@ -834,8 +835,8 @@ export function useOrderRealtime() {
       void connect("mount");
     }
 
-    const appStateSub = AppState.addEventListener("change", (state: AppStateStatus) => {
-      if (shouldSuspendRealtimeTransport(state)) {
+    const unsubscribeAppState = subscribeConfirmedAppState({
+      onSuspend: () => {
         backgroundedAtMs = Date.now();
         suspended = true;
         if (reconnectTimer) {
@@ -850,31 +851,31 @@ export function useOrderRealtime() {
           /* ignore */
         }
         thermalAudit("WS_SUSPEND", { reason: "background" });
-        return;
-      }
-      if (state !== "active" || cancelled) return;
+      },
+      onResume: () => {
+        if (cancelled) return;
+        const awayMs = backgroundedAtMs != null ? Date.now() - backgroundedAtMs : 0;
+        backgroundedAtMs = null;
+        suspended = false;
 
-      const awayMs = backgroundedAtMs != null ? Date.now() - backgroundedAtMs : 0;
-      backgroundedAtMs = null;
-      suspended = false;
+        setLiveLocationReconnecting(true);
+        failureCount = 0;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        void connect(awayMs >= 60_000 ? "resume_long" : "foreground");
 
-      setLiveLocationReconnecting(true);
-      failureCount = 0;
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      void connect(awayMs >= 60_000 ? "resume_long" : "foreground");
-
-      if (__DEV__) {
-        console.log("[live-track] app resume", { awayMs });
-      }
+        if (__DEV__) {
+          console.log("[live-track] app resume", { awayMs });
+        }
+      },
     });
 
     return () => {
       cancelled = true;
       connectGen += 1;
-      appStateSub.remove();
+      unsubscribeAppState();
       reconnectNowRef.current = null;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       clearHeartbeat();

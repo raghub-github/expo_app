@@ -34,6 +34,7 @@ import { resolveRideImage, resolveSelectedRideMapMarkerImageKey } from "@/featur
 import { useNearbyRideAvailability } from "@/hooks/useNearbyRideAvailability";
 import type { RideAvailabilityOption } from "@/services/rideAvailability.service";
 import { RIDE_RIDER_SEARCH_TIMEOUT_SEC } from "@/features/ride/rideOptions";
+import { RIDE_STOPS_ENABLED } from "@/features/ride/rideStops";
 import { getRideFareQuoteBatch, type RideFareQuote } from "@/services/rideQuote.service";
 import { useLocationStore } from "@/store/locationStore";
 import { pickupGeoHintsFromAddress } from "@/lib/ride-geo-hints";
@@ -68,8 +69,9 @@ import { latLngFromStrings, latLngKey } from "@/lib/ride-map-sync";
 
 const ENTRY_SURGE_MESSAGE = "Fares are higher due to increased demand";
 const PRICING_BANNER_MS = 2500;
-const FARE_QUOTE_RETRY_MS = 400;
-const FARE_QUOTE_MAX_ATTEMPTS = 2;
+const FARE_QUOTE_RETRY_MS = 700;
+const FARE_QUOTE_MAX_ATTEMPTS = 4;
+const FARE_QUOTE_DEBOUNCE_MS = 320;
 const BIKE_FAMILY_IDS = new Set(["bike", "bike-lite"]);
 const AUTO_FAMILY_IDS = new Set(["auto", "ev_auto"]);
 
@@ -318,7 +320,7 @@ export default function RideBookScreen() {
   const [fareQuotesLoading, setFareQuotesLoading] = useState(false);
   const [pricingBanner, setPricingBanner] = useState<PricingBanner | null>(null);
   const fareQuoteRequestRef = useRef(0);
-  const fareQuoteKeyRef = useRef<string | null>(null);
+  const lastOkQuoteKeyRef = useRef<string | null>(null);
   const fareQuoteAbortRef = useRef<AbortController | null>(null);
   const pricingBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const entrySurgeBannerShownRef = useRef(false);
@@ -530,16 +532,16 @@ export default function RideBookScreen() {
         ? Math.round(tripKm * 10) / 10
         : null;
     if (fromRoute != null) return fromRoute;
+    if (routeLoading) return null;
     if (endpointSpanKm != null && endpointSpanKm > 0) {
       return Math.round(endpointSpanKm * 10) / 10;
     }
     return null;
-  }, [tripKm, endpointSpanKm]);
+  }, [tripKm, endpointSpanKm, routeLoading]);
 
   const {
     data: availability,
     isLoading: availabilityLoading,
-    isFetching: availabilityFetching,
     isError: availabilityError,
   } = useNearbyRideAvailability(pickupLat, pickupLng, tripKm, pickupGeoHints);
 
@@ -756,27 +758,29 @@ export default function RideBookScreen() {
   const hasDrop = dropLat != null && dropLng != null;
   const routeSettled = !hasDrop || !routeLoading;
 
+  const hasNearbySupply = useMemo(
+    () =>
+      availableOptions.length > 0 ||
+      allNearbyRiders.length > 0 ||
+      (availability?.nearbyRiderCount ?? 0) > 0,
+    [availableOptions.length, allNearbyRiders.length, availability?.nearbyRiderCount]
+  );
+
   const noVehiclesAvailable = useMemo(
     () =>
       !availabilityLoading &&
-      !availabilityFetching &&
       !availabilityError &&
       routeSettled &&
       pickupLat != null &&
       pickupLng != null &&
-      availableOptions.length === 0 &&
-      allNearbyRiders.length === 0 &&
-      (availability?.nearbyRiderCount ?? 0) === 0,
+      !hasNearbySupply,
     [
       availabilityLoading,
-      availabilityFetching,
       availabilityError,
       routeSettled,
       pickupLat,
       pickupLng,
-      availableOptions.length,
-      allNearbyRiders.length,
-      availability?.nearbyRiderCount,
+      hasNearbySupply,
     ]
   );
 
@@ -788,13 +792,17 @@ export default function RideBookScreen() {
   }, [tripKm]);
 
   useEffect(() => {
-    if (!noVehiclesAvailable) {
+    if (hasNearbySupply) {
       setServiceUnavailableVisible(false);
+      return;
+    }
+    if (!noVehiclesAvailable) {
+      // First load / route still settling — keep the current sheet, never hide-and-reshow.
       return;
     }
     const t = setTimeout(() => setServiceUnavailableVisible(true), 800);
     return () => clearTimeout(t);
-  }, [noVehiclesAvailable]);
+  }, [hasNearbySupply, noVehiclesAvailable]);
 
   useEffect(() => {
     if (sortedOptions.length === 0) return;
@@ -812,7 +820,7 @@ export default function RideBookScreen() {
       return;
     }
     if (pickupLat == null || pickupLng == null || dropLat == null || dropLng == null) {
-      fareQuoteKeyRef.current = null;
+      lastOkQuoteKeyRef.current = null;
       fareQuoteAbortRef.current?.abort();
       fareQuoteAbortRef.current = null;
       setFareQuotes({});
@@ -822,8 +830,6 @@ export default function RideBookScreen() {
     }
 
     if (fareTripKm == null || fareCatalogCodesKey.length === 0) {
-      fareQuoteAbortRef.current?.abort();
-      fareQuoteAbortRef.current = null;
       setFareQuotesLoading(true);
       return;
     }
@@ -839,96 +845,105 @@ export default function RideBookScreen() {
       pickupState ?? "",
     ].join("\u0000");
 
-    if (quoteKey === fareQuoteKeyRef.current) return;
+    if (quoteKey === lastOkQuoteKeyRef.current) {
+      setFareQuotesLoading(false);
+      return;
+    }
 
-    fareQuoteAbortRef.current?.abort();
     const abort = new AbortController();
+    fareQuoteAbortRef.current?.abort();
     fareQuoteAbortRef.current = abort;
-    fareQuoteKeyRef.current = quoteKey;
-
     const requestId = ++fareQuoteRequestRef.current;
     const catalogCodes = fareCatalogCodesRef.current;
     setFareQuotesLoading(true);
-    const startedAt = Date.now();
-    logRideRouteDebug("fare_quote_batch_request", {
-      tripKm: fareTripKm,
-      pickupLat,
-      pickupLng,
-      dropLat,
-      dropLng,
-      vehicleCount: catalogCodes.length,
-      catalogCodes,
-    });
 
-    void (async () => {
-      try {
-        for (let attempt = 0; attempt < FARE_QUOTE_MAX_ATTEMPTS; attempt++) {
-          if (abort.signal.aborted || requestId !== fareQuoteRequestRef.current) return;
-          const result = await getRideFareQuoteBatch({
-            pickupLat,
-            pickupLng,
-            dropLat,
-            dropLng,
-            tripKm: fareTripKm,
-            catalogCodes,
-            pickupPincode,
-            pickupState,
-            signal: abort.signal,
-          });
+    const timer = setTimeout(() => {
+      if (abort.signal.aborted || requestId !== fareQuoteRequestRef.current) return;
+      const startedAt = Date.now();
+      logRideRouteDebug("fare_quote_batch_request", {
+        tripKm: fareTripKm,
+        pickupLat,
+        pickupLng,
+        dropLat,
+        dropLng,
+        vehicleCount: catalogCodes.length,
+        catalogCodes,
+      });
+
+      void (async () => {
+        try {
+          for (let attempt = 0; attempt < FARE_QUOTE_MAX_ATTEMPTS; attempt++) {
+            if (abort.signal.aborted || requestId !== fareQuoteRequestRef.current) return;
+            const result = await getRideFareQuoteBatch({
+              pickupLat,
+              pickupLng,
+              dropLat,
+              dropLng,
+              tripKm: fareTripKm,
+              catalogCodes,
+              pickupPincode,
+              pickupState,
+              signal: abort.signal,
+            });
+            if (requestId !== fareQuoteRequestRef.current) return;
+            if (!result.ok) {
+              if (result.code === "ABORTED") return;
+              if (attempt + 1 < FARE_QUOTE_MAX_ATTEMPTS) {
+                const shouldRetry = await waitForQuoteRetry(FARE_QUOTE_RETRY_MS, abort.signal);
+                if (!shouldRetry) return;
+                continue;
+              }
+              logRideRouteDebug("fare_quote_batch_failed", {
+                error: result.error,
+                code: result.code ?? null,
+                attempt: attempt + 1,
+              });
+              return;
+            }
+
+            const next: Record<string, number> = {};
+            const nextMeta: Record<string, RideFareQuote> = {};
+            for (const [code, quote] of Object.entries(result.quotes)) {
+              const payable = resolveRideQuotePayableAmount(quote);
+              if (!(payable > 0)) continue;
+              nextMeta[code] = quote;
+              next[code] = payable;
+            }
+            if (Object.keys(next).length === 0) {
+              if (attempt + 1 < FARE_QUOTE_MAX_ATTEMPTS) {
+                const shouldRetry = await waitForQuoteRetry(FARE_QUOTE_RETRY_MS, abort.signal);
+                if (!shouldRetry) return;
+                continue;
+              }
+              logRideRouteDebug("fare_quote_batch_empty", { attempt: attempt + 1 });
+              return;
+            }
+
+            lastOkQuoteKeyRef.current = quoteKey;
+            setFareQuoteMeta(nextMeta);
+            setFareOffsets(mergeRideCatalogFareOffsets(result.fareOffsets));
+            setFareQuotes(next);
+            logRideRouteDebug("fare_quote_batch_ms", {
+              ms: Date.now() - startedAt,
+              vehicleCount: Object.keys(next).length,
+              serverTimings: result.timings ?? null,
+              attempt: attempt + 1,
+            });
+            return;
+          }
+        } catch {
           if (requestId !== fareQuoteRequestRef.current) return;
-          if (!result.ok) {
-            if (result.code === "ABORTED") return;
-            if (attempt + 1 < FARE_QUOTE_MAX_ATTEMPTS) {
-              const shouldRetry = await waitForQuoteRetry(FARE_QUOTE_RETRY_MS, abort.signal);
-              if (!shouldRetry) return;
-              continue;
-            }
-            if (fareQuoteKeyRef.current === quoteKey) fareQuoteKeyRef.current = null;
-            return;
+        } finally {
+          if (requestId === fareQuoteRequestRef.current) {
+            setFareQuotesLoading(false);
           }
-
-          const next: Record<string, number> = {};
-          const nextMeta: Record<string, RideFareQuote> = {};
-          for (const [code, quote] of Object.entries(result.quotes)) {
-            nextMeta[code] = quote;
-            next[code] = resolveRideQuotePayableAmount(quote);
-          }
-          if (Object.keys(next).length === 0) {
-            if (attempt + 1 < FARE_QUOTE_MAX_ATTEMPTS) {
-              const shouldRetry = await waitForQuoteRetry(FARE_QUOTE_RETRY_MS, abort.signal);
-              if (!shouldRetry) return;
-              continue;
-            }
-            if (fareQuoteKeyRef.current === quoteKey) fareQuoteKeyRef.current = null;
-            return;
-          }
-
-          setFareQuoteMeta(nextMeta);
-          setFareOffsets(mergeRideCatalogFareOffsets(result.fareOffsets));
-          setFareQuotes(next);
-          logRideRouteDebug("fare_quote_batch_ms", {
-            ms: Date.now() - startedAt,
-            vehicleCount: Object.keys(next).length,
-            serverTimings: result.timings ?? null,
-            attempt: attempt + 1,
-          });
-          return;
         }
-      } catch {
-        if (requestId !== fareQuoteRequestRef.current) return;
-        if (fareQuoteKeyRef.current === quoteKey) fareQuoteKeyRef.current = null;
-      } finally {
-        if (requestId === fareQuoteRequestRef.current) {
-          setFareQuotesLoading(false);
-        }
-      }
-    })();
+      })();
+    }, FARE_QUOTE_DEBOUNCE_MS);
 
     return () => {
+      clearTimeout(timer);
       abort.abort();
-      if (fareQuoteKeyRef.current === quoteKey) {
-        fareQuoteKeyRef.current = null;
-      }
     };
   }, [
     isFocused,
@@ -1268,12 +1283,17 @@ export default function RideBookScreen() {
 
           <View style={styles.mapFabCol}>
             <TouchableOpacity
-              style={styles.mapFab}
+              style={[styles.mapFab, !RIDE_STOPS_ENABLED && styles.mapFabDisabled]}
               onPress={() => goEditLocations("add-stop")}
-              activeOpacity={0.88}
+              disabled={!RIDE_STOPS_ENABLED}
+              activeOpacity={RIDE_STOPS_ENABLED ? 0.88 : 1}
+              accessibilityState={{ disabled: !RIDE_STOPS_ENABLED }}
+              accessibilityLabel="Add stop"
             >
-              <Ionicons name="add" size={18} color="#111827" />
-              <AppText style={styles.mapFabText}>Add stop</AppText>
+              <Ionicons name="add" size={18} color={RIDE_STOPS_ENABLED ? "#111827" : "#A3A3A3"} />
+              <AppText style={[styles.mapFabText, !RIDE_STOPS_ENABLED && styles.mapFabTextDisabled]}>
+                Add stop
+              </AppText>
             </TouchableOpacity>
             <TouchableOpacity style={styles.locateFab} activeOpacity={0.88}>
               <Ionicons name="locate" size={22} color="#2563EB" />
@@ -1346,7 +1366,11 @@ export default function RideBookScreen() {
                   quoteLoading={
                     fareQuotePending && !(displayFareQuotes[option.id] > 0)
                   }
-                  showSurgeHint={option.id === "bike" && selectedRideId === "bike"}
+                  showSurgeHint={
+                    option.id === "bike" &&
+                    selectedRideId === "bike" &&
+                    (displayFareQuotes.bike ?? 0) > 0
+                  }
                   fareDetailsEnabled
                   onSelect={() => selectRideOption(option.id)}
                   onImagePress={() => {
@@ -1555,6 +1579,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
     color: "#111827",
+  },
+  mapFabDisabled: {
+    opacity: 0.45,
+  },
+  mapFabTextDisabled: {
+    color: "#A3A3A3",
   },
   locateFab: {
     width: 44,

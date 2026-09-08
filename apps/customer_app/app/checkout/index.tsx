@@ -63,6 +63,7 @@ import { useCheckoutPaymentFailureStore, presentCheckoutPaymentFailure } from "@
 import { DietIndicator } from "@/components/store/DietIndicator";
 import { resolveItemDiet } from "@/lib/itemDiet";
 import { merchantService, type MerchantSummary, type MenuItem } from "@/services/merchant.service";
+import { formatMenuOptionDisplayName, formatMenuPortionLabel } from "@/lib/format-menu-portion-label";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { DEFAULT_STATUS_BAR_HEIGHT, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
@@ -475,11 +476,33 @@ function formatCheckoutReceiverLine(
 
 function cartItemSubline(item: CartItem): string {
   const parts: string[] = [];
-  if (item.variantName?.trim()) parts.push(item.variantName.trim());
+  if (item.variantName?.trim()) {
+    parts.push(
+      formatMenuOptionDisplayName(
+        item.variantName.trim(),
+        item.variantSizeValue,
+        item.variantSizeUnit,
+        item.variantSizePreset
+      )
+    );
+  } else {
+    const portion = formatMenuPortionLabel(
+      item.variantSizeValue,
+      item.variantSizeUnit,
+      item.variantSizePreset
+    );
+    if (portion) parts.push(portion);
+  }
   if (item.addons?.length) {
     for (const a of item.addons) {
       const q = a.quantity > 1 ? ` ×${a.quantity}` : "";
-      parts.push(`${a.addonName}${q}`);
+      const addonLabel = formatMenuOptionDisplayName(
+        a.addonName,
+        a.addonSizeValue,
+        a.addonSizeUnit,
+        a.addonSizePreset
+      );
+      parts.push(`${addonLabel}${q}`);
     }
   }
   return parts.join(" · ");
@@ -517,6 +540,7 @@ function buildItemsWithSnapshots(
     if (i.variantName) snap.variant_name = i.variantName;
     if (i.variantSizeValue) snap.variant_size_value = i.variantSizeValue;
     if (i.variantSizeUnit) snap.variant_size_unit = i.variantSizeUnit;
+    if (i.variantSizePreset) snap.variant_size_preset = i.variantSizePreset;
     if (categoryName) snap.category_name = categoryName;
     if (Number.isFinite(packNum) && packNum > 0) {
       snap.packaging_enabled = true;
@@ -544,6 +568,7 @@ function buildItemsWithSnapshots(
           quantity: a.quantity,
           addon_size_value: a.addonSizeValue ?? undefined,
           addon_size_unit: a.addonSizeUnit ?? undefined,
+          addon_size_preset: a.addonSizePreset ?? undefined,
         })),
       itemSnapshot: specialInstructionsIntoSnapshot(snap, note),
     };
@@ -6323,6 +6348,7 @@ function CheckoutScreen() {
                   variantName: params.variantName,
                   variantSizeValue: params.variantSizeValue,
                   variantSizeUnit: params.variantSizeUnit,
+                  variantSizePreset: params.variantSizePreset,
                   addons: params.addons,
                   imageUrl: params.imageUrl ?? customizationSheetItem?.imageUrl ?? null,
                   specialInstructions: params.specialInstructions ?? null,
@@ -6340,6 +6366,7 @@ function CheckoutScreen() {
                 variantName: params.variantName,
                 variantSizeValue: params.variantSizeValue,
                 variantSizeUnit: params.variantSizeUnit,
+                variantSizePreset: params.variantSizePreset,
                 addons: params.addons,
                 imageUrl: params.imageUrl ?? customizationSheetItem?.imageUrl ?? null,
                 specialInstructions: params.specialInstructions ?? null,

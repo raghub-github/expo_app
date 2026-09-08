@@ -11,11 +11,12 @@ import {
   StyleSheet,
   Platform,
   RefreshControl,
+  FlatList,
+  type ListRenderItem,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
 import { AppText } from "@/components/AppText";
-import { FlashList, type FlashListRef, type ListRenderItem } from "@shopify/flash-list";
 import Animated, {
   type SharedValue,
   useAnimatedStyle,
@@ -43,7 +44,6 @@ import type { ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import {
   CATEGORY_RAIL_WIDTH,
   HEADER_IMAGE_HEIGHT,
-  MENU_ITEM_ROW_HEIGHT,
   MENU_LOADING_FILL_MIN_HEIGHT,
   MERCHANT_HERO_ACTIONS_TOP_PAD,
   SCREEN_HEIGHT,
@@ -59,11 +59,12 @@ import {
 } from "@/lib/merchantMenuScrollGuard";
 
 /**
- * Virtualized merchant menu (FlashList). Full-mount ScrollView previously kept every
- * menu row + image decoded — that heated devices and OOM-crashed Expo Go on large menus.
+ * Virtualized merchant menu.
  *
- * Do NOT wrap FlashList with Animated.createAnimatedComponent — FlashList v2 + Reanimated
- * crashes at module load (`Property 'ScrollView' doesn't exist`).
+ * FlashList v2 recycles mixed-height cells (hero / info / section / item) with absolute
+ * positioning. On Android fling that leaves large white/black holes under the sticky
+ * search bar. FlatList windowing keeps nearby rows mounted so that gap never appears,
+ * without mounting the whole catalog (full ScrollView OOMs on large menus).
  */
 export type MerchantScrollListHandle = {
   scrollToOffset: (params: { offset: number; animated?: boolean }) => void;
@@ -153,10 +154,36 @@ export type MerchantDetailFlashListProps = {
   onRefresh?: () => void;
 };
 
-/** Pre-render several screens so fast fling never shows empty cells. */
-const MENU_DRAW_DISTANCE = Math.max(2800, Math.round(SCREEN_HEIGHT * 4));
-/** FlashList v2 otherwise paints 1–2 rows first — fast scroll then hits white. */
-const MENU_INITIAL_DRAW_BATCH = 28;
+/** Viewports kept mounted above + below the screen. Large enough that a fling never uncovers empty cells. */
+const MENU_WINDOW_SIZE = 31;
+const MENU_INITIAL_RENDER = Math.min(16, Math.max(8, Math.ceil(SCREEN_HEIGHT / 160)));
+
+const PINNED_HEADER_TYPES = new Set<MerchantFlashListItem["type"]>([
+  "hero",
+  "info",
+  "closed_banner",
+  "rush_banner",
+  "filter_bar",
+  "past_orders",
+  "combo_section",
+  "section_lead",
+]);
+
+function splitPinnedChrome(data: MerchantFlashListItem[]): {
+  headerItems: MerchantFlashListItem[];
+  listItems: MerchantFlashListItem[];
+  footerItem: MerchantFlashListItem | null;
+} {
+  let i = 0;
+  while (i < data.length && PINNED_HEADER_TYPES.has(data[i]!.type)) i += 1;
+  let end = data.length;
+  if (end > i && data[end - 1]!.type === "footer") end -= 1;
+  return {
+    headerItems: data.slice(0, i),
+    listItems: data.slice(i, end),
+    footerItem: end < data.length ? data[end]! : null,
+  };
+}
 
 const MerchantDetailFlashListInner = forwardRef<
   MerchantScrollListHandle,
@@ -246,11 +273,17 @@ const MerchantDetailFlashListInner = forwardRef<
     return { opacity: 1 - (y - hideAt * 0.55) / (hideAt * 0.45) };
   }, [scrollY, heroBannerHeight]);
 
-  const scrollRef = useRef<FlashListRef<MerchantFlashListItem>>(null);
+  const scrollRef = useRef<FlatList<MerchantFlashListItem>>(null);
   const rowHeightsRef = useRef<Map<string, number>>(new Map());
   const rowOffsetsRef = useRef<Map<string, number>>(new Map());
   const scrollGenerationRef = useRef(0);
   const rebuildScheduledRef = useRef(false);
+  const headerCountRef = useRef(0);
+  const listLengthRef = useRef(0);
+
+  const { headerItems, listItems, footerItem } = useMemo(() => splitPinnedChrome(data), [data]);
+  headerCountRef.current = headerItems.length;
+  listLengthRef.current = listItems.length;
 
   const dataLayoutKey = useMemo(() => data.map((row) => row.key).join("\0"), [data]);
 
@@ -300,9 +333,18 @@ const MerchantDetailFlashListInner = forwardRef<
       },
       scrollToIndex: ({ index, animated = true, viewOffset = 0 }) => {
         cancelPendingScroll();
+        const listIndex = index - headerCountRef.current;
+        if (listIndex < 0) {
+          scrollRef.current?.scrollToOffset({ offset: 0, animated });
+          return;
+        }
+        if (listIndex >= listLengthRef.current) {
+          scrollRef.current?.scrollToEnd({ animated });
+          return;
+        }
         try {
           scrollRef.current?.scrollToIndex({
-            index,
+            index: listIndex,
             animated,
             viewOffset,
           });
@@ -402,7 +444,7 @@ const MerchantDetailFlashListInner = forwardRef<
         );
 
       case "info":
-        if (dark) return null;
+        if (dark) return <View style={styles.zeroCell} />;
         return (
           <StoreInfoCard
             name={merchant.name}
@@ -559,7 +601,7 @@ const MerchantDetailFlashListInner = forwardRef<
       }
 
       case "pairing_strip":
-        if (item.companions.length === 0) return null;
+        if (item.companions.length === 0) return <View style={styles.zeroCell} />;
         return (
           <View style={railInset ? { paddingLeft: railInset } : null}>
             <StoreMenuPairingSection
@@ -620,7 +662,7 @@ const MerchantDetailFlashListInner = forwardRef<
         );
 
       default:
-        return null;
+        return <View style={styles.zeroCell} />;
     }
   };
 
@@ -631,13 +673,12 @@ const MerchantDetailFlashListInner = forwardRef<
         style={[
           styles.rowShell,
           dark && styles.rowShellDark,
-          item.type === "menu_item" ? { height: MENU_ITEM_ROW_HEIGHT } : null,
+          item.type === "section_header" ? styles.sectionHeaderShell : null,
           item.type === "menu_masonry" ||
           item.type === "empty_menu" ||
           item.type === "menu_loading"
             ? styles.masonryRowShell
             : null,
-          item.type === "info" ? styles.infoRowShell : null,
         ]}
         onLayout={(event) => {
           recordRowLayout(item.key, event.nativeEvent.layout.height);
@@ -671,8 +712,73 @@ const MerchantDetailFlashListInner = forwardRef<
     ]
   );
 
+  const listHeader = useMemo(
+    () => (
+      <View collapsable={false} style={dark ? styles.headerHostDark : styles.headerHost}>
+        {headerItems.map((item) => (
+          <View
+            key={item.key}
+            collapsable={false}
+            style={[
+              styles.headerRowShell,
+              dark && styles.rowShellDark,
+              item.type === "info" ? styles.infoRowShell : null,
+              item.type === "hero"
+                ? { height: Math.max(HEADER_IMAGE_HEIGHT, heroBannerHeight) }
+                : null,
+            ]}
+            onLayout={(event) => {
+              recordRowLayout(item.key, event.nativeEvent.layout.height);
+            }}
+          >
+            {renderRow(item)}
+          </View>
+        ))}
+      </View>
+    ),
+    [
+      headerItems,
+      dark,
+      recordRowLayout,
+      heroUri,
+      heroVideoUri,
+      shouldPlayHeroVideo,
+      showHeroActions,
+      heroActions,
+      heroActionsTopPad,
+      heroActionsFadeStyle,
+      scrollY,
+      heroBannerHeight,
+      merchant,
+      merchantId,
+      isStoreClosed,
+      itemOfferById,
+    ]
+  );
+
+  const listFooter = useMemo(() => {
+    if (!footerItem) return null;
+    return (
+      <View
+        collapsable={false}
+        style={[styles.rowShell, dark && styles.rowShellDark]}
+        onLayout={(event) => {
+          recordRowLayout(footerItem.key, event.nativeEvent.layout.height);
+        }}
+      >
+        {renderRow(footerItem)}
+      </View>
+    );
+  }, [
+    footerItem,
+    dark,
+    recordRowLayout,
+    similarMerchants,
+    footerBottomPadding,
+    fssaiNumber,
+  ]);
+
   const keyExtractor = useCallback((item: MerchantFlashListItem) => item.key, []);
-  const getItemType = useCallback((item: MerchantFlashListItem) => item.type, []);
 
   return (
     <View
@@ -691,21 +797,32 @@ const MerchantDetailFlashListInner = forwardRef<
             />
           </View>
         ) : null}
-        <FlashList
+        <FlatList
           ref={scrollRef}
           style={StyleSheet.flatten([styles.list, dark && styles.listDark])}
-          data={data}
+          data={listItems}
+          ListHeaderComponent={listHeader}
+          ListFooterComponent={listFooter}
           keyExtractor={keyExtractor}
           renderItem={renderItem}
-          getItemType={getItemType}
+          extraData={{
+            highlightedMenuItemKey,
+            highlightedOfferId,
+            isStoreClosed,
+            bookmarkMenuItemIdSet,
+            itemOfferById,
+          }}
           removeClippedSubviews={false}
-          drawDistance={MENU_DRAW_DISTANCE}
-          overrideProps={{ initialDrawBatchSize: MENU_INITIAL_DRAW_BATCH }}
+          windowSize={MENU_WINDOW_SIZE}
+          initialNumToRender={MENU_INITIAL_RENDER}
+          maxToRenderPerBatch={16}
+          updateCellsBatchingPeriod={16}
+          onEndReachedThreshold={2}
           contentContainerStyle={[styles.listContent, dark && styles.listContentDark, contentContainerStyle]}
           onScroll={scrollHandler}
           scrollEventThrottle={16}
           keyboardShouldPersistTaps="always"
-          nestedScrollEnabled
+          nestedScrollEnabled={false}
           showsVerticalScrollIndicator
           bounces
           delaysContentTouches={false}
@@ -740,6 +857,19 @@ const MerchantDetailFlashListInner = forwardRef<
               resolveVisibleCategoryId(event.nativeEvent.contentOffset.y)
             );
           }}
+          onScrollToIndexFailed={(info) => {
+            const offset = Math.max(0, info.averageItemLength * info.index);
+            scrollRef.current?.scrollToOffset({ offset, animated: false });
+            requestAnimationFrame(() => {
+              if (info.index < listLengthRef.current) {
+                scrollRef.current?.scrollToIndex({
+                  index: info.index,
+                  animated: false,
+                  viewOffset: 8,
+                });
+              }
+            });
+          }}
           {...(Platform.OS === "android"
             ? { overScrollMode: onRefresh ? ("auto" as const) : ("never" as const), persistentScrollbar: false }
             : null)}
@@ -750,8 +880,8 @@ const MerchantDetailFlashListInner = forwardRef<
 });
 
 /**
- * Virtualized menu host — only on-screen rows mount. Memo so cart qty updates do not
- * reconcile the whole list (rows subscribe to cart themselves).
+ * Virtualized menu host — nearby rows stay mounted so fling never shows a blank gap.
+ * Memo so cart qty updates do not reconcile the whole list (rows subscribe to cart themselves).
  */
 export const MerchantDetailFlashList = React.memo(MerchantDetailFlashListInner);
 
@@ -759,7 +889,7 @@ const styles = StyleSheet.create({
   listHost: {
     flex: 1,
     zIndex: 0,
-    backgroundColor: GatiMitraColors.softBackground,
+    backgroundColor: StoreTheme.background,
   },
   listHostDark: {
     backgroundColor: MerchantDarkPalette.bg,
@@ -769,7 +899,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     minHeight: 0,
     minWidth: 0,
-    overflow: "hidden",
+    overflow: "visible",
   },
   railColumn: {
     width: CATEGORY_RAIL_WIDTH,
@@ -785,21 +915,39 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     zIndex: 0,
-    backgroundColor: GatiMitraColors.softBackground,
+    backgroundColor: StoreTheme.background,
   },
   listDark: {
     backgroundColor: MerchantDarkPalette.bg,
   },
   listContent: {
-    backgroundColor: GatiMitraColors.softBackground,
+    backgroundColor: StoreTheme.background,
     paddingBottom: 8,
   },
   listContentDark: {
     backgroundColor: MerchantDarkPalette.bg,
   },
-  rowShell: {
-    backgroundColor: GatiMitraColors.softBackground,
+  headerHost: {
+    backgroundColor: StoreTheme.background,
     overflow: "visible",
+  },
+  headerHostDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+  },
+  headerRowShell: {
+    backgroundColor: StoreTheme.background,
+    overflow: "visible",
+  },
+  zeroCell: {
+    height: 0,
+    overflow: "hidden",
+  },
+  sectionHeaderShell: {
+    minHeight: 40,
+  },
+  rowShell: {
+    backgroundColor: StoreTheme.background,
+    overflow: "hidden",
     zIndex: 1,
   },
   rowShellDark: {

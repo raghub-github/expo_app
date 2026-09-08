@@ -16,12 +16,6 @@ const DEFAULT_WHILE_LOADING: GeoEnabledServices = {
   parcels: true,
 };
 
-const ALL_DISABLED: GeoEnabledServices = {
-  food: false,
-  ride: false,
-  parcels: false,
-};
-
 /** Stable React Query key — pincode-first; coords bucketed ~110m like merchants. */
 export function geoServicesQueryKey(args: {
   pincode?: string | null;
@@ -77,9 +71,9 @@ export function useGeoServiceAvailability(args: {
   });
 
   const enabledServices: GeoEnabledServices = (() => {
-    if (!canQuery) return ALL_DISABLED;
+    if (!canQuery) return DEFAULT_WHILE_LOADING;
     if (query.isLoading && !query.data) return DEFAULT_WHILE_LOADING;
-    if (!query.data) return ALL_DISABLED;
+    if (!query.data) return DEFAULT_WHILE_LOADING;
     // Main home / tab bar: use coverage* so Prevent Services does not grey out
     // tiles — user can enter the inner page, where ServiceBlockedGateHost runs.
     // On error, keepPreviousData still supplies last successful coverage.

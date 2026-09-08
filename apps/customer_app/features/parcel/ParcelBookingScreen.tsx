@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   Pressable,
   Image,
+  ScrollView,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
@@ -26,13 +27,25 @@ import { profileService } from "@/services/profile.service";
 import { resolveRideImage } from "@/features/ride/rideOptionAssets";
 import { ParcelGuidelinesBottomSheet } from "./ParcelGuidelinesBottomSheet";
 import { ParcelProhibitedItemsBottomSheet } from "./ParcelProhibitedItemsBottomSheet";
-import { useParcelBookingStore } from "./parcelBookingStore";
+import { useParcelBookingStore, type ParcelStop } from "./parcelBookingStore";
 import { useOrderStore } from "@/store/orderStore";
 import { FLOATING_CART_BAR_HEIGHT } from "@/constants/layout";
+import { RideJourneyShortcuts } from "@/features/ride/RideJourneyShortcuts";
+import { useRecentLocationStore, visibleRecentJourneys, type RideJourney } from "@/store/recentLocationStore";
 
 const HERO_MINT = GatiMitraColors.mintSoft;
 /** Space for the global parcel track pill between Continue and legal links. */
 const TRACK_FOOTER_SLOT = FLOATING_CART_BAR_HEIGHT + 10;
+
+function stopToPlace(stop: ParcelStop, kind: "pickup" | "drop") {
+  return {
+    latitude: stop.latitude,
+    longitude: stop.longitude,
+    primary: stop.primary,
+    fullAddress: stop.fullAddress,
+    kind,
+  };
+}
 
 function nearCoords(
   a: { latitude: number; longitude: number },
@@ -58,6 +71,7 @@ export function ParcelBookingScreen() {
   const pickup = useParcelBookingStore((s) => s.pickup);
   const drop = useParcelBookingStore((s) => s.drop);
   const setPickup = useParcelBookingStore((s) => s.setPickup);
+  const setDrop = useParcelBookingStore((s) => s.setDrop);
   const swapStops = useParcelBookingStore((s) => s.swapStops);
   const guidelinesShown = useParcelBookingStore((s) => s.guidelinesShown);
   const markGuidelinesShown = useParcelBookingStore((s) => s.markGuidelinesShown);
@@ -67,6 +81,25 @@ export function ParcelBookingScreen() {
     (s) => s.markPreserveDraftOnNextFocus
   );
   const clearDropSession = useParcelBookingStore((s) => s.clearDropSession);
+  const recentParcelJourneys = useRecentLocationStore((s) => s.recentParcelJourneys);
+  const lastCompletedParcelJourney = useRecentLocationStore((s) => s.lastCompletedParcelJourney);
+  const pruneExpiredJourneys = useRecentLocationStore((s) => s.pruneExpiredJourneys);
+  const clearRecentParcelJourneys = useRecentLocationStore((s) => s.clearRecentParcelJourneys);
+  const favoriteParcelJourneys = useRecentLocationStore((s) => s.favoriteParcelJourneys);
+  const rememberParcelJourney = useRecentLocationStore((s) => s.rememberParcelJourney);
+  const toggleFavoriteJourney = useRecentLocationStore((s) => s.toggleFavoriteJourney);
+  const isFavoriteJourney = useRecentLocationStore((s) => s.isFavoriteJourney);
+  const hydrateRecents = useRecentLocationStore((s) => s.hydrate);
+
+  useEffect(() => {
+    void hydrateRecents();
+    pruneExpiredJourneys();
+  }, [hydrateRecents, pruneExpiredJourneys]);
+
+  const { journeys: visibleParcelRecents, clearEnabled: parcelClearEnabled } = useMemo(
+    () => visibleRecentJourneys(recentParcelJourneys, lastCompletedParcelJourney),
+    [recentParcelJourneys, lastCompletedParcelJourney]
+  );
 
   const { data: profile } = useQuery({
     queryKey: ["me", "profile", "parcel"],
@@ -161,10 +194,36 @@ export function ParcelBookingScreen() {
   const openInnerPage = useCallback(() => {
     if (!pickup || !drop) return;
     setGuidelinesOpen(false);
+    rememberParcelJourney(stopToPlace(pickup, "pickup"), stopToPlace(drop, "drop"));
     markVisitedInnerPage();
     markPreserveDraftOnNextFocus();
     router.push("/home/service/parcel-book" as never);
-  }, [pickup, drop, markVisitedInnerPage, markPreserveDraftOnNextFocus, router]);
+  }, [pickup, drop, rememberParcelJourney, markVisitedInnerPage, markPreserveDraftOnNextFocus, router]);
+
+  const applyJourney = useCallback(
+    (journey: RideJourney) => {
+      const nextPickup: ParcelStop = {
+        primary: journey.pickup.primary,
+        fullAddress: journey.pickup.fullAddress || journey.pickup.primary,
+        latitude: journey.pickup.latitude,
+        longitude: journey.pickup.longitude,
+      };
+      const nextDrop: ParcelStop = {
+        primary: journey.drop.primary,
+        fullAddress: journey.drop.fullAddress || journey.drop.primary,
+        latitude: journey.drop.latitude,
+        longitude: journey.drop.longitude,
+      };
+      setPickup(nextPickup);
+      setDrop(nextDrop);
+      rememberParcelJourney(stopToPlace(nextPickup, "pickup"), stopToPlace(nextDrop, "drop"));
+      markVisitedInnerPage();
+      markPreserveDraftOnNextFocus();
+      setGuidelinesOpen(false);
+      router.push("/home/service/parcel-book" as never);
+    },
+    [setPickup, setDrop, rememberParcelJourney, markVisitedInnerPage, markPreserveDraftOnNextFocus, router]
+  );
 
   const openTerms = () => router.push("/profile/legal/terms-of-service" as never);
 
@@ -220,6 +279,11 @@ export function ParcelBookingScreen() {
       </View>
 
       <View style={styles.body}>
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollContent}
+        >
         <View style={styles.cardWrap}>
           <View style={styles.stopsCard}>
             <StopBlock
@@ -251,7 +315,22 @@ export function ParcelBookingScreen() {
           </View>
         </View>
 
-        <View style={styles.flexGrow} />
+        <View style={styles.journeyWrap}>
+          <RideJourneyShortcuts
+            recentJourneys={visibleParcelRecents}
+            favoriteJourneys={favoriteParcelJourneys}
+            recentTitle="Recent parcels"
+            favoriteTitle="Favorite journeys"
+            onSelect={applyJourney}
+            onToggleFavorite={(journey) =>
+              toggleFavoriteJourney({ ...journey, kind: "parcel" })
+            }
+            isFavorite={(journey) => isFavoriteJourney(journey.pickup, journey.drop, "parcel")}
+            onClearRecent={clearRecentParcelJourneys}
+            clearEnabled={parcelClearEnabled}
+          />
+        </View>
+        </ScrollView>
 
         <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 14) }]}>
           {showContinue ? (
@@ -424,6 +503,14 @@ const styles = StyleSheet.create({
   },
   body: {
     flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 12,
+    flexGrow: 1,
+  },
+  journeyWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
   },
   cardWrap: {
     marginTop: -4,

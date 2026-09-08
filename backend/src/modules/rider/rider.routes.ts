@@ -1797,7 +1797,9 @@ export async function riderRoutes(app: FastifyInstance) {
         });
       }
 
-      const { getRiderActiveVehicleProfile } = await import("../../lib/order-assignment-engine.js");
+      const { getRiderActiveVehicleProfile, loadRiderGpsLastKnown } = await import(
+        "../../lib/order-assignment-engine.js"
+      );
       const { filterDispatchServicesForRiderProfile } = await import(
         "../../lib/rider-dispatch-service-rules.js"
       );
@@ -1886,14 +1888,37 @@ export async function riderRoutes(app: FastifyInstance) {
         });
       }
 
+      let dutyLat = body.lat ?? null;
+      let dutyLon = body.lon ?? null;
+      if (
+        dutyLat == null ||
+        dutyLon == null ||
+        !Number.isFinite(dutyLat) ||
+        !Number.isFinite(dutyLon) ||
+        (dutyLat === 0 && dutyLon === 0)
+      ) {
+        // GPS timeout on the toggle still has to make an already-located rider
+        // dispatchable — reuse last known point and stamp it fresh at go-ON.
+        const lastKnown = await loadRiderGpsLastKnown(riderId).catch(() => null);
+        if (
+          lastKnown &&
+          Number.isFinite(lastKnown.lat) &&
+          Number.isFinite(lastKnown.lng) &&
+          !(lastKnown.lat === 0 && lastKnown.lng === 0)
+        ) {
+          dutyLat = lastKnown.lat;
+          dutyLon = lastKnown.lng;
+        }
+      }
+
       await recordRiderDutyLog({
         riderId,
         status: "ON",
         serviceTypes: allowed as ("food" | "parcel" | "person_ride")[],
         source: "rider_app",
         deviceId,
-        lat: body.lat ?? null,
-        lon: body.lon ?? null,
+        lat: dutyLat,
+        lon: dutyLon,
         metadata: {
           trigger: "duty_toggle",
           requestedServices: dutyServices,
@@ -1901,7 +1926,7 @@ export async function riderRoutes(app: FastifyInstance) {
         },
       });
 
-      if (body.lat != null && body.lon != null && Number.isFinite(body.lat) && Number.isFinite(body.lon)) {
+      if (dutyLat != null && dutyLon != null && Number.isFinite(dutyLat) && Number.isFinite(dutyLon)) {
         // Going online must make the rider dispatchable immediately, not after the
         // next independent location-ping loop tick — write rider_current_locations
         // right here with the coordinates the toggle already received, instead of
@@ -1911,14 +1936,14 @@ export async function riderRoutes(app: FastifyInstance) {
           userId,
           riderId,
           deviceId,
-          lat: body.lat,
-          lng: body.lon,
+          lat: dutyLat,
+          lng: dutyLon,
         }).catch(() => undefined);
 
         const { resolveZoneWeather } = await import("../weather/weather.service.js");
         void resolveZoneWeather({
-          lat: body.lat,
-          lng: body.lon,
+          lat: dutyLat,
+          lng: dutyLon,
           trigger: "rider_online",
           actorId: String(riderId),
           actorType: "rider",
@@ -2066,6 +2091,11 @@ export async function riderRoutes(app: FastifyInstance) {
             onboardingProgressPct: z.number(),
             macroStepIndex: z.number(),
             paymentCompleted: z.boolean(),
+            vehicleChoice: z.string().nullable(),
+            vehicleCategoryCode: z.string().nullable(),
+            vehicleOnboardingFlow: z.string().nullable(),
+            vehicleDocsSubmittedFor: z.string().nullable(),
+            bankAccountOnboardingDone: z.boolean(),
           }),
           404: z.object({
             error: z.string(),
@@ -2162,6 +2192,11 @@ export async function riderRoutes(app: FastifyInstance) {
         onboardingProgressPct: progress.onboardingProgressPct,
         macroStepIndex: progress.macroStepIndex,
         paymentCompleted: paid,
+        vehicleChoice: progress.vehicleChoice,
+        vehicleCategoryCode: progress.vehicleCategoryCode,
+        vehicleOnboardingFlow: progress.vehicleOnboardingFlow,
+        vehicleDocsSubmittedFor: progress.vehicleDocsSubmittedFor,
+        bankAccountOnboardingDone: progress.bankAccountOnboardingDone,
       };
     },
   );

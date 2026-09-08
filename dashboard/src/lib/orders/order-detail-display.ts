@@ -351,6 +351,23 @@ export function formatFirstEtaAt(iso: string | null | undefined): string {
   });
 }
 
+/** Order-page header clock: `07 Sep 2026, 05:54:54 pm`. */
+export function formatOrderHeaderDateTime(iso: string | null | undefined): string {
+  if (!iso?.trim()) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  });
+}
+
 export function formatScheduledOrderLabel(isScheduled: boolean): string {
   return isScheduled ? "True" : "False";
 }

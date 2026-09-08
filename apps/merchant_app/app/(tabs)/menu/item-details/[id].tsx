@@ -13,6 +13,7 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { fetchMenuItem, type MenuItemDetail } from "@/services/menuApi";
+import { formatMenuSize } from "@/lib/menu-size-preset";
 import { resolveImageUrl } from "@/services/outletApi";
 
 function InfoRow({
@@ -187,14 +188,13 @@ export default function ItemDetailsScreen() {
                       <Text style={styles.badgeText}>{item.serves_label}</Text>
                     </View>
                   )}
-                  {item.item_size_value != null &&
-                    item.item_size_unit && (
+                  {formatMenuSize(item.size_preset, item.item_size_value, item.item_size_unit) ? (
                       <View style={styles.badge}>
                         <Text style={styles.badgeText}>
-                          {item.item_size_value} {item.item_size_unit}
+                          {formatMenuSize(item.size_preset, item.item_size_value, item.item_size_unit)}
                         </Text>
                       </View>
-                    )}
+                    ) : null}
                 </View>
               </View>
             </View>
@@ -246,12 +246,12 @@ export default function ItemDetailsScreen() {
                   value={item.serves_label?.trim() || `${item.serves} person(s)`}
                 />
               )}
-              {item.item_size_value != null && item.item_size_unit && (
+              {formatMenuSize(item.size_preset, item.item_size_value, item.item_size_unit) ? (
                 <InfoRow
                   label="Size"
-                  value={`${item.item_size_value} ${item.item_size_unit}`}
+                  value={formatMenuSize(item.size_preset, item.item_size_value, item.item_size_unit) ?? ""}
                 />
-              )}
+              ) : null}
               {item.allergens?.length ? (
                 <InfoRow label="Allergens" value={item.allergens.join(", ")} />
               ) : null}

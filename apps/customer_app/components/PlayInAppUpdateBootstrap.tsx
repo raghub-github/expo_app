@@ -43,40 +43,50 @@ function compareAndroidVersionCodes(storeVersion: string, curVersion: string): -
 function openPlayStoreListing() {
   const market = `market://details?id=${PACKAGE_NAME}`;
   const https = `https://play.google.com/store/apps/details?id=${PACKAGE_NAME}`;
-  void Linking.openURL(market).catch(() => Linking.openURL(https));
+  void Linking.openURL(market).catch(() => {
+    void Linking.openURL(https);
+  });
 }
+
+/** Only one update sheet in the tree. */
+let playUpdateHostToken: symbol | null = null;
 
 function PlayInAppUpdateBootstrapInner() {
   const [sheetVisible, setSheetVisible] = useState(false);
   const [storeVersionHint, setStoreVersionHint] = useState<string | null>(null);
+  const [isLeader, setIsLeader] = useState(false);
   const dismissedRef = useRef(false);
+  const sheetVisibleRef = useRef(false);
   const clientRef = useRef<InstanceType<
     typeof import("sp-react-native-in-app-updates").default
   > | null>(null);
-  const flexibleKindRef = useRef(0);
   const downloadedStatusRef = useRef(0);
   const availableStatusRef = useRef(0);
+  const hostTokenRef = useRef(Symbol("play-update-host"));
 
-  const startNativeUpdate = useCallback(async () => {
+  const openStore = useCallback(() => {
     setSheetVisible(false);
-    const client = clientRef.current;
-    if (!client) {
-      openPlayStoreListing();
-      return;
-    }
-    try {
-      await client.startUpdate({ updateType: flexibleKindRef.current });
-    } catch {
-      openPlayStoreListing();
-    }
+    sheetVisibleRef.current = false;
+    openPlayStoreListing();
   }, []);
 
   useEffect(() => {
+    if (playUpdateHostToken) return;
+    playUpdateHostToken = hostTokenRef.current;
+    setIsLeader(true);
+    return () => {
+      if (playUpdateHostToken === hostTokenRef.current) playUpdateHostToken = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isLeader) return;
     let cancelled = false;
     let statusListener: ((event: { status: number }) => void) | null = null;
 
     const promptIfNeeded = async () => {
       if (cancelled || dismissedRef.current || !clientRef.current) return;
+      if (sheetVisibleRef.current) return;
 
       const curVersionCode = resolveAndroidVersionCode();
       const result = await clientRef.current.checkNeedsUpdate({
@@ -108,6 +118,7 @@ function PlayInAppUpdateBootstrapInner() {
           Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? "";
         setStoreVersionHint(cur ? `Current · v${cur}` : null);
       }
+      sheetVisibleRef.current = true;
       setSheetVisible(true);
     };
 
@@ -116,8 +127,7 @@ function PlayInAppUpdateBootstrapInner() {
         const mod = await import("sp-react-native-in-app-updates");
         if (cancelled) return;
 
-        const { IAUUpdateKind, IAUInstallStatus, IAUAvailabilityStatus } = mod;
-        flexibleKindRef.current = IAUUpdateKind.FLEXIBLE;
+        const { IAUInstallStatus, IAUAvailabilityStatus } = mod;
         availableStatusRef.current = IAUAvailabilityStatus.AVAILABLE;
         downloadedStatusRef.current = IAUInstallStatus.DOWNLOADED;
 
@@ -160,7 +170,9 @@ function PlayInAppUpdateBootstrapInner() {
         }
       }
     };
-  }, []);
+  }, [isLeader]);
+
+  if (!isLeader) return null;
 
   return (
     <PlayUpdateAvailableSheet
@@ -171,10 +183,11 @@ function PlayInAppUpdateBootstrapInner() {
       primaryColor={GatiMitraColors.splashMint}
       onDismiss={() => {
         dismissedRef.current = true;
+        sheetVisibleRef.current = false;
         setSheetVisible(false);
       }}
-      onUpdate={() => void startNativeUpdate()}
-      onLearnMore={openPlayStoreListing}
+      onUpdate={openStore}
+      onLearnMore={openStore}
     />
   );
 }

@@ -9,6 +9,7 @@ import { BackHandler, Platform } from "react-native";
 import { useRouter, useSegments } from "expo-router";
 import {
   HOME_TAB_FALLBACK,
+  foodHomeRouterBack,
   resolveAndroidBackFallback,
   safeRouterBack,
   type SafeRouterBackFallback,
@@ -41,12 +42,12 @@ export function AndroidBackHandler({ fallback, preferFallback = false }: Android
         return true;
       }
 
-      // Food listing — always replace to tabs (opened from tab bar push; back() fails after reload).
+      // Food listing — pop to tabs when possible; replace after reload/stack reset.
       if (
         root === "home" &&
         (segments.length === 1 || segments[1] === "index")
       ) {
-        router.replace(HOME_TAB_FALLBACK);
+        foodHomeRouterBack(router);
         return true;
       }
 

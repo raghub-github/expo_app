@@ -73,16 +73,24 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import org.json.JSONObject;
 
-/** Shared boot-reconnect tray logic (receiver + MainActivity resume). */
+/** Shared store-status tray: boot reconnect + resume. Same tag as JS/FCM. */
 public final class BootReconnectHelper {
   private static final String PREFS = "gatimitra_boot_reconnect";
   private static final String PENDING_KEY = "pending";
   private static final String CHANNEL_ID = "${esc(channelId)}";
   private static final String CHANNEL_NAME = "${esc(channelName)}";
-  private static final int NOTIFICATION_ID = ${Number(notificationId) || 91001};
-  private static final String TITLE = "${esc(title)}";
-  private static final String BODY = "${esc(body)}";
+  private static final String NOTIFICATION_TAG = "merchant-store-status";
+  private static final int NOTIFICATION_ID = NOTIFICATION_TAG.hashCode();
+  private static final int LEGACY_NOTIFICATION_ID = ${Number(notificationId) || 91001};
+  private static final String DEFAULT_TITLE = "${esc(title)}";
+  private static final String DEFAULT_BODY = "${esc(body)}";
+  private static final String SESSION_FILE = "merchant_store_status_session.json";
 
   private BootReconnectHelper() {}
 
@@ -104,11 +112,23 @@ public final class BootReconnectHelper {
 
   public static boolean showNotification(Context context) {
     try {
+      JSONObject session = readSession(context);
+      if (session == null || !session.optBoolean("active", false)) {
+        android.util.Log.i("STORE_STATUS_NOTIFICATION", "action=SKIPPED reason=NO_SESSION");
+        return false;
+      }
       if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
         markPending(context);
         return false;
       }
       ensureChannel(context);
+
+      String storeName = session.optString("storeName", "").trim();
+      String storeId = String.valueOf(session.opt("storeId"));
+      String merchantId = session.optString("merchantId", "");
+      String bodyText = storeName.length() > 0
+          ? storeName + ": " + DEFAULT_BODY
+          : DEFAULT_BODY;
 
       Intent launch = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
       if (launch == null) {
@@ -116,6 +136,8 @@ public final class BootReconnectHelper {
       }
       launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
       launch.putExtra("boot_reconnect", true);
+      launch.putExtra("type", "STORE_STATUS");
+      launch.putExtra("state", "RECONNECT");
 
       int flags = PendingIntent.FLAG_UPDATE_CURRENT;
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -125,18 +147,44 @@ public final class BootReconnectHelper {
 
       NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
           .setSmallIcon(getSmallIcon(context))
-          .setContentTitle(TITLE)
-          .setContentText(BODY)
-          .setStyle(new NotificationCompat.BigTextStyle().bigText(BODY))
-          .setPriority(NotificationCompat.PRIORITY_HIGH)
-          .setCategory(NotificationCompat.CATEGORY_REMINDER)
+          .setContentTitle(DEFAULT_TITLE)
+          .setContentText(bodyText)
+          .setStyle(new NotificationCompat.BigTextStyle().bigText(bodyText))
+          .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+          .setCategory(NotificationCompat.CATEGORY_STATUS)
           .setAutoCancel(true)
+          .setSilent(true)
           .setContentIntent(contentIntent);
 
-      NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, builder.build());
+      NotificationManagerCompat.from(context).cancel(LEGACY_NOTIFICATION_ID);
+      NotificationManagerCompat.from(context).notify(NOTIFICATION_TAG, NOTIFICATION_ID, builder.build());
+      android.util.Log.i(
+          "STORE_STATUS_NOTIFICATION",
+          "merchantId=" + merchantId + " storeId=" + storeId + " storeName=" + (storeName.length() > 0 ? storeName : "Your store")
+              + " state=RECONNECT source=BOOT notificationId=" + NOTIFICATION_TAG + " action=POSTED"
+      );
       return true;
     } catch (Throwable ignored) {
       return false;
+    }
+  }
+
+  private static JSONObject readSession(Context context) {
+    try {
+      File file = new File(context.getFilesDir(), SESSION_FILE);
+      if (!file.exists()) {
+        file = new File(new File(context.getFilesDir(), "Documents"), SESSION_FILE);
+      }
+      if (!file.exists()) return null;
+      BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), "UTF-8"));
+      StringBuilder sb = new StringBuilder();
+      String line;
+      while ((line = reader.readLine()) != null) sb.append(line);
+      reader.close();
+      if (sb.length() == 0) return null;
+      return new JSONObject(sb.toString());
+    } catch (Throwable ignored) {
+      return null;
     }
   }
 
@@ -153,9 +201,11 @@ public final class BootReconnectHelper {
     NotificationChannel channel = new NotificationChannel(
         CHANNEL_ID,
         CHANNEL_NAME,
-        NotificationManager.IMPORTANCE_HIGH
+        NotificationManager.IMPORTANCE_DEFAULT
     );
-    channel.setDescription(BODY);
+    channel.setDescription(DEFAULT_BODY);
+    channel.setSound(null, null);
+    channel.enableVibration(false);
     nm.createNotificationChannel(channel);
   }
 

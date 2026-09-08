@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { STORE_KEY } from "@/hooks/useStore";
 import { useToast } from "@/context/ToastContext";
 import { useStoreMutation, type StoreProfile } from "@/hooks/useStore";
-import { useStoreProfileFull, STORE_PROFILE_FULL_KEY } from "@/hooks/useStoreProfileFull";
+import { useStoreProfileFull, STORE_PROFILE_FULL_KEY, type StoreProfileFull } from "@/hooks/useStoreProfileFull";
 import { useStoreVerificationData } from "@/hooks/useStoreVerificationData";
 import { ChangeAddressModal } from "./ChangeAddressModal";
 import { StoreProfileSkeleton } from "./StoreProfileSkeleton";
@@ -73,6 +73,49 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
 
   const startEditing = (field: string) => setEditingField(field);
   const stopEditing = () => setEditingField(null);
+
+  const handleTogglePureVeg = async (newValue: boolean) => {
+    if (!canEditProfile) {
+      toast("View-only access — editing is disabled");
+      return;
+    }
+    if (!storeId || !editData) return;
+    const oldValue = editData.is_pure_veg;
+    setEditData((d) => (d ? { ...d, is_pure_veg: newValue } : d));
+    setSavingField("is_pure_veg");
+    try {
+      const res = await fetch(`/api/merchant/stores/${storeId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ is_pure_veg: newValue }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        throw new Error(typeof data?.error === "string" ? data.error : "Failed to update Pure Veg status");
+      }
+      const saved = data?.store?.is_pure_veg;
+      if (saved !== true && saved !== false) {
+        throw new Error("Pure Veg did not save");
+      }
+      if (saved !== newValue) {
+        throw new Error("Pure Veg did not save");
+      }
+      queryClient.setQueryData(STORE_PROFILE_FULL_KEY(storeId), (prev: StoreProfileFull | undefined) => {
+        if (!prev?.store) return prev;
+        return { ...prev, store: { ...prev.store, is_pure_veg: saved } };
+      });
+      setEditData((d) => (d ? { ...d, is_pure_veg: saved } : d));
+      toast(`Store marked as ${saved ? "Pure Veg" : "Not Pure Veg"}`);
+      queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
+      queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
+    } catch (e) {
+      setEditData((d) => (d ? { ...d, is_pure_veg: oldValue } : d));
+      toast(e instanceof Error ? e.message : "Failed to update Pure Veg status");
+    } finally {
+      setSavingField(null);
+    }
+  };
 
   const handleSaveField = async (field: string) => {
     if (!canEditProfile) {
@@ -274,6 +317,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
         stopEditing={stopEditing}
         setEditData={setEditData}
         handleSaveField={handleSaveField}
+        onTogglePureVeg={handleTogglePureVeg}
         revertAlternatePhone={revertAlternatePhone}
         canStoreVerify={canStoreVerify}
         canEditProfile={canEditProfile}

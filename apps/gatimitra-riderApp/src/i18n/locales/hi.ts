@@ -101,6 +101,7 @@ export const hi= {
     terms: "जारी रखने से, आप GatiMitra की सेवा की शर्तों और गोपनीयता नीति से सहमत हैं",
     failedRequest: "OTP अनुरोध विफल रहा",
     failedVerify: "OTP सत्यापन विफल रहा",
+    highTraffic: "कृपया कुछ देर बाद फिर कोशिश करें। इस समय ट्रैफिक ज़्यादा है।",
     invalidOtp: "अमान्य OTP कोड",
     sessionExpired: "सत्र समाप्त हो गया। कृपया फिर से लॉगिन करें",
   },

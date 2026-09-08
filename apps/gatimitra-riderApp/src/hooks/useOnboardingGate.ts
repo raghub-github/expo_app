@@ -86,6 +86,47 @@ export function useOnboardingGate() {
     setData,
   ]);
 
+  // Dashboard-completed steps: copy server vehicle/bank flags into local store
+  // so payment / bank screens do not bounce the rider back to upload.
+  useEffect(() => {
+    if (!riderStatus) return;
+    const patch: Record<string, unknown> = {};
+    const serverChoice = String(riderStatus.vehicleChoice || "").trim();
+    if (serverChoice && serverChoice !== vehicleChoice) {
+      patch.vehicleChoice = serverChoice;
+    }
+    const serverCat = String(riderStatus.vehicleCategoryCode || "").trim();
+    if (serverCat) {
+      patch.vehicleCategoryCode = serverCat;
+    }
+    const serverFlow = riderStatus.vehicleOnboardingFlow;
+    if (serverFlow === "dl_rc" || serverFlow === "rental_ev" || serverFlow === "payment") {
+      if (serverFlow !== vehicleOnboardingFlow) {
+        patch.vehicleOnboardingFlow = serverFlow;
+      }
+    }
+    const serverSubmitted = String(riderStatus.vehicleDocsSubmittedFor || "").trim();
+    if (serverSubmitted && serverSubmitted !== vehicleOnboardingSubmittedFor) {
+      patch.vehicleOnboardingSubmittedFor = serverSubmitted;
+    }
+    if (riderStatus.bankAccountOnboardingDone && !bankAccountOnboardingDone) {
+      patch.bankAccountOnboardingDone = true;
+    }
+    if (Object.keys(patch).length === 0) return;
+    void setData(patch);
+  }, [
+    riderStatus?.vehicleChoice,
+    riderStatus?.vehicleCategoryCode,
+    riderStatus?.vehicleOnboardingFlow,
+    riderStatus?.vehicleDocsSubmittedFor,
+    riderStatus?.bankAccountOnboardingDone,
+    vehicleChoice,
+    vehicleOnboardingFlow,
+    vehicleOnboardingSubmittedFor,
+    bankAccountOnboardingDone,
+    setData,
+  ]);
+
   // Stale local riderId (deleted from DB) — clear cached onboarding and sign out.
   useEffect(() => {
     if (!riderNotFound || clearedStaleRiderRef.current) return;
@@ -150,10 +191,18 @@ export function useOnboardingGate() {
     if (riderNotFound) return "/(auth)/login" as const;
     if (!riderId) return "/(auth)/login" as const;
     return resolveOnboardingHref(effectiveOnboardingStatus, currentStep, serverStep, {
-      vehicleChoice,
-      vehicleOnboardingFlow,
-      vehicleOnboardingSubmittedFor,
-      bankAccountOnboardingDone,
+      vehicleChoice: vehicleChoice || riderStatus?.vehicleChoice || undefined,
+      vehicleOnboardingFlow:
+        vehicleOnboardingFlow ||
+        (riderStatus?.vehicleOnboardingFlow === "dl_rc" ||
+        riderStatus?.vehicleOnboardingFlow === "rental_ev" ||
+        riderStatus?.vehicleOnboardingFlow === "payment"
+          ? riderStatus.vehicleOnboardingFlow
+          : undefined),
+      vehicleOnboardingSubmittedFor:
+        vehicleOnboardingSubmittedFor || riderStatus?.vehicleDocsSubmittedFor || undefined,
+      bankAccountOnboardingDone:
+        bankAccountOnboardingDone || riderStatus?.bankAccountOnboardingDone,
       accountStatus: effectiveAccountStatus,
       completedOnboardingSteps,
       approvalStatus: effectiveApprovalStatus,
@@ -176,6 +225,10 @@ export function useOnboardingGate() {
     effectiveApprovalStatus,
     riderStatus?.paymentCompleted,
     referralPromptHandled,
+    riderStatus?.bankAccountOnboardingDone,
+    riderStatus?.vehicleChoice,
+    riderStatus?.vehicleOnboardingFlow,
+    riderStatus?.vehicleDocsSubmittedFor,
   ]);
 
   const canAccessTabs = canAccessHome(effectiveOnboardingStatus, effectiveAccountStatus);

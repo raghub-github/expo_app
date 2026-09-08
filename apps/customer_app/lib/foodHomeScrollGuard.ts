@@ -10,6 +10,7 @@
  * them without touching each screen.
  */
 
+import { AppState, type AppStateStatus } from "react-native";
 import {
   markCardAnimationsScrolling,
   markCardAnimationsSettled,
@@ -17,8 +18,27 @@ import {
 
 let listScrolling = false;
 let scrollEndTimer: ReturnType<typeof setTimeout> | null = null;
+let stuckScrollTimer: ReturnType<typeof setTimeout> | null = null;
 /** Bumps whenever a list drag starts — in-flight card presses compare against this. */
 let scrollGeneration = 0;
+
+/** If the app backgrounds mid-fling, onMomentumScrollEnd may never fire. */
+const STUCK_SCROLL_MS = 1600;
+
+function clearStuckTimer(): void {
+  if (stuckScrollTimer) {
+    clearTimeout(stuckScrollTimer);
+    stuckScrollTimer = null;
+  }
+}
+
+function armStuckTimer(): void {
+  clearStuckTimer();
+  stuckScrollTimer = setTimeout(() => {
+    stuckScrollTimer = null;
+    resetFoodHomeListScrollGuard();
+  }, STUCK_SCROLL_MS);
+}
 
 /** Parent list began dragging — in-flight presses should cancel. */
 export function markFoodHomeListScrollActive(): void {
@@ -29,6 +49,7 @@ export function markFoodHomeListScrollActive(): void {
     clearTimeout(scrollEndTimer);
     scrollEndTimer = null;
   }
+  armStuckTimer();
 }
 
 /** Parent list stopped — clear immediately so the next tap works on first try. */
@@ -38,6 +59,7 @@ export function markFoodHomeListScrollEnded(): void {
     clearTimeout(scrollEndTimer);
     scrollEndTimer = null;
   }
+  clearStuckTimer();
   listScrolling = false;
 }
 
@@ -48,6 +70,7 @@ export function resetFoodHomeListScrollGuard(): void {
     clearTimeout(scrollEndTimer);
     scrollEndTimer = null;
   }
+  clearStuckTimer();
   listScrolling = false;
 }
 
@@ -58,3 +81,9 @@ export function isFoodHomeListScrollActive(): boolean {
 export function getFoodHomeScrollGeneration(): number {
   return scrollGeneration;
 }
+
+AppState.addEventListener("change", (state: AppStateStatus) => {
+  if (state === "active") {
+    resetFoodHomeListScrollGuard();
+  }
+});

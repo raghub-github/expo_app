@@ -5,7 +5,7 @@
  * Explore Nearby is inserted just after the last currently-active card.
  */
 
-import { useLayoutEffect, useMemo, useEffect, useRef, useState, useCallback } from "react";
+import { useLayoutEffect, useEffect, useRef, useState, useCallback } from "react";
 import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
 import { useRouter } from "expo-router";
 import { AppAssetImage } from "@/components/AppAssetImage";
@@ -16,6 +16,7 @@ import type { CustomerAccountBlocksMap } from "@/services/customerServiceBlocks.
 import { FrozenServiceIconCircle } from "@/components/FrozenServiceIconCircle";
 import type { CustomerHomeServiceId } from "@/lib/customerHomeServiceMeta";
 import { prefetchCriticalHomeAssetImagesSync } from "@/lib/homeCriticalAssets";
+import { navigateToFoodHome } from "@/lib/navigateToFoodHome";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
 import { useServiceCardOfferPills } from "@/hooks/useServiceCardOfferPills";
 
@@ -203,6 +204,9 @@ export function orderHomeServicesWithNearbyPlacement(
   return next;
 }
 
+/** Stable 2×3 grid — matches Home reference (Food → Ride → Courier → Grocery → Nearby → Ecom). */
+const HOME_SERVICES_STABLE: ServiceItem[] = [FOOD, RIDE, PARCELS, GROCERY, NEAR_ME, ECOM];
+
 type ServiceTileProps = {
   item: ServiceItem;
   cardHeight: number;
@@ -285,6 +289,16 @@ function ServiceTile({
       ]}
       activeOpacity={enabled || isAccountBlocked ? 0.88 : 1}
       disabled={!enabled && !isAccountBlocked}
+      delayPressIn={0}
+      onPressIn={() => {
+        if (isAccountBlocked) return;
+        if (!enabled) return;
+        // Food: navigate only on press-in (same gesture). Do NOT also push on onPress —
+        // that stacked two /home screens (few stores → full list + double back).
+        if (item.id === "food") {
+          navigateToFoodHome(router);
+        }
+      }}
       onPress={() => {
         if (isAccountBlocked && accountBlockReason) {
           onAccountBlockedPress?.(
@@ -295,7 +309,12 @@ function ServiceTile({
           );
           return;
         }
-        if (enabled) router.push(item.route as never);
+        if (!enabled) return;
+        if (item.id === "food") {
+          // Already handled in onPressIn.
+          return;
+        }
+        router.push(item.route as never);
       }}
     >
       {offerPillLabel ? (
@@ -371,17 +390,7 @@ export function HomeServicesRow({
     prefetchCriticalHomeAssetImagesSync(assets);
   }, [assets]);
 
-  const services = useMemo(
-    () =>
-      orderHomeServicesWithNearbyPlacement(
-        {
-          parcelEnabled: enabledServices?.parcels === true,
-          groceryEnabled: enabledServices?.grocery === true,
-        },
-        (id) => isServiceEnabled(id, enabledServices)
-      ),
-    [enabledServices]
-  );
+  const services = HOME_SERVICES_STABLE;
 
   return (
     <View style={styles.grid}>

@@ -17,6 +17,8 @@ type Props = {
    */
   fresh?: boolean;
   onLoad?: () => void;
+  /** Image fade duration. Home tiles pass 0 so icons paint without a delayed fade. */
+  transition?: number;
 };
 
 /** Renders a CMS-managed image from backend (R2 signed / proxy), with optional bundled fallback. */
@@ -28,6 +30,7 @@ export function AppAssetImage({
   fallbackSource = null,
   fresh = false,
   onLoad,
+  transition: transitionMs,
 }: Props) {
   const rawUrl = useAppAssetsStore((s) => s.assets[assetKey]?.url ?? null);
   const proxyUrl = useAppAssetsStore((s) => s.assets[assetKey]?.proxyUrl ?? null);
@@ -98,7 +101,9 @@ export function AppAssetImage({
       }
       source={source}
       placeholder={
-        !useBundled && lastGoodUriRef.current && lastGoodUriRef.current !== uri
+        !useBundled && uri
+          ? { uri }
+          : !useBundled && lastGoodUriRef.current && lastGoodUriRef.current !== uri
           ? { uri: lastGoodUriRef.current }
           : !useBundled && uri && fallbackSource
             ? fallbackSource
@@ -109,7 +114,7 @@ export function AppAssetImage({
       contentFit={contentFit}
       cachePolicy={fresh ? "none" : "memory-disk"}
       priority="high"
-      transition={fresh ? 0 : 120}
+      transition={transitionMs ?? 0}
       accessibilityLabel={accessibilityLabel}
       onLoad={() => {
         if (uri) lastGoodUriRef.current = uri;

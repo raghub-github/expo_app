@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type ReactNode, type MouseEvent } fro
 import { CalendarClock, ChefHat, X } from "lucide-react";
 import { toast } from "sonner";
 import { SCHEDULE_OFF_REASONS } from "@/lib/merchant-schedule-off-reasons";
+import { fetchMerchantStoreApi } from "@/lib/fetch-merchant-store-api";
 
 const RUSH_DURATION_OPTIONS = [
   { minutes: 30, label: "30 min" },
@@ -86,8 +87,7 @@ export function MerchantStoreScheduleActions({
   const loadRush = useCallback(async (signal?: AbortSignal) => {
     if (!storeId) return;
     try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/rush`, {
-        credentials: "include",
+      const res = await fetchMerchantStoreApi(`/api/merchant/stores/${storeId}/rush`, {
         signal,
       });
       const data = await res.json().catch(() => ({}));

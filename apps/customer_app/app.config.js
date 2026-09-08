@@ -99,6 +99,7 @@ module.exports = {
           data: [
             { scheme: "https", host: "gatimitra.com", pathPrefix: "/address/share" },
             { scheme: "https", host: "gatimitra.com", pathPrefix: "/addr/" },
+            { scheme: "https", host: "gatimitra.com", pathPrefix: "/restaurant" },
             { scheme: "https", host: "gatimitra.com", pathPrefix: "/ref" },
             { scheme: "https", host: "gatimitra.com", pathPrefix: "/invite" },
           ],
@@ -164,7 +165,8 @@ module.exports = {
       [
         "expo-navigation-bar",
         {
-          backgroundColor: LAUNCHER_SPLASH_BG,
+          // Follow light system theme — not brand mint splash color.
+          backgroundColor: "#FFFFFF",
           barStyle: "dark",
           visibility: "visible",
           position: "relative",

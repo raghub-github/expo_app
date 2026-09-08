@@ -32,6 +32,8 @@ export default function HomeLayout() {
       <Stack.Screen
         name="index"
         options={{
+          animation: "none",
+          animationDuration: 0,
           statusBarTranslucent: true,
           statusBarHidden: false,
           statusBarStyle: barStyle,

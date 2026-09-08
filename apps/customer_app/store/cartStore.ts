@@ -30,6 +30,7 @@ export type CartItemAddon = {
   quantity: number;
   addonSizeValue?: string | null;
   addonSizeUnit?: string | null;
+  addonSizePreset?: string | null;
 };
 
 export type CartItem = {
@@ -48,6 +49,7 @@ export type CartItem = {
   variantName?: string;
   variantSizeValue?: string | null;
   variantSizeUnit?: string | null;
+  variantSizePreset?: string | null;
   addons?: CartItemAddon[];
   /** Item-level cooking / special instructions (max 100 chars). */
   specialInstructions?: string | null;

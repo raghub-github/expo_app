@@ -14,6 +14,7 @@ export * from "./gps-filter";
 export * from "./route-visibility";
 export * from "./route-geometry";
 export * from "./off-route";
+export * from "./live-navigation";
 export * from "./marker-animation";
 export * from "./debug";
 export * from "./map-runtime";

@@ -4,12 +4,22 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getObjectByKey, headObjectByKey } from "@/lib/services/r2";
+import { extractR2KeyFromProxyUrl } from "@/lib/r2-proxy-url";
 
 export const runtime = "nodejs";
 
+function proxyObjectKey(request: NextRequest): string | null {
+  const keyParam = request.nextUrl.searchParams.get("key");
+  const urlParam = request.nextUrl.searchParams.get("url");
+  const raw = (keyParam || urlParam || "").trim();
+  if (!raw) return null;
+  const unwrapped = extractR2KeyFromProxyUrl(raw);
+  return unwrapped || raw;
+}
+
 export async function HEAD(request: NextRequest) {
-  const key = request.nextUrl.searchParams.get("key");
-  if (!key || typeof key !== "string") {
+  const key = proxyObjectKey(request);
+  if (!key) {
     return new NextResponse(null, { status: 400 });
   }
 
@@ -35,8 +45,8 @@ export async function HEAD(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  const key = request.nextUrl.searchParams.get("key");
-  if (!key || typeof key !== "string") {
+  const key = proxyObjectKey(request);
+  if (!key) {
     return NextResponse.json(
       { error: "Missing key parameter" },
       { status: 400 }

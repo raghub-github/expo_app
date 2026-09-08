@@ -1,4 +1,5 @@
 import type { Addon, Customization, Variant } from "@/app/dashboard/merchants/stores/[id]/menu/menu-types";
+import { parseSizePreset } from "@/lib/menu-size-preset";
 
 /** Coerce Postgres / JSON ids (string | number) to a finite positive integer. */
 export function toFiniteMenuId(value: unknown): number | null {
@@ -21,6 +22,7 @@ export function normalizeAddonFromApi(row: Record<string, unknown>, customizatio
         ? Number(row.addon_size_value)
         : undefined,
     addon_size_unit: row.addon_size_unit != null ? String(row.addon_size_unit) : undefined,
+    size_preset: parseSizePreset(row.size_preset),
     display_order: Number(row.display_order ?? 0),
     in_stock: row.in_stock !== false,
   };

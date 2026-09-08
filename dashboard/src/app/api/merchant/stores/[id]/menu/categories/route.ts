@@ -13,6 +13,7 @@ import {
   validateCategoryCreate,
   resolveStoreTypeForMenu,
   CategoryRuleError,
+  enforceStorePlanLimits,
 } from "@/lib/db/operations/menu-category-rules";
 
 export const runtime = "nodejs";
@@ -71,6 +72,7 @@ export async function POST(
       parent_category_id: body.parent_category_id,
       cuisine_id: body.cuisine_id,
       category_name: name,
+      skipPlanLimits: true,
     });
 
     const sql = getSql();
@@ -106,6 +108,7 @@ export async function POST(
           source: "dashboard",
         });
       } catch (_) {}
+      await enforceStorePlanLimits(storeId);
       return NextResponse.json({ success: true, id: Number((row as any).id) }, { status: 201 });
     } catch (ins: unknown) {
       const msg = String((ins as Error)?.message || ins);

@@ -160,9 +160,28 @@ const nextConfig: NextConfig = {
    * Legacy :4000 / :30000 backend URLs are auto-mapped to :3000 in dev.
    */
   async rewrites() {
-    if (!merchantApiProxyTarget) return [];
+    // Never name a Next route folder `logs` — Docker `**/logs` used to drop
+    // those App Router dirs from the image (campaign per-recipient 404).
+    const notificationLogAliases = [
+      {
+        source: "/api/super-admin/notifications/logs",
+        destination: "/api/super-admin/notifications/dispatch-logs",
+      },
+      {
+        source: "/api/super-admin/notifications/logs/:path*",
+        destination: "/api/super-admin/notifications/dispatch-logs/:path*",
+      },
+      {
+        source: "/dashboard/super-admin/notifications/logs",
+        destination: "/dashboard/super-admin/notifications/dispatch-logs",
+      },
+    ];
+    if (!merchantApiProxyTarget) return notificationLogAliases;
     const base = merchantApiProxyTarget.replace(/\/+$/, "");
-    return [{ source: "/v1/:path*", destination: `${base}/v1/:path*` }];
+    return [
+      { source: "/v1/:path*", destination: `${base}/v1/:path*` },
+      ...notificationLogAliases,
+    ];
   },
 
   async redirects() {

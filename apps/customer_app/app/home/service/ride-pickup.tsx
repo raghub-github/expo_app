@@ -3,7 +3,7 @@
  * Pickup defaults to user's current address; drop field is auto-focused on entry.
  */
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, TextInput, TouchableOpacity, ScrollView, StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, Alert, InteractionManager, Keyboard } from "react-native";
@@ -13,8 +13,16 @@ import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import * as Contacts from "expo-contacts";
 import { useLocationStore } from "@/store/locationStore";
-import { useRecentLocationStore } from "@/store/recentLocationStore";
+import { RideJourneyShortcuts } from "@/features/ride/RideJourneyShortcuts";
+import {
+  useRecentLocationStore,
+  visibleRecentJourneys,
+  type RideJourney,
+} from "@/store/recentLocationStore";
 import { useFavoriteLocationsStore } from "@/store/favoriteLocationsStore";
+import { selectLatestCompletedRide } from "@/lib/lastCompletedRide";
+import { useActivePersonRideOrders } from "@/hooks/useActivePersonRideOrders";
+import { RIDE_STOPS_ENABLED } from "@/features/ride/rideStops";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreFonts } from "@/constants/storeTypography";
 import { BookingRiderSheet } from "@/features/ride/BookingRiderSheet";
@@ -252,6 +260,15 @@ export default function RidePickupScreen() {
   const getRecentLocationKeys = useRecentLocationStore((s) => s.getRecentLocationKeys);
   const hydrateRecentLocations = useRecentLocationStore((s) => s.hydrate);
   const recentLocationItems = useRecentLocationStore((s) => s.items);
+  const recentJourneys = useRecentLocationStore((s) => s.recentJourneys);
+  const lastCompletedRideJourney = useRecentLocationStore((s) => s.lastCompletedRideJourney);
+  const pruneExpiredJourneys = useRecentLocationStore((s) => s.pruneExpiredJourneys);
+  const clearRecentRideJourneys = useRecentLocationStore((s) => s.clearRecentRideJourneys);
+  const favoriteJourneys = useRecentLocationStore((s) => s.favoriteJourneys);
+  const rememberRideJourney = useRecentLocationStore((s) => s.rememberRideJourney);
+  const toggleFavoriteJourney = useRecentLocationStore((s) => s.toggleFavoriteJourney);
+  const isFavoriteJourney = useRecentLocationStore((s) => s.isFavoriteJourney);
+  const { orders: myOrders } = useActivePersonRideOrders(true);
   const hydrateFavorites = useFavoriteLocationsStore((s) => s.hydrate);
   const favoriteItems = useFavoriteLocationsStore((s) => s.items);
   const isFavorite = useFavoriteLocationsStore((s) => s.isFavorite);
@@ -372,8 +389,18 @@ export default function RidePickupScreen() {
 
   useEffect(() => {
     hydrateRecentLocations();
+    pruneExpiredJourneys();
     void hydrateFavorites();
-  }, [hydrateRecentLocations, hydrateFavorites]);
+  }, [hydrateRecentLocations, pruneExpiredJourneys, hydrateFavorites]);
+
+  const lastCompletedForRow = useMemo(
+    () => selectLatestCompletedRide(myOrders, lastCompletedRideJourney),
+    [myOrders, lastCompletedRideJourney]
+  );
+  const { journeys: visibleRecentJourneysList, clearEnabled: recentClearEnabled } = useMemo(
+    () => visibleRecentJourneys(recentJourneys, lastCompletedForRow),
+    [recentJourneys, lastCompletedForRow]
+  );
 
   useEffect(() => {
     if (restoringFromBook) return;
@@ -418,7 +445,7 @@ export default function RidePickupScreen() {
     const focusField = params.focusField;
 
     if (focusField === "add-stop") {
-      if (restoredStops.length < MAX_STOPS) {
+      if (RIDE_STOPS_ENABLED && restoredStops.length < MAX_STOPS) {
         const newId = `stop-${Date.now()}`;
         const newIndex = restoredStops.length;
         setStops([...restoredStops, { id: newId, text: "", coords: null }]);
@@ -427,6 +454,7 @@ export default function RidePickupScreen() {
         setTimeout(() => stopInputRefs.current[newId]?.focus(), 150);
       } else {
         setActiveField("drop");
+        setTimeout(() => dropInputRef.current?.focus(), 150);
       }
       return true;
     }
@@ -482,6 +510,32 @@ export default function RidePickupScreen() {
     setDropPlaceLabel("");
     setTimeout(() => dropInputRef.current?.focus(), 0);
   };
+
+  const swapPickupDrop = useCallback(() => {
+    userEditedPickupRef.current = true;
+    selectSeqRef.current++;
+    cancelInFlightSearch();
+    const nextPickupText = dropText;
+    const nextDropText = pickupText;
+    const nextPickupCoords = dropCoords;
+    const nextDropCoords = pickupCoords;
+    const nextPickupLabel = dropPlaceLabel;
+    const nextDropLabel = pickupPlaceLabel;
+    setPickupText(nextPickupText);
+    setDropText(nextDropText);
+    setPickupCoords(nextPickupCoords);
+    setDropCoords(nextDropCoords);
+    setPickupPlaceLabel(nextPickupLabel);
+    setDropPlaceLabel(nextDropLabel);
+  }, [
+    cancelInFlightSearch,
+    dropText,
+    pickupText,
+    dropCoords,
+    pickupCoords,
+    dropPlaceLabel,
+    pickupPlaceLabel,
+  ]);
 
   const displayRiderLabel = selectedRiderId === "myself" ? "For me" : guestName ? guestName : "Add a guest";
   const headerTitle =
@@ -610,6 +664,22 @@ export default function RidePickupScreen() {
 
       navigatingToBookRef.current = true;
       Keyboard.dismiss();
+      rememberRideJourney(
+        {
+          latitude: resolvedPickup.latitude,
+          longitude: resolvedPickup.longitude,
+          primary: params.pickupLabel,
+          fullAddress: pickup,
+          kind: "pickup",
+        },
+        {
+          latitude: dropCoord.latitude,
+          longitude: dropCoord.longitude,
+          primary: params.dropLabel,
+          fullAddress: dropLabel,
+          kind: "drop",
+        }
+      );
 
       const go = () => {
         try {
@@ -646,8 +716,33 @@ export default function RidePickupScreen() {
       pickupDistanceFromBookerKm,
       routeParams.bookingMode,
       routeParams.returnTo,
+      rememberRideJourney,
+      farPickupAcknowledged,
+      pickupDistanceFromBookerKm,
+      routeParams.bookingMode,
+      routeParams.returnTo,
       router,
     ]
+  );
+
+  const applyJourney = useCallback(
+    (journey: RideJourney) => {
+      userEditedPickupRef.current = true;
+      selectSeqRef.current++;
+      cancelInFlightSearch();
+      setPickupText(journey.pickup.fullAddress || journey.pickup.primary);
+      setPickupPlaceLabel(journey.pickup.primary);
+      setPickupCoords({ latitude: journey.pickup.latitude, longitude: journey.pickup.longitude });
+      setDropText(journey.drop.fullAddress || journey.drop.primary);
+      setDropPlaceLabel(journey.drop.primary);
+      setDropCoords({ latitude: journey.drop.latitude, longitude: journey.drop.longitude });
+      void navigateToRideBook(
+        journey.drop.fullAddress || journey.drop.primary,
+        { latitude: journey.drop.latitude, longitude: journey.drop.longitude },
+        journey.drop.primary
+      );
+    },
+    [cancelInFlightSearch, navigateToRideBook]
   );
 
   const applyMapPickerResult = useCallback(
@@ -785,6 +880,7 @@ export default function RidePickupScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      pruneExpiredJourneys();
       const params = routeParamsRef.current;
       const mapResult = consumeRideMapPickerResult();
       if (mapResult) {
@@ -828,7 +924,7 @@ export default function RidePickupScreen() {
       }
 
       return undefined;
-    }, [consumeRideMapPickerResult])
+    }, [consumeRideMapPickerResult, pruneExpiredJourneys])
   );
 
   useFocusEffect(
@@ -1003,7 +1099,7 @@ export default function RidePickupScreen() {
   );
 
   const handleAddStop = () => {
-    if (!canAddMoreStops) return;
+    if (!RIDE_STOPS_ENABLED || !canAddMoreStops) return;
     const id = `stop-${Date.now()}`;
     const newIndex = stops.length;
     setStops((prev) => [...prev, { id, text: "", coords: null }]);
@@ -1291,8 +1387,11 @@ export default function RidePickupScreen() {
   const showEmptyState =
     !activeLoading && activeSuggestions.length === 0 && queryReadyForSearch;
   const hasStops = stops.length > 0;
+  const showBrowseJourneys =
+    !hasStops && activeQuery.length === 0 && !activeLoading;
   const showSuggestionsSection =
-    activeLoading || listedSuggestions.length > 0 || (activeQuery.length === 0 && !activeLoading);
+    !showBrowseJourneys &&
+    (activeLoading || listedSuggestions.length > 0 || (activeQuery.length === 0 && !activeLoading));
   const showStopsInfoPanel = hasStops && !showSuggestionsSection;
   const allStopsFilled = stops.every((s) => s.text.trim());
   const pickupFilled = Boolean(pickupText.trim());
@@ -1409,6 +1508,14 @@ export default function RidePickupScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={[styles.inputCard, stops.length > 0 && styles.inputCardExpanded]}>
+            <TouchableOpacity
+              style={styles.swapBtn}
+              onPress={swapPickupDrop}
+              activeOpacity={0.85}
+              accessibilityLabel="Reverse pickup and drop"
+            >
+              <Ionicons name="swap-vertical" size={18} color="#111827" />
+            </TouchableOpacity>
             {/* Pickup row */}
             <View style={styles.locationRow}>
               <View style={styles.rowIconCol}>
@@ -1533,13 +1640,22 @@ export default function RidePickupScreen() {
               <AppText style={styles.actionPillText}>Select on map</AppText>
             </TouchableOpacity>
             {canAddMoreStops ? (
-              <TouchableOpacity style={styles.actionPill} activeOpacity={0.85} onPress={handleAddStop}>
+              <TouchableOpacity
+                style={[styles.actionPill, !RIDE_STOPS_ENABLED && styles.actionPillDisabled]}
+                activeOpacity={RIDE_STOPS_ENABLED ? 0.85 : 1}
+                disabled={!RIDE_STOPS_ENABLED}
+                onPress={handleAddStop}
+                accessibilityState={{ disabled: !RIDE_STOPS_ENABLED }}
+                accessibilityLabel="Add stops"
+              >
                 <View style={styles.addStopsIconWrap}>
-                  <View style={styles.addStopsIcon}>
+                  <View style={[styles.addStopsIcon, !RIDE_STOPS_ENABLED && styles.addStopsIconDisabled]}>
                     <Ionicons name="add" size={11} color="#FFFFFF" style={styles.addStopsPlus} />
                   </View>
                 </View>
-                <AppText style={styles.actionPillText}>Add stops</AppText>
+                <AppText style={[styles.actionPillText, !RIDE_STOPS_ENABLED && styles.actionPillTextDisabled]}>
+                  Add stops
+                </AppText>
               </TouchableOpacity>
             ) : (
               <View style={styles.actionPillPlaceholder} />
@@ -1548,7 +1664,27 @@ export default function RidePickupScreen() {
 
           <View style={styles.sectionDivider} />
 
-          {showSuggestionsSection ? (
+          {showBrowseJourneys ? (
+            <>
+              <RideJourneyShortcuts
+                recentJourneys={visibleRecentJourneysList}
+                favoriteJourneys={favoriteJourneys}
+                onSelect={applyJourney}
+                onToggleFavorite={toggleFavoriteJourney}
+                isFavorite={(journey) => isFavoriteJourney(journey.pickup, journey.drop)}
+                onClearRecent={clearRecentRideJourneys}
+                clearEnabled={recentClearEnabled}
+                recentTitle={recentClearEnabled ? "Recent rides" : "Last ride"}
+              />
+              {listedSuggestions.map((loc) =>
+                renderSuggestionRow(
+                  loc,
+                  activeField === "pickup" ? "pickup" : activeField === "drop" ? "drop" : "stop",
+                  activeStopIndex >= 0 ? activeStopIndex : undefined
+                )
+              )}
+            </>
+          ) : showSuggestionsSection ? (
             activeLoading ? (
               <LocationSearchSkeleton rows={6} />
             ) : (
@@ -1655,9 +1791,27 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 6,
     paddingHorizontal: 12,
+    paddingRight: 48,
     marginBottom: 12,
     borderWidth: 1,
     borderColor: "#E8E8E8",
+    position: "relative",
+  },
+  swapBtn: {
+    position: "absolute",
+    right: 10,
+    top: "50%",
+    marginTop: -16,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 4,
+    elevation: 3,
   },
   inputCardExpanded: {
     backgroundColor: "#FFFFFF",
@@ -1784,6 +1938,16 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "500",
     color: "#0A0A0A",
+  },
+  actionPillDisabled: {
+    opacity: 0.45,
+    backgroundColor: "#F5F5F5",
+  },
+  actionPillTextDisabled: {
+    color: "#A3A3A3",
+  },
+  addStopsIconDisabled: {
+    backgroundColor: "#A3A3A3",
   },
   addStopsIconWrap: {
     width: 16,

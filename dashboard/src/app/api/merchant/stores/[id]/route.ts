@@ -8,14 +8,14 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getSystemUserByEmail, resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
-import { getMerchantStoreById, updateMerchantStore, getLatestStoreDelistingLog } from "@/lib/db/operations/merchant-stores";
+import { getMerchantStoreById, updateMerchantStore, updateMerchantStorePureVeg, getLatestStoreDelistingLog } from "@/lib/db/operations/merchant-stores";
 import { isStoreDelisted } from "@/lib/merchants/store-delist";
 import { logFieldChange } from "@/lib/db/operations/merchant-portal-activity-logs";
 
 export const runtime = "nodejs";
 
-async function getStoreAndAccess(storeId: number) {
-  const auth = await getAuthenticatedApiUser();
+async function getStoreAndAccess(storeId: number, request?: NextRequest) {
+  const auth = await getAuthenticatedApiUser(request);
   if (!auth.ok) {
     if (auth.status === 503 || auth.status === 499) {
       return {
@@ -76,7 +76,7 @@ export async function GET(
         { status: 400 }
       );
     }
-    const access = await getStoreAndAccess(storeId);
+    const access = await getStoreAndAccess(storeId, _request);
     if (!access.allowed) {
       return NextResponse.json(
         { success: false, error: access.error },
@@ -201,7 +201,14 @@ const PATCH_NUMBER_KEYS = [
   "latitude", "longitude", "avg_preparation_time_minutes", "min_order_amount", "delivery_radius_km",
   "packaging_charge_amount",
 ] as const;
-const PATCH_BOOLEAN_KEYS = ["is_pure_veg", "accepts_online_payment", "accepts_cash"] as const;
+const PATCH_BOOLEAN_KEYS = ["accepts_online_payment", "accepts_cash"] as const;
+
+function parseOptionalBoolean(value: unknown): boolean | undefined {
+  if (value === true || value === false) return value;
+  if (value === 1 || value === "1" || value === "true" || value === "TRUE") return true;
+  if (value === 0 || value === "0" || value === "false" || value === "FALSE") return false;
+  return undefined;
+}
 
 export async function PATCH(
   request: NextRequest,
@@ -216,7 +223,7 @@ export async function PATCH(
         { status: 400 }
       );
     }
-    const access = await getStoreAndAccess(storeId);
+    const access = await getStoreAndAccess(storeId, request);
     if (!access.allowed) {
       return NextResponse.json(
         { success: false, error: access.error },
@@ -227,12 +234,20 @@ export async function PATCH(
     const changeReason = typeof body.change_reason === "string" ? body.change_reason : null;
     const data: Record<string, unknown> = {};
 
+    if (body.is_pure_veg !== undefined && parseOptionalBoolean(body.is_pure_veg) === undefined) {
+      return NextResponse.json(
+        { success: false, error: "is_pure_veg must be true or false" },
+        { status: 400 }
+      );
+    }
+    const pureVeg = parseOptionalBoolean(body.is_pure_veg);
+
     const existingPhones = Array.isArray(access.store.store_phones) ? access.store.store_phones : [];
     const primaryPhone = existingPhones[0] ?? null;
     const isAgent = access.isAgent;
 
     if (isAgent) {
-      // Agents may edit ONLY the alternate store phone. Primary is read-only.
+      // Agents may edit the alternate store phone (primary is read-only) and Pure Veg.
       let alternatePhone: string | undefined;
       if (body.alternate_phone !== undefined) {
         alternatePhone = typeof body.alternate_phone === "string" ? body.alternate_phone.trim() : "";
@@ -244,9 +259,16 @@ export async function PATCH(
         const nextPhones = alternatePhone ? [primaryPhone, alternatePhone].filter(Boolean) : (primaryPhone ? [primaryPhone] : []);
         data.store_phones = nextPhones;
       }
-      if (Object.keys(data).length === 0) {
+      if (pureVeg === undefined && Object.keys(data).length === 0) {
         return NextResponse.json(
-          { success: true, store: { id: access.store.id, store_id: access.store.store_id } }
+          {
+            success: true,
+            store: {
+              id: access.store.id,
+              store_id: access.store.store_id,
+              is_pure_veg: access.store.is_pure_veg === true,
+            },
+          }
         );
       }
     } else {
@@ -290,14 +312,40 @@ export async function PATCH(
         const v = body.gallery_images;
         data.gallery_images = Array.isArray(v) ? v.map((x: unknown) => String(x)).filter(Boolean) : undefined;
       }
-      if (Object.keys(data).length === 0) {
+      if (pureVeg === undefined && Object.keys(data).length === 0) {
         return NextResponse.json(
-          { success: true, store: { id: access.store.id, store_id: access.store.store_id } }
+          {
+            success: true,
+            store: {
+              id: access.store.id,
+              store_id: access.store.store_id,
+              is_pure_veg: access.store.is_pure_veg === true,
+            },
+          }
         );
       }
     }
 
-    const updated = await updateMerchantStore(storeId, access.areaManagerId, data as Parameters<typeof updateMerchantStore>[2]);
+    let savedPureVeg = access.store.is_pure_veg === true;
+    if (pureVeg !== undefined) {
+      const vegRow = await updateMerchantStorePureVeg(storeId, pureVeg, access.areaManagerId);
+      if (!vegRow) {
+        return NextResponse.json(
+          { success: false, error: "Failed to update Pure Veg" },
+          { status: 500 }
+        );
+      }
+      savedPureVeg = vegRow.is_pure_veg === true;
+    }
+
+    const updated =
+      Object.keys(data).length > 0
+        ? await updateMerchantStore(
+            storeId,
+            access.areaManagerId,
+            data as Parameters<typeof updateMerchantStore>[2]
+          )
+        : access.store;
     if (!updated) {
       return NextResponse.json(
         { success: false, error: "Update failed" },
@@ -309,6 +357,18 @@ export async function PATCH(
     const agentId = access.systemUserId ?? access.areaManagerId ?? null;
     const section = "profile";
     try {
+      if (pureVeg !== undefined) {
+        await logFieldChange(
+          storeId,
+          agentId,
+          section,
+          "is_pure_veg",
+          access.store.is_pure_veg,
+          savedPureVeg,
+          changeReason,
+          "update"
+        );
+      }
       for (const key of Object.keys(data)) {
         const oldVal = (access.store as unknown as Record<string, unknown>)[key];
         const newVal = (updated as unknown as Record<string, unknown>)[key];
@@ -337,6 +397,7 @@ export async function PATCH(
         store_email: updated.store_email,
         store_phones: updated.store_phones ?? null,
         city: updated.city,
+        is_pure_veg: savedPureVeg,
       },
     });
   } catch (e) {

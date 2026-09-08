@@ -7,8 +7,10 @@ import { useEffect, useState } from "react";
 import { View } from "react-native";
 import { useRouter } from "expo-router";
 import { useAuthStore } from "@/store/authStore";
-import { profileService } from "@/services/profile.service";
-import { readCachedProfile, writeCachedProfile } from "@/lib/profileCache";
+import {
+  fetchProfileWithCache,
+  readCachedProfile,
+} from "@/lib/profileCache";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 
 export default function IndexScreen() {
@@ -39,18 +41,14 @@ export default function IndexScreen() {
         } else {
           router.replace("/(onboarding)");
         }
-        // Refresh in background; don't hold the splash/spinner.
-        void profileService
-          .getProfile()
-          .then((profile) => writeCachedProfile(profile))
-          .catch(() => {});
+        // Shared in-flight with ProfilePrefetch — one GET /me/profile.
+        void fetchProfileWithCache().catch(() => {});
         return;
       }
 
       try {
-        const profile = await profileService.getProfile();
+        const profile = await fetchProfileWithCache();
         if (cancelled) return;
-        await writeCachedProfile(profile);
         if (profile?.profile_completed === true) {
           router.replace("/(tabs)/");
         } else {

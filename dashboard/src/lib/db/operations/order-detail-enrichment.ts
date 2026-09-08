@@ -94,6 +94,12 @@ export type OrderDetailEnrichment = {
    * same source as the customer app bill / store quote.
    */
   billedDistanceKm: number | null;
+  /** This order's sequence among the customer's orders (1-based). */
+  customerOrderOrdinal: number | null;
+  /** Lifetime delivered orders for this customer. */
+  customerDeliveredCount: number | null;
+  /** Lifetime cancelled orders for this customer. */
+  customerCancelledCount: number | null;
 };
 
 function asNum(v: unknown): number | null {
@@ -996,6 +1002,69 @@ async function fetchDeliveryInitiator(orderId: number): Promise<string | null> {
   }
 }
 
+async function fetchCustomerOrderStats(
+  customerId: number | null | undefined,
+  orderId: number
+): Promise<{
+  ordinal: number | null;
+  deliveredCount: number | null;
+  cancelledCount: number | null;
+}> {
+  const empty = { ordinal: null, deliveredCount: null, cancelledCount: null };
+  const cid = customerId != null ? Number(customerId) : NaN;
+  if (!Number.isFinite(cid) || cid <= 0 || !Number.isFinite(orderId) || orderId <= 0) {
+    return empty;
+  }
+  try {
+    const db = getDb();
+    // Platform-wide (all stores / food+ride+parcel): this order's rank for the user on GatiMitra.
+    const rows = await db.execute(sql`
+      SELECT t.ordinal, t.delivered_count, t.cancelled_count
+      FROM (
+        SELECT
+          oc.id,
+          ROW_NUMBER() OVER (
+            PARTITION BY oc.customer_id
+            ORDER BY COALESCE(oc.placed_at, oc.created_at) ASC NULLS LAST, oc.id ASC
+          )::int AS ordinal,
+          COUNT(*) FILTER (
+            WHERE oc.cancelled_at IS NULL
+              AND (
+                oc.actual_delivery_time IS NOT NULL
+                OR UPPER(COALESCE(oc.current_status, oc.status::text))
+                  IN ('DELIVERED', 'COMPLETED', 'COMPLETE')
+              )
+          ) OVER (PARTITION BY oc.customer_id)::int AS delivered_count,
+          COUNT(*) FILTER (
+            WHERE oc.cancelled_at IS NOT NULL
+              OR UPPER(COALESCE(oc.current_status, oc.status::text))
+                IN ('CANCELLED', 'CANCELED')
+          ) OVER (PARTITION BY oc.customer_id)::int AS cancelled_count
+        FROM orders_core oc
+        WHERE oc.customer_id = ${cid}
+      ) t
+      WHERE t.id = ${orderId}
+      LIMIT 1
+    `);
+    const row = (
+      rows as unknown as Array<{
+        ordinal?: number;
+        delivered_count?: number;
+        cancelled_count?: number;
+      }>
+    )[0];
+    if (!row) return empty;
+    return {
+      ordinal: Number(row.ordinal) || 0,
+      deliveredCount: Number(row.delivered_count) || 0,
+      cancelledCount: Number(row.cancelled_count) || 0,
+    };
+  } catch (err) {
+    console.error("[fetchCustomerOrderStats] failed", err);
+    return empty;
+  }
+}
+
 export async function getOrderDetailEnrichment(
   orderId: number
 ): Promise<OrderDetailEnrichment | null> {
@@ -1018,6 +1087,7 @@ export async function getOrderDetailEnrichment(
         trustScore: customers.trustScore,
         statusReason: customers.statusReason,
         customerDbId: customers.id,
+        customerId: ordersCore.customerId,
         accountStatus: customers.accountStatus,
       })
       .from(ordersCore)
@@ -1117,7 +1187,7 @@ export async function getOrderDetailEnrichment(
       merchantInstructionsList = buildMerchantInstructionsFromCheckout(checkout);
     }
 
-    const [etaFields, timelineExpectedAt, cancellationInfo, orderOtps, customerFeedback] =
+    const [etaFields, timelineExpectedAt, cancellationInfo, orderOtps, customerFeedback, customerStats] =
       await Promise.all([
         fetchEtaFields(orderId),
         fetchFirstTimelineExpectedAt(orderId),
@@ -1128,6 +1198,7 @@ export async function getOrderDetailEnrichment(
           deliveryOtp: null,
         })),
         getOrderCustomerFeedback(orderId),
+        fetchCustomerOrderStats(base.customerId ?? base.customerDbId ?? null, orderId),
       ]);
     const firstEtaAtIso = resolveFirstEtaAtIso({
       firstEtaAt: etaFields.first_eta_at as Date | string | null | undefined,
@@ -1256,6 +1327,9 @@ export async function getOrderDetailEnrichment(
       riderRestaurantWaitAnchorAt: riderRestaurantWait.anchorAt,
       deliveryProofImageUrl,
       billedDistanceKm: readBilledTripDistanceKm(billing, checkout),
+      customerOrderOrdinal: customerStats.ordinal,
+      customerDeliveredCount: customerStats.deliveredCount,
+      customerCancelledCount: customerStats.cancelledCount,
     };
   } catch (err) {
     console.error("[getOrderDetailEnrichment] failed for order", orderId, err);

@@ -1,14 +1,16 @@
 /**
- * Explains WHY a service is blocked for this rider (Step 5b). Opened from a blocked row in
- * the service dropdown. Read-only + advisory — it changes nothing; it turns "this service
- * is missing" into "here's exactly why, and what to do", so PREFERENCE is never mistaken
- * for ELIGIBILITY. Reasons come from the backend eligibility engine.
+ * Explains WHY a service is blocked for this rider. Opened from a locked row in
+ * the service dropdown. Dismissible — riders can close it or open DL/RC upload.
  */
 import React from "react";
-import { View, Text, Pressable, StyleSheet, ScrollView } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { BlockingBottomSheetShell } from "@/src/components/vehicle/BlockingBottomSheetShell";
-import { colors } from "@/src/theme";
+import { DismissibleBottomSheetShell } from "@/src/components/language/DismissibleBottomSheetShell";
+import { RiderFonts } from "@/src/theme/fonts";
+import {
+  SLIDE_ACTION_GREEN,
+  SLIDE_ACTION_GREEN_BORDER,
+} from "@/src/theme/slideAction";
 import type { EligibilityReason } from "@/src/lib/rider-service-eligibility-rows";
 
 type Props = {
@@ -16,83 +18,120 @@ type Props = {
   serviceLabel: string;
   reasons: EligibilityReason[];
   onClose: () => void;
+  onCheckVehicles: () => void;
 };
 
-export function ServiceEligibilityReasonSheet({ visible, serviceLabel, reasons, onClose }: Props) {
+export function ServiceEligibilityReasonSheet({
+  visible,
+  serviceLabel,
+  reasons,
+  onClose,
+  onCheckVehicles,
+}: Props) {
   return (
-    <BlockingBottomSheetShell visible={visible} maxHeightRatio={0.6}>
+    <DismissibleBottomSheetShell
+      visible={visible}
+      onDismiss={onClose}
+      maxHeightRatio={0.72}
+      fitContent
+      showFloatingClose
+      compactBottomInset
+      sheetBottomPadding={24}
+    >
       <View style={styles.content}>
         <View style={styles.iconWrap}>
           <Ionicons name="lock-closed-outline" size={26} color="#B45309" />
         </View>
+
         <Text style={styles.title}>{serviceLabel} not available yet</Text>
         <Text style={styles.subtitle}>
           You can turn this on once it&apos;s eligible. Here&apos;s what&apos;s needed:
         </Text>
 
-        <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
+        <ScrollView
+          style={styles.list}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          bounces={false}
+        >
           {reasons.map((r, i) => (
             <View key={`${r.code}-${i}`} style={styles.reasonRow}>
-              <Ionicons
-                name="alert-circle"
-                size={18}
-                color="#DC2626"
-                style={styles.reasonIcon}
-              />
-              <View style={styles.reasonTextWrap}>
-                <Text style={styles.reasonText}>{r.reason}</Text>
-                {r.requiredAction ? (
-                  <Text style={styles.actionText}>→ {r.requiredAction}</Text>
-                ) : null}
-              </View>
+              <Ionicons name="alert-circle" size={20} color="#DC2626" />
+              <Text style={styles.reasonText}>{r.reason}</Text>
             </View>
           ))}
         </ScrollView>
 
-        <Pressable
-          onPress={onClose}
-          style={({ pressed }) => [styles.btn, pressed && { opacity: 0.9 }]}
-        >
-          <Text style={styles.btnText}>Got it</Text>
-        </Pressable>
+        <View style={styles.actions}>
+          <View style={styles.primarySlot}>
+            <TouchableOpacity
+              activeOpacity={0.88}
+              onPress={onCheckVehicles}
+              style={styles.primaryBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Check your vehicles"
+            >
+              <Text style={styles.primaryBtnText} numberOfLines={1}>
+                Check your vehicles
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.secondarySlot}>
+            <TouchableOpacity
+              activeOpacity={0.88}
+              onPress={onClose}
+              style={styles.secondaryBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+            >
+              <Text style={styles.secondaryBtnText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </View>
-    </BlockingBottomSheetShell>
+    </DismissibleBottomSheetShell>
   );
 }
 
 const styles = StyleSheet.create({
   content: {
+    width: "100%",
+    alignSelf: "stretch",
     paddingHorizontal: 4,
-    paddingTop: 4,
-    paddingBottom: 6,
-    alignItems: "center",
+    paddingTop: 8,
+    paddingBottom: 4,
   },
   iconWrap: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: "#FEF3C7",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 12,
+    alignSelf: "center",
+    marginBottom: 14,
   },
   title: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#111827",
+    fontFamily: RiderFonts.poppinsExtraBold,
+    fontSize: 22,
+    lineHeight: 28,
+    color: "#0F172A",
     textAlign: "center",
-    marginBottom: 6,
+    marginBottom: 8,
   },
   subtitle: {
-    fontSize: 13.5,
+    fontFamily: RiderFonts.poppinsSemiBold,
+    fontSize: 14,
     lineHeight: 20,
-    color: "#6B7280",
+    color: "#64748B",
     textAlign: "center",
     marginBottom: 16,
+    paddingHorizontal: 8,
   },
   list: {
     alignSelf: "stretch",
-    flexGrow: 0,
+    maxHeight: 160,
+    width: "100%",
   },
   listContent: {
     paddingBottom: 4,
@@ -102,40 +141,65 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     gap: 10,
     backgroundColor: "#FEF2F2",
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     marginBottom: 8,
   },
-  reasonIcon: {
-    marginTop: 1,
-  },
-  reasonTextWrap: {
-    flex: 1,
-  },
   reasonText: {
+    flex: 1,
+    fontFamily: RiderFonts.poppinsSemiBold,
     fontSize: 14,
     lineHeight: 20,
-    fontWeight: "600",
     color: "#111827",
   },
-  actionText: {
-    fontSize: 13,
-    lineHeight: 19,
-    color: "#B91C1C",
-    marginTop: 3,
-  },
-  btn: {
+  actions: {
+    flexDirection: "row",
+    alignItems: "stretch",
     alignSelf: "stretch",
-    backgroundColor: colors.primary[500],
-    borderRadius: 14,
-    paddingVertical: 14,
-    alignItems: "center",
-    marginTop: 12,
+    width: "100%",
+    marginTop: 16,
   },
-  btnText: {
+  primarySlot: {
+    width: "70%",
+    paddingRight: 6,
+  },
+  secondarySlot: {
+    width: "30%",
+    paddingLeft: 6,
+  },
+  primaryBtn: {
+    width: "100%",
+    minHeight: 54,
+    borderRadius: 14,
+    backgroundColor: SLIDE_ACTION_GREEN,
+    borderWidth: 2,
+    borderColor: SLIDE_ACTION_GREEN_BORDER,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  primaryBtnText: {
+    fontFamily: RiderFonts.poppinsBold,
+    fontSize: 14,
+    color: "#0B1A0F",
+  },
+  secondaryBtn: {
+    width: "100%",
+    minHeight: 54,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: "#111111",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+  },
+  secondaryBtnText: {
+    fontFamily: RiderFonts.poppinsBold,
     fontSize: 15,
-    fontWeight: "700",
-    color: "#FFFFFF",
+    color: "#111827",
   },
 });

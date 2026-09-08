@@ -24,7 +24,7 @@ export function isMerchantPureVeg(merchant: {
 }): boolean {
   const blob = `${merchant.name ?? ""} ${(merchant.cuisines ?? []).join(" ")}`;
   if (textLooksNonVeg(blob)) return false;
-  if (merchant.isPureVeg === false) return false;
+  // "Pure Veg restaurants only" is fail-closed: missing/unknown flags are mixed.
   return merchant.isPureVeg === true;
 }
 

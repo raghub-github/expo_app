@@ -27,6 +27,8 @@ type Props = {
   rideName: string;
   pickupLabel: string;
   dropLabel: string;
+  /** Customer-added intermediate stops (max 2). Hidden when empty. */
+  stops?: { label?: string; address?: string }[];
   tripKm?: number;
   pickupDistanceKm?: number | null;
   routeEtaMins?: number | null;
@@ -196,6 +198,7 @@ export function RideSearchingBottomSheet({
   rideName,
   pickupLabel,
   dropLabel,
+  stops = [],
   tripKm,
   pickupDistanceKm,
   routeEtaMins,
@@ -223,6 +226,18 @@ export function RideSearchingBottomSheet({
   const mitraSathiPool = activeMitraSathiCount ?? nearbyRidersCount;
   const showStrike =
     listFare != null && Number.isFinite(listFare) && Number.isFinite(fare) && listFare > fare;
+  const routePoints = [
+    { key: "pickup", kind: "pickup" as const, label: "Pickup", address: pickupLabel },
+    ...stops
+      .map((stop, index) => ({
+        key: `stop-${index}`,
+        kind: "stop" as const,
+        label: stop.label?.trim() || `Stop ${index + 1}`,
+        address: stop.address?.trim() || stop.label?.trim() || `Stop ${index + 1}`,
+      }))
+      .filter((stop) => stop.address.trim().length > 0),
+    { key: "drop", kind: "drop" as const, label: "Drop", address: dropLabel },
+  ];
 
   return (
     <View style={[styles.sheet, { paddingBottom: Math.max(8, bottomInset) }]}>
@@ -326,23 +341,30 @@ export function RideSearchingBottomSheet({
             <View style={styles.routeCard}>
               <View style={styles.routeLeftCol}>
                 <View style={styles.routeStepper}>
-                  <View style={styles.routeDotGreen} />
-                  <View style={styles.routeStepLine} />
-                  <View style={styles.routeDotRed} />
+                  {routePoints.map((point, index) => (
+                    <View key={`${point.key}-rail`} style={styles.routeStepperItem}>
+                      <View
+                        style={
+                          point.kind === "pickup"
+                            ? styles.routeDotGreen
+                            : point.kind === "drop"
+                              ? styles.routeDotRed
+                              : styles.routeDotAmber
+                        }
+                      />
+                      {index < routePoints.length - 1 ? <View style={styles.routeStepLine} /> : null}
+                    </View>
+                  ))}
                 </View>
                 <View style={styles.routeAddrCol}>
-                  <View style={styles.routeStopBlock}>
-                    <AppText style={styles.routeStopLabel}>Pickup</AppText>
-                    <AppText style={styles.routeStopAddr} numberOfLines={2}>
-                      {truncateText(pickupLabel, 48)}
-                    </AppText>
-                  </View>
-                  <View style={styles.routeStopBlock}>
-                    <AppText style={styles.routeStopLabel}>Drop</AppText>
-                    <AppText style={styles.routeStopAddr} numberOfLines={2}>
-                      {truncateText(dropLabel, 48)}
-                    </AppText>
-                  </View>
+                  {routePoints.map((point) => (
+                    <View key={point.key} style={styles.routeStopBlock}>
+                      <AppText style={styles.routeStopLabel}>{point.label}</AppText>
+                      <AppText style={styles.routeStopAddr} numberOfLines={2}>
+                        {truncateText(point.address, 48)}
+                      </AppText>
+                    </View>
+                  ))}
                 </View>
               </View>
 
@@ -710,12 +732,18 @@ const styles = StyleSheet.create({
   },
   routeStepper: {
     alignItems: "center",
-    paddingTop: 14,
+    alignSelf: "stretch",
+    paddingTop: 6,
     width: 10,
+  },
+  routeStepperItem: {
+    alignItems: "center",
+    flex: 1,
   },
   routeStepLine: {
     width: 2,
-    height: 22,
+    flex: 1,
+    minHeight: 16,
     backgroundColor: "#CBD5E1",
     marginVertical: 3,
   },
@@ -778,6 +806,12 @@ const styles = StyleSheet.create({
     height: 9,
     borderRadius: 5,
     backgroundColor: "#EF4444",
+  },
+  routeDotAmber: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: "#F59E0B",
   },
   actionRow: {
     flexDirection: "row",

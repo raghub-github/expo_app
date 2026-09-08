@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, Star } from "lucide-react";
 import {
   isStoreOperationallyOpen,
@@ -70,6 +70,16 @@ interface MerchantProfile {
 const STORE_STATUS_PILL =
   "inline-flex items-center rounded px-1 py-px text-[9px] font-semibold leading-none border";
 
+function latchAppInstalled(
+  prev: boolean | null | undefined,
+  incoming: unknown,
+): boolean | null {
+  if (prev === true || incoming === true) return true;
+  if (incoming === false) return false;
+  if (typeof prev === "boolean") return prev;
+  return null;
+}
+
 export default function MerchantDetails({
   merchant,
   initialProfile,
@@ -84,6 +94,8 @@ export default function MerchantDetails({
   const [showPhoneModal, setShowPhoneModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const initialProfileRef = useRef(initialProfile);
+  initialProfileRef.current = initialProfile;
 
   useEffect(() => {
     if (!storeId) {
@@ -91,13 +103,9 @@ export default function MerchantDetails({
       return;
     }
 
-    // Show cached/summary profile immediately; always refresh for live fields (app install).
-    if (initialProfile) {
-      setProfile(initialProfile);
-      setLoading(false);
-    } else {
-      setLoading(true);
-    }
+    const seed = initialProfileRef.current ?? null;
+    setProfile(seed);
+    if (!seed) setLoading(true);
 
     let cancelled = false;
 
@@ -124,7 +132,6 @@ export default function MerchantDetails({
       .then((body) => {
         if (cancelled) return;
         if (!body?.success || !body.store) {
-          if (!initialProfile) setProfile(null);
           return;
         }
         const store = body.store as any;
@@ -143,7 +150,7 @@ export default function MerchantDetails({
             }
           : null;
 
-        setProfile({
+        setProfile((prev) => ({
           parentMerchantId: store.parent_merchant_id ?? null,
           parentName: store.parent_name ?? null,
           storeCode: store.store_id ?? null,
@@ -177,11 +184,11 @@ export default function MerchantDetails({
           is_available: store.is_available ?? null,
           deleted_at: store.deleted_at ?? null,
           delisted_at: store.delisted_at ?? null,
-          appInstalled: Boolean(body.app_installed),
-        });
+          appInstalled: latchAppInstalled(prev?.appInstalled, body.app_installed),
+        }));
       })
       .catch(() => {
-        if (!cancelled && !initialProfile) setProfile(null);
+        // Keep the last known profile (including a confirmed install).
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -190,7 +197,7 @@ export default function MerchantDetails({
     return () => {
       cancelled = true;
     };
-  }, [storeId, initialProfile]);
+  }, [storeId]);
 
   const parentId = merchant.parentId ?? null;
 
@@ -198,6 +205,9 @@ export default function MerchantDetails({
     merchant.pickupLat != null && merchant.pickupLon != null
       ? `${merchant.pickupLat}, ${merchant.pickupLon}`
       : null;
+
+  const appInstalledKnown = typeof profile?.appInstalled === "boolean";
+  const appInstalled = profile?.appInstalled === true;
 
   const handleViewOnMap = () => {
     if (!pickupLatLon) return;
@@ -278,15 +288,21 @@ export default function MerchantDetails({
             <span>Mx Details</span>
           </span>
         </span>
-        <span
-          className={
-            profile?.appInstalled
-              ? "text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded-full whitespace-nowrap"
-              : "text-[11px] font-medium text-rose-600 bg-rose-50 border border-rose-100 px-1.5 py-0.5 rounded-full whitespace-nowrap"
-          }
-        >
-          {profile?.appInstalled ? "App Installed" : "App Not Installed"}
-        </span>
+        {appInstalledKnown ? (
+          <span
+            className={
+              appInstalled
+                ? "text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded-full whitespace-nowrap"
+                : "text-[11px] font-medium text-rose-600 bg-rose-50 border border-rose-100 px-1.5 py-0.5 rounded-full whitespace-nowrap"
+            }
+          >
+            {appInstalled ? "App Installed" : "App Not Installed"}
+          </span>
+        ) : (
+          <span className="invisible text-[11px] font-medium px-1.5 py-0.5 whitespace-nowrap">
+            App Not Installed
+          </span>
+        )}
       </div>
 
       {/* Body */}

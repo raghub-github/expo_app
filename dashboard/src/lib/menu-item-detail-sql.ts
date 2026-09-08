@@ -19,7 +19,7 @@ export async function fetchAddonsForCustomization(
   try {
     return (await sql`
       SELECT id, addon_id, addon_name, addon_price::text, addon_image_url,
-             addon_size_value::text, addon_size_unit, display_order, in_stock
+             addon_size_value::text, addon_size_unit, size_preset, display_order, in_stock
       FROM merchant_menu_item_addons
       WHERE customization_id = ${customizationId}
       ORDER BY display_order ASC, id ASC
@@ -45,7 +45,7 @@ export async function fetchVariantsForMenuItems(
   try {
     return (await sql`
       SELECT menu_item_id, id, variant_id, variant_name, variant_type, variant_price::text,
-             variant_size_value::text, variant_size_unit,
+             variant_size_value::text, variant_size_unit, size_preset,
              is_default, display_order, in_stock
       FROM merchant_menu_item_variants
       WHERE menu_item_id = ANY(${menuItemIds}::bigint[])
@@ -70,7 +70,7 @@ export async function fetchVariantsForMenuItem(
   try {
     return (await sql`
       SELECT id, variant_id, variant_name, variant_type, variant_price::text,
-             variant_size_value::text, variant_size_unit,
+             variant_size_value::text, variant_size_unit, size_preset,
              is_default, display_order, in_stock
       FROM merchant_menu_item_variants
       WHERE menu_item_id = ${menuItemId}
@@ -112,7 +112,7 @@ export async function fetchCustomizationsForMenuItems(
   try {
     flatAddons = (await sql`
       SELECT customization_id, id, addon_id, addon_name, addon_price::text, addon_image_url,
-             addon_size_value::text, addon_size_unit, display_order, in_stock
+             addon_size_value::text, addon_size_unit, size_preset, display_order, in_stock
       FROM merchant_menu_item_addons
       WHERE customization_id = ANY(${customizationIds}::bigint[])
       ORDER BY customization_id ASC, display_order ASC, id ASC
@@ -149,6 +149,7 @@ export async function fetchCustomizationsForMenuItems(
           ? Number(o.addon_size_value)
           : null,
       addon_size_unit: o.addon_size_unit ?? null,
+      size_preset: o.size_preset ?? null,
       display_order: o.display_order ?? 0,
       in_stock: o.in_stock ?? true,
     }));

@@ -228,12 +228,13 @@ export function FoodHomeFilterRow({
 
 const styles = StyleSheet.create({
   wrap: {
-    paddingBottom: 10,
+    paddingTop: 0,
+    paddingBottom: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "rgba(0, 0, 0, 0.06)",
   },
   wrapCompact: {
-    paddingBottom: 6,
+    paddingBottom: 4,
   },
   chipsScroll: {
     flexGrow: 0,

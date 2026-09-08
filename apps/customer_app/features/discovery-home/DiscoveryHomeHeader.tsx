@@ -3,7 +3,7 @@
  * dark search bar, VEG toggle.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, TouchableOpacity, StyleSheet, Platform } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
@@ -22,6 +22,7 @@ import { useWalletBalance } from "@/hooks/useWalletBalance";
 import { walletBalanceFallback } from "@/lib/walletBalanceCache";
 import { markWalletEntrySource } from "@/store/walletChromeStore";
 import { DiscoveryColors, DISCOVERY_PAGE_PAD } from "./discoveryTheme";
+import type { VegPopoverAnchor } from "@/components/home/VegModePopover";
 
 const PLACEHOLDERS = [
   "Search for delivery outlets near you...",
@@ -49,6 +50,7 @@ type Props = {
   onSearchPress: () => void;
   vegOnly: boolean;
   onVegChange: (value: boolean) => void;
+  onOpenVegPopover?: (anchor: VegPopoverAnchor) => void;
   topInset?: number;
 };
 
@@ -59,11 +61,13 @@ export function DiscoveryHomeHeader({
   onSearchPress,
   vegOnly,
   onVegChange,
+  onOpenVegPopover,
   topInset = 0,
 }: Props) {
   const router = useRouter();
   const balanceQ = useWalletBalance();
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
+  const vegToggleRef = useRef<View>(null);
   const micScale = useSharedValue(1);
   const isScreenFocused = useIsFocused();
 
@@ -168,16 +172,43 @@ export function DiscoveryHomeHeader({
           </Animated.View>
         </TouchableOpacity>
 
-        <View style={styles.vegCol}>
-          <AppText style={styles.vegLabel}>VEG</AppText>
+        <View ref={vegToggleRef} collapsable={false}>
           <TouchableOpacity
-            style={[styles.vegTrack, vegOnly && styles.vegTrackOn]}
-            onPress={() => onVegChange(!vegOnly)}
+            style={styles.vegCol}
+            onPress={() => {
+              if (vegOnly) {
+                onVegChange(false);
+                return;
+              }
+              if (onOpenVegPopover) {
+                requestAnimationFrame(() => {
+                  vegToggleRef.current?.measureInWindow((x, y, width, height) => {
+                    onOpenVegPopover({
+                      x,
+                      y,
+                      width: width || 42,
+                      height: height || 36,
+                    });
+                  });
+                });
+                return;
+              }
+              onVegChange(true);
+            }}
             activeOpacity={0.85}
+            delayPressIn={0}
             accessibilityRole="switch"
             accessibilityState={{ checked: vegOnly }}
           >
-            <View style={[styles.vegThumb, vegOnly && styles.vegThumbOn]} />
+            <View style={styles.vegLabelBadge}>
+              <AppText style={styles.vegLabel}>VEG</AppText>
+            </View>
+            <View
+              style={[styles.vegTrack, vegOnly && styles.vegTrackOn]}
+              pointerEvents="none"
+            >
+              <View style={[styles.vegThumb, vegOnly && styles.vegThumbOn]} />
+            </View>
           </TouchableOpacity>
         </View>
       </View>
@@ -284,20 +315,29 @@ const styles = StyleSheet.create({
     color: "#8E8E8E",
   },
   vegCol: {
-    width: 36,
+    minWidth: 42,
     alignItems: "center",
     gap: 4,
+    paddingHorizontal: 2,
+  },
+  vegLabelBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: "rgba(255, 255, 255, 0.94)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.98)",
   },
   vegLabel: {
     fontSize: 10,
     fontWeight: "800",
-    color: DiscoveryColors.text,
+    color: "#374151",
     letterSpacing: 0.6,
   },
   vegTrack: {
-    width: 34,
-    height: 18,
-    borderRadius: 9,
+    width: 38,
+    height: 20,
+    borderRadius: 10,
     backgroundColor: "#4B4B4B",
     padding: 2,
     justifyContent: "center",
@@ -306,9 +346,9 @@ const styles = StyleSheet.create({
     backgroundColor: DiscoveryColors.veg,
   },
   vegThumb: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
     backgroundColor: "#FFFFFF",
     ...(Platform.OS === "ios"
       ? {

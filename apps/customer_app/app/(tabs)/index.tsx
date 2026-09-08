@@ -4,7 +4,16 @@
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { View, StyleSheet, ScrollView, RefreshControl, StatusBar as NativeStatusBar, Platform } from "react-native";
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+  StatusBar as NativeStatusBar,
+  Platform,
+  AppState,
+  type AppStateStatus,
+} from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -17,12 +26,10 @@ import { HomeServicesRow } from "@/components/home/HomeServicesRow";
 import { HomeBrandBanner } from "@/components/home/HomeBrandBanner";
 import { WeatherDetailsSheet } from "@/components/weather";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
-import { prefetchAddresses } from "@/hooks/useAddresses";
 import { resolveHomeLocationPrimary, resolveHomeWeatherQueryParams } from "@/lib/weather-location";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useHomeScreenLayout } from "@/hooks/useHomeScreenLayout";
 import {
-  prefetchFeaturedOffersHome,
   useFeaturedOffersHome,
 } from "@/hooks/useFeaturedOffersHome";
 import { normalizeOfferLocationParams } from "@/lib/featuredOfferGeo";
@@ -32,6 +39,9 @@ import { useNearbyGroceryAvailability } from "@/hooks/useNearbyGroceryAvailabili
 import { useCustomerServiceBlocks, CUSTOMER_SERVICE_BLOCKS_QUERY_KEY } from "@/hooks/useCustomerServiceBlocks";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { useCustomerServiceBlockSheetStore } from "@/store/customerServiceBlockSheetStore";
+import { prioritizeVisibleMerchantBanners } from "@/lib/prefetchMerchantBanners";
+import { resetFoodHomeListScrollGuard } from "@/lib/foodHomeScrollGuard";
+import { warmFoodHomeEntry } from "@/lib/navigateToFoodHome";
 
 const PAGE_BG = GatiMitraColors.softBackground;
 const STATUS_CHROME = GatiMitraColors.softBackground;
@@ -41,6 +51,8 @@ export default function HomeScreen() {
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
   const [weatherSheetVisible, setWeatherSheetVisible] = useState(false);
+  /** Remount service grid after idle/resume — Android ScrollView+RefreshControl can eat taps. */
+  const [servicesTouchEpoch, setServicesTouchEpoch] = useState(0);
   const openBlockSheet = useCustomerServiceBlockSheetStore((s) => s.open);
   // Throttle the on-focus service-blocks refetch: returning to Home (e.g. rapid tab
   // toggling) previously fired a network invalidation + re-render every single time.
@@ -85,8 +97,8 @@ export default function HomeScreen() {
   }, [locationHydrated, reconcileReady, locationSource, coords, requestPermissionAndFetch]);
 
   useEffect(() => {
-    void prefetchAddresses(queryClient);
-  }, [queryClient]);
+    warmFoodHomeEntry();
+  }, []);
 
   const isPincode = (value?: string | null) => !!value && /^\d{6}$/.test(value.trim());
   const fullParts = (address?.fullAddress ?? "")
@@ -139,11 +151,7 @@ export default function HomeScreen() {
     ]
   );
 
-  useEffect(() => {
-    if (!locationHydrated) return;
-    void prefetchFeaturedOffersHome(queryClient, offerLocationParams);
-  }, [locationHydrated, offerLocationParams, queryClient]);
-
+  // FeaturedOffersPrefetch already warms home offers; this hook only observes.
   const { data: featuredOffersData } = useFeaturedOffersHome(
     offerLocationParams,
     locationHydrated
@@ -168,6 +176,10 @@ export default function HomeScreen() {
           hideStatusBarSpacer: false,
         });
       }
+      resetFoodHomeListScrollGuard();
+      // Only remount tiles after idle resume via AppState — not every focus (avoids UI flash).
+      prioritizeVisibleMerchantBanners(12);
+      warmFoodHomeEntry();
       const now = Date.now();
       if (now - lastBlocksRefetchRef.current > 60_000) {
         lastBlocksRefetchRef.current = now;
@@ -178,6 +190,16 @@ export default function HomeScreen() {
       }
     }, [queryClient])
   );
+
+  useEffect(() => {
+    const onAppState = (state: AppStateStatus) => {
+      if (state !== "active") return;
+      resetFoodHomeListScrollGuard();
+      setServicesTouchEpoch((n) => n + 1);
+    };
+    const sub = AppState.addEventListener("change", onAppState);
+    return () => sub.remove();
+  }, []);
 
   return (
     <View style={styles.container}>
@@ -202,7 +224,11 @@ export default function HomeScreen() {
         ]}
         scrollEnabled={false}
         bounces={false}
+        overScrollMode="never"
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="always"
+        nestedScrollEnabled
+        removeClippedSubviews={false}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -220,6 +246,7 @@ export default function HomeScreen() {
         />
 
         <HomeServicesRow
+          key={`home-services-${servicesTouchEpoch}`}
           cardHeight={serviceCardH}
           enabledServices={homeEnabledServices}
           accountBlocks={accountBlocks}

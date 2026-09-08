@@ -616,6 +616,7 @@ export default function MealsUnderPriceScreen() {
       variantName?: string;
       variantSizeValue?: string | null;
       variantSizeUnit?: string | null;
+      variantSizePreset?: string | null;
       addons?: Array<{
         addonId: string;
         customizationId?: string;
@@ -624,6 +625,7 @@ export default function MealsUnderPriceScreen() {
         quantity: number;
         addonSizeValue?: string | null;
         addonSizeUnit?: string | null;
+        addonSizePreset?: string | null;
       }>;
       imageUrl?: string | null;
       specialInstructions?: string | null;
@@ -642,6 +644,7 @@ export default function MealsUnderPriceScreen() {
           variantName: params.variantName,
           variantSizeValue: params.variantSizeValue,
           variantSizeUnit: params.variantSizeUnit,
+          variantSizePreset: params.variantSizePreset,
           addons: params.addons,
           imageUrl: params.imageUrl ?? customizationItem?.imageUrl ?? null,
           specialInstructions: params.specialInstructions ?? null,

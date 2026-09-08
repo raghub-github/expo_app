@@ -234,9 +234,12 @@ async function getUserPermissionsFromDb(systemUserId: number): Promise<Permissio
  * Get complete user permissions including roles, permissions, and domain access
  * This is the main function called by middleware and API routes
  */
-// Request-level cache for permissions
+// Process-local cache + single-flight: CX home fires 5+ APIs at once; each used
+// to hit system_users in parallel and 503 when the pool/compile storm lagged.
 const permissionsCache = new Map<string, { data: UserPermissions | null; timestamp: number }>();
-const PERMISSIONS_CACHE_TTL = 2000; // 2 seconds cache per request
+const permsInFlight = new Map<string, Promise<UserPermissions | null>>();
+const PERMISSIONS_CACHE_TTL = 30_000;
+const PERMISSIONS_MISS_TTL = 400;
 
 /** Clear in-memory permissions cache (call after superadmin access grants change). */
 export function clearPermissionsCache(opts?: { supabaseAuthId?: string | null; email?: string | null }) {
@@ -247,7 +250,7 @@ export function clearPermissionsCache(opts?: { supabaseAuthId?: string | null; e
     return;
   }
   for (const key of permissionsCache.keys()) {
-    if (authId && key.includes(`perms:${authId}:`)) {
+    if (authId && (key === `perms:${authId}` || key.includes(`perms:${authId}:`))) {
       permissionsCache.delete(key);
       continue;
     }
@@ -257,28 +260,79 @@ export function clearPermissionsCache(opts?: { supabaseAuthId?: string | null; e
   }
 }
 
+function permissionsFlightKey(supabaseAuthId: string, email?: string | null): string {
+  const id = supabaseAuthId.trim();
+  if (id) return `perms:${id}`;
+  return `perms:email:${(email || "").trim().toLowerCase()}`;
+}
+
+function cachedSuperAdminPerms(authId: string): UserPermissions | null {
+  const cached = peekDashboardIdentity(authId);
+  if (!cached || cached.primaryRole !== "SUPER_ADMIN") return null;
+  return {
+    systemUserId: cached.systemUserNumericId || 0,
+    canTogglePortal: true,
+    roles: [],
+    permissions: [],
+    domainAccess: [],
+    isSuperAdmin: true,
+  };
+}
+
 export async function getUserPermissions(
   supabaseAuthId: string,
   email?: string | null
 ): Promise<UserPermissions | null> {
-  try {
-    // Validate that we have at least one identifier
-    if (!email && !supabaseAuthId) {
-      return null;
+  if (!email && !supabaseAuthId) {
+    return null;
+  }
+
+  const flightKey = permissionsFlightKey(supabaseAuthId, email);
+  const now = Date.now();
+  const cached = permissionsCache.get(flightKey);
+  if (cached) {
+    const ttl = cached.data ? PERMISSIONS_CACHE_TTL : PERMISSIONS_MISS_TTL;
+    if (now - cached.timestamp < ttl) {
+      return cached.data;
     }
-    
+  }
+
+  const inflight = permsInFlight.get(flightKey);
+  if (inflight) return inflight;
+
+  const promise = loadUserPermissions(supabaseAuthId, email, flightKey).finally(() => {
+    permsInFlight.delete(flightKey);
+  });
+  permsInFlight.set(flightKey, promise);
+  return promise;
+}
+
+/** Super-admin gate: retry + identity-cache so a DB blip does not 503 the whole CX home page. */
+export async function getSuperAdminPermissions(
+  supabaseAuthId: string,
+  email?: string | null
+): Promise<UserPermissions | null> {
+  const first = await getUserPermissions(supabaseAuthId, email);
+  if (first) return first;
+  const fromCache = cachedSuperAdminPerms(supabaseAuthId);
+  if (fromCache) return fromCache;
+  await new Promise((r) => setTimeout(r, 200));
+  const cached = peekDashboardIdentity(supabaseAuthId);
+  return getUserPermissions(supabaseAuthId, email || cached?.email || "");
+}
+
+async function loadUserPermissions(
+  supabaseAuthId: string,
+  email: string | null | undefined,
+  cacheKey: string
+): Promise<UserPermissions | null> {
+  try {
     let resolvedEmail = (email || "").trim();
     if (!resolvedEmail.includes("@") && supabaseAuthId?.trim()) {
       resolvedEmail = peekDashboardIdentity(supabaseAuthId)?.email ?? "";
     }
 
-    // Check request-level cache
-    const cacheKey = `perms:${supabaseAuthId}:${resolvedEmail || email || ""}`;
-    const cached = permissionsCache.get(cacheKey);
     const now = Date.now();
-    if (cached && (now - cached.timestamp) < PERMISSIONS_CACHE_TTL) {
-      return cached.data;
-    }
     
     // 1. Resolve system user: unique index on system_user_id (auth uid) first, then email
     let systemUser =
@@ -303,6 +357,8 @@ export async function getUserPermissions(
       }
     }
     if (!systemUser) {
+      const cachedAdmin = cachedSuperAdminPerms(supabaseAuthId);
+      if (cachedAdmin) return cachedAdmin;
       // Do not cache a miss when email was absent — cookie JWT often omits it.
       if (resolvedEmail || email?.trim()) {
         permissionsCache.set(cacheKey, { data: null, timestamp: now });
@@ -361,11 +417,10 @@ export async function getUserPermissions(
     
     return result;
   } catch (error) {
-    // Only log actual errors in development
-    if (process.env.NODE_ENV === 'development') {
+    if (process.env.NODE_ENV === "development") {
       console.error("[getUserPermissions] Error:", error);
     }
-    return null;
+    return cachedSuperAdminPerms(supabaseAuthId);
   }
 }
 

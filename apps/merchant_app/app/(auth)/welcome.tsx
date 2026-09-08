@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, Pressable, ImageBackground, Dimensions, Animated, Linking } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, Redirect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraMerchant, BUTTON_RADIUS, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
 import { useAppAssetUrl } from "@/store/appAssetsStore";
 import { MX_WELCOME_SLIDE_KEYS } from "@/lib/appAssetKeys";
+import { useAuth } from "@/context/AuthContext";
+import { MerchantBootstrapScreen } from "@/components/MerchantBootstrapScreen";
 
 const { width, height } = Dimensions.get("window");
 const SLIDE_INTERVAL_MS = 4000;
@@ -16,6 +18,7 @@ const BOTTOM_SECTION_HEIGHT = 140;
 export default function WelcomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { authState } = useAuth();
   const slide0 = useAppAssetUrl(MX_WELCOME_SLIDE_KEYS[0]);
   const slide1 = useAppAssetUrl(MX_WELCOME_SLIDE_KEYS[1]);
   const slide2 = useAppAssetUrl(MX_WELCOME_SLIDE_KEYS[2]);
@@ -65,6 +68,13 @@ export default function WelcomeScreen() {
   };
 
   const legalUrls = getPartnerLegalUrls();
+
+  if (authState.status === "loading") {
+    return <MerchantBootstrapScreen />;
+  }
+  if (authState.status === "authenticated") {
+    return <Redirect href="/" />;
+  }
 
   return (
     <View style={[styles.container, { paddingTop: Math.max(insets.top, SAFE_AREA_TOP_MIN) }]}>

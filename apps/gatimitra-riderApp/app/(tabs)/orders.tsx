@@ -58,9 +58,9 @@ import { extractApiErrorMessage } from "@/src/services/http";
 import { shouldSkipCoalescedFix, COALESCE_IDLE_HOME_MOVE_M, COALESCE_IDLE_HOME_HEADING_DEG, type CoalesceFixSnapshot } from "@/src/lib/coalesceLocationUi";
 import { useHomeMapLocationStore } from "@/src/stores/homeMapLocationStore";
 import { HomeDutyMap } from "@/src/components/home/HomeDutyMap";
+import { mapLog } from "@/src/lib/map-debug";
+import { isUsableMapCoordinate, readLatestRiderGps, rememberMapCameraCenter } from "@/src/lib/readLatestRiderGps";
 
-/** Demand heatmap may use a slightly stale fix; map pin stays on a stricter gate. */
-const DEMAND_FIX_MAX_AGE_MS = 5 * 60_000;
 /** Screen/demand re-render threshold — coarser than the map pin store. */
 const DEMAND_SCREEN_MIN_MOVE_M = 40;
 const DEMAND_SCREEN_MIN_HEADING_DEG = 25;
@@ -346,15 +346,10 @@ export default function OrdersScreen() {
   const rawFixPreview = state.status === "tracking" ? state.lastFix : undefined;
   if (rawFixPreview) stickyFixRef.current = rawFixPreview;
   /**
-   * Demand zones accept a slightly older sticky fix so the HDZ banner stays useful
-   * while GPS watch briefly stalls.
+   * Keep the last GPS for the HDZ banner while ON duty. Do not drop it on
+   * Date.now() checks in render — that remounts the panel and looks like a reload.
    */
-  const demandFix =
-    stickyFixRef.current &&
-    Number.isFinite(stickyFixRef.current.tsMs) &&
-    Date.now() - stickyFixRef.current.tsMs <= DEMAND_FIX_MAX_AGE_MS
-      ? stickyFixRef.current
-      : undefined;
+  const demandFix = stickyFixRef.current;
 
   // Real backend H3 hot zones — the SINGLE source for both the map layer and the side panel.
   // The legacy store-cluster "demand zones" (a shop being online) are retired as a hot-zone
@@ -428,6 +423,9 @@ export default function OrdersScreen() {
               atMs: now,
             };
             stickyFixRef.current = nextFix;
+            if (isUsableMapCoordinate(nextFix.lat, nextFix.lng)) {
+              rememberMapCameraCenter(nextFix.lat, nextFix.lng);
+            }
             useHomeMapLocationStore.getState().setFix({
               lat: parseFloat(nextFix.lat.toFixed(7)),
               lng: parseFloat(nextFix.lng.toFixed(7)),
@@ -438,8 +436,7 @@ export default function OrdersScreen() {
             });
           }
         } else if (next.status !== "tracking") {
-          lastEmittedFixRef.current = null;
-          useHomeMapLocationStore.getState().setFix(null);
+          // Keep the last pin. Idle/restart must not blank the home map.
         }
 
         setState((prev) => {
@@ -558,7 +555,31 @@ export default function OrdersScreen() {
   }, [isOnDuty, t, tracker]);
 
   useEffect(() => {
-    const needsWatch = homeFocused && (isOnDuty || activeOrders.length > 0);
+    const seed = readLatestRiderGps();
+    if (seed && isUsableMapCoordinate(seed.lat, seed.lng)) {
+      useHomeMapLocationStore.getState().setFix({
+        lat: parseFloat(seed.lat.toFixed(7)),
+        lng: parseFloat(seed.lng.toFixed(7)),
+        accuracyM: seed.accuracyM,
+        speedMps: seed.speedMps,
+        heading: seed.headingDeg,
+        tsMs: seed.tsMs,
+      });
+      mapLog("LOCATION", {
+        lat: seed.lat,
+        lng: seed.lng,
+        accuracy: seed.accuracyM ?? null,
+        timestamp: seed.tsMs,
+        source: "seed",
+      });
+    }
+  }, []);
+
+  // Keep the shared GPS watch while on duty or in an active order — even if this
+  // tab is blurred under Active Ride. Stopping on blur dropped the last fix and
+  // left the next map on Mapbox's world view until the location button was pressed.
+  useEffect(() => {
+    const needsWatch = isOnDuty || activeOrders.length > 0;
     if (!needsWatch) {
       void tracker.stop();
       return;
@@ -567,7 +588,7 @@ export default function OrdersScreen() {
     return () => {
       void tracker.stop();
     };
-  }, [tracker, isOnDuty, activeOrders.length, homeFocused]);
+  }, [tracker, isOnDuty, activeOrders.length]);
 
   // Foreground resume: refresh without tearing down the shared watch (keeps last fix).
   useEffect(() => {
@@ -613,6 +634,7 @@ export default function OrdersScreen() {
   }, [tracker]);
 
   const handleRecenter = useCallback(() => {
+    mapLog("MAP_CAMERA", { action: "RECENTER", reason: "USER_BUTTON", screen: "HOME" });
     mapRef.current?.recenter();
     if (state.status !== "tracking") void tracker.start();
   }, [state.status, tracker]);
@@ -790,11 +812,11 @@ export default function OrdersScreen() {
         <MapRightControls
           onRecenter={handleRecenter}
           showOffDutyBanner={showOffDutyBanner}
-          hasDemandZonesDock={homeChrome.showHighDemandSection}
+          hasDemandZonesDock={isOnDuty && !homeChrome.hasActiveOrder}
           showActiveRideFab={homeChrome.showActiveRideFab}
         />
 
-        {homeChrome.showHighDemandSection ? (
+        {isOnDuty && !homeChrome.hasActiveOrder ? (
           <View style={styles.demandHost} pointerEvents="box-none">
             <HighDemandZonesPanel
               visible

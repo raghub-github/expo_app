@@ -53,6 +53,8 @@ export function BlockingBottomSheetShell({
       ? Math.max(280, winH - keyboardHeight - insets.top - 12)
       : maxH;
 
+  if (!visible) return null;
+
   return (
     <Modal
       visible={visible}

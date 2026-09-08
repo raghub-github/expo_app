@@ -180,6 +180,51 @@ async function probeApplied(file: string): Promise<boolean> {
         WHERE table_schema = 'public'
           AND table_name = 'merchant_store_competitor_refresh_meta'
       ) AS ok`,
+    "0606_customer_veg_mode_preferences.sql": `
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'customer_veg_mode_preferences'
+      ) AS ok`,
+    "0607_admin_cx_order_delivered_rate_templates.sql": `
+      SELECT EXISTS (
+        SELECT 1 FROM public.notification_templates
+        WHERE code = 'ADMIN_CX_ORDER_DELIVERED_DE' AND locale = 'en'
+      ) AND EXISTS (
+        SELECT 1 FROM public.notification_templates
+        WHERE code = 'ADMIN_CX_ORDER_DELIVERED_SP' AND locale = 'en'
+      ) AS ok`,
+    "0608_pure_veg_store_filter.sql": `
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname = 'get_nearby_merchant_stores'
+          AND pg_get_functiondef(p.oid) ILIKE '%ms.is_pure_veg%'
+          AND pg_get_functiondef(p.oid) ILIKE '%pure veg%'
+      ) AS ok`,
+    "0604_cust_orders_menu_report_titles.sql": `
+      SELECT (
+        SELECT COUNT(*)
+        FROM public.ticket_titles tt
+        JOIN public.ticket_groups tg ON tg.id = tt.group_id
+        WHERE tg.group_code = 'CUST_ORDERS'
+          AND tt.is_active = TRUE
+          AND NULLIF(trim(tt.intake_unified_title), '') IS NOT NULL
+          AND (
+            tt.title_code IN (
+              'CUST_MENU_INACCURATE_PHOTOS',
+              'CUST_MENU_ITEMS_MISSING',
+              'CUST_MENU_OTHER_ISSUE'
+            )
+            OR lower(trim(tt.title_text)) IN (
+              'inaccurate photos or descriptions',
+              'items missing from the menu',
+              'other issue'
+            )
+          )
+      ) >= 3 AS ok`,
   };
   const q = probes[file];
   if (!q) return false;

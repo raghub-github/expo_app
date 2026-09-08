@@ -84,6 +84,7 @@ export interface Addon {
   addon_image_url?: string;
   addon_size_value?: number | null;
   addon_size_unit?: string | null;
+  size_preset?: import("@/lib/menu-size-preset").SizePreset | null;
   in_stock?: boolean;
   display_order?: number;
 }
@@ -111,6 +112,7 @@ export interface Variant {
   /** Optional portion size or range (e.g. 500 or 1500-1700). */
   variant_size_value?: string | number | null;
   variant_size_unit?: string | null;
+  size_preset?: import("@/lib/menu-size-preset").SizePreset | null;
   price_difference?: number;
   in_stock?: boolean;
   display_order?: number;
@@ -156,6 +158,7 @@ export interface MenuItem {
   serves_label?: string | null;
   item_size_value?: number | null;
   item_size_unit?: string | null;
+  size_preset?: import("@/lib/menu-size-preset").SizePreset | null;
   available_for_delivery?: boolean;
   weight_per_serving?: number | null;
   weight_per_serving_unit?: string | null;

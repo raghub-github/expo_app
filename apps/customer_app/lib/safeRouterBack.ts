@@ -46,8 +46,17 @@ export function checkoutRouterBack(
   router.replace(HOME_TAB_FALLBACK);
 }
 
-/** Food listing at /home — return to main tabs (avoid GO_BACK when stack was reset). */
-export function foodHomeRouterBack(router: Pick<Router, "replace">): void {
+/**
+ * Food listing at /home — prefer a real stack pop (first tap works after push from tabs).
+ * Fall back to replace when the stack was reset / reloaded and canGoBack is false.
+ */
+export function foodHomeRouterBack(
+  router: Pick<Router, "back" | "canGoBack" | "replace">
+): void {
+  if (typeof router.canGoBack === "function" && router.canGoBack()) {
+    router.back();
+    return;
+  }
   router.replace(HOME_TAB_FALLBACK);
 }
 

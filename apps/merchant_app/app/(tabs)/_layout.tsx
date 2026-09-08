@@ -177,14 +177,18 @@ function MerchantTabsShell() {
 }
 
 export default function TabsLayout() {
-  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const { authState, isAuthenticated } = useAuth();
   const { selectedStore, isStoreReady } = useSelectedStore();
 
-  if (authLoading || (isAuthenticated && !isStoreReady)) {
+  if (authState.status === "loading" || (isAuthenticated && !isStoreReady)) {
     return <MerchantBootstrapScreen />;
   }
 
-  if (isAuthenticated && !selectedStore) {
+  if (authState.status !== "authenticated") {
+    return <Redirect href="/(auth)/welcome" />;
+  }
+
+  if (!selectedStore) {
     return <Redirect href="/(auth)/partner-home" />;
   }
 

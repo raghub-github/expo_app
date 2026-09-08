@@ -103,12 +103,20 @@ export async function clearCachedProfile(): Promise<void> {
   }
 }
 
+let profileInFlight: Promise<UserProfile> | null = null;
+
 export async function fetchProfileWithCache(): Promise<UserProfile> {
-  const { profileService } = await import("@/services/profile.service");
-  const profile = await profileService.getProfile();
-  await writeCachedProfile(profile);
-  prefetchEmailAvatar(profile);
-  return profile;
+  if (profileInFlight) return profileInFlight;
+  profileInFlight = (async () => {
+    const { profileService } = await import("@/services/profile.service");
+    const profile = await profileService.getProfile();
+    await writeCachedProfile(profile);
+    prefetchEmailAvatar(profile);
+    return profile;
+  })().finally(() => {
+    profileInFlight = null;
+  });
+  return profileInFlight;
 }
 
 export async function hydrateProfileCache(queryClient: QueryClient): Promise<UserProfile | undefined> {

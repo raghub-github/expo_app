@@ -26,11 +26,11 @@ import {
   isWithinSupportHours,
   resolveRiderIdentityForSupport,
 } from "@/src/lib/team-leader-support";
-import { colors } from "@/src/theme";
+import { colors, RIDER_AUTH_BG } from "@/src/theme";
 
 const TEAL = colors.primary[600];
 const TEAL_DARK = "#0F766E";
-const SCREEN_BG = "#F4F6F8";
+const SCREEN_BG = RIDER_AUTH_BG;
 const CARD_RADIUS = 22;
 const CARD_BORDER = "#CBD5E1";
 

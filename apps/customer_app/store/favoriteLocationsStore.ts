@@ -1,12 +1,13 @@
 /**
  * Favorite / hearted locations — shared across food, ride, and parcel search.
- * Persisted locally (no DB migration). Synced into recent locations when toggled on.
+ * Local cache + /v1/me/saved-places upsert on heart.
  */
 
 import { create } from "zustand";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { fastGetString, fastSetString, hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
+import { fastGetString, fastRemove, fastSetString, hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
+import { savedPlacesService } from "@/services/savedPlaces.service";
 
 const STORAGE_KEY = "gm.favoriteLocations.v1";
 const MAX_FAVORITES = 40;
@@ -55,6 +56,8 @@ type FavoriteLocationsState = {
   isFavorite: (lat: number, lng: number, primary?: string) => boolean;
   toggleFavorite: (place: Omit<FavoriteLocation, "savedAt">) => boolean;
   removeFavorite: (lat: number, lng: number, primary?: string) => void;
+  mergeFromServer: (items: FavoriteLocation[]) => void;
+  reset: () => void;
 };
 
 function persist(items: FavoriteLocation[]) {
@@ -106,12 +109,14 @@ export const useFavoriteLocationsStore = create<FavoriteLocationsState>((set, ge
       const next = existing.filter((_, i) => i !== idx);
       set({ items: next });
       persist(next);
+      savedPlacesService.deleteLocation(place.latitude, place.longitude);
       return false;
     }
     const item: FavoriteLocation = { ...place, savedAt: Date.now() };
     const next = [item, ...existing].slice(0, MAX_FAVORITES);
     set({ items: next });
     persist(next);
+    savedPlacesService.upsertLocation(item);
     useRecentLocationStore.getState().addRecentLocation({
       latitude: place.latitude,
       longitude: place.longitude,
@@ -126,5 +131,32 @@ export const useFavoriteLocationsStore = create<FavoriteLocationsState>((set, ge
     const next = get().items.filter((item) => !isSameFavorite(item, lat, lng, primary));
     set({ items: next });
     persist(next);
+    savedPlacesService.deleteLocation(lat, lng);
+  },
+
+  mergeFromServer: (incoming) => {
+    const valid = incoming.filter(
+      (item) =>
+        Number.isFinite(item.latitude) &&
+        Number.isFinite(item.longitude) &&
+        String(item.primary ?? "").trim().length > 0
+    );
+    if (valid.length === 0) return;
+    set((state) => {
+      const map = new Map<string, FavoriteLocation>();
+      for (const item of valid) map.set(coordKey(item.latitude, item.longitude), item);
+      for (const item of state.items) {
+        const key = coordKey(item.latitude, item.longitude);
+        if (!map.has(key)) map.set(key, item);
+      }
+      const next = Array.from(map.values()).slice(0, MAX_FAVORITES);
+      persist(next);
+      return { items: next, hydrated: true };
+    });
+  },
+
+  reset: () => {
+    set({ items: [], hydrated: false });
+    fastRemove(STORAGE_KEY);
   },
 }));

@@ -15,7 +15,6 @@ import {
   CUSTOMIZATION_TYPES,
   CUSTOMIZATION_VARIANT_LIMIT,
   SERVES_OPTIONS,
-  SIZE_UNITS,
   WEIGHT_PER_SERVING_UNITS,
   NUTRIENT_UNITS,
   normalizeSpiceLevelForForm,
@@ -24,6 +23,9 @@ import {
 import { toFiniteMenuId } from "@/lib/menu-customization-normalize";
 import { normalizeMenuItemImageFile } from "@/lib/menuItemImageValidationClient";
 import { variantSizeValueForInput } from "@/lib/menu-variant-size";
+import { MenuFormZipSlider } from "./MenuFormZipSlider";
+import { SizeTypeFields } from "./SizeTypeFields";
+import type { SizePreset } from "@/lib/menu-size-preset";
 
 export interface ItemFormData {
   item_name: string;
@@ -53,6 +55,7 @@ export interface ItemFormData {
   serves_label: string;
   item_size_value: string;
   item_size_unit: string;
+  size_preset: SizePreset | null;
   /** Same semantics as merchant app / backend `merchant_menu_items`. */
   available_for_delivery: boolean;
   weight_per_serving: string;
@@ -199,6 +202,7 @@ export function MenuItemForm({
   const [addonImageUploading, setAddonImageUploading] = useState<number | null>(null);
   const [addonImageError, setAddonImageError] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const formScrollRef = useRef<HTMLDivElement>(null);
   const [linkedAddonGroups, setLinkedAddonGroups] = useState<{ id: number; modifier_group_id: number; group?: { title: string; options_count?: number } }[]>([]);
   const [showLinkAddonPicker, setShowLinkAddonPicker] = useState(false);
   const [allGroupsForPicker, setAllGroupsForPicker] = useState<{ id: number; title: string; options_count: number; used_in_items_count: number }[]>([]);
@@ -555,26 +559,49 @@ export function MenuItemForm({
   };
 
   const handleAddAddon = (custIndex: number) => {
-    const updated = [...customizations];
-    const cust = updated[custIndex];
-    const addons = cust.addons || [];
-    addons.push({
-      addon_id: "",
-      customization_id: cust.id ?? 0,
-      addon_name: `Addon ${addons.length + 1}`,
-      addon_price: null,
-      display_order: addons.length,
+    setFormData((prev) => {
+      const list = [...(prev.customizations ?? [])];
+      const cust = list[custIndex];
+      if (!cust) return prev;
+      const addons = [...(cust.addons || [])];
+      addons.push({
+        addon_id: "",
+        customization_id: cust.id ?? 0,
+        addon_name: `Addon ${addons.length + 1}`,
+        addon_price: null,
+        display_order: addons.length,
+        size_preset: null,
+      });
+      list[custIndex] = { ...cust, addons };
+      return {
+        ...prev,
+        customizations: list,
+        has_customizations: true,
+        has_addons: true,
+      };
     });
-    updated[custIndex] = { ...cust, addons };
-    patchCustomizations(updated);
   };
 
   const handleUpdateAddon = (custIndex: number, addonIndex: number, field: string, value: unknown) => {
-    const updated = [...customizations];
-    const addons = [...(updated[custIndex].addons || [])];
-    addons[addonIndex] = { ...addons[addonIndex], [field]: value };
-    updated[custIndex] = { ...updated[custIndex], addons };
-    patchCustomizations(updated);
+    handlePatchAddon(custIndex, addonIndex, { [field]: value } as Partial<Addon>);
+  };
+
+  const handlePatchAddon = (custIndex: number, addonIndex: number, patch: Partial<Addon>) => {
+    setFormData((prev) => {
+      const list = [...(prev.customizations ?? [])];
+      const group = list[custIndex];
+      if (!group) return prev;
+      const addons = [...(group.addons || [])];
+      if (!addons[addonIndex]) return prev;
+      addons[addonIndex] = { ...addons[addonIndex], ...patch };
+      list[custIndex] = { ...group, addons };
+      return {
+        ...prev,
+        customizations: list,
+        has_customizations: list.length > 0,
+        has_addons: list.some((c) => (c.addons?.length ?? 0) > 0),
+      };
+    });
   };
 
   const handleUploadAddonImage = async (
@@ -688,8 +715,8 @@ export function MenuItemForm({
   const lockOptionsTab = Boolean(onSaveAndNext) && !currentItemId;
 
   return (
-    <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl mx-2 md:mx-0 border border-gray-100">
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
+    <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl mx-2 md:mx-0 border border-gray-100 max-h-[90vh] flex flex-col">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100 shrink-0">
         <div>
           <h2 className="text-base font-bold text-gray-900">{title}</h2>
           <p className="text-xs text-gray-500">
@@ -705,7 +732,7 @@ export function MenuItemForm({
         </button>
       </div>
 
-      <div className="flex border-b border-gray-200">
+      <div className="flex border-b border-gray-200 shrink-0">
         <button
           type="button"
           onClick={() => setActiveSection("main")}
@@ -737,8 +764,10 @@ export function MenuItemForm({
         </button>
       </div>
 
+      <div className="flex flex-1 min-h-0">
       <div
-        className="px-4 py-3 max-h-[70vh] overflow-y-auto"
+        ref={formScrollRef}
+        className="px-4 py-3 flex-1 min-h-0 overflow-y-auto menu-item-form-zip-scroll"
         onKeyDown={(e) => {
           if (e.key !== "Enter") return;
           const tag = (e.target as HTMLElement).tagName;
@@ -1209,81 +1238,59 @@ export function MenuItemForm({
               </div>
               ) : null}
               {isGrocery ? (
-              <div>
-                <label className="text-xs font-medium text-gray-600">Item size</label>
-                <div className="flex gap-1.5">
-                  <input
-                    type="number"
-                    min={0}
-                    className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
-                    value={formData.item_size_value}
-                    onChange={(e) => setFormData({ ...formData, item_size_value: e.target.value })}
-                    placeholder="e.g. 500"
-                  />
-                  <select
-                    className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
-                    value={formData.item_size_unit}
-                    onChange={(e) => setFormData({ ...formData, item_size_unit: e.target.value })}
-                  >
-                    <option value="">Unit</option>
-                    {SIZE_UNITS.map((u) => (
-                      <option key={u} value={u}>
-                        {u}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div className="col-span-full overflow-x-auto">
+                <SizeTypeFields
+                  sizePreset={formData.size_preset}
+                  sizeValue={formData.item_size_value}
+                  sizeUnit={formData.item_size_unit}
+                  onChange={(next) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      size_preset: next.size_preset,
+                      item_size_value: next.size_value,
+                      item_size_unit: next.size_unit,
+                    }))
+                  }
+                />
               </div>
               ) : null}
               {showFoodAttrs ? (
-              <>
-              <div>
-                <label className="text-xs font-medium text-gray-600">Serves (label)</label>
-                <select
-                  className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
-                  value={formData.serves_label || ""}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      serves_label: e.target.value,
-                      serves: e.target.value ? Number((e.target.value.match(/\d+/) || ["1"])[0]) : formData.serves,
-                    })
-                  }
-                >
-                  <option value="">Select serves</option>
-                  {SERVES_OPTIONS.map((opt) => (
-                    <option key={opt} value={opt}>
-                      {opt}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-xs font-medium text-gray-600">Item size</label>
-                <div className="flex gap-1.5">
-                  <input
-                    type="number"
-                    min={0}
-                    className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
-                    value={formData.item_size_value}
-                    onChange={(e) => setFormData({ ...formData, item_size_value: e.target.value })}
-                    placeholder="e.g. 500"
-                  />
+              <div className="col-span-full flex flex-nowrap items-end gap-2 overflow-x-auto">
+                <div className="w-[160px] shrink-0">
+                  <label className="text-xs font-medium text-gray-600 block mb-0.5 whitespace-nowrap">Serves (label)</label>
                   <select
-                    className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
-                    value={formData.item_size_unit}
-                    onChange={(e) => setFormData({ ...formData, item_size_unit: e.target.value })}
+                    className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                    value={formData.serves_label || ""}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        serves_label: e.target.value,
+                        serves: e.target.value ? Number((e.target.value.match(/\d+/) || ["1"])[0]) : formData.serves,
+                      })
+                    }
                   >
-                    <option value="">Unit</option>
-                    {SIZE_UNITS.map((u) => (
-                      <option key={u} value={u}>
-                        {u}
+                    <option value="">Select serves</option>
+                    {SERVES_OPTIONS.map((opt) => (
+                      <option key={opt} value={opt}>
+                        {opt}
                       </option>
                     ))}
                   </select>
                 </div>
+                <SizeTypeFields
+                  sizePreset={formData.size_preset}
+                  sizeValue={formData.item_size_value}
+                  sizeUnit={formData.item_size_unit}
+                  onChange={(next) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      size_preset: next.size_preset,
+                      item_size_value: next.size_value,
+                      item_size_unit: next.size_unit,
+                    }))
+                  }
+                />
               </div>
-              </>
               ) : null}
             </div>
             {showFoodAttrs ? (
@@ -1752,7 +1759,7 @@ export function MenuItemForm({
                           return (
                             <div
                               key={`addon-${addonPk ?? `new-${addonIndex}`}`}
-                              className="flex flex-wrap items-start gap-2 py-1"
+                              className="flex flex-nowrap items-end gap-1.5 py-1 min-w-0 overflow-x-auto"
                             >
                               <div className="relative shrink-0">
                                 {storeId ? (
@@ -1848,19 +1855,19 @@ export function MenuItemForm({
                               </div>
                               <input
                                 type="text"
-                                className="flex-1 min-w-[120px] px-2 py-1 border border-gray-200 rounded text-xs"
+                                className="w-[140px] shrink-0 px-2 py-1 border border-gray-200 rounded text-xs"
                                 value={addon.addon_name}
                                 onChange={(e) =>
                                   handleUpdateAddon(custIndex, addonIndex, "addon_name", e.target.value)
                                 }
                                 placeholder="Add-on name"
                               />
-                              <span className="text-gray-500 text-xs self-center">₹</span>
+                              <span className="text-gray-500 text-xs self-center shrink-0">₹</span>
                               <input
                                 type="number"
                                 min={0}
                                 step={0.01}
-                                className="w-14 px-2 py-1 border border-gray-200 rounded text-xs"
+                                className="w-14 shrink-0 px-2 py-1 border border-gray-200 rounded text-xs"
                                 value={numberInputValue(addon.addon_price)}
                                 onChange={(e) =>
                                   handleUpdateAddon(
@@ -1872,46 +1879,28 @@ export function MenuItemForm({
                                 }
                                 placeholder="0"
                               />
-                              <input
-                                type="number"
-                                min={0}
-                                step={0.01}
-                                className="w-14 px-2 py-1 border border-gray-200 rounded text-xs"
-                                value={addon.addon_size_value ?? ""}
-                                onChange={(e) =>
-                                  handleUpdateAddon(
-                                    custIndex,
-                                    addonIndex,
-                                    "addon_size_value",
-                                    e.target.value === "" ? null : Number(e.target.value)
-                                  )
-                                }
-                                placeholder="Size"
-                                title="Size amount"
-                              />
-                              <select
-                                className="w-20 px-1 py-1 border border-gray-200 rounded text-xs"
-                                value={addon.addon_size_unit ?? ""}
-                                onChange={(e) =>
-                                  handleUpdateAddon(
-                                    custIndex,
-                                    addonIndex,
-                                    "addon_size_unit",
-                                    e.target.value || null
-                                  )
-                                }
-                              >
-                                <option value="">Unit</option>
-                                {SIZE_UNITS.map((u) => (
-                                  <option key={u} value={u}>
-                                    {u}
-                                  </option>
-                                ))}
-                              </select>
+                              <div className="shrink-0">
+                                <SizeTypeFields
+                                  compact
+                                  sizeInputType="number"
+                                  sizePlaceholder="Size"
+                                  sizePreset={addon.size_preset ?? null}
+                                  sizeValue={addon.addon_size_value != null ? String(addon.addon_size_value) : ""}
+                                  sizeUnit={addon.addon_size_unit ?? ""}
+                                  onChange={(next) => {
+                                    handlePatchAddon(custIndex, addonIndex, {
+                                      size_preset: next.size_preset,
+                                      addon_size_value:
+                                        next.size_value.trim() === "" ? null : Number(next.size_value),
+                                      addon_size_unit: next.size_unit || null,
+                                    });
+                                  }}
+                                />
+                              </div>
                               <button
                                 type="button"
                                 onClick={() => void handleDeleteAddon(custIndex, addonIndex)}
-                                className="text-xs font-medium text-red-600 hover:bg-red-50 px-1.5 py-0.5 rounded self-center"
+                                className="text-xs font-medium text-red-600 hover:bg-red-50 px-1.5 py-0.5 rounded shrink-0 whitespace-nowrap"
                               >
                                 Remove
                               </button>
@@ -1947,28 +1936,32 @@ export function MenuItemForm({
               {(formData.variants || []).map((v, idx) => (
                 <div
                   key={idx}
-                  className="flex flex-wrap items-end gap-3 mb-3 p-2.5 bg-gray-50 rounded-lg border border-gray-200"
+                  className="flex flex-nowrap items-end gap-2 mb-3 p-2.5 bg-gray-50 rounded-lg border border-gray-200 overflow-x-auto"
                 >
-                  <div className="min-w-[140px]">
+                  <div className="w-[140px] shrink-0">
                     <label className="text-xs text-gray-600 block mb-0.5">Variant name *</label>
                     <input
                       type="text"
                       className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm"
                       value={v.variant_name}
                       onChange={(e) => {
-                        const vars = [...(formData.variants || [])];
-                        vars[idx] = { ...vars[idx], variant_name: e.target.value };
-                        setFormData({
-                          ...formData,
-                          variants: vars,
-                          has_variants: vars.some((v) => (v.variant_name || "").trim().length > 0),
+                        const name = e.target.value;
+                        setFormData((prev) => {
+                          const vars = [...(prev.variants || [])];
+                          if (!vars[idx]) return prev;
+                          vars[idx] = { ...vars[idx], variant_name: name };
+                          return {
+                            ...prev,
+                            variants: vars,
+                            has_variants: vars.some((row) => (row.variant_name || "").trim().length > 0),
+                          };
                         });
                       }}
                       placeholder="e.g. Half, Full"
                     />
                   </div>
-                  <div className="min-w-[100px]">
-                    <label className="text-xs text-gray-600 block mb-0.5">Variant price (₹) *</label>
+                  <div className="w-[108px] shrink-0">
+                    <label className="text-xs text-gray-600 block mb-0.5 whitespace-nowrap">Variant price (₹) *</label>
                     <input
                       type="number"
                       min={0}
@@ -1976,64 +1969,48 @@ export function MenuItemForm({
                       className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm"
                       value={numberInputValue(v.variant_price)}
                       onChange={(e) => {
-                        const vars = [...(formData.variants || [])];
-                        vars[idx] = {
-                          ...vars[idx],
-                          variant_price: parseNumberInputAllowEmpty(e.target.value),
-                        };
-                        setFormData((prev) => ({
-                          ...prev,
-                          variants: vars,
-                          has_variants: vars.some((x) => (x.variant_name || "").trim().length > 0),
-                        }));
+                        const price = parseNumberInputAllowEmpty(e.target.value);
+                        setFormData((prev) => {
+                          const vars = [...(prev.variants || [])];
+                          if (!vars[idx]) return prev;
+                          vars[idx] = { ...vars[idx], variant_price: price };
+                          return {
+                            ...prev,
+                            variants: vars,
+                            has_variants: vars.some((x) => (x.variant_name || "").trim().length > 0),
+                          };
+                        });
                       }}
                       placeholder="0"
                     />
                   </div>
-                  <div className="min-w-[88px]">
-                    <label className="text-xs text-gray-600 block mb-0.5">Size (optional)</label>
-                    <input
-                      type="text"
-                      className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm"
-                      value={variantSizeValueForInput(v.variant_size_value)}
-                      onChange={(e) => {
-                        const vars = [...(formData.variants || [])];
-                        const raw = e.target.value.trim();
-                        vars[idx] = {
-                          ...vars[idx],
-                          variant_size_value: raw === "" ? null : raw,
-                        };
-                        setFormData((prev) => ({ ...prev, variants: vars }));
+                  <div className="shrink-0">
+                    <SizeTypeFields
+                      compact
+                      sizeInputType="text"
+                      sizePlaceholder="e.g. 500 or 1500-1700"
+                      sizePreset={v.size_preset ?? null}
+                      sizeValue={variantSizeValueForInput(v.variant_size_value)}
+                      sizeUnit={v.variant_size_unit ?? ""}
+                      onChange={(next) => {
+                        setFormData((prev) => {
+                          const vars = [...(prev.variants || [])];
+                          if (!vars[idx]) return prev;
+                          vars[idx] = {
+                            ...vars[idx],
+                            size_preset: next.size_preset,
+                            variant_size_value: next.size_value.trim() === "" ? null : next.size_value.trim(),
+                            variant_size_unit: next.size_unit || null,
+                          };
+                          return { ...prev, variants: vars };
+                        });
                       }}
-                      placeholder="e.g. 500 or 1500-1700"
                     />
-                  </div>
-                  <div className="min-w-[88px]">
-                    <label className="text-xs text-gray-600 block mb-0.5">Unit</label>
-                    <select
-                      className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm"
-                      value={v.variant_size_unit ?? ""}
-                      onChange={(e) => {
-                        const vars = [...(formData.variants || [])];
-                        vars[idx] = {
-                          ...vars[idx],
-                          variant_size_unit: e.target.value || null,
-                        };
-                        setFormData((prev) => ({ ...prev, variants: vars }));
-                      }}
-                    >
-                      <option value="">—</option>
-                      {SIZE_UNITS.map((u) => (
-                        <option key={u} value={u}>
-                          {u}
-                        </option>
-                      ))}
-                    </select>
                   </div>
                   <button
                     type="button"
                     onClick={() => void handleRemoveVariant(idx)}
-                    className="p-1.5 text-red-600 hover:bg-red-50 rounded self-end"
+                    className="p-1.5 text-red-600 hover:bg-red-50 rounded self-end shrink-0"
                     aria-label="Remove variant"
                   >
                     <Trash2 size={14} />
@@ -2047,17 +2024,21 @@ export function MenuItemForm({
                   CUSTOMIZATION_VARIANT_LIMIT
                 }
                 onClick={() => {
-                  const vars = [
-                    ...(formData.variants || []),
-                    {
-                      variant_id: "",
-                      variant_name: "",
-                      variant_type: "",
-                      variant_price: null,
-                      menu_item_id: 0,
-                    } as Variant,
-                  ];
-                  setFormData({ ...formData, variants: vars, has_variants: true });
+                  setFormData((prev) => ({
+                    ...prev,
+                    variants: [
+                      ...(prev.variants || []),
+                      {
+                        variant_id: "",
+                        variant_name: "",
+                        variant_type: "",
+                        variant_price: null,
+                        menu_item_id: 0,
+                        size_preset: null,
+                      } as Variant,
+                    ],
+                    has_variants: true,
+                  }));
                 }}
                 className="mt-2 px-3 py-1.5 bg-orange-500 text-white rounded text-sm font-medium hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -2174,7 +2155,11 @@ export function MenuItemForm({
           </div>
         )}
 
-        <div className="flex justify-between items-center mt-4 pt-3 border-t border-gray-200">
+      </div>
+      <MenuFormZipSlider scrollRef={formScrollRef} resetKey={activeSection} />
+      </div>
+
+        <div className="flex justify-between items-center px-4 py-3 border-t border-gray-200 shrink-0">
           <button
             type="button"
             className="px-3 py-1.5 rounded-lg text-sm font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-100"
@@ -2216,8 +2201,7 @@ export function MenuItemForm({
             </button>
           )}
         </div>
-        {error && <div className="text-red-500 text-xs mt-2">{error}</div>}
-      </div>
+        {error && <div className="text-red-500 text-xs px-4 pb-3 shrink-0">{error}</div>}
     </div>
   );
 }

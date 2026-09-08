@@ -1,10 +1,11 @@
 import { Stack } from "expo-router";
+import { RIDER_AUTH_BG } from "@/src/theme/riderAuthTheme";
 
 export default function OnboardingLayout() {
   return (
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#f4fbf6' } }}>
       <Stack.Screen name="method-selection" />
-      <Stack.Screen name="language" />
+      <Stack.Screen name="language" options={{ contentStyle: { backgroundColor: RIDER_AUTH_BG } }} />
       <Stack.Screen name="help" />
       <Stack.Screen name="location" />
       <Stack.Screen name="welcome" />

@@ -79,8 +79,28 @@ function isBenignAbortNoise(value: unknown): boolean {
   );
 }
 
+function isBenignRefreshTokenNoise(value: unknown): boolean {
+  if (value == null) return false;
+  const r = value as { name?: string; message?: string; code?: string };
+  const name = String(r.name ?? "").toLowerCase();
+  const msg = String(r.message ?? value).toLowerCase();
+  const code = String(r.code ?? "").toLowerCase();
+  if (code === "refresh_token_not_found" || code === "refresh_token_already_used") {
+    return true;
+  }
+  if (name === "authapierror" && msg.includes("refresh") && msg.includes("token")) {
+    return true;
+  }
+  return (
+    msg.includes("refresh_token_not_found") ||
+    msg.includes("refresh token not found") ||
+    msg.includes("refresh_token_already_used") ||
+    (msg.includes("invalid refresh token") && msg.includes("not found"))
+  );
+}
+
 function argsLookLikeAbortNoise(args: unknown[]): boolean {
-  return args.some((arg) => isBenignAbortNoise(arg));
+  return args.some((arg) => isBenignAbortNoise(arg) || isBenignRefreshTokenNoise(arg));
 }
 
 /** Webpack pack files deleted mid-compile (Windows Temp / AV). Do not crash the server. */
@@ -122,7 +142,7 @@ export async function register() {
     };
 
     process.on("unhandledRejection", (reason: unknown) => {
-      if (isBenignAbortNoise(reason)) return;
+      if (isBenignAbortNoise(reason) || isBenignRefreshTokenNoise(reason)) return;
       if (isStaleWebpackPackError(reason)) {
         originalWarn(
           "[instrumentation] Webpack cache pack missing (ignored; restart with a clean cache if compiles keep failing)."
@@ -158,7 +178,7 @@ export async function register() {
 }
 
 export function onRequestError(error: unknown): void {
-  // Swallow expected aborts so observability hooks never treat them as crashes.
-  if (isBenignAbortNoise(error)) return;
+  // Swallow expected aborts / dead refresh races so they are never treated as crashes.
+  if (isBenignAbortNoise(error) || isBenignRefreshTokenNoise(error)) return;
 }
 

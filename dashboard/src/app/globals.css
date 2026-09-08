@@ -577,3 +577,60 @@ select option {
   );
   z-index: -1;
 }
+
+/* Error/success toasts must sit above menu modals (z-9999 + backdrop-blur). */
+[data-sonner-toaster] {
+  z-index: 2147483646 !important;
+}
+
+/*
+ * Order-page hanging folder-tab: full-width mint rail with a gap at the
+ * hanging pill (line connects to the pill sides, never across its top).
+ */
+.nth-hang {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 4;
+  width: 100%;
+  height: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.nth-hang__svg {
+  display: block;
+  overflow: visible;
+}
+
+.nth-hang__text {
+  position: absolute;
+  top: 6px;
+  display: block;
+  overflow: hidden;
+  max-width: min(420px, 70vw);
+  transform: translateX(-50%);
+  color: #145c4e;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.nth-hang__ordinal {
+  font-family: var(--font-tickets-num), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+.nth-hang__name {
+  font-weight: 700;
+}
+
+/* Keep the hanging tab tight against the order-id row (overrides space-y). */
+.nth-hang + * {
+  margin-top: 0;
+}
+

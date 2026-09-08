@@ -35,3 +35,38 @@ export async function clearMerchantSessionToken(): Promise<void> {
     /* ignore */
   }
 }
+
+/** Partner JSON cache — never proof of authentication, only a profile snapshot. */
+export const MERCHANT_PARTNER_KEY = "gatimitra_merchant_partner";
+export const MERCHANT_SUPABASE_USER_ID_KEY = "gatimitra_merchant_supabase_user_id";
+export const MERCHANT_CACHED_EXPO_PUSH_TOKEN_KEY = "merchant_cached_expo_push_token_v1";
+
+async function deleteKey(key: string): Promise<void> {
+  try {
+    await SecureStore.deleteItemAsync(key);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Wipe every local credential that could restore an authenticated tree.
+ * Does not remove the stable install device id (needed for the next login).
+ */
+export async function clearAllMerchantAuthArtifacts(): Promise<void> {
+  const { clearLastSelectedStore, clearManagedStores } = await import("@/lib/selectedStoreStorage");
+  try {
+    const { removeStoreStatusNotification } = await import("@/lib/storeStatusNotification");
+    await removeStoreStatusNotification("LOGOUT");
+  } catch {
+    /* tray dismiss is best-effort */
+  }
+  await Promise.all([
+    clearMerchantSessionToken(),
+    deleteKey(MERCHANT_PARTNER_KEY),
+    deleteKey(MERCHANT_SUPABASE_USER_ID_KEY),
+    deleteKey(MERCHANT_CACHED_EXPO_PUSH_TOKEN_KEY),
+    clearLastSelectedStore(),
+    clearManagedStores(),
+  ]);
+}

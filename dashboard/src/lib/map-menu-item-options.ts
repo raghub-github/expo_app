@@ -1,5 +1,6 @@
 import type { Customization, Variant } from "@/app/dashboard/merchants/stores/[id]/menu/menu-types";
 import { normalizeVariantSizeValue } from "@/lib/menu-variant-size";
+import { parseSizePreset } from "@/lib/menu-size-preset";
 import {
   buildInitialAddonIdMap,
   customizationGroupIds,
@@ -25,6 +26,7 @@ export function mapVariantsFromApi(rows: unknown[], menuItemId: number): Variant
       variant_size_value: normalizeVariantSizeValue(row.variant_size_value) ?? undefined,
       variant_size_unit:
         row.variant_size_unit != null ? String(row.variant_size_unit) : undefined,
+      size_preset: parseSizePreset(row.size_preset),
       in_stock: row.in_stock !== false,
       display_order: Number(row.display_order ?? 0),
       is_default: row.is_default === true,
@@ -53,6 +55,7 @@ export function mapAddonsFromApiRows(rows: Record<string, unknown>[]) {
         ? Number(o.addon_size_value)
         : null,
     addon_size_unit: o.addon_size_unit ?? null,
+    size_preset: parseSizePreset(o.size_preset),
     display_order: o.display_order ?? 0,
     in_stock: o.in_stock ?? true,
   }));

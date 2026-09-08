@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { FolderGit2, Tag, Plus, Pencil, Trash2, X, List, ListTree, BookMarked, Gauge } from "lucide-react";
+import { FolderGit2, Tag, Plus, Pencil, Trash2, List, ListTree, BookMarked, Gauge } from "lucide-react";
 import { TicketHelpTopicsPanel } from "@/components/tickets/admin/TicketHelpTopicsPanel";
 import { TicketPrioritiesPanel } from "@/components/tickets/admin/TicketPrioritiesPanel";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -21,6 +21,7 @@ import {
   useDeleteTicketTagMutation,
   useUpdateTicketTitleAdminMutation,
   useUpdateTicketTitleConfigAdminMutation,
+  useDeleteTicketTitleAdminMutation,
   type TicketTitleRow,
   type TicketTitleConfigRow,
 } from "@/store/api/superAdminApi";
@@ -200,6 +201,104 @@ function formatRtkQueryError(e: unknown): string {
   }
 }
 
+function GroupTitlesEditor({
+  titles,
+  onChange,
+}: {
+  titles: TitleRow[];
+  onChange: (next: TitleRow[]) => void;
+}) {
+  const [unlocked, setUnlocked] = useState<Record<string, boolean>>({});
+  const rowKey = (t: TitleRow, i: number) => (t.id > 0 ? `id-${t.id}` : `new-${i}`);
+  const textCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const t of titles) {
+      const k = t.titleText.trim().toLowerCase();
+      if (!k) continue;
+      m.set(k, (m.get(k) ?? 0) + 1);
+    }
+    return m;
+  }, [titles]);
+
+  const patchRow = (i: number, patch: Partial<TitleRow>) => {
+    const next = [...titles];
+    next[i] = { ...next[i], ...patch };
+    onChange(next);
+  };
+
+  return (
+    <div className="space-y-2">
+      {titles.map((t, i) => {
+        const key = rowKey(t, i);
+        const isNew = !(t.id > 0);
+        const isEditing = isNew || Boolean(unlocked[key]);
+        const dup = Boolean(t.titleText.trim()) && (textCounts.get(t.titleText.trim().toLowerCase()) ?? 0) > 1;
+        return (
+          <div key={key} className="rounded-lg border border-gray-200 bg-white px-2 py-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              {isEditing ? (
+                <>
+                  <input
+                    type="text"
+                    value={t.titleCode}
+                    onChange={(e) => patchRow(i, { titleCode: e.target.value })}
+                    placeholder="Code (optional — generated if empty)"
+                    className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm font-mono"
+                  />
+                  <input
+                    type="text"
+                    value={t.titleText}
+                    onChange={(e) => patchRow(i, { titleText: e.target.value })}
+                    placeholder="Display text"
+                    className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm"
+                  />
+                </>
+              ) : (
+                <>
+                  <p className="flex-1 min-w-0 font-mono text-xs text-gray-700 break-all">{t.titleCode || "—"}</p>
+                  <p className="flex-1 min-w-0 text-sm text-gray-800">{t.titleText || "—"}</p>
+                </>
+              )}
+              <div className="flex shrink-0 gap-1">
+                {!isNew && !isEditing ? (
+                  <button
+                    type="button"
+                    onClick={() => setUnlocked((u) => ({ ...u, [key]: true }))}
+                    className="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100"
+                    title="Edit title"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    Edit
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChange(titles.filter((_, j) => j !== i));
+                    setUnlocked((u) => {
+                      const next = { ...u };
+                      delete next[key];
+                      return next;
+                    });
+                  }}
+                  className="inline-flex items-center gap-1 rounded border border-red-100 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
+                  title="Remove title"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Remove
+                </button>
+              </div>
+            </div>
+            {dup ? (
+              <p className="mt-1 text-xs text-red-600">Duplicate display text in this list — only one will be saved.</p>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function TicketSettingsPageContent() {
   const router = useRouter();
   const pathname = useAppPathname();
@@ -242,12 +341,19 @@ function TicketSettingsPageContent() {
     (Omit<Partial<Group>, "titles"> & { groupCode: string; groupName: string; titles?: TitleRow[] }) | null
   >(null);
   const [tagForm, setTagForm] = useState<Partial<TagRecord> & { tagCode: string; tagName: string } | null>(null);
+  const [titleForm, setTitleForm] = useState<{
+    id: number;
+    titleCode: string;
+    titleText: string;
+    displayOrder: number | null;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [togglingActiveId, setTogglingActiveId] = useState<number | null>(null);
   const [togglingTagId, setTogglingTagId] = useState<number | null>(null);
   const [togglingConfigId, setTogglingConfigId] = useState<number | null>(null);
   const [togglingTitleId, setTogglingTitleId] = useState<number | null>(null);
+  const [removingTitleId, setRemovingTitleId] = useState<number | null>(null);
 
   const {
     data: groups = [],
@@ -338,6 +444,7 @@ function TicketSettingsPageContent() {
   const [deleteTagMutation] = useDeleteTicketTagMutation();
   const [updateTitleMutation] = useUpdateTicketTitleAdminMutation();
   const [updateTitleConfigMutation] = useUpdateTicketTitleConfigAdminMutation();
+  const [deleteTitleMutation] = useDeleteTicketTitleAdminMutation();
 
   useEffect(() => {
     setMounted(true);
@@ -366,7 +473,7 @@ function TicketSettingsPageContent() {
     setSaving(true);
     setError(null);
     try {
-      const titles = (groupForm.titles ?? []).filter((t) => t.titleCode?.trim() && t.titleText?.trim());
+      const titles = (groupForm.titles ?? []).filter((t) => t.titleText?.trim());
       await createGroupMutation({
         groupCode: groupForm.groupCode.trim(),
         groupName: groupForm.groupName.trim(),
@@ -377,7 +484,10 @@ function TicketSettingsPageContent() {
         ticketSection: groupForm.ticketSection || null,
         ticketCategory: groupForm.ticketCategory || null,
         sourceRole: groupForm.sourceRole || null,
-        titles: titles.map((t) => ({ titleCode: t.titleCode.trim(), titleText: t.titleText.trim() })),
+        titles: titles.map((t) => ({
+          titleCode: t.titleCode.trim(),
+          titleText: t.titleText.trim(),
+        })),
       }).unwrap();
       setGroupForm(null);
     } catch (e) {
@@ -394,8 +504,13 @@ function TicketSettingsPageContent() {
       const payload: Record<string, unknown> = { ...updates };
       if (Array.isArray(updates.titles)) {
         payload.titles = updates.titles
-          .filter((t) => t.titleCode?.trim() && t.titleText?.trim())
-          .map((t) => ({ titleCode: t.titleCode.trim(), titleText: t.titleText.trim() }));
+          .filter((t) => t.titleText?.trim())
+          .map((t) => ({
+            id: t.id > 0 ? t.id : undefined,
+            titleCode: (t.titleCode ?? "").trim(),
+            titleText: t.titleText.trim(),
+            displayOrder: t.displayOrder ?? null,
+          }));
       }
       await updateGroupMutation({ id, updates: payload as any }).unwrap();
       setGroupForm(null);
@@ -439,6 +554,49 @@ function TicketSettingsPageContent() {
       setError(e instanceof Error ? e.message : "Failed to update title status");
     } finally {
       setTogglingTitleId(null);
+    }
+  };
+
+  const saveTitleRow = async () => {
+    if (!titleForm) return;
+    if (!titleForm.titleText.trim()) {
+      setError("Display text is required");
+      return;
+    }
+    if (!titleForm.titleCode.trim()) {
+      setError("Title code is required");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await updateTitleMutation({
+        id: titleForm.id,
+        updates: {
+          titleCode: titleForm.titleCode.trim(),
+          titleText: titleForm.titleText.trim(),
+          displayOrder: titleForm.displayOrder,
+        },
+      }).unwrap();
+      setTitleForm(null);
+    } catch (e) {
+      setError(formatRtkQueryError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeTitleRow = async (row: TicketTitleRow) => {
+    if (!confirm(`Remove title “${row.titleText}”? If tickets still use it, delete will be blocked.`)) return;
+    setRemovingTitleId(row.id);
+    setError(null);
+    try {
+      await deleteTitleMutation(row.id).unwrap();
+      if (titleForm?.id === row.id) setTitleForm(null);
+    } catch (e) {
+      setError(formatRtkQueryError(e));
+    } finally {
+      setRemovingTitleId(null);
     }
   };
 
@@ -773,47 +931,17 @@ function TicketSettingsPageContent() {
                           ...f,
                           titles: [...(f.titles ?? []), { id: 0, titleCode: "", titleText: "", displayOrder: null }],
                         }
-                      )}                    className="text-xs text-blue-600 hover:underline"
+                      )
+                    }
+                    className="text-xs text-blue-600 hover:underline"
                   >
                     + Add title
                   </button>
                 </div>
-                <div className="space-y-2">
-                  {(groupForm.titles ?? []).map((t, i) => (
-                    <div key={i} className="flex gap-2 items-center">
-                      <input
-                        type="text"
-                        value={t.titleCode}
-                        onChange={(e) => {
-                          const next = [...(groupForm?.titles ?? [])];
-                          next[i] = { ...next[i], titleCode: e.target.value };
-                          setGroupForm((f) => f && { ...f, titles: next });
-                        }}
-                        placeholder="Code (e.g. penalty_issue)"
-                        className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm"
-                      />
-                      <input
-                        type="text"
-                        value={t.titleText}
-                        onChange={(e) => {
-                          const next = [...(groupForm?.titles ?? [])];
-                          next[i] = { ...next[i], titleText: e.target.value };
-                          setGroupForm((f) => f && { ...f, titles: next });
-                        }}
-                        placeholder="Display text (e.g. Penalty issue)"
-                        className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setGroupForm((f) => f && { ...f, titles: (f.titles ?? []).filter((_, j) => j !== i) })}
-                        className="p-1.5 rounded text-gray-500 hover:bg-red-50 hover:text-red-600"
-                        title="Remove"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
+                <GroupTitlesEditor
+                  titles={groupForm.titles ?? []}
+                  onChange={(titles) => setGroupForm((f) => f && { ...f, titles })}
+                />
               </div>
               <div className="flex gap-2">
                 <button
@@ -1004,47 +1132,17 @@ function TicketSettingsPageContent() {
                           ...f,
                           titles: [...(f.titles ?? []), { id: 0, titleCode: "", titleText: "", displayOrder: null }],
                         }
-                      )}                    className="text-xs text-blue-600 hover:underline"
+                      )
+                    }
+                    className="text-xs text-blue-600 hover:underline"
                   >
                     + Add title
                   </button>
                 </div>
-                <div className="space-y-2">
-                  {(groupForm.titles ?? []).map((t, i) => (
-                    <div key={i} className="flex gap-2 items-center">
-                      <input
-                        type="text"
-                        value={t.titleCode}
-                        onChange={(e) => {
-                          const next = [...(groupForm?.titles ?? [])];
-                          next[i] = { ...next[i], titleCode: e.target.value };
-                          setGroupForm((f) => f && { ...f, titles: next });
-                        }}
-                        placeholder="Code"
-                        className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm"
-                      />
-                      <input
-                        type="text"
-                        value={t.titleText}
-                        onChange={(e) => {
-                          const next = [...(groupForm?.titles ?? [])];
-                          next[i] = { ...next[i], titleText: e.target.value };
-                          setGroupForm((f) => f && { ...f, titles: next });
-                        }}
-                        placeholder="Display text"
-                        className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setGroupForm((f) => f && { ...f, titles: (f.titles ?? []).filter((_, j) => j !== i) })}
-                        className="p-1.5 rounded text-gray-500 hover:bg-red-50 hover:text-red-600"
-                        title="Remove"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
+                <GroupTitlesEditor
+                  titles={groupForm.titles ?? []}
+                  onChange={(titles) => setGroupForm((f) => f && { ...f, titles })}
+                />
               </div>
               <div className="flex gap-2">
                 <button
@@ -1316,9 +1414,65 @@ function TicketSettingsPageContent() {
           <div className="w-full min-w-0">
             <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between mb-4">
               <h2 className="text-lg font-semibold text-gray-800">Ticket titles ({ticketTitles.length})</h2>
+              <p className="text-xs text-gray-500">Edit wrong titles in place. Remove deletes the catalog row (duplicates can be removed).</p>
             </div>
+            {titleForm ? (
+              <div className="mb-4 p-4 rounded-lg border border-gray-200 bg-gray-50 space-y-3">
+                <h3 className="font-medium text-gray-800">Edit title</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Title code</label>
+                    <input
+                      type="text"
+                      value={titleForm.titleCode}
+                      onChange={(e) => setTitleForm((f) => f && { ...f, titleCode: e.target.value })}
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Display text</label>
+                    <input
+                      type="text"
+                      value={titleForm.titleText}
+                      onChange={(e) => setTitleForm((f) => f && { ...f, titleText: e.target.value })}
+                      className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </div>
+                </div>
+                <div className="max-w-xs">
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Sort</label>
+                  <input
+                    type="number"
+                    value={titleForm.displayOrder ?? ""}
+                    onChange={(e) =>
+                      setTitleForm((f) =>
+                        f && { ...f, displayOrder: e.target.value === "" ? null : Number(e.target.value) }
+                      )
+                    }
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void saveTitleRow()}
+                    disabled={saving}
+                    className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {saving ? "Saving..." : "Save"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTitleForm(null)}
+                    className="rounded border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="rounded-lg border border-gray-200 overflow-x-auto">
-              <table className="w-full text-sm min-w-[1100px]">
+              <table className="w-full text-sm min-w-[1180px]">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
                     <th className="text-left py-2 px-3 font-medium text-gray-700">Title code</th>
@@ -1329,12 +1483,13 @@ function TicketSettingsPageContent() {
                     <th className="text-left py-2 px-3 font-medium text-gray-700">Source</th>
                     <th className="text-left py-2 px-3 font-medium text-gray-700">Sort</th>
                     <th className="text-left py-2 px-3 font-medium text-gray-700">Active</th>
+                    <th className="w-28 text-left py-2 px-3 font-medium text-gray-700">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {ticketTitles.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="py-8 text-center text-gray-500">
+                      <td colSpan={9} className="py-8 text-center text-gray-500">
                         No rows in ticket_titles.
                       </td>
                     </tr>
@@ -1364,6 +1519,34 @@ function TicketSettingsPageContent() {
                             onToggle={() => void toggleTitleRowActive(row)}
                             ariaLabel={row.isActive ? "Title active" : "Title inactive"}
                           />
+                        </td>
+                        <td className="py-2 px-3">
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setTitleForm({
+                                  id: row.id,
+                                  titleCode: row.titleCode,
+                                  titleText: row.titleText,
+                                  displayOrder: row.displayOrder ?? null,
+                                })
+                              }
+                              className="p-1.5 rounded text-gray-500 hover:bg-gray-200 hover:text-gray-700"
+                              title="Edit"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void removeTitleRow(row)}
+                              disabled={removingTitleId === row.id}
+                              className="p-1.5 rounded text-gray-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                              title="Remove"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))

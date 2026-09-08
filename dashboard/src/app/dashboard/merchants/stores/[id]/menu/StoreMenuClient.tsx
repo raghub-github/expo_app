@@ -33,6 +33,7 @@ import {
   ChevronDown,
   ChevronUp,
   FileText,
+  FileSpreadsheet,
   Layers,
   LayoutGrid,
   ListTree,
@@ -45,6 +46,7 @@ import { withAttachmentCacheBust, resolveAttachmentProxyUrl } from "@/lib/attach
 import { MenuItemsGridSkeleton } from "@/components/ui/MenuItemsGridSkeleton";
 import { MenuItemForm, type ItemFormData } from "./MenuItemForm";
 import { MenuItemPhotoModal } from "./MenuItemPhotoModal";
+import { MenuXlsxImportModal } from "@/components/merchant/MenuXlsxImportModal";
 import { buildEditOptionsRefs } from "@/lib/map-menu-item-options";
 import {
   DEFAULT_ITEM_FORM_DATA,
@@ -57,6 +59,7 @@ import {
   toFiniteMenuId,
 } from "@/lib/menu-customization-normalize";
 import { normalizeVariantSizeValue } from "@/lib/menu-variant-size";
+import { formatMenuSize, normalizeSizeWrite, numericSizeOrNull, parseSizePreset } from "@/lib/menu-size-preset";
 import { setMenuItemFormModalOpen } from "@/lib/merchant-menu-form-modal-bus";
 import {
   ITEM_PLACEHOLDER_SVG,
@@ -217,6 +220,7 @@ function normalizeItem(
     item_size_value:
       item.item_size_value == null ? null : (Number(item.item_size_value) as number),
     item_size_unit: (item.item_size_unit as string) ?? null,
+    size_preset: parseSizePreset((item as { size_preset?: unknown }).size_preset),
     available_for_delivery:
       (item.available_for_delivery as boolean) ?? true,
     weight_per_serving:
@@ -509,8 +513,22 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
   const menuReferenceLoadedForStoreRef = useRef<string | null>(null);
 
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showXlsxImportModal, setShowXlsxImportModal] = useState(false);
+  const [addItemMenuOpen, setAddItemMenuOpen] = useState(false);
+  const addItemMenuRef = useRef<HTMLDivElement>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+
+  useEffect(() => {
+    if (!addItemMenuOpen) return;
+    const onPointer = (e: MouseEvent) => {
+      if (addItemMenuRef.current && !addItemMenuRef.current.contains(e.target as Node)) {
+        setAddItemMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointer);
+    return () => document.removeEventListener("mousedown", onPointer);
+  }, [addItemMenuOpen]);
 
   useEffect(() => {
     setMenuItemFormModalOpen(showEditModal || showAddModal);
@@ -891,11 +909,8 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
     }
     return counts;
   }, [categories, liveMenuItems]);
-  const allCategoriesItemCount = liveMenuItems.length;
-  const allSubcategoryItemCount = useMemo(() => {
-    const subIds = new Set(subCategories.map((c) => c.id));
-    return liveMenuItems.filter((item) => item.category_id != null && subIds.has(item.category_id)).length;
-  }, [liveMenuItems, subCategories]);
+  const allCategoriesCount = categories.length;
+  const allSubcategoryCount = subCategories.length;
   const childrenByParentId = useMemo(() => {
     const map = new Map<number, MenuCategory[]>();
     for (const c of categories) {
@@ -1405,8 +1420,23 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
           packaging_charges: isGrocery ? null : packagingPayload,
           serves: isGrocery ? null : addForm.serves ?? null,
           serves_label: isGrocery ? null : addForm.serves_label || null,
-          item_size_value: addForm.item_size_value ? Number(addForm.item_size_value) : null,
-          item_size_unit: addForm.item_size_unit || null,
+          item_size_value: numericSizeOrNull(
+            normalizeSizeWrite({
+              size_preset: addForm.size_preset,
+              size_value: addForm.item_size_value,
+              size_unit: addForm.item_size_unit,
+            }).size_value
+          ),
+          item_size_unit: normalizeSizeWrite({
+            size_preset: addForm.size_preset,
+            size_value: addForm.item_size_value,
+            size_unit: addForm.item_size_unit,
+          }).size_unit,
+          size_preset: normalizeSizeWrite({
+            size_preset: addForm.size_preset,
+            size_value: addForm.item_size_value,
+            size_unit: addForm.item_size_unit,
+          }).size_preset,
           allergens: isGrocery
             ? null
             : addForm.allergens
@@ -1472,8 +1502,23 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
         packaging_charges: isGrocery ? null : packagingPayload,
         serves: isGrocery ? null : addForm.serves ?? null,
         serves_label: isGrocery ? null : addForm.serves_label || null,
-        item_size_value: addForm.item_size_value ? Number(addForm.item_size_value) : null,
-        item_size_unit: addForm.item_size_unit || null,
+        item_size_value: numericSizeOrNull(
+          normalizeSizeWrite({
+            size_preset: addForm.size_preset,
+            size_value: addForm.item_size_value,
+            size_unit: addForm.item_size_unit,
+          }).size_value
+        ),
+        item_size_unit: normalizeSizeWrite({
+          size_preset: addForm.size_preset,
+          size_value: addForm.item_size_value,
+          size_unit: addForm.item_size_unit,
+        }).size_unit,
+        size_preset: normalizeSizeWrite({
+          size_preset: addForm.size_preset,
+          size_value: addForm.item_size_value,
+          size_unit: addForm.item_size_unit,
+        }).size_preset,
         allergens: isGrocery
           ? null
           : addForm.allergens
@@ -1583,6 +1628,25 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
     if (!res.ok || r?.success === false) throw new Error(r?.error || "Failed to update option flags");
   };
 
+  const persistItemSizeFields = async (itemId: number, form: ItemFormData) => {
+    const size = normalizeSizeWrite({
+      size_preset: form.size_preset,
+      size_value: form.item_size_value,
+      size_unit: form.item_size_unit,
+    });
+    const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${itemId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        size_preset: size.size_preset,
+        item_size_value: numericSizeOrNull(size.size_value),
+        item_size_unit: size.size_unit,
+      }),
+    });
+    const r = await res.json().catch(() => ({}));
+    if (!res.ok || r?.success === false) throw new Error(r?.error || "Failed to update size");
+  };
+
   const handleAddSubmitOptions = async () => {
     if (addCreatedItemId == null) {
       toast("Save the item on the first tab first.");
@@ -1593,6 +1657,7 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
     try {
       const base = `/api/merchant/stores/${storeId}/menu`;
       const itemId = addCreatedItemId;
+      await persistItemSizeFields(itemId, addForm);
       const variantsToSave = dedupeVariants(addForm.variants ?? []);
       const currentVariantIds = variantsToSave
         .map((v) => toFiniteMenuId(v.id))
@@ -1604,8 +1669,21 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
           variant_name: v.variant_name,
           variant_type: v.variant_type ?? null,
           variant_price: v.variant_price ?? 0,
-          variant_size_value: normalizeVariantSizeValue(v.variant_size_value),
-          variant_size_unit: v.variant_size_unit ?? null,
+          variant_size_value: normalizeSizeWrite({
+            size_preset: v.size_preset,
+            size_value: normalizeVariantSizeValue(v.variant_size_value),
+            size_unit: v.variant_size_unit,
+          }).size_value,
+          variant_size_unit: normalizeSizeWrite({
+            size_preset: v.size_preset,
+            size_value: normalizeVariantSizeValue(v.variant_size_value),
+            size_unit: v.variant_size_unit,
+          }).size_unit,
+          size_preset: normalizeSizeWrite({
+            size_preset: v.size_preset,
+            size_value: normalizeVariantSizeValue(v.variant_size_value),
+            size_unit: v.variant_size_unit,
+          }).size_preset,
           is_default: v.is_default ?? false,
           display_order: v.display_order ?? 0,
         };
@@ -1684,8 +1762,23 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
             addon_name: o.addon_name,
             addon_price: o.addon_price ?? 0,
             addon_image_url: o.addon_image_url ?? null,
-            addon_size_value: o.addon_size_value ?? null,
-            addon_size_unit: o.addon_size_unit ?? null,
+            addon_size_value: numericSizeOrNull(
+              normalizeSizeWrite({
+                size_preset: o.size_preset,
+                size_value: o.addon_size_value,
+                size_unit: o.addon_size_unit,
+              }).size_value
+            ),
+            addon_size_unit: normalizeSizeWrite({
+              size_preset: o.size_preset,
+              size_value: o.addon_size_value,
+              size_unit: o.addon_size_unit,
+            }).size_unit,
+            size_preset: normalizeSizeWrite({
+              size_preset: o.size_preset,
+              size_value: o.addon_size_value,
+              size_unit: o.addon_size_unit,
+            }).size_preset,
             display_order: o.display_order ?? 0,
           };
           const addonPk = toFiniteMenuId(o.id);
@@ -1771,8 +1864,23 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
         packaging_charges: isGrocery ? null : packagingPayload,
         serves: isGrocery ? null : editForm.serves ?? null,
         serves_label: isGrocery ? null : editForm.serves_label || null,
-        item_size_value: editForm.item_size_value ? Number(editForm.item_size_value) : null,
-        item_size_unit: editForm.item_size_unit || null,
+        item_size_value: numericSizeOrNull(
+          normalizeSizeWrite({
+            size_preset: editForm.size_preset,
+            size_value: editForm.item_size_value,
+            size_unit: editForm.item_size_unit,
+          }).size_value
+        ),
+        item_size_unit: normalizeSizeWrite({
+          size_preset: editForm.size_preset,
+          size_value: editForm.item_size_value,
+          size_unit: editForm.item_size_unit,
+        }).size_unit,
+        size_preset: normalizeSizeWrite({
+          size_preset: editForm.size_preset,
+          size_value: editForm.item_size_value,
+          size_unit: editForm.item_size_unit,
+        }).size_preset,
         allergens: isGrocery
           ? null
           : editForm.allergens
@@ -1850,6 +1958,7 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
     setIsSavingEdit(true);
     try {
       const base = `/api/merchant/stores/${storeId}/menu`;
+      await persistItemSizeFields(editingId, editForm);
       const variantsToSave = dedupeVariants(editForm.variants ?? []);
       const currentVariantIds = variantsToSave
         .map((v) => toFiniteMenuId(v.id))
@@ -1861,8 +1970,21 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
           variant_name: v.variant_name,
           variant_type: v.variant_type ?? null,
           variant_price: v.variant_price ?? 0,
-          variant_size_value: normalizeVariantSizeValue(v.variant_size_value),
-          variant_size_unit: v.variant_size_unit ?? null,
+          variant_size_value: normalizeSizeWrite({
+            size_preset: v.size_preset,
+            size_value: normalizeVariantSizeValue(v.variant_size_value),
+            size_unit: v.variant_size_unit,
+          }).size_value,
+          variant_size_unit: normalizeSizeWrite({
+            size_preset: v.size_preset,
+            size_value: normalizeVariantSizeValue(v.variant_size_value),
+            size_unit: v.variant_size_unit,
+          }).size_unit,
+          size_preset: normalizeSizeWrite({
+            size_preset: v.size_preset,
+            size_value: normalizeVariantSizeValue(v.variant_size_value),
+            size_unit: v.variant_size_unit,
+          }).size_preset,
           is_default: v.is_default ?? false,
           display_order: v.display_order ?? 0,
         };
@@ -1921,8 +2043,23 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
             addon_name: o.addon_name,
             addon_price: o.addon_price ?? 0,
             addon_image_url: o.addon_image_url ?? null,
-            addon_size_value: o.addon_size_value ?? null,
-            addon_size_unit: o.addon_size_unit ?? null,
+            addon_size_value: numericSizeOrNull(
+              normalizeSizeWrite({
+                size_preset: o.size_preset,
+                size_value: o.addon_size_value,
+                size_unit: o.addon_size_unit,
+              }).size_value
+            ),
+            addon_size_unit: normalizeSizeWrite({
+              size_preset: o.size_preset,
+              size_value: o.addon_size_value,
+              size_unit: o.addon_size_unit,
+            }).size_unit,
+            size_preset: normalizeSizeWrite({
+              size_preset: o.size_preset,
+              size_value: o.addon_size_value,
+              size_unit: o.addon_size_unit,
+            }).size_preset,
             display_order: o.display_order ?? 0,
           };
           const addonPk = toFiniteMenuId(o.id);
@@ -2472,17 +2609,56 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
             </button>
             ) : null}
             {!menuReadOnly ? (
-            <button
-              onClick={() => openAddItemModal()}
-              disabled={!canAddItem}
-              className="flex cursor-pointer items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg transition-colors bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Plus size={16} />
-              Add Menu Item
-              {planLimits != null && (
-                <span className="text-xs opacity-90">({menuItems.length}/{(planLimits as { maxMenuItems?: number })?.maxMenuItems ?? "—"})</span>
-              )}
-            </button>
+            <div className="relative" ref={addItemMenuRef}>
+              <button
+                type="button"
+                disabled={!canAddItem}
+                onClick={() => setAddItemMenuOpen((o) => !o)}
+                className="flex cursor-pointer items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg transition-colors bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                aria-haspopup="menu"
+                aria-expanded={addItemMenuOpen}
+              >
+                <Plus size={16} />
+                Add Menu Item
+                {planLimits != null && (
+                  <span className="text-xs opacity-90">({menuItems.length}/{(planLimits as { maxMenuItems?: number })?.maxMenuItems ?? "—"})</span>
+                )}
+                <ChevronDown size={14} className={`transition-transform ${addItemMenuOpen ? "rotate-180" : ""}`} />
+              </button>
+              {addItemMenuOpen ? (
+                <div
+                  role="menu"
+                  className="absolute right-0 mt-1 z-40 w-56 rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={!canAddItem}
+                    onClick={() => {
+                      setAddItemMenuOpen(false);
+                      openAddItemModal();
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    <Plus size={15} />
+                    Add Menu Item
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={!canAddItem}
+                    onClick={() => {
+                      setAddItemMenuOpen(false);
+                      setShowXlsxImportModal(true);
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    <FileSpreadsheet size={15} />
+                    Add menu item XLSX
+                  </button>
+                </div>
+              ) : null}
+            </div>
             ) : null}
             {!menuReadOnly ? (
             <button
@@ -2535,8 +2711,8 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
               }`}
             >
               {categoryPillMode === "category"
-                ? `All Categories (${allCategoriesItemCount})`
-                : `All Sub-Categories (${allSubcategoryItemCount})`}
+                ? `All Categories (${allCategoriesCount})`
+                : `All Sub-Categories (${allSubcategoryCount})`}
             </button>
             <div className="flex-1 min-w-0 flex items-center gap-0.5 overflow-hidden">
               {categoriesForPills.length > 0 && (
@@ -2703,8 +2879,8 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                               >
                                 <span className="min-w-0 flex-1 text-gray-800">
                                   {v.variant_name || v.variant_type || "Variant"}
-                                  {v.variant_size_value && v.variant_size_unit
-                                    ? ` (${v.variant_size_value} ${v.variant_size_unit})`
+                                  {formatMenuSize(v.size_preset, v.variant_size_value, v.variant_size_unit)
+                                    ? ` (${formatMenuSize(v.size_preset, v.variant_size_value, v.variant_size_unit)})`
                                     : ""}
                                 </span>
                                 <span className="font-semibold tabular-nums text-gray-900 shrink-0">
@@ -3011,11 +3187,11 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                               {normalizeSpiceLevelForForm(item.spice_level)}
                             </span>
                           )}
-                          {item.item_size_value && item.item_size_unit && (
+                          {formatMenuSize(item.size_preset, item.item_size_value, item.item_size_unit) ? (
                             <span>
-                              • Size {item.item_size_value} {item.item_size_unit}
+                              • Size {formatMenuSize(item.size_preset, item.item_size_value, item.item_size_unit)}
                             </span>
-                          )}
+                          ) : null}
                           {item.preparation_time_minutes != null && (
                             <span>• Prep {item.preparation_time_minutes} min</span>
                           )}
@@ -3370,12 +3546,12 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                           : "—"}
                     </div>
                   )}
-                  {(reviewItem.item_size_value && reviewItem.item_size_unit) && (
+                  {formatMenuSize(reviewItem.size_preset, reviewItem.item_size_value, reviewItem.item_size_unit) ? (
                     <div>
                       <span className="font-semibold">Item size: </span>
-                      {reviewItem.item_size_value} {reviewItem.item_size_unit}
+                      {formatMenuSize(reviewItem.size_preset, reviewItem.item_size_value, reviewItem.item_size_unit)}
                     </div>
-                  )}
+                  ) : null}
                   {reviewItem.preparation_time_minutes != null && (
                     <div>
                       <span className="font-semibold">Prep time: </span>
@@ -3743,6 +3919,29 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
           </div>,
           document.body
         )}
+
+      {showXlsxImportModal ? (
+        <MenuXlsxImportModal
+          open={showXlsxImportModal}
+          storeId={storeId}
+          categories={categories}
+          existingItems={menuItems
+            .filter((item) => !item.is_deleted)
+            .map((item) => ({
+              id: item.id,
+              item_name: item.item_name,
+              category_name:
+                categories.find((c) => Number(c.id) === Number(item.category_id))?.category_name ?? null,
+            }))}
+          itemFormVariant={itemFormVariant}
+          showCuisineField={Boolean(categoryUiConfig?.cuisine_field.visible)}
+          storeTypeLabel={isGroceryItemForm ? "Grocery" : resolvedStoreType || "Restaurant"}
+          defaultPrepMinutes={storeMenuDefaults.avg_preparation_time_minutes}
+          toast={toast}
+          onClose={() => setShowXlsxImportModal(false)}
+          onImported={refreshMenu}
+        />
+      ) : null}
 
       {showAddModal &&
         typeof document !== "undefined" &&

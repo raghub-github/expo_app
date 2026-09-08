@@ -106,7 +106,13 @@ export function PlayUpdateAvailableSheet({
               </View>
             </View>
 
-            <View style={styles.whatsNewRow}>
+            {/* Tappable (opens Play) — kept inside the ScrollView so the pinned actions stay put. */}
+            <Pressable
+              onPress={onLearnMore}
+              style={({ pressed }) => [styles.whatsNewRow, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel="What's new on Google Play"
+            >
               <View style={{ flex: 1 }}>
                 <Text style={styles.whatsNewLabel} maxFontSizeMultiplier={1.3}>
                   What&apos;s new
@@ -116,7 +122,7 @@ export function PlayUpdateAvailableSheet({
                 </Text>
               </View>
               <Ionicons name="chevron-down" size={18} color="#94A3B8" />
-            </View>
+            </Pressable>
           </ScrollView>
 
           {/* Pinned action row — never scrolls off screen. */}
@@ -125,7 +131,7 @@ export function PlayUpdateAvailableSheet({
               onPress={onLearnMore}
               style={({ pressed }) => [styles.learnBtn, pressed && styles.pressed]}
               accessibilityRole="button"
-              accessibilityLabel="Learn more"
+              accessibilityLabel="Learn more on Google Play"
             >
               <Text style={styles.learnText} maxFontSizeMultiplier={1.3}>
                 Learn more
@@ -139,7 +145,7 @@ export function PlayUpdateAvailableSheet({
                 pressed && styles.pressed,
               ]}
               accessibilityRole="button"
-              accessibilityLabel="Update"
+              accessibilityLabel="Update on Google Play"
             >
               <Text style={styles.updateText} maxFontSizeMultiplier={1.3}>
                 Update

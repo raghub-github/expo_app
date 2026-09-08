@@ -9,6 +9,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppText } from "@/components/AppText";
+import { PureVegStoreTag } from "@/components/home/PureVegStoreTag";
 import { MenuItemImagePlaceholder } from "@/components/store/MenuItemImagePlaceholder";
 import { setStoreBookmark, type MerchantSummary } from "@/services/merchant.service";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
@@ -142,6 +143,7 @@ function DiscoveryPackagingGridCardInner({
             {cuisine}
           </AppText>
         ) : null}
+        {merchant.isPureVeg === true ? <PureVegStoreTag compact /> : null}
         <View style={styles.footer}>
           <View style={styles.etaRow}>
             <Ionicons name="timer-outline" size={12} color={DiscoveryColors.textMuted} />

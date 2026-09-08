@@ -37,8 +37,10 @@ export async function logoutUserSessions(token: string, sessionIds: number[]): P
     {
       method: "POST",
       body: JSON.stringify({ session_ids: sessionIds }),
+      timeoutMs: 15_000,
     }
   );
+  if (res.status === 401) return;
   if (!res.ok) {
     throw new Error("Failed to logout selected devices");
   }
@@ -51,8 +53,10 @@ export async function logoutAllUserSessions(token: string, includeCurrent = fals
     {
       method: "POST",
       body: JSON.stringify({ includeCurrent }),
+      timeoutMs: 15_000,
     }
   );
+  if (res.status === 401) return;
   if (!res.ok) {
     throw new Error("Failed to logout all devices");
   }

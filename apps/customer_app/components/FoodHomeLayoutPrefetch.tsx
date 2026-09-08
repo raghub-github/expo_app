@@ -4,25 +4,28 @@ import {
   prefetchFoodHomeLayout,
   getSyncFoodHomeLayoutFromQueryClient,
 } from "@/lib/foodHomeLayoutCache";
-import { prefetchUserAppCategories } from "@/lib/userAppCategoryCache";
 import { useLocationStore } from "@/store/locationStore";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
-import { prefetchMerchantsList, readSyncMerchantsList, merchantsGeoBucket } from "@/lib/merchantsListCache";
+import {
+  prefetchMerchantsList,
+  readSyncMerchantsList,
+  seedMerchantsListQueryIfCached,
+  merchantsGeoBucket,
+} from "@/lib/merchantsListCache";
 import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
 import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
 import { prefetchMerchantCardImages } from "@/lib/imageEngine";
 import { prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
 
+/** Debounce only network refresh after lastKnown → reconcile — never block sync paint. */
+const LOCATION_SETTLE_MS = 500;
+
 /**
  * Warm food-home layout + nearby merchants AND their imagery as soon as location is
  * known — while the user is still on the Home tab, before they ever open Food.
  *
- * Data alone is not enough for "instant visual readiness": if the hero/card images are
- * only prefetched once the Food screen mounts, the first paint still waits on a download
- * + decode. So after each data prefetch resolves we also decode the images into the
- * memory/disk cache here. Every prefetch helper dedupes by URI, so warming early cannot
- * cause a double download — it only moves the fetch off the first-paint critical path.
+ * Categories are owned by UserAppCategoriesPrefetch (do not prefetch here).
  */
 export function FoodHomeLayoutPrefetch() {
   const queryClient = useQueryClient();
@@ -38,21 +41,21 @@ export function FoodHomeLayoutPrefetch() {
   useEffect(() => {
     if (!locationHydrated) return;
     let cancelled = false;
-    void (async () => {
-      await prefetchFoodHomeLayout(queryClient, address, coords);
-      if (cancelled) return;
-      // Decode the FRESHEST hero media (post-network) into cache now, not on-screen —
-      // hydrateFoodHomeLayoutForHints only warmed the disk-cached media pre-fetch.
-      const hints = extractCustomerGeoHints(address, coords);
-      const layout = getSyncFoodHomeLayoutFromQueryClient(queryClient, hints);
-      if (layout) {
-        prefetchGridFirstHeroMedia(layout.gridFirstHeroMedia);
-        prefetchMealsUnder250HeroMedia(layout);
-      }
-    })();
-    void prefetchUserAppCategories(queryClient, "FOOD");
+    const timer = setTimeout(() => {
+      void (async () => {
+        await prefetchFoodHomeLayout(queryClient, address, coords);
+        if (cancelled) return;
+        const hints = extractCustomerGeoHints(address, coords);
+        const layout = getSyncFoodHomeLayoutFromQueryClient(queryClient, hints);
+        if (layout) {
+          prefetchGridFirstHeroMedia(layout.gridFirstHeroMedia);
+          prefetchMealsUnder250HeroMedia(layout);
+        }
+      })();
+    }, LOCATION_SETTLE_MS);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [
     locationHydrated,
@@ -67,43 +70,48 @@ export function FoodHomeLayoutPrefetch() {
     if (!locationHydrated || coords?.latitude == null || coords?.longitude == null) return;
     const lat = coords.latitude;
     const lng = coords.longitude;
+
+    // Instant: seed RQ + decode card art from sync cache (no 500ms wait).
+    seedMerchantsListQueryIfCached(queryClient, lat, lng, false);
+    seedMerchantsListQueryIfCached(queryClient, lat, lng, true);
+    seedMerchantsListQueryIfCached(queryClient, lat, lng, false, "GROCERY");
+    const syncFood = readSyncMerchantsList(lat, lng, vegOnly) ?? readSyncMerchantsList(lat, lng, false);
+    if (syncFood?.length) {
+      prefetchMerchantCardImages(syncFood);
+      prefetchMerchantBanners(syncFood);
+    }
+    const syncGrocery = readSyncMerchantsList(lat, lng, false, "GROCERY");
+    if (syncGrocery?.length) {
+      prefetchMerchantCardImages(syncGrocery);
+      prefetchMerchantBanners(syncGrocery);
+    }
+
     let cancelled = false;
-    void (async () => {
-      await prefetchMerchantsList(queryClient, lat, lng, vegOnly);
-      if (cancelled) return;
-      const list = readSyncMerchantsList(lat, lng, vegOnly);
-      if (list?.length) {
-        // Warms restaurant card images AND the hero fallback (merchant banners are used
-        // as the hero when admin has no grid-first media) — both ready before navigation.
-        prefetchMerchantCardImages(list);
-        prefetchMerchantBanners(list);
-      }
-    })();
+    const timer = setTimeout(() => {
+      void (async () => {
+        await Promise.allSettled([
+          prefetchMerchantsList(queryClient, lat, lng, false),
+          prefetchMerchantsList(queryClient, lat, lng, true),
+          prefetchMerchantsList(queryClient, lat, lng, false, "GROCERY"),
+        ]);
+        if (cancelled) return;
+        const list = readSyncMerchantsList(lat, lng, vegOnly) ?? readSyncMerchantsList(lat, lng, false);
+        if (list?.length) {
+          prefetchMerchantCardImages(list);
+          prefetchMerchantBanners(list);
+        }
+        const grocery = readSyncMerchantsList(lat, lng, false, "GROCERY");
+        if (grocery?.length) {
+          prefetchMerchantCardImages(grocery);
+          prefetchMerchantBanners(grocery);
+        }
+      })();
+    }, LOCATION_SETTLE_MS);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [locationHydrated, merchantsGeoKey, vegOnly, queryClient]);
-
-  // Grocery list + card banners — warm while still on Home, before Grocery opens.
-  useEffect(() => {
-    if (!locationHydrated || coords?.latitude == null || coords?.longitude == null) return;
-    const lat = coords.latitude;
-    const lng = coords.longitude;
-    let cancelled = false;
-    void (async () => {
-      await prefetchMerchantsList(queryClient, lat, lng, false, "GROCERY");
-      if (cancelled) return;
-      const list = readSyncMerchantsList(lat, lng, false, "GROCERY");
-      if (list?.length) {
-        prefetchMerchantCardImages(list);
-        prefetchMerchantBanners(list);
-      }
-    })();
-    void prefetchUserAppCategories(queryClient, "GROCERY");
-    return () => {
-      cancelled = true;
-    };
-  }, [locationHydrated, merchantsGeoKey, queryClient]);
 
   return null;
 }

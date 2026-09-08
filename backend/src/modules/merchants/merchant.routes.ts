@@ -43,6 +43,7 @@ import {
   resolveStorePrepMinutesForEta,
 } from "./merchant-menu-prep.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
+import { parseSizePreset } from "../../lib/menu-size-preset.js";
 import { foodTypeIsListedAsVeg } from "../../lib/food-order-veg.js";
 import { previewEtaRange } from "../eta/eta.preview.js";
 import { getSql } from "../../db/client.js";
@@ -184,6 +185,15 @@ function mapCustomerMenuItem(
     hasAddons: m.has_addons === true,
     hasVariants: m.has_variants === true,
     inStock: m.in_stock !== false,
+    sizeValue:
+      m.item_size_value != null && String(m.item_size_value).trim() !== ""
+        ? String(m.item_size_value).trim()
+        : undefined,
+    sizeUnit:
+      m.item_size_unit != null && String(m.item_size_unit).trim() !== ""
+        ? String(m.item_size_unit).trim()
+        : undefined,
+    sizePreset: parseSizePreset(m.size_preset) ?? undefined,
   };
 }
 
@@ -630,7 +640,7 @@ export async function merchantRoutes(app: FastifyInstance) {
             Number.isFinite(storeInternalId) && storeInternalId > 0
               ? mediaByStoreId.get(storeInternalId)?.packaging_charge_amount ?? 0
               : 0,
-          isPureVeg: s.is_pure_veg === true,
+          isPureVeg: q.veg === true || s.is_pure_veg === true,
           storeType:
             Number.isFinite(storeInternalId) && storeInternalId > 0
               ? mediaByStoreId.get(storeInternalId)?.store_type ??
@@ -791,6 +801,7 @@ export async function merchantRoutes(app: FastifyInstance) {
               hasVariants: z.boolean(),
               sizeValue: z.string().nullable().optional(),
               sizeUnit: z.string().nullable().optional(),
+              sizePreset: z.enum(["REGULAR", "STANDARD", "PREMIUM"]).nullable().optional(),
             }),
             variants: z.array(z.object({
               id: z.string(),
@@ -798,6 +809,7 @@ export async function merchantRoutes(app: FastifyInstance) {
               type: z.string().nullable(),
               sizeValue: z.string().nullable().optional(),
               sizeUnit: z.string().nullable().optional(),
+              sizePreset: z.enum(["REGULAR", "STANDARD", "PREMIUM"]).nullable().optional(),
               price: z.number(),
               isDefault: z.boolean(),
               displayOrder: z.number(),
@@ -817,6 +829,7 @@ export async function merchantRoutes(app: FastifyInstance) {
                 imageUrl: z.string().nullable(),
                 sizeValue: z.string().nullable().optional(),
                 sizeUnit: z.string().nullable().optional(),
+                sizePreset: z.enum(["REGULAR", "STANDARD", "PREMIUM"]).nullable().optional(),
                 displayOrder: z.number(),
                 isMostOrdered: z.boolean().optional(),
               })),
@@ -997,6 +1010,8 @@ export async function merchantRoutes(app: FastifyInstance) {
             is_active: z.boolean().nullable(),
             created_at: z.string().nullable().optional(),
             legal_name: z.string().nullable().optional(),
+            owner_name: z.string().nullable().optional(),
+            public_slug: z.string().nullable().optional(),
             gst_number: z.string().nullable().optional(),
             fssai_number: z.string().nullable().optional(),
             store_phone: z.string().nullable().optional(),
@@ -1083,6 +1098,9 @@ export async function merchantRoutes(app: FastifyInstance) {
                   hasAddons: z.boolean().optional(),
                   hasVariants: z.boolean().optional(),
                   inStock: z.boolean().optional(),
+                  sizeValue: z.string().nullable().optional(),
+                  sizeUnit: z.string().nullable().optional(),
+                  sizePreset: z.enum(["REGULAR", "STANDARD", "PREMIUM"]).nullable().optional(),
                 })
               )
               .optional(),
@@ -1163,6 +1181,9 @@ export async function merchantRoutes(app: FastifyInstance) {
                 hasAddons: z.boolean().optional(),
                 hasVariants: z.boolean().optional(),
                 inStock: z.boolean().optional(),
+                sizeValue: z.string().nullable().optional(),
+                sizeUnit: z.string().nullable().optional(),
+                sizePreset: z.enum(["REGULAR", "STANDARD", "PREMIUM"]).nullable().optional(),
               })
             ),
             cuisines: z.array(z.string()).optional(),
@@ -1180,6 +1201,7 @@ export async function merchantRoutes(app: FastifyInstance) {
             etag: z.string().optional(),
             fssaiNumber: z.string().nullable().optional(),
             storeType: z.string().nullable().optional(),
+            publicSlug: z.string().nullable().optional(),
           }),
           404: z.object({ error: z.string() }),
         },
@@ -1263,6 +1285,9 @@ export async function merchantRoutes(app: FastifyInstance) {
       return reply.send({
         id: store.store_id,
         name: store.store_display_name ?? store.store_name,
+        publicSlug:
+          ((store as { public_slug?: string | null }).public_slug ?? "").trim() ||
+          store.store_id,
         imageUrl: toAbsoluteClientMediaUrl(store.banner_url ?? null) ?? undefined,
         bannerVideoUrl:
           toAbsoluteClientMediaUrl(

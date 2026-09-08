@@ -4,13 +4,14 @@
  * Full: Back | Search | Veg | Cart. Minimal (no-service): Back | Location only.
  */
 
-import React from "react";
+import React, { useRef } from "react";
 import { View, TouchableOpacity, StyleSheet, Platform } from "react-native";
 import Animated from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { HEADER_PADDING_TOP, HEADER_VERTICAL_PADDING } from "@/constants/layout";
 import { AppText } from "@/components/AppText";
+import type { VegPopoverAnchor } from "@/components/home/VegModePopover";
 
 export const GM_HEADER_HEIGHT = 56;
 const GM_MINIMAL_HEADER_HEIGHT = 44;
@@ -25,6 +26,7 @@ export type GMHeaderProps = {
   showActions?: boolean;
   vegOnly?: boolean;
   onVegChange?: (value: boolean) => void;
+  onOpenVegPopover?: (anchor: VegPopoverAnchor) => void;
   /** Show cart in header (false on food, true on other services e.g. shop). */
   showCart?: boolean;
   cartCount?: number;
@@ -54,6 +56,7 @@ export function GMHeader({
   showActions = true,
   vegOnly = false,
   onVegChange,
+  onOpenVegPopover,
   showCart = false,
   cartCount = 0,
   onCartPress,
@@ -66,6 +69,7 @@ export function GMHeader({
   compact = false,
   skyBackground = false,
 }: GMHeaderProps) {
+  const vegToggleRef = useRef<View>(null);
   const bottomPad = compact ? 8 : HEADER_VERTICAL_PADDING;
   if (minimal) {
     return (
@@ -131,14 +135,45 @@ export function GMHeader({
 
         {showActions && (
           <View style={styles.actions}>
-            <View style={styles.vegWrap}>
-              <AppText style={styles.vegLabel}>Veg</AppText>
+            <View ref={vegToggleRef} collapsable={false}>
               <TouchableOpacity
-                style={[styles.vegToggle, vegOnly && styles.vegToggleOn]}
-                onPress={() => onVegChange?.(!vegOnly)}
+                style={styles.vegWrap}
+                onPress={() => {
+                  if (vegOnly) {
+                    onVegChange?.(false);
+                    return;
+                  }
+                  if (onOpenVegPopover) {
+                    requestAnimationFrame(() => {
+                      try {
+                        vegToggleRef.current?.measureInWindow((x, y, width, height) => {
+                          onOpenVegPopover({
+                            x: Number.isFinite(x) ? x : 0,
+                            y: Number.isFinite(y) ? y : 0,
+                            width: width || 42,
+                            height: height || 36,
+                          });
+                        });
+                      } catch {
+                        onOpenVegPopover({ x: 0, y: 0, width: 42, height: 36 });
+                      }
+                    });
+                    return;
+                  }
+                  // No popover — leave Veg Mode off until Apply is available.
+                }}
                 activeOpacity={0.8}
+                delayPressIn={0}
+                accessibilityRole="switch"
+                accessibilityState={{ checked: vegOnly }}
               >
-                <View style={[styles.vegThumb, vegOnly && styles.vegThumbOn]} />
+                <AppText style={styles.vegLabel}>Veg</AppText>
+                <View
+                  style={[styles.vegToggle, vegOnly && styles.vegToggleOn]}
+                  pointerEvents="none"
+                >
+                  <View style={[styles.vegThumb, vegOnly && styles.vegThumbOn]} />
+                </View>
               </TouchableOpacity>
             </View>
             {showCart && (

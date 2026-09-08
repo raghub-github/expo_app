@@ -16,8 +16,9 @@ import {
   BUTTON_RADIUS,
   TAB_BAR_SCROLL_CONTENT_PADDING,
 } from "@/constants/theme";
-import { useAuth } from "@/context/AuthContext";
+import { sizeModeFromPreset, normalizeSizeWrite, numericSizeOrNull, type SizeMode } from "@/lib/menu-size-preset";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useAuth } from "@/context/AuthContext";
 import {
   useMenuCategories,
   useMenuItem,
@@ -82,6 +83,17 @@ const SERVES_OPTIONS = [
 const SIZE_UNITS = [
   "slices", "kg", "litre", "ml", "serves", "cms", "piece", "grams", "inches",
 ] as const;
+
+const SIZE_TYPE_OPTIONS: { value: SizeMode; label: string }[] = [
+  { value: "MANUAL", label: "Manual" },
+  { value: "REGULAR", label: "Regular" },
+  { value: "STANDARD", label: "Standard" },
+  { value: "PREMIUM", label: "Premium" },
+];
+
+function sizeTypeLabel(mode: SizeMode): string {
+  return SIZE_TYPE_OPTIONS.find((o) => o.value === mode)?.label ?? "Manual";
+}
 
 const WEIGHT_UNITS = ["grams", "kg", "oz", "lbs"] as const;
 const NUTRIENT_UNITS = ["mg", "g"] as const;
@@ -295,6 +307,8 @@ export default function AddEditItemScreen() {
   const [servesLabel, setServesLabel] = useState("");
   const [itemSizeValue, setItemSizeValue] = useState("");
   const [itemSizeUnit, setItemSizeUnit] = useState("piece");
+  const [sizePreset, setSizePreset] = useState<SizeMode>("MANUAL");
+  const [showSizeTypeModal, setShowSizeTypeModal] = useState(false);
   const [availableForDelivery, setAvailableForDelivery] = useState(true);
   const [authorized, setAuthorized] = useState(false);
 
@@ -698,6 +712,7 @@ export default function AddEditItemScreen() {
     setServesLabel(itemData.serves_label ?? "");
     setItemSizeValue(itemData.item_size_value != null ? String(itemData.item_size_value) : "");
     setItemSizeUnit(itemData.item_size_unit ?? "piece");
+    setSizePreset(sizeModeFromPreset(itemData.size_preset));
     setAvailableForDelivery(itemData.available_for_delivery ?? true);
     setWeightPerServing(itemData.weight_per_serving != null ? String(itemData.weight_per_serving) : "");
     setWeightUnit(itemData.weight_per_serving_unit ?? "grams");
@@ -904,6 +919,11 @@ export default function AddEditItemScreen() {
       packagingOut = packagingNum;
     }
 
+    const itemSize = normalizeSizeWrite({
+      size_preset: sizePreset === "MANUAL" ? null : sizePreset,
+      size_value: itemSizeValue,
+      size_unit: itemSizeUnit,
+    });
     const payload: MenuItemPayload = {
       item_name: itemName.trim(),
       item_description: description.trim() || null,
@@ -916,8 +936,9 @@ export default function AddEditItemScreen() {
       packaging_charges: isGroceryItemForm ? null : packagingOut,
       serves_label: isGroceryItemForm ? null : servesLabel || null,
       serves: isGroceryItemForm ? null : servesNumber,
-      item_size_value: parseOptionalNonNegativeNumber(itemSizeValue || ""),
-      item_size_unit: itemSizeUnit || null,
+      item_size_value: numericSizeOrNull(itemSize.size_value),
+      item_size_unit: itemSize.size_unit,
+      size_preset: itemSize.size_preset,
       available_for_delivery: availableForDelivery,
       weight_per_serving: parseOptionalNonNegativeNumber(weightPerServing || ""),
       weight_per_serving_unit: weightUnit,
@@ -1041,7 +1062,7 @@ export default function AddEditItemScreen() {
     }
   }, [
     storeId, isEdit, itemId, itemName, description, foodType, categoryId, cuisineType, pendingImage, token,
-    basePrice, sellingPrice, prepTimeMinutes, packagingEnabled, packagingCharges, servesLabel, itemSizeValue, itemSizeUnit,
+    basePrice, sellingPrice, prepTimeMinutes, packagingEnabled, packagingCharges, servesLabel, itemSizeValue, itemSizeUnit, sizePreset,
     availableForDelivery, weightPerServing, weightUnit, caloriesKcal,
     proteinVal, proteinUnit, carbsVal, carbsUnit, fatVal, fatUnit,
     fibreVal, fibreUnit, selectedAllergens, selectedTags, router,
@@ -1849,6 +1870,13 @@ export default function AddEditItemScreen() {
         <Text style={styles.helperText}>Number of adults who can be served with 1 item</Text>
 
         {/* ── Item size (food stores) ── */}
+        <DropdownField
+          label="Size type"
+          value={sizeTypeLabel(sizePreset)}
+          placeholder="Manual"
+          onPress={() => setShowSizeTypeModal(true)}
+        />
+        {sizePreset === "MANUAL" ? (
         <ValueUnitField
           label="Item size"
           value={itemSizeValue}
@@ -1858,6 +1886,11 @@ export default function AddEditItemScreen() {
           placeholder="Eg. 4"
           helperText="Size of the item e.g. Paneer Tikka, 8 pieces"
         />
+        ) : (
+          <Text style={styles.helperText}>
+            Customer sees {sizeTypeLabel(sizePreset)}. No numeric size required.
+          </Text>
+        )}
         </>
         ) : null}
 
@@ -1983,6 +2016,13 @@ export default function AddEditItemScreen() {
               />
               <Text style={styles.helperText}>Product best-before / expiry</Text>
             </View>
+            <DropdownField
+              label="Size type"
+              value={sizeTypeLabel(sizePreset)}
+              placeholder="Manual"
+              onPress={() => setShowSizeTypeModal(true)}
+            />
+            {sizePreset === "MANUAL" ? (
             <ValueUnitField
               label="Item size"
               value={itemSizeValue}
@@ -1992,6 +2032,11 @@ export default function AddEditItemScreen() {
               placeholder="Eg. 500"
               helperText="Optional — e.g. 1 L, 500 grams, 12 piece"
             />
+            ) : (
+              <Text style={styles.helperText}>
+                Customer sees {sizeTypeLabel(sizePreset)}. No numeric size required.
+              </Text>
+            )}
             </>
           ) : (
             <>
@@ -2207,6 +2252,31 @@ export default function AddEditItemScreen() {
               name={servesLabel === opt ? "radio-button-on" : "radio-button-off"}
               size={24}
               color={servesLabel === opt ? GatiMitraMerchant.primary : GatiMitraMerchant.textTertiary}
+            />
+          </TouchableOpacity>
+        ))}
+      </BottomModal>
+
+      <BottomModal visible={showSizeTypeModal} title="Size type" onClose={() => setShowSizeTypeModal(false)}>
+        {SIZE_TYPE_OPTIONS.map((opt) => (
+          <TouchableOpacity
+            key={opt.value}
+            style={styles.radioRow}
+            onPress={() => {
+              setSizePreset(opt.value);
+              if (opt.value !== "MANUAL") {
+                setItemSizeValue("");
+                setItemSizeUnit("piece");
+              }
+              setShowSizeTypeModal(false);
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.radioLabel}>{opt.label}</Text>
+            <Ionicons
+              name={sizePreset === opt.value ? "radio-button-on" : "radio-button-off"}
+              size={24}
+              color={sizePreset === opt.value ? GatiMitraMerchant.primary : GatiMitraMerchant.textTertiary}
             />
           </TouchableOpacity>
         ))}

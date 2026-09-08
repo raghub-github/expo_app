@@ -9,6 +9,7 @@ import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-mercha
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import { expireTimedMenuOutOfStockForStore } from "@/lib/menu-oos-expiry";
+import { collapseDuplicateMenuItems } from "@/lib/collapse-duplicate-menu-items";
 import {
   fetchCustomizationsForMenuItems,
   fetchVariantsForMenuItems,
@@ -49,6 +50,7 @@ export async function GET(
 
     const sql = getSql();
     await expireTimedMenuOutOfStockForStore(sql, storeId);
+    await collapseDuplicateMenuItems(sql, storeId);
     const categories = await sql`
       SELECT id, store_id, category_name, category_description, category_image_url,
              parent_category_id, cuisine_id, display_order, is_active,
@@ -108,7 +110,7 @@ export async function GET(
              ) AS has_addons,
              has_variants,
              is_popular, is_recommended,
-             preparation_time_minutes, packaging_charges, serves, serves_label, item_size_value, item_size_unit,
+             preparation_time_minutes, packaging_charges, serves, serves_label, item_size_value, item_size_unit, size_preset,
              available_for_delivery,
              weight_per_serving, weight_per_serving_unit, calories_kcal,
              protein, protein_unit, carbohydrates, carbohydrates_unit,

@@ -49,6 +49,13 @@ function publish() {
 
 AppState.addEventListener("change", (state: AppStateStatus) => {
   appActive = state === "active";
+  if (state === "active") {
+    scrolling = false;
+    if (scrollIdleTimer) {
+      clearTimeout(scrollIdleTimer);
+      scrollIdleTimer = null;
+    }
+  }
   publish();
 });
 

@@ -10,6 +10,7 @@
  */
 
 import { extractAddressShareToken, isAddressSharePath } from "@/lib/addressShareLink";
+import { extractRestaurantShareSlug, isRestaurantSharePath } from "@/lib/restaurantShareLink";
 
 function isReferralPath(path: string): boolean {
   return /(^|\/\/|\/)(ref|invite)(\/|\?|$)/.test(path) || /referral(\?|$)/.test(path);
@@ -46,6 +47,12 @@ export function redirectSystemPath({
         return `/address/save?id=${encodeURIComponent(token)}`;
       }
       return `/address/save`;
+    }
+    if (isRestaurantSharePath(path)) {
+      const slug = extractRestaurantShareSlug(path);
+      if (slug) {
+        return `/home/merchant/${encodeURIComponent(slug)}`;
+      }
     }
     if (isReferralPath(path)) {
       const parsed = extractReferralCode(path);

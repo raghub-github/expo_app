@@ -149,38 +149,85 @@ export async function listR2KeysByPrefix(
   return keys;
 }
 
-export async function getObjectByKey(
-  r2Key: string
+async function bufferFromGetObject(
+  client: S3Client,
+  bucket: string,
+  key: string
 ): Promise<{ buffer: Buffer; contentType?: string } | null> {
+  const { contentTypeFromR2Key } = await import("@/lib/r2-proxy-url");
+  try {
+    const response = await client.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      })
+    );
+    if (!response.Body) return null;
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of response.Body as AsyncIterable<Uint8Array>) {
+      chunks.push(chunk);
+    }
+    return {
+      buffer: Buffer.concat(chunks),
+      contentType: contentTypeFromR2Key(key, response.ContentType ?? null),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveExistingObjectKey(r2Key: string): Promise<string | null> {
   const client = getR2Client();
   const bucket = getBucketName();
-  const { r2LookupKeyVariants, contentTypeFromR2Key } = await import("@/lib/r2-proxy-url");
+  const {
+    r2LookupKeyVariants,
+    r2ObjectFileName,
+    r2OnboardingSearchPrefixes,
+  } = await import("@/lib/r2-proxy-url");
   const variants = r2LookupKeyVariants(r2Key);
   if (variants.length === 0) return null;
 
   for (const key of variants) {
     try {
-      const response = await client.send(
-        new GetObjectCommand({
-          Bucket: bucket,
-          Key: key,
-        })
-      );
-      if (!response.Body) continue;
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of response.Body as AsyncIterable<Uint8Array>) {
-        chunks.push(chunk);
-      }
-      const buffer = Buffer.concat(chunks);
-      return {
-        buffer,
-        contentType: contentTypeFromR2Key(key, response.ContentType ?? null),
-      };
+      await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+      return key;
+    } catch {
+      /* try next */
+    }
+  }
+
+  const fileName = r2ObjectFileName(r2Key).toLowerCase();
+  if (!fileName) return null;
+  const seen = new Set(variants);
+  for (const prefix of r2OnboardingSearchPrefixes(r2Key)) {
+    let listed: string[] = [];
+    try {
+      listed = await listR2KeysByPrefix(`${prefix.replace(/\/+$/, "")}/`, 80);
     } catch {
       continue;
     }
+    const match =
+      listed.find((k) => (k.split("/").pop() || "").toLowerCase() === fileName) ||
+      listed.find((k) => k.toLowerCase().includes(`/${fileName}`));
+    if (match && !seen.has(match)) {
+      seen.add(match);
+      try {
+        await client.send(new HeadObjectCommand({ Bucket: bucket, Key: match }));
+        return match;
+      } catch {
+        /* try next */
+      }
+    }
   }
   return null;
+}
+
+export async function getObjectByKey(
+  r2Key: string
+): Promise<{ buffer: Buffer; contentType?: string } | null> {
+  const resolved = await resolveExistingObjectKey(r2Key);
+  if (!resolved) return null;
+  return bufferFromGetObject(getR2Client(), getBucketName(), resolved);
 }
 
 /** True when the object exists in R2 (HEAD). Missing/invalid keys → false. */
@@ -199,22 +246,16 @@ export async function headObjectByKey(
   r2Key: string
 ): Promise<{ contentType?: string; contentLength?: number } | null> {
   try {
+    const resolved = await resolveExistingObjectKey(r2Key);
+    if (!resolved) return null;
     const client = getR2Client();
     const bucket = getBucketName();
-    const { r2LookupKeyVariants, contentTypeFromR2Key } = await import("@/lib/r2-proxy-url");
-    const variants = r2LookupKeyVariants(r2Key);
-    for (const key of variants) {
-      try {
-        const response = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
-        return {
-          contentType: contentTypeFromR2Key(key, response.ContentType ?? null),
-          contentLength: typeof response.ContentLength === "number" ? response.ContentLength : undefined,
-        };
-      } catch {
-        continue;
-      }
-    }
-    return null;
+    const { contentTypeFromR2Key } = await import("@/lib/r2-proxy-url");
+    const response = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: resolved }));
+    return {
+      contentType: contentTypeFromR2Key(resolved, response.ContentType ?? null),
+      contentLength: typeof response.ContentLength === "number" ? response.ContentLength : undefined,
+    };
   } catch {
     return null;
   }

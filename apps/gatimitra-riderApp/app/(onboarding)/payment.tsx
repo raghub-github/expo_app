@@ -35,6 +35,7 @@ import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstab
 import {
   onboardingStepToRoute,
   isVehicleOnboardingComplete,
+  isOnboardingVehicleDocsComplete,
   resolveOnboardingMacroStepIndex,
   canAccessOnboardingPaymentScreen,
   type ServerOnboardingStep,
@@ -141,13 +142,17 @@ export default function PaymentScreen() {
   }, [hydrate]);
 
   useEffect(() => {
-    if (!data.vehicleChoice?.trim()) {
+    const vehicleDone = isOnboardingVehicleDocsComplete(
+      riderStatus?.completedOnboardingSteps,
+      data.vehicleOnboardingFlow
+    );
+    if (!data.vehicleChoice?.trim() && !vehicleDone) {
       router.replace("/(onboarding)/dl-rc");
       return;
     }
     const locallySubmitted =
-      data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice.trim();
-    if (!locallySubmitted) {
+      data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice?.trim();
+    if (!locallySubmitted && !vehicleDone) {
       if (
         !canAccessOnboardingPaymentScreen({
           vehicleChoice: data.vehicleChoice,
@@ -161,7 +166,7 @@ export default function PaymentScreen() {
         return;
       }
     }
-    if (!data.bankAccountOnboardingDone) {
+    if (!data.bankAccountOnboardingDone && !riderStatus?.bankAccountOnboardingDone) {
       router.replace("/(onboarding)/bank-account");
     }
   }, [
@@ -170,6 +175,7 @@ export default function PaymentScreen() {
     data.vehicleOnboardingFlow,
     data.bankAccountOnboardingDone,
     riderStatus?.completedOnboardingSteps,
+    riderStatus?.bankAccountOnboardingDone,
   ]);
 
   useEffect(() => {
@@ -208,14 +214,15 @@ export default function PaymentScreen() {
 
   const documentsReadyForPayment = useMemo(
     () =>
-      Boolean(data.bankAccountOnboardingDone) &&
+      Boolean(data.bankAccountOnboardingDone || riderStatus?.bankAccountOnboardingDone) &&
       (data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice?.trim() ||
         canAccessOnboardingPaymentScreen({
           vehicleChoice: data.vehicleChoice,
           vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
           completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
           vehicleOnboardingFlow: data.vehicleOnboardingFlow,
-          bankAccountOnboardingDone: data.bankAccountOnboardingDone,
+          bankAccountOnboardingDone:
+            data.bankAccountOnboardingDone || riderStatus?.bankAccountOnboardingDone,
         })),
     [
       data.vehicleChoice,
@@ -223,6 +230,7 @@ export default function PaymentScreen() {
       data.vehicleOnboardingFlow,
       data.bankAccountOnboardingDone,
       riderStatus?.completedOnboardingSteps,
+      riderStatus?.bankAccountOnboardingDone,
     ]
   );
 

@@ -4,4 +4,5 @@ export const RiderFonts = {
   loraBold: "Lora_700Bold",
   poppinsSemiBold: "Poppins_600SemiBold",
   poppinsBold: "Poppins_700Bold",
+  poppinsExtraBold: "Poppins_800ExtraBold",
 } as const;

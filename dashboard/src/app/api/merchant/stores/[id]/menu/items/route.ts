@@ -19,6 +19,10 @@ import {
 } from "@/lib/db/sql-json-body";
 import { ulid } from "ulid";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
+import { enforceStorePlanLimits } from "@/lib/db/operations/menu-category-rules";
+import { normalizeSizeWrite, numericSizeOrNull } from "@/lib/menu-size-preset";
+import { itemNameMatchKey } from "@/lib/menu-xlsx-import";
+import { collapseDuplicateMenuItems } from "@/lib/collapse-duplicate-menu-items";
 
 export const runtime = "nodejs";
 
@@ -81,8 +85,14 @@ export async function POST(
     const serves_label = bodyOptionalStr(body.serves_label);
     const short_name = bodyOptionalStr(body.short_name);
     const display_order = bodyNum(body.display_order, 0);
-    const item_size_value = bodyNumOrNull(body.item_size_value);
-    const item_size_unit = bodyOptionalStr(body.item_size_unit);
+    const item_size = normalizeSizeWrite({
+      size_preset: body.size_preset,
+      size_value: body.item_size_value,
+      size_unit: body.item_size_unit,
+    });
+    const item_size_value = numericSizeOrNull(item_size.size_value);
+    const item_size_unit = item_size.size_unit;
+    const size_preset = item_size.size_preset;
     const available_for_delivery = bodyBool(body.available_for_delivery, true);
     const in_stock = bodyBool(body.in_stock, true);
     const is_active = bodyBool(body.is_active, true);
@@ -112,11 +122,88 @@ export async function POST(
       expiryRaw && /^\d{4}-\d{2}-\d{2}$/.test(expiryRaw) ? expiryRaw : null;
 
     const sql = getSql();
+    await collapseDuplicateMenuItems(sql, storeId);
+    const liveItems = await sql<{ id: number; item_id: string; item_name: string }[]>`
+      SELECT id, item_id, item_name
+      FROM merchant_menu_items
+      WHERE store_id = ${storeId}
+        AND COALESCE(is_deleted, FALSE) = FALSE
+      ORDER BY id ASC
+    `;
+    const wantKey = itemNameMatchKey(item_name);
+    const existing = liveItems.find((r) => itemNameMatchKey(String(r.item_name ?? "")) === wantKey);
+    if (existing) {
+      const existingId = Number(existing.id);
+      await sql`
+        UPDATE merchant_menu_items SET
+          category_id = ${category_id},
+          item_name = ${item_name},
+          item_description = ${item_description},
+          food_type = ${food_type},
+          spice_level = ${spice_level},
+          cuisine_type = ${cuisine_type},
+          base_price = ${base_price},
+          selling_price = ${selling_price},
+          preparation_time_minutes = ${preparation_time_minutes},
+          packaging_charges = ${packaging_charges},
+          serves = ${serves},
+          serves_label = ${serves_label},
+          short_name = ${short_name},
+          display_order = ${display_order},
+          item_size_value = ${item_size_value},
+          item_size_unit = ${item_size_unit},
+          size_preset = ${size_preset},
+          available_for_delivery = ${available_for_delivery},
+          allergens = ${allergens},
+          item_tags = ${item_tags},
+          weight_per_serving = ${weight_per_serving},
+          weight_per_serving_unit = ${weight_per_serving_unit},
+          calories_kcal = ${calories_kcal},
+          protein = ${protein},
+          protein_unit = ${protein_unit},
+          carbohydrates = ${carbohydrates},
+          carbohydrates_unit = ${carbohydrates_unit},
+          fat = ${fat},
+          fat_unit = ${fat_unit},
+          fibre = ${fibre},
+          fibre_unit = ${fibre_unit},
+          in_stock = ${in_stock},
+          available_quantity = ${available_quantity},
+          low_stock_threshold = ${low_stock_threshold},
+          expiry_date = ${expiry_date},
+          is_active = ${is_active},
+          is_popular = ${is_popular},
+          is_recommended = ${is_recommended},
+          has_customizations = ${has_customizations},
+          has_addons = ${has_addons},
+          has_variants = ${has_variants},
+          updated_at = NOW()
+        WHERE id = ${existingId} AND store_id = ${storeId}
+      `;
+      try {
+        await logStoreActivity({
+          storeId,
+          section: "menu_item",
+          action: "update",
+          entityId: existingId,
+          entityName: item_name,
+          summary: `Agent replaced menu item "${item_name}"`,
+          actorType: "agent",
+          source: "dashboard",
+        });
+      } catch (_) {}
+      await enforceStorePlanLimits(storeId);
+      return NextResponse.json(
+        { success: true, id: existingId, item_id: existing.item_id, replaced: true },
+        { status: 200 }
+      );
+    }
+
     const [row] = await sql`
       INSERT INTO merchant_menu_items (
         store_id, category_id, item_id, item_name, item_description, food_type, spice_level, cuisine_type,
         base_price, selling_price, preparation_time_minutes, packaging_charges, serves, serves_label, short_name, display_order,
-        item_size_value, item_size_unit, available_for_delivery,
+        item_size_value, item_size_unit, size_preset, available_for_delivery,
         allergens, item_tags,
         weight_per_serving, weight_per_serving_unit, calories_kcal,
         protein, protein_unit, carbohydrates, carbohydrates_unit,
@@ -139,6 +226,7 @@ export async function POST(
         ${display_order},
         ${item_size_value},
         ${item_size_unit},
+        ${size_preset},
         ${available_for_delivery},
         ${allergens},
         ${item_tags},
@@ -186,8 +274,17 @@ export async function POST(
       });
     } catch (_) {}
 
+    await enforceStorePlanLimits(storeId);
+
     return NextResponse.json({ success: true, id: newId, item_id: (row as any).item_id }, { status: 201 });
   } catch (e) {
+    const code = e && typeof e === "object" && "code" in e ? String((e as { code?: string }).code ?? "") : "";
+    if (code === "23505") {
+      return NextResponse.json(
+        { success: false, error: "An item with this name already exists. Open it and edit instead of adding a duplicate." },
+        { status: 409 }
+      );
+    }
     console.error("[POST /api/merchant/stores/[id]/menu/items]", e);
     return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });
   }

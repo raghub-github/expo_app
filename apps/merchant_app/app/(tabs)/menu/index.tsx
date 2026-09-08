@@ -72,6 +72,7 @@ import { CatalogPhotoUploadingOverlay } from "@/components/menu/CatalogPhotoUplo
 import type { CatalogPhotoUploadCallbacks } from "@/lib/catalogPhotoUploadFlow";
 import { CatalogStockToggle } from "@/components/menu/CatalogStockToggle";
 import { CatalogCategoryMenuSheet } from "@/components/menu/CatalogCategoryMenuSheet";
+import { formatMenuSize } from "@/lib/menu-size-preset";
 import { AuthProxyImage, prefetchAuthImage, prefetchAuthImages } from "@/components/AuthProxyImage";
 import { prefetchMenuItemDetail, invalidateMenuItemCache } from "@/lib/menuItemCache";
 
@@ -296,12 +297,9 @@ function buildCatalogItemDetailLines(item: MenuItemRow): string[] {
   } else if (item.serves != null && item.serves > 0) {
     meta.push(`${item.serves} ${item.serves === 1 ? "person" : "people"}`);
   }
-  if (item.item_size_value != null && item.item_size_value > 0 && item.item_size_unit?.trim()) {
-    const sizeVal =
-      Number(item.item_size_value) === Math.floor(Number(item.item_size_value))
-        ? String(Math.floor(Number(item.item_size_value)))
-        : String(Number(item.item_size_value));
-    meta.push(`${sizeVal} ${item.item_size_unit.trim()}`);
+  const sizeLabel = formatMenuSize(item.size_preset, item.item_size_value, item.item_size_unit);
+  if (sizeLabel) {
+    meta.push(sizeLabel);
   }
   if (meta.length > 0) lines.push(meta.join(" · "));
 

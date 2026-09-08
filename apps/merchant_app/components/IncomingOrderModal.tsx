@@ -38,10 +38,9 @@ import { mapApiOrder } from "@/lib/orderRecord";
 import { shortLocalityFromAddress } from "@/lib/selectedStoreStorage";
 import { readDeviceOrderAlertsAsync } from "@/lib/deviceOrderAlerts";
 import {
-  playIncomingOrderAlert,
-  stopOrderAlertSound,
-} from "@/lib/playOrderAlertSound";
-import { claimNewOrderAlertSound } from "@/lib/newOrderAlertSoundDedupe";
+  takeoverNewOrderAlertByModal,
+  stopNewOrderAlert,
+} from "@/lib/newOrderAlertManager";
 import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
 import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/RejectFollowUpHost";
 import { OrderCardItemRow } from "@/components/order/OrderCardItemRow";
@@ -511,7 +510,6 @@ export default function IncomingOrderModal() {
 
   const seenFoodIdsRef = useRef<Set<string>>(new Set());
   const shownCoreIdsRef = useRef<Set<string>>(new Set());
-  const soundPlayedForOrderRef = useRef<string | null>(null);
 
   useEffect(() => {
     void getDismissed().then((set) => {
@@ -569,19 +567,8 @@ export default function IncomingOrderModal() {
           );
       const target = queue[0] ?? order;
       setSheetOrder(target);
-
-      if (
-        soundPlayedForOrderRef.current !== target.id &&
-        claimNewOrderAlertSound(target.id)
-      ) {
-        soundPlayedForOrderRef.current = target.id;
-        const dev = await readDeviceOrderAlertsAsync(storeId);
-        if (dev.orderAlertsEnabled && dev.soundAlertsEnabled) {
-          void playIncomingOrderAlert(acceptanceSettings, dev);
-        }
-      }
     },
-    [storeId, token, acceptanceWindowMinutes, acceptanceSettings, orders]
+    [storeId, token, acceptanceWindowMinutes, orders]
   );
 
   const openSheetManually = useCallback(
@@ -626,7 +613,6 @@ export default function IncomingOrderModal() {
     if (!target) return;
     shownCoreIdsRef.current.delete(`c:${target.ordersCoreId}`);
     seenFoodIdsRef.current.delete(target.id);
-    soundPlayedForOrderRef.current = null;
     setSheetOrder(target);
     shownCoreIdsRef.current.add(`c:${target.ordersCoreId}`);
     seenFoodIdsRef.current.add(target.id);
@@ -674,18 +660,16 @@ export default function IncomingOrderModal() {
 
   useEffect(() => {
     if (!sheetOrder || !storeId) return;
-    if (soundPlayedForOrderRef.current === sheetOrder.id) return;
-    if (!claimNewOrderAlertSound(sheetOrder.id)) {
-      soundPlayedForOrderRef.current = sheetOrder.id;
-      return;
-    }
-    soundPlayedForOrderRef.current = sheetOrder.id;
     let cancelled = false;
     void (async () => {
       const dev = await readDeviceOrderAlertsAsync(storeId);
       if (cancelled) return;
-      if (!dev.orderAlertsEnabled || !dev.soundAlertsEnabled) return;
-      await playIncomingOrderAlert(acceptanceSettings, dev);
+      await takeoverNewOrderAlertByModal({
+        orderId: sheetOrder.id,
+        source: "MODAL",
+        settings: acceptanceSettings,
+        device: dev,
+      });
     })();
     return () => {
       cancelled = true;
@@ -843,7 +827,6 @@ export default function IncomingOrderModal() {
   /** Move to the previous/next pending order with a horizontal slide.
    *  delta -1 = older (Prev), +1 = newer (Next). Index 0 is always oldest. */
   const applyOrderTarget = useCallback((target: OrderRecord) => {
-    soundPlayedForOrderRef.current = target.id;
     shownCoreIdsRef.current.add(`c:${target.ordersCoreId}`);
     seenFoodIdsRef.current.add(target.id);
     setRejectOpen(false);
@@ -910,14 +893,13 @@ export default function IncomingOrderModal() {
     async (opts?: {
       markDismissed?: boolean;
       parkIfLast?: boolean;
+      stopReason?: "accepted" | "rejected" | "expired" | "cancelled" | "dismissed";
       /** When set, no-op if the sheet already advanced past this order (accept/sync race). */
       forCoreId?: number | null;
       forFoodId?: string | null;
     }) => {
       const markDismissed = opts?.markDismissed !== false;
       const parkIfLast = opts?.parkIfLast === true;
-      stopOrderAlertSound();
-
       const current = sheetOrderRef.current;
       if (
         opts?.forCoreId != null &&
@@ -944,6 +926,10 @@ export default function IncomingOrderModal() {
           !current ||
           (o.id !== current.id && o.ordersCoreId !== current.ordersCoreId)
       );
+
+      if (current) {
+        void stopNewOrderAlert(current.id, opts?.stopReason ?? "dismissed");
+      }
 
       if (current && markDismissed) {
         await addDismissed(current.ordersCoreId);
@@ -972,8 +958,6 @@ export default function IncomingOrderModal() {
               (o.id !== current.id && o.ordersCoreId !== current.ordersCoreId)
           );
         const target = after[0] ?? before[before.length - 1] ?? others[0]!;
-        // Suppress re-chime when advancing to an already-queued order.
-        soundPlayedForOrderRef.current = target.id;
         shownCoreIdsRef.current.add(`c:${target.ordersCoreId}`);
         seenFoodIdsRef.current.add(target.id);
         if (current && !markDismissed) {
@@ -986,7 +970,6 @@ export default function IncomingOrderModal() {
       }
 
       // Last pending card — close the sheet.
-      soundPlayedForOrderRef.current = null;
       if (parkIfLast) {
         setParked(true);
         if (current) {
@@ -1006,13 +989,13 @@ export default function IncomingOrderModal() {
    * With multiple pending orders, advance to the next FIFO card (partnersite parity).
    */
   const dismissByUser = useCallback(() => {
-    stopOrderAlertSound();
+    const current = sheetOrderRef.current;
+    if (current) void stopNewOrderAlert(current.id, "dismissed");
     setRejectOpen(false);
     setAllItemsOpen(false);
     setBillBreakdownOpen(false);
     setCustomizationItem(null);
 
-    const current = sheetOrderRef.current;
     if (!current) {
       setSheetOrder(null);
       setParked(false);
@@ -1030,7 +1013,6 @@ export default function IncomingOrderModal() {
     const nextTarget = others.find((o) => !isDismissedCore(o.ordersCoreId));
 
     if (nextTarget) {
-      soundPlayedForOrderRef.current = nextTarget.id;
       shownCoreIdsRef.current.add(`c:${nextTarget.ordersCoreId}`);
       seenFoodIdsRef.current.add(nextTarget.id);
       setParked(false);
@@ -1038,7 +1020,6 @@ export default function IncomingOrderModal() {
       return;
     }
 
-    soundPlayedForOrderRef.current = null;
     setParked(false);
     setSheetOrder(null);
   }, [orders, setParked]);
@@ -1060,6 +1041,8 @@ export default function IncomingOrderModal() {
       const actedCoreId = Number(current.ordersCoreId);
       const actedFoodId = current.id;
       if (!Number.isFinite(foodId)) return;
+      const stopReason = status === "ACCEPTED" ? "accepted" : "rejected";
+      void stopNewOrderAlert(current.id, stopReason);
       setActionLoading(true);
       try {
         upsertOrder(current);
@@ -1081,6 +1064,7 @@ export default function IncomingOrderModal() {
         await advanceOrCloseSheet({
           markDismissed: true,
           parkIfLast: false,
+          stopReason,
           forCoreId: actedCoreId,
           forFoodId: actedFoodId,
         });
@@ -1096,6 +1080,7 @@ export default function IncomingOrderModal() {
           await advanceOrCloseSheet({
             markDismissed: true,
             parkIfLast: false,
+            stopReason,
             forCoreId: actedCoreId,
             forFoodId: actedFoodId,
           });
@@ -1134,6 +1119,7 @@ export default function IncomingOrderModal() {
       void advanceOrCloseSheet({
         markDismissed: true,
         parkIfLast: false,
+        stopReason: live.status === "rejected" ? "rejected" : "expired",
         forCoreId: sheetOrder.ordersCoreId,
         forFoodId: sheetOrder.id,
       });
@@ -1192,6 +1178,8 @@ export default function IncomingOrderModal() {
           await advanceOrCloseSheet({
             markDismissed: true,
             parkIfLast: false,
+            stopReason:
+              stage === "CANCELLED" || stage === "REJECTED" ? "cancelled" : "expired",
             forCoreId: syncCoreId,
             forFoodId: String(foodId),
           });

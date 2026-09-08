@@ -135,10 +135,16 @@ export function LogoutConfirmModal({ visible, token, onStay, onCompleteSignOut }
   );
 
   const runLogoutAll = async () => {
-    if (!token || busy) return;
+    if (busy) return;
     setBusy("all");
     try {
-      await logoutAllUserSessions(token, true);
+      if (token) {
+        try {
+          await logoutAllUserSessions(token, true);
+        } catch {
+          // Server revoke is best-effort — this device must still sign out locally.
+        }
+      }
       await onCompleteSignOut();
     } catch (e) {
       Alert.alert("Sign out failed", e instanceof Error ? e.message : "Could not sign out all devices.");
@@ -152,7 +158,11 @@ export function LogoutConfirmModal({ visible, token, onStay, onCompleteSignOut }
     setBusy("this");
     try {
       if (token && currentSession) {
-        await logoutUserSessions(token, [currentSession.id]);
+        try {
+          await logoutUserSessions(token, [currentSession.id]);
+        } catch {
+          /* local sign-out still proceeds */
+        }
       }
       await onCompleteSignOut();
     } catch (e) {
@@ -286,10 +296,10 @@ export function LogoutConfirmModal({ visible, token, onStay, onCompleteSignOut }
 
             <Pressable
               onPress={() => void runLogoutAll()}
-              disabled={busy != null || !token}
+              disabled={busy != null}
               style={({ pressed }) => [
                 styles.logoutAllBtn,
-                (pressed || busy != null || !token) && styles.pressed,
+                (pressed || busy != null) && styles.pressed,
               ]}
               hitSlop={8}
             >

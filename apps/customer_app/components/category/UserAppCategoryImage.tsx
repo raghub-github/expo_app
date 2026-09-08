@@ -102,13 +102,8 @@ function UserAppCategoryImageInner({
     persisted ||
     null;
 
-  const placeholderUri =
-    (localUri && localUri !== displayUri ? localUri : null) ||
-    (lastGoodRef.current && lastGoodRef.current !== displayUri
-      ? lastGoodRef.current
-      : null) ||
-    (persisted && persisted !== displayUri ? persisted : null);
-
+  // Never stack a second image URI as placeholder — on Android that paints a
+  // ghost/offset "duplicated layer" under category circles.
   if (displayUri) {
     return (
       <Image
@@ -119,8 +114,6 @@ function UserAppCategoryImageInner({
         recyclingKey={cacheKey ?? displayUri}
         priority="high"
         transition={0}
-        placeholder={placeholderUri ? { uri: placeholderUri } : undefined}
-        placeholderContentFit={contentFit}
         onLoad={() => {
           lastGoodRef.current = displayUri;
           markHeroMediaSessionReady(displayUri);

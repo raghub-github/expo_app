@@ -270,6 +270,22 @@ export async function POST(request: NextRequest) {
       if (!sourceRole && g0.sr) sourceRole = g0.sr;
     }
 
+    if (groupId != null) {
+      const dupText = await sqlClient.unsafe(
+        `SELECT 1 FROM ticket_titles
+         WHERE group_id = $1 AND lower(trim(title_text)) = lower(trim($2))
+           AND COALESCE(is_active, TRUE) = TRUE
+         LIMIT 1`,
+        [groupId, titleText]
+      );
+      if (dupText?.length) {
+        return NextResponse.json(
+          { success: false, error: "A title with this display text already exists in this group" },
+          { status: 400 }
+        );
+      }
+    }
+
     if (!serviceType || !ticketSection || !sourceRole) {
       return NextResponse.json(
         { success: false, error: "Provide groupId or all of serviceType, ticketSection, sourceRole" },

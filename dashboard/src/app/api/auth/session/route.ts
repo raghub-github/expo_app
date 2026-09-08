@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getUserPermissions } from "@/lib/permissions/engine";
 import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
@@ -9,6 +10,7 @@ import {
   isTimeoutOrAbortError,
   signOutIfSessionDead,
 } from "@/lib/auth/session-errors";
+import { readCookieAccessSession } from "@/lib/auth/read-cookie-access-session";
 
 const maxGetUserAttempts = 3;
 const retryDelaysMs = [800, 1600];
@@ -16,10 +18,22 @@ const retryDelaysMs = [800, 1600];
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
+    const cookieStore = await cookies();
+    const cookieSession = readCookieAccessSession({
+      get: (name) => cookieStore.get(name),
+      getAll: () => cookieStore.getAll(),
+    });
 
-    let user: { id: string; email?: string; [key: string]: unknown } | null = null;
+    let user: { id: string; email?: string; [key: string]: unknown } | null = cookieSession?.user?.id
+      ? {
+          ...cookieSession.user,
+          id: cookieSession.user.id,
+          email: cookieSession.user.email,
+        }
+      : null;
     let userError: unknown = null;
 
+    if (!user) {
     for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
       const result = await supabase.auth.getUser();
       user = result.data?.user ? { ...result.data.user, id: result.data.user.id, email: result.data.user.email } : null;
@@ -38,6 +52,7 @@ export async function GET(request: NextRequest) {
         continue;
       }
       break;
+    }
     }
 
     if (userError || !user) {

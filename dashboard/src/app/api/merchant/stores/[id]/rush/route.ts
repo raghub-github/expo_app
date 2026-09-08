@@ -4,10 +4,10 @@ import { triggerStoreScheduleTick } from "@/lib/triggerStoreScheduleTick";
 
 export const runtime = "nodejs";
 
-export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const auth = await authorizeMerchantStoreRoute(id);
+    const auth = await authorizeMerchantStoreRoute(id, { request });
     if (auth instanceof NextResponse) return auth;
 
     const now = new Date();
@@ -65,7 +65,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const auth = await authorizeMerchantStoreRoute(id);
+    const auth = await authorizeMerchantStoreRoute(id, { request });
     if (auth instanceof NextResponse) return auth;
 
     const body = await request.json().catch(() => ({}));
@@ -131,7 +131,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const auth = await authorizeMerchantStoreRoute(id);
+    const auth = await authorizeMerchantStoreRoute(id, { request });
     if (auth instanceof NextResponse) return auth;
 
     const body = await request.json().catch(() => ({}));

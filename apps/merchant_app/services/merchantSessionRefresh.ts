@@ -58,16 +58,20 @@ export async function refreshMerchantSessionIfNeeded(opts?: {
       body: JSON.stringify({ deviceId }),
     });
 
+    if (res.status === 401) {
+      return null;
+    }
+
     const raw = await res.text().catch(() => "");
     let data: { accessToken?: string; expiresAt?: number; error?: string } = {};
     try {
       data = raw ? (JSON.parse(raw) as typeof data) : {};
     } catch {
-      return token;
+      return opts?.force ? null : token;
     }
 
     if (!res.ok || !data.accessToken || !data.expiresAt) {
-      return token;
+      return opts?.force ? null : token;
     }
 
     await writeMerchantSessionToken(data.accessToken, data.expiresAt);

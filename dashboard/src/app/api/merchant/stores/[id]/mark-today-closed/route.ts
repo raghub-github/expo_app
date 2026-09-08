@@ -34,7 +34,7 @@ function normalizeClosedDays(raw: unknown): string[] {
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const auth = await authorizeMerchantStoreRoute(id, { requireTiming: true });
+    const auth = await authorizeMerchantStoreRoute(id, { requireTiming: true, request });
     if (auth instanceof NextResponse) return auth;
 
     const body = await request.json().catch(() => ({}));

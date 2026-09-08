@@ -174,14 +174,49 @@ export async function PATCH(
       values.push(Boolean(body.isActive));
     }
     if (body.titleText !== undefined) {
+      const nextText = String(body.titleText).trim();
+      if (!nextText) {
+        return NextResponse.json({ success: false, error: "Display text is required" }, { status: 400 });
+      }
+      const grp = await sqlClient.unsafe(`SELECT group_id FROM ticket_titles WHERE id = $1 LIMIT 1`, [titleId]);
+      const gid = grp?.[0]?.group_id != null ? Number(grp[0].group_id) : null;
+      if (gid != null) {
+        const dupText = await sqlClient.unsafe(
+          `SELECT title_code FROM ticket_titles
+           WHERE group_id = $1 AND id <> $2 AND lower(trim(title_text)) = lower(trim($3))
+             AND COALESCE(is_active, TRUE) = TRUE
+           LIMIT 1`,
+          [gid, titleId, nextText]
+        );
+        if (dupText?.length) {
+          return NextResponse.json(
+            { success: false, error: "A title with this display text already exists in this group" },
+            { status: 400 }
+          );
+        }
+      }
       idx++;
       updates.push(`title_text = $${idx}`);
-      values.push(String(body.titleText).trim());
+      values.push(nextText);
     }
     if (body.titleCode !== undefined || body.title_code !== undefined) {
+      const nextCode = String(body.titleCode ?? body.title_code).trim().toUpperCase();
+      if (!nextCode) {
+        return NextResponse.json({ success: false, error: "Title code is required" }, { status: 400 });
+      }
+      const dupCode = await sqlClient.unsafe(
+        `SELECT 1 FROM ticket_titles WHERE title_code = $1 AND id <> $2 LIMIT 1`,
+        [nextCode, titleId]
+      );
+      if (dupCode?.length) {
+        return NextResponse.json(
+          { success: false, error: `Title code "${nextCode}" already exists` },
+          { status: 400 }
+        );
+      }
       idx++;
       updates.push(`title_code = $${idx}`);
-      values.push(String(body.titleCode ?? body.title_code).trim().toUpperCase());
+      values.push(nextCode);
     }
     if (body.description !== undefined) {
       idx++;
@@ -401,8 +436,15 @@ export async function PATCH(
     }
     return NextResponse.json({ success: true, data: mapTitleRow(full) });
   } catch (e) {
+    const msg = String(e);
     console.error("[PATCH /api/tickets/reference-data/titles]", e);
-    return NextResponse.json({ success: false, error: String(e) }, { status: 500 });
+    if (/duplicate key|23505|title_code/i.test(msg)) {
+      return NextResponse.json(
+        { success: false, error: "A title with this code already exists" },
+        { status: 400 }
+      );
+    }
+    return NextResponse.json({ success: false, error: msg }, { status: 500 });
   }
 }
 

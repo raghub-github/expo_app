@@ -59,6 +59,7 @@ export function normalizeMenuItemFullConfig(config: MenuItemFullConfig): MenuIte
             price: config.item.price,
             sizeValue: config.item.sizeValue ?? null,
             sizeUnit: config.item.sizeUnit ?? null,
+            sizePreset: config.item.sizePreset ?? null,
           },
           deduped
         ).map((v) => ({ ...v, type: v.type ?? null }));

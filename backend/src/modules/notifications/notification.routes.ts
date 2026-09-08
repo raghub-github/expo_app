@@ -11,7 +11,7 @@
  *      PATCH  /v1/notifications/templates/:id            — edit
  *      DELETE /v1/notifications/templates/:id            — disable (soft)
  *      POST   /v1/notifications/campaigns                — create draft / schedule / immediate
- *      GET    /v1/notifications/campaigns                — list
+ *      GET    /v1/notifications/campaigns/:id            — detail + last 100 dispatch logs
  *      POST   /v1/notifications/campaigns/:id/cancel     — cancel scheduled/running
  *      POST   /v1/notifications/campaigns/:id/resend     — resend stored campaign
  *      POST   /v1/notifications/campaigns/:id/revoke     — hide a sent campaign from every inbox
@@ -653,14 +653,30 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       if (!Number.isInteger(id) || id < 1) return reply.code(400).send({ error: "invalid_id" });
       const campaign = await getCampaignById(id);
       if (!campaign) return reply.code(404).send({ error: "not_found" });
-      const recipients = await resolveTarget(campaign.target_filter as TargetFilter);
       const sql = getSql();
-      const [tokenStats] = (await sql`
-        SELECT
-          (SELECT COUNT(*)::int FROM public.expo_push_tokens) AS expo_tokens,
-          (SELECT COUNT(*)::int FROM public.merchant_store_push_tokens) AS merchant_store_tokens,
-          (SELECT COUNT(*)::int FROM public.native_device_push_tokens WHERE token_type = 'fcm') AS native_fcm_tokens
-      `) as unknown as Array<{
+      const [recipients, tokenStatsRows, dispatchLogs] = await Promise.all([
+        resolveTarget(campaign.target_filter as TargetFilter),
+        sql`
+          SELECT
+            (SELECT COUNT(*)::int FROM public.expo_push_tokens) AS expo_tokens,
+            (SELECT COUNT(*)::int FROM public.merchant_store_push_tokens) AS merchant_store_tokens,
+            (SELECT COUNT(*)::int FROM public.native_device_push_tokens WHERE token_type = 'fcm') AS native_fcm_tokens
+        `,
+        Promise.resolve(
+          sql`
+            SELECT id, notification_id, campaign_id, template_code,
+                   recipient_user_id, recipient_role, platform, channel,
+                   title, body, deep_link, status, error_code, error_message,
+                   retry_attempts,
+                   queued_at, sent_at, delivered_at, clicked_at, failed_at
+            FROM public.notification_dispatch_logs
+            WHERE campaign_id = ${id}
+            ORDER BY queued_at DESC
+            LIMIT 100
+          `,
+        ).catch(() => []),
+      ]);
+      const [tokenStats] = tokenStatsRows as unknown as Array<{
         expo_tokens: number;
         merchant_store_tokens: number;
         native_fcm_tokens: number;
@@ -673,6 +689,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           merchant_store_tokens: 0,
           native_fcm_tokens: 0,
         },
+        dispatch_logs: dispatchLogs,
       });
     });
 

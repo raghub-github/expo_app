@@ -140,13 +140,30 @@ export async function emitStoreStatusChanged(
     log.info({ storeId, err: e }, "store_status_change_insert_failed");
   }
 
-  // CLOSED → OPEN: push "You're Online" to all registered devices (works when app is closed).
+  // CLOSED → OPEN: persistent ONLINE / waiting-for-orders tray (works when app is closed).
   if (previousStatus === "CLOSED" && newStatus === "OPEN") {
     try {
       const { notifyMerchantStoreOnline } = await import("../../lib/merchant-push-notify.js");
       await notifyMerchantStoreOnline(sql, storeId);
     } catch (e) {
       log.info({ storeId, err: e }, "store_online_push_failed");
+    }
+  }
+
+  // OPEN → CLOSED because the delivery window ended — update the same tray item.
+  const outOfTimings =
+    previousStatus === "OPEN" &&
+    newStatus === "CLOSED" &&
+    (reason === "schedule_closed" ||
+      reason === "schedule_expired" ||
+      reason === "schedule_end_timeout" ||
+      reason === "outside_operating_hours");
+  if (outOfTimings) {
+    try {
+      const { notifyMerchantStoreStatus } = await import("../../lib/merchant-push-notify.js");
+      await notifyMerchantStoreStatus(sql, storeId, "OUT_OF_TIMINGS");
+    } catch (e) {
+      log.info({ storeId, err: e }, "store_out_of_timings_push_failed");
     }
   }
 }

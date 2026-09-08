@@ -15,6 +15,7 @@ export type OrderItemAddonDetail = {
   type?: string | null;
   sizeValue?: string | null;
   sizeUnit?: string | null;
+  sizePreset?: string | null;
 };
 
 /** One display row: `Quantity: Full(qty: 1 Price:169) [Total Price:169]` */
@@ -101,14 +102,31 @@ function readSizeValueUnit(
   return { value, unit };
 }
 
+function readSizePreset(
+  row: Record<string, unknown> | null,
+  prefix: "variant" | "addon"
+): string | null {
+  if (!row) return null;
+  const keys =
+    prefix === "variant"
+      ? ["variant_size_preset", "variantSizePreset", "size_preset", "sizePreset"]
+      : ["addon_size_preset", "addonSizePreset", "size_preset", "sizePreset"];
+  return readSnapString(row, keys);
+}
+
 function readVariantPortion(
   snap: Record<string, unknown> | null,
   cartLine?: Record<string, unknown> | null
 ): string | null {
   const fromSnap = readSizeValueUnit(snap, "variant");
   const fromCart = readSizeValueUnit(cartLine ?? null, "variant");
+  const preset = readSizePreset(snap, "variant") ?? readSizePreset(cartLine ?? null, "variant");
   const portion =
-    formatMenuPortionLabel(fromSnap.value ?? fromCart.value, fromSnap.unit ?? fromCart.unit) ??
+    formatMenuPortionLabel(
+      fromSnap.value ?? fromCart.value,
+      fromSnap.unit ?? fromCart.unit,
+      preset
+    ) ??
     readSnapString(snap, [
       "variant_size",
       "variantSize",
@@ -141,7 +159,7 @@ function isSizeChoiceAddon(a: OrderItemAddonDetail): boolean {
   ) {
     return true;
   }
-  if (a.sizeValue || a.sizeUnit) return true;
+  if (a.sizeValue || a.sizeUnit || a.sizePreset) return true;
   const base = a.name.replace(/\s*\([^)]*\)\s*$/, "").trim();
   return SIZE_CHOICE_NAME_RE.test(base);
 }
@@ -153,7 +171,8 @@ function addonDisplayName(
   const name = rawName.trim();
   if (!name) return name;
   const { value, unit } = readSizeValueUnit(row ?? null, "addon");
-  return formatMenuOptionDisplayName(name, value, unit);
+  const preset = readSizePreset(row ?? null, "addon");
+  return formatMenuOptionDisplayName(name, value, unit, preset);
 }
 
 function parseAddonsArray(
@@ -173,6 +192,7 @@ function parseAddonsArray(
     ).trim();
     if (!name) continue;
     const { value: sizeValue, unit: sizeUnit } = readSizeValueUnit(row, "addon");
+    const sizePreset = readSizePreset(row, "addon");
     out.push({
       name: addonDisplayName(name, row),
       quantity: Math.max(1, asNum(row.quantity) ?? 1),
@@ -187,6 +207,7 @@ function parseAddonsArray(
               : null,
       sizeValue,
       sizeUnit,
+      sizePreset,
     });
   }
   if (out.length > 0 && priceRow) {
@@ -217,6 +238,9 @@ function mergeAddonLists(lists: OrderItemAddonDetail[][]): OrderItemAddonDetail[
         quantity: Math.max(existing.quantity, a.quantity),
         price: Math.max(existing.price, a.price),
         type: existing.type ?? a.type,
+        sizeValue: existing.sizeValue ?? a.sizeValue,
+        sizeUnit: existing.sizeUnit ?? a.sizeUnit,
+        sizePreset: existing.sizePreset ?? a.sizePreset,
       });
     }
   }
@@ -423,7 +447,8 @@ export function buildCustomisationDetail(args: {
     let displayName = formatMenuOptionDisplayName(
       variantName,
       snapSizes.value ?? cartSizes.value,
-      snapSizes.unit ?? cartSizes.unit
+      snapSizes.unit ?? cartSizes.unit,
+      readSizePreset(snap, "variant") ?? readSizePreset(args.cartLine ?? null, "variant")
     );
     if (
       displayName === variantName &&
@@ -446,6 +471,14 @@ export function buildCustomisationDetail(args: {
       unitPrice,
       totalPrice: unitPrice * qty,
     });
+  } else if (variantSize) {
+    lines.push({
+      label: "Size",
+      name: variantSize,
+      quantity: 1,
+      unitPrice: 0,
+      totalPrice: 0,
+    });
   }
 
   for (const a of addons) {
@@ -453,7 +486,7 @@ export function buildCustomisationDetail(args: {
     const qty = Math.max(1, a.quantity);
     lines.push({
       label: "Add-on",
-      name: formatMenuOptionDisplayName(a.name, a.sizeValue, a.sizeUnit),
+      name: formatMenuOptionDisplayName(a.name, a.sizeValue, a.sizeUnit, a.sizePreset),
       quantity: qty,
       unitPrice,
       totalPrice: unitPrice * qty,
@@ -518,7 +551,7 @@ export function merchantItemBreakdownFromDetail(
 
   for (const a of detail.addons) {
     const unit = a.price > 0 ? a.price : 0;
-    const addonLabel = formatMenuOptionDisplayName(a.name, a.sizeValue, a.sizeUnit);
+    const addonLabel = formatMenuOptionDisplayName(a.name, a.sizeValue, a.sizeUnit, a.sizePreset);
     lines.push({
       name: a.quantity > 1 ? `${addonLabel} ×${a.quantity}` : addonLabel,
       amount: unit * Math.max(1, a.quantity),

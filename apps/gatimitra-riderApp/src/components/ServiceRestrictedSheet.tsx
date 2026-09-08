@@ -12,6 +12,7 @@ import { BlockingBottomSheetShell } from "@/src/components/vehicle/BlockingBotto
 import { getRiderAppConfig } from "@/src/config/env";
 import { useRiderLocationStore } from "@/src/stores/riderLocationStore";
 import { onPreventServicesSignal } from "@/src/lib/preventServicesSignalBus";
+import { useSessionStore } from "@/src/stores/sessionStore";
 import { colors } from "@/src/theme";
 
 const ACK_KEY = "prevent_services_rider_ack_version";
@@ -45,6 +46,7 @@ async function fetchRiderImpact(lat: number, lng: number): Promise<ImpactRespons
 }
 
 export function ServiceRestrictedSheet() {
+  const hasSession = useSessionStore((s) => Boolean(s.session?.accessToken));
   const lat = useRiderLocationStore((s) => {
     const v = s.coords?.latitude;
     return v != null && Number.isFinite(v) ? roundCoord3(v) : null;
@@ -73,7 +75,7 @@ export function ServiceRestrictedSheet() {
   }, []);
 
   const refresh = useCallback(async () => {
-    if (lat == null || lng == null) {
+    if (!hasSession || lat == null || lng == null) {
       setAffected(false);
       setVisible(false);
       return;
@@ -92,9 +94,15 @@ export function ServiceRestrictedSheet() {
       return;
     }
     setVisible(true);
-  }, [lat, lng, ackedVersion]);
+  }, [hasSession, lat, lng, ackedVersion]);
 
   useEffect(() => {
+    if (!hasSession) {
+      lastFetchKeyRef.current = "";
+      setVisible(false);
+      setAffected(false);
+      return;
+    }
     if (lat == null || lng == null) {
       lastFetchKeyRef.current = "";
       void refresh();

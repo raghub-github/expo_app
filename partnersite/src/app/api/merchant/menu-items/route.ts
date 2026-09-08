@@ -9,6 +9,7 @@ import { buildMenuItemOosModePatch, buildMenuItemStockTogglePatch } from '@/lib/
 import { client as pgClient } from '@/lib/drizzle'
 import { expireTimedMenuOutOfStockForStore } from '@/lib/menu-oos-expiry'
 import { enforcePlanLimitsForStoreNumericId } from '@/lib/plan-enforce'
+import { normalizeSizeWrite, numericSizeOrNull } from '@/lib/menu-size-preset'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co"
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key"
@@ -383,8 +384,18 @@ export async function POST(req: NextRequest) {
           ? null
           : Number(body.packaging_charges),
       serves: body.serves ?? 1,
-      item_size_value: parseOptNum(body.item_size_value),
-      item_size_unit: body.item_size_unit ?? null,
+      ...(() => {
+        const itemSize = normalizeSizeWrite({
+          size_preset: body.size_preset,
+          size_value: body.item_size_value,
+          size_unit: body.item_size_unit,
+        })
+        return {
+          item_size_value: numericSizeOrNull(itemSize.size_value),
+          item_size_unit: itemSize.size_unit,
+          size_preset: itemSize.size_preset,
+        }
+      })(),
       is_active: body.is_active ?? true,
       allergens: allergens.length ? allergens : null,
       item_tags,
@@ -571,11 +582,16 @@ export async function PATCH(req: NextRequest) {
           body.packaging_charges === null ? null : Number(body.packaging_charges)
       }
       if (body.serves !== undefined) proposed.serves = body.serves ?? 1
-      if (body.item_size_value !== undefined) {
-        const n = Number(body.item_size_value)
-        proposed.item_size_value = Number.isFinite(n) && n >= 0 ? n : null
+      if (body.item_size_value !== undefined || body.item_size_unit !== undefined || body.size_preset !== undefined) {
+        const itemSize = normalizeSizeWrite({
+          size_preset: body.size_preset,
+          size_value: body.item_size_value,
+          size_unit: body.item_size_unit,
+        })
+        proposed.item_size_value = numericSizeOrNull(itemSize.size_value)
+        proposed.item_size_unit = itemSize.size_unit
+        proposed.size_preset = itemSize.size_preset
       }
-      if (body.item_size_unit !== undefined) proposed.item_size_unit = body.item_size_unit ?? null
       if (body.is_active !== undefined) proposed.is_active = body.is_active ?? true
       if (body.allergens !== undefined) {
         const allergens = Array.isArray(body.allergens) ? body.allergens : (typeof body.allergens === 'string' ? body.allergens.split(',').map((a: string) => a.trim()).filter(Boolean) : [])
@@ -723,6 +739,7 @@ export async function PATCH(req: NextRequest) {
       body.serves !== undefined ||
       body.item_size_value !== undefined ||
       body.item_size_unit !== undefined ||
+      body.size_preset !== undefined ||
       body.is_active !== undefined ||
       body.allergens !== undefined ||
       body.item_image_url !== undefined ||
@@ -795,8 +812,16 @@ export async function PATCH(req: NextRequest) {
           body.packaging_charges === null ? null : Number(body.packaging_charges)
       }
       if (body.serves !== undefined) updatePayload.serves = body.serves ?? 1
-      if (body.item_size_value !== undefined) updatePayload.item_size_value = patchOptNum(body.item_size_value)
-      if (body.item_size_unit !== undefined) updatePayload.item_size_unit = body.item_size_unit ?? null
+      if (body.item_size_value !== undefined || body.item_size_unit !== undefined || body.size_preset !== undefined) {
+        const itemSize = normalizeSizeWrite({
+          size_preset: body.size_preset,
+          size_value: body.item_size_value,
+          size_unit: body.item_size_unit,
+        })
+        updatePayload.item_size_value = numericSizeOrNull(itemSize.size_value)
+        updatePayload.item_size_unit = itemSize.size_unit
+        updatePayload.size_preset = itemSize.size_preset
+      }
       if (body.is_active !== undefined) updatePayload.is_active = body.is_active ?? true
       if (body.allergens !== undefined) {
         const allergens = Array.isArray(body.allergens) ? body.allergens : (typeof body.allergens === 'string' ? body.allergens.split(',').map((a: string) => a.trim()).filter(Boolean) : [])

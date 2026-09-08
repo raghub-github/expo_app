@@ -1,24 +1,23 @@
 import { useEffect } from "react";
-import { AppState, Platform, StatusBar, type AppStateStatus } from "react-native";
+import { AppState, Platform, StatusBar, useColorScheme, type AppStateStatus } from "react-native";
 import { applyAndroidNavigationChrome } from "@/lib/androidEdgeToEdgeChrome";
-import { CUSTOMER_SYSTEM_NAV_MINT } from "@/constants/layout";
+import {
+  resolveAndroidSystemNavBackground,
+  resolveAndroidSystemNavButtonStyle,
+} from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
-
-/**
- * Android system navigation bar: mint background + dark (black) icons for visibility.
- * Gesture nav (bottom inset 0) gets no in-app filler — see AndroidSystemNavigationFill.
- */
 
 function assertStatusBarVisible() {
   StatusBar.setHidden(false, "none");
 }
 
 /**
- * Mint Android system navigation bar with dark icons; kept in sync on resume.
- * Always re-asserts that the status bar itself stays visible.
+ * Android system navigation bar follows the device light/dark theme (not brand mint).
+ * Kept in sync on resume / theme change.
  */
 export function CustomerSystemChrome() {
   const bootstrapActive = useScreenChromeStore((s) => s.bootstrapActive);
+  const colorScheme = useColorScheme();
 
   useEffect(() => {
     assertStatusBarVisible();
@@ -26,8 +25,8 @@ export function CustomerSystemChrome() {
     if (Platform.OS !== "android" || bootstrapActive) return;
 
     void applyAndroidNavigationChrome({
-      buttonStyle: "dark",
-      backgroundColor: CUSTOMER_SYSTEM_NAV_MINT,
+      buttonStyle: resolveAndroidSystemNavButtonStyle(colorScheme),
+      backgroundColor: resolveAndroidSystemNavBackground(colorScheme),
     }).catch(() => {});
 
     const onAppState = (state: AppStateStatus) => {
@@ -35,14 +34,14 @@ export function CustomerSystemChrome() {
       assertStatusBarVisible();
       if (useScreenChromeStore.getState().bootstrapActive) return;
       void applyAndroidNavigationChrome({
-        buttonStyle: "dark",
-        backgroundColor: CUSTOMER_SYSTEM_NAV_MINT,
+        buttonStyle: resolveAndroidSystemNavButtonStyle(colorScheme),
+        backgroundColor: resolveAndroidSystemNavBackground(colorScheme),
       }).catch(() => {});
     };
 
     const sub = AppState.addEventListener("change", onAppState);
     return () => sub.remove();
-  }, [bootstrapActive]);
+  }, [bootstrapActive, colorScheme]);
 
   return null;
 }

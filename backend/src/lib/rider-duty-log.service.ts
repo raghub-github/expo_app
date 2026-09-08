@@ -7,6 +7,24 @@ import { recordRiderDutyLocationBusinessEvent } from "./rider-location-business-
 export type RiderDutyLogStatus = "ON" | "OFF" | "AUTO_OFF";
 export type RiderDutyService = "food" | "parcel" | "person_ride";
 
+function canonicalizeDutyServices(raw: unknown): RiderDutyService[] {
+  if (!Array.isArray(raw)) return [];
+  const out: RiderDutyService[] = [];
+  for (const item of raw) {
+    const s = String(item ?? "").trim().toLowerCase();
+    const norm: RiderDutyService | null =
+      s === "food"
+        ? "food"
+        : s === "parcel"
+          ? "parcel"
+          : s === "person_ride" || s === "ride" || s === "person"
+            ? "person_ride"
+            : null;
+    if (norm && !out.includes(norm)) out.push(norm);
+  }
+  return out;
+}
+
 export type RecordRiderDutyLogInput = {
   riderId: number;
   status: RiderDutyLogStatus;
@@ -50,7 +68,7 @@ export async function getLatestDutyLog(riderId: number) {
 /** Append an immutable duty_logs row (dashboard Activity Logs source of truth). */
 export async function recordRiderDutyLog(input: RecordRiderDutyLogInput): Promise<void> {
   const db = getDb();
-  const serviceTypes = input.status === "ON" ? (input.serviceTypes ?? []) : [];
+  const serviceTypes = input.status === "ON" ? canonicalizeDutyServices(input.serviceTypes) : [];
   const latest = await getLatestDutyLog(input.riderId);
 
   const sameStatus =

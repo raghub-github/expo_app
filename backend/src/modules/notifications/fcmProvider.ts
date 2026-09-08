@@ -34,6 +34,10 @@ type FcmSendInput = {
   priority?: NotificationPriority;
   collapseKey?: string | null;
   silent?: boolean;
+  /** Android notification tag — replace an existing tray item instead of stacking. */
+  tag?: string | null;
+  /** When false, omit channel/default sound (status notifications). */
+  playSound?: boolean;
   /** Customer / merchant / rider — stamps Expo experienceId so killed-app FCM still renders. */
   appRole?: string | null;
 };
@@ -116,8 +120,9 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
   const androidPriority = mapPriorityAndroid(input.priority);
   const notifPriority: "min" | "low" | "default" | "high" | "max" =
     input.priority === "critical" ? "max" : androidPriority === "high" ? "high" : "default";
+  const playSound = input.playSound !== false;
   const soundName =
-    input.sound && String(input.sound).trim() && String(input.sound).trim() !== "default"
+    playSound && input.sound && String(input.sound).trim() && String(input.sound).trim() !== "default"
       ? String(input.sound).trim().replace(/\.(mp3|wav|ogg)$/i, "")
       : null;
 
@@ -137,11 +142,14 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
                 ? input.deepLink
                 : undefined,
             channelId: input.channelId?.trim() || "default",
+            tag: input.tag?.trim() || undefined,
             // Channel sound is authoritative on Android O+; still set for pre-O / FCM fallback.
             ...(soundName
               ? { sound: soundName, defaultSound: false }
-              : { defaultSound: true }),
-            defaultVibrateTimings: true,
+              : playSound
+                ? { defaultSound: true }
+                : { defaultSound: false }),
+            defaultVibrateTimings: playSound,
             visibility: "public",
             priority: notifPriority,
           }
@@ -156,7 +164,7 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
         aps: wantsNotificationBlock
           ? {
               alert: { title: input.title, body: input.body },
-              sound: soundName ? `${soundName}.caf` : "default",
+              sound: playSound ? (soundName ? `${soundName}.caf` : "default") : undefined,
               "mutable-content": input.imageUrl ? 1 : 0,
               "content-available": 1,
             }

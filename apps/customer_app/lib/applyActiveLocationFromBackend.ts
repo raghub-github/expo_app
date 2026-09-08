@@ -5,6 +5,10 @@
 
 import type { QueryClient } from "@tanstack/react-query";
 import { addressService } from "@/services/address.service";
+import {
+  activeLocationQueryOptions,
+  addressesQueryOptions,
+} from "@/hooks/useAddresses";
 import { useLocationStore } from "@/store/locationStore";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import { promptCartIfLocationBrokeServiceability } from "@/lib/promptCartIfLocationBrokeServiceability";
@@ -23,14 +27,44 @@ function classifyKind(
   return meters <= retentionRadiusM ? "nearby" : "remote";
 }
 
+function locationSnapshot() {
+  const s = useLocationStore.getState();
+  return {
+    lat: s.coords?.latitude ?? null,
+    lng: s.coords?.longitude ?? null,
+    pincode: s.address?.pincode?.trim() || null,
+    boundAddressId: s.sessionBoundAddressId ?? null,
+    source: s.locationSource ?? null,
+  };
+}
+
+function sameLocationPin(
+  a: ReturnType<typeof locationSnapshot>,
+  b: ReturnType<typeof locationSnapshot>
+): boolean {
+  return (
+    a.lat === b.lat &&
+    a.lng === b.lng &&
+    a.pincode === b.pincode &&
+    a.boundAddressId === b.boundAddressId &&
+    a.source === b.source
+  );
+}
+
 export async function applyActiveLocationFromBackend(
   queryClient?: QueryClient,
   options?: { retentionRadiusM?: number }
 ): Promise<boolean> {
   try {
+    const before = locationSnapshot();
     const [active, addresses] = await Promise.all([
-      addressService.getActiveLocation(),
-      addressService.getAddresses().catch(() => [] as Awaited<ReturnType<typeof addressService.getAddresses>>),
+      queryClient
+        ? queryClient.fetchQuery(activeLocationQueryOptions())
+        : addressService.getActiveLocation(),
+      (queryClient
+        ? queryClient.fetchQuery(addressesQueryOptions())
+        : addressService.getAddresses()
+      ).catch(() => [] as Awaited<ReturnType<typeof addressService.getAddresses>>),
     ]);
 
     if (queryClient) {
@@ -54,8 +88,8 @@ export async function applyActiveLocationFromBackend(
         useLocationStore.getState().setAddressAndCoords(
           {
             primary: saved.label ?? "Address",
-            secondary: saved.fullAddress.slice(0, 80),
-            fullAddress: saved.fullAddress,
+            secondary: (saved.fullAddress ?? saved.label ?? "").slice(0, 80),
+            fullAddress: saved.fullAddress || saved.label || "Address",
             city: saved.city,
             state: saved.state,
             pincode: saved.pincode,
@@ -63,7 +97,8 @@ export async function applyActiveLocationFromBackend(
           { latitude: saved.latitude, longitude: saved.longitude },
           { source: "selected", selectionKind, boundAddressId: boundId }
         );
-        if (queryClient) {
+        const after = locationSnapshot();
+        if (queryClient && !sameLocationPin(before, after)) {
           void invalidateFoodHomeLocationQueries(queryClient);
           void promptCartIfLocationBrokeServiceability(queryClient);
         }
@@ -73,6 +108,7 @@ export async function applyActiveLocationFromBackend(
             addressId: boundId,
             source: "selected",
             selectionKind,
+            skippedInvalidate: sameLocationPin(before, after),
           });
         }
         return true;
@@ -90,7 +126,8 @@ export async function applyActiveLocationFromBackend(
         { latitude: active.latitude, longitude: active.longitude },
         { source: "current" }
       );
-      if (queryClient) {
+      const after = locationSnapshot();
+      if (queryClient && !sameLocationPin(before, after)) {
         void invalidateFoodHomeLocationQueries(queryClient);
         void promptCartIfLocationBrokeServiceability(queryClient);
       }
@@ -99,6 +136,7 @@ export async function applyActiveLocationFromBackend(
           path: "applyActiveLocationFromBackend",
           addressId: null,
           source: "current",
+          skippedInvalidate: sameLocationPin(before, after),
         });
       }
       return true;

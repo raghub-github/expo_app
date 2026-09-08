@@ -14,6 +14,10 @@ import {
 } from "@/lib/auth/session-errors";
 import { validateAndPersistSupabaseSession } from "@/lib/auth/persist-supabase-session";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import {
+  isCookieAccessTokenUsable,
+  readCookieAccessSession,
+} from "@/lib/auth/read-cookie-access-session";
 import { recordFailedLogin, recordLogin } from "@/lib/auth/user-management";
 import { getSystemUserById } from "@/lib/db/operations/users";
 import { getIpAddress, getUserAgent } from "@/lib/audit/logger";
@@ -71,15 +75,18 @@ export async function POST(request: NextRequest) {
 
     if (!persist.ok) {
       if (persist.code === "SESSION_INVALID") {
+        const existing = readCookieAccessSession({
+          get: (name) => cookieStore.get(name),
+          getAll: () => cookieStore.getAll(),
+        });
+        if (isCookieAccessTokenUsable(existing)) {
+          console.warn(
+            "[set-cookie] Ignoring stale refresh token; existing cookie session is still valid"
+          );
+          return NextResponse.json({ success: true, reusedExistingSession: true });
+        }
         try {
           const supabase = await createServerSupabaseClient();
-          const existing = await supabase.auth.getUser();
-          if (existing.data?.user && !existing.error) {
-            console.warn(
-              "[set-cookie] Ignoring stale refresh token; existing cookie session is still valid"
-            );
-            return NextResponse.json({ success: true, reusedExistingSession: true });
-          }
           await signOutIfSessionDead(supabase, new Error("Session invalid"));
         } catch {
           // fall through

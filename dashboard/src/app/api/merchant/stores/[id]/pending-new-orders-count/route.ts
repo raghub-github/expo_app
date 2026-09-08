@@ -3,7 +3,7 @@
  * Unaccepted orders (CREATED pipeline) for floating new-order bar.
  * Excludes orders past the acceptance window.
  */
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import { resolvePartnerPipeline } from "@/lib/partner-orders-unify";
 import { ensureMerchantStoreDashboardAccess } from "@/lib/merchant-food-orders/store-access";
@@ -15,14 +15,14 @@ import {
 
 export const runtime = "nodejs";
 
-export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const storeId = parseInt(id, 10);
     if (!Number.isFinite(storeId)) {
       return NextResponse.json({ error: "Invalid store id" }, { status: 400 });
     }
-    const access = await ensureMerchantStoreDashboardAccess(storeId);
+    const access = await ensureMerchantStoreDashboardAccess(storeId, request);
     if ("error" in access) {
       return NextResponse.json({ error: access.error }, { status: access.status });
     }

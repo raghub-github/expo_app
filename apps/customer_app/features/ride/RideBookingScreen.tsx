@@ -2,11 +2,11 @@
  * GatiMitra Ride Booking – reference home layout.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
@@ -30,6 +30,17 @@ import { filterRideBookFeaturedOffers, filterRideOffersForCompletedRides, comple
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 import { prefetchCriticalRideAssetImagesSync } from "@/lib/rideCriticalAssets";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
+import {
+  useRecentLocationStore,
+} from "@/store/recentLocationStore";
+import {
+  resolveLastRideCtaMode,
+  reverseCompletedRideRoute,
+  selectLatestCompletedRide,
+  type CompletedRideRoute,
+  type ReturnTripGps,
+} from "@/lib/lastCompletedRide";
+import { getFastPosition } from "@gatimitra/expo-location-kit";
 
 const PAD = 18;
 const TRACKING_PILL_H = 56;
@@ -56,7 +67,7 @@ type RideRouteParams = {
 };
 
 export function RideBookingScreen() {
-  const insets = useSafeAreaInsets();
+  const insets = useAppSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
   const routeParams = useLocalSearchParams<RideRouteParams>();
@@ -84,6 +95,19 @@ export function RideBookingScreen() {
 
   const { data: rideOffersData } = useFeaturedOffersRide(offerLocationParams, locationHydrated);
   const { activeRides, dueFareRide, hasDueFare, orders: myOrders } = useActivePersonRideOrders(true);
+  const pruneExpiredJourneys = useRecentLocationStore((s) => s.pruneExpiredJourneys);
+  const lastCompletedRideJourney = useRecentLocationStore((s) => s.lastCompletedRideJourney);
+  const navLockRef = useRef(false);
+  const lastRideForBanner = useMemo(
+    () => selectLatestCompletedRide(myOrders, lastCompletedRideJourney),
+    [myOrders, lastCompletedRideJourney]
+  );
+  const [returnTripGps, setReturnTripGps] = useState<ReturnTripGps>({ status: "idle" });
+  const lastRideCtaMode = useMemo(
+    () => resolveLastRideCtaMode(returnTripGps, lastRideForBanner?.drop),
+    [returnTripGps, lastRideForBanner?.drop]
+  );
+  const lastRideCta = lastRideCtaMode === "return" ? "Book Return Trip" : "Book again";
   const completedRideCount = completedPersonRideCountHint(myOrders);
   const rideFeaturedOffers = useMemo(
     () =>
@@ -96,10 +120,71 @@ export function RideBookingScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      navLockRef.current = false;
+      pruneExpiredJourneys();
       if (!locationHydrated) return;
       void queryClient.invalidateQueries({ queryKey: ["featured-offers-ride"] });
-    }, [locationHydrated, queryClient])
+    }, [locationHydrated, queryClient, pruneExpiredJourneys])
   );
+
+  useEffect(() => {
+    if (!lastRideForBanner?.drop) {
+      setReturnTripGps({ status: "idle" });
+      return;
+    }
+
+    let cancelled = false;
+    const store = useLocationStore.getState();
+    const storeCoords = store.coords;
+    const storeAccuracy = store.coordsAccuracy;
+    const canUseStoreGps =
+      store.locationSource === "current" &&
+      storeCoords != null &&
+      (store.locationFreshness === "FRESH" || store.locationFreshness === "RECENT") &&
+      (storeAccuracy == null || storeAccuracy <= 300);
+
+    if (canUseStoreGps && storeCoords) {
+      setReturnTripGps({
+        status: "available",
+        latitude: storeCoords.latitude,
+        longitude: storeCoords.longitude,
+        accuracyM: storeAccuracy,
+      });
+      return;
+    }
+
+    setReturnTripGps({ status: "loading" });
+    void getFastPosition({})
+      .then((fix) => {
+        if (cancelled) return;
+        if (
+          !fix ||
+          !Number.isFinite(fix.latitude) ||
+          !Number.isFinite(fix.longitude) ||
+          (Math.abs(fix.latitude) < 0.0001 && Math.abs(fix.longitude) < 0.0001)
+        ) {
+          setReturnTripGps({ status: "unavailable" });
+          return;
+        }
+        setReturnTripGps({
+          status: "available",
+          latitude: fix.latitude,
+          longitude: fix.longitude,
+          accuracyM: fix.accuracy,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setReturnTripGps({ status: "unavailable" });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    lastRideForBanner?.drop?.latitude,
+    lastRideForBanner?.drop?.longitude,
+    lastRideForBanner?.savedAt,
+  ]);
 
   const initialTab: RideServiceTab =
     routeParams.tab === "intercity" ? "intercity" : "all";
@@ -155,17 +240,23 @@ export function RideBookingScreen() {
     setMeasuredNavH((prev) => (prev === height ? prev : height));
   }, []);
 
+  const pushOnce = useCallback((run: () => void) => {
+    if (navLockRef.current) return;
+    navLockRef.current = true;
+    run();
+  }, []);
+
   const openIntercityPickup = useCallback(() => {
-    // No route yet — collect pickup/drop first.
-    const params: Record<string, string> = {
-      bookingMode: "intercity",
-      returnTo: "ride",
-    };
-    router.push({
-      pathname: "/home/service/ride-pickup",
-      params,
+    pushOnce(() => {
+      router.push({
+        pathname: "/home/service/ride-pickup",
+        params: {
+          bookingMode: "intercity",
+          returnTo: "ride",
+        },
+      });
     });
-  }, [router]);
+  }, [router, pushOnce]);
 
   /** Intercity "Change" → vehicle search / ride-book (Finding nearby riders). */
   const openIntercityRideBook = useCallback(() => {
@@ -173,31 +264,33 @@ export function RideBookingScreen() {
       openIntercityPickup();
       return;
     }
-    if (hasDueFare && trackingRide) {
-      const target = resolvePersonRideTrackingNavigation(trackingRide);
-      router.push({ pathname: target.pathname, params: target.params });
-      return;
-    }
-    router.push({
-      pathname: "/home/service/ride-book",
-      params: {
-        pickup: routeParams.pickup ?? "",
-        drop: routeParams.drop ?? "",
-        pickupLabel: routeParams.pickupLabel ?? "",
-        dropLabel: routeParams.dropLabel ?? "",
-        pickupLat: routeParams.pickupLat ?? "",
-        pickupLng: routeParams.pickupLng ?? "",
-        dropLat: routeParams.dropLat ?? "",
-        dropLng: routeParams.dropLng ?? "",
-        stops: routeParams.stops ?? "",
-        bookedForSelf: routeParams.bookedForSelf ?? "true",
-        passengerName: routeParams.passengerName ?? "",
-        passengerPhone: routeParams.passengerPhone ?? "",
-        bookingMode: "intercity",
-        selectedRideId: "cab-economy",
-      },
+    pushOnce(() => {
+      if (hasDueFare && trackingRide) {
+        const target = resolvePersonRideTrackingNavigation(trackingRide);
+        router.push({ pathname: target.pathname, params: target.params });
+        return;
+      }
+      router.push({
+        pathname: "/home/service/ride-book",
+        params: {
+          pickup: routeParams.pickup ?? "",
+          drop: routeParams.drop ?? "",
+          pickupLabel: routeParams.pickupLabel ?? "",
+          dropLabel: routeParams.dropLabel ?? "",
+          pickupLat: routeParams.pickupLat ?? "",
+          pickupLng: routeParams.pickupLng ?? "",
+          dropLat: routeParams.dropLat ?? "",
+          dropLng: routeParams.dropLng ?? "",
+          stops: routeParams.stops ?? "",
+          bookedForSelf: routeParams.bookedForSelf ?? "true",
+          passengerName: routeParams.passengerName ?? "",
+          passengerPhone: routeParams.passengerPhone ?? "",
+          bookingMode: "intercity",
+          selectedRideId: "cab-economy",
+        },
+      });
     });
-  }, [hasIntercityRoute, hasDueFare, trackingRide, openIntercityPickup, router, routeParams]);
+  }, [hasIntercityRoute, hasDueFare, trackingRide, openIntercityPickup, router, routeParams, pushOnce]);
 
   const handleTabChange = useCallback(
     (tab: RideServiceTab) => {
@@ -211,45 +304,81 @@ export function RideBookingScreen() {
 
   const goToRideBook = useCallback(
     (serviceId: ServiceId) => {
+      pushOnce(() => {
+        if (hasDueFare && trackingRide) {
+          const target = resolvePersonRideTrackingNavigation(trackingRide);
+          router.push({ pathname: target.pathname, params: target.params });
+          return;
+        }
+
+        if (activeTab === "intercity" && hasIntercityRoute) {
+          router.push({
+            pathname: "/home/service/ride-book",
+            params: {
+              pickup: routeParams.pickup ?? "",
+              drop: routeParams.drop ?? "",
+              pickupLabel: routeParams.pickupLabel ?? "",
+              dropLabel: routeParams.dropLabel ?? "",
+              pickupLat: routeParams.pickupLat ?? "",
+              pickupLng: routeParams.pickupLng ?? "",
+              dropLat: routeParams.dropLat ?? "",
+              dropLng: routeParams.dropLng ?? "",
+              stops: routeParams.stops ?? "",
+              bookedForSelf: routeParams.bookedForSelf ?? "true",
+              passengerName: routeParams.passengerName ?? "",
+              passengerPhone: routeParams.passengerPhone ?? "",
+              bookingMode: "intercity",
+              selectedRideId: serviceId,
+            },
+          });
+          return;
+        }
+
+        router.push({
+          pathname: "/home/service/ride-pickup",
+          params: { preselectService: serviceId },
+        });
+      });
+    },
+    [activeTab, hasDueFare, hasIntercityRoute, trackingRide, router, routeParams, pushOnce]
+  );
+
+  const goToLocation = () => pushOnce(() => router.push("/location"));
+  const openDefaultRide = () => goToRideBook("bike");
+
+  const openLastRideBook = useCallback(() => {
+    const journey: CompletedRideRoute | null = lastRideForBanner;
+    if (!journey) {
+      goToRideBook("bike");
+      return;
+    }
+    const route =
+      lastRideCtaMode === "return" ? reverseCompletedRideRoute(journey) : journey;
+    pushOnce(() => {
       if (hasDueFare && trackingRide) {
         const target = resolvePersonRideTrackingNavigation(trackingRide);
         router.push({ pathname: target.pathname, params: target.params });
         return;
       }
-
-      if (activeTab === "intercity" && hasIntercityRoute) {
-        router.push({
-          pathname: "/home/service/ride-book",
-          params: {
-            pickup: routeParams.pickup ?? "",
-            drop: routeParams.drop ?? "",
-            pickupLabel: routeParams.pickupLabel ?? "",
-            dropLabel: routeParams.dropLabel ?? "",
-            pickupLat: routeParams.pickupLat ?? "",
-            pickupLng: routeParams.pickupLng ?? "",
-            dropLat: routeParams.dropLat ?? "",
-            dropLng: routeParams.dropLng ?? "",
-            stops: routeParams.stops ?? "",
-            bookedForSelf: routeParams.bookedForSelf ?? "true",
-            passengerName: routeParams.passengerName ?? "",
-            passengerPhone: routeParams.passengerPhone ?? "",
-            bookingMode: "intercity",
-            selectedRideId: serviceId,
-          },
-        });
-        return;
-      }
-
+      const params: Record<string, string> = {
+        pickup: route.pickup.fullAddress || route.pickup.primary,
+        drop: route.drop.fullAddress || route.drop.primary,
+        pickupLabel: route.pickup.primary,
+        dropLabel: route.drop.primary,
+        pickupLat: String(route.pickup.latitude),
+        pickupLng: String(route.pickup.longitude),
+        dropLat: String(route.drop.latitude),
+        dropLng: String(route.drop.longitude),
+        bookedForSelf: "true",
+      };
+      const rideType = journey.rideType?.trim();
+      if (rideType) params.selectedRideId = rideType;
       router.push({
-        pathname: "/home/service/ride-pickup",
-        params: { preselectService: serviceId },
+        pathname: "/home/service/ride-book",
+        params,
       });
-    },
-    [activeTab, hasDueFare, hasIntercityRoute, trackingRide, router, routeParams]
-  );
-
-  const goToLocation = () => router.push("/location");
-  const openDefaultRide = () => goToRideBook("bike");
+    });
+  }, [lastRideForBanner, lastRideCtaMode, hasDueFare, trackingRide, router, goToRideBook, pushOnce]);
 
   const trackingBottom = rideNavH + trackingFloatGap;
   // Root layout already reserves the status-bar strip — only add a small gap below it.
@@ -267,7 +396,7 @@ export function RideBookingScreen() {
         <View style={styles.titleBar}>
           <TouchableOpacity
             style={styles.backBtn}
-            onPress={() => router.back()}
+            onPress={() => pushOnce(() => router.back())}
             activeOpacity={0.8}
           >
             <Ionicons name="arrow-back" size={20} color={GatiMitraColors.textPrimary} />
@@ -295,7 +424,7 @@ export function RideBookingScreen() {
             <GatiCashHeaderPill />
             <TouchableOpacity
               style={styles.bellBtn}
-              onPress={() => router.push("/notifications")}
+              onPress={() => pushOnce(() => router.push("/notifications"))}
               activeOpacity={0.8}
             >
               <Ionicons name="notifications-outline" size={20} color={GatiMitraColors.textPrimary} />
@@ -309,8 +438,10 @@ export function RideBookingScreen() {
             activeOpacity={0.9}
             onPress={() => {
               if (!trackingRide) return;
-              const target = resolvePersonRideTrackingNavigation(trackingRide);
-              router.push({ pathname: target.pathname, params: target.params });
+              pushOnce(() => {
+                const target = resolvePersonRideTrackingNavigation(trackingRide);
+                router.push({ pathname: target.pathname, params: target.params });
+              });
             }}
           >
             <View style={styles.dueFareRibbonInner}>
@@ -326,6 +457,7 @@ export function RideBookingScreen() {
 
       <ScrollView
         style={styles.scroll}
+        nestedScrollEnabled
         contentContainerStyle={[
           styles.scrollContent,
           { paddingBottom: bottomStackH + 8, flexGrow: 1 },
@@ -334,7 +466,13 @@ export function RideBookingScreen() {
       >
         {activeTab === "all" ? (
           <>
-            <RideHomePromoBanner offers={rideFeaturedOffers} onBookNow={openDefaultRide} />
+            <RideHomePromoBanner
+              offers={rideFeaturedOffers}
+              lastRide={lastRideForBanner}
+              lastRideCta={lastRideCta}
+              onBookNow={openDefaultRide}
+              onLastRideBook={openLastRideBook}
+            />
             <AllServicesGrid onSelectService={goToRideBook} servicesDisabled={hasDueFare} />
             {hideSafetyBanner ? null : (
               <>

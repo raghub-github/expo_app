@@ -5,6 +5,7 @@ import { Check, Copy, RefreshCw, X } from "lucide-react";
 import type { PersonRideDetailOrder } from "./person-ride-detail-types";
 import { formatRideStatusLabel, normalizeStatus } from "./person-ride-utils";
 import { titleCaseStatusWords } from "@/lib/riders/rider-order-status-display";
+import { formatOrderHeaderDateTime } from "@/lib/orders/order-detail-display";
 import { OrderPageOverlay } from "@/components/orders/OrderPageOverlay";
 
 export type PersonRideTicketSummary = {
@@ -48,24 +49,11 @@ export default function PersonRideOrderHeader({
     order.orderId?.trim() ||
     `GMP${String(order.id).padStart(6, "0")}`;
   const normalizedId = displayId.replace(/^#/, "");
-  const idPrefix = normalizedId.length > 4 ? normalizedId.slice(0, -4) : normalizedId;
-  const idLast4 = normalizedId.length > 4 ? normalizedId.slice(-4) : "";
-  const idLast4Chars = idLast4.split("");
 
   const statusRaw = order.currentStatus ?? order.status;
   const statusLabel = formatRideStatusLabel(statusRaw);
 
-  const createdLabel = order.createdAt
-    ? new Date(order.createdAt).toLocaleString("en-IN", {
-        day: "numeric",
-        month: "numeric",
-        year: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: true,
-      })
-    : "—";
+  const createdLabel = formatOrderHeaderDateTime(order.createdAt);
 
   useEffect(() => {
     return () => {
@@ -87,38 +75,27 @@ export default function PersonRideOrderHeader({
 
   return (
     <>
-      <section className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-slate-100 pb-2">
-        <div>
-          <h1 className="flex items-center gap-1.5 text-[16px] font-medium text-slate-900">
-            <span className="text-slate-700">#</span>
-            <span className="font-mono text-[15px] tracking-wide text-emerald-700">
-              {idLast4 ? (
-                <>
-                  <span>{idPrefix}</span>
-                  <span className="text-[15px] font-medium">{idLast4Chars[0]}</span>
-                  <span className="text-[16px] font-semibold">{idLast4Chars[1]}</span>
-                  <span className="text-[17px] font-semibold">{idLast4Chars[2]}</span>
-                  <span className="text-[18px] font-bold">{idLast4Chars[3]}</span>
-                </>
-              ) : (
-                normalizedId || "—"
-              )}
+      <section className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1 border-b border-slate-100 pb-2">
+        <div className="flex flex-col items-start">
+          <h1 className="m-0 flex items-center gap-2">
+            <span className="inline-flex items-center rounded-md border-0 bg-emerald-50/15 px-0 py-0.5 font-mono text-[16px] font-extrabold tracking-wide text-emerald-800">
+              #{normalizedId || "—"}
             </span>
             <button
               type="button"
               onClick={handleCopyId}
-              className="inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-slate-500 transition hover:text-slate-700"
+              className="inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-slate-500 transition hover:text-slate-700"
               aria-label={copied ? "Copied" : "Copy order ID"}
             >
               {copied ? (
-                <Check className="h-3 w-3 text-emerald-600" />
+                <Check className="h-3.5 w-3.5 text-emerald-600" />
               ) : (
-                <Copy className="h-3 w-3 text-gati-primary" />
+                <Copy className="h-3.5 w-3.5 text-gati-primary" />
               )}
             </button>
           </h1>
-          <p className="mt-0.5 text-[11px] text-slate-600">
-            <span className="text-slate-800">{createdLabel}</span>
+          <p className="mt-1 pl-0 text-[12px] font-bold tabular-nums text-slate-800">
+            {createdLabel}
           </p>
         </div>
         <div className="flex flex-col items-end gap-1 text-[11px]">

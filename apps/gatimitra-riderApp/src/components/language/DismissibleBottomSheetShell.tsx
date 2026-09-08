@@ -313,6 +313,8 @@ export function DismissibleBottomSheetShell({
       return legacySheetNode;
     }
 
+    if (!visible) return null;
+
     return (
       <Modal
         visible={visible}
@@ -423,6 +425,8 @@ export function DismissibleBottomSheetShell({
     keyboardOpen: keyboardActive,
     availableHeight: keyboardActive ? maxH : null,
   };
+
+  if (!visible) return null;
 
   const sheetNode = (
     <View

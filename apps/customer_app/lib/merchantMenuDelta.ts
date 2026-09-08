@@ -18,6 +18,9 @@ function menuItemSignature(item: MenuItem): string {
     item.inStock === false ? "0" : "1",
     item.categoryId ?? "",
     item.categoryName ?? "",
+    item.sizePreset ?? "",
+    item.sizeValue ?? "",
+    item.sizeUnit ?? "",
   ].join("|");
 }
 

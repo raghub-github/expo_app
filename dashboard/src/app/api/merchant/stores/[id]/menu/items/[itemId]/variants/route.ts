@@ -9,6 +9,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
+import { normalizeSizeWrite } from "@/lib/menu-size-preset";
 
 export const runtime = "nodejs";
 
@@ -59,23 +60,22 @@ export async function POST(
     const displayOrderRaw = Number(body.display_order);
     const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
     const sizeRaw = body.variant_size_value;
-    const variantSizeValue =
-      sizeRaw != null && String(sizeRaw).trim() !== "" ? String(sizeRaw).trim() : null;
-    const variantSizeUnit =
-      body.variant_size_unit != null && String(body.variant_size_unit).trim() !== ""
-        ? String(body.variant_size_unit).trim()
-        : null;
+    const variantSize = normalizeSizeWrite({
+      size_preset: body.size_preset,
+      size_value: sizeRaw,
+      size_unit: body.variant_size_unit,
+    });
 
     let row: unknown;
     try {
       [row] = await sql`
         INSERT INTO merchant_menu_item_variants (
           menu_item_id, variant_id, variant_name, variant_type, variant_price,
-          variant_size_value, variant_size_unit, is_default, display_order
+          variant_size_value, variant_size_unit, size_preset, is_default, display_order
         )
         VALUES (
           ${menuItemId}, ${variantId}, ${variant_name}, ${variantType}, ${variant_price},
-          ${variantSizeValue}, ${variantSizeUnit}, ${isDefault}, ${displayOrder}
+          ${variantSize.size_value}, ${variantSize.size_unit}, ${variantSize.size_preset}, ${isDefault}, ${displayOrder}
         )
         RETURNING id
       `;

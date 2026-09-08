@@ -349,6 +349,10 @@ export async function approveRiderDocument(
     Boolean(previousRcPlate) &&
     Boolean(nextRcPlate) &&
     previousRcPlate !== nextRcPlate;
+  const pendingPlaceholderUrl = (() => {
+    const url = String(current.fileUrl || "").trim().toLowerCase();
+    return !url || url === "pending" || url === "n/a";
+  })();
 
   const electronicPatch = ev
     ? {
@@ -364,10 +368,11 @@ export async function approveRiderDocument(
         lastVerificationId: ev.verificationId ?? current.lastVerificationId ?? null,
         lastProviderReference: ev.providerReference ?? current.lastProviderReference ?? null,
         // Wrong RC → new RC: drop old photo refs so UI / vehicle don't keep stale image.
-        ...(isRcPlateReplace
+        // Pending stub (no rider upload): mark electronic so the rider app treats the step done.
+        ...(isRcPlateReplace || pendingPlaceholderUrl
           ? {
               fileUrl: "electronic_verified",
-              r2Key: null as string | null,
+              r2Key: isRcPlateReplace ? (null as string | null) : current.r2Key,
             }
           : {}),
         extractedDataSummary: {
@@ -445,7 +450,9 @@ export async function approveRiderDocument(
       verifierUserId: agentId,
       rejectedReason: null,
     });
-    const allSidesApproved = areAllRequiredSidesApproved(nextMetadata, files);
+    // Electronic verify is a whole-document result (Aadhaar/DL EV does not need a back photo).
+    const allSidesApproved =
+      Boolean(ev) || areAllRequiredSidesApproved(nextMetadata, files);
 
     const [updated] = await db
       .update(riderDocuments)
@@ -766,6 +773,8 @@ async function recomputeRiderStateAfterDocChange(riderId: number): Promise<{
   };
   if (!rider) return fallbackState;
 
+  await markVehicleDocsSubmittedIfAdminCompleted(riderId);
+
   const allDocs = await db
     .select()
     .from(riderDocuments)
@@ -843,6 +852,7 @@ function isCompositeDocSideComplete(
   filesByDocId: Map<number, { side?: string | null }[]>
 ): boolean {
   if (!isCompositeBaseType(doc.docType)) return false;
+  if (doc.verified) return true;
   const files = filesByDocId.get((doc as any).id) ?? [];
   const hasSide = files.some((f) => (f.side || "").toLowerCase() === side);
   if (hasSide) {
@@ -877,8 +887,81 @@ function checkIdentityDocsVerifiedFromList(
 }
 
 function hasSubmittedDocFile(doc: { fileUrl?: string | null } | undefined): boolean {
-  const url = String(doc?.fileUrl || "").trim();
-  return Boolean(url) && url !== "pending";
+  const url = String(doc?.fileUrl || "").trim().toLowerCase();
+  return Boolean(url) && url !== "pending" && url !== "n/a";
+}
+
+function isDashboardCompletedDoc(doc: {
+  verified?: boolean | null;
+  verificationMethod?: string | null;
+  verificationStatus?: string | null;
+  fileUrl?: string | null;
+} | undefined): boolean {
+  if (!doc) return false;
+  if (doc.verified === true) return true;
+  const method = String(doc.verificationMethod || "").toUpperCase();
+  if (
+    method === "APP_VERIFIED" ||
+    method.startsWith("CASHFREE_") ||
+    method === "RAZORPAY_BANK"
+  ) {
+    return true;
+  }
+  const status = String(doc.verificationStatus || "").toLowerCase();
+  if (status === "auto_verified" || status === "approved") return true;
+  const url = String(doc.fileUrl || "").toLowerCase();
+  return url.includes("electronic_verified") || url.includes("digilocker_verified");
+}
+
+/**
+ * When admin finishes DL+RC (or rental) on the dashboard, mark the same
+ * vehicle-submit flag the rider app writes on Continue — so payment is reachable.
+ */
+async function markVehicleDocsSubmittedIfAdminCompleted(riderId: number): Promise<void> {
+  const db = getDb();
+  const docs = await db
+    .select()
+    .from(riderDocuments)
+    .where(eq(riderDocuments.riderId, riderId));
+
+  const dl = docs.find((d) => d.docType === "dl");
+  const rc = docs.find((d) => d.docType === "rc");
+  const rental = docs.find((d) => d.docType === "rental_proof" || d.docType === "ev_proof");
+  const adminVehicleDone =
+    (isDashboardCompletedDoc(dl) && isDashboardCompletedDoc(rc)) ||
+    isDashboardCompletedDoc(rental);
+  if (!adminVehicleDone) return;
+
+  const selection = docs.find((d) => d.docType === "onboarding_vehicle_selection");
+  const prevMeta =
+    selection?.metadata && typeof selection.metadata === "object"
+      ? ({ ...(selection.metadata as Record<string, unknown>) } as Record<string, unknown>)
+      : {};
+  const choice =
+    typeof prevMeta.vehicleChoice === "string" ? prevMeta.vehicleChoice.trim() : "";
+  if (!choice) return;
+
+  if (
+    prevMeta.vehicleDocsSubmittedFor === choice &&
+    typeof prevMeta.vehicleDocsSubmittedAt === "string" &&
+    prevMeta.vehicleDocsSubmittedAt
+  ) {
+    return;
+  }
+
+  const nextMeta = {
+    ...prevMeta,
+    vehicleDocsSubmittedFor: choice,
+    vehicleDocsSubmittedAt: new Date().toISOString(),
+    submittedFromDashboard: true,
+  };
+
+  if (selection) {
+    await db
+      .update(riderDocuments)
+      .set({ metadata: nextMeta, updatedAt: new Date() })
+      .where(eq(riderDocuments.id, selection.id));
+  }
 }
 
 /** Identity docs present enough to continue (verified or awaiting review). */
@@ -894,6 +977,7 @@ function checkIdentityDocsSubmittedFromList(
     const hasBack = files.some((f) => (f.side || "").toLowerCase() === "back");
     aadhaarOk =
       Boolean(aadhaarRow.verified) ||
+      isDashboardCompletedDoc(aadhaarRow) ||
       hasSubmittedDocFile(aadhaarRow) ||
       (hasFront && hasBack);
   } else {
@@ -926,13 +1010,13 @@ function checkVehicleDocsSubmittedFromList(docs: any[], _vehicleType?: string): 
     typeof meta?.vehicleDocsSubmittedFor === "string" ? meta.vehicleDocsSubmittedFor.trim() : "";
 
   const hasDl =
-    docs.some((d) => d.docType === "dl" && hasSubmittedDocFile(d)) ||
-    (docs.some((d) => d.docType === "dl_front" && hasSubmittedDocFile(d)) &&
-      docs.some((d) => d.docType === "dl_back" && hasSubmittedDocFile(d)));
-  const hasRc = docs.some((d) => d.docType === "rc" && hasSubmittedDocFile(d));
+    (docs.some((d) => d.docType === "dl" && (hasSubmittedDocFile(d) || isDashboardCompletedDoc(d))) ||
+    (docs.some((d) => d.docType === "dl_front" && (hasSubmittedDocFile(d) || isDashboardCompletedDoc(d))) &&
+      docs.some((d) => d.docType === "dl_back" && (hasSubmittedDocFile(d) || isDashboardCompletedDoc(d)))));
+  const hasRc = docs.some((d) => d.docType === "rc" && (hasSubmittedDocFile(d) || isDashboardCompletedDoc(d)));
   const hasRental =
-    docs.some((d) => d.docType === "rental_proof" && hasSubmittedDocFile(d)) ||
-    docs.some((d) => d.docType === "ev_proof" && hasSubmittedDocFile(d));
+    docs.some((d) => d.docType === "rental_proof" && (hasSubmittedDocFile(d) || isDashboardCompletedDoc(d))) ||
+    docs.some((d) => d.docType === "ev_proof" && (hasSubmittedDocFile(d) || isDashboardCompletedDoc(d)));
 
   if (flow === "payment") {
     return Boolean(selection && submittedFor && choice && submittedFor === choice);

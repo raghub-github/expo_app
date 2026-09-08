@@ -1,41 +1,28 @@
 /**
- * Plays configured alert chime when a new-order push arrives while the app is
- * foregrounded. Background/killed delivery uses the Android notification
- * channel sound (merchant_new_orders_alert) — do not double-chime from JS.
- *
- * Uses the centralized push dispatcher + shared order-key dedupe so dual
- * Expo/FCM delivery cannot chime the same event twice (also shares with modal).
+ * Owns NEW_ORDER JS alert playback while the merchant app is ACTIVE.
+ * Background/killed delivery uses native FCM + merchant_new_orders_alert
+ * (bundled `notification` wav). Tapping transfers remaining repeats here.
  */
 import { useEffect, useRef } from "react";
-import { AppState } from "react-native";
 import Constants from "expo-constants";
+import { AppState } from "react-native";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { readDeviceOrderAlertsAsync } from "@/lib/deviceOrderAlerts";
-import { registerMerchantForegroundPushHandler } from "@/lib/merchantPushDispatch";
-import { playIncomingOrderAlert } from "@/lib/playOrderAlertSound";
+import {
+  registerMerchantForegroundPushHandler,
+  registerMerchantNotificationResponseHandler,
+} from "@/lib/merchantPushDispatch";
 import { isMerchantNewOrderPushData } from "@/lib/merchantNewOrderChannel";
-import { claimNewOrderAlertSound } from "@/lib/newOrderAlertSoundDedupe";
-
-function chimeDedupeKey(data: Record<string, unknown>): string {
-  const orderId =
-    data.foodOrderId ??
-    data.orderId ??
-    data.order_id ??
-    data.notification_id ??
-    data.notificationId ??
-    "";
-  return String(orderId || "new_order");
-}
-
-async function playNewOrderChime(
-  storeId: number,
-  settings: Parameters<typeof playIncomingOrderAlert>[0]
-): Promise<void> {
-  const dev = await readDeviceOrderAlertsAsync(storeId);
-  if (!dev.orderAlertsEnabled || !dev.soundAlertsEnabled) return;
-  await playIncomingOrderAlert(settings, dev);
-}
+import {
+  continueOrStartNewOrderAlert,
+  extractNewOrderEventId,
+  extractNewOrderIdFromPush,
+  handleNewOrderNotificationTap,
+  hydrateNewOrderAlertManager,
+  rememberIncomingOrderAlertConfig,
+  startedAtFromPush,
+} from "@/lib/newOrderAlertManager";
 
 export default function OrderAlertPushHandler() {
   const { selectedStore } = useSelectedStore();
@@ -47,15 +34,73 @@ export default function OrderAlertPushHandler() {
   storeIdRef.current = storeId;
 
   useEffect(() => {
+    const sid = storeIdRef.current;
+    if (!sid) return;
+    void (async () => {
+      const dev = await readDeviceOrderAlertsAsync(sid);
+      rememberIncomingOrderAlertConfig(settingsRef.current, dev);
+    })();
+  }, [storeId, acceptanceSettings]);
+
+  useEffect(() => {
     if (Constants.appOwnership === "expo") return;
-    return registerMerchantForegroundPushHandler(({ data }) => {
-      // Killed/background: OS plays channel sound. Only chime from JS when active.
-      if (AppState.currentState !== "active") return;
+    void hydrateNewOrderAlertManager();
+    void (async () => {
+      try {
+        const { getLastNotificationOpenPayload } = await import("@gatimitra/expo-push-kit");
+        const last = await getLastNotificationOpenPayload();
+        if (!last || !isMerchantNewOrderPushData(last.data ?? {})) return;
+        const sid = storeIdRef.current;
+        const dev = sid ? await readDeviceOrderAlertsAsync(sid) : null;
+        await handleNewOrderNotificationTap({
+          data: last.data ?? {},
+          notificationDate: startedAtFromPush(last.data ?? {}, last.date),
+          settings: settingsRef.current,
+          device: dev,
+        });
+      } catch {
+        /* cold-start drain is best-effort; controller also emits onNotificationOpen */
+      }
+    })();
+
+    const unsubFg = registerMerchantForegroundPushHandler(({ data, date }) => {
+      if (!isMerchantNewOrderPushData(data)) return;
+      const orderId = extractNewOrderIdFromPush(data);
+      if (!orderId) return;
       const sid = storeIdRef.current;
-      if (!isMerchantNewOrderPushData(data) || !sid) return;
-      if (!claimNewOrderAlertSound(chimeDedupeKey(data))) return;
-      void playNewOrderChime(sid, settingsRef.current);
+      const source = AppState.currentState === "active" ? "FOREGROUND" : "BACKGROUND";
+      void (async () => {
+        const dev = sid ? await readDeviceOrderAlertsAsync(sid) : null;
+        if (sid && dev) rememberIncomingOrderAlertConfig(settingsRef.current, dev);
+        await continueOrStartNewOrderAlert({
+          orderId,
+          eventId: extractNewOrderEventId(data, orderId),
+          source,
+          settings: settingsRef.current,
+          device: dev,
+          notificationDate: startedAtFromPush(data, date),
+        });
+      })();
     });
+
+    const unsubTap = registerMerchantNotificationResponseHandler((payload) => {
+      if (!isMerchantNewOrderPushData(payload.data ?? {})) return;
+      const sid = storeIdRef.current;
+      void (async () => {
+        const dev = sid ? await readDeviceOrderAlertsAsync(sid) : null;
+        await handleNewOrderNotificationTap({
+          data: payload.data ?? {},
+          notificationDate: startedAtFromPush(payload.data ?? {}, payload.date),
+          settings: settingsRef.current,
+          device: dev,
+        });
+      })();
+    });
+
+    return () => {
+      unsubFg();
+      unsubTap();
+    };
   }, []);
 
   return null;

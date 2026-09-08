@@ -40,6 +40,11 @@ import {
   MERCHANT_NEW_ORDER_SOUND,
   isMerchantNewOrderPushData,
 } from "@/lib/merchantNewOrderChannel";
+import {
+  STORE_STATUS_CHANNEL_ID,
+  isStoreStatusPushData,
+  storeStatusStateFromPush,
+} from "@/lib/storeStatusNotification";
 
 const LORA = "Lora_400Regular";
 const LORA_BOLD = "Lora_700Bold";
@@ -136,6 +141,17 @@ export default function NotificationSetup() {
         }
         return;
       }
+      if (isStoreStatusPushData(data)) {
+        const state = storeStatusStateFromPush(data);
+        if (state === "OUT_OF_TIMINGS") {
+          router.push("/restaurant-status" as never);
+        } else if (state === "RECONNECT") {
+          router.replace("/" as never);
+        } else {
+          router.replace("/(tabs)/" as never);
+        }
+        return;
+      }
       if (isMerchantNewOrderPush(data)) {
         void (async () => {
           const foodIdRaw = extractMerchantFoodOrderIdFromPush(data);
@@ -191,7 +207,7 @@ export default function NotificationSetup() {
         router.push("/(tabs)/complaints" as never);
         return;
       }
-      if (data?.screen === "orders" || data?.type === "store_online") {
+      if (data?.screen === "orders") {
         const numeric = extractMerchantFoodOrderIdFromPush(data);
         if (numeric) {
           openOrderDetailOnce(router, numeric, { currentPath: pathname });
@@ -264,7 +280,7 @@ export default function NotificationSetup() {
           channelId: "merchant_order_lifecycle",
           name: "Order updates",
           lightColor: "#3EB489",
-          importance: 4,
+          importance: 5,
         },
         {
           channelId: "merchant_default",
@@ -276,7 +292,13 @@ export default function NotificationSetup() {
           channelId: "merchant_online",
           name: "Store online status",
           lightColor: "#3EB489",
-          importance: 4,
+          importance: 3,
+        },
+        {
+          channelId: STORE_STATUS_CHANNEL_ID,
+          name: "Store status",
+          lightColor: "#3EB489",
+          importance: 3,
         },
         { channelId: "default", name: "Store & Orders", lightColor: "#3EB489", importance: 4 },
       ],

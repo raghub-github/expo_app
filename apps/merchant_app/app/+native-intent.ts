@@ -5,6 +5,10 @@
  * (empty path) when an order notification is tapped. Without this rewriter
  * Expo Router lands on the Unmatched Route screen.
  *
+ * Empty launcher URLs MUST land on `/` so Index can wait for session
+ * validation. Never send a cold start to `/(tabs)` — that mounts the
+ * authenticated tree before auth is known.
+ *
  * New-order pushes deep-link to `/(tabs)?orderTab=New`. Lifecycle / rider /
  * rating pushes deep-link to `/order/{foodId}` — preserve that path.
  *
@@ -35,6 +39,8 @@ function foodOrderIdFromPath(path: string): string | null {
   return m?.[1] ?? null;
 }
 
+const AUTH_ENTRY = "/";
+
 export function redirectSystemPath({
   path,
   initial,
@@ -61,9 +67,8 @@ export function redirectSystemPath({
       p === "/index" ||
       /^\/?\?/.test(p) ||
       /^\/+$/.test(p);
-    // Empty launcher URL: land on home; NotificationSetup still drains
-    // getLastNotificationResponseAsync for typed deep links.
-    if (empty) return "/(tabs)";
+    // Empty launcher URL: Index decides Login vs inner app after session validation.
+    if (empty) return AUTH_ENTRY;
 
     const ordersList = p.match(/^\/+orders\/?(?:\?(.*))?$/i);
     if (ordersList) {
@@ -73,7 +78,7 @@ export function redirectSystemPath({
     void initial;
   } catch {
     void initial;
-    return "/(tabs)";
+    return AUTH_ENTRY;
   }
   return path;
 }

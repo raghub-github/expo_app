@@ -46,6 +46,8 @@ export type GatiMitraBootstrapScreenProps = {
   appReady?: boolean;
   onExitComplete?: () => void;
   statusMessage?: string | null;
+  /** Hide native splash only after Lora is loaded — otherwise wordmark flashes thin system text. */
+  fontsReady?: boolean;
   /** Fired once the splash has laid out — used to hide the native splash early. */
   onSplashReady?: () => void;
 };
@@ -55,6 +57,7 @@ export function GatiMitraBootstrapScreen({
   appReady = false,
   onExitComplete,
   statusMessage = null,
+  fontsReady = true,
   onSplashReady,
 }: GatiMitraBootstrapScreenProps) {
   const insets = useSafeAreaInsets();
@@ -76,10 +79,16 @@ export function GatiMitraBootstrapScreen({
   }, []);
 
   const handleSplashLayout = useCallback(() => {
+    if (!fontsReady) return;
     if (splashReadyFiredRef.current) return;
     splashReadyFiredRef.current = true;
     onSplashReadyRef.current?.();
-  }, []);
+  }, [fontsReady]);
+
+  useEffect(() => {
+    if (!fontsReady) return;
+    handleSplashLayout();
+  }, [fontsReady, handleSplashLayout]);
 
   useEffect(() => {
     const chrome = useScreenChromeStore.getState();
@@ -130,24 +139,28 @@ export function GatiMitraBootstrapScreen({
         style={[styles.statusFill, { height: topBleed, backgroundColor: SPLASH_STATUS_BAR }]}
       />
       <View style={styles.logoLayer} pointerEvents="none">
-        <AppText
-          style={styles.title}
-          bold
-          numberOfLines={1}
-          adjustsFontSizeToFit
-          minimumFontScale={0.7}
-        >
-          GatiMitra
-        </AppText>
-        <AppText
-          style={styles.subtitle}
-          bold
-          numberOfLines={1}
-          adjustsFontSizeToFit
-          minimumFontScale={0.6}
-        >
-          CRAFTED FOR CONVENIENCE
-        </AppText>
+        {fontsReady ? (
+          <>
+            <AppText
+              style={styles.title}
+              bold
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+            >
+              GatiMitra
+            </AppText>
+            <AppText
+              style={styles.subtitle}
+              bold
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.6}
+            >
+              CRAFTED FOR CONVENIENCE
+            </AppText>
+          </>
+        ) : null}
         <ActivityIndicator
           style={[styles.spinner, { bottom: spinnerBottom }]}
           size="small"

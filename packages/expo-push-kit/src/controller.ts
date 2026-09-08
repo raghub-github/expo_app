@@ -418,6 +418,7 @@ export function createPushPermissionController(
           body: c.body ?? null,
           data: (c.data ?? {}) as Record<string, unknown>,
           actionIdentifier,
+          date: response.notification.date,
         };
         void reportClickIfPresent(
           options.apiBaseUrl,
@@ -436,6 +437,7 @@ export function createPushPermissionController(
           title: c.title ?? null,
           body: c.body ?? null,
           data: (c.data ?? {}) as Record<string, unknown>,
+          date: notification.date,
         };
         options.onForeground?.(payload);
       });
@@ -458,6 +460,7 @@ export function createPushPermissionController(
             title: c.title ?? null,
             body: c.body ?? null,
             data: (c.data ?? {}) as Record<string, unknown>,
+            date: last.notification.date,
           };
           void reportClickIfPresent(options.apiBaseUrl, options.getAuth, payload.data);
           emitNotificationOpen(options, payload);

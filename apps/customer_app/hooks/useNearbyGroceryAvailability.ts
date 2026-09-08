@@ -60,6 +60,7 @@ export function useNearbyGroceryAvailability() {
   const groceryEnabled =
     canQuery &&
     ((query.data?.length ?? 0) > 0 ||
+      !query.isFetched ||
       (query.isLoading && (cached?.length ?? 0) > 0));
 
   return {

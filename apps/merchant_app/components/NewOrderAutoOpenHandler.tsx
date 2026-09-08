@@ -54,7 +54,7 @@ export default function NewOrderAutoOpenHandler() {
         });
         await Notifications.setNotificationChannelAsync("merchant_order_lifecycle", {
           name: "Order updates",
-          importance: Notifications.AndroidImportance.HIGH,
+          importance: Notifications.AndroidImportance.MAX,
           vibrationPattern: [0, 250, 250, 250],
           lightColor: "#3EB489",
           lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
@@ -62,11 +62,19 @@ export default function NewOrderAutoOpenHandler() {
         });
         await Notifications.setNotificationChannelAsync("merchant_online", {
           name: "Store online status",
-          importance: Notifications.AndroidImportance.HIGH,
-          vibrationPattern: [0, 250, 250, 250],
+          importance: Notifications.AndroidImportance.DEFAULT,
+          sound: null,
           lightColor: "#3EB489",
           lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-          enableVibrate: true,
+          enableVibrate: false,
+        });
+        await Notifications.setNotificationChannelAsync("merchant_store_status", {
+          name: "Store status",
+          importance: Notifications.AndroidImportance.DEFAULT,
+          sound: null,
+          lightColor: "#3EB489",
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          enableVibrate: false,
         });
       } catch {
         /* expo-notifications unavailable */

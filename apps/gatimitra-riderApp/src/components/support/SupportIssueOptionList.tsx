@@ -46,12 +46,12 @@ export function SupportIssueOptionList({ prompt, items, onSelect, loading }: Pro
 }
 
 const styles = StyleSheet.create({
-  wrap: { width: "100%" },
+  wrap: { width: "100%", gap: 22 },
   prompt: {
     fontSize: 13,
     fontWeight: "600",
     color: "#64748B",
-    marginBottom: 10,
+    marginBottom: 6,
     marginLeft: 4,
     textTransform: "uppercase",
     letterSpacing: 0.3,

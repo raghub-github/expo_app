@@ -40,6 +40,8 @@ export type PushNotificationOpenPayload = {
   body: string | null;
   data: Record<string, unknown>;
   actionIdentifier?: string | null;
+  /** When the OS received the notification (ms). Used to resume alert progress. */
+  date?: number | null;
 };
 
 export type PushControllerOptions = {

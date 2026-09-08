@@ -4,6 +4,7 @@
 
 import { Image } from "expo-image";
 import type { UserProfile } from "@/services/profile.service";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 /** MD5 hex digest for Gravatar URLs (sync, no extra deps). */
 function md5Hex(input: string): string {
@@ -150,13 +151,29 @@ function md5Hex(input: string): string {
 
 export function isCustomProfileUploadUrl(url: string | null | undefined): boolean {
   if (!url?.trim()) return false;
-  return url.trim().toLowerCase().includes("/attachments/proxy");
+  const u = url.trim().toLowerCase();
+  return u.includes("/attachments/proxy") || u.startsWith("customers/profile-images/");
+}
+
+/** Absolute URI for the stored profile photo (proxy, R2 key, or https). */
+export function resolveStoredProfileAvatarUri(url: string | null | undefined): string | null {
+  const trimmed = url?.trim();
+  if (!trimmed || isGenericProfileImageUrl(trimmed)) return null;
+  if (
+    !isCustomProfileUploadUrl(trimmed) &&
+    !trimmed.startsWith("http://") &&
+    !trimmed.startsWith("https://")
+  ) {
+    return null;
+  }
+  return toAbsoluteImageUrl(trimmed);
 }
 
 export function isGenericProfileImageUrl(url: string | null | undefined): boolean {
   if (!url?.trim()) return true;
   const u = url.trim().toLowerCase();
   if (u.includes("/attachments/proxy")) return false;
+  if (u.startsWith("customers/profile-images/")) return false;
   if (u.includes("fallback.png")) return true;
   if (u.includes("api.unavatar.io/fallback")) return true;
   if (u.includes("unavatar.io/google/") && u.includes("@")) return true;
@@ -216,15 +233,10 @@ export function pickVerifiedEmailAvatarUrl(
 const prefetchedAvatarUris = new Set<string>();
 
 export function prefetchEmailAvatar(profile: Pick<UserProfile, "email" | "is_email_verified" | "profile_image_url">) {
-  const custom = profile.profile_image_url?.trim();
-  if (custom && isCustomProfileUploadUrl(custom)) {
-    // Lazy absolute URL so home avatar hits disk cache without waiting on network.
-    void import("@/utils/mediaUrl").then(({ toAbsoluteImageUrl }) => {
-      const uri = toAbsoluteImageUrl(custom);
-      if (!uri || prefetchedAvatarUris.has(uri)) return;
-      prefetchedAvatarUris.add(uri);
-      void Image.prefetch(uri, { cachePolicy: "memory-disk" });
-    });
+  const stored = resolveStoredProfileAvatarUri(profile.profile_image_url);
+  if (stored && !prefetchedAvatarUris.has(stored)) {
+    prefetchedAvatarUris.add(stored);
+    void Image.prefetch(stored, { cachePolicy: "memory-disk" });
   }
 
   if (!profile.is_email_verified || !profile.email?.trim()) return;

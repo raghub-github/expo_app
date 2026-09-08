@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { AppState, type AppStateStatus } from "react-native";
+import { AppState } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { getConfig } from "@/config/env";
 import { useAuthStore } from "@/store/authStore";
@@ -10,6 +10,7 @@ import {
   patchLocationWeatherCache,
 } from "@/hooks/useLocationWeather";
 import type { CustomerWeatherContext } from "@/services/weather.service";
+import { subscribeConfirmedAppState } from "@/lib/confirmedAppState";
 import { shouldSuspendRealtimeTransport } from "@/lib/realtime-lifecycle";
 import { thermalAudit } from "@/lib/thermalAudit";
 
@@ -64,7 +65,12 @@ export function WeatherRealtimeSync() {
   const suspendedRef = useRef(false);
 
   useEffect(() => {
-    const { wsEnabled } = getConfig();
+    let wsEnabled = false;
+    try {
+      wsEnabled = getConfig().wsEnabled === true;
+    } catch {
+      return;
+    }
     if (!wsEnabled || !authHydrated || !locationHydrated || !session?.accessToken || !coords) {
       cancelledRef.current = true;
       connectGenRef.current += 1;
@@ -85,7 +91,15 @@ export function WeatherRealtimeSync() {
 
     cancelledRef.current = false;
     const accessToken = session.accessToken;
-    const { apiBaseUrl, wsBaseUrl } = getConfig();
+    let apiBaseUrl = "";
+    let wsBaseUrl = "";
+    try {
+      const cfg = getConfig();
+      apiBaseUrl = cfg.apiBaseUrl;
+      wsBaseUrl = cfg.wsBaseUrl;
+    } catch {
+      return;
+    }
 
     const clearHeartbeat = () => {
       if (heartbeatTimer.current) {
@@ -221,8 +235,8 @@ export function WeatherRealtimeSync() {
       void connect("mount");
     }
 
-    const appStateSub = AppState.addEventListener("change", (state: AppStateStatus) => {
-      if (shouldSuspendRealtimeTransport(state)) {
+    const unsubscribeAppState = subscribeConfirmedAppState({
+      onSuspend: () => {
         suspendedRef.current = true;
         if (reconnectTimer.current) {
           clearTimeout(reconnectTimer.current);
@@ -235,19 +249,19 @@ export function WeatherRealtimeSync() {
           /* ignore */
         }
         thermalAudit("WS_SUSPEND", { reason: "weather_background" });
-        return;
-      }
-      if (state === "active" && !cancelledRef.current) {
+      },
+      onResume: () => {
+        if (cancelledRef.current) return;
         suspendedRef.current = false;
         failureCountRef.current = 0;
         void connect("foreground");
-      }
+      },
     });
 
     return () => {
       cancelledRef.current = true;
       connectGenRef.current += 1;
-      appStateSub.remove();
+      unsubscribeAppState();
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       clearHeartbeat();
       wsRef.current?.close();

@@ -46,6 +46,7 @@ type DispatchRuntime = {
   abortRetryAttempts: number;
   lastRecoverAt: number;
   lastIntervalMs: number;
+  consecutiveEmpty: number;
   pendingRecoverReason: string | null;
   seenOfferIds: Set<string>;
   listenersWired: boolean;
@@ -68,6 +69,7 @@ function emptyRuntime(): DispatchRuntime {
     abortRetryAttempts: 0,
     lastRecoverAt: 0,
     lastIntervalMs: 0,
+    consecutiveEmpty: 0,
     pendingRecoverReason: null,
     seenOfferIds: new Set(),
     listenersWired: false,
@@ -127,7 +129,7 @@ function clearTimers(): void {
 function armRecoveryTimer(): void {
   const rt = runtime();
   if (!rt.active) return;
-  const ms = recoveryIntervalMs(isRiderDispatchRealtimeActive());
+  const ms = recoveryIntervalMs(isRiderDispatchRealtimeActive(), rt.consecutiveEmpty);
   if (rt.recoverTimer && rt.lastIntervalMs === ms) return;
   if (rt.recoverTimer) clearInterval(rt.recoverTimer);
   rt.lastIntervalMs = ms;
@@ -241,11 +243,15 @@ export async function recoverDispatchOffers(
         merged: merged.length,
         newOfferIds: newIds,
       });
+      return merged.length;
     };
+
+    const pendingPromise = fetchPendingOffersForDispatch();
+    const availablePromise = fetchAvailableOrdersForDispatch();
 
     let pending: RiderOrderSummary[] = [];
     try {
-      pending = await fetchPendingOffersForDispatch();
+      pending = await pendingPromise;
     } catch (err) {
       riderDispatchWarn("fetch pending failed during recover", {
         reason,
@@ -258,9 +264,11 @@ export async function recoverDispatchOffers(
     }
 
     try {
-      const available = await fetchAvailableOrdersForDispatch();
+      const available = await availablePromise;
       if (rt.recoverGen !== gen || !rt.active) return;
-      applyRecovered(available, pending);
+      const mergedCount = applyRecovered(available, pending);
+      rt.consecutiveEmpty = mergedCount === 0 ? rt.consecutiveEmpty + 1 : 0;
+      armRecoveryTimer();
       rt.abortRetryAttempts = 0;
     } catch (err) {
       if (pending.length > 0 && !isAbortError(err)) {
@@ -345,6 +353,7 @@ export function startRiderDispatchLifecycle(input: {
   };
   rt.seenOfferIds = new Set();
   rt.abortRetryAttempts = 0;
+  rt.consecutiveEmpty = 0;
   rt.pendingRecoverReason = null;
   riderDispatchLog("DISPATCH STARTED", {
     sessionKey: input.sessionKey,
@@ -386,6 +395,7 @@ export function _resetDispatchLifecycleForTests(): void {
   rt.abortRetryAttempts = 0;
   rt.lastRecoverAt = 0;
   rt.seenOfferIds = new Set();
+  rt.consecutiveEmpty = 0;
   rt.wasOffline = false;
   rt.prevWsLive = false;
   rt.pendingRecoverReason = null;

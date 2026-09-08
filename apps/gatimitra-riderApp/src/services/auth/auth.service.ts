@@ -15,6 +15,7 @@ import { getRiderAppConfig, resolveUrlForDevice } from "@/src/config/env";
 import { getSupabaseAuth, getSupabaseOtpEnvDebugInfo } from "@/src/lib/supabaseClient";
 import { getRiderLoginDeviceMeta } from "@/src/lib/riderDeviceInfo";
 import type { RiderLoginGeoPayload } from "@/src/lib/getRiderLoginGeoFromDevice";
+import { RIDER_HIGH_TRAFFIC_MESSAGE, sanitizeRiderAuthError } from "@/src/lib/sanitizeRiderAuthError";
 
 const AUTH_PREFIX = "/v1/auth";
 
@@ -76,12 +77,9 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit & { 
       (err instanceof Error && err.name === "AbortError") ||
       (typeof err === "object" && err != null && (err as { name?: string }).name === "AbortError");
     if (aborted) {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
-      throw new Error(
-        `Request timed out after ${Math.round(timeoutMs / 1000)}s contacting ${url}. Check that the backend is running and EXPO_PUBLIC_API_BASE_URL matches this device's network.`,
-      );
+      throw new Error(RIDER_HIGH_TRAFFIC_MESSAGE);
     }
-    throw err;
+    throw new Error(sanitizeRiderAuthError(err));
   } finally {
     clearTimeout(id);
   }
@@ -119,7 +117,7 @@ function mapVerifyErrorCode(errCode: string, serverMessage: string, fallbackMess
   if (errCode === "sms_delivery_failed") {
     throw new Error(serverMessage || "Unable to send OTP. Please try again.");
   }
-  throw new Error(serverMessage || errCode || fallbackMessage);
+  throw new Error(sanitizeRiderAuthError(serverMessage || errCode || fallbackMessage));
 }
 
 function throwIfExchangeFailed(res: Response, dataJson: Record<string, unknown>, fallbackMessage: string): void {
@@ -131,7 +129,7 @@ function throwIfExchangeFailed(res: Response, dataJson: Record<string, unknown>,
 
 function assertSession(dataJson: Record<string, unknown>): asserts dataJson is Session {
   if (!dataJson.accessToken || !dataJson.userId) {
-    throw new Error("Session response missing access token.");
+    throw new Error(sanitizeRiderAuthError("Session response missing access token."));
   }
 }
 
@@ -155,9 +153,7 @@ function normalizeOtpErrorMessage(message: string): string {
 async function deliverOtpViaSupabase(phoneE164: string): Promise<void> {
   const supabase = getSupabaseAuth();
   if (!supabase) {
-    throw new Error(
-      "Supabase is not configured for rider OTP. Check EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.",
-    );
+    throw new Error(RIDER_HIGH_TRAFFIC_MESSAGE);
   }
 
   // Normalize phone to strict E.164 (same as partnersite / merchant). Supabase rejects
@@ -203,11 +199,9 @@ async function deliverOtpViaSupabase(phoneE164: string): Promise<void> {
       /network request failed|failed to fetch|AuthRetryableFetchError/i.test(msg) ||
       (error as { status?: number }).status === 0
     ) {
-      throw new Error(
-        "Unable to reach authentication server. Check internet connection and that EXPO_PUBLIC_SUPABASE_URL matches the merchant app project (uoxkwzn…). Then restart Expo with -c.",
-      );
+      throw new Error(RIDER_HIGH_TRAFFIC_MESSAGE);
     }
-    throw new Error(msg + hint);
+    throw new Error(sanitizeRiderAuthError(msg + hint));
   }
 }
 
@@ -252,14 +246,14 @@ export const riderAuthService = {
     try {
       dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
     } catch {
-      throw new Error("Invalid response from server while requesting OTP.");
+      throw new Error(sanitizeRiderAuthError("Invalid response from server while requesting OTP."));
     }
     if (!res.ok) {
       const msg =
         (typeof dataJson.message === "string" && dataJson.message) ||
         (typeof dataJson.error === "string" && dataJson.error) ||
         `Could not send OTP (HTTP ${res.status}).`;
-      throw new Error(msg);
+      throw new Error(sanitizeRiderAuthError(msg));
     }
 
     // Review number: backend seeded a fixed OTP → verify via the backend.
@@ -279,7 +273,7 @@ export const riderAuthService = {
       return;
     }
 
-    throw new Error("Unexpected OTP response from server.");
+    throw new Error(sanitizeRiderAuthError("Unexpected OTP response from server."));
   },
 
   /**
@@ -316,7 +310,7 @@ export const riderAuthService = {
       try {
         dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
       } catch {
-        throw new Error("Invalid response from server while verifying OTP.");
+        throw new Error(sanitizeRiderAuthError("Invalid response from server while verifying OTP."));
       }
 
       // OTP succeeded but another device is active — surface the conflict (do NOT log in).
@@ -385,7 +379,7 @@ export const riderAuthService = {
     try {
       dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
     } catch {
-      throw new Error("Invalid response from server while exchanging Supabase token.");
+      throw new Error(sanitizeRiderAuthError("Invalid response from server while exchanging Supabase token."));
     }
     const supabaseConflict = parseSessionConflict(res.status, dataJson);
     if (supabaseConflict) return supabaseConflict;
@@ -408,7 +402,7 @@ export const riderAuthService = {
   }): Promise<VerifyOtpResult> {
     const supabase = getSupabaseAuth();
     if (!supabase) {
-      throw new Error("Supabase is not configured.");
+      throw new Error(RIDER_HIGH_TRAFFIC_MESSAGE);
     }
     const { data, error } = await supabase.auth.getSession();
     if (error || !data?.session?.access_token) {
@@ -430,7 +424,7 @@ export const riderAuthService = {
     try {
       dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
     } catch {
-      throw new Error("Invalid response from server while exchanging Supabase token.");
+      throw new Error(sanitizeRiderAuthError("Invalid response from server while exchanging Supabase token."));
     }
     const retryConflict = parseSessionConflict(res.status, dataJson);
     if (retryConflict) return retryConflict;
@@ -464,7 +458,7 @@ export const riderAuthService = {
     try {
       dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
     } catch {
-      throw new Error("Invalid response from server during device switch.");
+      throw new Error(sanitizeRiderAuthError("Invalid response from server during device switch."));
     }
     throwIfExchangeFailed(res, dataJson, "Could not switch devices. Please try again.");
     assertSession(dataJson);
@@ -481,13 +475,15 @@ export const riderAuthService = {
     try {
       dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
     } catch {
-      throw new Error("Invalid response while loading rider status.");
+      throw new Error(sanitizeRiderAuthError("Invalid response while loading rider status."));
     }
     if (!res.ok) {
       throw new Error(
-        (typeof dataJson.message === "string" && dataJson.message) ||
-          (typeof dataJson.error === "string" && dataJson.error) ||
-          "Could not load rider status.",
+        sanitizeRiderAuthError(
+          (typeof dataJson.message === "string" && dataJson.message) ||
+            (typeof dataJson.error === "string" && dataJson.error) ||
+            "Could not load rider status.",
+        ),
       );
     }
     return dataJson as RiderStatusResponse;
@@ -511,7 +507,7 @@ export const riderAuthService = {
     try {
       dataJson = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
     } catch {
-      throw new Error("Invalid response while refreshing session.");
+      throw new Error(sanitizeRiderAuthError("Invalid response while refreshing session."));
     }
     if (!res.ok) {
       throw new Error(

@@ -227,6 +227,11 @@ export function useRiderStatus(riderId: string | undefined) {
         onboardingProgressPct?: number;
         macroStepIndex?: number;
         paymentCompleted?: boolean;
+        vehicleChoice?: string | null;
+        vehicleCategoryCode?: string | null;
+        vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment" | null;
+        vehicleDocsSubmittedFor?: string | null;
+        bankAccountOnboardingDone?: boolean;
       }>(`${API_BASE()}/v1/rider/${riderId}/status`, {
         headers: { authorization: `Bearer ${session.accessToken}` },
       });

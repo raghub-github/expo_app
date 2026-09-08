@@ -103,10 +103,18 @@ class SharedLocationEngine {
   private profiles = new Map<string, LocationEngineProfile>();
   private sub: Location.LocationSubscription | null = null;
   private restarting = false;
+  private reconcileQueued = false;
   private activeOptsKey = "";
+  /** Survives idle / watch restarts so maps never drop to a blank world view. */
+  private lastGoodFix: LocationFix | undefined;
 
   getState(): LocationTrackerState {
     return this.state;
+  }
+
+  getLastFix(): LocationFix | undefined {
+    if (this.state.status === "tracking" && this.state.lastFix) return this.state.lastFix;
+    return this.lastGoodFix;
   }
 
   /** Inject a fix from the background location task (or one-shot refresh). */
@@ -114,6 +122,7 @@ class SharedLocationEngine {
     if (this.state.status === "permission_denied" || this.state.status === "services_disabled") {
       return;
     }
+    this.lastGoodFix = fix;
     this.emit({ status: "tracking", lastFix: fix });
   }
 
@@ -140,6 +149,9 @@ class SharedLocationEngine {
   }
 
   private emit(s: LocationTrackerState) {
+    if (s.status === "tracking" && s.lastFix) {
+      this.lastGoodFix = s.lastFix;
+    }
     this.state = s;
     for (const fn of this.listeners) {
       try {
@@ -151,7 +163,8 @@ class SharedLocationEngine {
   }
 
   private currentFix(): LocationFix | undefined {
-    return this.state.status === "tracking" ? this.state.lastFix : undefined;
+    if (this.state.status === "tracking" && this.state.lastFix) return this.state.lastFix;
+    return this.lastGoodFix;
   }
 
   private shouldAcceptFix(fix: LocationFix, minAccuracyM: number): boolean {
@@ -163,8 +176,13 @@ class SharedLocationEngine {
   }
 
   private async reconcileWatch(): Promise<void> {
+    if (this.restarting) {
+      this.reconcileQueued = true;
+      return;
+    }
     if (this.profiles.size === 0) {
       await this.stopWatch();
+      // Keep lastGoodFix — idle means "not watching", not "forget where the rider is".
       this.emit({ status: "idle" });
       return;
     }
@@ -183,7 +201,10 @@ class SharedLocationEngine {
   }
 
   private async startWatch(merged: LocationEngineProfile, optsKey: string): Promise<void> {
-    if (this.restarting) return;
+    if (this.restarting) {
+      this.reconcileQueued = true;
+      return;
+    }
     this.restarting = true;
     try {
       const perm = await Location.requestForegroundPermissionsAsync();
@@ -199,7 +220,7 @@ class SharedLocationEngine {
 
       await this.stopWatch();
       // Keep any existing fix while restarting so UI never blanks.
-      this.emit({ status: "tracking", lastFix: this.currentFix() });
+      this.emit({ status: "tracking", lastFix: this.lastGoodFix ?? this.currentFix() });
       this.activeOptsKey = optsKey;
 
       // Instant seed: OS last-known first (do not wait on cold GPS).
@@ -251,6 +272,10 @@ class SharedLocationEngine {
       })();
     } finally {
       this.restarting = false;
+      if (this.reconcileQueued) {
+        this.reconcileQueued = false;
+        void this.reconcileWatch();
+      }
     }
   }
 

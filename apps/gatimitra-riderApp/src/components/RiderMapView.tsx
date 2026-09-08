@@ -15,6 +15,12 @@ import {
   type DemandZone,
 } from "@/src/lib/demand-zones";
 import { hotZonesToGeoJson, type HotZoneCell } from "@/src/lib/hot-zones";
+import { mapLog } from "@/src/lib/map-debug";
+import {
+  isUsableMapCoordinate,
+  readLastMapCameraCenter,
+  rememberMapCameraCenter,
+} from "@/src/lib/readLatestRiderGps";
 import { nearbyStoresToGeoJson, type NearbyStore } from "@/src/lib/nearby-stores";
 
 const BRAND = colors.primary[500];
@@ -27,8 +33,6 @@ const SERVICE_FILL = {
 /** Store marker + cluster colours (kept distinct from hot-zone service colours). */
 const STORE_COLOR = "#EA580C";
 const STORE_CLOSED_COLOR = "#9CA3AF";
-/** Last successful camera center — never jump to a hardcoded city while waiting for GPS. */
-let lastCameraCenter: { lat: number; lng: number } | null = null;
 const DEMAND_FILL = "rgba(239, 68, 68, 0.22)";
 const DEMAND_STROKE = "#DC2626";
 
@@ -159,13 +163,14 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
     }
   }, []);
 
-  const hasLiveFix = !!riderLocation;
-  if (riderLocation) {
-    lastCameraCenter = { lat: riderLocation.lat, lng: riderLocation.lng };
+  const hasLiveFix = !!riderLocation && isUsableMapCoordinate(riderLocation.lat, riderLocation.lng);
+  if (hasLiveFix && riderLocation) {
+    rememberMapCameraCenter(riderLocation.lat, riderLocation.lng);
   }
-  const cameraSeed = riderLocation ?? lastCameraCenter;
+  const cameraSeed = hasLiveFix && riderLocation ? riderLocation : readLastMapCameraCenter();
   const lat = formatCoordinate(cameraSeed?.lat ?? 0);
   const lng = formatCoordinate(cameraSeed?.lng ?? 0);
+  const hasCameraSeed = !!(cameraSeed && isUsableMapCoordinate(cameraSeed.lat, cameraSeed.lng));
 
   const visibleOrders = useMemo(
     () =>
@@ -198,10 +203,19 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
   );
 
   const recenter = useCallback(() => {
-    if (!cameraRef.current || !riderLocation) return;
+    const target = riderLocation && isUsableMapCoordinate(riderLocation.lat, riderLocation.lng)
+      ? riderLocation
+      : readLastMapCameraCenter();
+    if (!cameraRef.current || !target) return;
     try {
+      mapLog("MAP_CAMERA", {
+        action: "RECENTER",
+        reason: "USER_BUTTON",
+        lat: target.lat,
+        lng: target.lng,
+      });
       cameraRef.current.setCamera({
-        centerCoordinate: [formatCoordinate(riderLocation.lng), formatCoordinate(riderLocation.lat)],
+        centerCoordinate: [formatCoordinate(target.lng), formatCoordinate(target.lat)],
         zoomLevel: HOME_MAP_ZOOM,
         animationMode: "flyTo",
         animationDuration: 700,
@@ -222,10 +236,16 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
   const didInitialCenterRef = useRef(false);
   useEffect(() => {
     if (didInitialCenterRef.current) return;
-    if (!Mapbox || !riderLocation || !cameraRef.current || !mapReady) return;
+    if (!Mapbox || !hasCameraSeed || !cameraRef.current || !mapReady) return;
     didInitialCenterRef.current = true;
+    mapLog("MAP_CAMERA", {
+      action: "FOLLOW",
+      reason: "INITIAL_LOCATION",
+      lat: cameraSeed?.lat,
+      lng: cameraSeed?.lng,
+    });
     recenter();
-  }, [riderLocation?.lat, riderLocation?.lng, mapReady, Mapbox, recenter]);
+  }, [hasCameraSeed, cameraSeed?.lat, cameraSeed?.lng, mapReady, Mapbox, recenter]);
 
   if (Platform.OS === "web") {
     return <View style={[styles.container, style, { backgroundColor: "#ECECEC" }]} />;
@@ -290,8 +310,11 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
         zoomEnabled
         pitchEnabled={false}
         rotateEnabled
-        preferredFramesPerSecond={20}
-        onDidFinishLoadingMap={() => setMapReady(true)}
+        preferredFramesPerSecond={12}
+        onDidFinishLoadingMap={() => {
+          setMapReady(true);
+          mapLog("MAP", { screen: "HOME", mapReady: true, hasFix: hasLiveFix, touchLayerDetected: false });
+        }}
       >
         <Mapbox.Camera
           ref={cameraRef}
@@ -302,7 +325,7 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
           // defaultSettings positions the map once when a fix/last-known center is
           // available at mount; if the first fix arrives later, the one-time effect
           // above calls recenter(). After that the camera stays user-controlled.
-          {...(cameraSeed
+          {...(hasCameraSeed && cameraSeed
             ? {
                 defaultSettings: {
                   centerCoordinate: [

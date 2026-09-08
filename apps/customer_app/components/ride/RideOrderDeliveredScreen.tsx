@@ -43,6 +43,7 @@ import {
 import type { RideCaptainRatingSubmitPayload } from "@/components/ride/RideCaptainRatingSheet";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
+import { useRecentLocationStore } from "@/store/recentLocationStore";
 
 const MINT = GatiMitraColors.primaryMint;
 const MINT_DARK = GatiMitraColors.deepMintStart;
@@ -179,6 +180,50 @@ export function RideOrderDeliveredScreen({ order, onBack, onOpenHelp }: Props) {
   const tripStats = formatRideTripStats(deliveredBill.distanceKm, order.rideDurationMinutes);
   const deliveredAtIso = getDeliveredAtIso(order);
   const deliveredTime = formatDeliveredTime(deliveredAtIso);
+
+  useEffect(() => {
+    const pickupLat = Number(order.pickupLat);
+    const pickupLng = Number(order.pickupLng);
+    const dropLat = Number(order.deliveryLat);
+    const dropLng = Number(order.deliveryLng);
+    if (
+      !Number.isFinite(pickupLat) ||
+      !Number.isFinite(pickupLng) ||
+      !Number.isFinite(dropLat) ||
+      !Number.isFinite(dropLng)
+    ) {
+      return;
+    }
+    const pickupPrimary =
+      pickupAddress.split(",")[0]?.trim() || pickupAddress || "Pickup";
+    const dropPrimary = dropAddress.split(",")[0]?.trim() || dropAddress || "Drop";
+    useRecentLocationStore.getState().setLastCompletedRideJourney(
+      {
+        latitude: pickupLat,
+        longitude: pickupLng,
+        primary: pickupPrimary,
+        fullAddress: order.merchantAddress?.trim() || pickupAddress,
+        kind: "pickup",
+      },
+      {
+        latitude: dropLat,
+        longitude: dropLng,
+        primary: dropPrimary,
+        fullAddress: order.deliveryAddress?.trim() || dropAddress,
+        kind: "drop",
+      }
+    );
+  }, [
+    order.orderId,
+    order.pickupLat,
+    order.pickupLng,
+    order.deliveryLat,
+    order.deliveryLng,
+    order.merchantAddress,
+    order.deliveryAddress,
+    pickupAddress,
+    dropAddress,
+  ]);
 
   const riderName = order.rider?.name?.trim() || "Captain";
   const riderFirstName = riderName.split(/\s+/)[0] || "Captain";

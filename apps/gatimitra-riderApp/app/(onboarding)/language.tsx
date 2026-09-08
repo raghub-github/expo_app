@@ -10,6 +10,8 @@ import {
 } from "@/src/stores/languageStore";
 import { getItem } from "@/src/utils/storage";
 import { LanguageSelectorContent } from "@/src/components/language/LanguageSelectorContent";
+import { StatusBar } from "expo-status-bar";
+import { RIDER_AUTH_BG } from "@/src/theme/riderAuthTheme";
 
 export default function LanguageScreen() {
   const { i18n } = useTranslation();
@@ -94,12 +96,14 @@ export default function LanguageScreen() {
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: "#FFFFFF" }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: RIDER_AUTH_BG }} edges={["top"]}>
+      <StatusBar style="dark" />
       <LanguageSelectorContent
         fullScreen
         selected={selected as LanguageCode}
         onSelect={handleLanguageSelect}
         onProceed={handleProceed}
+        onBack={router.canGoBack() ? () => router.back() : undefined}
         onGetHelp={() => router.push({ pathname: "/raise-ticket", params: { prelogin: "1" } })}
         proceedLoading={loading}
       />

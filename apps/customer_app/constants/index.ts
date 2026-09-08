@@ -58,6 +58,8 @@ export const STORAGE_KEYS = {
   CATEGORY_IMAGE_LAST_GOOD: "gm_customer_category_image_last_good_v1",
   /** Local file:// paths for category rail images (instant paint after first visit). */
   CATEGORY_IMAGE_FILE_CACHE: "gm_customer_category_image_file_cache_v1",
+  /** Store ids hidden from the customer's restaurant feed */
+  HIDDEN_STORES: "gm_customer_hidden_stores_v1",
 } as const;
 
 export const API_TIMEOUT_MS = 30000;

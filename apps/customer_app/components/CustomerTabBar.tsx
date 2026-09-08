@@ -7,7 +7,6 @@ import { useRouter } from "expo-router";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT,
-  CUSTOMER_SYSTEM_NAV_MINT,
   resolveCustomerBottomNavHeight,
   resolveTabBarBottomInset,
 } from "@/constants/layout";
@@ -16,6 +15,7 @@ import { useCustomerServiceBlocks } from "@/hooks/useCustomerServiceBlocks";
 import { CUSTOMER_HOME_SERVICE_META } from "@/lib/customerHomeServiceMeta";
 import { useCustomerServiceBlockSheetStore } from "@/store/customerServiceBlockSheetStore";
 import { AppText } from "@/components/AppText";
+import { navigateToFoodHome } from "@/lib/navigateToFoodHome";
 
 const TAB_ACTIVE = GatiMitraColors.splashMint;
 const TAB_INACTIVE = "#94A3B8";
@@ -124,7 +124,7 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
     <View
       style={[
         styles.outer,
-        bottomPad > 0 ? { paddingBottom: bottomPad, backgroundColor: CUSTOMER_SYSTEM_NAV_MINT } : null,
+        bottomPad > 0 ? { paddingBottom: bottomPad, backgroundColor: "#FFFFFF" } : null,
       ]}
     >
       <View style={styles.wrapper}>
@@ -143,7 +143,7 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
                 });
                 return;
               }
-              router.push("/home" as never);
+              // Already started in onPressIn — guard inside navigateToFoodHome is a no-op.
               return;
             }
             const event = navigation.emit({
@@ -154,6 +154,10 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
             if (!focused && !event.defaultPrevented) {
               navigation.navigate(route.name, route.params);
             }
+          };
+          const onPressIn = () => {
+            if (route.name !== "food" || !foodEnabled || foodBlocked) return;
+            navigateToFoodHome(router);
           };
           const onLongPress = () => {
             navigation.emit({ type: "tabLongPress", target: route.key });
@@ -168,7 +172,9 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
               accessibilityState={focused ? { selected: true } : {}}
               accessibilityLabel={tab.label}
               onPress={onPress}
+              onPressIn={onPressIn}
               onLongPress={onLongPress}
+              unstable_pressDelay={0}
               style={[styles.tab, foodTabDisabled && styles.tabDisabled]}
             >
               <TabIcon tab={tab} focused={focused} disabled={foodTabDisabled} />

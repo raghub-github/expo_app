@@ -1795,9 +1795,9 @@ export default function OrderRightSidebar({
     <>
     <aside className="w-full space-y-3 text-[12px] text-slate-600">
       {/* Order details card — compact labels & spacing */}
-      <section className="rounded-xl border border-slate-200 bg-white p-3 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
-        <div className="mb-2 flex items-center justify-between border-b border-slate-100 pb-1.5">
-          <h3 className="flex items-center gap-1 text-[12px] font-semibold text-slate-800">
+      <section className="rounded-xl border border-slate-200 bg-white px-3 pb-3.5 pt-2.5 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+        <div className="mb-2.5 flex min-h-[28px] items-center justify-between border-b border-slate-100 pb-2">
+          <h3 className="flex items-center gap-1.5 text-[12px] font-semibold leading-none text-slate-800">
             <i className="bi bi-info-circle text-[11px] text-emerald-500" />
             Order details
           </h3>

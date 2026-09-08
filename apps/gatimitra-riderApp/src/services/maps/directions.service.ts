@@ -223,10 +223,21 @@ function buildNavigationFromRawRoutes(
   };
 }
 
+function abortError(): Error {
+  const error = new Error("Aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 async function fetchMapboxRoute(
   from: LatLng,
   to: LatLng,
-  profile: RouteProfile
+  profile: RouteProfile,
+  signal?: AbortSignal
 ): Promise<NavigationRoute | null> {
   const { mapboxToken } = getRiderAppConfig();
   if (!mapboxToken) return null;
@@ -235,13 +246,14 @@ async function fetchMapboxRoute(
   let best: NavigationRoute | null = null;
 
   for (const mapboxProfile of profile.mapboxProfiles) {
+    if (signal?.aborted) throw abortError();
     const url =
       `https://api.mapbox.com/directions/v5/mapbox/${mapboxProfile}/${coords}` +
       `?access_token=${encodeURIComponent(mapboxToken)}` +
       `&alternatives=true&overview=full&geometries=polyline&steps=true&banner_instructions=false&language=en`;
 
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, signal ? { signal } : undefined);
       if (!res.ok) continue;
       const data = (await res.json()) as { routes?: RawRoute[] };
       const candidate = buildNavigationFromRawRoutes(data.routes ?? [], profile, "mapbox");
@@ -256,7 +268,8 @@ async function fetchMapboxRoute(
           : candidate.etaMinutes < best.etaMinutes ||
             (candidate.etaMinutes === best.etaMinutes && candidate.distanceKm < best.distanceKm));
       if (better) best = candidate;
-    } catch {
+    } catch (error) {
+      if (isAbortError(error)) throw error;
       // try next profile
     }
   }
@@ -267,18 +280,20 @@ async function fetchMapboxRoute(
 async function fetchOsrmRoute(
   from: LatLng,
   to: LatLng,
-  profile: RouteProfile
+  profile: RouteProfile,
+  signal?: AbortSignal
 ): Promise<NavigationRoute | null> {
   const coords = `${from.longitude},${from.latitude};${to.longitude},${to.latitude}`;
   const url = `${OSRM_DRIVING}/${coords}?overview=full&geometries=polyline&alternatives=true`;
 
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, signal ? { signal } : undefined);
     if (!res.ok) return null;
     const data = (await res.json()) as { code?: string; routes?: RawRoute[] };
     if (data.code !== "Ok") return null;
     return buildNavigationFromRawRoutes(data.routes ?? [], profile, "osrm");
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) throw error;
     return null;
   }
 }
@@ -310,20 +325,24 @@ async function fetchBackendNavigationRoute(
   };
 }
 
-/** Rider → pickup road route. Returns null if no road geometry available. */
+/** Current GPS origin → destination road route. Returns null if no road geometry available. */
 export async function getNavigationRouteToPickup(
   from: LatLng,
   to: LatLng,
-  rideType?: string
+  rideType?: string,
+  options?: { signal?: AbortSignal }
 ): Promise<NavigationRoute | null> {
   const profile = profileForRideType(rideType);
-  const mapbox = await fetchMapboxRoute(from, to, profile);
+  const signal = options?.signal;
+  const mapbox = await fetchMapboxRoute(from, to, profile, signal);
   if (mapbox) return mapbox;
+  if (signal?.aborted) throw abortError();
 
   const backend = await fetchBackendNavigationRoute(from, to, rideType);
   if (backend) return backend;
+  if (signal?.aborted) throw abortError();
 
-  return fetchOsrmRoute(from, to, profile);
+  return fetchOsrmRoute(from, to, profile, signal);
 }
 
 export function latLngFromRider(lat: number, lng: number): LatLng {

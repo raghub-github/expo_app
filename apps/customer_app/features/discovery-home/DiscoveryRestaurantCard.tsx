@@ -4,6 +4,7 @@
 
 import { memo, useCallback, useMemo, useState } from "react";
 import { View, Pressable, StyleSheet, useWindowDimensions } from "react-native";
+import Animated from "react-native-reanimated";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -13,6 +14,7 @@ import { MenuItemImagePlaceholder } from "@/components/store/MenuItemImagePlaceh
 import { setStoreBookmark, type MerchantSummary } from "@/services/merchant.service";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { useScrollSafePress } from "@/hooks/useScrollSafePress";
+import { useInstantPressScale } from "@/components/InstantPressable";
 import { useMerchantLiveStatus } from "@/hooks/useMerchantLiveStatus";
 import { usePreventServicesAtPin } from "@/hooks/usePreventServicesAtPin";
 import { resolveMerchantFoodHeroPrimaryUri } from "@/lib/merchantHeroMedia";
@@ -21,7 +23,7 @@ import { formatMerchantDeliveryTime } from "@/lib/merchantDeliveryTime";
 import { formatMerchantDistanceKm } from "@/lib/merchantDistance";
 import { formatCardOfferLine, RATING_PILL_GREEN } from "@/lib/merchantOfferBadge";
 import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
-import { useStoreBookmarkMutations, useStoreBookmarks } from "@/hooks/useStoreBookmarks";
+import { useStoreBookmarkMutations, useIsStoreBookmarked } from "@/hooks/useStoreBookmarks";
 import { DiscoveryColors, DISCOVERY_PAGE_PAD, DISCOVERY_RESTAURANT_CARD_H } from "./discoveryTheme";
 
 const IMG = 96;
@@ -57,10 +59,10 @@ type Props = {
 function DiscoveryRestaurantCardInner({ merchant, weatherDelayMinutes = 0 }: Props) {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { bookmarkSet } = useStoreBookmarks();
+  const saved = useIsStoreBookmarked(merchant.id);
   const { syncBookmark } = useStoreBookmarkMutations();
-  const saved = bookmarkSet.has(merchant.id);
   const { foodLocked } = usePreventServicesAtPin();
+  const pressScale = useInstantPressScale(0.98);
   const liveStatus = useMerchantLiveStatus(merchant);
   const isOpen = liveStatus === "OPEN";
   const listingBlocked = foodLocked;
@@ -94,8 +96,10 @@ function DiscoveryRestaurantCardInner({ merchant, weatherDelayMinutes = 0 }: Pro
   const cardPress = useScrollSafePress(openMerchant, {
     onPressIn: () => {
       if (listingBlocked) return;
+      pressScale.pressIn();
       warmMerchantHeroImage(merchant.id, bannerUri);
     },
+    onPressCancel: () => pressScale.pressOut(),
   });
 
   const onHeart = useCallback(async () => {
@@ -110,11 +114,15 @@ function DiscoveryRestaurantCardInner({ merchant, weatherDelayMinutes = 0 }: Pro
   }, [merchant.id, saved, syncBookmark]);
 
   return (
+    <Animated.View style={pressScale.style} collapsable={false}>
     <Pressable
       style={[styles.card, { width: cardW }, (!isOpen || listingBlocked) && styles.cardDim]}
       onPress={cardPress.onPress}
       onPressIn={cardPress.onPressIn}
-      onPressOut={cardPress.onPressOut}
+      onPressOut={() => {
+        pressScale.pressOut();
+        cardPress.onPressOut();
+      }}
       onTouchMove={cardPress.onTouchMove}
       disabled={listingBlocked}
     >
@@ -192,6 +200,7 @@ function DiscoveryRestaurantCardInner({ merchant, weatherDelayMinutes = 0 }: Pro
         </View>
       ) : null}
     </Pressable>
+    </Animated.View>
   );
 }
 

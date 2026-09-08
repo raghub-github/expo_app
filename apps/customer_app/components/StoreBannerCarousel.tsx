@@ -3,7 +3,7 @@
  * Horizontal strip (all slides mounted) — no URI swapping during swipe (prevents flicker).
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   StyleSheet,
@@ -20,6 +20,7 @@ import {
   isHeroMediaSessionReady,
   markHeroMediaSessionReady,
 } from "@/lib/prefetchGridFirstHeroMedia";
+import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -31,7 +32,6 @@ import Animated, {
   withSequence,
   withTiming,
 } from "react-native-reanimated";
-import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 /** Soft white shell under list-card banners — matches grocery/food grid-first hero placeholder. */
@@ -75,6 +75,19 @@ const DEFAULT_HOLD = LIST_CARD_CAROUSEL_HOLD_MS;
 const DEFAULT_SLIDE = LIST_CARD_CAROUSEL_SLIDE_MS;
 const SWIPE_THRESHOLD = 36;
 
+function stableImageRecyclingKey(uri: string): string {
+  const trimmed = uri.trim();
+  const q = trimmed.indexOf("?");
+  if (q < 0) return trimmed;
+  try {
+    const u = new URL(trimmed);
+    const key = u.searchParams.get("key");
+    return key ? `${u.origin}${u.pathname}?key=${key}` : `${u.origin}${u.pathname}`;
+  } catch {
+    return trimmed.slice(0, q);
+  }
+}
+
 const BannerImage = React.memo(function BannerImage({
   uri,
   width,
@@ -111,10 +124,6 @@ const BannerImage = React.memo(function BannerImage({
       }}
       collapsable={false}
     >
-      {/*
-        Always paint at opacity 1. Hiding until onLoad left many cards blank forever —
-        expo-image often skips onLoad for memory-disk cache hits.
-      */}
       <Image
         source={{ uri: paintUri }}
         style={{ width, height }}
@@ -123,7 +132,7 @@ const BannerImage = React.memo(function BannerImage({
         transition={0}
         priority="high"
         allowDownscaling
-        recyclingKey={paintUri}
+        recyclingKey={stableImageRecyclingKey(paintUri)}
         placeholder={
           lastGoodRef.current && lastGoodRef.current !== paintUri
             ? { uri: lastGoodRef.current }
@@ -134,6 +143,10 @@ const BannerImage = React.memo(function BannerImage({
           lastGoodRef.current = paintUri;
           markHeroMediaSessionReady(paintUri);
           onLoadOk?.(paintUri);
+        }}
+        onDisplay={() => {
+          lastGoodRef.current = paintUri;
+          markHeroMediaSessionReady(paintUri);
         }}
         onError={() => {
           if (lastGoodRef.current && lastGoodRef.current !== paintUri) {
@@ -150,7 +163,6 @@ function EmptyHero({
   width,
   height,
   borderRadius,
-  hidePlaceholderIcon,
 }: {
   width: number;
   height: number;
@@ -167,13 +179,13 @@ function EmptyHero({
         overflow: "hidden",
       }}
     >
-      <LinearGradient
-        colors={
-          hidePlaceholderIcon
-            ? [CARD_BANNER_SHELL, CARD_BANNER_SHELL, GatiMitraColors.surfaceWarm]
-            : [CARD_BANNER_SHELL, "#FFFFFF", GatiMitraColors.surfaceWarm]
-        }
-        style={StyleSheet.absoluteFill}
+      <GMSkeleton
+        style={{
+          width,
+          height,
+          borderTopLeftRadius: borderRadius,
+          borderTopRightRadius: borderRadius,
+        }}
       />
     </View>
   );
@@ -227,7 +239,9 @@ export function StoreBannerCarousel({
   const didSwipeRef = useRef(false);
   const widthRef = useRef(width);
 
-  const translateX = useSharedValue(0);
+  const translateX = useSharedValue(
+    enableInfiniteLoop !== false && width > 0 ? -width : 0
+  );
   const kenBurns = useSharedValue(0);
 
   holdMsRef.current = resolvedHoldMs;
@@ -364,7 +378,7 @@ export function StoreBannerCarousel({
     void prefetchImagesNow(slides, Math.min(4, slides.length));
   }, [dataKey, slides]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setActiveIndex(0);
     activeIndexRef.current = 0;
     physicalIndexRef.current = useInfiniteLoop ? 1 : 0;
@@ -660,14 +674,23 @@ export function StoreBannerCarousel({
   if (!showCarousel) {
     const inner = (
       <>
-        <Animated.View style={[styles.singleSlideMotion, singleSlideMotionStyle]}>
+        {enableKenBurns ? (
+          <Animated.View style={[styles.singleSlideMotion, singleSlideMotionStyle]}>
+            <BannerImage
+              uri={slides[0]}
+              width={width}
+              height={height}
+              onLoadFail={onSlideLoadFail}
+            />
+          </Animated.View>
+        ) : (
           <BannerImage
             uri={slides[0]}
             width={width}
             height={height}
             onLoadFail={onSlideLoadFail}
           />
-        </Animated.View>
+        )}
         {dimmed ? <View style={[styles.dim, { borderRadius }]} pointerEvents="none" /> : null}
       </>
     );

@@ -82,7 +82,7 @@ export function buildAppleAppSiteAssociation(): Record<string, unknown> | null {
       details: [
         {
           appID,
-          paths: ["/address/share/*", "/addr/*", "/ref/*", "/invite/*"],
+          paths: ["/address/share/*", "/addr/*", "/ref/*", "/invite/*", "/restaurant/*"],
         },
       ],
     },

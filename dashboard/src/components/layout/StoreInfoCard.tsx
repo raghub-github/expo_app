@@ -9,6 +9,7 @@ import { useCanStoreVerify } from "@/hooks/useCanStoreVerify";
 import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import { MenuReferenceReviewBlock } from "@/components/verification/MenuReferenceReviewBlock";
 import { summarizeMenuRejectionDetail } from "@/lib/store-verification-menu-rejection-detail-shared";
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 import type { MenuMediaFile } from "@/lib/merchant-menu-media";
 
 export type StoreInfoCardData = {
@@ -374,7 +375,7 @@ function StepDetailContent({
                 </div>
                 {!!doc[e.urlKey] && (
                   <a
-                    href={doc[e.urlKey] as string}
+                    href={resolveAttachmentProxyUrl(doc[e.urlKey] as string) || (doc[e.urlKey] as string)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex shrink-0 items-center gap-0.5 rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-indigo-700"

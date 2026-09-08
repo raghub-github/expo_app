@@ -10,6 +10,8 @@ export function SessionRevokedGate() {
 
   useEffect(() => {
     const unsubscribe = onSessionRevoked(async (payload) => {
+      // Drop the local session immediately so protected screens unmount.
+      await signOut();
       Alert.alert(
         "Session ended",
         payload.reason === "invalid_token"
@@ -18,8 +20,7 @@ export function SessionRevokedGate() {
         [
           {
             text: "OK",
-            onPress: async () => {
-              await signOut();
+            onPress: () => {
               router.replace("/(auth)/login");
             },
           },
@@ -35,4 +36,3 @@ export function SessionRevokedGate() {
 
   return null;
 }
-

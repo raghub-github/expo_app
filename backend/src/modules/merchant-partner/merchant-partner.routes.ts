@@ -7,7 +7,7 @@ import { getEnv } from "../../config/env.js";
 import { logStoreActivity } from "../../lib/store-activity-feed.js";
 import { syncedGeneratedOfferTitle } from "../../lib/merchant-offer-title.js";
 import { auth } from "../../plugins/auth.js";
-import { writeDeviceSessionCache } from "../../lib/device-session-cache.js";
+import { writeDeviceSessionCache, invalidateDeviceSessionCache } from "../../lib/device-session-cache.js";
 import { send as sendNotification } from "../notifications/notificationService.js";
 import {
   isWithinOperatingHours,
@@ -386,13 +386,27 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             return reply.code(400).send({ error: "invalid_session_ids" });
           }
           try {
-            // Use postgres.js tuple expansion for a safe IN (...) clause.
-            const revoked = await sql`
-              DELETE FROM user_device_sessions
-              WHERE user_id = ${req.auth.sub} AND id IN ${sql(ids)}
-              RETURNING device_id
-            `;
-            for (const row of revoked as { device_id?: string | null }[]) {
+            let revoked: { device_id?: string | null }[] = [];
+            try {
+              revoked = (await sql`
+                UPDATE user_device_sessions
+                SET
+                  is_active = FALSE,
+                  last_active = now(),
+                  logged_out_at = now(),
+                  revoked_by = 'merchant_self'
+                WHERE user_id = ${req.auth.sub} AND id IN ${sql(ids)} AND is_active = TRUE
+                RETURNING device_id
+              `) as { device_id?: string | null }[];
+            } catch {
+              revoked = (await sql`
+                UPDATE user_device_sessions
+                SET is_active = FALSE, last_active = now()
+                WHERE user_id = ${req.auth.sub} AND id IN ${sql(ids)} AND is_active = TRUE
+                RETURNING device_id
+              `) as { device_id?: string | null }[];
+            }
+            for (const row of revoked) {
               const deviceId = row.device_id != null ? String(row.device_id).trim() : "";
               if (deviceId) writeDeviceSessionCache(req.auth.sub, deviceId, false);
             }
@@ -415,28 +429,68 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           if (req.auth?.role !== "merchant" || !req.auth?.sub) {
             return reply.code(401).send({ error: "merchant_required" });
           }
+          const userId = req.auth.sub;
           const sql = getSql();
-          const body = logoutAllBody.parse(req.body);
+          const body = logoutAllBody.parse(req.body ?? {});
           const includeCurrent = body?.includeCurrent ?? false;
           const currentDeviceId = req.auth.device_id;
           try {
-            let revoked: { device_id?: string | null }[] = [];
-            if (!includeCurrent && currentDeviceId) {
-              revoked = (await sql`
-                DELETE FROM user_device_sessions
-                WHERE user_id = ${req.auth.sub} AND device_id IS DISTINCT FROM ${currentDeviceId}
-                RETURNING device_id
-              `) as { device_id?: string | null }[];
-            } else {
-              revoked = (await sql`
-                DELETE FROM user_device_sessions
-                WHERE user_id = ${req.auth.sub}
-                RETURNING device_id
-              `) as { device_id?: string | null }[];
-            }
+            const deactivate = async (exceptDeviceId: string | null) => {
+              try {
+                if (exceptDeviceId) {
+                  return (await sql`
+                    UPDATE user_device_sessions
+                    SET
+                      is_active = FALSE,
+                      last_active = now(),
+                      logged_out_at = now(),
+                      revoked_by = 'merchant_logout_all'
+                    WHERE user_id = ${userId}
+                      AND is_active = TRUE
+                      AND device_id IS DISTINCT FROM ${exceptDeviceId}
+                    RETURNING device_id
+                  `) as { device_id?: string | null }[];
+                }
+                return (await sql`
+                  UPDATE user_device_sessions
+                  SET
+                    is_active = FALSE,
+                    last_active = now(),
+                    logged_out_at = now(),
+                    revoked_by = 'merchant_logout_all'
+                  WHERE user_id = ${userId} AND is_active = TRUE
+                  RETURNING device_id
+                `) as { device_id?: string | null }[];
+              } catch {
+                if (exceptDeviceId) {
+                  return (await sql`
+                    UPDATE user_device_sessions
+                    SET is_active = FALSE, last_active = now()
+                    WHERE user_id = ${userId}
+                      AND is_active = TRUE
+                      AND device_id IS DISTINCT FROM ${exceptDeviceId}
+                    RETURNING device_id
+                  `) as { device_id?: string | null }[];
+                }
+                return (await sql`
+                  UPDATE user_device_sessions
+                  SET is_active = FALSE, last_active = now()
+                  WHERE user_id = ${userId} AND is_active = TRUE
+                  RETURNING device_id
+                `) as { device_id?: string | null }[];
+              }
+            };
+
+            const revoked = await deactivate(
+              !includeCurrent && currentDeviceId ? currentDeviceId : null
+            );
+            invalidateDeviceSessionCache(req.auth.sub);
             for (const row of revoked) {
               const deviceId = row.device_id != null ? String(row.device_id).trim() : "";
               if (deviceId) writeDeviceSessionCache(req.auth.sub, deviceId, false);
+            }
+            if (includeCurrent && currentDeviceId) {
+              writeDeviceSessionCache(req.auth.sub, currentDeviceId, false);
             }
             return { ok: true, removed: revoked.length };
           } catch {

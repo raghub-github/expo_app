@@ -16,6 +16,8 @@ type MerchantNavTransitionState = {
   /** Wall-clock when show() ran — page waits for slide-in before hide. */
   shownAt: number;
   show: (merchantId: string, opts?: { dark?: boolean }) => void;
+  /** Book visit/message index without opening the full-screen shutter Modal. */
+  beginVisit: (merchantId: string, opts?: { dark?: boolean }) => void;
   hide: () => void;
   consumeLoadingMessageIndex: (merchantId: string) => number;
 };
@@ -34,6 +36,18 @@ export const useMerchantNavTransitionStore = create<MerchantNavTransitionState>(
     const dark = opts?.dark ?? peekCachedFoodHomeLayoutKey() === "discovery";
     set({
       active: true,
+      merchantId,
+      loadingMessageIndex,
+      dark,
+      visitId: get().visitId + 1,
+      shownAt: Date.now(),
+    });
+  },
+  beginVisit: (merchantId, opts) => {
+    const loadingMessageIndex = useMerchantLoadingMessageStore.getState().pickStartIndex(merchantId);
+    const dark = opts?.dark ?? peekCachedFoodHomeLayoutKey() === "discovery";
+    set({
+      active: false,
       merchantId,
       loadingMessageIndex,
       dark,

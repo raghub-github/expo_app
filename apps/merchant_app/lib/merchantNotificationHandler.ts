@@ -1,16 +1,21 @@
 /**
  * Foreground presentation for Partner: every remote event goes to the OS
- * shade (old merchant-app behaviour). Only the local kitchen sticky is
- * suppressed so it does not double-chime as a heads-up.
+ * shade. Only the local kitchen sticky is suppressed so it does not
+ * double-chime as a heads-up.
  *
- * New-order pushes while the app is ACTIVE: suppress OS sound — the accept
- * modal / OrderAlertPushHandler play the bundled alert once.
- * Background / locked (JS still alive): allow sound so the tray is not
- * silent; killed delivery uses the Android channel sound from FCM.
+ * NEW_ORDER sound ownership:
+ *   • App ACTIVE  — mute OS channel sound; NewOrderAlertManager plays
+ *     the merchant-configured repeating chime.
+ *   • App NOT active (background / cached / headless) — NEVER mute OS
+ *     sound. Native FCM + merchant_new_orders_alert is the audible owner
+ *     so a killed/cached process cannot swallow the alert.
+ *   • Process dead — this handler does not run; Android shows the FCM
+ *     notification block with the channel sound.
  */
 import { AppState } from "react-native";
 import { isMerchantIdleStatusNotification } from "@/lib/merchantStatusNotification";
 import { isMerchantNewOrderPushData } from "@/lib/merchantNewOrderChannel";
+import { isStoreStatusPushData } from "@/lib/storeStatusNotification";
 
 export async function installMerchantForegroundNotificationHandler(): Promise<void> {
   try {
@@ -28,10 +33,24 @@ export async function installMerchantForegroundNotificationHandler(): Promise<vo
             shouldShowList: false,
           };
         }
+        const isStoreStatus = isStoreStatusPushData(data);
         const isOffline = t === "offline_network";
         const isNewOrder = isMerchantNewOrderPushData(data);
         const appActive = AppState.currentState === "active";
-        // Only mute the OS chime when the in-app alert path will own it.
+        // Status tray is quiet. While JS is active it owns the sticky so the
+        // FCM copy is not shown as a second row. When JS is not active, native
+        // FCM must still render (this handler may not even run).
+        if (isStoreStatus) {
+          return {
+            shouldShowAlert: !appActive,
+            shouldPlaySound: false,
+            shouldSetBadge: false,
+            shouldShowBanner: !appActive,
+            shouldShowList: !appActive,
+          };
+        }
+        // Only the in-app alert owns the chime while the merchant is looking
+        // at the app. Any other state must keep the native NEW_ORDER sound.
         const suppressOsSound = isOffline || (isNewOrder && appActive);
         return {
           shouldShowAlert: true,

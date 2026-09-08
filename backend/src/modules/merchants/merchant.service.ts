@@ -55,6 +55,7 @@ import {
   fetchVariantsForFullConfig,
 } from "../../lib/menu-full-config-sql.js";
 import { prependBaseMenuItemVariant } from "../../lib/menu-item-base-variant.js";
+import { parseSizePreset } from "../../lib/menu-size-preset.js";
 
 /**
  * Stamps the canonical customer-facing ETA range on a store row using its
@@ -574,8 +575,13 @@ export async function listStoresNearby(params: {
       .map((r) => Number(r.id))
       .filter((id) => Number.isFinite(id) && id > 0);
     if (ids.length === 0) return [];
-    const eligible = await resolveVegEligibleStoreIds(getSql(), ids);
-    return list.filter((r) => eligible.has(Number(r.id)));
+    try {
+      const eligible = await resolveVegEligibleStoreIds(getSql(), ids);
+      return list.filter((r) => eligible.has(Number(r.id)));
+    } catch {
+      // Fail closed: never leak mixed stores if the menu aggregation errors.
+      return list.filter((r) => r.is_pure_veg === true);
+    }
   };
 
   const listStoresNearbyHaversineFallback = async (): Promise<NearbyStoreRow[]> => {
@@ -797,13 +803,15 @@ export const __test__enrichNearbyWithRoadDistance = enrichNearbyWithRoadDistance
  */
 export async function getStoreByStoreId(storeId: string): Promise<MerchantStoreRow | null> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("merchant_stores")
-    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, banner_video_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km, store_phones, has_customer_visible_menu, store_type")
-    .eq("store_id", storeId)
-    .single();
-  if (error || !data) return null;
-  return data as MerchantStoreRow;
+  const id = storeId.trim();
+  if (!id) return null;
+  const columns =
+    "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, banner_video_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km, store_phones, has_customer_visible_menu, store_type, public_slug";
+  const byPublicId = await supabase.from("merchant_stores").select(columns).eq("store_id", id).maybeSingle();
+  if (!byPublicId.error && byPublicId.data) return byPublicId.data as MerchantStoreRow;
+  const bySlug = await supabase.from("merchant_stores").select(columns).eq("public_slug", id).maybeSingle();
+  if (!bySlug.error && bySlug.data) return bySlug.data as MerchantStoreRow;
+  return null;
 }
 
 /**
@@ -866,10 +874,20 @@ export async function getMerchantAboutPayload(storeId: string) {
     fssai_document_name?: string | null;
   } | null;
 
-  const legalName =
-    (store.store_display_name ?? "").trim() ||
-    (store.store_name ?? "").trim() ||
-    null;
+  let ownerName: string | null = null;
+  const parentId = Number(store.parent_id);
+  if (Number.isFinite(parentId) && parentId > 0) {
+    const { data: parentRow } = await supabase
+      .from("merchant_parents")
+      .select("owner_name, parent_name")
+      .eq("id", parentId)
+      .maybeSingle();
+    const row = parentRow as { owner_name?: string | null; parent_name?: string | null } | null;
+    ownerName =
+      (row?.owner_name ?? "").trim() ||
+      (row?.parent_name ?? "").trim() ||
+      null;
+  }
 
   const phones = (store as { store_phones?: string[] | null }).store_phones;
   const storePhone =
@@ -877,10 +895,15 @@ export async function getMerchantAboutPayload(storeId: string) {
       ? phones.map((p) => (p ?? "").trim()).find(Boolean) ?? null
       : null;
 
+  const publicSlug =
+    ((store as { public_slug?: string | null }).public_slug ?? "").trim() || null;
+
   return {
     store_name: store.store_name,
     store_display_name: store.store_display_name ?? null,
-    legal_name: legalName,
+    legal_name: ownerName,
+    owner_name: ownerName,
+    public_slug: publicSlug,
     full_address: store.full_address ?? store.store_description ?? null,
     city: store.city ?? null,
     state: (store as { state?: string | null }).state ?? null,
@@ -1182,6 +1205,9 @@ export async function getMenuByStoreId(
             m.has_customizations,
             m.has_addons,
             m.has_variants,
+            m.item_size_value,
+            m.item_size_unit,
+            m.size_preset,
             c.category_name,
             NULLIF(trim(c.category_image_url), '') AS category_image_url,
             c.display_order AS category_display_order,
@@ -1239,6 +1265,9 @@ export async function getMenuByStoreId(
             m.has_customizations,
             m.has_addons,
             m.has_variants,
+            m.item_size_value,
+            m.item_size_unit,
+            m.size_preset,
             c.category_name,
             NULLIF(trim(c.category_image_url), '') AS category_image_url,
             c.display_order AS category_display_order,
@@ -1439,6 +1468,9 @@ export async function getMenuDelta(
       m.has_customizations,
       m.has_addons,
       m.has_variants,
+      m.item_size_value,
+      m.item_size_unit,
+      m.size_preset,
       m.approval_status,
       COALESCE(m.is_deleted, FALSE) AS is_deleted,
       COALESCE(m.is_locked_by_plan, FALSE) AS is_locked_by_plan,
@@ -1507,6 +1539,7 @@ export type MenuItemFullConfig = {
     hasVariants: boolean;
     sizeValue?: string | null;
     sizeUnit?: string | null;
+    sizePreset?: string | null;
   };
   variants: Array<{
     id: string;
@@ -1514,6 +1547,7 @@ export type MenuItemFullConfig = {
     type: string | null;
     sizeValue: string | null;
     sizeUnit: string | null;
+    sizePreset?: string | null;
     price: number;
     isDefault: boolean;
     displayOrder: number;
@@ -1533,6 +1567,7 @@ export type MenuItemFullConfig = {
       imageUrl: string | null;
       sizeValue: string | null;
       sizeUnit: string | null;
+      sizePreset?: string | null;
       displayOrder: number;
       isMostOrdered?: boolean;
     }>;
@@ -2197,7 +2232,7 @@ export async function getMenuItemFullConfig(
   if (!store) return null;
 
   const itemSelect =
-    "id, item_id, item_name, short_name, item_description, item_image_url, food_type, base_price, selling_price, packaging_charges, item_size_value, item_size_unit, has_customizations, has_addons, has_variants";
+    "id, item_id, item_name, short_name, item_description, item_image_url, food_type, base_price, selling_price, packaging_charges, item_size_value, item_size_unit, size_preset, has_customizations, has_addons, has_variants";
 
   let itemRow: Record<string, unknown> | null = null;
 
@@ -2266,6 +2301,7 @@ export async function getMenuItemFullConfig(
           variant_type: row.variant_type != null ? String(row.variant_type) : null,
           variant_size_value: row.variant_size_value ?? null,
           variant_size_unit: row.variant_size_unit ?? null,
+          size_preset: row.size_preset ?? null,
           variant_price: String(row.variant_price ?? "0"),
           price_difference: null,
           in_stock: row.in_stock !== false,
@@ -2296,6 +2332,7 @@ export async function getMenuItemFullConfig(
         addon_image_url: row.addon_image_url != null ? String(row.addon_image_url) : null,
         addon_size_value: row.addon_size_value ?? null,
         addon_size_unit: row.addon_size_unit != null ? String(row.addon_size_unit) : null,
+        size_preset: row.size_preset != null ? String(row.size_preset) : null,
         display_order: Number(row.display_order ?? 0),
         in_stock: row.in_stock !== false,
       } as MenuItemAddonRow);
@@ -2320,6 +2357,7 @@ export async function getMenuItemFullConfig(
           a.addon_size_unit != null && String(a.addon_size_unit).trim() !== ""
             ? String(a.addon_size_unit).trim()
             : null,
+        sizePreset: parseSizePreset(a.size_preset),
         displayOrder: a.display_order ?? 0,
       }));
       return {
@@ -2351,6 +2389,9 @@ export async function getMenuItemFullConfig(
     });
   const markup = (rupees: number): number => markupRupeesPaise(rupees, commission.percent);
   const itemPriced = priceItem(parseFloat(item.selling_price));
+  const itemSizePreset = parseSizePreset(
+    (item as { size_preset?: string | null }).size_preset
+  );
   const itemSizeValue =
     (item as { item_size_value?: number | string | null }).item_size_value != null &&
     String((item as { item_size_value?: number | string | null }).item_size_value).trim() !== ""
@@ -2374,6 +2415,7 @@ export async function getMenuItemFullConfig(
         v.variant_size_unit != null && String(v.variant_size_unit).trim() !== ""
           ? String(v.variant_size_unit).trim()
           : null,
+      sizePreset: parseSizePreset(v.size_preset),
       price: priceItem(parseFloat(v.variant_price)).customerItemPriceUnit,
       isDefault: v.is_default === true,
       displayOrder: v.display_order ?? 0,
@@ -2393,6 +2435,7 @@ export async function getMenuItemFullConfig(
       hasVariants: item.has_variants === true,
       sizeValue: itemSizeValue,
       sizeUnit: itemSizeUnit,
+      sizePreset: itemSizePreset,
     },
     variants: prependBaseMenuItemVariant(
       {
@@ -2401,6 +2444,7 @@ export async function getMenuItemFullConfig(
         price: itemPriced.customerItemPriceUnit,
         sizeValue: itemSizeValue,
         sizeUnit: itemSizeUnit,
+        sizePreset: itemSizePreset,
       },
       mappedVariants
     ).map((v) => ({
@@ -2408,6 +2452,7 @@ export async function getMenuItemFullConfig(
       type: v.type ?? null,
       sizeValue: v.sizeValue ?? null,
       sizeUnit: v.sizeUnit ?? null,
+      sizePreset: v.sizePreset ?? null,
     })),
     customizations: customizationsWithAddons.map((c) => ({
       ...c,

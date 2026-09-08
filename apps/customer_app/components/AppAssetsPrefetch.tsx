@@ -1,31 +1,31 @@
 import { useEffect, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
-import { Image } from "expo-image";
 import { STORAGE_KEYS } from "@/constants";
 import { fetchCustomerAppAssets, type AppAssetItem } from "@/services/appAssets.service";
 import { prefetchCriticalHomeAssetImages } from "@/lib/homeCriticalAssets";
 import { prefetchCriticalRideAssetImages } from "@/lib/rideCriticalAssets";
 import { readSyncAppAssets } from "@/lib/appAssetsCache";
 import { hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
+import { enqueueImagePrefetch } from "@/lib/prefetchQueue";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
-const prefetched = new Set<string>();
 const RETRY_MS = [0, 2_000, 5_000, 10_000];
 const FOREGROUND_RELOAD_MIN_MS = 8_000;
 
 function prefetchRemainingAssetUrls(assets: Record<string, AppAssetItem>) {
+  const uris: string[] = [];
   for (const item of Object.values(assets)) {
     for (const raw of [item.proxyUrl, item.url]) {
       const trimmed = raw?.trim();
       if (!trimmed) continue;
       const uri = toAbsoluteImageUrl(trimmed) ?? trimmed;
-      if (!uri || prefetched.has(uri)) continue;
-      prefetched.add(uri);
-      // Fire-and-forget — never block UI or starve on-screen Image loads.
-      void Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => {});
+      if (!uri || uris.includes(uri)) continue;
+      uris.push(uri);
     }
   }
+  // Bounded queue — unbounded Image.prefetch starved on-screen home tiles.
+  enqueueImagePrefetch(uris, 80);
 }
 
 function warmFromStoreAssets() {
@@ -33,11 +33,11 @@ function warmFromStoreAssets() {
   if (Object.keys(seeded).length === 0) return;
   // Mark ready immediately so home isn't gated; warm cache in background.
   useAppAssetsStore.getState().setHomeImagesPrefetched(true);
-  void Promise.allSettled([
-    prefetchCriticalHomeAssetImages(seeded),
-    prefetchCriticalRideAssetImages(seeded),
-  ]);
-  prefetchRemainingAssetUrls(seeded);
+  void (async () => {
+    await prefetchCriticalHomeAssetImages(seeded);
+    void prefetchCriticalRideAssetImages(seeded);
+    prefetchRemainingAssetUrls(seeded);
+  })();
 }
 
 async function loadAppAssets(): Promise<boolean> {
@@ -46,11 +46,8 @@ async function loadAppAssets(): Promise<boolean> {
   if (Object.keys(assets).length === 0) return false;
   useAppAssetsStore.getState().setAssets(assets);
   useAppAssetsStore.getState().setHomeImagesPrefetched(true);
-  // Prefetch after paint — don't await (large PNGs via proxy used to starve UI).
-  void Promise.allSettled([
-    prefetchCriticalHomeAssetImages(assets),
-    prefetchCriticalRideAssetImages(assets),
-  ]);
+  await prefetchCriticalHomeAssetImages(assets);
+  void prefetchCriticalRideAssetImages(assets);
   prefetchRemainingAssetUrls(assets);
   return true;
 }

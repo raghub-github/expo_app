@@ -10,6 +10,7 @@ import {
   resolveMerchantBannerUri,
 } from "@/lib/merchantBanner";
 import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
+import { enqueueImagePrefetch } from "@/lib/prefetchQueue";
 import type { MerchantSummary } from "@/services/merchant.service";
 
 export const IMAGE_CACHE_POLICY = "memory-disk" as const;
@@ -74,13 +75,13 @@ export function prefetchImages(
 
 /**
  * Primary banner only — one URI per store. Must be warm before list paint.
- * Gallery is intentionally excluded so banners win the network/cache slot.
+ * First N images prefetch immediately (bypass concurrency queue); rest enqueue.
  */
 export function prefetchMerchantPrimaryBanners(
   merchants: Array<MerchantSummary | { banner_url?: string | null; displayImage?: string | null; galleryImages?: string[]; imageUrl?: string | null }>,
   opts?: { limit?: number }
 ): void {
-  const limit = opts?.limit ?? 60;
+  const limit = opts?.limit ?? 16;
   const urls: string[] = [];
   const seen = new Set<string>();
   for (const m of merchants) {
@@ -91,7 +92,12 @@ export function prefetchMerchantPrimaryBanners(
     urls.push(banner);
   }
   if (urls.length === 0) return;
-  void Promise.allSettled(urls.map((uri) => prefetchUriNow(uri)));
+  // Above-the-fold: fire Image.prefetch now so Food list paints from memory-disk.
+  const hot = urls.slice(0, 12);
+  void Promise.allSettled(hot.map((uri) => prefetchUriNow(uri)));
+  if (urls.length > 12) {
+    enqueueImagePrefetch(urls.slice(12), limit);
+  }
 }
 
 /**
@@ -108,7 +114,7 @@ export function prefetchMerchantCardImages(
   }>
 ): void {
   const list = merchants as MerchantSummary[];
-  prefetchMerchantPrimaryBanners(list, { limit: 60 });
+  prefetchMerchantPrimaryBanners(list, { limit: 24 });
 
   // Gallery second-class — never steal bandwidth from banners on first paint.
   if (typeof requestAnimationFrame === "function") {

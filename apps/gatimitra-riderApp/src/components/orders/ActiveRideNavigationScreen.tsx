@@ -51,13 +51,12 @@ import { PickupCameraPermissionSheet } from "@/src/components/orders/PickupCamer
 import { readCameraPermission } from "@/src/lib/cameraPermission";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
-import { createForegroundLocationTracker, LOCATION_ENGINE_PROFILES, type LocationTrackerState } from "@/src/services/location/locationTracker";
+import { createForegroundLocationTracker, getSharedLocationEngine, LOCATION_ENGINE_PROFILES, type LocationTrackerState } from "@/src/services/location/locationTracker";
 import {
-  getNavigationRouteToPickup,
-  latLngFromRider,
   type LatLng,
   type NavigationRoute,
 } from "@/src/services/maps/directions.service";
+import { useLiveNavigationRoute } from "@/src/hooks/useLiveNavigationRoute";
 import {
   useRideOrder,
   syncRiderOrderDetailCache,
@@ -127,11 +126,11 @@ import {
   splitRouteProgress,
   etaMinutesFromMeters,
   analyzeRiderOnRoute,
-  rerouteDebounceMs,
-  shouldRequestReroute,
 } from "@/src/lib/navigation-route-progress";
 import { useActiveNavLocationStore } from "@/src/stores/activeNavLocationStore";
 import { trackDebug } from "@gatimitra/map-tracking-engine";
+import { mapLog } from "@/src/lib/map-debug";
+import { isUsableMapCoordinate, readLatestRiderGps, rememberMapCameraCenter } from "@/src/lib/readLatestRiderGps";
 import {
   resolveCustomerDropPin,
   resolveRestaurantPickupPin,
@@ -223,17 +222,20 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const stickyFixRef = useRef<NonNullable<Extract<LocationTrackerState, { status: "tracking" }>["lastFix"]> | undefined>(
     undefined
   );
-  const [route, setRoute] = useState<NavigationRoute | null>(null);
-  // Start false so cached order UI paints immediately; fetch flips this when needed.
-  const [routeLoading, setRouteLoading] = useState(false);
-  const [routeError, setRouteError] = useState(false);
-  const lastRouteFromRef = useRef<string | null>(null);
+  if (!stickyFixRef.current) {
+    const seed = readLatestRiderGps();
+    if (seed && isUsableMapCoordinate(seed.lat, seed.lng)) {
+      stickyFixRef.current = {
+        tsMs: seed.tsMs || Date.now(),
+        lat: seed.lat,
+        lng: seed.lng,
+        accuracyM: seed.accuracyM,
+        speedMps: seed.speedMps,
+        headingDeg: seed.headingDeg,
+      };
+    }
+  }
   const lastPickupKeyRef = useRef<string | null>(null);
-  const lastRerouteAtRef = useRef(0);
-  const lastRouteDistanceKmRef = useRef<number | null>(null);
-  const routeInFlightRef = useRef(false);
-  const routeFetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const offRouteRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hadRouteRef = useRef(false);
   const [previousPickup, setPreviousPickup] = useState<{ lat: number; lng: number } | null>(null);
   const [pickupBannerVisible, setPickupBannerVisible] = useState(false);
@@ -412,9 +414,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     prevRiderMarkedPickupRef.current = null;
     setReachSliderPending(false);
     setRideStartedOptimistic(false);
-    lastRerouteAtRef.current = 0;
-    lastRouteFromRef.current = null;
-    lastRouteDistanceKmRef.current = null;
     lastPickupKeyRef.current = null;
   }, [orderId]);
 
@@ -532,10 +531,15 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
             lng: riderFix.lng,
             headingDeg: riderFix.headingDeg,
             speedMps: riderFix.speedMps,
+            accuracyM: riderFix.accuracyM,
+            timestampMs: riderFix.tsMs,
           }
         : undefined,
-    [riderFix?.lat, riderFix?.lng, riderFix?.headingDeg, riderFix?.speedMps]
+    [riderFix?.lat, riderFix?.lng, riderFix?.headingDeg, riderFix?.speedMps, riderFix?.accuracyM, riderFix?.tsMs]
   );
+  if (riderLocation && isUsableMapCoordinate(riderLocation.lat, riderLocation.lng)) {
+    rememberMapCameraCenter(riderLocation.lat, riderLocation.lng);
+  }
 
   const riderForRoute = useMemo(
     () => (riderFix ? { lat: riderFix.lat, lng: riderFix.lng } : undefined),
@@ -805,6 +809,10 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     });
   }, [tracker]);
   useEffect(() => {
+    const seed = stickyFixRef.current;
+    if (seed) {
+      getSharedLocationEngine().ingestExternalFix(seed);
+    }
     void tracker.start();
     return () => {
       void tracker.stop();
@@ -823,87 +831,23 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     return () => sub.remove();
   }, [tracker]);
 
-  const riderForRouteRef = useRef(riderForRoute);
-  riderForRouteRef.current = riderForRoute;
-  const riderLocationRef = useRef(riderLocation);
-  riderLocationRef.current = riderLocation;
-  const navDestinationRef = useRef(navDestination);
-  navDestinationRef.current = navDestination;
-  const routeLenRef = useRef(route?.coordinates?.length ?? 0);
-  routeLenRef.current = route?.coordinates?.length ?? 0;
-
-  const fetchRoute = useCallback(
-    async (force = false) => {
-      const navRider = riderForRouteRef.current ?? riderLocationRef.current;
-      const dest = navDestinationRef.current;
-      if (!navRider || !dest) {
-        // Keep prior polyline; wait for GPS — do not spin forever.
-        if (!hadRouteRef.current) setRouteLoading(true);
-        return;
-      }
-
-      const pickupLat = Number(dest.lat);
-      const pickupLng = Number(dest.lng);
-      if (!Number.isFinite(pickupLat) || !Number.isFinite(pickupLng) || (pickupLat === 0 && pickupLng === 0)) {
-        setRoute(null);
-        setRouteError(true);
-        setRouteLoading(false);
-        return;
-      }
-
-      const fromKey = `${pickupLat.toFixed(5)},${pickupLng.toFixed(5)}|${navRider.lat.toFixed(3)},${navRider.lng.toFixed(3)}`;
-      if (!force && lastRouteFromRef.current === fromKey) return;
-      if (routeInFlightRef.current) return;
-
-      const isInitialRoute = routeLenRef.current === 0;
-      if (isInitialRoute) setRouteLoading(true);
-      setRouteError(false);
-      routeInFlightRef.current = true;
-      try {
-        const result = await getNavigationRouteToPickup(
-          latLngFromRider(navRider.lat, navRider.lng),
-          latLngFromRider(pickupLat, pickupLng),
-          order?.rideType
-        );
-        if (result) {
-          lastRouteFromRef.current = fromKey;
-          const samePolyline =
-            !isInitialRoute &&
-            routeLenRef.current === (result.coordinates?.length ?? 0) &&
-            lastRouteDistanceKmRef.current != null &&
-            Math.abs(lastRouteDistanceKmRef.current - (result.distanceKm ?? 0)) < 0.008;
-          lastRouteDistanceKmRef.current = result.distanceKm ?? 0;
-          if (!samePolyline) {
-            setRoute(result);
-          }
-          trackDebug(force ? "rerouting_completed" : "route_generated", {
-            orderId,
-            points: result.coordinates?.length ?? 0,
-            distanceKm: result.distanceKm,
-            force,
-            skippedDuplicate: samePolyline,
-          });
-        } else {
-          // Keep last good polyline so the map never blanks on a flaky Directions call.
-          if (!hadRouteRef.current) setRoute(null);
-          setRouteError(true);
-        }
-      } catch {
-        if (!hadRouteRef.current) setRoute(null);
-        setRouteError(true);
-      } finally {
-        routeInFlightRef.current = false;
-        setRouteLoading(false);
-      }
-    },
-    [order?.rideType, orderId]
-  );
-
-  useEffect(() => {
-    if (!showDropOnMap) return;
-    lastRouteFromRef.current = null;
-    void fetchRoute(true);
-  }, [showDropOnMap, delivery?.lat, delivery?.lng, fetchRoute]);
+  const {
+    route,
+    routeVersion,
+    routeLoading,
+    routeError,
+    isOffRoute,
+    arrived: navArrived,
+    retryRoute,
+  } = useLiveNavigationRoute({
+    orderId,
+    origin: riderLocation,
+    destination: navDestination
+      ? { lat: navDestination.lat, lng: navDestination.lng }
+      : null,
+    rideType: order?.rideType,
+    enabled: !orderDelivered && Boolean(navDestination),
+  });
 
   useEffect(() => {
     const hasRoute = (route?.coordinates?.length ?? 0) > 0;
@@ -927,37 +871,10 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         t("orders.activeFood.pickupLocationUpdated", "Pickup location updated")
       );
       setPickupBannerVisible(true);
-      lastRouteFromRef.current = null;
       setCameraFitTrigger((n) => n + 1);
-      void fetchRoute(true);
     }
     lastPickupKeyRef.current = pickupKey;
-  }, [navDestination?.lat, navDestination?.lng, fetchRoute, t]);
-
-  useEffect(() => {
-    const navRider = riderForRoute ?? riderLocation;
-    if (!navRider || !navDestination) return;
-    if (routeFetchTimerRef.current) clearTimeout(routeFetchTimerRef.current);
-    routeFetchTimerRef.current = setTimeout(() => {
-      void fetchRoute();
-    }, 300);
-    return () => {
-      if (routeFetchTimerRef.current) clearTimeout(routeFetchTimerRef.current);
-    };
-  }, [navDestination?.lat, navDestination?.lng, fetchRoute]);
-
-  useEffect(() => {
-    const navRider = riderForRoute ?? riderLocation;
-    if (!navRider || !navDestination || route?.coordinates?.length) return;
-    void fetchRoute();
-  }, [
-    riderForRoute?.lat,
-    riderForRoute?.lng,
-    navDestination?.lat,
-    navDestination?.lng,
-    route?.coordinates?.length,
-    fetchRoute,
-  ]);
+  }, [navDestination?.lat, navDestination?.lng, t]);
 
   const routeDeviation = useMemo(() => {
     if (!route?.coordinates?.length || !riderLocation) return null;
@@ -967,46 +884,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       headingDeg: riderLocation.headingDeg,
     });
   }, [route?.coordinates, riderLocation?.lat, riderLocation?.lng, riderLocation?.headingDeg]);
-
-  useEffect(() => {
-    const navRider = riderForRoute;
-    if (!navRider || !navDestination || !route?.coordinates?.length) return;
-
-    const deviation = analyzeRiderOnRoute(route.coordinates, {
-      latitude: navRider.lat,
-      longitude: navRider.lng,
-      headingDeg: riderLocation?.headingDeg,
-    });
-    if (!shouldRequestReroute(deviation, lastRerouteAtRef.current)) return;
-
-    trackDebug("off_route_detected", {
-      orderId,
-      offRouteM: Math.round(deviation!.offRouteM),
-      wrongWay: deviation!.wrongWay,
-      remainingM: Math.round(deviation!.remainingDistanceM),
-    });
-
-    lastRerouteAtRef.current = Date.now();
-    if (offRouteRefetchTimerRef.current) clearTimeout(offRouteRefetchTimerRef.current);
-    const debounceMs = rerouteDebounceMs(deviation!);
-    trackDebug("rerouting_started", { orderId, debounceMs });
-    offRouteRefetchTimerRef.current = setTimeout(() => {
-      void fetchRoute(true);
-    }, debounceMs);
-
-    return () => {
-      if (offRouteRefetchTimerRef.current) clearTimeout(offRouteRefetchTimerRef.current);
-    };
-  }, [
-    riderForRoute?.lat,
-    riderForRoute?.lng,
-    riderLocation?.headingDeg,
-    navDestination?.lat,
-    navDestination?.lng,
-    route?.coordinates,
-    fetchRoute,
-    orderId,
-  ]);
 
   const routeProgressMetrics = useMemo(
     () => buildRouteProgressSlice(route, riderForRoute, riderFix?.headingDeg),
@@ -1056,7 +933,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       metersAway: sheetMetersAway ?? metersToPickup,
       loading: routeLoading && !route,
       error: routeError,
-      onRetryRoute: () => void fetchRoute(true),
+      onRetryRoute: () => retryRoute(),
     }),
     [
       liveEtaMinutes,
@@ -1066,7 +943,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       routeLoading,
       route,
       routeError,
-      fetchRoute,
+      retryRoute,
     ]
   );
 
@@ -1090,6 +967,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const handleUserMapGesture = useCallback(() => {
     userControllingMapRef.current = true;
     setMapFollowEnabled(false);
+    mapLog("MAP_INTERACTION", { state: "USER_INTERACTING", orderId });
     trackDebug("camera_follow_disabled", { orderId, reason: "user_pan" });
   }, [orderId]);
 
@@ -1101,9 +979,14 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const handleMapRecenter = useCallback(() => {
     userControllingMapRef.current = false;
     setMapFollowEnabled(true);
+    mapLog("MAP_CAMERA", { action: "RECENTER", reason: "USER_BUTTON", orderId });
     trackDebug("camera_follow_enabled", { orderId });
     mapRef.current?.recenter(true);
-  }, [orderId]);
+    const engine = getSharedLocationEngine();
+    if (engine.getState().status !== "tracking") {
+      void tracker.start();
+    }
+  }, [orderId, tracker]);
 
   const handleMapRouteOverview = useCallback(() => {
     releaseMapFollow();
@@ -2529,7 +2412,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           }
           remainingCoordinates={routeProgressMetrics.remaining}
           fullRouteCoordinates={route?.coordinates ?? EMPTY_ROUTE_COORDS}
-          alternativeRoutes={route?.alternatives}
+          routeRevision={routeVersion}
+          alternativeRoutes={isOffRoute ? undefined : route?.alternatives}
           offRouteConnectorGeoJson={null}
           routeJoinPoint={routeProgressMetrics.routeJoinPoint ?? null}
           routeDeviationWrongWay={routeDeviation?.wrongWay ?? false}
@@ -2543,9 +2427,10 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           arrivedAtDestination={
             // Hide only for the *current* nav destination (pickup OR drop).
             // Never use sticky pickupConfirmed — that hid the drop-leg polyline.
-            showDropOnMap
+            navArrived ||
+            (showDropOnMap
               ? atCustomer || (metersToPickup != null && metersToPickup <= 40)
-              : metersToPickup != null && metersToPickup <= 40
+              : metersToPickup != null && metersToPickup <= 40)
           }
           remainingDistanceM={metersToPickup}
           style={styles.mapFill}
@@ -3007,6 +2892,7 @@ const styles = StyleSheet.create({
     elevation: 32,
     backgroundColor: "transparent",
     overflow: "visible",
+    pointerEvents: "box-none",
   },
   sheetOverlayBehindOtp: {
     opacity: 0,

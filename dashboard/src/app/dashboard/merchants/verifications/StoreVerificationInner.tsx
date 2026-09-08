@@ -57,7 +57,7 @@ import {
   profileMediaR2KeyFromUrl,
   maxGalleryImages,
 } from "@/lib/merchant/store-profile-media";
-import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
+import { resolveAttachmentProxyUrl, isPdfAttachment } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { DocumentAttachmentThumb } from "@/components/verification/DocumentAttachmentThumb";
 import { DocAutoVerificationDetails } from "@/components/verification/DocAutoVerificationDetails";
 import {
@@ -1357,8 +1357,7 @@ function DocRejectButton({
 }
 
 function docAttachmentLooksPdf(url: string): boolean {
-  const u = url.split("?")[0]?.toLowerCase() ?? "";
-  return u.endsWith(".pdf");
+  return isPdfAttachment(url);
 }
 
 /** Step 4 document upload/replace.
@@ -2160,7 +2159,7 @@ function StepDetailContent({
                     </div>
                     {fileHref ? (
                       <a
-                        href={fileHref}
+                        href={resolveAttachmentProxyUrl(fileHref) || fileHref}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex shrink-0 items-center gap-0.5 rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-indigo-700"
