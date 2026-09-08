@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { router, usePathname } from "expo-router";
 import { onSessionRevoked } from "@/src/services/sessionEvents";
 import { useSessionStore } from "@/src/stores/sessionStore";
+import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { SessionEndedSheet } from "@/src/components/auth/SessionEndedSheet";
 
 function isLoginPath(pathname: string | null): boolean {
@@ -19,6 +20,7 @@ export function SessionRevokedGate() {
 
   useEffect(() => {
     const unsubscribe = onSessionRevoked(async (payload) => {
+      await useOnboardingStore.getState().bindOwner(null);
       await setSession(null);
       const alreadyOnLogin = isLoginPath(pathnameRef.current);
       if (!alreadyOnLogin) {

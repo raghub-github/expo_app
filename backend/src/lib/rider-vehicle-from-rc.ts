@@ -29,6 +29,49 @@ function normalizeReg(raw: string | null | undefined): string | null {
   return v.length >= 4 ? v : null;
 }
 
+/** Seed riders.state from RC plate RTO code when the profile has no location yet. */
+async function backfillRiderStateFromRegistration(
+  riderId: number,
+  registrationState: string | null
+): Promise<void> {
+  if (!registrationState) return;
+  try {
+    const { resolveStateIdByNameOrCode } = await import(
+      "../modules/billing/geoRefFromPincode.js"
+    );
+    const sql = getSql();
+    const stateId = await resolveStateIdByNameOrCode(registrationState);
+    if (!stateId) {
+      await sql`
+        UPDATE public.riders
+        SET state = COALESCE(NULLIF(TRIM(state), ''), ${registrationState}),
+            updated_at = NOW()
+        WHERE id = ${riderId}
+          AND (state IS NULL OR TRIM(state) = '')
+      `;
+      return;
+    }
+    const [row] = await sql<{ name: string }[]>`
+      SELECT name FROM states WHERE id = ${stateId}::uuid LIMIT 1
+    `;
+    const name = row?.name?.trim();
+    if (!name) return;
+    await sql`
+      UPDATE public.riders
+      SET state = ${name},
+          updated_at = NOW()
+      WHERE id = ${riderId}
+        AND (state IS NULL OR TRIM(state) = '')
+    `;
+  } catch (e) {
+    console.warn(
+      "[backfillRiderStateFromRegistration]",
+      riderId,
+      e instanceof Error ? e.message : e
+    );
+  }
+}
+
 /** Cashfree fuel labels → app fuel codes. */
 function mapCashfreeFuelToApp(raw: string | null | undefined): string | null {
   if (!raw) return null;
@@ -336,6 +379,7 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
             AND rider_id = ${riderId}
         `;
       }
+      await backfillRiderStateFromRegistration(riderId, registrationState);
       return { ok: true, vehicleId: Number(targetId) };
     }
 
@@ -405,6 +449,7 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
       )
     `;
 
+    await backfillRiderStateFromRegistration(riderId, registrationState);
     return { ok: true, vehicleId: null };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

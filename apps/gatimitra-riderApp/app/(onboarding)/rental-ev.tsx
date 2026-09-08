@@ -1,11 +1,10 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   View,
   Text,
   TextInput,
   ScrollView,
-  KeyboardAvoidingView,
   Platform,
   Alert,
   Pressable,
@@ -195,8 +194,11 @@ export default function RentalEvScreen() {
     hydrate();
   }, [hydrate]);
 
+  const rentalGateOnceRef = useRef<string | null>(null);
   useEffect(() => {
     const next = riderStatus?.nextOnboardingStep;
+    let target: `/(onboarding)/${string}` | null = null;
+
     if (
       next === "payment" ||
       (next === "rental_ev" &&
@@ -206,33 +208,34 @@ export default function RentalEvScreen() {
           data.vehicleOnboardingFlow
         ))
     ) {
-      router.replace(
-        data.bankAccountOnboardingDone
-          ? "/(onboarding)/payment"
-          : "/(onboarding)/bank-account",
+      target = data.bankAccountOnboardingDone
+        ? "/(onboarding)/payment"
+        : "/(onboarding)/bank-account";
+    } else if (next && next !== "rental_ev") {
+      target = onboardingStepToRoute(next as ServerOnboardingStep);
+    } else if (data.vehicleOnboardingFlow === "payment" || data.vehicleOnboardingFlow === "dl_rc") {
+      target = "/(onboarding)/dl-rc";
+    } else {
+      const incomplete = requiredDocs.filter(
+        (doc) => !isDocStepSatisfied(data, doc, doc.optional)
       );
-      return;
+      if (incomplete.length > 0) {
+        target = "/(onboarding)/dl-rc";
+      }
     }
-    if (next && next !== "rental_ev") {
-      router.replace(onboardingStepToRoute(next as ServerOnboardingStep));
-      return;
-    }
-    if (data.vehicleOnboardingFlow === "payment" || data.vehicleOnboardingFlow === "dl_rc") {
-      router.replace("/(onboarding)/dl-rc");
-      return;
-    }
-    const incomplete = requiredDocs.filter(
-      (doc) => !isDocStepSatisfied(data, doc, doc.optional)
-    );
-    if (incomplete.length > 0) {
-      router.replace("/(onboarding)/dl-rc");
-    }
+
+    if (!target) return;
+    if (rentalGateOnceRef.current === target) return;
+    rentalGateOnceRef.current = target;
+    router.replace(target);
   }, [
     riderStatus?.nextOnboardingStep,
     riderStatus?.completedOnboardingSteps,
     data.vehicleOnboardingFlow,
     data.bankAccountOnboardingDone,
-    data,
+    data.vehicleChoice,
+    data.documentUploads,
+    data.skippedOnboardingDocs,
     requiredDocs,
   ]);
 
@@ -450,14 +453,12 @@ export default function RentalEvScreen() {
   return (
     <View style={form.root}>
       <SafeAreaView style={form.safeArea} edges={["top", "bottom"]}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={form.flex}
-        >
+        <View style={form.flex}>
           <ScrollView
             contentContainerStyle={form.scrollContent}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
+            keyboardDismissMode="on-drag"
           >
             <LinearGradient
               colors={["#dff5e4", BG]}
@@ -567,7 +568,7 @@ export default function RentalEvScreen() {
               />
             </View>
           </ScrollView>
-        </KeyboardAvoidingView>
+        </View>
       </SafeAreaView>
     </View>
   );

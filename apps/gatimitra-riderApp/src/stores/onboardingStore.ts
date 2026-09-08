@@ -1,9 +1,16 @@
 import { create } from "zustand";
-import { getItem, setItem, removeItem } from "@/src/utils/storage";
+import { removeItem } from "@/src/utils/storage";
+import {
+  LEGACY_ONBOARDING_KEY,
+  LEGACY_MIGRATION_DONE_KEY,
+  LEGACY_QUARANTINE_KEY,
+  ownerFromOnboardingData,
+  persistOnboardingBlobForOwner,
+  resolveOnboardingBlobForOwner,
+  storageKeyForOwner,
+} from "@/src/lib/onboardingLegacyMigration";
 
-const ONBOARDING_KEY = "gm_onboarding_v1";
-
-export type OnboardingStep = 
+export type OnboardingStep =
   | "aadhaar_name"
   | "dl_rc"
   | "rental_ev"
@@ -13,7 +20,7 @@ export type OnboardingStep =
 export type OnboardingData = {
   // Onboarding method
   onboardingMethod?: "manual" | "policy";
-  
+
   // Step 1: Aadhaar + Name + DOB + Photo
   aadhaarNumber?: string;
   fullName?: string;
@@ -24,7 +31,7 @@ export type OnboardingData = {
   aadhaarBackPhotoUri?: string;
   aadhaarFrontPhotoSignedUrl?: string;
   aadhaarBackPhotoSignedUrl?: string;
-  
+
   // Step 2: PAN + PAN Photo + Selfie
   panNumber?: string;
   panSkipped?: boolean;
@@ -38,7 +45,7 @@ export type OnboardingData = {
   panPhotoSignedUrl?: string; // after R2 upload
   selfieUri?: string; // local URI before upload
   selfieSignedUrl?: string; // after R2 upload
-  
+
   // Step 3: DL + RC
   dlNumber?: string;
   dlPhotoUri?: string; // front — local URI before upload
@@ -54,7 +61,7 @@ export type OnboardingData = {
   vehicleModelLabel?: string;
   vehicleCategoryCode?: string;
   vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment";
-  
+
   // Step 3b: Rental/EV alternative
   rentalProofUri?: string; // local URI before upload
   rentalProofSignedUrl?: string; // after R2 upload
@@ -75,8 +82,11 @@ export type OnboardingData = {
   skippedOnboardingDocs?: string[];
   /** Vehicle code for which the rider tapped Continue on the final doc step (allows payment). */
   vehicleOnboardingSubmittedFor?: string;
-  /** Step 4 bank account saved / verified during onboarding (before fee payment). */
+  /** Step 4 bank account saved / verified during onboarding (before fee payment).
+   * Also set when the rider skips bank and will add it later from Earnings. */
   bankAccountOnboardingDone?: boolean;
+  /** True when Step 4 was skipped (no bank linked yet). */
+  bankAccountOnboardingSkipped?: boolean;
 
   // Location data
   lat?: number;
@@ -85,7 +95,7 @@ export type OnboardingData = {
   state?: string;
   pincode?: string;
   address?: string;
-  
+
   // Metadata
   currentStep?: OnboardingStep;
   riderId?: string; // set after backend creates rider
@@ -108,50 +118,150 @@ export type OnboardingData = {
 
 type OnboardingState = {
   hydrated: boolean;
+  /** Session riderId or userId this in-memory blob belongs to — never share across riders. */
+  boundOwnerId: string | null;
   data: OnboardingData;
   setData: (data: Partial<OnboardingData>) => Promise<void>;
   setStep: (step: OnboardingStep) => Promise<void>;
   clear: () => Promise<void>;
+  /** Cold start: load nothing until bindOwner knows who is signed in. */
   hydrate: () => Promise<void>;
+  /**
+   * Bind store to authenticated owner. Switches disk partition on rider change so
+   * Rider B never inherits Rider A's RC/DL/Aadhaar drafts.
+   */
+  bindOwner: (ownerId: string | null) => Promise<void>;
 };
+
+/** Monotonic bind generation — stale async migrations must not write after logout/switch. */
+let bindGeneration = 0;
+let expectedOwnerForGeneration: string | null = null;
 
 export const useOnboardingStore = create<OnboardingState>((set, get) => ({
   hydrated: false,
+  boundOwnerId: null,
   data: {},
 
   setData: async (partial) => {
+    // Session bindOwner is the only way to attach an owner. Never rebind from a
+    // stale setData({ riderId }) after logout / rider switch (cross-rider leak).
+    const bound = get().boundOwnerId;
+    if (!bound) {
+      return;
+    }
+    const incomingOwner = partial.riderId ? String(partial.riderId).trim() : "";
+    if (incomingOwner && incomingOwner !== bound) {
+      return;
+    }
+
+    const genAtStart = bindGeneration;
     const current = get().data;
-    const updated = { ...current, ...partial };
+    const keys = Object.keys(partial) as (keyof OnboardingData)[];
+    const changed = keys.some((k) => current[k] !== partial[k]);
+    if (!changed) return;
+    const updated = { ...current, ...partial, riderId: bound };
+    if (bindGeneration !== genAtStart || get().boundOwnerId !== bound) return;
     set({ data: updated });
-    await setItem(ONBOARDING_KEY, JSON.stringify(updated));
+    await persistOnboardingBlobForOwner(bound, updated);
+    // Late persist after switch must not matter for the new rider's memory;
+    // disk write was under `bound` only (previous rider's scoped key).
   },
 
   setStep: async (step) => {
+    const bound = get().boundOwnerId;
+    if (!bound) return;
     const current = get().data;
-    const updated = { ...current, currentStep: step };
+    if (current.currentStep === step) return;
+    const genAtStart = bindGeneration;
+    const updated = { ...current, currentStep: step, riderId: bound };
+    if (bindGeneration !== genAtStart || get().boundOwnerId !== bound) return;
     set({ data: updated });
-    await setItem(ONBOARDING_KEY, JSON.stringify(updated));
+    await persistOnboardingBlobForOwner(bound, updated);
   },
 
   clear: async () => {
-    set({ data: {} });
-    await removeItem(ONBOARDING_KEY);
+    const owner = get().boundOwnerId || ownerFromOnboardingData(get().data);
+    bindGeneration += 1;
+    expectedOwnerForGeneration = null;
+    set({ data: {}, boundOwnerId: null, hydrated: true });
+    if (owner) {
+      await removeItem(storageKeyForOwner(owner));
+    }
+    await removeItem(LEGACY_ONBOARDING_KEY);
   },
 
   hydrate: async () => {
-    if (get().hydrated) return;
-    try {
-      const raw = await getItem(ONBOARDING_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as OnboardingData;
-        set({ data: parsed, hydrated: true });
-      } else {
-        set({ hydrated: true });
-      }
-    } catch (error) {
-      console.warn("[OnboardingStore] Hydration error:", error);
-      set({ hydrated: true });
+    // Owner-specific load happens in bindOwner after session is known.
+    // Never hydrate legacy/global key here — that would race before auth.
+    if (get().hydrated && get().boundOwnerId != null) return;
+    set({ hydrated: true });
+  },
+
+  bindOwner: async (ownerId) => {
+    const normalized = ownerId?.trim() || null;
+    if (normalized === get().boundOwnerId && get().hydrated) {
+      return;
     }
+
+    const gen = ++bindGeneration;
+    expectedOwnerForGeneration = normalized;
+
+    if (!normalized) {
+      // Logout / signed-out: wipe memory only. Disk stays under each rider key for resume.
+      set({ data: {}, boundOwnerId: null, hydrated: true });
+      return;
+    }
+
+    // Clear previous rider from memory immediately so UI cannot flash foreign drafts.
+    set({ data: { riderId: normalized }, boundOwnerId: normalized, hydrated: false });
+
+    const { data: blob, migration } = await resolveOnboardingBlobForOwner(normalized, {
+      generation: () => (bindGeneration === gen ? expectedOwnerForGeneration : null),
+    });
+
+    if (bindGeneration !== gen || expectedOwnerForGeneration !== normalized) {
+      // Stale — a newer bindOwner/logout won.
+      if (__DEV__) {
+        console.log("[ONBOARDING_MIGRATION]", {
+          result: "STALE_OWNER_ABORTED",
+          migration,
+        });
+      }
+      return;
+    }
+
+    if (!blob) {
+      set({
+        data: { riderId: normalized },
+        boundOwnerId: normalized,
+        hydrated: true,
+      });
+      return;
+    }
+
+    const stamped = ownerFromOnboardingData(blob);
+    if (stamped && stamped !== normalized) {
+      // Defense in depth — never hydrate foreign stamp.
+      set({
+        data: { riderId: normalized },
+        boundOwnerId: normalized,
+        hydrated: true,
+      });
+      return;
+    }
+
+    set({
+      data: { ...(blob as OnboardingData), riderId: normalized },
+      boundOwnerId: normalized,
+      hydrated: true,
+    });
   },
 }));
 
+/** Test/helper export — quarantine key must never be used as hydration source. */
+export const ONBOARDING_STORAGE_KEYS = {
+  LEGACY_ONBOARDING_KEY,
+  LEGACY_QUARANTINE_KEY,
+  LEGACY_MIGRATION_DONE_KEY,
+  storageKeyForOwner,
+} as const;

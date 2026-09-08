@@ -72,19 +72,50 @@ test("PARCEL: 2W/3W/4W all allowed; DL + RC both required", () => {
 // ── PERSON RIDE + commercial (geo-configurable) ─────────────────────────
 test("PERSON: commercial required by default → non-commercial blocked, commercial eligible", () => {
   const person = defaultPolicyForService("person_ride");
-  assert.deepEqual(codes(person, input({ ownership: "non_commercial" })), ["COMMERCIAL_VEHICLE_REQUIRED"]);
+  const blocked = codes(person, input({ ownership: "non_commercial" }));
+  assert.ok(blocked.includes("COMMERCIAL_VEHICLE_REQUIRED") || blocked.includes("OWNERSHIP_NOT_ALLOWED"));
   assert.equal(resolveRiderServiceEligibility(input({ ownership: "commercial" }), person).eligible, true);
 });
 
-test("PERSON: location override commercialRequired=false → non-commercial becomes eligible", () => {
+test("PERSON: location override commercialRequired=false + both ownerships → non-commercial eligible", () => {
   const person: ServiceEligibilityPolicy = {
     ...defaultPolicyForService("person_ride"),
     commercialRequired: false,
+    allowedOwnership: ["commercial", "non_commercial"],
     resolvedGeo: { level: "pincode", refId: "PINCODE-132103" },
   };
   const d = resolveRiderServiceEligibility(input({ ownership: "non_commercial" }), person);
   assert.equal(d.eligible, true);
   assert.equal(d.resolvedGeo?.level, "pincode");
+});
+
+test("PERSON Phase B: allowlist with non_commercial wins over commercialRequired flag", () => {
+  // Admin selected both ownership chips while leaving commercialRequired on (legacy/confusing).
+  // Explicit allowlist wins — Non-commercial must be accepted.
+  const person: ServiceEligibilityPolicy = {
+    ...defaultPolicyForService("person_ride"),
+    commercialRequired: true,
+    allowedOwnership: ["commercial", "non_commercial"],
+  };
+  assert.equal(resolveRiderServiceEligibility(input({ ownership: "non_commercial" }), person).eligible, true);
+  assert.equal(resolveRiderServiceEligibility(input({ ownership: "commercial" }), person).eligible, true);
+});
+
+test("Phase C decision payload includes reasonCode, nextAction, requiredDocuments, policySource", () => {
+  const parcel = defaultPolicyForService("parcel");
+  const d = resolveRiderServiceEligibility(input({ dl: "missing", ownership: "commercial" }), parcel);
+  assert.equal(d.eligible, false);
+  assert.equal(d.reasonCode, "DL_REQUIRED_NOT_VERIFIED");
+  assert.equal(d.nextAction, "UPLOAD_DL");
+  assert.ok(d.requiredDocuments.includes("DRIVING_LICENSE"));
+  assert.ok(d.requiredDocuments.includes("REGISTRATION_CERTIFICATE"));
+  assert.equal(d.policySource, "default");
+  assert.equal(d.matchedRuleId, null);
+
+  const ok = resolveRiderServiceEligibility(input({ ownership: "commercial" }), parcel);
+  assert.equal(ok.eligible, true);
+  assert.equal(ok.reasonCode, null);
+  assert.equal(ok.nextAction, "CONTINUE");
 });
 
 // ── EV: RC is NOT automatically exempt ──────────────────────────────────

@@ -27,6 +27,7 @@ import {
 } from "./rider-onboarding-stage-machine.js";
 import { normalizeDlNumber } from "./rider-dl-registration-check.js";
 import { normalizeRcNumber } from "./rider-rc-registration-check.js";
+import { maskAadhaarNumber } from "./mask-aadhaar.js";
 
 export type RiderOnboardingStepKey =
   | "method_selection"
@@ -428,6 +429,14 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   panNumber: string | null;
   /** True when PAN row is electronically / manually verified in rider_documents. */
   panVerified: boolean;
+  /** Cashfree / DigiLocker PAN payload for rider-app rehydrate. */
+  panVerifiedData: Record<string, unknown> | null;
+  /** Masked Aadhaar (XXXX-XXXX-1234) for rider-app display / match. */
+  aadhaarNumber: string | null;
+  /** True when Aadhaar step is complete (DigiLocker / masking / photos). */
+  aadhaarVerified: boolean;
+  /** Cashfree DigiLocker Aadhaar payload for rider-app rehydrate. */
+  aadhaarVerifiedData: Record<string, unknown> | null;
   /** Aadhaar / rider DOB as YYYY-MM-DD — used to prefill DL verify DOB. */
   dob: string | null;
   /** DL number + photo URLs after Cashfree fallback manual upload (or EV). */
@@ -462,6 +471,10 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     approval: "not_started",
   };
   const emptyDocDraft = {
+    panVerifiedData: null as Record<string, unknown> | null,
+    aadhaarNumber: null as string | null,
+    aadhaarVerified: false,
+    aadhaarVerifiedData: null as Record<string, unknown> | null,
     dob: null as string | null,
     dlNumber: null as string | null,
     dlFrontUrl: null as string | null,
@@ -592,6 +605,24 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   const panDoc = docs.find((d) => d.docType === "pan");
   const panNumber = readPanNumber(docs, rider.panNumber);
   const panVerified = panDocVerified(panDoc);
+  const panVerifiedData = readCashfreeVerifiedData(docs, "pan");
+  const aadhaarDoc =
+    docs.find((d) => d.docType === "aadhaar") ||
+    docs.find((d) => d.docType === "aadhaar_front");
+  const aadhaarVerified = aadhaarComplete(docs, filesByDocId);
+  const aadhaarVerifiedData = readCashfreeVerifiedData(docs, "aadhaar");
+  const aadhaarNumberRaw =
+    (typeof rider.aadhaarNumber === "string" && rider.aadhaarNumber.trim()) ||
+    (typeof aadhaarDoc?.docNumber === "string" && aadhaarDoc.docNumber.trim()) ||
+    (aadhaarVerifiedData &&
+      String(
+        aadhaarVerifiedData.masked_aadhaar ??
+          aadhaarVerifiedData.uid ??
+          aadhaarVerifiedData.aadhaar_number ??
+          "",
+      ).trim()) ||
+    "";
+  const aadhaarNumber = aadhaarNumberRaw ? maskAadhaarNumber(aadhaarNumberRaw) : null;
   const dob = normalizeRiderDob(rider.dob);
   const dlNumber = readDlNumber(docs);
   const dlDoc = docs.find((d) => d.docType === "dl");
@@ -604,6 +635,10 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   const rcVerified = isDocElectronicallyVerified(rcDoc);
   const rcVerifiedData = readCashfreeVerifiedData(docs, "rc");
   const docDraftFields = {
+    panVerifiedData,
+    aadhaarNumber,
+    aadhaarVerified,
+    aadhaarVerifiedData,
     dob,
     dlNumber,
     dlFrontUrl: dlUrls.frontUrl,

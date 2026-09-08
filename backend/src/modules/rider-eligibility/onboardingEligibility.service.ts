@@ -38,6 +38,11 @@ export type OnboardingDocView = {
   code: MissingDocumentCode;
   /** required for at least one service that is currently blocked only by this doc-family. */
   requiredForSomeService: boolean;
+  /**
+   * Phase C: true when at least one service at this location does NOT require this document
+   * — rider may skip during onboarding and continue with limited services.
+   */
+  canSkipDuringOnboarding: boolean;
   state: DocumentLifecycleState;
 };
 
@@ -123,9 +128,13 @@ export async function resolveRiderOnboardingSummary(riderId: number): Promise<Ri
   const anyBlockedNeeds = (code: MissingDocumentCode): boolean =>
     onboarding.blockedServices.some((b) => b.missingDocuments.includes(code));
 
+  const anyServiceOmitsRequirement = (code: MissingDocumentCode): boolean =>
+    Object.values(services).some((d) => !d.requiredDocuments.includes(code));
+
   const docView = (code: MissingDocumentCode, dbType: string): OnboardingDocView => {
     const row = byType.get(dbType);
     const requiredForSomeService = anyBlockedNeeds(code);
+    const canSkipDuringOnboarding = anyServiceOmitsRequirement(code);
     const requirement = requiredForSomeService ? "required" : "optional";
     const r: DocRow = row
       ? {
@@ -136,7 +145,12 @@ export async function resolveRiderOnboardingSummary(riderId: number): Promise<Ri
           expiresAt: row.expiryDate ?? null,
         }
       : null;
-    return { code, requiredForSomeService, state: resolveDocumentLifecycleState(r, requirement) };
+    return {
+      code,
+      requiredForSomeService,
+      canSkipDuringOnboarding,
+      state: resolveDocumentLifecycleState(r, requirement),
+    };
   };
 
   return {

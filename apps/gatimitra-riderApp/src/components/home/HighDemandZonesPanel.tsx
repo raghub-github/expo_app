@@ -13,8 +13,27 @@ import { Ionicons } from "@expo/vector-icons";
 import type { DemandZone } from "@/src/lib/demand-zones";
 import { openGoogleMapsNavigation } from "@/src/lib/open-google-maps-navigation";
 
-if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
+/** Fabric / New Arch — LayoutAnimation often crashes with "Unable to find viewState for tag". */
+const IS_FABRIC =
+  Boolean((globalThis as { nativeFabricUIManager?: unknown }).nativeFabricUIManager) ||
+  Boolean((globalThis as { RN$Bridgeless?: unknown }).RN$Bridgeless);
+
+const LAYOUT_ANIM_OK =
+  !IS_FABRIC &&
+  Platform.OS === "android" &&
+  typeof UIManager.setLayoutAnimationEnabledExperimental === "function";
+
+if (LAYOUT_ANIM_OK) {
+  UIManager.setLayoutAnimationEnabledExperimental?.(true);
+}
+
+function safeConfigureLayoutAnimation(): void {
+  if (IS_FABRIC) return;
+  try {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+  } catch {
+    /* ignore — never crash expand/collapse */
+  }
 }
 
 /** Same banner chrome as OffDutyBanner ("Not receiving new orders!"). */
@@ -46,7 +65,7 @@ export function HighDemandZonesPanel({
 
   const toggle = useCallback(() => {
     if (zones.length === 0) return;
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    safeConfigureLayoutAnimation();
     setExpanded((v) => !v);
   }, [zones.length]);
 

@@ -241,6 +241,53 @@ export async function resolveRiderServiceEligibilityAtPickup(args: {
 export const ALL_ELIGIBILITY_SERVICES: EligibilityService[] = ["food", "parcel", "person_ride"];
 
 /**
+ * RTO state code / name from the rider's operating vehicle — used when the rider
+ * profile has no home lat/pincode/state yet (typical mid-onboarding).
+ */
+async function loadActiveVehicleRegistrationState(riderId: number): Promise<string | null> {
+  const db = getDb();
+  const [riderRow] = await db
+    .select({ activeVehicleId: riders.activeVehicleId })
+    .from(riders)
+    .where(eq(riders.id, riderId))
+    .limit(1);
+
+  const pick = async (vehicleId?: number | null) => {
+    if (vehicleId == null) return undefined;
+    const [row] = await db
+      .select({ registrationState: riderVehicles.registrationState })
+      .from(riderVehicles)
+      .where(
+        and(
+          eq(riderVehicles.id, vehicleId),
+          eq(riderVehicles.riderId, riderId),
+          isNull(riderVehicles.deletedAt)
+        )
+      )
+      .limit(1);
+    return row;
+  };
+
+  let row = await pick(riderRow?.activeVehicleId ?? null);
+  if (!row?.registrationState) {
+    [row] = await db
+      .select({ registrationState: riderVehicles.registrationState })
+      .from(riderVehicles)
+      .where(
+        and(
+          eq(riderVehicles.riderId, riderId),
+          eq(riderVehicles.isActive, true),
+          isNull(riderVehicles.deletedAt)
+        )
+      )
+      .orderBy(desc(riderVehicles.verified))
+      .limit(1);
+  }
+  const s = row?.registrationState?.trim();
+  return s || null;
+}
+
+/**
  * Rider-facing "my eligibility for every service, here" — loads the rider's real
  * attributes ONCE, resolves the geo ONCE, then runs the SAME engine per service. Powers
  * the rider-app surface that shows WHY a service is (in)eligible so PREFERENCE is never
@@ -273,12 +320,27 @@ export async function resolveRiderAllServiceEligibilityAtLocation(args: {
   const overrides = await loadActiveOverridesForRider(args.riderId);
 
   let resolvedGeo: { level: string; refId: string } | null = null;
+  // Onboarding riders often have no saved lat/pincode/state yet. Fall back to the
+  // active vehicle's RTO registration_state (e.g. HR) so geo person_ride rules apply
+  // instead of the commercial-required GLOBAL default.
+  let liveState = args.state ?? null;
+  let livePincode = args.pincode ?? null;
+  const hasCoords =
+    args.lat != null &&
+    args.lng != null &&
+    Number.isFinite(Number(args.lat)) &&
+    Number.isFinite(Number(args.lng)) &&
+    !(Number(args.lat) === 0 && Number(args.lng) === 0);
+  if (!liveState && !livePincode && !hasCoords) {
+    const regState = await loadActiveVehicleRegistrationState(args.riderId);
+    if (regState) liveState = regState;
+  }
   try {
     const geo = await resolveGeoLocation({
       latitude: args.lat ?? undefined,
       longitude: args.lng ?? undefined,
-      livePincode: args.pincode ?? undefined,
-      liveState: args.state ?? undefined,
+      livePincode: livePincode ?? undefined,
+      liveState: liveState ?? undefined,
     });
     const anchor = pickMostSpecificGeoAnchor(geo.refs);
     if (anchor) resolvedGeo = { level: anchor.level, refId: anchor.refId };

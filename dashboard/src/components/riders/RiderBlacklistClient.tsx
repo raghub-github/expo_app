@@ -15,6 +15,8 @@ import type { RiderSummaryParams } from "@/lib/queryKeys";
 import {
   parseNumericRiderIdFromSearch,
   riderSearchNeedsSupabaseResolve,
+  classifyRiderDashboardSearch,
+  supabaseRiderMobileOrFilter,
 } from "@/lib/riders/resolve-rider-search";
 import {
   resolveRiderServiceRestriction,
@@ -277,13 +279,22 @@ export function RiderBlacklistClient() {
     try {
       if (!supabase) throw new Error("Database not available");
       let query = supabase.from("riders").select("id, name, mobile");
-      const isPhone = /^\d{10,}$/.test(value.replace(/^\+?91/, ""));
-      if (isPhone) {
-        query = query.eq("mobile", value.replace(/^\+?91/, ""));
-      } else {
-        query = query.ilike("mobile", `%${value}%`);
+      const classified = classifyRiderDashboardSearch(value);
+      if (!classified) {
+        setRider(null);
+        setError("No rider found");
+        return;
       }
-      const { data, error: e } = await query.limit(1).single();
+      if (classified.kind === "id") {
+        query = query.eq("id", classified.id);
+      } else if (classified.kind === "phone") {
+        query = query.or(
+          supabaseRiderMobileOrFilter(classified.last10, classified.variants),
+        );
+      } else {
+        query = query.ilike("mobile", `%${classified.term}%`);
+      }
+      const { data, error: e } = await query.limit(1).maybeSingle();
       if (e || !data) {
         setRider(null);
         setError("No rider found");

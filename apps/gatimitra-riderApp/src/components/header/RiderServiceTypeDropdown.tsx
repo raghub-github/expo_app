@@ -21,6 +21,7 @@ import {
   type EligibilityReason,
 } from "@/src/lib/rider-service-eligibility-rows";
 import { ServiceEligibilityReasonSheet } from "@/src/components/header/ServiceEligibilityReasonSheet";
+import { headerControlText, HEADER_SERVICES_WIDTH } from "@/src/theme/headerFonts";
 
 const GREEN = "#16A34A";
 const POPOVER_WIDTH = 188;
@@ -216,10 +217,17 @@ export function RiderServiceTypeDropdown({
 
   const openMenu = useCallback(async () => {
     if (!eligibleServices.length || isUpdating) return;
-    const nextAnchor = await measureAndAnchor();
-    if (!nextAnchor) return;
-    setAnchor(nextAnchor);
+    // Open immediately so the first tap always works; refine anchor after measure.
+    const fallbackWidth = Math.min(POPOVER_WIDTH, Dimensions.get("window").width - 24);
+    setAnchor({
+      top: FALLBACK_HEADER_HEIGHT + GAP_BELOW_HEADER,
+      left: 12,
+      width: fallbackWidth,
+      triggerCenterX: 80,
+    });
     setOpen(true);
+    const nextAnchor = await measureAndAnchor();
+    if (nextAnchor) setAnchor(nextAnchor);
   }, [eligibleServices.length, isUpdating, measureAndAnchor]);
 
   const closeMenu = useCallback(() => {
@@ -228,14 +236,14 @@ export function RiderServiceTypeDropdown({
   }, []);
 
   if (!visible) {
-    // Keep header chrome stable while eligibility loads — no missing gap.
+    // Same fixed-width chip as loaded state — prevents first-paint row reflow.
     return (
-      <View style={[styles.trigger, styles.triggerPlaceholder]} pointerEvents="none">
+      <View style={[styles.wrap, styles.trigger, styles.triggerPlaceholder]} pointerEvents="none">
         <View style={styles.triggerRow}>
           <Text style={styles.triggerText} numberOfLines={1}>
             {allServicesLabel}
           </Text>
-          <Ionicons name="chevron-down" size={14} color={GREEN} />
+          <Ionicons name="chevron-down" size={13} color={GREEN} />
         </View>
       </View>
     );
@@ -258,6 +266,7 @@ export function RiderServiceTypeDropdown({
       <View
         ref={triggerRef}
         collapsable={false}
+        style={styles.triggerHost}
         onLayout={() => {
           if (open) {
             void measureAndAnchor().then((next) => {
@@ -268,6 +277,7 @@ export function RiderServiceTypeDropdown({
       >
         <TouchableOpacity
           activeOpacity={0.85}
+          delayPressIn={0}
           onPress={() => (open ? closeMenu() : void openMenu())}
           disabled={!canOpen}
           style={styles.trigger}
@@ -435,10 +445,9 @@ export function RiderServiceTypeDropdown({
         onCheckVehicles={() => {
           setReasonSheet(null);
           closeMenu();
-          router.push({
-            pathname: "/(onboarding)/dl-rc",
-            params: { reupload: "1" },
-          });
+          // Vehicles & Documents — never send riders who already have DL/RC into
+          // onboarding to upload a second RC.
+          router.push("/vehicles");
         }}
       />
     </View>
@@ -448,12 +457,18 @@ export function RiderServiceTypeDropdown({
 const styles = StyleSheet.create({
   wrap: {
     flexShrink: 0,
+    width: HEADER_SERVICES_WIDTH,
+    alignSelf: "center",
+  },
+  triggerHost: {
+    width: HEADER_SERVICES_WIDTH,
   },
   trigger: {
-    minHeight: 36,
+    height: 36,
+    width: HEADER_SERVICES_WIDTH,
     justifyContent: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 0,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "rgba(22, 163, 74, 0.35)",
@@ -465,13 +480,15 @@ const styles = StyleSheet.create({
   triggerRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 3,
+    gap: 2,
+    minWidth: 0,
   },
   triggerText: {
-    fontSize: 13,
-    fontWeight: "700",
+    ...headerControlText,
+    flexShrink: 1,
+    minWidth: 0,
+    fontSize: 12,
     color: GREEN,
-    includeFontPadding: false,
   },
   modalBackdrop: {
     flex: 1,

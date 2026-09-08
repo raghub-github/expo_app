@@ -26,6 +26,48 @@ import {
   mergeRiderBlockedServices,
 } from "@/src/lib/rider-blocked-services";
 import { useRef, useState } from "react";
+import type { RiderVehicleView } from "@/src/services/api/riderApi";
+
+function vehicleDutyLabel(v: RiderVehicleView): string {
+  const cls =
+    v.vehicleClass === "2_wheeler"
+      ? "2W"
+      : v.vehicleClass === "3_wheeler"
+        ? "3W"
+        : v.vehicleClass === "4_wheeler"
+          ? "4W"
+          : "Vehicle";
+  const fuel = v.fuelKind === "ev" ? "EV" : v.fuelKind === "petrol" ? "Petrol" : v.fuelKind || "";
+  const own = v.commercial ? "Commercial" : "Non-commercial";
+  return `${cls}${fuel ? ` · ${fuel}` : ""} · ${own} · ${v.registrationMasked || v.registrationNumber}`;
+}
+
+/**
+ * When the rider has 2 verified vehicles, force an explicit pick before going ON
+ * (max 2 RCs). Returns selected id, or null if cancelled.
+ */
+function promptSelectVehicleForDuty(
+  vehicles: RiderVehicleView[],
+  activeVehicleId: number | null
+): Promise<number | null> {
+  return new Promise((resolve) => {
+    Alert.alert(
+      "Select vehicle for today's work",
+      "You're going online with the vehicle you pick. Services available depend on that vehicle and your current location.",
+      [
+        ...vehicles.slice(0, 2).map((v) => ({
+          text: `${v.isActiveVehicle || v.id === activeVehicleId ? "✓ " : ""}${vehicleDutyLabel(v)}`,
+          onPress: () => resolve(v.id),
+        })),
+        {
+          text: "Cancel",
+          style: "cancel" as const,
+          onPress: () => resolve(null),
+        },
+      ]
+    );
+  });
+}
 
 async function loadRiderVehicleStatusForDutyGate(): Promise<RiderVehicleStatusResponse | null> {
   const token = useSessionStore.getState().session?.accessToken;
@@ -184,6 +226,31 @@ export function useDutyToggle() {
         if (!vehicleStatus.vehicle?.verified) {
           openVerificationModal();
           return { ok: false, reason: "vehicle" };
+        }
+
+        // Phase C: multi-vehicle — require explicit selection before going ON.
+        try {
+          const fleet = await riderApi.getVehicles();
+          const verified = (fleet.vehicles ?? []).filter(
+            (v) => v.verified && String(v.status).toLowerCase() !== "retired"
+          );
+          if (verified.length > 1) {
+            const picked = await promptSelectVehicleForDuty(verified, fleet.activeVehicleId);
+            if (picked == null) {
+              return { ok: false, reason: "vehicle" };
+            }
+            if (picked !== fleet.activeVehicleId) {
+              await riderApi.setActiveVehicle(picked);
+              void queryClient.invalidateQueries({ queryKey: ["rider", "vehicles"] });
+              void queryClient.invalidateQueries({ queryKey: riderVehicleQueryKey });
+            }
+          } else if (verified.length === 1 && verified[0]!.id !== fleet.activeVehicleId) {
+            await riderApi.setActiveVehicle(verified[0]!.id);
+            void queryClient.invalidateQueries({ queryKey: ["rider", "vehicles"] });
+            void queryClient.invalidateQueries({ queryKey: riderVehicleQueryKey });
+          }
+        } catch {
+          // Non-fatal: fall through with current active vehicle if list fails.
         }
 
         let serviceTypes = resolveDutyServiceTypesForToggle(queryClient);

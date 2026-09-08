@@ -16,6 +16,7 @@ import type {
 import { defaultPolicyForService } from "./serviceEligibilityDefaults.js";
 
 type RuleRow = {
+  id: number;
   service_enabled: boolean;
   dl_requirement: string;
   rc_requirement: string;
@@ -55,7 +56,7 @@ async function findEffectiveNode(
   `;
   for (const step of chain) {
     const rows = await sql<RuleRow[]>`
-      SELECT service_enabled, dl_requirement, rc_requirement, commercial_required,
+      SELECT id, service_enabled, dl_requirement, rc_requirement, commercial_required,
              allowed_vehicle_classes, allowed_fuel_kinds, allowed_ownership,
              ev_proof_requirement, ownership_proof_requirement, commercial_proof_requirement,
              effective_from, effective_to
@@ -114,6 +115,7 @@ export async function resolveEffectiveEligibilityPolicy(args: {
       commercialProofRequirement: normProof(r.commercial_proof_requirement),
       resolvedGeo: { level: hit.level, refId: hit.refId },
       ruleVersion: `${hit.level}:${hit.refId}`,
+      matchedRuleId: Number.isFinite(Number(r.id)) ? Number(r.id) : null,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

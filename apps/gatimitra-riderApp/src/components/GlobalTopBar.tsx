@@ -1,6 +1,6 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 import React, { useState } from "react";
-import { View, StyleSheet, Platform } from "react-native";
+import { View, StyleSheet } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { HeaderTrailingActions } from "@/src/components/header/HeaderTrailingActions";
@@ -41,16 +41,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E2E8F0",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0F172A",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.04,
-        shadowRadius: 6,
-      },
-      android: { elevation: 2 },
-      default: {},
-    }),
   },
   bar: {
     flexDirection: "row",

@@ -1,10 +1,11 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 import React from "react";
-import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
+import { View, Text, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
 import { colors } from "@/src/theme";
+import { headerControlText } from "@/src/theme/headerFonts";
 
 type Props = {
   onPress?: () => void;
@@ -24,6 +25,8 @@ export function HeaderMaxSubscriptionBadge({ onPress }: Props) {
   return (
     <Pressable
       onPress={handlePress}
+      delayPressIn={0}
+      hitSlop={8}
       style={({ pressed }) => [styles.hitSlop, pressed && styles.pressed]}
       accessibilityRole="button"
       accessibilityLabel={t("subscription.maxBadgeA11y", "Gatimitra Max subscription active")}
@@ -49,31 +52,19 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    minHeight: 32,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    height: 36,
     borderRadius: 8,
     backgroundColor: colors.primary[900],
     borderWidth: 1.5,
     borderColor: "#FBBF24",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0F172A",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.14,
-        shadowRadius: 4,
-      },
-      android: { elevation: 4 },
-      default: {},
-    }),
   },
   label: {
-    marginLeft: 4,
-    fontSize: 11,
-    fontWeight: "800",
+    marginLeft: 3,
+    ...headerControlText,
+    fontSize: 12,
     color: "#FBBF24",
-    letterSpacing: 0.8,
-    includeFontPadding: false,
     flexShrink: 0,
   },
 });

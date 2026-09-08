@@ -234,7 +234,11 @@ test("SCENARIO: person_ride · same rider where the CITY does not require commer
       dl: MANUAL_APPROVED,
       rc: MANUAL_APPROVED,
     }),
-    policy("person_ride", { commercialRequired: false, resolvedGeo: { level: "district", refId: "x" } })
+    policy("person_ride", {
+      commercialRequired: false,
+      allowedOwnership: ["commercial", "non_commercial"],
+      resolvedGeo: { level: "district", refId: "x" },
+    })
   );
   assert.equal(d.eligible, true);
 });

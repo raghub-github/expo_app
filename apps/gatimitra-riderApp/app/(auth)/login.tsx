@@ -306,8 +306,12 @@ export default function LoginScreen() {
       session.riderId ??
       session.userId.replace(/^usr_/, "");
 
+    // Bind rider-scoped onboarding BEFORE writing — prevents inheriting another rider's RC/DL.
     if (riderId) {
-      await setOnboardingData({ riderId });
+      await useOnboardingStore.getState().bindOwner(String(riderId));
+      await setOnboardingData({ riderId: String(riderId) });
+    } else {
+      await useOnboardingStore.getState().bindOwner(session.userId);
     }
 
     if (status.onboardingStatus === "approved") {

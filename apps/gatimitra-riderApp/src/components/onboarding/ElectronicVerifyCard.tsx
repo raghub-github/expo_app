@@ -70,6 +70,15 @@ const DETAIL_LABELS: Record<string, string> = {
   reg_date: "Registered",
   insurance_upto: "Insurance valid till",
   fitness_upto: "Fitness valid till",
+  gender: "Gender",
+  care_of: "Care Of",
+  status: "Status",
+  digilocker_verified: "DigiLocker Verified",
+  address: "Permanent Address",
+  present_address: "Permanent Address",
+  pan: "PAN",
+  pan_number: "PAN",
+  full_name: "Full Name",
 };
 
 /** Prefer Cashfree Try DL/RC field order. */
@@ -79,8 +88,8 @@ const DETAIL_PRIORITY: Record<string, string[]> = {
   "Class of Vehicle": ["class_of_vehicle"],
   "Date of Issue": ["date_of_issue"],
   "DL Validity": ["dl_validity_summary", "dl_validity"],
-  "Full Name": ["name", "holder_name", "registered_name"],
-  "Father's / Husband's Name": ["father_or_husband_name"],
+  "Full Name": ["name", "holder_name", "registered_name", "full_name"],
+  "Father's / Husband's Name": ["father_or_husband_name", "care_of"],
   "Permanent Address": ["permanent_address", "address", "present_address"],
   "Temporary Address": ["temporary_address"],
   "Registration number": ["reg_no"],
@@ -94,6 +103,12 @@ const DETAIL_PRIORITY: Record<string, string[]> = {
   "Insurance valid till": ["vehicle_insurance_upto", "insurance_upto"],
   "Fitness valid till": ["fitness_upto"],
   Aadhaar: ["masked_aadhaar", "aadhaar_number", "uid"],
+  PAN: ["pan", "pan_number"],
+  "PAN status": ["pan_status"],
+  "Registered name": ["registered_name"],
+  Gender: ["gender"],
+  "Care Of": ["care_of"],
+  Status: ["status"],
 };
 
 function formatCov(raw: unknown): string | null {
@@ -201,6 +216,43 @@ function buildVerifiedRows(details: Record<string, unknown>): Array<{ label: str
   return rows.slice(0, 12);
 }
 
+function defaultVerifiedTitle(documentLabel: string, requiresDob: boolean): string {
+  const label = String(documentLabel || "").toLowerCase();
+  if (requiresDob || label.includes("licen") || label.includes("dl")) {
+    return "Driving License is Valid";
+  }
+  if (label.includes("rc") || label.includes("registration")) {
+    return "Vehicle RC is Valid";
+  }
+  if (label.includes("pan")) {
+    return "PAN is Valid";
+  }
+  if (label.includes("aadhaar") || label.includes("aadhar")) {
+    return "Aadhaar is Verified";
+  }
+  if (label.includes("bank")) {
+    return "Bank Account is Verified";
+  }
+  return `${documentLabel || "Document"} is Verified`;
+}
+
+function defaultVerifiedHint(documentLabel: string, hasDetailRows: boolean): string {
+  if (!hasDetailRows) {
+    return "Already verified. Change the document number above to verify again.";
+  }
+  const label = String(documentLabel || "").toLowerCase();
+  if (label.includes("rc") || label.includes("registration")) {
+    return "Your RC has been verified successfully. Confirm the vehicle details below before continuing.";
+  }
+  if (label.includes("pan")) {
+    return "PAN verified. Change the PAN number above only if you need to re-verify.";
+  }
+  if (label.includes("aadhaar") || label.includes("aadhar")) {
+    return "Aadhaar verified via DigiLocker. Change the Aadhaar number above only if you need to re-verify.";
+  }
+  return "Matched with your Aadhaar identity. No photo needed.";
+}
+
 /** Accept YYYY-MM-DD or DD/MM/YYYY → YYYY-MM-DD. */
 export function normalizeDlDobInput(raw: string): string | null {
   const t = String(raw || "").trim();
@@ -297,14 +349,15 @@ export function ElectronicVerifyCard(props: {
 
   if (state.phase === "verified") {
     const hasDetailRows = verifiedRows.length > 0;
+    const title =
+      verifiedTitle || defaultVerifiedTitle(documentLabel, requiresDob);
+    const hint =
+      verifiedHint || defaultVerifiedHint(documentLabel, hasDetailRows);
     return (
       <View style={[styles.card, styles.cardVerified]}>
         <View style={styles.headerRow}>
           <Ionicons name="shield-checkmark" size={18} color="#059669" />
-          <Text style={styles.verifiedTitle}>
-            {verifiedTitle ||
-              (requiresDob ? "Driving License is Valid" : "Vehicle RC is Valid")}
-          </Text>
+          <Text style={styles.verifiedTitle}>{title}</Text>
         </View>
         {hasDetailRows ? (
           verifiedRows.map((row) => (
@@ -314,23 +367,12 @@ export function ElectronicVerifyCard(props: {
             </View>
           ))
         ) : (
-          <TouchableOpacity
-            style={[styles.button, verifyDisabled && styles.buttonDisabled]}
-            disabled={verifyDisabled}
-            onPress={onVerify}
-            activeOpacity={0.8}
-            accessibilityRole="button"
-            accessibilityLabel={verifyLabel}
-          >
-            <Ionicons name="flash" size={16} color="#ffffff" />
-            <Text style={styles.buttonText}>{verifyLabel}</Text>
-          </TouchableOpacity>
+          <Text style={styles.alreadyVerifiedBody}>
+            Already verified through app. Edit the {documentLabel} number above to
+            run Verify Instantly again.
+          </Text>
         )}
-        <Text style={styles.verifiedHint}>
-          {hasDetailRows
-            ? verifiedHint || "Matched with your Aadhaar identity. No photo needed."
-            : "Tap Verify Instantly to load vehicle details from Cashfree."}
-        </Text>
+        <Text style={styles.verifiedHint}>{hint}</Text>
       </View>
     );
   }
@@ -464,16 +506,11 @@ export function ElectronicVerifyCard(props: {
         <View style={[styles.notice, styles.noticeError]}>
           <Ionicons name="close-circle" size={16} color="#be123c" />
           <View style={{ flex: 1, gap: 4 }}>
-            <Text style={styles.noticeErrorTitle}>Auto Verification Failed</Text>
+            <Text style={styles.noticeErrorTitle}>Couldn't verify automatically</Text>
             <Text style={styles.noticeErrorReason}>Reason: {state.error}</Text>
-            {state.providerReference ? (
-              <Text style={styles.noticeErrorText}>
-                Cashfree Ref: {state.providerReference}
-                {state.verificationId ? ` · ID: ${state.verificationId}` : ""}
-              </Text>
-            ) : null}
             <Text style={styles.noticeErrorText}>
-              Please re-check the {documentLabel} number and date of birth, then try again.
+              Re-check the {documentLabel} number and date of birth, then tap Try Again — or upload
+              a clear photo below for manual review.
             </Text>
           </View>
           {dismissBtn}
@@ -483,16 +520,11 @@ export function ElectronicVerifyCard(props: {
         <View style={[styles.notice, styles.noticeWarn]}>
           <Ionicons name="alert-circle" size={16} color="#b45309" />
           <View style={{ flex: 1, gap: 4 }}>
-            <Text style={styles.noticeWarnTitle}>Auto Verification Failed</Text>
+            <Text style={styles.noticeWarnTitle}>Couldn't verify automatically</Text>
             <Text style={styles.noticeWarnReason}>Reason: {state.error}</Text>
-            {state.providerReference ? (
-              <Text style={styles.noticeWarnText}>
-                Cashfree Ref: {state.providerReference}
-                {state.verificationId ? ` · ID: ${state.verificationId}` : ""}
-              </Text>
-            ) : null}
             <Text style={styles.noticeWarnText}>
-              Check licence number + DOB (as on DL), or upload a clear photo for manual review.
+              Check licence number + DOB (as on DL), try again, or upload a clear photo for manual
+              review.
             </Text>
           </View>
           {dismissBtn}
@@ -521,6 +553,13 @@ const styles = StyleSheet.create({
   },
   headerRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 },
   verifiedTitle: { fontSize: 14, fontWeight: "700", color: "#065f46" },
+  alreadyVerifiedBody: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: "#047857",
+    fontWeight: "600",
+    marginTop: 2,
+  },
   detailRow: {
     flexDirection: "row",
     justifyContent: "space-between",

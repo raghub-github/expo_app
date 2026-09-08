@@ -18,7 +18,6 @@ function pathMatchesHref(pathname: string | null, href: string): boolean {
   if (!pathname) return false;
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const normalizedHref = href.replace(/\/$/, "");
-  // href like "/(onboarding)/payment" — match by leaf segment
   const hrefLeaf = normalizedHref.split("/").filter(Boolean).pop();
   const pathLeaf = normalizedPath.split("/").filter(Boolean).pop();
   if (hrefLeaf && pathLeaf && hrefLeaf === pathLeaf) return true;
@@ -29,9 +28,10 @@ function pathMatchesHref(pathname: string | null, href: string): boolean {
 export function useOnboardingEstablishedRedirect(riderStatus?: RiderStatusSlice | null) {
   const pathname = usePathname();
   const lastHrefRef = useRef<string | null>(null);
+  const navigatedRef = useRef(false);
 
   useEffect(() => {
-    if (!riderStatus) return;
+    if (!riderStatus || navigatedRef.current) return;
     const href = resolveEstablishedRiderHref(
       riderStatus.onboardingStatus,
       riderStatus.accountStatus,
@@ -42,9 +42,13 @@ export function useOnboardingEstablishedRedirect(riderStatus?: RiderStatusSlice 
       },
     );
     if (!href) return;
-    if (pathMatchesHref(pathname, href)) return;
+    if (pathMatchesHref(pathname, href)) {
+      lastHrefRef.current = href;
+      return;
+    }
     if (lastHrefRef.current === href) return;
     lastHrefRef.current = href;
+    navigatedRef.current = true;
     router.replace(href);
   }, [
     riderStatus?.onboardingStatus,

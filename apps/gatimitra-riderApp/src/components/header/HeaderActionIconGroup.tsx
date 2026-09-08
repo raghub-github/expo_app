@@ -28,7 +28,7 @@ export function HeaderActionIconGroup({
         style={({ pressed }) => [styles.iconTap, pressed && styles.iconTapPressed]}
         accessibilityLabel={t("topbar.selectLanguage", "Select language")}
         accessibilityRole="button"
-        hitSlop={6}
+        hitSlop={8}
       >
         <HeaderLanguageIcon size={ACTION_ICON_SIZE} color={colors.gray[800]} />
       </Pressable>
@@ -38,7 +38,7 @@ export function HeaderActionIconGroup({
         style={({ pressed }) => [styles.iconTap, pressed && styles.iconTapPressed]}
         accessibilityLabel={t("topbar.notifications", "Notifications")}
         accessibilityRole="button"
-        hitSlop={6}
+        hitSlop={8}
       >
         <HeaderNotificationIcon
           size={ACTION_ICON_SIZE}
@@ -51,7 +51,7 @@ export function HeaderActionIconGroup({
   );
 }
 
-/** Aligned with tab title + icon badge row height */
+/** Aligned with duty toggle / services trigger height */
 const GROUP_HEIGHT = 36;
 
 const BORDER = "rgba(148, 163, 184, 0.22)";
@@ -60,18 +60,18 @@ const styles = StyleSheet.create({
   group: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
+    gap: 10,
     height: GROUP_HEIGHT,
-    minWidth: 84,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: BORDER,
     backgroundColor: "#FFFFFF",
-    paddingHorizontal: 12,
+    paddingHorizontal: 8,
     overflow: "visible",
+    flexShrink: 0,
   },
   iconTap: {
-    width: 28,
+    width: 26,
     height: GROUP_HEIGHT - 2,
     alignItems: "center",
     justifyContent: "center",

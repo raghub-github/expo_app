@@ -84,13 +84,17 @@ function proxyPathFromPossiblySignedUrl(u: string): string | null {
 /**
  * Prefer fresh local upload, then server selfie, then onboarding cache.
  * Always resolve to an Image-loadable absolute URL (or local file URI).
+ * Stale file:// paths are skipped unless allowLocalFile is true (fresh capture).
  */
 export function resolveRiderSelfieDisplayUrl(opts: {
   localSelfieUrl?: string | null;
   serverSelfieUrl?: string | null;
   onboardingSignedUrl?: string | null;
   onboardingLocalUri?: string | null;
+  /** When false (default), ignore file:// and content:// — they usually die after restart. */
+  allowLocalFile?: boolean;
 }): string | null {
+  const allowLocal = opts.allowLocalFile === true;
   const candidates = [
     opts.localSelfieUrl,
     opts.serverSelfieUrl,
@@ -98,7 +102,12 @@ export function resolveRiderSelfieDisplayUrl(opts: {
     opts.onboardingLocalUri,
   ];
   for (const c of candidates) {
-    const abs = toAbsoluteImageUrl(c);
+    if (c == null || typeof c !== "string" || !c.trim()) continue;
+    const t = c.trim();
+    if (!allowLocal && (t.startsWith("file://") || t.startsWith("content://"))) {
+      continue;
+    }
+    const abs = toAbsoluteImageUrl(t);
     if (abs) return abs;
   }
   return null;

@@ -60,6 +60,8 @@ export type ServiceEligibilityPolicy = {
   /** Provenance for audit: which geo node the effective value came from. */
   resolvedGeo?: { level: string; refId: string } | null;
   ruleVersion?: string | null;
+  /** Numeric PK of `rider_service_eligibility_rules` when a geo rule matched; null for code default. */
+  matchedRuleId?: number | null;
 };
 
 export type RiderEligibilityInput = {
@@ -107,6 +109,16 @@ export type MissingDocumentCode =
   | "OWNERSHIP_PROOF"
   | "COMMERCIAL_PROOF";
 
+export type EligibilityNextAction =
+  | "CONTINUE"
+  | "UPLOAD_DL"
+  | "UPLOAD_RC"
+  | "UPDATE_DOCUMENT"
+  | "SERVICE_LIMITED"
+  | "BLOCK";
+
+export type EligibilityPolicySource = "geo_rule" | "default" | "override";
+
 /** Which blocking codes correspond to a concrete missing/invalid document. */
 function missingDocsFromBlocking(blocking: EligibilityBlock[]): MissingDocumentCode[] {
   const out = new Set<MissingDocumentCode>();
@@ -131,8 +143,18 @@ export type EligibilityDecision = {
   commercialRequired: boolean;
   /** All failed conditions, most-severe first (precedence order). */
   blocking: EligibilityBlock[];
+  /** Top blocking code (or null when eligible) — convenient for clients/logs. */
+  reasonCode: EligibilityBlockCode | null;
   /** Concrete documents the rider must submit/verify to clear the blocks (subset of blocking). */
   missingDocuments: MissingDocumentCode[];
+  /** Documents the effective policy marks as required (independent of current state). */
+  requiredDocuments: MissingDocumentCode[];
+  /** Suggested next rider action for this service decision. */
+  nextAction: EligibilityNextAction;
+  /** Where the effective policy came from. */
+  policySource: EligibilityPolicySource;
+  /** Numeric rule id when policySource is geo_rule. */
+  matchedRuleId: number | null;
   /** Set when an admin ELIGIBILITY_OVERRIDE granted this decision despite failing checks. */
   overridden?: { reason: string; approvedBy?: string | null } | null;
   resolvedGeo?: { level: string; refId: string } | null;
@@ -165,9 +187,50 @@ export function applyEligibilityOverride(
     eligible: true,
     blocking: [],
     missingDocuments: [],
+    reasonCode: null,
+    nextAction: "CONTINUE",
+    policySource: "override",
+    matchedRuleId: null,
     overridden: { reason: override.reason, approvedBy: override.approvedBy ?? null },
     ruleVersion: `override:${override.reason}`,
   };
+}
+
+function requiredDocumentsFromPolicy(policy: ServiceEligibilityPolicy): MissingDocumentCode[] {
+  const out: MissingDocumentCode[] = [];
+  if (policy.dlRequirement === "required") out.push("DRIVING_LICENSE");
+  if (policy.rcRequirement === "required") out.push("REGISTRATION_CERTIFICATE");
+  if ((policy.evProofRequirement ?? "exempt") === "required") out.push("EV_PROOF");
+  if ((policy.ownershipProofRequirement ?? "exempt") === "required") out.push("OWNERSHIP_PROOF");
+  if ((policy.commercialProofRequirement ?? "exempt") === "required") out.push("COMMERCIAL_PROOF");
+  return out;
+}
+
+function nextActionFromBlocks(
+  eligible: boolean,
+  blocking: EligibilityBlock[],
+  missing: MissingDocumentCode[]
+): EligibilityNextAction {
+  if (eligible) return "CONTINUE";
+  if (missing.includes("DRIVING_LICENSE")) return "UPLOAD_DL";
+  if (missing.includes("REGISTRATION_CERTIFICATE")) return "UPLOAD_RC";
+  if (missing.length > 0) return "UPDATE_DOCUMENT";
+  const limited = blocking.some((b) =>
+    [
+      "COMMERCIAL_VEHICLE_REQUIRED",
+      "VEHICLE_CLASS_NOT_ALLOWED",
+      "FUEL_NOT_ALLOWED",
+      "OWNERSHIP_NOT_ALLOWED",
+      "SERVICE_DISABLED",
+    ].includes(b.code)
+  );
+  return limited ? "SERVICE_LIMITED" : "BLOCK";
+}
+
+function policySourceOf(policy: ServiceEligibilityPolicy): EligibilityPolicySource {
+  if (policy.matchedRuleId != null) return "geo_rule";
+  if (!policy.ruleVersion || policy.ruleVersion === "default") return "default";
+  return "geo_rule";
 }
 
 function docSatisfies(requirement: DocRequirement, state: DocState): {
@@ -261,7 +324,17 @@ export function resolveRiderServiceEligibility(
   }
 
   // 4. Commercial-vehicle requirement (geo-configurable).
-  if (policy.commercialRequired && input.ownership !== "commercial") {
+  // Phase B: ownership allowlist is authoritative when it explicitly includes
+  // non_commercial — both selected means both accepted. commercialRequired only
+  // hard-blocks when the allowlist does NOT permit non_commercial (including
+  // empty allowlist = "all fuels/ownership" semantics for step 5, but commercial
+  // gate still applies as a location hard requirement).
+  const allowlistPermitsNonCommercial = policy.allowedOwnership.includes("non_commercial");
+  if (
+    policy.commercialRequired &&
+    input.ownership !== "commercial" &&
+    !allowlistPermitsNonCommercial
+  ) {
     blocking.push({
       code: "COMMERCIAL_VEHICLE_REQUIRED",
       reason: `A commercial vehicle is required for ${labelService(
@@ -322,9 +395,13 @@ export function resolveRiderServiceEligibility(
     }
   }
 
+  const missingDocuments = missingDocsFromBlocking(blocking);
+  const requiredDocuments = requiredDocumentsFromPolicy(policy);
+  const eligible = blocking.length === 0;
+
   return {
     service: policy.service,
-    eligible: blocking.length === 0,
+    eligible,
     vehicleClass: input.vehicleClass,
     fuelKind,
     ownership: input.ownership,
@@ -332,7 +409,12 @@ export function resolveRiderServiceEligibility(
     rcState: input.rc,
     commercialRequired: policy.commercialRequired,
     blocking,
-    missingDocuments: missingDocsFromBlocking(blocking),
+    reasonCode: blocking[0]?.code ?? null,
+    missingDocuments,
+    requiredDocuments,
+    nextAction: nextActionFromBlocks(eligible, blocking, missingDocuments),
+    policySource: policySourceOf(policy),
+    matchedRuleId: policy.matchedRuleId ?? null,
     resolvedGeo: policy.resolvedGeo ?? null,
     ruleVersion: policy.ruleVersion ?? null,
   };
