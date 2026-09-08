@@ -74,36 +74,42 @@ export async function uploadToR2(
 
   const finalFileName = key.split("/").pop() || `${Date.now()}.jpg`;
 
-  const formData = new FormData();
-  formData.append("folder", folder);
-  formData.append("key", key);
-  formData.append("file", {
-    uri: fileUri,
-    type: "image/jpeg",
-    name: finalFileName,
-  } as any);
-
-  let uploadResponse: Response;
-  try {
-    uploadResponse = await fetchWithTimeout(
-      `${apiBaseUrl}/v1/storage/upload`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: formData,
-      },
-      UPLOAD_TIMEOUT_MS
-    );
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error("Upload timed out. Check your network and API URL.");
+  // Multipart uploads on mobile networks (LTE, moving, weak signal) fail transiently far more
+  // often than JSON requests. Retry a few times with backoff before surfacing an error — this is
+  // the main cause of the onboarding "Upload failed: Network request failed" that stalled the
+  // PAN/selfie/DL steps. Each attempt rebuilds FormData (a consumed body can't be re-sent).
+  const MAX_ATTEMPTS = 3;
+  let uploadResponse: Response | null = null;
+  let lastErr: unknown = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const body = new FormData();
+    body.append("folder", folder);
+    body.append("key", key);
+    body.append("file", { uri: fileUri, type: "image/jpeg", name: finalFileName } as any);
+    try {
+      uploadResponse = await fetchWithTimeout(
+        `${apiBaseUrl}/v1/storage/upload`,
+        { method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body },
+        UPLOAD_TIMEOUT_MS
+      );
+      break; // got an HTTP response (ok or not) — stop retrying
+    } catch (err) {
+      lastErr = err;
+      if (err instanceof Error && err.name === "AbortError") {
+        // A timeout is unlikely to succeed on an immediate retry — fail fast.
+        throw new Error("Upload timed out. Check your network and try again.");
+      }
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, 700 * attempt)); // 0.7s, 1.4s backoff
+        continue;
+      }
     }
+  }
+  if (!uploadResponse) {
     throw new Error(
-      err instanceof Error
-        ? `Upload failed: ${err.message}. Ensure EXPO_PUBLIC_API_BASE_URL reaches your backend.`
-        : "Upload failed"
+      lastErr instanceof Error
+        ? `Upload failed after ${MAX_ATTEMPTS} attempts: ${lastErr.message}. Check your internet connection and try again.`
+        : "Upload failed. Check your internet connection and try again."
     );
   }
 

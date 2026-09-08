@@ -36,6 +36,17 @@ export type PolicyDecisionInput = {
 };
 
 /**
+ * Rider document kinds that Cashfree can verify by NUMBER — these default to electronic-first
+ * (hybrid) when no explicit policy exists, so a rider is never asked to upload an image the
+ * gateway can verify. (Aadhaar/DigiLocker + bank use different flows and keep the manual default.)
+ */
+const RIDER_ELECTRONIC_FIRST_KINDS = new Set<VerificationDocumentKind>([
+  "pan",
+  "driving_licence",
+  "vehicle_rc",
+]);
+
+/**
  * Returns the effective policy. `mode = 'manual'` is the safe default;
  * callers should skip provider submission and route the doc to the existing
  * manual approval workflow.
@@ -80,13 +91,30 @@ export async function resolveEffectivePolicy(input: PolicyDecisionInput): Promis
     .limit(1);
 
   if (rows.length === 0) {
-    return forceHybrid
-      ? {
-          ...manualDefault({ reason: "no_policy_row_force_hybrid" }),
-          mode: "hybrid" as const,
-          fallbackToManual: true,
-        }
-      : manualDefault({ reason: "no_policy_row" });
+    if (forceHybrid) {
+      return {
+        ...manualDefault({ reason: "no_policy_row_force_hybrid" }),
+        mode: "hybrid" as const,
+        fallbackToManual: true,
+      };
+    }
+    // ELECTRONIC-FIRST default for the rider docs Cashfree can verify by NUMBER (PAN / DL / RC):
+    // when no explicit policy exists, verify the number instantly and only fall back to a photo
+    // upload if it fails — so a rider is never asked to upload a document Cashfree can verify,
+    // and failures still leave an image for an agent to review. Kill switches
+    // (disabled / force_manual) already short-circuited above, and an explicit policy row still
+    // wins (handled below). Mirrors the force_hybrid shape (provider resolved by the submitter).
+    if (
+      input.subjectType === "rider" &&
+      RIDER_ELECTRONIC_FIRST_KINDS.has(input.documentKind)
+    ) {
+      return {
+        ...manualDefault({ reason: "no_policy_row_rider_electronic_first" }),
+        mode: "hybrid" as const,
+        fallbackToManual: true,
+      };
+    }
+    return manualDefault({ reason: "no_policy_row" });
   }
   const p = rows[0]!;
 

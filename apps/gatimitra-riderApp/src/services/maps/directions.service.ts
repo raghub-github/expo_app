@@ -6,6 +6,11 @@
 import { getRiderAppConfig } from "@/src/config/env";
 import { formatAlternativeRouteLabel } from "@/src/lib/navigation-alternative-routes";
 import { fetchBackendRoute } from "@/src/services/maps/distance.service";
+import {
+  compareRouteByPolicy,
+  optimizeForRideType,
+  type RouteOptimizeFor,
+} from "@/src/services/maps/route-policy";
 
 export type LatLng = { latitude: number; longitude: number };
 
@@ -42,19 +47,24 @@ const OSRM_DRIVING = "https://router.project-osrm.org/route/v1/driving";
 type RouteProfile = {
   mapboxProfiles: string[];
   durationScale: number;
+  /** SHORTEST distance for 2-wheelers, FASTEST time for cars/autos — see route-policy.ts. */
+  optimizeFor: RouteOptimizeFor;
 };
 
 const PROFILES: Record<string, RouteProfile> = {
-  bike: { mapboxProfiles: ["driving"], durationScale: 0.72 },
-  "bike-lite": { mapboxProfiles: ["driving"], durationScale: 0.76 },
-  auto: { mapboxProfiles: ["driving-traffic", "driving"], durationScale: 1.18 },
-  ev_auto: { mapboxProfiles: ["driving-traffic", "driving"], durationScale: 1.18 },
-  "cab-economy": { mapboxProfiles: ["driving-traffic", "driving"], durationScale: 1.0 },
-  "cab-premium": { mapboxProfiles: ["driving-traffic", "driving"], durationScale: 0.96 },
-  travel: { mapboxProfiles: ["driving"], durationScale: 0.9 },
+  bike: { mapboxProfiles: ["driving"], durationScale: 0.72, optimizeFor: optimizeForRideType("bike") },
+  "bike-lite": { mapboxProfiles: ["driving"], durationScale: 0.76, optimizeFor: optimizeForRideType("bike-lite") },
+  auto: { mapboxProfiles: ["driving-traffic", "driving"], durationScale: 1.18, optimizeFor: optimizeForRideType("auto") },
+  ev_auto: { mapboxProfiles: ["driving-traffic", "driving"], durationScale: 1.18, optimizeFor: optimizeForRideType("ev_auto") },
+  "cab-economy": { mapboxProfiles: ["driving-traffic", "driving"], durationScale: 1.0, optimizeFor: optimizeForRideType("cab-economy") },
+  "cab-premium": { mapboxProfiles: ["driving-traffic", "driving"], durationScale: 0.96, optimizeFor: optimizeForRideType("cab-premium") },
+  travel: { mapboxProfiles: ["driving"], durationScale: 0.9, optimizeFor: optimizeForRideType("travel") },
 };
 
-const DEFAULT_PROFILE = PROFILES["cab-economy"]!;
+// Default to the 2-wheeler profile (shortest distance): ride orders always pass an explicit
+// rideType, so only food/parcel deliveries — which are bikes — fall back here, and shortest
+// matches the backend fare basis for them.
+const DEFAULT_PROFILE = PROFILES["bike"]!;
 
 export function profileForRideType(rideType?: string): RouteProfile {
   if (!rideType) return DEFAULT_PROFILE;
@@ -178,7 +188,10 @@ function buildNavigationFromRawRoutes(
 
   if (candidates.length === 0) return null;
 
-  candidates.sort((a, b) => a.durationScaled - b.durationScaled);
+  // Pick the primary per the vehicle's policy: 2-wheelers -> SHORTEST distance (ties break to the
+  // faster route), cars/autos -> FASTEST time (ties break to the shorter route). Mirrors the
+  // customer app + backend so the drawn line, distance and ETA are consistent across surfaces.
+  candidates.sort((a, b) => compareRouteByPolicy(a, b, profile.optimizeFor));
   const primary = candidates[0]!;
   const alternatives: NavigationAlternativeRoute[] = [];
 
@@ -245,7 +258,16 @@ async function fetchMapboxRoute(
       const data = (await res.json()) as { routes?: RawRoute[] };
       const candidate = buildNavigationFromRawRoutes(data.routes ?? [], profile, "mapbox");
       if (!candidate) continue;
-      if (!best || candidate.etaMinutes < best.etaMinutes) best = candidate;
+      // Across the profile fallbacks (driving-traffic / driving) keep the result that best fits
+      // the vehicle policy — shortest distance for 2W, fastest ETA for cars/autos.
+      const better =
+        !best ||
+        (profile.optimizeFor === "shortest_distance"
+          ? candidate.distanceKm < best.distanceKm ||
+            (candidate.distanceKm === best.distanceKm && candidate.etaMinutes < best.etaMinutes)
+          : candidate.etaMinutes < best.etaMinutes ||
+            (candidate.etaMinutes === best.etaMinutes && candidate.distanceKm < best.distanceKm));
+      if (better) best = candidate;
     } catch (error) {
       if (isAbortError(error)) throw error;
       // try next profile

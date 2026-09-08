@@ -6,9 +6,11 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
   type ImageSourcePropType,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -36,6 +38,10 @@ export function PlayUpdateAvailableSheet({
   onLearnMore,
 }: PlayUpdateAvailableSheetProps) {
   const insets = useSafeAreaInsets();
+  const { height: screenHeight } = useWindowDimensions();
+  // Insets inside an Android RN Modal are frequently 0, so floor the bottom padding to clear
+  // the system navigation/gesture bar; otherwise the pinned action row hides behind it.
+  const bottomPad = Math.max(insets.bottom, 24);
 
   return (
     <Modal
@@ -47,50 +53,79 @@ export function PlayUpdateAvailableSheet({
     >
       <View style={styles.overlay}>
         <Pressable style={styles.backdrop} onPress={onDismiss} accessibilityLabel="Dismiss" />
-        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-          <View style={styles.topRow}>
-            <View style={styles.brandRow}>
-              <View style={[styles.playDot, { backgroundColor: primaryColor }]} />
-              <Text style={styles.brandText}>Google Play</Text>
-            </View>
-            <Pressable onPress={onDismiss} hitSlop={12} style={styles.closeBtn}>
-              <Ionicons name="close" size={22} color="#E2E8F0" />
-            </Pressable>
-          </View>
-
-          <Text style={styles.title}>Update available</Text>
-          <Text style={styles.body}>
-            To use this app, download the latest version. You can keep using this app while
-            downloading the update.
-          </Text>
-
-          <View style={styles.appRow}>
-            <Image source={appIcon} style={styles.appIcon} resizeMode="contain" />
-            <View style={styles.appMeta}>
-              <Text style={styles.appName} numberOfLines={2}>
-                {appName}
-              </Text>
-              {versionHint ? (
-                <Text style={styles.appSub} numberOfLines={1}>
-                  {versionHint}
-                </Text>
-              ) : null}
-            </View>
-          </View>
-
-          <Pressable
-            onPress={onLearnMore}
-            style={({ pressed }) => [styles.whatsNewRow, pressed && styles.pressed]}
-            accessibilityRole="button"
-            accessibilityLabel="What's new on Google Play"
+        {/* maxHeight caps the sheet to the viewport; the scrollable body + a PINNED action row
+            guarantee the Update button is always visible/tappable on every device & font scale
+            (the previous single-column layout let large fonts / the nav bar push it off-screen). */}
+        <View
+          style={[
+            styles.sheet,
+            { maxHeight: Math.round(screenHeight * 0.9), paddingBottom: bottomPad },
+          ]}
+        >
+          <ScrollView
+            style={styles.scrollArea}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            bounces={false}
           >
-            <View style={{ flex: 1 }}>
-              <Text style={styles.whatsNewLabel}>What&apos;s new</Text>
-              <Text style={styles.whatsNewDate}>New version available on Google Play</Text>
+            <View style={styles.topRow}>
+              <View style={styles.brandRow}>
+                <View style={[styles.playDot, { backgroundColor: primaryColor }]} />
+                <Text style={styles.brandText}>Google Play</Text>
+              </View>
+              <Pressable
+                onPress={onDismiss}
+                hitSlop={12}
+                style={styles.closeBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={22} color="#E2E8F0" />
+              </Pressable>
             </View>
-            <Ionicons name="chevron-down" size={18} color="#94A3B8" />
-          </Pressable>
 
+            <Text style={styles.title} maxFontSizeMultiplier={1.3}>
+              Update available
+            </Text>
+            <Text style={styles.body} maxFontSizeMultiplier={1.4}>
+              To use this app, download the latest version. You can keep using this app while
+              downloading the update.
+            </Text>
+
+            <View style={styles.appRow}>
+              <Image source={appIcon} style={styles.appIcon} resizeMode="contain" />
+              <View style={styles.appMeta}>
+                <Text style={styles.appName} numberOfLines={2} maxFontSizeMultiplier={1.3}>
+                  {appName}
+                </Text>
+                {versionHint ? (
+                  <Text style={styles.appSub} numberOfLines={1} maxFontSizeMultiplier={1.3}>
+                    {versionHint}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+
+            {/* Tappable (opens Play) — kept inside the ScrollView so the pinned actions stay put. */}
+            <Pressable
+              onPress={onLearnMore}
+              style={({ pressed }) => [styles.whatsNewRow, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel="What's new on Google Play"
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.whatsNewLabel} maxFontSizeMultiplier={1.3}>
+                  What&apos;s new
+                </Text>
+                <Text style={styles.whatsNewDate} maxFontSizeMultiplier={1.3}>
+                  New version available on Google Play
+                </Text>
+              </View>
+              <Ionicons name="chevron-down" size={18} color="#94A3B8" />
+            </Pressable>
+          </ScrollView>
+
+          {/* Pinned action row — never scrolls off screen. */}
           <View style={styles.actions}>
             <Pressable
               onPress={onLearnMore}
@@ -98,7 +133,9 @@ export function PlayUpdateAvailableSheet({
               accessibilityRole="button"
               accessibilityLabel="Learn more on Google Play"
             >
-              <Text style={styles.learnText}>Learn more</Text>
+              <Text style={styles.learnText} maxFontSizeMultiplier={1.3}>
+                Learn more
+              </Text>
             </Pressable>
             <Pressable
               onPress={onUpdate}
@@ -110,7 +147,9 @@ export function PlayUpdateAvailableSheet({
               accessibilityRole="button"
               accessibilityLabel="Update on Google Play"
             >
-              <Text style={styles.updateText}>Update</Text>
+              <Text style={styles.updateText} maxFontSizeMultiplier={1.3}>
+                Update
+              </Text>
             </Pressable>
           </View>
         </View>
@@ -143,6 +182,10 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  // flexShrink lets the scroll area give up height (up to the sheet maxHeight) so the pinned
+  // actions below always fit; flexGrow:0 keeps the sheet hugging its content when it's short.
+  scrollArea: { flexGrow: 0, flexShrink: 1 },
+  scrollContent: { paddingBottom: 4 },
   topRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -171,7 +214,7 @@ const styles = StyleSheet.create({
   },
   whatsNewLabel: { color: "#F8FAFC", fontSize: 14, fontWeight: "600" },
   whatsNewDate: { color: "#94A3B8", fontSize: 12, marginTop: 2 },
-  actions: { flexDirection: "row", gap: 12 },
+  actions: { flexDirection: "row", gap: 12, paddingTop: 6 },
   learnBtn: {
     flex: 1,
     borderRadius: 999,

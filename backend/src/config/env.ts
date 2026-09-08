@@ -521,6 +521,28 @@ export function getEnv(): Env {
     }
   }
 
+  // Review-login bypass flags fail CLOSED: an unrecognised value (e.g. the typo "flase")
+  // parses to `false`, silently disabling the fixed-OTP bypass so review numbers get real
+  // (billable) SMS and the fixed OTP stops working. Surface such typos loudly instead of
+  // letting them look like an intentional "off".
+  for (const flag of [
+    "REVIEW_LOGIN_BYPASS_ENABLED",
+    "RIDER_REVIEW_LOGIN_BYPASS_ENABLED",
+    "GOOGLE_REVIEW_MODE",
+  ]) {
+    const raw = process.env[flag];
+    if (raw != null && raw.trim() !== "") {
+      const v = raw.trim().toLowerCase();
+      if (!["true", "false", "1", "0"].includes(v)) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[env] ${flag}="${raw}" is not a recognised boolean — treated as FALSE (bypass OFF). ` +
+            `Did you mean "true"/"false"? A typo here disables the review fixed-OTP and sends real SMS.`
+        );
+      }
+    }
+  }
+
   return parsed.data;
 }
 

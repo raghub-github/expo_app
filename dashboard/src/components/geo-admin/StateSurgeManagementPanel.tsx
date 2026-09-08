@@ -666,8 +666,9 @@ export function StateSurgeManagementPanel({
       <section className="rounded-xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-4 shadow-sm">
         <h4 className="text-sm font-bold text-slate-900">Max surge per order</h4>
         <p className="mt-1 text-xs text-slate-600">
-          When multiple surges apply together (e.g. ₹12 + ₹18 + ₹25 + ₹30 = ₹85), the rider receives only up to
-          this cap for <span className="font-semibold">{stateLabel}</span>. Leave blank for no cap.
+          Only <span className="font-semibold">one surge applies per order</span> — the highest-amount surge the
+          rider is eligible for. This cap is the ceiling on that surge for{" "}
+          <span className="font-semibold">{stateLabel}</span>. Leave blank for no cap.
         </p>
         <div className="mt-3 flex flex-wrap items-end gap-3">
           <label className="text-xs font-semibold text-slate-700">
@@ -692,10 +693,10 @@ export function StateSurgeManagementPanel({
         </div>
         {settings.maxTotalSurgeAmount != null ? (
           <p className="mt-2 text-[11px] font-medium text-amber-800">
-            Active cap: ₹{settings.maxTotalSurgeAmount} per order — rider never gets more than this from surges.
+            Active cap: ₹{settings.maxTotalSurgeAmount} per order — the single applied surge is capped here.
           </p>
         ) : (
-          <p className="mt-2 text-[11px] text-slate-500">No cap set — all active surges add up fully.</p>
+          <p className="mt-2 text-[11px] text-slate-500">No cap set — the winning surge applies in full.</p>
         )}
       </section>
 

@@ -320,6 +320,9 @@ export default function PanSelfieScreen() {
   const [wizardStep, setWizardStep] = useState<"pan" | "selfie">(() => {
     if (data.selfieUri || data.selfieSignedUrl) return "selfie";
     if (data.panSkipped && !data.selfieUri) return "selfie";
+    // Durable verified flag (electronic OR photo) — the electronic flow has no photo, so the
+    // old photo-only check bounced verified riders back to PAN on re-mount.
+    if (data.panVerified && !data.selfieUri) return "selfie";
     const panReady = isValidPan(data.panNumber || "") && Boolean(data.panPhotoUri);
     if (panReady && !data.selfieUri) return "selfie";
     return "pan";
@@ -359,6 +362,8 @@ export default function PanSelfieScreen() {
   const handlePanNumberChange = (text: string) => {
     setPanNumber(formatPan(text));
     setPanEv({ phase: "idle" });
+    // Editing the number invalidates any prior verification.
+    if (data.panVerified) void setData({ panVerified: false });
   };
 
   const runPanElectronicVerify = async () => {
@@ -373,6 +378,10 @@ export default function PanSelfieScreen() {
       });
       if (res.outcome === "verified") {
         setPanEv({ phase: "verified", details: res.verifiedData ?? {} });
+        // Persist a DURABLE verified flag + number so a re-render / re-mount cannot lose the
+        // ephemeral panEv state and bounce the rider back to the PAN step (the reported loop),
+        // and so the PAN number is carried into saveStep → the control dashboard.
+        void setData({ panVerified: true, panNumber: panNumber.toUpperCase(), panSkipped: false });
       } else if (res.outcome === "mismatch") {
         setPanEv({
           phase: "mismatch",
@@ -519,7 +528,7 @@ export default function PanSelfieScreen() {
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
         aspect: [3, 2],
-        quality: 0.9,
+        quality: 0.5,
       });
       if (!result.canceled && result.assets[0]) {
         setPanPhotoUri(result.assets[0].uri);
@@ -538,7 +547,7 @@ export default function PanSelfieScreen() {
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
         aspect: [3, 2],
-        quality: 0.9,
+        quality: 0.5,
       });
       if (!result.canceled && result.assets[0]) {
         setPanPhotoUri(result.assets[0].uri);
@@ -668,6 +677,7 @@ export default function PanSelfieScreen() {
         panPhotoUri: panPhotoUri ?? undefined,
         panPhotoSignedUrl: uploadedProxyUrl ?? undefined,
         panSkipped: false,
+        panVerified: true, // durable: PAN step complete (photo uploaded or electronically verified)
       });
 
       setWizardStep("selfie");
@@ -708,6 +718,7 @@ export default function PanSelfieScreen() {
     }
     const panReady =
       panSkipped ||
+      data.panVerified === true || // durable flag survives re-render (the loop fix)
       panEv.phase === "verified" ||
       riderStatus?.panVerified === true ||
       (panValid && (Boolean(panPhotoUri) || Boolean(panPhotoSignedUrl)));
@@ -756,6 +767,7 @@ export default function PanSelfieScreen() {
 
       const hasPanNumber =
         panValid ||
+        data.panVerified === true || // durable flag → the number always reaches the dashboard
         panEv.phase === "verified" ||
         riderStatus?.panVerified === true;
 

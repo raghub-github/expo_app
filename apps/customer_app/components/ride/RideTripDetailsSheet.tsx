@@ -21,6 +21,8 @@ type RideTripDetailsSheetProps = {
   waitingCharge?: number | null;
   totalFare?: number | null;
   hasPickupWait?: boolean;
+  /** True while the ride is live — the fare is an estimate, confirmed at payment after the ride. */
+  isEstimate?: boolean;
   onClose: () => void;
   onCancelRide?: () => void;
   showCancelRide?: boolean;
@@ -33,6 +35,7 @@ export function RideTripDetailsSheet({
   waitingCharge,
   totalFare,
   hasPickupWait = false,
+  isEstimate = false,
   onClose,
   onCancelRide,
   showCancelRide = false,
@@ -104,11 +107,18 @@ export function RideTripDetailsSheet({
                 </AppText>
               </View>
               <View style={styles.metaRow}>
-                <AppText style={styles.metaLabel}>Total fare</AppText>
+                <AppText style={styles.metaLabel}>
+                  {isEstimate ? "Estimated total" : "Total fare"}
+                </AppText>
                 <AppText style={[styles.metaValue, styles.totalFareValue]}>
                   {formatRideFare(resolvedTotal)}
                 </AppText>
               </View>
+              {isEstimate ? (
+                <AppText style={styles.estimateNote}>
+                  Final fare is confirmed when you pay after the ride. Waiting charges may change it.
+                </AppText>
+              ) : null}
             </>
           ) : (
             <View style={styles.metaRow}>
@@ -217,6 +227,7 @@ const styles = StyleSheet.create({
   metaValue: { fontSize: 13, color: "#111827", fontWeight: "600", maxWidth: "62%", textAlign: "right" },
   waitingValue: { color: "#854D0E" },
   totalFareValue: { fontWeight: "800", fontSize: 14 },
+  estimateNote: { marginTop: 4, fontSize: 11, color: "#9CA3AF", lineHeight: 15 },
   closeBtn: {
     marginTop: 12,
     backgroundColor: "#111827",

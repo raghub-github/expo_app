@@ -72,7 +72,7 @@ test("waiting charge is not counted toward the rider percentage split", () => {
   assert.ok(withWait.quote.pickupAmount > withoutWait.quote.pickupAmount);
 });
 
-test("surge_wait_max_only blocks waiting and surges for non-Max riders", () => {
+test("surge_wait_max_only blocks WAITING for non-Max riders; surge passes through (gated per-config upstream)", () => {
   const res = calculatePercentageRiderPayout({
     customerFare: 95,
     pickupKm: 1,
@@ -81,14 +81,16 @@ test("surge_wait_max_only blocks waiting and surges for non-Max riders", () => {
     waitingMinutes: 10,
     riderHasGmitraMax: false,
     surgeWaitMaxOnly: true,
+    // Surge eligibility is decided per-surge in resolveStateSurges; whatever reaches this
+    // calc is already filtered, so the global flag must NOT re-zero it here.
     appliedSurges: [{ surgeId: 1, name: "Rain", kind: "rain", amount: 10 }],
     rawSurgeTotal: 10,
     surgeTotal: 10,
   });
   assert.equal(res.ok, true);
   if (!res.ok) return;
-  assert.equal(res.quote.waitingAmount, 0);
-  assert.equal(res.quote.surgeTotal, 0);
+  assert.equal(res.quote.waitingAmount, 0, "waiting still gated for non-Max riders");
+  assert.equal(res.quote.surgeTotal, 10, "surge is no longer blocked by the global flag");
 });
 
 test("surge adds to rider payout total on top of the percentage split", () => {

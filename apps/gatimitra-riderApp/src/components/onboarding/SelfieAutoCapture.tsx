@@ -97,7 +97,7 @@ export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoC
     setStatus("capturing");
     try {
       const photo = await cameraRef.current?.takePictureAsync({
-        quality: 0.92,
+        quality: 0.6, // smaller selfie JPEG → far more reliable upload on mobile networks
         skipProcessing: false,
         shutterSound: false,
       });

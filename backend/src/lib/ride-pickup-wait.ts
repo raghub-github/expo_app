@@ -85,6 +85,81 @@ export async function resolveRidePickupWaitingChargePerMin(args: {
   return Number.isFinite(perMin) && perMin > 0 ? perMin : 0;
 }
 
+/**
+ * Combined pickup-waiting config from ONE rule load (free minutes + per-min charge + caps).
+ * Used to attach live-waiting fields to the rider order summary so the app can render a live
+ * ₹ estimate as the wait accrues (mirrors the customer live-status estimate). Falls back to
+ * the same safe defaults the individual resolvers use when no rule/geo is available.
+ */
+export async function resolveRidePickupWaitingConfig(args: {
+  checkoutMetadata?: unknown;
+  pickupLat?: number | null;
+  pickupLng?: number | null;
+  rideType?: string | null;
+}): Promise<{
+  freeMinutes: number;
+  chargePerMin: number;
+  maxCharge: number | null;
+  maxMinutes: number | null;
+}> {
+  const fromMetaFree = ridePickupWaitFreeMinutesFromCheckoutMetadata(args.checkoutMetadata);
+  const meta =
+    args.checkoutMetadata && typeof args.checkoutMetadata === "object"
+      ? (args.checkoutMetadata as Record<string, unknown>)
+      : null;
+  const fromMetaPerMin = Number(meta?.pickupWaitingChargePerMin ?? meta?.waitingChargePerMin);
+
+  const pickupLat = Number(args.pickupLat);
+  const pickupLng = Number(args.pickupLng);
+  const hasCoords = Number.isFinite(pickupLat) && Number.isFinite(pickupLng);
+
+  let ruleFreeMinutes: number | null = null;
+  let rulePerMin = 0;
+  let ruleMaxCharge: number | null = null;
+  let ruleMaxMinutes: number | null = null;
+
+  if (hasCoords) {
+    try {
+      const geoHints = rideGeoFromCheckoutMetadata(args.checkoutMetadata);
+      const rideGeo = await resolveRidePricingGeoFromPickup({
+        pickupLat,
+        pickupLng,
+        pickupPincode: geoHints.pickupPincode,
+        pickupState: geoHints.pickupState,
+      });
+      if (rideGeo.pricingGeo) {
+        const { rule } = await loadEffectiveServicePayoutRule({
+          level: rideGeo.pricingGeo.level,
+          refId: rideGeo.pricingGeo.refId,
+          service: "ride",
+        });
+        if (rule) {
+          ruleFreeMinutes = Math.max(0, Math.round(rule.waitingFreeMinutes ?? DEFAULT_RIDE_PICKUP_FREE_WAIT_MINUTES));
+          rulePerMin = Math.max(0, Number(rule.waitingChargePerMin ?? 0));
+          const mc = Number(rule.waitingMaxCharge);
+          ruleMaxCharge = Number.isFinite(mc) && mc > 0 ? mc : null;
+          const mm = Number(rule.waitingMaxMinutes);
+          ruleMaxMinutes = Number.isFinite(mm) && mm > 0 ? mm : null;
+        }
+      }
+    } catch {
+      // fall through to defaults / metadata
+    }
+  }
+
+  const freeMinutes =
+    fromMetaFree != null ? fromMetaFree : ruleFreeMinutes ?? DEFAULT_RIDE_PICKUP_FREE_WAIT_MINUTES;
+  const chargePerMin =
+    Number.isFinite(fromMetaPerMin) && fromMetaPerMin > 0 ? fromMetaPerMin : rulePerMin;
+
+  return {
+    freeMinutes: Math.max(0, freeMinutes),
+    chargePerMin: Math.max(0, chargePerMin),
+    maxCharge: ruleMaxCharge,
+    maxMinutes: ruleMaxMinutes,
+  };
+}
+
 export function computeRidePickupWaitSeconds(
   reachedAt: Date | string,
   endedAt: Date | string
@@ -177,6 +252,10 @@ export type RidePickupWaitAttachInput = {
   pickupWaitSeconds?: number | null;
   pickupOtpVerifiedAt?: Date | string | null;
   pickupWaitFreeMinutes: number;
+  /** ₹/min charged after the free window — lets the app render a live ₹ estimate as it accrues. */
+  pickupWaitingChargePerMin?: number | null;
+  /** Amount cap (₹) on the waiting charge, when the rule sets one. */
+  pickupWaitingMaxCharge?: number | null;
 };
 
 function toIsoOrNull(value: Date | string | null | undefined): string | null {
@@ -195,11 +274,22 @@ export function attachRidePickupWaitFields<T extends Record<string, unknown>>(
   pickupWaitFinalized?: boolean;
   pickupTimerBudgetSeconds?: number;
   ridePickupWaitFreeMinutes?: number;
+  ridePickupWaitingChargePerMin?: number;
+  ridePickupWaitingMaxCharge?: number | null;
 } {
   const startedAt = toIsoOrNull(input.riderReachedPickupAt);
   const verifiedAt = toIsoOrNull(input.pickupOtpVerifiedAt);
   const freeMinutes = Math.max(0, input.pickupWaitFreeMinutes);
   const freeBudgetSeconds = Math.max(0, Math.round(freeMinutes * 60));
+  const perMin = Math.max(0, Number(input.pickupWaitingChargePerMin) || 0);
+  const maxCharge =
+    input.pickupWaitingMaxCharge != null && Number(input.pickupWaitingMaxCharge) > 0
+      ? Number(input.pickupWaitingMaxCharge)
+      : null;
+  const rateFields =
+    perMin > 0
+      ? { ridePickupWaitingChargePerMin: perMin, ridePickupWaitingMaxCharge: maxCharge }
+      : {};
 
   if (!startedAt || verifiedAt) {
     if (startedAt && verifiedAt && input.pickupWaitSeconds != null) {
@@ -210,6 +300,7 @@ export function attachRidePickupWaitFields<T extends Record<string, unknown>>(
         pickupWaitFinalized: true,
         pickupTimerBudgetSeconds: freeBudgetSeconds,
         ridePickupWaitFreeMinutes: freeMinutes,
+        ...rateFields,
       };
     }
     return summary;
@@ -222,5 +313,6 @@ export function attachRidePickupWaitFields<T extends Record<string, unknown>>(
     pickupWaitFinalized: false,
     pickupTimerBudgetSeconds: freeBudgetSeconds,
     ridePickupWaitFreeMinutes: freeMinutes,
+    ...rateFields,
   };
 }

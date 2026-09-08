@@ -66,6 +66,8 @@ const OrderSummarySchema = z.object({
   pickupTimerBudgetSeconds: z.number().nullable().optional(),
   pickupDurationSeconds: z.number().nullable().optional(),
   ridePickupWaitFreeMinutes: z.number().nullable().optional(),
+  ridePickupWaitingChargePerMin: z.number().nullable().optional(),
+  ridePickupWaitingMaxCharge: z.number().nullable().optional(),
   prepReadyByAt: z.string().nullable().optional(),
   acceptedAt: z.string().nullable().optional(),
   preparingAt: z.string().nullable().optional(),

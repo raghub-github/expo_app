@@ -1,6 +1,7 @@
 import type { RideVehiclePricingType } from "../rider-payout-pricing/types.js";
 import { pricingVehicleMatchesScope } from "./catalogVehicleMap.js";
 import type { StateSurgeConfigRow, StateSurgeTimeSlotRow } from "./rideStateConfig.repository.js";
+import { istClock } from "../../lib/dynamic-pricing.js";
 
 function parseTimeToMinutes(value: string): number {
   const [h, m] = value.split(":").map((x) => Number(x));
@@ -9,8 +10,12 @@ function parseTimeToMinutes(value: string): number {
 
 function isTimeInSlot(now: Date, slot: StateSurgeTimeSlotRow): boolean {
   if (!slot.isEnabled) return false;
-  if (!slot.daysOfWeek.includes(now.getDay())) return false;
-  const nowMin = now.getHours() * 60 + now.getMinutes();
+  // Evaluate the slot window in IST (Asia/Kolkata) so the day-of-week and start/end times
+  // match what the admin sets in the dashboard, regardless of the server's own timezone.
+  // Mirrors the dynamic-pricing engine (istClock); server-local getDay()/getHours() would
+  // fire the window at the wrong wall-clock time on a UTC host.
+  const { minutes: nowMin, dow } = istClock(now);
+  if (!slot.daysOfWeek.includes(dow)) return false;
   const start = parseTimeToMinutes(slot.startTime);
   const end = parseTimeToMinutes(slot.endTime);
   if (start === end) return false;
@@ -58,27 +63,15 @@ export function resolveStateSurges(args: {
 } {
   const now = args.now ?? new Date();
   const forceIds = args.forceActiveSurgeIds ? new Set(args.forceActiveSurgeIds) : undefined;
-  const extrasBlocked = args.surgeWaitMaxOnly && !args.riderHasGmitraMax;
 
-  if (extrasBlocked) {
-    return {
-      appliedSurges: [],
-      surgeTotal: 0,
-      customerShareTotal: 0,
-      companyShareTotal: 0,
-      surgeCapped: false,
-      activeSurgesRequireMaxOnly: true,
-    };
-  }
-
-  const applied: AppliedStateSurge[] = [];
+  // Highest-priority first so amount ties resolve to the higher-priority (then lower-id) surge.
   const sorted = [...args.configs].sort((a, b) => b.priority - a.priority || a.id - b.id);
 
   const serviceKey =
     args.service === "person_ride" ? "ride" : args.service ?? null;
 
   let activeSurgeCount = 0;
-  let riderEligibleActiveSurgeCount = 0;
+  const eligible: { cfg: StateSurgeConfigRow; appliedAmount: number }[] = [];
 
   for (const cfg of sorted) {
     if (!cfg.enabled) continue;
@@ -107,21 +100,51 @@ export function resolveStateSurges(args: {
     if (!active) continue;
 
     activeSurgeCount += 1;
-    if (!cfg.maxRidersOnly || args.riderHasGmitraMax) {
-      riderEligibleActiveSurgeCount += 1;
-    }
 
+    // Eligibility is decided SOLELY by the per-surge "GMitra Max riders only" checkbox:
+    //   checked   -> only riders with an active GatiMitra Max subscription qualify;
+    //   unchecked -> every rider qualifies (Max and non-Max alike).
+    // (The legacy global surge_wait_max_only switch no longer blocks surges — it only gates
+    // waiting minutes upstream — so the checkbox is the single source of truth for surge.)
     if (cfg.maxRidersOnly && !args.riderHasGmitraMax) continue;
 
     const appliedAmount =
       cfg.surgeType === "percentage"
         ? round2(Math.max(0, args.baseFareForPct) * (cfg.amount / 100))
         : round2(Math.max(0, cfg.amount));
-
     if (appliedAmount <= 0) continue;
-    // Phase 3 — split each surge's amount by its configured funding mode. If
-    // the row predates migration 0465, mapSurge collapses to CUSTOMER_100 so
-    // customerShareAmount === appliedAmount.
+
+    eligible.push({ cfg, appliedAmount });
+  }
+
+  // ONE surge per order: when several surges are active AND the rider is eligible for more than
+  // one, only the single highest-amount surge applies. Ties break toward the higher-priority
+  // (then lower-id) surge because `eligible` is built in that order and the winner is replaced
+  // only on a strictly-greater amount.
+  let winner: { cfg: StateSurgeConfigRow; appliedAmount: number } | null = null;
+  for (const cand of eligible) {
+    if (!winner || cand.appliedAmount > winner.appliedAmount) winner = cand;
+  }
+
+  const applied: AppliedStateSurge[] = [];
+  let surgeTotal = 0;
+  let customerShareTotal = 0;
+  let companyShareTotal = 0;
+  let surgeCapped = false;
+
+  if (winner) {
+    const cfg = winner.cfg;
+    let appliedAmount = winner.appliedAmount;
+
+    // Per-order cap: with a single surge the cap is simply a ceiling on that surge's amount.
+    const cap = args.maxTotalSurgeAmount;
+    if (cap != null && cap >= 0 && appliedAmount > cap) {
+      appliedAmount = round2(cap);
+      surgeCapped = true;
+    }
+
+    // Split the (possibly capped) amount by the surge's funding mode. Rows predating the
+    // funding migration collapse to CUSTOMER_100 so customerShareAmount === appliedAmount.
     const customerPct =
       cfg.fundingMode === "CUSTOMER_100"
         ? 100
@@ -130,6 +153,7 @@ export function resolveStateSurges(args: {
           : Math.max(0, Math.min(100, cfg.customerSharePct));
     const customerShareAmount = round2((appliedAmount * customerPct) / 100);
     const companyShareAmount = round2(appliedAmount - customerShareAmount);
+
     applied.push({
       surgeId: cfg.id,
       name: cfg.name,
@@ -140,25 +164,9 @@ export function resolveStateSurges(args: {
       customerShareAmount,
       companyShareAmount,
     });
-  }
-
-  let surgeTotal = round2(applied.reduce((s, x) => s + x.appliedAmount, 0));
-  let customerShareTotal = round2(
-    applied.reduce((s, x) => s + x.customerShareAmount, 0)
-  );
-  let companyShareTotal = round2(
-    applied.reduce((s, x) => s + x.companyShareAmount, 0)
-  );
-  let surgeCapped = false;
-  const cap = args.maxTotalSurgeAmount;
-  if (cap != null && cap >= 0 && surgeTotal > cap) {
-    // Cap applies to the total. Scale customer/company shares proportionally
-    // so their sum still equals the capped total.
-    const scale = surgeTotal > 0 ? cap / surgeTotal : 0;
-    surgeTotal = round2(cap);
-    customerShareTotal = round2(customerShareTotal * scale);
-    companyShareTotal = round2(surgeTotal - customerShareTotal);
-    surgeCapped = true;
+    surgeTotal = appliedAmount;
+    customerShareTotal = customerShareAmount;
+    companyShareTotal = companyShareAmount;
   }
 
   return {
@@ -167,7 +175,6 @@ export function resolveStateSurges(args: {
     customerShareTotal,
     companyShareTotal,
     surgeCapped,
-    activeSurgesRequireMaxOnly:
-      activeSurgeCount > 0 && riderEligibleActiveSurgeCount === 0,
+    activeSurgesRequireMaxOnly: activeSurgeCount > 0 && eligible.length === 0,
   };
 }

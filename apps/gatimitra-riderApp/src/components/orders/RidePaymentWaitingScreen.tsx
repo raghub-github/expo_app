@@ -410,7 +410,6 @@ export function RidePaymentWaitingScreen() {
     if (Number.isFinite(fromOrder) && fromOrder >= 0) return Math.round(fromOrder * 100) / 100;
     return 0;
   }, [order]);
-  const companyKeeps = Math.max(0, customerPays - riderReceives);
   const fareAmount = customerPays;
   const collectPaymentRequired = customerPays > 0.005 && order?.paymentRequired !== false;
   const completedAt = order?.createdAt ?? null;
@@ -577,34 +576,9 @@ export function RidePaymentWaitingScreen() {
             </View>
           </View>
 
-          <View style={styles.breakdownCard}>
-            <AppText style={styles.breakdownTitle} bold>
-              {t("orders.ridePaymentWait.settlementTitle", "Settlement summary")}
-            </AppText>
-            <View style={styles.feeRow}>
-              <AppText style={styles.feeRowLabel}>
-                {t("orders.ridePaymentWait.customerPays", "Customer Pays")}
-              </AppText>
-              <AppText style={styles.feeRowValue} bold>{formatFare(customerPays)}</AppText>
-            </View>
-            <View style={styles.feeRow}>
-              <AppText style={styles.feeRowLabel}>
-                {t("orders.ridePaymentWait.riderReceives", "Rider Receives")}
-              </AppText>
-              <AppText style={[styles.feeRowValue, styles.feeRowValueMint]} bold>
-                {formatFare(riderReceives)}
-              </AppText>
-            </View>
-            <View style={[styles.feeRow, styles.feeRowTotal]}>
-              <AppText style={[styles.feeRowLabel, styles.feeRowLabelTotal]} bold>
-                {t("orders.ridePaymentWait.companyKeeps", "Company Keeps")}
-              </AppText>
-              <AppText style={[styles.feeRowValue, styles.feeRowValueTotal]} bold>
-                {formatFare(companyKeeps)}
-              </AppText>
-            </View>
-          </View>
-
+          {/* Rider EARNINGS breakdown only — no customer-vs-rider or company-keeps comparison
+              (that was confusing: the distance-based payout can exceed a low customer fare, so
+              "Company Keeps ₹0" looked wrong). The rider sees only what they earn. */}
           <View style={styles.breakdownCard}>
             <AppText style={styles.breakdownTitle} bold>
               {t("orders.ridePaymentWait.breakdownTitle", "Earnings breakdown")}
@@ -650,9 +624,9 @@ export function RidePaymentWaitingScreen() {
                   {isCashRide
                     ? t(
                         "orders.ridePaymentWait.cashSub",
-                        "Company share (≈ {{company}}) will be deducted from your wallet; you keep {{rider}}.",
+                        "Collect {{amount}} in cash. Your wallet is adjusted so you keep {{rider}} in total.",
                         {
-                          company: formatFare(companyKeeps),
+                          amount: formatFare(fareAmount),
                           rider: formatFare(riderReceives),
                         }
                       )

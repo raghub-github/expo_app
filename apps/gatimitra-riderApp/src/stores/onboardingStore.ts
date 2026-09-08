@@ -28,6 +28,12 @@ export type OnboardingData = {
   // Step 2: PAN + PAN Photo + Selfie
   panNumber?: string;
   panSkipped?: boolean;
+  /**
+   * Durable "PAN is done" flag — set once the PAN is verified (electronically via Cashfree, or
+   * by uploading a photo). Persisted so re-renders / navigating to the selfie step and back
+   * cannot lose the ephemeral electronic-verify state and bounce the rider back to PAN.
+   */
+  panVerified?: boolean;
   panPhotoUri?: string; // local URI before upload
   panPhotoSignedUrl?: string; // after R2 upload
   selfieUri?: string; // local URI before upload

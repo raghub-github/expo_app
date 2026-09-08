@@ -70,8 +70,12 @@ export function calculatePercentageRiderPayout(args: {
     rule: toRule(args.rule),
   });
 
-  const surgeBlocked = args.surgeWaitMaxOnly === true && args.riderHasGmitraMax !== true;
-  const waitingMinutes = surgeBlocked ? 0 : Math.max(0, args.waitingMinutes ?? 0);
+  // The global surge_wait_max_only flag now gates ONLY waiting minutes for non-Max riders.
+  // Surge eligibility is decided per-surge by the "GMitra Max riders only" checkbox inside
+  // resolveStateSurges, so the surge values passed in are already correctly filtered — we must
+  // not re-block them here (that would override an unchecked "all riders" surge).
+  const waitingBlocked = args.surgeWaitMaxOnly === true && args.riderHasGmitraMax !== true;
+  const waitingMinutes = waitingBlocked ? 0 : Math.max(0, args.waitingMinutes ?? 0);
   const waitingAmount =
     waitingMinutes > 0 && args.rule.waitingChargePerMin
       ? calculateWaitingCharge({
@@ -84,9 +88,9 @@ export function calculatePercentageRiderPayout(args: {
         })
       : 0;
 
-  const appliedSurges = surgeBlocked ? [] : args.appliedSurges ?? [];
-  const surgeTotal = surgeBlocked ? 0 : args.surgeTotal ?? 0;
-  const rawSurgeTotal = surgeBlocked ? 0 : args.rawSurgeTotal ?? 0;
+  const appliedSurges = args.appliedSurges ?? [];
+  const surgeTotal = args.surgeTotal ?? 0;
+  const rawSurgeTotal = args.rawSurgeTotal ?? 0;
 
   const pickupAmount = round2(split.pickupAmount + waitingAmount);
   const dropAmount = round2(split.dropAmount);
