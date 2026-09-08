@@ -55,6 +55,13 @@ export type ResolvedRiderLeg = {
   sourceRefId: string | null;
   /** True when a real rule matched; false when no rule → rawAmount 0 (caller falls back). */
   matched: boolean;
+  /**
+   * True when pre-leg rules ARE configured on the geo chain but the distance is BELOW the
+   * closest node's smallest min_km — i.e. the rider is inside the "no first-mile" radius
+   * (e.g. store within 1 km). The caller must pay 0 for this leg and NOT fall back to the
+   * legacy first-mile allowance. Absent/false = normal (matched, or no rule at all → fallback).
+   */
+  belowConfiguredMinKm?: boolean;
 };
 
 const LOOKUP_LEVELS: (keyof DropGeoRefByLevel)[] = [
@@ -137,9 +144,68 @@ function mapLegRow(row: EffectiveLegRow, leg: RiderLegKind, distanceKm: number):
 }
 
 /**
+ * Smallest `min_km` among the active leg rules at the CLOSEST geo-chain node that has any
+ * rule for (leg, service, vehicle, weight) — ignoring the trip distance. Returns null when no
+ * rule exists anywhere on the chain. Used to detect the "inside the no-first-mile radius" case:
+ * when a rule exists but the distance is below this threshold, the leg pays 0 (no fallback).
+ */
+async function resolveClosestNodeMinKm(args: {
+  leg: RiderLegKind;
+  service: DispatchServiceType;
+  vehicle: LegVehicleType;
+  weight: number | null;
+  level: string;
+  id: string;
+}): Promise<number | null> {
+  const sql = getSql();
+  try {
+    const rows = await sql<{ min_km: number | string }[]>`
+      SELECT c.min_km
+      FROM geo_pricing_chain_steps(${args.level}::geo_pricing_level, ${args.id}::uuid) s
+      JOIN rider_leg_pricing c
+        ON c.geo_level = s.step_level AND c.geo_ref_id = s.step_id
+      WHERE c.leg = ${args.leg}
+        AND c.service_type = ${args.service}::order_type
+        AND c.is_active = true
+        AND (c.vehicle_type IS NULL OR c.vehicle_type = ${args.vehicle}::ride_vehicle_pricing_type)
+        AND (c.weight_min_kg IS NULL OR ${args.weight}::numeric IS NULL OR ${args.weight}::numeric >= c.weight_min_kg)
+        AND (c.weight_max_kg IS NULL OR ${args.weight}::numeric IS NULL OR ${args.weight}::numeric <  c.weight_max_kg)
+        AND (c.effective_from IS NULL OR c.effective_from <= now())
+        AND (c.effective_to   IS NULL OR c.effective_to   >  now())
+      ORDER BY s.step_ord ASC, c.min_km ASC
+      LIMIT 1
+    `;
+    const mk = rows[0]?.min_km;
+    return mk == null ? null : num(mk);
+  } catch {
+    return null;
+  }
+}
+
+/** emptyLeg + the "inside the no-first-mile radius" flag when a rule exists but distance < min_km. */
+async function emptyLegWithMinKmCheck(args: {
+  leg: RiderLegKind;
+  service: DispatchServiceType;
+  vehicle: LegVehicleType;
+  weight: number | null;
+  distanceKm: number;
+  level: string;
+  id: string;
+}): Promise<ResolvedRiderLeg> {
+  const base = emptyLeg(args.leg, args.distanceKm);
+  const minKm = await resolveClosestNodeMinKm(args);
+  if (minKm != null && args.distanceKm < minKm) {
+    return { ...base, belowConfiguredMinKm: true };
+  }
+  return base;
+}
+
+/**
  * Resolve one leg's independent price for a location + distance. Returns a leg with
  * matched=false (rawAmount 0) when no rule is configured on the geo chain — the caller
  * then falls back (post → pool remainder; pre → legacy geo_pre_pickup_compensation).
+ * When a rule EXISTS but the distance is below the configured min_km, `belowConfiguredMinKm`
+ * is set so the caller pays 0 and does NOT fall back.
  */
 export async function resolveRiderLegPricing(args: {
   leg: RiderLegKind;
@@ -174,7 +240,16 @@ export async function resolveRiderLegPricing(args: {
         )
         LIMIT 1
       `;
-      return rows[0] ? mapLegRow(rows[0], leg, distanceKm) : emptyLeg(leg, distanceKm);
+      if (rows[0]) return mapLegRow(rows[0], leg, distanceKm);
+      return emptyLegWithMinKmCheck({
+        leg,
+        service: args.service,
+        vehicle,
+        weight,
+        distanceKm,
+        level: String(args.geoNode.level),
+        id: String(args.geoNode.refId),
+      });
     } catch {
       return emptyLeg(leg, distanceKm);
     }
@@ -232,7 +307,18 @@ export async function resolveRiderLegPricing(args: {
     for (const rows of results) {
       if (rows[0]) return mapLegRow(rows[0], leg, distanceKm);
     }
-    return emptyLeg(leg, distanceKm);
+    // No slab matched at any level. If a rule EXISTS on the chain but the distance is below
+    // its min_km, the rider is inside the no-first-mile radius → 0 (no legacy fallback).
+    const root = targets[0]!;
+    return emptyLegWithMinKmCheck({
+      leg,
+      service: args.service,
+      vehicle,
+      weight,
+      distanceKm,
+      level: String(root.level),
+      id: String(root.id),
+    });
   } catch {
     return emptyLeg(leg, distanceKm);
   }
