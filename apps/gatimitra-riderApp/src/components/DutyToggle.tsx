@@ -152,7 +152,6 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
         <Pressable
           onPress={requestToggle}
           disabled={isPending}
-          delayPressIn={0}
           style={[styles.statusPill, isPending && { opacity: 0.75 }]}
           accessibilityRole="switch"
           accessibilityState={{ checked: isOnDuty, disabled: dutyGoOnBlocked }}
@@ -191,7 +190,6 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
           onPressIn={onPressIn}
           onPressOut={onPressOut}
           disabled={isPending && !displayOn}
-          delayPressIn={0}
           hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
           accessibilityRole="switch"
           accessibilityState={{ checked: displayOn, disabled: dutyGoOnBlocked }}
@@ -246,7 +244,6 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
         <Pressable
           onPress={requestToggle}
           disabled={isPending}
-          delayPressIn={0}
           style={{
             width: 48,
             height: 28,
@@ -281,7 +278,6 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
         <Pressable
           onPress={requestToggle}
           disabled={isPending}
-          delayPressIn={0}
           style={{
             width: 56,
             height: 28,

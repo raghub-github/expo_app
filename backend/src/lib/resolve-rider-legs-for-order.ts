@@ -58,6 +58,49 @@ export type OrderLegResult = {
 
 export type OrderLegs = { pre: OrderLegResult; post: OrderLegResult };
 
+/**
+ * Decide the PRE (first-mile) leg from the resolved rule + the legacy fallback. Pure + exported
+ * for tests. Three cases:
+ *  - rule matched                → pay the rule's amount + funding.
+ *  - rule exists but below min_km → pay 0, NO fallback (rider inside the no-first-mile radius).
+ *  - no rule on the geo chain    → legacy fallback allowance.
+ */
+export function decidePreLegResult(
+  preLeg: {
+    matched: boolean;
+    belowConfiguredMinKm?: boolean;
+    rawAmount: number;
+    funding: PrePickupFunding;
+    ruleId: number | null;
+    ratePerKm: number;
+  } | null,
+  fallbackPre: { amount: number; funding: PrePickupFunding } | null | undefined,
+  pickupKm: number
+): OrderLegResult {
+  if (preLeg && preLeg.matched) {
+    return {
+      amount: preLeg.rawAmount,
+      funding: preLeg.funding,
+      ruleId: preLeg.ruleId,
+      matched: true,
+      distanceKm: pickupKm,
+      ratePerKm: preLeg.ratePerKm,
+    };
+  }
+  if (preLeg && preLeg.belowConfiguredMinKm) {
+    // Rider is inside the no-first-mile radius (rider→pickup < configured min_km) — 0, no fallback.
+    return { amount: 0, funding: "company", ruleId: null, matched: false, distanceKm: pickupKm, ratePerKm: 0 };
+  }
+  return {
+    amount: Math.max(0, fallbackPre?.amount ?? 0),
+    funding: fallbackPre?.funding ?? "company",
+    ruleId: null,
+    matched: false,
+    distanceKm: pickupKm,
+    ratePerKm: 0,
+  };
+}
+
 export async function resolveRiderLegsForOrder(args: {
   serviceType: DispatchServiceType;
   vehicleType?: LegVehicleType;
@@ -89,24 +132,7 @@ export async function resolveRiderLegsForOrder(args: {
     }).catch(() => null),
   ]);
 
-  const pre: OrderLegResult =
-    preLeg && preLeg.matched
-      ? {
-          amount: preLeg.rawAmount,
-          funding: preLeg.funding,
-          ruleId: preLeg.ruleId,
-          matched: true,
-          distanceKm: args.pickupKm,
-          ratePerKm: preLeg.ratePerKm,
-        }
-      : {
-          amount: Math.max(0, args.fallbackPre?.amount ?? 0),
-          funding: args.fallbackPre?.funding ?? "company",
-          ruleId: null,
-          matched: false,
-          distanceKm: args.pickupKm,
-          ratePerKm: 0,
-        };
+  const pre: OrderLegResult = decidePreLegResult(preLeg, args.fallbackPre, args.pickupKm);
 
   const post: OrderLegResult =
     postLeg && postLeg.matched

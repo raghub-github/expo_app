@@ -25,7 +25,6 @@ export function HeaderActionIconGroup({
     <View style={styles.group}>
       <Pressable
         onPress={onLanguagePress}
-        delayPressIn={0}
         style={({ pressed }) => [styles.iconTap, pressed && styles.iconTapPressed]}
         accessibilityLabel={t("topbar.selectLanguage", "Select language")}
         accessibilityRole="button"
@@ -36,7 +35,6 @@ export function HeaderActionIconGroup({
 
       <Pressable
         onPress={onNotificationPress}
-        delayPressIn={0}
         style={({ pressed }) => [styles.iconTap, pressed && styles.iconTapPressed]}
         accessibilityLabel={t("topbar.notifications", "Notifications")}
         accessibilityRole="button"

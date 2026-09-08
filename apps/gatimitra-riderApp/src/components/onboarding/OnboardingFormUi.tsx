@@ -108,12 +108,12 @@ export function HeaderSkipLink({
       importantForAccessibility={hidden ? "no-hide-descendants" : "yes"}
       hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
       style={[
-        styles.headerSkipBtn,
-        inactive && styles.headerSkipBtnDisabled,
-        hidden && styles.headerSkipHidden,
+        onboardingFormStyles.headerSkipBtn,
+        inactive && onboardingFormStyles.headerSkipBtnDisabled,
+        hidden && onboardingFormStyles.headerSkipHidden,
       ]}
     >
-      <Text style={styles.headerSkipText}>{label}</Text>
+      <Text style={onboardingFormStyles.headerSkipText}>{label}</Text>
     </TouchableOpacity>
   );
 }

@@ -13,7 +13,7 @@ import {
   resolveOnboardingBlobForOwner,
   storageKeyForOwner,
   type OnboardingStorageAdapter,
-} from "./onboardingLegacyMigration.ts";
+} from "./onboardingLegacyMigration.js";
 
 function createMemoryStorage(): OnboardingStorageAdapter & { dump: () => Record<string, string> } {
   const map = new Map<string, string>();
