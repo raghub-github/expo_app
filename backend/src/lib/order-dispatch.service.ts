@@ -6,6 +6,7 @@
 import { and, eq } from "drizzle-orm";
 import { cacheDel, cacheGet, cacheSet } from "@gatimitra/redis";
 import { getDb, getSql } from "../db/client.js";
+import { isSelfPickupFulfillment } from "./self-pickup.js";
 import { triggerHotZoneReconcileSoon } from "./hot-zones/hot-zone-reconciler.js";
 import {
   customerRideServiceCatalog,
@@ -60,37 +61,7 @@ function normalizeOrderServiceType(raw: string | null | undefined): DispatchServ
 }
 
 /** Customer collects at store — never start/exhaust rider dispatch for these. */
-function isSelfPickupFulfillment(
-  deliveryType: string | null | undefined,
-  billingSnapshot?: unknown,
-  checkoutMetadata?: unknown
-): boolean {
-  const fromStored = String(deliveryType ?? "").trim().toLowerCase();
-  if (
-    fromStored === "self_pickup" ||
-    fromStored === "takeaway" ||
-    fromStored === "take_away" ||
-    fromStored === "pickup"
-  ) {
-    return true;
-  }
-  const billing =
-    billingSnapshot && typeof billingSnapshot === "object"
-      ? (billingSnapshot as Record<string, unknown>)
-      : null;
-  const billed = String(billing?.deliveryType ?? billing?.delivery_type ?? "")
-    .trim()
-    .toLowerCase();
-  if (billed === "self_pickup" || billing?.isSelfPickup === true) return true;
-  const checkout =
-    checkoutMetadata && typeof checkoutMetadata === "object"
-      ? (checkoutMetadata as Record<string, unknown>)
-      : null;
-  const meta = String(checkout?.deliveryType ?? checkout?.delivery_type ?? "")
-    .trim()
-    .toLowerCase();
-  return meta === "self_pickup" || meta === "takeaway";
-}
+// isSelfPickupFulfillment now lives in ./self-pickup.js (shared with the poll pool query).
 
 export async function isOrderStillDispatchable(orderCoreId: number): Promise<boolean> {
   const db = getDb();
