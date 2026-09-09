@@ -20,6 +20,18 @@ export function SessionRevokedGate() {
 
   useEffect(() => {
     const unsubscribe = onSessionRevoked(async (payload) => {
+      // Drop any offer that arrived just before the session was revoked, so a logged-out /
+      // revoked device never shows an order to accept. (New dispatch already stops: the backend
+      // takes the rider offline when their device session is revoked, and the WS/offer stream is
+      // gated on an authenticated on-duty session.)
+      try {
+        const { useIncomingDispatchOfferStore } = await import(
+          "@/src/stores/incomingDispatchOfferStore"
+        );
+        useIncomingDispatchOfferStore.getState().reset();
+      } catch {
+        /* best-effort */
+      }
       await useOnboardingStore.getState().bindOwner(null);
       await setSession(null);
       const alreadyOnLogin = isLoginPath(pathnameRef.current);

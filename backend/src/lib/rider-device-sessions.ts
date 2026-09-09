@@ -141,6 +141,31 @@ export async function countActiveRiderDeviceSessions(sql: Sql, riderId: number):
   return Number((rows[0] as { c?: number })?.c ?? 0);
 }
 
+/**
+ * Take the rider OFFLINE if they have no active device session left. Call AFTER revoking
+ * sessions (explicit logout, logout-all-including-current, admin force-logout, session revoke).
+ * A device takeover leaves the NEW device's session active, so this correctly leaves the rider
+ * online there; and an app-kill never deactivates a session, so a backgrounded rider stays online
+ * and keeps receiving dispatch. Best-effort — never throws into the revoke flow.
+ */
+export async function setRiderOfflineIfNoActiveSession(sql: Sql, riderId: number): Promise<void> {
+  if (!Number.isFinite(riderId) || riderId <= 0) return;
+  try {
+    const active = await countActiveRiderDeviceSessions(sql, riderId);
+    if (active > 0) return;
+    const { recordRiderDutyOffIfOnline } = await import("./rider-duty-log.service.js");
+    await recordRiderDutyOffIfOnline(riderId, "logout", {
+      metadata: { via: "device_session_revoked" },
+    });
+  } catch (err) {
+    console.warn(
+      "[rider-session] auto-offline after revoke failed",
+      riderId,
+      (err as Error).message
+    );
+  }
+}
+
 export async function revokeRiderDeviceSessionsByIds(
   sql: Sql,
   args: {
