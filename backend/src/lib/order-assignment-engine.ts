@@ -11,6 +11,7 @@
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { incrCounter } from "@gatimitra/logger";
 import { getDb, getSql } from "../db/client.js";
+import { isSelfPickupFulfillment } from "./self-pickup.js";
 import { getEnv } from "../config/env.js";
 import {
   customerRideServiceCatalog,
@@ -1259,6 +1260,9 @@ async function fetchFoodPoolRows(): Promise<DispatchPoolOrderRow[]> {
       dropLat: ordersCore.dropLat,
       dropLon: ordersCore.dropLon,
       createdAt: ordersCore.createdAt,
+      deliveryType: ordersCore.deliveryType,
+      billingSnapshot: ordersCore.billingSnapshot,
+      checkoutMetadata: ordersCore.checkoutMetadata,
     })
     .from(ordersCore)
     .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
@@ -1277,6 +1281,10 @@ async function fetchFoodPoolRows(): Promise<DispatchPoolOrderRow[]> {
 
   return rows
     .filter((r) => r.orderId)
+    // Self-pickup (takeaway) orders are collected by the customer and must never reach a rider —
+    // the push path already excludes them (isOrderStillDispatchable); the idle-rider poll pool
+    // must do the same, otherwise a self-pickup order surfaces in the rider app to accept.
+    .filter((r) => !isSelfPickupFulfillment(r.deliveryType, r.billingSnapshot, r.checkoutMetadata))
     .map((r) => ({
       serviceType: "food" as const,
       orderCoreId: r.orderCoreId,
@@ -1382,6 +1390,28 @@ export async function listDispatchPoolOrdersForRider(
 
   const withinRadius: DispatchPoolOrderRow[] = [];
   const radiusByWave = new Map<string, number>();
+  const { fetchEffectiveDispatchRadiusMeters } = await import("./order-dispatch-settings.js");
+
+  // Each order's CURRENT dispatch wave — so the idle-rider poll uses the SAME radius the push
+  // wave is currently on (a rider outside the current wave's radius must not see the order).
+  // No active session yet ⇒ treat as wave 1 (tightest radius).
+  const waveByOrder = new Map<number, number>();
+  if (candidates.length > 0) {
+    try {
+      const sqlWave = getSql();
+      const waveRows = (await sqlWave`
+        SELECT order_core_id, current_wave
+        FROM order_dispatch_sessions
+        WHERE order_core_id = ANY(${candidates.map((o) => o.orderCoreId)}) AND status = 'active'
+      `) as Array<{ order_core_id: number; current_wave: number }>;
+      for (const w of waveRows) {
+        waveByOrder.set(Number(w.order_core_id), Math.max(1, Number(w.current_wave) || 1));
+      }
+    } catch {
+      /* fall back to wave 1 for all if the session lookup fails */
+    }
+  }
+
   const { isOrderDispatchManualHold } = await import("./order-dispatch-manual-hold.js");
   const { isDispatchOrderBlockedByPrevent } = await import(
     "../modules/prevent-services/preventServices.engine.js"
@@ -1404,21 +1434,21 @@ export async function listDispatchPoolOrdersForRider(
       continue;
     }
 
-    const radiusKey = `${order.serviceType}:pool`;
+    // Use the order's CURRENT wave radius, not the max — polling must obey the same per-wave
+    // distance rule as the push so orders never reach riders beyond the configured radius.
+    const currentWave = waveByOrder.get(order.orderCoreId) ?? 1;
+    const radiusKey = `${order.serviceType}:${currentWave}`;
     let radiusMeters = radiusByWave.get(radiusKey);
     if (radiusMeters == null) {
       try {
-        const { fetchDispatchWaveSettings } = await import("./order-dispatch-settings.js");
-        const waveSettings = await fetchDispatchWaveSettings(order.serviceType);
-        // HTTP pool is the idle-rider fallback. Wave-1 push stays tight; polling
-        // must still surface waiting orders out to the configured max radius.
-        radiusMeters = waveSettings.maxDispatchRadiusMeters;
+        radiusMeters = await fetchEffectiveDispatchRadiusMeters(order.serviceType, currentWave);
         radiusByWave.set(radiusKey, radiusMeters);
       } catch (err) {
         console.warn(
           "[dispatch] pickup radius lookup failed",
           order.serviceType,
           order.orderId,
+          currentWave,
           (err as Error).message
         );
         continue;
