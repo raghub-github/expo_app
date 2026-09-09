@@ -5,6 +5,8 @@ import {
   listRiderDeviceSessions,
   revokeAllRiderDeviceSessions,
   revokeRiderDeviceSessionsByIds,
+  setRiderOfflineIfNoActiveSession,
+  parseRiderIdFromUserId,
   type RiderDeviceSessionRow,
 } from "../../lib/rider-device-sessions.js";
 
@@ -114,6 +116,8 @@ export function registerRiderDeviceSessionRoutes(
         revokedBy: "rider_self",
         revokeReason: "remote_logout",
       });
+      const riderPk = parseRiderIdFromUserId(userId);
+      if (riderPk != null) await setRiderOfflineIfNoActiveSession(sql, riderPk);
       return { ok: true as const, revokedCount };
     },
   );
@@ -147,6 +151,8 @@ export function registerRiderDeviceSessionRoutes(
         revokedBy: "rider_logout_all",
         revokeReason: includeCurrent ? "logout_all_including_current" : "logout_all_other_devices",
       });
+      const riderPk = parseRiderIdFromUserId(userId);
+      if (riderPk != null) await setRiderOfflineIfNoActiveSession(sql, riderPk);
 
       return { ok: true as const, revokedCount };
     },
@@ -166,20 +172,24 @@ export async function adminRevokeRiderDeviceSessions(args: {
   const revokeReason = args.reason?.trim() || "admin_force_logout";
 
   if (args.revokeAll) {
-    return revokeAllRiderDeviceSessions(sql, {
+    const n = await revokeAllRiderDeviceSessions(sql, {
       userId,
       revokedBy,
       revokeReason,
     });
+    await setRiderOfflineIfNoActiveSession(sql, args.riderId);
+    return n;
   }
 
   const sessionIds = (args.sessionIds ?? []).filter((id) => Number.isFinite(id) && id > 0);
   if (sessionIds.length === 0) return 0;
 
-  return revokeRiderDeviceSessionsByIds(sql, {
+  const revokedByIds = await revokeRiderDeviceSessionsByIds(sql, {
     userId,
     sessionIds,
     revokedBy,
     revokeReason,
   });
+  await setRiderOfflineIfNoActiveSession(sql, args.riderId);
+  return revokedByIds;
 }
