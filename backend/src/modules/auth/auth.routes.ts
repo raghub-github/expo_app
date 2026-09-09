@@ -41,6 +41,7 @@ import {
   verifyRiderTakeoverToken,
 } from "../../lib/rider-takeover-token.js";
 import { performRiderDeviceTakeover } from "../../lib/rider-session-takeover.js";
+import { MERCHANT_SESSION_TTL_SEC, RIDER_SESSION_TTL_SEC } from "./session-ttl.js";
 import { markDeviceSessionActive } from "../../lib/device-session-cache.js";
 import { resolveRiderLoginGeoForSession, type RiderLoginGeo } from "../../lib/login-geo.js";
 import {
@@ -150,8 +151,6 @@ function riderLoginLocation(req: { headers: Record<string, unknown> }): string |
 
 const RIDER_REFRESH_CLOCK_TOLERANCE_SEC = 60 * 60 * 24 * 30; // allow refresh up to 30d after JWT exp
 const MERCHANT_REFRESH_CLOCK_TOLERANCE_SEC = 60 * 60 * 24 * 30;
-/** Merchant stays signed in until explicit logout; refresh extends this window. */
-const MERCHANT_SESSION_TTL_SEC = 60 * 60 * 24 * 365;
 
 async function verifyRiderJwtForRefresh(token: string): Promise<{
   sub: string;
@@ -690,7 +689,7 @@ export async function authRoutes(app: FastifyInstance) {
       // In production, derive from DB and map Firebase uid -> userId.
       const userId = `usr_${ulid()}`;
 
-      const expiresInSec = 60 * 60 * 24 * 7; // 7 days — aligned with merchant/rider app session TTL
+      const expiresInSec = RIDER_SESSION_TTL_SEC;
       const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
 
       const accessToken = await issueSupabaseCompatibleJwt({
@@ -1445,7 +1444,7 @@ export async function authRoutes(app: FastifyInstance) {
         });
       }
 
-      const expiresInSec = 60 * 60 * 24 * 7; // 7 days — aligned with merchant app session TTL
+      const expiresInSec = RIDER_SESSION_TTL_SEC;
       const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
 
       const accessToken = await issueSupabaseCompatibleJwt({
@@ -1600,7 +1599,7 @@ export async function authRoutes(app: FastifyInstance) {
         });
       }
 
-      const expiresInSec = 60 * 60 * 24 * 7;
+      const expiresInSec = RIDER_SESSION_TTL_SEC;
       const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
       const jwtToken = await issueSupabaseCompatibleJwt({
         jwtSecret: env.SUPABASE_JWT_SECRET,
@@ -1716,7 +1715,7 @@ export async function authRoutes(app: FastifyInstance) {
         });
       }
 
-      const expiresInSec = 60 * 60 * 24 * 7;
+      const expiresInSec = RIDER_SESSION_TTL_SEC;
       const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
       const accessToken = await issueSupabaseCompatibleJwt({
         jwtSecret: env.SUPABASE_JWT_SECRET,
@@ -1801,7 +1800,7 @@ export async function authRoutes(app: FastifyInstance) {
       `;
 
       const env = getEnv();
-      const expiresInSec = 60 * 60 * 24 * 7;
+      const expiresInSec = RIDER_SESSION_TTL_SEC;
       const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
       const accessToken = await issueSupabaseCompatibleJwt({
         jwtSecret: env.SUPABASE_JWT_SECRET,
@@ -2481,7 +2480,7 @@ export async function authRoutes(app: FastifyInstance) {
           });
         }
 
-        const expiresInSec = 60 * 60 * 24 * 7; // 7 days
+        const expiresInSec = RIDER_SESSION_TTL_SEC;
         const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
 
         const accessToken = await issueSupabaseCompatibleJwt({
