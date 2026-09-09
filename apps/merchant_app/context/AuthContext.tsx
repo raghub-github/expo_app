@@ -104,6 +104,18 @@ async function persistPartner(partner: PartnerData): Promise<void> {
   await SecureStore.setItemAsync(MERCHANT_PARTNER_KEY, JSON.stringify(partner));
 }
 
+/** Last known partner snapshot — used to stay signed in when a cold-start validation can't reach
+ *  the server (offline / timeout / transient 5xx). Never proof of auth on its own. */
+async function readCachedPartner(): Promise<PartnerData | null> {
+  try {
+    const raw = await SecureStore.getItemAsync(MERCHANT_PARTNER_KEY);
+    if (!raw?.trim()) return null;
+    return parsePartnerData(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
 async function persistSupabaseUserId(id: string | null): Promise<void> {
   if (id?.trim()) {
     await SecureStore.setItemAsync(MERCHANT_SUPABASE_USER_ID_KEY, id.trim());
@@ -282,7 +294,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       if (result.reason === "invalid") {
+        // Genuine revocation/expiry the server confirmed — clear and show login.
         await clearAllMerchantAuthArtifacts();
+        if (!cancelled) applyUnauthenticated();
+        return;
+      }
+      // reason === "network": the cold-start check couldn't reach the server (offline / timeout /
+      // transient 5xx). Do NOT bounce a valid, persisted session to login — stay signed in with
+      // the last cached partner and let the AppState-active handler re-validate. Mirrors that
+      // foreground handler, which already tolerates "network". Only fall back to login when there
+      // is no persisted token + cached partner to trust.
+      const cachedToken = await readMerchantAccessToken();
+      const cachedPartner = await readCachedPartner();
+      if (cancelled) return;
+      if (cachedToken?.trim() && cachedPartner) {
+        const sbId = await getStoredSupabaseUserId();
+        if (cancelled) return;
+        applyAuthenticated({
+          token: cachedToken.trim(),
+          partner: cachedPartner,
+          supabaseUserId: sbId,
+        });
+        return;
       }
       if (!cancelled) applyUnauthenticated();
     })();
