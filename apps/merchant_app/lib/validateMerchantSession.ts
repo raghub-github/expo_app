@@ -113,12 +113,11 @@ export async function validateMerchantSessionFromStore(): Promise<SessionValidat
       };
     }
 
-    if (res.status >= 500) {
-      return { ok: false, reason: "network" };
-    }
-
-    await clearAllMerchantAuthArtifacts();
-    return { ok: false, reason: "invalid" };
+    // The token was ACCEPTED (not 401) but we couldn't read a partner — a transient 5xx, an
+    // unexpected body shape, or a slow gateway. Auth did NOT fail, so never log the merchant out
+    // here: return "network" so the caller keeps the persisted session and re-validates later.
+    // Only a confirmed 401 (above) or an expired token whose refresh failed clears the session.
+    return { ok: false, reason: "network" };
   } catch {
     return { ok: false, reason: "network" };
   }
