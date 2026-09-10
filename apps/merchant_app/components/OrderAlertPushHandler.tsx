@@ -81,11 +81,14 @@ export default function OrderAlertPushHandler() {
           if (!isMerchantNewOrderPushData(data)) continue;
           const orderId = extractNewOrderIdFromPush(data);
           await dismissNativeNewOrderAlerts(orderId);
+          // n.date is typed as `number` by the installed expo-notifications types, but tolerate a
+          // Date at runtime; widen to unknown so both branches stay valid regardless of typings.
+          const rawDate: unknown = n.date;
           const date =
-            typeof n.date === "number"
-              ? n.date
-              : n.date instanceof Date
-                ? n.date.getTime()
+            typeof rawDate === "number"
+              ? rawDate
+              : rawDate instanceof Date
+                ? rawDate.getTime()
                 : null;
           await playFromPushData(data, date, source);
         }
