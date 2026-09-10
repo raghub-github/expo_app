@@ -233,11 +233,14 @@ export function createPushPermissionController(
       }
 
       const expoToken = await getFreshExpoPushToken({ requestIfNeeded: false });
-      // FCM token can lag right after permission grant — retry once before giving up.
+      // FCM token can lag right after permission grant — retry a few times before giving up.
       let native = await getFreshNativePushToken();
       if (!native?.token && !isExpoGoRuntime()) {
-        await sleep(1200);
-        native = await getFreshNativePushToken();
+        for (const waitMs of [800, 1600, 3200]) {
+          await sleep(waitMs);
+          native = await getFreshNativePushToken();
+          if (native?.token) break;
+        }
       }
 
       if (!expoToken && !native?.token) {

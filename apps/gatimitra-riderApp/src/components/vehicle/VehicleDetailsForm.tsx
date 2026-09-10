@@ -105,6 +105,7 @@ export function VehicleDetailsForm({
   const storeVehicleChoice = useOnboardingStore((s) => s.data.vehicleChoice);
   const storeVehicleCategoryCode = useOnboardingStore((s) => s.data.vehicleCategoryCode);
   const storeRcNumber = useOnboardingStore((s) => s.data.rcNumber);
+  const storeHasOwnVehicle = useOnboardingStore((s) => s.data.hasOwnVehicle);
   const hydrateOnboarding = useOnboardingStore((s) => s.hydrate);
   const isCompact = isElectronicVehicleForm(formMeta, initial);
   const missingFields = formMeta?.missingFields ?? [];
@@ -167,14 +168,10 @@ export function VehicleDetailsForm({
   };
 
   const showStep2Field = (field: RiderVehicleMissingField) => {
-    if (
-      field === "service_types" ||
-      field === "ownership_type" ||
-      field === "is_commercial"
-    ) {
-      return true;
-    }
     if (!isCompact) return true;
+    // RC never captures these — always collect them on the Cashfree sheet.
+    if (field === "service_types" || field === "ownership_type") return true;
+    if (field === "is_commercial" && isCommercial == null) return true;
     return missingSet.has(field);
   };
 
@@ -210,6 +207,13 @@ export function VehicleDetailsForm({
     if (initial.year != null) {
       lines.push(`${t("vehicle.form.year", "Year")}: ${initial.year}`);
     }
+    lines.push(
+      `${t("vehicle.form.commercialStatus", "Commercial")}: ${
+        initial.isCommercial
+          ? t("common.yes", "Yes")
+          : t("common.no", "No")
+      }`,
+    );
     return lines;
   }, [isCompact, initial, t]);
 
@@ -411,8 +415,6 @@ export function VehicleDetailsForm({
 
   const eligibility = eligibilityPreviewQuery.data ?? null;
   const eligibilityKnown = Boolean(eligibility?.services);
-  /** Hard-gate selection only when the backend actually enforces eligibility (else advisory). */
-  const eligibilityEnforced = eligibility?.enforced ?? false;
   const serviceEligibility = useMemo(() => {
     const map: Record<string, { eligible: boolean; reason: string | null }> = {};
     for (const v of RIDER_SERVICE_TYPE_VALUES) {
@@ -446,40 +448,71 @@ export function VehicleDetailsForm({
 
   useEffect(() => {
     const assigned = filterServicesByVehicleAssignments(
-      normalizeSelectedServiceTypes(selectedServices),
+      [...RIDER_SERVICE_TYPE_VALUES],
       vehicleType,
       assignmentsQuery.data?.byMapsToVehicleType,
       vehicleCategoryCode,
-      assignmentsQuery.data?.byCategory ?? {}
+      assignmentsQuery.data?.byCategory ?? {},
     );
     if (assigned.length === 0) return;
+
     setSelectedServices((prev) => {
-      const current = normalizeSelectedServiceTypes(prev);
-      if (current.sort().join(",") === [...assigned].sort().join(",")) return prev;
-      return assigned.length === RIDER_SERVICE_TYPE_VALUES.length
-        ? ["all", ...RIDER_SERVICE_TYPE_VALUES]
+      // Prefer backend eligibility once known — auto-select only eligible services.
+      const pool = eligibilityKnown
+        ? assigned.filter((s) => serviceEligibility[s]?.eligible !== false)
         : assigned;
+      if (pool.length === 0) {
+        const normalized = normalizeSelectedServiceTypes(prev).filter((s) =>
+          assigned.includes(s),
+        );
+        if (normalized.length === normalizeSelectedServiceTypes(prev).length) return prev;
+        return normalized;
+      }
+      const next =
+        pool.length === RIDER_SERVICE_TYPE_VALUES.length
+          ? ["all", ...RIDER_SERVICE_TYPE_VALUES]
+          : [...pool];
+      const prevKey = normalizeSelectedServiceTypes(prev).slice().sort().join(",");
+      const nextKey = normalizeSelectedServiceTypes(next).slice().sort().join(",");
+      return prevKey === nextKey ? prev : next;
     });
   }, [
     vehicleType,
     vehicleCategoryCode,
     assignmentsQuery.data?.byCategory,
     assignmentsQuery.data?.byMapsToVehicleType,
+    eligibilityKnown,
+    serviceEligibility,
   ]);
 
-  // When eligibility is ENFORCED, a service the vehicle/documents don't qualify for can never
-  // be selected — drop any such service from the current selection so the rider can't save it.
+  // Drop ineligible picks whenever eligibility updates (shadow + enforce).
   useEffect(() => {
-    if (!eligibilityKnown || !eligibilityEnforced) return;
+    if (!eligibilityKnown) return;
     setSelectedServices((prev) => {
       const normalized = normalizeSelectedServiceTypes(prev);
       const kept = normalized.filter((s) => serviceEligibility[s]?.eligible !== false);
-      if (kept.length === normalized.length) return prev;
+      if (kept.length === normalized.length && kept.length > 0) return prev;
+      if (kept.length === 0) {
+        const eligible = RIDER_SERVICE_TYPE_VALUES.filter(
+          (s) => serviceEligibility[s]?.eligible !== false,
+        );
+        if (eligible.length === 0) return prev;
+        return eligible.length === RIDER_SERVICE_TYPE_VALUES.length
+          ? ["all", ...RIDER_SERVICE_TYPE_VALUES]
+          : [...eligible];
+      }
       return kept.length === RIDER_SERVICE_TYPE_VALUES.length
         ? ["all", ...RIDER_SERVICE_TYPE_VALUES]
         : kept;
     });
-  }, [eligibilityKnown, eligibilityEnforced, serviceEligibility]);
+  }, [eligibilityKnown, serviceEligibility]);
+
+  // Compact Cashfree RC sheet: prefill ownership from onboarding intent when missing.
+  useEffect(() => {
+    if (!isCompact || ownershipType) return;
+    if (storeHasOwnVehicle === false) setOwnershipType("rental");
+    else if (storeHasOwnVehicle === true) setOwnershipType("ownership");
+  }, [isCompact, ownershipType, storeHasOwnVehicle, initial?.id]);
 
   const canSubmitStep2 = useMemo(() => {
     if (normalizedServices.length < 1) return false;
@@ -614,11 +647,8 @@ export function VehicleDetailsForm({
   const displayError = errorMessage ?? localError;
 
   const fieldsMaxHeight = Math.max(
-    160,
-    Math.round(winH * 0.92) -
-      systemBottom -
-      (keyboardHeight > 0 ? Math.min(keyboardHeight, Math.round(winH * 0.35)) : 0) -
-      250,
+    140,
+    Math.round(winH * (isCompact ? 0.42 : 0.48)),
   );
 
   const plainTextProps = {
@@ -671,13 +701,171 @@ export function VehicleDetailsForm({
 
       <ScrollView
         ref={scrollRef}
-        showsVerticalScrollIndicator={false}
+        showsVerticalScrollIndicator
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         nestedScrollEnabled
         style={{ maxHeight: fieldsMaxHeight }}
         contentContainerStyle={[styles.scroll, styles.scrollContent]}
       >
+        {compactSingleStep && showStep2Section ? (
+          <Text style={styles.remainingNeededLabel}>
+            {t(
+              "vehicle.form.remainingNeeded",
+              "Fill details not captured from RC",
+            )}
+          </Text>
+        ) : null}
+
+        {showStep2Section && compactSingleStep ? (
+          <>
+            {showStep2Field("service_types") ? (
+              <>
+            <Text style={styles.fieldLabel}>
+              {t("vehicle.form.serviceTypes", "Services you will deliver")}
+              <Text style={styles.required}> *</Text>
+            </Text>
+            <Pressable
+              onPress={() => setServicePickerOpen(true)}
+              style={styles.dropdownTrigger}
+            >
+              <Ionicons name="layers-outline" size={18} color="#94A3B8" />
+              <Text
+                style={[
+                  styles.dropdownText,
+                  normalizedServices.length === 0 && styles.dropdownPlaceholder,
+                ]}
+                numberOfLines={2}
+              >
+                {serviceSummary}
+              </Text>
+              <Ionicons name="chevron-down" size={18} color="#64748B" />
+            </Pressable>
+              </>
+            ) : null}
+
+            {showStep2Field("is_commercial") ? (
+              <>
+            <Text style={styles.fieldLabel}>
+              {t("vehicle.form.isCommercial", "Commercial vehicle?")}
+              <Text style={styles.required}> *</Text>
+            </Text>
+            <View style={styles.chipRow}>
+              <Pressable
+                onPress={() => setIsCommercial(false)}
+                style={[styles.fuelChip, isCommercial === false && styles.fuelChipSelected]}
+              >
+                <Text
+                  style={[styles.fuelChipText, isCommercial === false && styles.fuelChipTextSelected]}
+                >
+                  {t("common.no", "No")}
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setIsCommercial(true)}
+                style={[styles.fuelChip, isCommercial === true && styles.fuelChipSelected]}
+              >
+                <Text
+                  style={[styles.fuelChipText, isCommercial === true && styles.fuelChipTextSelected]}
+                >
+                  {t("common.yes", "Yes")}
+                </Text>
+              </Pressable>
+            </View>
+              </>
+            ) : null}
+
+            {showStep2Field("ownership_type") ? (
+              <>
+            <Text style={styles.fieldLabel}>
+              {t("vehicle.form.ownership", "Ownership")}
+              <Text style={styles.required}> *</Text>
+            </Text>
+            <View style={styles.chipRow}>
+              {OWNERSHIP_TYPE_OPTIONS.map((opt) => {
+                const selected = ownershipType === opt.value;
+                return (
+                  <Pressable
+                    key={opt.value}
+                    onPress={() => setOwnershipType(opt.value)}
+                    style={[styles.fuelChip, selected && styles.fuelChipSelected]}
+                  >
+                    <Text
+                      style={[styles.fuelChipText, selected && styles.fuelChipTextSelected]}
+                    >
+                      {opt.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+              </>
+            ) : null}
+
+            {showPersonRideFields ? (
+              <View style={styles.row}>
+                <View style={[styles.fieldGroup, styles.half]}>
+                  <Text style={styles.fieldLabel}>
+                    {t("vehicle.form.seatingCapacity", "Seating capacity")}
+                  </Text>
+                  <Pressable
+                    onPress={() => setSeatingPickerOpen(true)}
+                    style={styles.dropdownTrigger}
+                  >
+                    <Ionicons name="people-outline" size={18} color="#94A3B8" />
+                    <Text
+                      style={[
+                        styles.dropdownText,
+                        seatingCapacity.trim()
+                          ? styles.seatingValueText
+                          : styles.dropdownPlaceholder,
+                      ]}
+                    >
+                      {seatingCapacity.trim()
+                        ? seatingCapacity.trim()
+                        : t("vehicle.form.seatingPh", "Select 1–10")}
+                    </Text>
+                    <Ionicons name="chevron-down" size={18} color="#64748B" />
+                  </Pressable>
+                </View>
+                <View style={[styles.fieldGroup, styles.half]}>
+                  <Text style={[styles.fieldLabel, acTypeDisabled && styles.fieldLabelDisabled]}>
+                    {t("vehicle.form.acType", "AC type")}
+                  </Text>
+                  <View style={styles.acChipRow}>
+                    {AC_TYPE_OPTIONS.map((opt) => {
+                      const selected = !acTypeDisabled && acType === opt.value;
+                      return (
+                        <Pressable
+                          key={opt.value}
+                          disabled={acTypeDisabled}
+                          onPress={() => setAcType(selected ? null : opt.value)}
+                          style={[
+                            styles.fuelChip,
+                            styles.acChipFlex,
+                            selected && styles.fuelChipSelected,
+                            acTypeDisabled && styles.fuelChipDisabled,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.fuelChipText,
+                              selected && styles.fuelChipTextSelected,
+                              acTypeDisabled && styles.fuelChipTextDisabled,
+                            ]}
+                          >
+                            {opt.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              </View>
+            ) : null}
+          </>
+        ) : null}
+
         {compactSingleStep && verifiedSummaryLines.length > 0 ? (
           <View style={styles.verifiedSummary}>
             <View style={styles.verifiedSummaryHeader}>
@@ -931,7 +1119,7 @@ export function VehicleDetailsForm({
           </>
         ) : null}
 
-        {showStep2Section ? (
+        {showStep2Section && !compactSingleStep ? (
           <>
             {showStep2Field("service_types") ? (
               <>
@@ -1172,7 +1360,8 @@ export function VehicleDetailsForm({
             {serviceOptionsWithEligibility.map((opt) => {
               const checked = isServiceOptionSelected(selectedServices, opt.value);
               const blocked = opt.eligible === false;
-              const hardBlocked = blocked && eligibilityEnforced;
+              // Ineligible services stay inactive (not toggable), even in shadow mode.
+              const hardBlocked = blocked;
               return (
                 <Pressable
                   key={opt.value}
@@ -1273,6 +1462,13 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontFamily: LORA_BOLD,
     color: "#64748B",
+  },
+  remainingNeededLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    fontFamily: LORA_BOLD,
+    color: "#0F172A",
+    marginBottom: 4,
   },
   stepDots: {
     flexDirection: "row",
@@ -1497,6 +1693,7 @@ const styles = StyleSheet.create({
     borderColor: colors.primary[100],
     padding: 12,
     gap: 4,
+    marginTop: 12,
   },
   verifiedSummaryHeader: {
     flexDirection: "row",

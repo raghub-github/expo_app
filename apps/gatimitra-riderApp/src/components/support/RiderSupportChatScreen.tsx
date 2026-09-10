@@ -12,7 +12,7 @@ import {
   TouchableOpacity,
   KeyboardAvoidingView,
 } from "react-native";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useTranslation } from "react-i18next";
@@ -32,9 +32,10 @@ import {
 import { extractApiErrorMessage } from "@/src/services/http";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { colors } from "@/src/theme";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 const BRAND = colors.primary[600];
-const H_PAD = 16;
 /** Space for pinned submit bar + safe area so form fields stay scrollable above it. */
 const FOOTER_SCROLL_PAD = 96;
 
@@ -64,7 +65,9 @@ export function RiderSupportChatScreen() {
   const hasSession = useSessionStore((s) => !!s.session?.accessToken);
   const formRef = useRef<RaiseTicketSubmitFormHandle>(null);
   const scrollRef = useRef<ScrollView>(null);
-  const insets = useSafeAreaInsets();
+  const { rs, insets } = useResponsiveLayout();
+  const hPad = rs(16);
+  const footerBottomPad = Math.max(insets.bottom, rs(12));
   const params = useLocalSearchParams<{
     ticket_title_id?: string;
     issue_title?: string;
@@ -73,6 +76,7 @@ export function RiderSupportChatScreen() {
     order_id?: string;
     formatted_order_id?: string;
     prelogin?: string;
+    prefill_description?: string;
   }>();
 
   const ticketTitleId = paramInt(params.ticket_title_id);
@@ -82,6 +86,7 @@ export function RiderSupportChatScreen() {
   const orderId = paramInt(params.order_id);
   const orderLabel = paramString(params.formatted_order_id);
   const isPreLogin = isPreLoginParam(params.prelogin) || !hasSession;
+  const prefillDescription = paramString(params.prefill_description) ?? "";
 
   const [canSubmit, setCanSubmit] = useState(false);
   const [photoPreview, setPhotoPreview] = useState<PhotoPreviewState>({ uri: null, slot: null });
@@ -189,7 +194,6 @@ export function RiderSupportChatScreen() {
   };
 
   const sending = createMutation.isPending;
-  const footerBottomPad = Math.max(insets.bottom, 12);
 
   const openTicketChat = () => {
     if (!ticket) return;
@@ -209,23 +213,23 @@ export function RiderSupportChatScreen() {
 
   return (
     <SafeAreaView style={styles.flex} edges={["top", "left", "right"]}>
-      <View style={styles.header}>
+      <View style={[rowLayout.row, styles.header, { paddingHorizontal: hPad }]}>
         <Pressable
           onPress={() => router.back()}
-          style={({ pressed }) => [styles.backBtn, pressed && styles.backBtnPressed]}
+          style={({ pressed }) => [styles.backBtn, rowLayout.noShrink, pressed && styles.backBtnPressed]}
           accessibilityLabel={t("common.back", "Back")}
         >
           <Ionicons name="arrow-back" size={22} color="#0F172A" />
         </Pressable>
-        <Text style={styles.headerTitle} numberOfLines={2}>
+        <Text style={[styles.headerTitle, flexShrinkText]} numberOfLines={2} ellipsizeMode="tail">
           {issueTitle}
         </Text>
       </View>
 
       {showCreatedToast ? (
-        <View style={styles.toast}>
-          <Ionicons name="checkmark-circle" size={18} color="#15803D" />
-          <Text style={styles.toastText}>
+        <View style={[rowLayout.row, styles.toast, { marginHorizontal: hPad }]}>
+          <Ionicons name="checkmark-circle" size={18} color="#15803D" style={rowLayout.noShrink} />
+          <Text style={[styles.toastText, flexShrinkText]} numberOfLines={3}>
             {t(
               "profile.supportChat.createdToast",
               "Ticket created successfully. Our support team will review your request shortly.",
@@ -240,7 +244,7 @@ export function RiderSupportChatScreen() {
             style={styles.successScrollView}
             contentContainerStyle={[
               styles.successScroll,
-              { paddingBottom: 24 + footerBottomPad },
+              { paddingHorizontal: hPad, paddingBottom: 24 + footerBottomPad },
             ]}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
@@ -299,7 +303,7 @@ export function RiderSupportChatScreen() {
             </View>
           </ScrollView>
 
-          <View style={[styles.successActionBar, { paddingBottom: footerBottomPad }]}>
+          <View style={[styles.successActionBar, { paddingBottom: footerBottomPad, paddingHorizontal: hPad }]}>
             {!isPreLogin ? (
               <TouchableOpacity
                 activeOpacity={0.88}
@@ -309,7 +313,7 @@ export function RiderSupportChatScreen() {
                 accessibilityLabel={t("profile.supportChat.trackTicket", "Track ticket")}
               >
                 <Ionicons name="chatbubbles" size={20} color="#0F766E" />
-                <Text style={styles.trackTicketBtnText}>
+                <Text style={[styles.trackTicketBtnText, flexShrinkText]} numberOfLines={1}>
                   {t("profile.supportChat.trackTicket", "Track ticket")}
                 </Text>
               </TouchableOpacity>
@@ -323,7 +327,7 @@ export function RiderSupportChatScreen() {
               accessibilityLabel={t("profile.supportChat.backToSupport", "Back to Support")}
             >
               <Ionicons name="arrow-back" size={20} color="#475569" />
-              <Text style={styles.backToSupportBtnText}>
+              <Text style={[styles.backToSupportBtnText, flexShrinkText]} numberOfLines={1}>
                 {t("profile.supportChat.backToSupport", "Back to Support")}
               </Text>
             </TouchableOpacity>
@@ -347,15 +351,18 @@ export function RiderSupportChatScreen() {
               showsVerticalScrollIndicator
             >
               {linkedOrderText ? (
-                <View style={styles.orderChip}>
+                <View style={[rowLayout.row, styles.orderChip, { marginHorizontal: hPad }]}>
                   <Ionicons name="receipt-outline" size={14} color={BRAND} />
-                  <Text style={styles.orderChipText}>{linkedOrderText}</Text>
+                  <Text style={styles.orderChipText} numberOfLines={1}>
+                    {linkedOrderText}
+                  </Text>
                 </View>
               ) : null}
               <RaiseTicketSubmitForm
                 ref={formRef}
                 issueTitle={issueTitle}
                 isPreLogin={isPreLogin}
+                initialDescription={prefillDescription}
                 onCanSubmitChange={setCanSubmit}
                 onSubmit={onFormSubmit}
                 onPhotoPreviewChange={setPhotoPreview}
@@ -367,7 +374,7 @@ export function RiderSupportChatScreen() {
               />
             </ScrollView>
 
-            <View style={[styles.footerBar, { paddingBottom: footerBottomPad }]}>
+            <View style={[styles.footerBar, { paddingBottom: footerBottomPad, paddingHorizontal: hPad }]}>
               <RaiseTicketSubmitFooter
                 canSubmit={canSubmit}
                 submitting={sending}
@@ -392,14 +399,12 @@ export function RiderSupportChatScreen() {
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: "#FFFFFF" },
   header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: H_PAD,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E2E8F0",
     backgroundColor: "#FFFFFF",
     gap: 12,
+    maxWidth: "100%",
   },
   backBtn: {
     width: 40,
@@ -412,22 +417,21 @@ const styles = StyleSheet.create({
   backBtnPressed: { opacity: 0.8 },
   headerTitle: {
     flex: 1,
+    minWidth: 0,
     fontSize: 17,
     fontWeight: "700",
     color: "#0F172A",
   },
   toast: {
-    marginHorizontal: H_PAD,
     marginTop: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,
     backgroundColor: "#DCFCE7",
-    flexDirection: "row",
-    alignItems: "center",
     gap: 6,
+    maxWidth: "100%",
   },
-  toastText: { flex: 1, fontSize: 12, color: "#0F172A", lineHeight: 16 },
+  toastText: { flex: 1, minWidth: 0, fontSize: 12, color: "#0F172A", lineHeight: 16 },
   body: {
     flex: 1,
     minHeight: 0,
@@ -441,22 +445,19 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   orderChip: {
-    flexDirection: "row",
-    alignItems: "center",
     gap: 6,
     alignSelf: "flex-start",
-    marginHorizontal: H_PAD,
+    maxWidth: "100%",
     marginTop: 12,
     backgroundColor: colors.primary[100],
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
   },
-  orderChipText: { fontSize: 12, fontWeight: "700", color: BRAND },
+  orderChipText: { fontSize: 12, fontWeight: "700", color: BRAND, flexShrink: 1 },
   footerBar: {
     flexShrink: 0,
     width: "100%",
-    paddingHorizontal: H_PAD,
     paddingTop: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E2E8F0",
@@ -483,7 +484,6 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   successScroll: {
-    padding: H_PAD,
     paddingTop: 8,
     paddingBottom: 8,
   },
@@ -491,7 +491,6 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     width: "100%",
     alignItems: "stretch",
-    paddingHorizontal: H_PAD,
     paddingTop: 16,
     gap: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -507,8 +506,7 @@ const styles = StyleSheet.create({
       android: { elevation: 12 },
       default: {},
     }),
-  },
-  requestCard: {
+  },  requestCard: {
     padding: 16,
     borderRadius: 14,
     backgroundColor: "#F8FAFC",

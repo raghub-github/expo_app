@@ -5,7 +5,6 @@ import {
   Modal,
   Pressable,
   StyleSheet,
-  ScrollView,
   ActivityIndicator,
   TouchableOpacity,
   Platform,
@@ -15,6 +14,9 @@ import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme";
 import { useRiderCancellationReasons } from "@/src/hooks/useRiderCancellationReasons";
 import { useRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 import { RIDER_CANCEL_REASON_FALLBACK } from "@/src/lib/rider-ride-cancel-reasons";
 
 type Props = {
@@ -34,6 +36,8 @@ export function RiderRideCancelReasonSheet({
 }: Props) {
   const { t } = useTranslation();
   const bottomInset = useRiderBottomInset();
+  const { height, isShortHeight, rs } = useResponsiveLayout();
+  const sheetMaxH = Math.round(height * (isShortHeight ? 0.72 : 0.78));
   const isFood = variant === "food";
   // Catalog is prefetched on the nav screen — always render the list (fallback or cache).
   const { data: reasons = RIDER_CANCEL_REASON_FALLBACK } =
@@ -63,8 +67,8 @@ export function RiderRideCancelReasonSheet({
       onPress={() => onSelect(opt.reasonCode, opt.label)}
       style={[styles.row, disabled ? styles.rowDisabled : null]}
     >
-      <View style={styles.rowInner}>
-        <Text style={styles.rowText} numberOfLines={2}>
+      <View style={[rowLayout.row, styles.rowInner]}>
+        <Text style={[styles.rowText, flexShrinkText]} numberOfLines={2}>
           {opt.label}
         </Text>
         <View style={styles.rowChevronWrap}>
@@ -90,35 +94,38 @@ export function RiderRideCancelReasonSheet({
           accessibilityRole="button"
           accessibilityLabel={t("common.close", "Close")}
         />
-        <View style={styles.sheet}>
-          <View style={styles.sheetBody}>
-            <View style={styles.handle} />
-            <Text style={styles.title}>{title}</Text>
-            <View style={styles.warningBox}>
+        <View style={[styles.sheet, { maxHeight: sheetMaxH }]}>
+          <View style={styles.handle} />
+          <ResponsiveSheetBody
+            maxHeight={Math.max(200, sheetMaxH - bottomInset - rs(24))}
+            contentContainerStyle={styles.scrollContent}
+            footerStyle={styles.footerSlot}
+            footer={
+              loading ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator color={colors.primary[600]} />
+                </View>
+              ) : (
+                <Pressable onPress={onClose} style={styles.dismissBtn} disabled={disabled}>
+                  <Text style={styles.dismissText}>{t("common.cancel", "Cancel")}</Text>
+                </Pressable>
+              )
+            }
+          >
+            <Text style={styles.title} numberOfLines={isShortHeight ? 2 : 3}>
+              {title}
+            </Text>
+            <View style={[rowLayout.rowStart, styles.warningBox]}>
               <Ionicons name="warning-outline" size={18} color={colors.error[600]} />
-              <Text style={styles.warningText}>{warning}</Text>
+              <Text
+                style={[styles.warningText, flexShrinkText]}
+                numberOfLines={isShortHeight ? 3 : 5}
+              >
+                {warning}
+              </Text>
             </View>
-
-            <ScrollView
-              style={styles.list}
-              contentContainerStyle={styles.listContent}
-              showsVerticalScrollIndicator={false}
-              bounces={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              {reasonRows}
-            </ScrollView>
-
-            {loading ? (
-              <View style={styles.loadingRow}>
-                <ActivityIndicator color={colors.primary[600]} />
-              </View>
-            ) : (
-              <Pressable onPress={onClose} style={styles.dismissBtn} disabled={disabled}>
-                <Text style={styles.dismissText}>{t("common.cancel", "Cancel")}</Text>
-              </Pressable>
-            )}
-          </View>
+            {reasonRows}
+          </ResponsiveSheetBody>
           <View style={[styles.bottomSafeFill, { height: bottomInset }]} />
         </View>
       </View>
@@ -141,17 +148,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: "78%",
     overflow: "hidden",
+    flexShrink: 1,
+    minHeight: 0,
     ...Platform.select({
       android: { elevation: 12 },
     }),
-  },
-  sheetBody: {
-    width: "100%",
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    paddingBottom: 8,
   },
   bottomSafeFill: {
     width: "100%",
@@ -164,7 +166,14 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: colors.gray[300],
     marginTop: 8,
-    marginBottom: 12,
+    marginBottom: 4,
+  },
+  scrollContent: {
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  footerSlot: {
+    borderTopWidth: 0,
   },
   title: {
     fontSize: 18,
@@ -173,8 +182,6 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   warningBox: {
-    flexDirection: "row",
-    alignItems: "flex-start",
     gap: 8,
     backgroundColor: colors.error[50],
     borderWidth: 1,
@@ -191,15 +198,6 @@ const styles = StyleSheet.create({
     color: colors.error[700],
     lineHeight: 18,
   },
-  list: {
-    width: "100%",
-    flexGrow: 0,
-    flexShrink: 1,
-  },
-  listContent: {
-    width: "100%",
-    paddingBottom: 4,
-  },
   row: {
     width: "100%",
     alignSelf: "stretch",
@@ -210,8 +208,6 @@ const styles = StyleSheet.create({
   },
   rowInner: {
     width: "100%",
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
   },
   rowDisabled: {
@@ -219,8 +215,6 @@ const styles = StyleSheet.create({
   },
   rowText: {
     flex: 1,
-    flexShrink: 1,
-    minWidth: 0,
     fontSize: 15,
     fontWeight: "600",
     color: colors.gray[800],
@@ -238,16 +232,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 12,
   },
-  emptyText: {
-    textAlign: "center",
-    paddingVertical: 20,
-    fontSize: 14,
-    color: colors.gray[500],
-  },
   dismissBtn: {
     alignItems: "center",
     paddingVertical: 14,
-    marginTop: 4,
   },
   dismissText: {
     fontSize: 15,

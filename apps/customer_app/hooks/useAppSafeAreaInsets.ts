@@ -11,7 +11,8 @@ let lockedBottomInset: number | null = null;
 
 /**
  * Safe area insets that don't start at 0 on Android (tab bar / home first paint).
- * Bottom is locked on first paint so the nav bar never jumps after WindowInsets arrive.
+ * Bottom may start from a seed / default, then grow when WindowInsets arrive —
+ * never permanently lock an undersized value (that pinned the tab bar into the system nav).
  */
 export function useAppSafeAreaInsets() {
   const insets = useSafeAreaInsets();
@@ -19,6 +20,8 @@ export function useAppSafeAreaInsets() {
   const seedTop = initialWindowMetrics?.insets.top ?? 0;
   const bottomRaw = resolveStableBottomInset(insets.bottom, seedBottom);
   if (lockedBottomInset == null) {
+    lockedBottomInset = bottomRaw;
+  } else if (bottomRaw > lockedBottomInset) {
     lockedBottomInset = bottomRaw;
   }
   const bottom = resolveBottomSafeInset(lockedBottomInset);

@@ -5,6 +5,9 @@ import { colors } from "@/src/theme";
 import { LORA_BOLD, LORA_SEMIBOLD } from "@/src/theme/headerFonts";
 import { PremiumAllowButton } from "./PremiumAllowButton";
 import { PermissionBottomSheetShell } from "./PermissionBottomSheetShell";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 import type { PermissionStepKey } from "@/src/services/permissions/smartPermissionHandler";
 
 export type LocationBlockingReason = "denied" | "gps_off" | "background_denied";
@@ -121,6 +124,8 @@ export function PermissionStepSheet({
   onAllow,
   onSkip,
 }: PermissionStepSheetProps) {
+  const { height, isShortHeight } = useResponsiveLayout();
+  const bodyMaxH = Math.round(height * (isShortHeight ? 0.72 : 0.62));
   const isLocationStep = step.key === "location" || step.key === "location_services";
   const copy = isLocationStep
     ? locationCopy(locationIssue ?? (step.key === "location_services" ? "gps_off" : null), step)
@@ -151,8 +156,32 @@ export function PermissionStepSheet({
             : { title: step.title, message: step.description, instructions: null };
 
   return (
-    <PermissionBottomSheetShell visible={visible} maxHeightRatio={0.82}>
-      <View style={styles.content}>
+    <PermissionBottomSheetShell
+      visible={visible}
+      maxHeightRatio={isShortHeight ? 0.9 : 0.82}
+    >
+      <ResponsiveSheetBody
+        maxHeight={bodyMaxH}
+        contentContainerStyle={styles.content}
+        footerStyle={styles.footerSlot}
+        footer={
+          <View style={styles.buttonWrap}>
+            <PremiumAllowButton
+              onPress={onAllow}
+              loading={loading}
+              disabled={loading}
+              mandatory={false}
+            />
+            {onSkip ? (
+              <Pressable onPress={onSkip} style={styles.skipBtn} hitSlop={8}>
+                <Text style={styles.skipText} numberOfLines={1}>
+                  Skip for now
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        }
+      >
         <Text style={styles.stepLabel}>
           Step {stepIndex + 1} of {totalSteps}
         </Text>
@@ -161,53 +190,55 @@ export function PermissionStepSheet({
           <Ionicons name={stepIconName(step)} size={32} color={colors.primary[700]} />
         </View>
 
-        <Text style={styles.title}>{copy.title}</Text>
-        <Text style={styles.message}>{copy.message}</Text>
+        <Text style={[styles.title, flexShrinkText]} numberOfLines={3}>
+          {copy.title}
+        </Text>
+        <Text
+          style={[styles.message, flexShrinkText]}
+          numberOfLines={isShortHeight ? 4 : 6}
+        >
+          {copy.message}
+        </Text>
 
         <View style={styles.instructionsBox}>
           {copy.instructions ? (
             <>
               <Text style={styles.instructionsTitle}>What to do</Text>
               {copy.instructions.map((line, index) => (
-                <View key={line} style={styles.instructionRow}>
-                  <View style={styles.stepBadge}>
+                <View key={line} style={[rowLayout.row, styles.instructionRow]}>
+                  <View style={[styles.stepBadge, rowLayout.noShrink]}>
                     <Text style={styles.stepBadgeText}>{index + 1}</Text>
                   </View>
-                  <Text style={styles.instructionText}>{line}</Text>
+                  <Text style={[styles.instructionText, flexShrinkText]} numberOfLines={3}>
+                    {line}
+                  </Text>
                 </View>
               ))}
             </>
           ) : (
             <>
               <Text style={styles.instructionsTitle}>Note</Text>
-              <Text style={styles.noteText}>{step.microText}</Text>
+              <Text style={[styles.noteText, flexShrinkText]} numberOfLines={4}>
+                {step.microText}
+              </Text>
             </>
           )}
         </View>
-
-        <View style={styles.buttonWrap}>
-          <PremiumAllowButton
-            onPress={onAllow}
-            loading={loading}
-            disabled={loading}
-            mandatory={false}
-          />
-          {onSkip ? (
-            <Pressable onPress={onSkip} style={styles.skipBtn} hitSlop={8}>
-              <Text style={styles.skipText}>Skip for now</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      </View>
+      </ResponsiveSheetBody>
     </PermissionBottomSheetShell>
   );
 }
 
 const styles = StyleSheet.create({
   content: {
-    paddingHorizontal: 24,
+    paddingHorizontal: 8,
     paddingTop: 8,
     paddingBottom: 8,
+  },
+  footerSlot: {
+    borderTopWidth: 0,
+    backgroundColor: "transparent",
+    paddingHorizontal: 8,
   },
   stepLabel: {
     fontFamily: LORA_SEMIBOLD,
@@ -236,6 +267,7 @@ const styles = StyleSheet.create({
     color: "#111827",
     textAlign: "center",
     marginBottom: 10,
+    maxWidth: "100%",
   },
   message: {
     fontFamily: LORA_SEMIBOLD,
@@ -245,14 +277,16 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     marginBottom: 20,
     paddingHorizontal: 4,
+    maxWidth: "100%",
   },
   instructionsBox: {
     backgroundColor: colors.primary[50],
     borderRadius: 16,
     padding: 16,
-    marginBottom: 22,
+    marginBottom: 8,
     borderWidth: 1,
     borderColor: colors.primary[100],
+    maxWidth: "100%",
   },
   instructionsTitle: {
     fontFamily: LORA_BOLD,
@@ -263,10 +297,10 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   instructionRow: {
-    flexDirection: "row",
     alignItems: "center",
     marginBottom: 10,
     gap: 12,
+    maxWidth: "100%",
   },
   stepBadge: {
     width: 24,
@@ -283,6 +317,7 @@ const styles = StyleSheet.create({
   },
   instructionText: {
     flex: 1,
+    minWidth: 0,
     fontSize: 14,
     color: colors.gray[700],
     lineHeight: 20,

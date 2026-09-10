@@ -7,7 +7,6 @@ import {
   Pressable,
   Platform,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import Svg, { Path } from "react-native-svg";
 import Animated, {
@@ -21,6 +20,10 @@ import Animated, {
 } from "react-native-reanimated";
 import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme/colors";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { flexShrinkText } from "@/src/theme/responsiveText";
 
 const H_PADDING = 20;
 const CARD_RADIUS = 18;
@@ -122,8 +125,9 @@ export function RiderTipEarnedBottomSheet({
   onDismiss,
 }: Props) {
   const { t } = useTranslation();
-  const insets = useSafeAreaInsets();
-  const bottomPad = Math.max(insets.bottom, Platform.OS === "android" ? 12 : 8);
+  const { height, isShortHeight, insets, rs } = useResponsiveLayout();
+  const bottomPad = resolveRiderBottomInset(insets.bottom) + rs(12);
+  const bodyMaxH = Math.round(height * (isShortHeight ? 0.58 : 0.5));
 
   if (!visible || tipAmount <= 0) return null;
 
@@ -160,14 +164,17 @@ export function RiderTipEarnedBottomSheet({
             <TipEarnedBadgePill label={badgeLabel} />
           </View>
 
-          <View style={[styles.sheet, { paddingBottom: bottomPad }]}>
+          <View style={[styles.sheet, { paddingBottom: bottomPad, maxHeight: Math.round(height * 0.72) }]}>
             <View style={styles.sheetTopCap} pointerEvents="none" />
 
-            <View style={styles.body}>
+            <ResponsiveSheetBody
+              maxHeight={bodyMaxH}
+              contentContainerStyle={styles.body}
+            >
               {displayOrderId ? (
                 <View style={styles.orderIdChip}>
                   <Text style={styles.orderIdCaption}>{orderIdCaption}</Text>
-                  <Text style={styles.orderIdValue} numberOfLines={1}>
+                  <Text style={[styles.orderIdValue, flexShrinkText]} numberOfLines={1}>
                     {displayOrderId}
                   </Text>
                 </View>
@@ -177,19 +184,28 @@ export function RiderTipEarnedBottomSheet({
                 <Ionicons name="heart" size={30} color={colors.success[600]} />
               </View>
 
-              <Text style={styles.tagline}>{tagline}</Text>
-              <Text style={styles.message}>
+              <Text style={[styles.tagline, flexShrinkText]} numberOfLines={2}>
+                {tagline}
+              </Text>
+              <Text
+                style={[styles.message, flexShrinkText]}
+                numberOfLines={isShortHeight ? 4 : 6}
+              >
                 {messageLead}{" "}
                 <Text style={styles.customerName}>{displayCustomerName}</Text> {messageMid}{" "}
                 <Text style={styles.messageAmount}>{tipLabel}</Text> {messageSuffix}
               </Text>
 
               <View style={styles.tipAmountWrap}>
-                <Text style={styles.tipAmount}>{tipLabel}</Text>
+                <Text style={[styles.tipAmount, flexShrinkText]} numberOfLines={1}>
+                  {tipLabel}
+                </Text>
               </View>
 
-              <Text style={styles.footer}>{footer}</Text>
-            </View>
+              <Text style={[styles.footer, flexShrinkText]} numberOfLines={2}>
+                {footer}
+              </Text>
+            </ResponsiveSheetBody>
           </View>
         </View>
       </View>
@@ -275,6 +291,9 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
     paddingTop: BADGE_OVERLAP + 8,
+    overflow: "hidden",
+    flexShrink: 1,
+    minHeight: 0,
   },
   sheetTopCap: {
     position: "absolute",
@@ -288,7 +307,7 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   body: {
-    paddingHorizontal: H_PADDING,
+    paddingHorizontal: H_PADDING - 16,
     paddingTop: 4,
     paddingBottom: 8,
     alignItems: "center",
@@ -319,9 +338,11 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: colors.gray[900],
     includeFontPadding: false,
+    maxWidth: "100%",
   },
   tipAmountWrap: {
     width: "100%",
+    maxWidth: "100%",
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.success[50],
@@ -338,6 +359,7 @@ const styles = StyleSheet.create({
     color: colors.success[700],
     letterSpacing: -0.5,
     includeFontPadding: false,
+    maxWidth: "100%",
   },
   iconRing: {
     width: 64,
@@ -356,6 +378,7 @@ const styles = StyleSheet.create({
     color: colors.gray[900],
     textAlign: "center",
     marginBottom: 8,
+    maxWidth: "100%",
   },
   message: {
     fontSize: 15,
@@ -364,6 +387,7 @@ const styles = StyleSheet.create({
     color: colors.gray[600],
     textAlign: "center",
     marginBottom: 12,
+    maxWidth: "100%",
   },
   messageAmount: {
     fontSize: 15,
@@ -383,5 +407,6 @@ const styles = StyleSheet.create({
     color: colors.success[700],
     textAlign: "center",
     marginBottom: 0,
+    maxWidth: "100%",
   },
 });

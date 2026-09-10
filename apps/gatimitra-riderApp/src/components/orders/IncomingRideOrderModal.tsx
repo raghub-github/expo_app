@@ -4,7 +4,6 @@ import {
   Text,
   Pressable,
   StyleSheet,
-  ScrollView,
   Modal,
   Platform,
 } from "react-native";
@@ -13,6 +12,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme";
 import { resolveNavScreenBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import {
+  flexShrinkText,
+  responsiveMultilineProps,
+  rowLayout,
+} from "@/src/theme/responsiveText";
 import {
   categoryBannerIcon,
   formatDistanceKm,
@@ -76,6 +82,8 @@ type Props = {
 
 const H_PADDING = 16;
 const CARD_RADIUS = 16;
+/** Floating reject row above the fuse badge — keeps Reject clear of "New order!". */
+const REJECT_ROW_H = 40;
 const BADGE_H = 42;
 const BADGE_OVERLAP = BADGE_H * 0.2;
 
@@ -92,8 +100,12 @@ function compactAddress(raw: string): string {
 function DistanceStat({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.distanceStat}>
-      <Text style={styles.distanceStatLabel}>{label}</Text>
-      <Text style={styles.distanceStatValue}>{value}</Text>
+      <Text style={styles.distanceStatLabel} numberOfLines={1}>
+        {label}
+      </Text>
+      <Text style={styles.distanceStatValue} numberOfLines={1}>
+        {value}
+      </Text>
     </View>
   );
 }
@@ -114,6 +126,7 @@ function IncomingOrderModalInner({
 }: Props) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
+  const { height, isShortHeight, rs } = useResponsiveLayout();
 
   if (!order) return null;
 
@@ -162,6 +175,9 @@ function IncomingOrderModalInner({
       ? pickupKm + tripKm
       : order.totalDistanceKm ?? tripKm ?? pickupKm;
   const rideStops = (order.stops ?? []).filter((stop) => stop.address.trim().length > 0);
+  // Reject sits in its own row above the "New order!" badge — never overlaps the pill.
+  const sheetMaxH = Math.round(height * (isShortHeight ? 0.88 : 0.92));
+  const bodyMaxH = Math.max(220, sheetMaxH - BADGE_OVERLAP - rs(8) - REJECT_ROW_H);
 
   return (
     <Modal
@@ -177,8 +193,7 @@ function IncomingOrderModalInner({
 
         <View style={styles.sheetStack}>
           <View style={styles.sheetOverlapHeader} pointerEvents="box-none">
-            <IncomingOfferFuseBadge order={order} visible={visible} label={badgeLabel} />
-            <View style={styles.rejectAnchor} pointerEvents="box-none">
+            <View style={styles.rejectRow} pointerEvents="box-none">
               <Pressable
                 onPress={onReject}
                 disabled={loading}
@@ -194,7 +209,7 @@ function IncomingOrderModalInner({
                       pressed && styles.pressed,
                     ]}
                   >
-                    <Text style={styles.rejectPillText} numberOfLines={1}>
+                    <Text style={styles.rejectPillText} numberOfLines={1} allowFontScaling={false}>
                       {t("orders.reject", "Reject")}
                     </Text>
                     <Ionicons name="close" size={14} color="#EF4444" />
@@ -202,37 +217,63 @@ function IncomingOrderModalInner({
                 )}
               </Pressable>
             </View>
+            <View style={styles.badgeRow} pointerEvents="box-none">
+              <IncomingOfferFuseBadge order={order} visible={visible} label={badgeLabel} />
+            </View>
           </View>
 
-          <View style={styles.sheet}>
+          <View style={[styles.sheet, { maxHeight: sheetMaxH }]}>
             <View style={styles.sheetTopCap} pointerEvents="none" />
-            <ScrollView
-              style={styles.body}
-              contentContainerStyle={styles.bodyContent}
-              showsVerticalScrollIndicator={false}
-              bounces={false}
+            <ResponsiveSheetBody
+              maxHeight={bodyMaxH}
+              contentContainerStyle={[
+                styles.bodyContent,
+                { paddingHorizontal: H_PADDING },
+              ]}
+              footerStyle={styles.acceptFooterSlot}
+              footer={
+                <IncomingOfferAcceptFooter
+                  order={order}
+                  visible={visible}
+                  loading={loading}
+                  loadingLabel={loadingLabel}
+                  acceptLabel={acceptLabel}
+                  resetKey={acceptSwipeResetKey}
+                  paddingBottom={footerBottomInset}
+                  onAccept={onAccept}
+                  onExpired={onExpired}
+                />
+              }
             >
               <View style={styles.categoryBanner}>
                 <Ionicons name={bannerIcon} size={14} color={colors.primary[700]} />
-                <Text style={styles.categoryBannerText}>{bannerLabel}</Text>
+                <Text style={[styles.categoryBannerText, flexShrinkText]} numberOfLines={1}>
+                  {bannerLabel}
+                </Text>
               </View>
 
-              <View style={styles.orderMetaRow}>
-                <Text style={styles.orderId}>{displayId}</Text>
-                <Text style={styles.orderTime}>
+              <View style={[rowLayout.row, styles.orderMetaRow]}>
+                <Text style={[styles.orderId, flexShrinkText]} numberOfLines={1}>
+                  {displayId}
+                </Text>
+                <Text style={[styles.orderTime, rowLayout.noShrink]} numberOfLines={1}>
                   {t("orders.incoming.justNow", "Just now")}
                 </Text>
               </View>
 
               {order.merchantName && order.category !== "ride" ? (
-                <View style={styles.merchantRow}>
-                  <Text style={styles.merchantName} numberOfLines={2}>
+                <View style={[rowLayout.rowStart, styles.merchantRow]}>
+                  <Text
+                    style={[styles.merchantName, flexShrinkText]}
+                    {...responsiveMultilineProps}
+                    numberOfLines={2}
+                  >
                     {order.merchantName}
                   </Text>
                   {order.itemCount != null && order.itemCount > 0 ? (
                     <View style={styles.itemCountPill}>
                       <Ionicons name="bag-handle-outline" size={12} color={colors.primary[800]} />
-                      <Text style={styles.itemCountPillText}>
+                      <Text style={styles.itemCountPillText} numberOfLines={1}>
                         {order.itemCount}{" "}
                         {order.itemCount === 1
                           ? t("orders.incoming.itemOne", "item")
@@ -245,71 +286,74 @@ function IncomingOrderModalInner({
 
               <View style={styles.earningsCard}>
                 <View style={styles.earningsBreakdown}>
-                  <View style={styles.earningsLine}>
-                    <Text style={styles.earningsSubLabel}>
+                  <View style={[rowLayout.row, styles.earningsLine]}>
+                    <Text style={[styles.earningsSubLabel, flexShrinkText]} numberOfLines={1}>
                       {isDeliveryOrder
                         ? t("orders.incoming.deliveryFee", "Delivery fee")
                         : t("orders.incoming.baseEarning", "Base earnings")}
                     </Text>
-                    <Text style={styles.earningsSubValue}>
+                    <Text style={[styles.earningsSubValue, rowLayout.noShrink]} numberOfLines={1}>
                       ₹{slabBase.toLocaleString("en-IN")}
                     </Text>
                   </View>
                   {waitingAmount > 0 ? (
-                    <View style={styles.earningsLine}>
-                      <Text style={styles.earningsSubLabel}>
+                    <View style={[rowLayout.row, styles.earningsLine]}>
+                      <Text style={[styles.earningsSubLabel, flexShrinkText]} numberOfLines={1}>
                         {t("orders.incoming.waitingCharge", "Waiting charge")}
                       </Text>
-                      <Text style={styles.earningsSubValue}>
+                      <Text style={[styles.earningsSubValue, rowLayout.noShrink]} numberOfLines={1}>
                         + ₹{waitingAmount.toLocaleString("en-IN")}
                       </Text>
                     </View>
                   ) : null}
                   {surgeLines.map((surge) => (
-                    <View key={`${surge.name}-${surge.amount}`} style={styles.earningsLine}>
-                      <View style={styles.tipLineLabel}>
+                    <View
+                      key={`${surge.name}-${surge.amount}`}
+                      style={[rowLayout.row, styles.earningsLine]}
+                    >
+                      <View style={[rowLayout.grow, styles.tipLineLabel]}>
                         <Ionicons name="flash-outline" size={13} color="#B45309" />
-                        <Text style={styles.surgeLineText} numberOfLines={1}>
+                        <Text style={[styles.surgeLineText, flexShrinkText]} numberOfLines={1}>
                           {surge.name}
                         </Text>
                       </View>
-                      <Text style={styles.surgeLineValue}>
+                      <Text style={[styles.surgeLineValue, rowLayout.noShrink]} numberOfLines={1}>
                         + ₹{Math.round(surge.amount).toLocaleString("en-IN")}
                       </Text>
                     </View>
                   ))}
                   {firstMileOnTop > 0 ? (
-                    <View style={styles.earningsLine}>
-                      <View style={styles.tipLineLabel}>
+                    <View style={[rowLayout.row, styles.earningsLine]}>
+                      <View style={[rowLayout.grow, styles.tipLineLabel]}>
                         <Ionicons name="navigate-outline" size={13} color="#4F46E5" />
-                        <Text style={styles.earningsSubLabel}>
+                        <Text style={[styles.earningsSubLabel, flexShrinkText]} numberOfLines={1}>
                           {t("orders.incoming.firstMile", "First-mile allowance")}
                         </Text>
                       </View>
-                      <Text style={styles.earningsSubValue}>
+                      <Text style={[styles.earningsSubValue, rowLayout.noShrink]} numberOfLines={1}>
                         + ₹{firstMileOnTop.toLocaleString("en-IN")}
                       </Text>
                     </View>
                   ) : null}
                   {tipAmount > 0 ? (
-                    <View style={styles.earningsLine}>
-                      <View style={styles.tipLineLabel}>
+                    <View style={[rowLayout.row, styles.earningsLine]}>
+                      <View style={[rowLayout.grow, styles.tipLineLabel]}>
                         <Ionicons name="gift-outline" size={13} color="#15803D" />
-                        <Text style={styles.tipLineText}>
+                        <Text style={[styles.tipLineText, flexShrinkText]} numberOfLines={1}>
                           {t("orders.incoming.customerTip", "Customer tip")}
                         </Text>
                       </View>
-                      <Text style={styles.tipLineValue}>
+                      <Text style={[styles.tipLineValue, rowLayout.noShrink]} numberOfLines={1}>
                         + ₹{tipAmount.toLocaleString("en-IN")}
                       </Text>
                     </View>
                   ) : null}
                   <View style={styles.earningsDividerHorizontal} />
-                  <View style={styles.earningsTotalRow}>
-                    <Text style={styles.earningsLabel}>
+                  <View style={[rowLayout.row, styles.earningsTotalRow]}>
+                    <Text style={[styles.earningsLabel, flexShrinkText]} numberOfLines={1}>
                       {t("orders.incoming.totalEarning", "Total earnings")}
                     </Text>
-                    <Text style={styles.earningsValue}>
+                    <Text style={[styles.earningsValue, rowLayout.noShrink]} numberOfLines={1}>
                       ₹{totalEarning.toLocaleString("en-IN")}
                     </Text>
                   </View>
@@ -334,55 +378,73 @@ function IncomingOrderModalInner({
               </View>
 
               <View style={styles.routeCard}>
-                <View style={styles.routeRow}>
+                <View style={[rowLayout.rowStart, styles.routeRow]}>
                   <View style={styles.routeDotCol}>
                     <View style={[styles.routeDot, styles.pickupDot]} />
                     <View style={styles.routeConnector} />
                   </View>
-                  <View style={styles.routeTextWrap}>
-                    <View style={styles.routeLabelRow}>
-                      <Text style={styles.routeLabel}>
+                  <View style={[rowLayout.grow, styles.routeTextWrap]}>
+                    <View style={[rowLayout.row, styles.routeLabelRow]}>
+                      <Text style={[styles.routeLabel, flexShrinkText]} numberOfLines={1}>
                         {t("orders.incoming.pickup", "Pickup")}
                       </Text>
                       {pickupKm != null && pickupKm > 0 ? (
-                        <Text style={styles.routeKmChip}>{formatDistanceKm(pickupKm)}</Text>
+                        <Text style={[styles.routeKmChip, rowLayout.noShrink]} numberOfLines={1}>
+                          {formatDistanceKm(pickupKm)}
+                        </Text>
                       ) : null}
                     </View>
-                    <Text style={styles.routeAddress}>
+                    <Text
+                      style={[styles.routeAddress, flexShrinkText]}
+                      {...responsiveMultilineProps}
+                    >
                       {compactAddress(order.pickup.address)}
                     </Text>
                   </View>
                 </View>
                 {rideStops.map((stop, index) => (
-                  <View key={`stop-${index}-${stop.address}`} style={styles.routeRow}>
+                  <View
+                    key={`stop-${index}-${stop.address}`}
+                    style={[rowLayout.rowStart, styles.routeRow]}
+                  >
                     <View style={styles.routeDotCol}>
                       <View style={[styles.routeDot, styles.stopDot]} />
                       <View style={styles.routeConnector} />
                     </View>
-                    <View style={styles.routeTextWrap}>
-                      <View style={styles.routeLabelRow}>
-                        <Text style={styles.routeLabel}>
+                    <View style={[rowLayout.grow, styles.routeTextWrap]}>
+                      <View style={[rowLayout.row, styles.routeLabelRow]}>
+                        <Text style={[styles.routeLabel, flexShrinkText]} numberOfLines={1}>
                           {`Stop ${index + 1}`}
                         </Text>
                       </View>
-                      <Text style={styles.routeAddress}>{compactAddress(stop.address)}</Text>
+                      <Text
+                        style={[styles.routeAddress, flexShrinkText]}
+                        {...responsiveMultilineProps}
+                      >
+                        {compactAddress(stop.address)}
+                      </Text>
                     </View>
                   </View>
                 ))}
-                <View style={styles.routeRow}>
+                <View style={[rowLayout.rowStart, styles.routeRow]}>
                   <View style={styles.routeDotCol}>
                     <View style={[styles.routeDot, styles.dropDot]} />
                   </View>
-                  <View style={styles.routeTextWrap}>
-                    <View style={styles.routeLabelRow}>
-                      <Text style={styles.routeLabel}>
+                  <View style={[rowLayout.grow, styles.routeTextWrap]}>
+                    <View style={[rowLayout.row, styles.routeLabelRow]}>
+                      <Text style={[styles.routeLabel, flexShrinkText]} numberOfLines={1}>
                         {t("orders.incoming.drop", "Drop")}
                       </Text>
                       {tripKm != null && tripKm > 0 ? (
-                        <Text style={styles.routeKmChip}>{formatDistanceKm(tripKm)}</Text>
+                        <Text style={[styles.routeKmChip, rowLayout.noShrink]} numberOfLines={1}>
+                          {formatDistanceKm(tripKm)}
+                        </Text>
                       ) : null}
                     </View>
-                    <Text style={styles.routeAddress}>
+                    <Text
+                      style={[styles.routeAddress, flexShrinkText]}
+                      {...responsiveMultilineProps}
+                    >
                       {compactAddress(order.delivery.address)}
                     </Text>
                   </View>
@@ -393,19 +455,7 @@ function IncomingOrderModalInner({
                   />
                 </View>
               </View>
-            </ScrollView>
-
-            <IncomingOfferAcceptFooter
-              order={order}
-              visible={visible}
-              loading={loading}
-              loadingLabel={loadingLabel}
-              acceptLabel={acceptLabel}
-              resetKey={acceptSwipeResetKey}
-              paddingBottom={footerBottomInset}
-              onAccept={onAccept}
-              onExpired={onExpired}
-            />
+            </ResponsiveSheetBody>
           </View>
         </View>
       </View>
@@ -468,33 +518,35 @@ const styles = StyleSheet.create({
     paddingBottom: 0,
     overflow: "visible",
   },
-  /** Porter-style: pill + reject float above sheet top edge */
+  /** Porter-style: reject row, then fuse badge overlapping sheet top */
   sheetOverlapHeader: {
     position: "relative",
     alignSelf: "stretch",
     width: "100%",
-    height: BADGE_H,
     marginBottom: -BADGE_OVERLAP,
     zIndex: 30,
-    alignItems: "center",
-    justifyContent: "flex-start",
-    paddingTop: 0,
     overflow: "visible",
     ...Platform.select({
       android: { elevation: 16 },
       default: {},
     }),
   },
-  rejectAnchor: {
-    position: "absolute",
-    top: -10,
-    right: H_PADDING,
+  rejectRow: {
+    alignSelf: "stretch",
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    minHeight: REJECT_ROW_H,
+    paddingHorizontal: H_PADDING,
+    paddingBottom: 6,
     zIndex: 40,
-    alignSelf: "flex-end",
-    ...Platform.select({
-      android: { elevation: 20 },
-      default: {},
-    }),
+  },
+  badgeRow: {
+    alignSelf: "stretch",
+    alignItems: "center",
+    justifyContent: "center",
+    height: BADGE_H,
+    zIndex: 30,
   },
   rejectPill: {
     flexDirection: "row",
@@ -537,7 +589,8 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
     overflow: "hidden",
-    maxHeight: "98%",
+    flexShrink: 1,
+    minHeight: 0,
     paddingTop: BADGE_OVERLAP + 6,
     ...Platform.select({
       ios: {
@@ -561,19 +614,24 @@ const styles = StyleSheet.create({
     borderTopRightRadius: CARD_RADIUS + 6,
     zIndex: 1,
   },
-  body: {
-    flexGrow: 0,
-  },
   bodyContent: {
-    paddingHorizontal: H_PADDING,
     paddingTop: 2,
     paddingBottom: 10,
+  },
+  /** Footer owns its own padding + hairline — avoid double chrome from ResponsiveSheetBody. */
+  acceptFooterSlot: {
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+    borderTopWidth: 0,
+    backgroundColor: "transparent",
   },
   categoryBanner: {
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
     alignSelf: "flex-start",
+    maxWidth: "100%",
     backgroundColor: colors.primary[50],
     paddingHorizontal: 9,
     paddingVertical: 4,
@@ -586,8 +644,6 @@ const styles = StyleSheet.create({
     color: colors.primary[800],
   },
   merchantRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 8,
     marginBottom: 10,
@@ -619,12 +675,12 @@ const styles = StyleSheet.create({
     color: colors.primary[800],
   },
   orderMetaRow: {
-    flexDirection: "row",
-    alignItems: "baseline",
     justifyContent: "space-between",
     marginBottom: 8,
+    gap: 8,
   },
   orderId: {
+    flex: 1,
     fontSize: 20,
     fontWeight: "800",
     fontFamily: "Lora_700Bold",
@@ -648,11 +704,11 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   earningsLine: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
+    gap: 8,
   },
   earningsSubLabel: {
+    flex: 1,
     fontSize: 13,
     fontWeight: "600",
     fontFamily: "Poppins_600SemiBold",
@@ -670,6 +726,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   tipLineText: {
+    flex: 1,
     fontSize: 13,
     fontWeight: "700",
     color: "#15803D",
@@ -680,11 +737,10 @@ const styles = StyleSheet.create({
     color: "#15803D",
   },
   surgeLineText: {
+    flex: 1,
     fontSize: 13,
     fontWeight: "700",
     color: "#B45309",
-    flexShrink: 1,
-    maxWidth: 180,
   },
   surgeLineValue: {
     fontSize: 15,
@@ -697,11 +753,11 @@ const styles = StyleSheet.create({
     marginVertical: 2,
   },
   earningsTotalRow: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
+    gap: 8,
   },
   earningsLabel: {
+    flex: 1,
     fontSize: 12,
     fontWeight: "700",
     fontFamily: "Poppins_600SemiBold",
@@ -726,6 +782,7 @@ const styles = StyleSheet.create({
   },
   distanceStat: {
     flex: 1,
+    minWidth: 0,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 4,
@@ -758,14 +815,13 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   routeRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
     gap: 10,
   },
   routeDotCol: {
     alignItems: "center",
     width: 12,
     paddingTop: 4,
+    flexShrink: 0,
   },
   routeDot: {
     width: 10,
@@ -782,14 +838,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.gray[200],
     marginVertical: 4,
   },
-  routeTextWrap: { flex: 1, paddingBottom: 8 },
+  routeTextWrap: { paddingBottom: 8 },
   routeLabelRow: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
     gap: 8,
   },
   routeLabel: {
+    flex: 1,
     fontSize: 11,
     fontWeight: "700",
     color: colors.gray[500],

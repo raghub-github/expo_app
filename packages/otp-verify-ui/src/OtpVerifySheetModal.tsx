@@ -199,6 +199,7 @@ export function OtpVerifySheetModal({
                     ? { fontFamily: titleFont, fontWeight: "normal" }
                     : styles.titleFallbackWeight,
                 ]}
+                numberOfLines={2}
               >
                 {title}
               </Text>
@@ -209,6 +210,7 @@ export function OtpVerifySheetModal({
                     ? { fontFamily: bodyFont, fontWeight: "normal" }
                     : null,
                 ]}
+                numberOfLines={3}
               >
                 {subtitle}
               </Text>

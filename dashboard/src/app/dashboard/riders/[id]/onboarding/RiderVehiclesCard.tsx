@@ -151,7 +151,13 @@ export function RiderVehiclesCard({ riderId }: { riderId: number }) {
                   <tr key={i} className="border-t border-slate-100">
                     <td className="px-2 py-1">{h.document_kind === "vehicle_rc" ? "RC" : "DL"}</td>
                     <td className="px-2 py-1">#{h.attempt_number}</td>
-                    <td className={`px-2 py-1 font-semibold ${h.status === "verified" ? "text-emerald-700" : h.status === "rejected" ? "text-rose-700" : "text-amber-700"}`}>
+                    <td className={`px-2 py-1 font-semibold ${
+                      h.status === "verified"
+                        ? "text-emerald-700"
+                        : h.status === "rejected" || h.status === "failed" || h.status === "duplicate"
+                          ? "text-rose-700"
+                          : "text-amber-700"
+                    }`}>
                       {human(h.status)}
                       {h.status_reason ? <span className="font-normal text-slate-400"> · {h.status_reason}</span> : null}
                     </td>

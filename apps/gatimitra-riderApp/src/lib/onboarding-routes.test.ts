@@ -13,6 +13,8 @@ describe("onboarding top-bar back navigation + step meta", () => {
   it("returns the previous step route for a mid-flow step", () => {
     assert.equal(previousOnboardingRoute("pan-selfie"), "/(onboarding)/aadhaar");
     assert.equal(previousOnboardingRoute("dl-rc"), "/(onboarding)/pan-selfie");
+    assert.equal(previousOnboardingRoute("bank-account"), "/(onboarding)/dl-rc");
+    assert.equal(previousOnboardingRoute("rental-ev"), "/(onboarding)/dl-rc");
     assert.equal(previousOnboardingRoute("payment"), "/(onboarding)/bank-account");
   });
 
@@ -24,21 +26,35 @@ describe("onboarding top-bar back navigation + step meta", () => {
   it("has no back target on the first step", () => {
     assert.equal(previousOnboardingRoute("language"), null);
     assert.equal(canGoBackFromOnboardingRoute("language"), false);
-    assert.equal(canGoBackFromOnboardingRoute("aadhaar"), true);
+    // Aadhaar is first KYC step — header back is hidden even if referral precedes it.
+    assert.equal(canGoBackFromOnboardingRoute("aadhaar"), false);
+    assert.equal(canGoBackFromOnboardingRoute("pan-selfie"), true);
   });
 
   it("returns null (not a crash) for an unknown route", () => {
     assert.equal(previousOnboardingRoute("something-else"), null);
   });
 
-  it("gives a 1-based step number + label for the help ticket", () => {
+  it("gives KYC step numbers matching on-screen pills (not full 11-route flow)", () => {
     const aadhaar = onboardingStepMetaForRoute("aadhaar");
-    assert.equal(aadhaar.number, 5);
+    assert.equal(aadhaar.number, 1);
+    assert.equal(aadhaar.total, 6);
     assert.equal(aadhaar.label, "Aadhaar & name");
-    assert.ok(aadhaar.total >= 7);
-    // routes outside the linear flow (e.g. pending) have no number but still a label
+
+    const pan = onboardingStepMetaForRoute("pan-selfie");
+    assert.equal(pan.number, 2);
+    assert.equal(pan.label, "PAN & selfie");
+
+    const rental = onboardingStepMetaForRoute("rental-ev");
+    assert.equal(rental.number, 3);
+
+    // Pre-KYC routes have a label but no verification step number
+    const language = onboardingStepMetaForRoute("language");
+    assert.equal(language.number, null);
+    assert.equal(language.label, "Language");
+
     const pending = onboardingStepMetaForRoute("pending");
-    assert.equal(pending.number, null);
+    assert.equal(pending.number, 6);
     assert.equal(pending.label, "Under review");
   });
 });

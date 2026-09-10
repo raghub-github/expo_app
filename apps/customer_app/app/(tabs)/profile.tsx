@@ -22,12 +22,13 @@ import { presentReferralCopy } from "@/lib/referralCopy";
 import { isCustomProfileUploadUrl, resolveStoredProfileAvatarUri } from "@/lib/emailAvatar";
 import { getNameInitials } from "@/lib/nameInitials";
 import { useProfile } from "@/hooks/useProfile";
-import { useCurrentSubscription } from "@/hooks/useCustomerSubscription";
+import { useCurrentSubscription, useCheckoutSubscriptionPlan } from "@/hooks/useCustomerSubscription";
+import { formatPlanPriceLine } from "@/services/subscription.service";
 import { GmitraPlusMembershipSheet } from "@/components/profile/GmitraPlusMembershipSheet";
 import { ProfilePhotoSourceSheet } from "@/components/profile/ProfilePhotoSourceSheet";
 import { ProfilePhotoViewerSheet } from "@/components/profile/ProfilePhotoViewerSheet";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
-import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { STATUS_BAR_TO_HEADER_GAP, resolveCustomerBottomNavHeight } from "@/constants/layout";
 import { profileService, type UserProfile } from "@/services/profile.service";
 import { referralService } from "@/services/referral.service";
 import { invalidateProfileCache, PROFILE_QUERY_KEY, writeCachedProfile } from "@/lib/profileCache";
@@ -62,11 +63,15 @@ export default function ProfileScreen() {
   const insets = useAppSafeAreaInsets();
   /** Pushed from food home (`/profile`) — root layout omits the status-bar spacer. */
   const inProfileStack = segments[0] === "profile";
-  const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
-  const profileTopPad =
-    (inProfileStack || hideStatusBarSpacer ? insets.top : 0) + STATUS_BAR_TO_HEADER_GAP + 6;
+  /** Always self-pad under tabs (and profile stack) — root spacer stays off for all tabs. */
+  const profileTopPad = insets.top + STATUS_BAR_TO_HEADER_GAP + 6;
   const { data: profile } = useProfile();
   const { data: subscriptionStatus, isFetched: subscriptionFetched } = useCurrentSubscription(true);
+  const { defaultPrice } = useCheckoutSubscriptionPlan();
+  const plusHighlightPrice = defaultPrice
+    ? `₹${Math.round(defaultPrice.amount)}`
+    : null;
+  const plusCtaSubtitle = defaultPrice ? formatPlanPriceLine(defaultPrice) : null;
 
   useLayoutEffect(() => {
     if (!inProfileStack) return;
@@ -75,7 +80,7 @@ export default function ProfileScreen() {
     useScreenChromeStore.setState({
       statusBarBackground: PAGE_BG,
       statusBarStyle: "dark",
-      hideStatusBarSpacer: false,
+      hideStatusBarSpacer: true,
     });
   }, [inProfileStack]);
 
@@ -87,7 +92,8 @@ export default function ProfileScreen() {
       useScreenChromeStore.setState({
         statusBarBackground: PAGE_BG,
         statusBarStyle: "dark",
-        hideStatusBarSpacer: false,
+        // Match Home/Food immersive top — avoids root spacer appearing mid tab-slide.
+        hideStatusBarSpacer: true,
       });
       void queryClient.invalidateQueries({ queryKey: ["referral", "config", "customer"] });
       void queryClient.invalidateQueries({ queryKey: CURRENT_SUBSCRIPTION_QUERY_KEY });
@@ -150,6 +156,16 @@ export default function ProfileScreen() {
       subscriptionStatus?.subscription?.expiresAt ??
       null;
     return formatSubscriptionExpiryCountdown(iso);
+  }, [subscriptionActive, subscriptionStatus?.subscription]);
+
+  const subscriptionExpired = useMemo(() => {
+    if (subscriptionActive) return false;
+    const sub = subscriptionStatus?.subscription;
+    if (!sub) return false;
+    const end = resolveSubscriptionExpiryIso(sub) ?? sub.expiresAt ?? null;
+    if (!end) return Boolean(sub.planName || sub.id);
+    const endMs = Date.parse(end);
+    return Number.isFinite(endMs) && endMs < Date.now();
   }, [subscriptionActive, subscriptionStatus?.subscription]);
 
   useEffect(() => {
@@ -307,7 +323,10 @@ export default function ProfileScreen() {
       <StatusBar style="dark" backgroundColor={PAGE_BG} />
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: resolveCustomerBottomNavHeight(insets.bottom) + 16 },
+        ]}
         showsVerticalScrollIndicator={false}
       >
         {/* Profile card — GatiMitra-style with subscription strip */}
@@ -495,16 +514,22 @@ export default function ProfileScreen() {
         visible={membershipSheetVisible}
         onClose={() => setMembershipSheetVisible(false)}
         active={subscriptionActive}
-        planName={subscriptionPlanName}
+        expired={subscriptionExpired}
+        planName={subscriptionPlanName === "Membership" ? "GMitra Plus" : subscriptionPlanName}
         benefits={subscriptionBenefits}
         freeDeliveryNote={freeDeliveryNote}
         expiryCountdown={membershipExpiryCountdown}
+        highlightPrice={plusHighlightPrice}
+        ctaSubtitle={plusCtaSubtitle}
         description={
           subscriptionActive
             ? null
-            : `Add ${subscriptionPlanName} at checkout on your next order — save on delivery and unlock member-only offers.`
+            : subscriptionExpired
+              ? "Renew now to enjoy unlimited free deliveries and other GatiMitra member benefits."
+              : `Join GMitra Plus on your next food order — save on delivery and unlock member-only offers.`
         }
-        onBrowseRestaurants={() => router.push("/(tabs)")}
+        onBrowseRestaurants={() => router.navigate("/(tabs)/food" as never)}
+        onRenew={() => router.navigate("/(tabs)/food" as never)}
       />
 
       <ProfilePhotoSourceSheet

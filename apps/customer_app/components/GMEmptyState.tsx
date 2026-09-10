@@ -135,7 +135,6 @@ export function GMEmptyState({ header }: { header?: React.ReactNode }) {
     () =>
       resolveChangeLocationCtaBottom({
         rawBottomInset: insets.bottom,
-        // Food home no-service: floating cart can appear whenever the user has items.
         reserveFloatingCart: true,
         aboveTabBar: inTabs,
         tabBarOffset: inTabs ? customerTabBarOffset(insets.bottom) : undefined,

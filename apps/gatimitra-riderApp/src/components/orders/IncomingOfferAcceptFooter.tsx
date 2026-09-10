@@ -4,9 +4,9 @@ import { RiderActionSlider } from "@/src/components/orders/RiderActionSlider";
 import {
   formatRiderAcceptCountdown,
   riderAcceptSecondsLeft,
-  riderAcceptTimeProgress,
 } from "@/src/lib/riderOrderAcceptWindow";
 import { beginAcceptLatency } from "@/src/lib/acceptOrderLatency";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
 const URGENT_SECONDS = 20;
 
@@ -43,6 +43,7 @@ export const IncomingOfferAcceptFooter = memo(function IncomingOfferAcceptFooter
   onAccept,
   onExpired,
 }: Props) {
+  const { rs, isCompactWidth } = useResponsiveLayout();
   const [nowTick, setNowTick] = useState(() => Date.now());
   const visibleSinceRef = useRef<number | null>(null);
 
@@ -69,7 +70,15 @@ export const IncomingOfferAcceptFooter = memo(function IncomingOfferAcceptFooter
   }, [visible, secondsLeft, loading, onExpired]);
 
   return (
-    <View style={[styles.footer, { paddingBottom }]}>
+    <View
+      style={[
+        styles.footer,
+        {
+          paddingBottom,
+          paddingHorizontal: rs(isCompactWidth ? 12 : 16),
+        },
+      ]}
+    >
       <RiderActionSlider
         label={loading ? loadingLabel || "Accepting..." : `${acceptLabel} (${mmss})`}
         onComplete={() => {
@@ -82,7 +91,7 @@ export const IncomingOfferAcceptFooter = memo(function IncomingOfferAcceptFooter
         resetKey={`${order.id}:${resetKey}`}
         actionName="accept_offer"
         variant={fuseUrgent ? "urgent" : "default"}
-        sideInset={12}
+        sideInset={rs(12)}
         hapticOnComplete
       />
     </View>
@@ -91,10 +100,12 @@ export const IncomingOfferAcceptFooter = memo(function IncomingOfferAcceptFooter
 
 const styles = StyleSheet.create({
   footer: {
-    paddingHorizontal: 16,
     paddingTop: 6,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E5E7EB",
     backgroundColor: "#FFFFFF",
+    flexShrink: 0,
+    width: "100%",
+    maxWidth: "100%",
   },
 });

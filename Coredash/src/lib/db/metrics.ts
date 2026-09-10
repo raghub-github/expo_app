@@ -1182,7 +1182,7 @@ export async function fetchCustomers(periodRaw: string | null) {
   const sql = getSql();
   const { period, from, to } = boundsFromSearch(periodRaw);
 
-  const [stats, states, recent] = await Promise.all([
+  const [stats, states, cities, recent] = await Promise.all([
     safeQuery(
       "customers-stats",
       () =>
@@ -1201,6 +1201,19 @@ export async function fetchCustomers(periodRaw: string | null) {
       () =>
         sql<{ state: string; count: number }[]>`
           SELECT COALESCE(NULLIF(state, ''), 'Unknown') AS state, COUNT(*)::int AS count
+          FROM customers
+          WHERE deleted_at IS NULL
+          GROUP BY 1
+          ORDER BY count DESC
+          LIMIT 10
+        `,
+      []
+    ),
+    safeQuery(
+      "customers-cities",
+      () =>
+        sql<{ city: string; count: number }[]>`
+          SELECT COALESCE(NULLIF(city, ''), 'Unknown') AS city, COUNT(*)::int AS count
           FROM customers
           WHERE deleted_at IS NULL
           GROUP BY 1
@@ -1261,6 +1274,7 @@ export async function fetchCustomers(periodRaw: string | null) {
       wallet: num(stats[0]?.wallet),
     },
     states: states.map((r) => ({ state: str(r.state), count: num(r.count) })),
+    cities: cities.map((r) => ({ city: str(r.city), count: num(r.count) })),
     recent: recent.map((r) => ({
       id: str(r.customer_id),
       name: str(r.full_name),

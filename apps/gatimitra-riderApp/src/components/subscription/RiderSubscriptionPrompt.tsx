@@ -8,6 +8,8 @@ import {
   useRiderSubscriptionStatus,
 } from "@/src/hooks/useRiderSubscription";
 import { useRiderVehicle } from "@/src/hooks/useRiderVehicle";
+import { useRiderHomeLocation } from "@/src/hooks/useRiderHomeLocation";
+import { useOnboardingStore } from "@/src/stores/onboardingStore";
 
 /**
  * Shows GMitra Max subscription sheet on app open when rider has NO active subscription.
@@ -15,15 +17,23 @@ import { useRiderVehicle } from "@/src/hooks/useRiderVehicle";
 export function RiderSubscriptionPrompt() {
   const pathname = usePathname();
   const onSubscriptionPage = pathname.includes("your-subscription");
+  const riderId = useOnboardingStore((s) => s.data.riderId);
   const { data: plans = [], isFetched: plansFetched } = useRiderSubscriptionPlans();
   const { data: status, isFetched: statusFetched, isError: statusError } = useRiderSubscriptionStatus();
   const { data: vehicleStatus, isFetched: vehicleFetched } = useRiderVehicle();
+  const {
+    needsHomeLocation,
+    locationStatusReady,
+    statusLoading: homeLocLoading,
+  } = useRiderHomeLocation(riderId);
   const [visible, setVisible] = useState(false);
   const [sessionDismissed, setSessionDismissed] = useState(false);
 
   const featured = pickFeaturedPlan(plans);
   const isSubscribed = !statusError && Boolean(status?.active);
   const vehicleGatePending = vehicleFetched && !vehicleStatus?.isComplete;
+  const locationGatePending =
+    !riderId || homeLocLoading || !locationStatusReady || needsHomeLocation;
   const ready = plansFetched && statusFetched && vehicleFetched;
   const shouldOffer =
     ready &&
@@ -31,6 +41,7 @@ export function RiderSubscriptionPrompt() {
     !isSubscribed &&
     !sessionDismissed &&
     !vehicleGatePending &&
+    !locationGatePending &&
     !onSubscriptionPage;
 
   useEffect(() => {

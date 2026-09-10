@@ -29,6 +29,8 @@ import {
   type BillingCycle,
 } from "@/src/hooks/useRiderSubscription";
 import { extractApiErrorMessage } from "@/src/services/http";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 function formatRupee(amount: number) {
   return `₹${amount.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
@@ -98,6 +100,8 @@ function resolvePlan(
 
 export function YourSubscriptionScreen() {
   const { t } = useTranslation();
+  const { rs, isCompactWidth } = useResponsiveLayout();
+  const padX = rs(16);
   const queryClient = useQueryClient();
   const { data: plans = [], isLoading: plansLoading } = useRiderSubscriptionPlans();
   const { data: status, isLoading: statusLoading } = useRiderSubscriptionStatus();
@@ -173,31 +177,35 @@ export function YourSubscriptionScreen() {
 
   return (
     <SafeAreaView style={styles.root} edges={["top", "bottom"]}>
-      <View style={styles.header}>
+      <View style={[rowLayout.row, styles.header, { paddingLeft: rs(12), paddingRight: padX }]}>
         <Pressable
           onPress={() => router.back()}
-          style={({ pressed }) => [styles.backBtn, pressed && styles.backBtnPressed]}
+          style={({ pressed }) => [styles.backBtn, rowLayout.noShrink, pressed && styles.backBtnPressed]}
           hitSlop={8}
         >
           <Ionicons name="chevron-back" size={22} color="#111827" />
         </Pressable>
-        <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
+        <View style={[styles.headerCenter, rowLayout.grow]}>
+          <Text style={[styles.headerTitle, flexShrinkText]} numberOfLines={1} ellipsizeMode="tail">
             {t("subscription.yourSubscription", "Your Subscription")}
           </Text>
         </View>
-        <View style={styles.headerActions}>
+        <View style={[rowLayout.row, styles.headerActions, rowLayout.noShrink, isCompactWidth && styles.headerActionsCompact]}>
           <Pressable
             onPress={() => setTermsOpen(true)}
             style={({ pressed }) => [styles.tcBtn, pressed && styles.headerBtnPressed]}
           >
-            <Text style={styles.tcBtnTxt}>{t("subscription.termsShort", "T&C")}</Text>
+            <Text style={styles.tcBtnTxt} numberOfLines={1}>
+              {t("subscription.termsShort", "T&C")}
+            </Text>
           </Pressable>
           <Pressable
             onPress={() => router.push("/raise-ticket")}
             style={({ pressed }) => [styles.helpBtn, pressed && styles.headerBtnPressed]}
           >
-            <Text style={styles.helpBtnTxt}>{t("common.help", "Help")}</Text>
+            <Text style={styles.helpBtnTxt} numberOfLines={1}>
+              {t("common.help", "Help")}
+            </Text>
           </Pressable>
         </View>
       </View>
@@ -209,7 +217,10 @@ export function YourSubscriptionScreen() {
       ) : (
         <ScrollView
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.scroll}
+          contentContainerStyle={[
+            styles.scroll,
+            { paddingHorizontal: padX, paddingTop: rs(16), paddingBottom: rs(32) },
+          ]}
         >
           {(dues?.alertBanner?.visible ?? ((dues?.dispatchBlocked || (dues?.totalDue ?? 0) > 0) && isActive)) ? (
             <View style={styles.duesBannerWrap}>
@@ -228,21 +239,27 @@ export function YourSubscriptionScreen() {
               ) : null}
 
               <View style={[styles.planCard, isActive && styles.planCardActive]}>
-                <View style={styles.planTop}>
-                  <View style={styles.planTitleRow}>
-                    <View style={styles.planTitleLine}>
-                      <View style={styles.maxBadge}>
-                        <Text style={styles.maxBadgeTxt}>{maxBadgeLabel}</Text>
+                <View style={[rowLayout.rowStart, styles.planTop]}>
+                  <View style={[styles.planTitleRow, rowLayout.grow]}>
+                    <View style={[rowLayout.row, styles.planTitleLine]}>
+                      <View style={[styles.maxBadge, rowLayout.noShrink]}>
+                        <Text style={styles.maxBadgeTxt} numberOfLines={1}>
+                          {maxBadgeLabel}
+                        </Text>
                       </View>
-                      <Text style={styles.planCycle}>{cycleText} Plan</Text>
+                      <Text style={[styles.planCycle, flexShrinkText]} numberOfLines={1}>
+                        {cycleText} Plan
+                      </Text>
                     </View>
                   </View>
                   {payPrice != null ? (
-                    <View style={styles.priceCol}>
+                    <View style={[styles.priceCol, rowLayout.noShrink]}>
                       {listPrice != null && listPrice > payPrice ? (
-                        <Text style={styles.priceStrike}>{formatRupee(listPrice)}</Text>
+                        <Text style={styles.priceStrike} numberOfLines={1}>
+                          {formatRupee(listPrice)}
+                        </Text>
                       ) : null}
-                      <Text style={[styles.priceMain, { color: accent }]}>
+                      <Text style={[styles.priceMain, { color: accent }]} numberOfLines={1}>
                         {formatRupee(payPrice)}
                       </Text>
                     </View>
@@ -270,19 +287,24 @@ export function YourSubscriptionScreen() {
                 </Text>
 
                 {isActive && activePlan ? (
-                  <View style={styles.datesInCard}>
-                    <View style={styles.dateInCardItem}>
-                      <Text style={styles.dateInCardLabel}>
+                  <View style={[rowLayout.row, styles.datesInCard]}>
+                    <View style={[styles.dateInCardItem, rowLayout.grow]}>
+                      <Text style={styles.dateInCardLabel} numberOfLines={1}>
                         {t("subscription.expiresOn", "Expires on")}
                       </Text>
-                      <Text style={styles.dateInCardValue}>{formatDateTime(expiryIso)}</Text>
+                      <Text style={[styles.dateInCardValue, flexShrinkText]} numberOfLines={2}>
+                        {formatDateTime(expiryIso)}
+                      </Text>
                     </View>
                     <View style={styles.dateInCardDivider} />
-                    <View style={styles.dateInCardItem}>
-                      <Text style={styles.dateInCardLabel}>
+                    <View style={[styles.dateInCardItem, rowLayout.grow]}>
+                      <Text style={styles.dateInCardLabel} numberOfLines={1}>
                         {t("subscription.nextRenewal", "Next renewal")}
                       </Text>
-                      <Text style={[styles.dateInCardValue, { color: accent }]}>
+                      <Text
+                        style={[styles.dateInCardValue, flexShrinkText, { color: accent }]}
+                        numberOfLines={2}
+                      >
                         {renewalMode === "on_first_accept"
                           ? t(
                               "subscription.nextRenewalOnFirstAccept",
@@ -298,24 +320,24 @@ export function YourSubscriptionScreen() {
 
                 <Text style={styles.benefitsTitle}>{t("subscription.benefits", "Benefits")}</Text>
                 {plan.benefits.map((benefit, index) => (
-                  <View key={`${plan.id}-b-${index}`} style={styles.benefitRow}>
-                    <LinearGradient colors={["#34D399", "#059669"]} style={styles.check}>
+                  <View key={`${plan.id}-b-${index}`} style={[rowLayout.rowStart, styles.benefitRow]}>
+                    <LinearGradient colors={["#34D399", "#059669"]} style={[styles.check, rowLayout.noShrink]}>
                       <Ionicons name="checkmark" size={12} color="#FFF" />
                     </LinearGradient>
-                    <Text style={styles.benefitTxt}>{benefit}</Text>
+                    <Text style={[styles.benefitTxt, flexShrinkText]}>{benefit}</Text>
                   </View>
                 ))}
 
                 {isActive ? (
                   <View style={styles.autoRenewBox}>
-                    <View style={styles.autoRenewRow}>
-                      <View style={styles.autoRenewCopy}>
-                        <Text style={styles.autoRenewTitle}>
+                    <View style={[rowLayout.row, styles.autoRenewRow]}>
+                      <View style={[styles.autoRenewCopy, rowLayout.grow]}>
+                        <Text style={[styles.autoRenewTitle, flexShrinkText]} numberOfLines={2}>
                           {autoRenewOn
                             ? t("subscription.autoRenewActive", "Auto renew is active")
                             : t("subscription.autoRenewOff", "Auto renew is off")}
                         </Text>
-                        <Text style={styles.autoRenewSub}>
+                        <Text style={[styles.autoRenewSub, flexShrinkText]} numberOfLines={4}>
                           {autoRenewOn
                             ? renewalMode === "on_first_accept"
                               ? t(
@@ -340,6 +362,7 @@ export function YourSubscriptionScreen() {
                         disabled={toggleBusy}
                         trackColor={{ false: "#D1D5DB", true: "#C4B5FD" }}
                         thumbColor={autoRenewOn ? accent : "#F9FAFB"}
+                        style={rowLayout.noShrink}
                       />
                     </View>
                   </View>
@@ -423,13 +446,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingLeft: 12,
-    paddingRight: 16,
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E5E7EB",
+    maxWidth: "100%",
   },
   backBtn: {
     width: 40,
@@ -442,9 +462,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#F3F4F6",
   },
   headerCenter: {
-    flex: 1,
     alignItems: "center",
     paddingHorizontal: 4,
+    minWidth: 0,
   },
   headerTitle: {
     fontSize: 17,
@@ -452,11 +472,12 @@ const styles = StyleSheet.create({
     color: "#111827",
   },
   headerActions: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "flex-end",
     gap: 10,
     paddingLeft: 4,
+  },
+  headerActionsCompact: {
+    gap: 6,
   },
   tcBtn: {
     paddingHorizontal: 12,
@@ -493,9 +514,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   scroll: {
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 32,
     gap: 16,
   },
   duesBannerWrap: {
@@ -503,6 +521,7 @@ const styles = StyleSheet.create({
   },
   planCardWrap: {
     position: "relative",
+    maxWidth: "100%",
   },
   planCardWrapActive: {
     marginTop: 6,
@@ -513,6 +532,7 @@ const styles = StyleSheet.create({
     borderColor: "#E9D5FF",
     backgroundColor: "#FAF5FF",
     padding: 16,
+    maxWidth: "100%",
   },
   planCardActive: {
     paddingTop: 20,
@@ -532,20 +552,18 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
   },
   planTop: {
-    flexDirection: "row",
-    alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 12,
+    maxWidth: "100%",
   },
   planTitleRow: {
     flex: 1,
     minWidth: 0,
   },
   planTitleLine: {
-    flexDirection: "row",
     flexWrap: "wrap",
-    alignItems: "center",
     gap: 8,
+    maxWidth: "100%",
   },
   maxBadge: {
     backgroundColor: "#312E81",
@@ -585,17 +603,17 @@ const styles = StyleSheet.create({
   },
   datesInCard: {
     marginTop: 12,
-    flexDirection: "row",
     backgroundColor: "#FFFFFF",
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "#EDE9FE",
     overflow: "hidden",
+    maxWidth: "100%",
   },
   dateInCardItem: {
-    flex: 1,
     paddingHorizontal: 10,
     paddingVertical: 10,
+    minWidth: 0,
   },
   dateInCardDivider: {
     width: StyleSheet.hairlineWidth,
@@ -626,10 +644,9 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   benefitRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
     gap: 10,
     marginBottom: 10,
+    maxWidth: "100%",
   },
   check: {
     width: 22,
@@ -641,6 +658,7 @@ const styles = StyleSheet.create({
   },
   benefitTxt: {
     flex: 1,
+    minWidth: 0,
     fontSize: 14,
     color: "#374151",
     lineHeight: 20,
@@ -652,11 +670,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E5E7EB",
     padding: 12,
+    maxWidth: "100%",
   },
   autoRenewRow: {
-    flexDirection: "row",
-    alignItems: "center",
     gap: 12,
+    maxWidth: "100%",
   },
   autoRenewCopy: {
     flex: 1,

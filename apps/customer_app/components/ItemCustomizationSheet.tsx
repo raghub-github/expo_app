@@ -763,7 +763,7 @@ export function ItemCustomizationSheet({
 
   const footerBar = (
     <View style={[styles.footer, dark && styles.footerDark, { paddingBottom: footerPadBottom }]}>
-      <View style={styles.stepper}>
+      <View style={[styles.stepper, dark && styles.stepperDark]}>
         <TouchableOpacity
           accessibilityRole="button"
           accessibilityLabel="Decrease quantity"
@@ -773,12 +773,18 @@ export function ItemCustomizationSheet({
           activeOpacity={0.7}
         >
           <AppText
-            style={[styles.stepperGlyph, quantity <= 1 && styles.stepperGlyphDisabled]}
+            style={[
+              styles.stepperGlyph,
+              dark && styles.stepperGlyphDark,
+              quantity <= 1 && styles.stepperGlyphDisabled,
+            ]}
           >
             −
           </AppText>
         </TouchableOpacity>
-        <AppText style={styles.stepperQuantity}>{quantity}</AppText>
+        <AppText style={[styles.stepperQuantity, dark && styles.stepperQuantityDark]}>
+          {quantity}
+        </AppText>
         <TouchableOpacity
           accessibilityRole="button"
           accessibilityLabel="Increase quantity"
@@ -786,14 +792,14 @@ export function ItemCustomizationSheet({
           onPress={() => setQuantity((q) => q + 1)}
           activeOpacity={0.7}
         >
-          <AppText style={styles.stepperGlyph}>+</AppText>
+          <AppText style={[styles.stepperGlyph, dark && styles.stepperGlyphDark]}>+</AppText>
         </TouchableOpacity>
       </View>
 
       <TouchableOpacity
         onPress={handleAdd}
         disabled={!canAdd}
-        style={[styles.addBtn, !canAdd && styles.addBtnDisabled]}
+        style={[styles.addBtn, dark && styles.addBtnDarkSurface, !canAdd && styles.addBtnDisabled]}
         activeOpacity={0.9}
       >
         <AppText style={[styles.addBtnText, !canAdd && styles.addBtnTextDisabled]}>
@@ -1725,6 +1731,10 @@ const styles = StyleSheet.create({
     flexGrow: 0,
     flexShrink: 0,
   },
+  stepperDark: {
+    borderColor: MerchantDarkPalette.accent,
+    backgroundColor: MerchantDarkPalette.accentSoft,
+  },
   stepperButton: {
     width: 36,
     height: CTA_HEIGHT,
@@ -1737,6 +1747,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: ADD_GREEN,
   },
+  stepperGlyphDark: {
+    color: MerchantDarkPalette.accent,
+  },
   stepperGlyphDisabled: {
     color: "#9CA3AF",
   },
@@ -1746,6 +1759,9 @@ const styles = StyleSheet.create({
     color: ADD_GREEN,
     minWidth: 24,
     textAlign: "center",
+  },
+  stepperQuantityDark: {
+    color: MerchantDarkPalette.accent,
   },
   addBtn: {
     flex: 1,
@@ -1766,6 +1782,9 @@ const styles = StyleSheet.create({
       },
       android: { elevation: 3 },
     }),
+  },
+  addBtnDarkSurface: {
+    backgroundColor: MerchantDarkPalette.accent,
   },
   addBtnDisabled: {
     backgroundColor: "#86EFAC",

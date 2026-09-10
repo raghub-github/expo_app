@@ -1,5 +1,10 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
+/**
+ * Cache-first food-home layout (classic / grid_first / discovery).
+ * fastKv (MMKV) for sync frame-0 paint; AsyncStorage migrate for Expo Go.
+ */
+
 import type { QueryClient } from "@tanstack/react-query";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { STORAGE_KEYS } from "@/constants";
 import type { FoodHomeLayoutKey } from "@/lib/foodHomeLayout";
 import {
@@ -20,6 +25,7 @@ import {
 } from "@/services/foodHomeLayout.service";
 import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
+import { fastGetString, fastSetString, hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
 import type { ReverseGeocodeResult } from "@/services/location.service";
 
 /** Admin layout tiles change rarely — avoid refetching on every home tab focus. */
@@ -49,18 +55,9 @@ function cacheKeysForHints(hints: GeoHints, result?: FoodHomeLayoutResult): stri
   return keys;
 }
 
-function readMemoryEntry(hints: GeoHints): CachedFoodHomeLayoutEntry | undefined {
-  for (const key of cacheKeysForHints(hints)) {
-    const hit = memoryByKey.get(key);
-    if (hit) return hit;
-  }
-  return undefined;
-}
-
-async function readPersistedBlob(): Promise<FoodHomeLayoutCacheBlob> {
+function parseBlob(raw: string | null | undefined): FoodHomeLayoutCacheBlob {
+  if (!raw) return {};
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE);
-    if (!raw) return {};
     const parsed = JSON.parse(raw) as FoodHomeLayoutCacheBlob;
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
@@ -68,16 +65,23 @@ async function readPersistedBlob(): Promise<FoodHomeLayoutCacheBlob> {
   }
 }
 
-async function writePersistedBlob(blob: FoodHomeLayoutCacheBlob): Promise<void> {
-  try {
-    await AsyncStorage.setItem(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE, JSON.stringify(blob));
-  } catch {
-    // Non-blocking — in-memory + React Query still work.
+function hydrateMemoryFromFastKvSync(): void {
+  const blob = parseBlob(fastGetString(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE));
+  for (const [key, entry] of Object.entries(blob)) {
+    if (!entry?.layoutKey || memoryByKey.has(key)) continue;
+    memoryByKey.set(key, entry);
   }
 }
 
-export function buildFoodHomeLayoutQueryKey(hints: GeoHints) {
-  return ["food-home-layout", hints.pincode, hints.state, hints.lat, hints.lng] as const;
+hydrateMemoryFromFastKvSync();
+
+function readMemoryEntry(hints: GeoHints): CachedFoodHomeLayoutEntry | undefined {
+  if (memoryByKey.size === 0) hydrateMemoryFromFastKvSync();
+  for (const key of cacheKeysForHints(hints)) {
+    const hit = memoryByKey.get(key);
+    if (hit) return hit;
+  }
+  return undefined;
 }
 
 function normalizeCachedFoodHomeLayout(entry: CachedFoodHomeLayoutEntry): FoodHomeLayoutResult {
@@ -118,31 +122,50 @@ function normalizeCachedFoodHomeLayout(entry: CachedFoodHomeLayoutEntry): FoodHo
   };
 }
 
+/** Sync frame-0 layout — MMKV/memory, no await. */
+export function readSyncFoodHomeLayout(hints: GeoHints): FoodHomeLayoutResult | undefined {
+  const hit = readMemoryEntry(hints);
+  if (!hit?.layoutKey) return undefined;
+  return normalizeCachedFoodHomeLayout(hit);
+}
+
+export function buildFoodHomeLayoutQueryKey(hints: GeoHints) {
+  return ["food-home-layout", hints.pincode, hints.state, hints.lat, hints.lng] as const;
+}
+
 export async function readCachedFoodHomeLayout(
   hints: GeoHints
 ): Promise<FoodHomeLayoutResult | undefined> {
-  const memoryHit = readMemoryEntry(hints);
-  if (memoryHit) {
-    return normalizeCachedFoodHomeLayout(memoryHit);
-  }
+  const sync = readSyncFoodHomeLayout(hints);
+  if (sync) return sync;
 
-  const blob = await readPersistedBlob();
-  for (const key of cacheKeysForHints(hints)) {
-    const hit = blob[key];
-    if (hit?.layoutKey) {
-      memoryByKey.set(key, hit);
-      return normalizeCachedFoodHomeLayout(hit);
+  await hydrateFastKvFromAsyncStorage([STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE]);
+  if (!fastGetString(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE)) {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE);
+      if (raw) fastSetString(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE, raw);
+    } catch {
+      /* ignore */
     }
   }
-  return undefined;
+  hydrateMemoryFromFastKvSync();
+  return readSyncFoodHomeLayout(hints);
 }
 
 /** Warm layout + hero media from disk before first home paint. */
 export async function hydrateFoodHomeLayoutMemoryFromStorage(): Promise<void> {
-  const blob = await readPersistedBlob();
-  for (const [key, entry] of Object.entries(blob)) {
+  await hydrateFastKvFromAsyncStorage([STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE]);
+  if (!fastGetString(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE)) {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE);
+      if (raw) fastSetString(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE, raw);
+    } catch {
+      /* ignore */
+    }
+  }
+  hydrateMemoryFromFastKvSync();
+  for (const entry of memoryByKey.values()) {
     if (!entry?.layoutKey) continue;
-    memoryByKey.set(key, entry);
     prefetchGridFirstHeroMedia(entry.gridFirstHeroMedia);
     prefetchMealsUnder250HeroMedia(entry);
   }
@@ -160,11 +183,15 @@ export async function writeCachedFoodHomeLayout(
     memoryByKey.set(key, entry);
   }
 
-  const blob = await readPersistedBlob();
+  const blob = parseBlob(fastGetString(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE));
   for (const key of keys) {
     blob[key] = entry;
   }
-  await writePersistedBlob(blob);
+  try {
+    fastSetString(STORAGE_KEYS.FOOD_HOME_LAYOUT_CACHE, JSON.stringify(blob));
+  } catch {
+    // Non-blocking — in-memory + React Query still work.
+  }
 }
 
 export async function fetchFoodHomeLayoutWithCache(
@@ -189,7 +216,7 @@ export async function hydrateFoodHomeLayoutForHints(
   const existing = queryClient.getQueryData<FoodHomeLayoutResult>(queryKey);
   if (existing?.layoutKey) return existing;
 
-  const cached = await readCachedFoodHomeLayout(hints);
+  const cached = readSyncFoodHomeLayout(hints) ?? (await readCachedFoodHomeLayout(hints));
   if (cached?.layoutKey) {
     prefetchGridFirstHeroMedia(cached.gridFirstHeroMedia);
     prefetchMealsUnder250HeroMedia(cached);
@@ -243,6 +270,7 @@ export async function prefetchFoodHomeLayout(
 }
 
 export function peekCachedFoodHomeLayoutKey(): FoodHomeLayoutKey | null {
+  if (memoryByKey.size === 0) hydrateMemoryFromFastKvSync();
   let best: CachedFoodHomeLayoutEntry | undefined;
   for (const entry of memoryByKey.values()) {
     if (!entry?.layoutKey) continue;
@@ -257,9 +285,7 @@ export function getSyncFoodHomeLayoutFromQueryClient(
 ): FoodHomeLayoutResult | undefined {
   const fromQuery = queryClient.getQueryData<FoodHomeLayoutResult>(buildFoodHomeLayoutQueryKey(hints));
   if (fromQuery?.layoutKey) return fromQuery;
-  const fromMemory = readMemoryEntry(hints);
-  if (!fromMemory?.layoutKey) return undefined;
-  return normalizeCachedFoodHomeLayout(fromMemory);
+  return readSyncFoodHomeLayout(hints);
 }
 
 export type { FoodHomeLayoutKey };

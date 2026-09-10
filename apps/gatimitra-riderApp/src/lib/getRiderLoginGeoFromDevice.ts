@@ -38,3 +38,23 @@ export async function getRiderLoginGeoFromDevice(): Promise<RiderLoginGeoPayload
     return undefined;
   }
 }
+
+/**
+ * Same as getRiderLoginGeoFromDevice, but never waits longer than `budgetMs`.
+ * OTP verify should not stall on GPS / reverse-geocode.
+ */
+export async function getRiderLoginGeoWithBudget(
+  budgetMs = 350
+): Promise<RiderLoginGeoPayload | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      getRiderLoginGeoFromDevice(),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), budgetMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}

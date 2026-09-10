@@ -2,11 +2,12 @@ import { Stack } from "expo-router";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
 import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
+import { GatiMitraColors } from "@/constants/gatimitra";
 
 export default function HomeLayout() {
   const discovery = useDiscoveryLayout();
   const barStyle = discovery ? "light" : "dark";
-  const barBg = discovery ? DiscoveryColors.bg : "#FFFFFF";
+  const barBg = discovery ? DiscoveryColors.bg : GatiMitraColors.softBackground;
 
   return (
     <>

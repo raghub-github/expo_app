@@ -27,9 +27,13 @@ import {
   parseRiderNumericId,
   useRiderWalletFreezeState,
 } from "@/src/hooks/useRiderWalletFreezeLive";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 export default function EarningsScreen() {
   const { t } = useTranslation();
+  const { rs } = useResponsiveLayout();
+  const padX = rs(20);
   const { data: earnings, isError, error, refetch } = useEarningsSummary();
   const {
     data: bankAccount,
@@ -86,16 +90,36 @@ export default function EarningsScreen() {
       <View style={styles.root}>
         <ScrollView
           style={styles.mainScroll}
-          contentContainerStyle={styles.mainScrollContent}
+          contentContainerStyle={[
+            styles.mainScrollContent,
+            {
+              paddingHorizontal: padX,
+              paddingTop: rs(12),
+              paddingBottom: EARNINGS_ADD_ACCOUNT_FOOTER_HEIGHT + rs(8),
+            },
+          ]}
           showsVerticalScrollIndicator={false}
         >
           <View style={[styles.balanceCard, balanceNegative && styles.balanceCardNegative]}>
-            <View style={styles.balanceTopRow}>
-              <Text style={[styles.balanceLabel, balanceNegative && styles.balanceLabelNegative]}>
+            <View style={[rowLayout.row, styles.balanceTopRow]}>
+              <Text
+                style={[
+                  styles.balanceLabel,
+                  flexShrinkText,
+                  balanceNegative && styles.balanceLabelNegative,
+                ]}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
                 {t("earnings.totalBalance")}
               </Text>
               <TouchableOpacity
-                style={[styles.activeAccountBtn, balanceNegative && styles.activeAccountBtnNegative]}
+                style={[
+                  rowLayout.row,
+                  styles.activeAccountBtn,
+                  rowLayout.noShrink,
+                  balanceNegative && styles.activeAccountBtnNegative,
+                ]}
                 onPress={() => router.push("/payout-accounts")}
                 activeOpacity={0.85}
                 accessibilityRole="button"
@@ -109,6 +133,7 @@ export default function EarningsScreen() {
                 <Text
                   style={[
                     styles.activeAccountBtnText,
+                    flexShrinkText,
                     balanceNegative && styles.activeAccountBtnTextNegative,
                   ]}
                   numberOfLines={1}
@@ -117,14 +142,30 @@ export default function EarningsScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
-            <Text style={[styles.balanceAmount, balanceNegative && styles.balanceAmountNegative]}>
+            <Text
+              style={[styles.balanceAmount, balanceNegative && styles.balanceAmountNegative]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+            >
               {formatCurrency(display.totalBalance)}
             </Text>
-            <Text style={[styles.balanceHint, balanceNegative && styles.balanceHintNegative]}>
+            <Text
+              style={[
+                styles.balanceHint,
+                flexShrinkText,
+                balanceNegative && styles.balanceHintNegative,
+              ]}
+              numberOfLines={2}
+            >
               {t("earnings.availableForWithdrawal")}
             </Text>
             <Text
-              style={[styles.activeAccountHint, balanceNegative && styles.activeAccountHintNegative]}
+              style={[
+                styles.activeAccountHint,
+                flexShrinkText,
+                balanceNegative && styles.activeAccountHintNegative,
+              ]}
               numberOfLines={1}
             >
               {bankAccount?.verificationStatus === "verified"
@@ -156,7 +197,7 @@ export default function EarningsScreen() {
           {/* Shown only when the wallet is negative — read-only "Pay ₹X" (native). */}
           <NegativeWalletPayCard />
 
-          <View style={styles.statsRow}>
+          <View style={[rowLayout.row, styles.statsRow]}>
             <StatCard
               label={t("earnings.thisWeek")}
               value={formatCurrency(display.thisWeek)}
@@ -221,24 +262,31 @@ export default function EarningsScreen() {
           <View style={styles.sectionCard}>
             <Text style={styles.sectionTitle}>{t("earnings.walletStatus")}</Text>
             <View style={styles.walletRow}>
-              <Text style={styles.walletLabel}>{t("earnings.withdrawable")}</Text>
-              <Text style={[styles.walletAmount, styles.withdrawableAmount]}>
+              <Text style={[styles.walletLabel, flexShrinkText]} numberOfLines={2}>
+                {t("earnings.withdrawable")}
+              </Text>
+              <Text style={[styles.walletAmount, styles.withdrawableAmount, rowLayout.noShrink]} numberOfLines={1}>
                 {formatCurrency(display.withdrawable)}
               </Text>
             </View>
             {display.subscriptionDebited > 0 ? (
               <View style={styles.walletRow}>
-                <Text style={styles.walletLabel}>
+                <Text style={[styles.walletLabel, flexShrinkText]} numberOfLines={2}>
                   {t("earnings.subscriptionDebited", "Subscription debited")}
                 </Text>
-                <Text style={[styles.walletAmount, styles.subscriptionDebitedAmount]}>
+                <Text
+                  style={[styles.walletAmount, styles.subscriptionDebitedAmount, rowLayout.noShrink]}
+                  numberOfLines={1}
+                >
                   {formatCurrency(display.subscriptionDebited)}
                 </Text>
               </View>
             ) : null}
             <View style={styles.walletRow}>
-              <Text style={styles.walletLabel}>{t("earnings.locked")}</Text>
-              <Text style={[styles.walletAmount, styles.lockedAmount]}>
+              <Text style={[styles.walletLabel, flexShrinkText]} numberOfLines={2}>
+                {t("earnings.locked")}
+              </Text>
+              <Text style={[styles.walletAmount, styles.lockedAmount, rowLayout.noShrink]} numberOfLines={1}>
                 {formatCurrency(display.locked)}
               </Text>
             </View>
@@ -285,17 +333,31 @@ export default function EarningsScreen() {
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.statCard}>
-      <Text style={styles.statLabel}>{label}</Text>
-      <Text style={styles.statValue}>{value}</Text>
+      <Text style={[styles.statLabel, flexShrinkText]} numberOfLines={1}>
+        {label}
+      </Text>
+      <Text style={[styles.statValue, flexShrinkText]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
+        {value}
+      </Text>
     </View>
   );
 }
 
 function EarningItem({ label, amount, bold }: { label: string; amount: string; bold?: boolean }) {
   return (
-    <View style={styles.earningRow}>
-      <Text style={[styles.earningLabel, bold && styles.earningLabelBold]}>{label}</Text>
-      <Text style={[styles.earningAmount, bold && styles.earningAmountBold]}>{amount}</Text>
+    <View style={[rowLayout.row, styles.earningRow]}>
+      <Text
+        style={[styles.earningLabel, flexShrinkText, bold && styles.earningLabelBold]}
+        numberOfLines={2}
+      >
+        {label}
+      </Text>
+      <Text
+        style={[styles.earningAmount, rowLayout.noShrink, bold && styles.earningAmountBold]}
+        numberOfLines={1}
+      >
+        {amount}
+      </Text>
     </View>
   );
 }
@@ -331,14 +393,29 @@ function ServiceBreakdownBlock({
 
   return (
     <View style={styles.svcBlock}>
-      <View style={styles.earningRow}>
-        <Text style={[styles.earningLabel, styles.earningLabelBold]}>{label}</Text>
-        <Text style={[styles.earningAmount, styles.earningAmountBold]}>{format(data.net)}</Text>
+      <View style={[rowLayout.row, styles.earningRow]}>
+        <Text style={[styles.earningLabel, styles.earningLabelBold, flexShrinkText]} numberOfLines={2}>
+          {label}
+        </Text>
+        <Text style={[styles.earningAmount, styles.earningAmountBold, rowLayout.noShrink]} numberOfLines={1}>
+          {format(data.net)}
+        </Text>
       </View>
       {subLines.map((s) => (
-        <View key={s.key} style={styles.svcSubRow}>
-          <Text style={styles.svcSubLabel}>{s.label}</Text>
-          <Text style={[styles.svcSubValue, s.tone === "debit" && styles.svcSubValueDebit]}>{s.value}</Text>
+        <View key={s.key} style={[rowLayout.row, styles.svcSubRow]}>
+          <Text style={[styles.svcSubLabel, flexShrinkText]} numberOfLines={1}>
+            {s.label}
+          </Text>
+          <Text
+            style={[
+              styles.svcSubValue,
+              rowLayout.noShrink,
+              s.tone === "debit" && styles.svcSubValueDebit,
+            ]}
+            numberOfLines={1}
+          >
+            {s.value}
+          </Text>
         </View>
       ))}
     </View>
@@ -359,11 +436,7 @@ const styles = StyleSheet.create({
   mainScroll: {
     flex: 1,
   },
-  mainScrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: EARNINGS_ADD_ACCOUNT_FOOTER_HEIGHT + 8,
-  },
+  mainScrollContent: {},
   centerBlock: {
     flex: 1,
     alignItems: "center",
@@ -400,6 +473,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 18,
     marginBottom: 14,
+    maxWidth: "100%",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.18,
@@ -416,17 +490,17 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#FFE0D1",
     flexShrink: 1,
+    minWidth: 0,
     marginRight: 8,
   },
   balanceLabelNegative: {
     color: "#B91C1C",
   },
   balanceTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 6,
     gap: 8,
+    maxWidth: "100%",
   },
   balanceAmount: {
     fontSize: 32,
@@ -445,8 +519,6 @@ const styles = StyleSheet.create({
     color: "#DC2626",
   },
   activeAccountBtn: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "center",
     gap: 4,
     alignSelf: "flex-start",
@@ -456,7 +528,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 8,
     paddingVertical: 4,
-    maxWidth: 132,
+    maxWidth: 140,
     height: 28,
   },
   activeAccountBtnNegative: {
@@ -508,12 +580,13 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   statsRow: {
-    flexDirection: "row",
     gap: 12,
     marginBottom: 14,
+    maxWidth: "100%",
   },
   statCard: {
     flex: 1,
+    minWidth: 0,
     backgroundColor: "#FFFFFF",
     borderRadius: 12,
     paddingHorizontal: 14,
@@ -539,6 +612,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     borderWidth: 1,
     borderColor: "#E5E7EB",
+    maxWidth: "100%",
   },
   sectionTitle: {
     fontSize: 16,
@@ -547,14 +621,16 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   earningRow: {
-    flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
     paddingVertical: 6,
+    gap: 8,
+    maxWidth: "100%",
   },
   earningLabel: {
     fontSize: 15,
     color: "#374151",
+    flex: 1,
+    minWidth: 0,
   },
   earningLabelBold: {
     fontWeight: "800",
@@ -578,15 +654,16 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   svcSubRow: {
-    flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
     paddingLeft: 12,
     paddingVertical: 2,
+    gap: 8,
   },
   svcSubLabel: {
     fontSize: 12.5,
     color: "#6B7280",
+    flex: 1,
+    minWidth: 0,
   },
   svcSubValue: {
     fontSize: 12.5,
@@ -601,10 +678,14 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     paddingVertical: 6,
+    gap: 8,
+    maxWidth: "100%",
   },
   walletLabel: {
     fontSize: 15,
     color: "#374151",
+    flex: 1,
+    minWidth: 0,
   },
   walletAmount: {
     fontSize: 17,

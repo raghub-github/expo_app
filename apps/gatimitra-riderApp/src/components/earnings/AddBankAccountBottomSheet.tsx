@@ -11,8 +11,8 @@ import {
   Keyboard,
   Modal,
   Pressable,
-  Dimensions,
   KeyboardAvoidingView,
+  useWindowDimensions,
   type KeyboardEvent,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -66,16 +66,19 @@ type KeyboardMetrics = {
   sheetHeight: number;
 };
 
-function readKeyboardMetrics(e: KeyboardEvent, topInset: number): KeyboardMetrics {
+function readKeyboardMetrics(
+  e: KeyboardEvent,
+  topInset: number,
+  windowH: number,
+  screenH: number
+): KeyboardMetrics {
   const keyboardH = Math.round(e.endCoordinates.height);
   const keyboardTop = e.endCoordinates.screenY;
-  const windowH = Dimensions.get("window").height;
   const gapBelowKeyboardTop = Math.max(0, Math.round(windowH - keyboardTop));
 
   const sheetHeight = Math.max(300, Math.round(keyboardTop - topInset - 8));
   let bottomLift = gapBelowKeyboardTop > 20 ? gapBelowKeyboardTop : 0;
 
-  const screenH = Dimensions.get("screen").height;
   const modalNotResized = windowH > screenH * 0.85;
   if (bottomLift === 0 && keyboardH > 100 && modalNotResized) {
     bottomLift = keyboardH;
@@ -103,6 +106,8 @@ function maskAccount(raw: string): string {
 export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Props) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
+  const { height: windowH } = useWindowDimensions();
+  const screenH = windowH; // adjustResize window is the layout surface; avoid one-shot screen get
   const scrollRef = useRef<ScrollView>(null);
   const fieldOffsets = useRef<Partial<Record<FormFieldKey, number>>>({});
   const createBank = useCreateRiderBankPaymentMethod();
@@ -130,7 +135,6 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
   const [nameMismatchVisible, setNameMismatchVisible] = useState(false);
   const [nameMismatchBody, setNameMismatchBody] = useState("");
 
-  const windowH = Dimensions.get("window").height;
   const closedMaxH = Math.round(windowH * 0.88);
   const keyboardUp = keyboard != null && keyboard.height > 0;
 
@@ -155,7 +159,7 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
     }
 
     const onShow = (e: KeyboardEvent) => {
-      const apply = () => setKeyboard(readKeyboardMetrics(e, insets.top));
+      const apply = () => setKeyboard(readKeyboardMetrics(e, insets.top, windowH, screenH));
       apply();
       if (Platform.OS === "android") setTimeout(apply, 80);
     };
@@ -170,7 +174,7 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
       showSub.remove();
       hideSub.remove();
     };
-  }, [visible, insets.top, bankElectronic, profileName]);
+  }, [visible, insets.top, bankElectronic, profileName, windowH, screenH]);
 
   const accountOk = ACCOUNT_RE.test(form.accountNumber.replace(/\s/g, ""));
   const ifscOk = IFSC_RE.test(form.ifsc.trim());

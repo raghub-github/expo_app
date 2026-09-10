@@ -63,7 +63,7 @@ import { AppText } from "@/components/AppText";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   HEADER_TOP_PADDING_NONE,
-  STATUS_BAR_TO_HEADER_GAP,
+  HOME_HEADER_BELOW_STATUS_GAP,
   resolveTopSafeInset,
   FLOATING_CART_BAR_HEIGHT,
   FLOATING_CART_UI_LIFT,
@@ -857,14 +857,14 @@ export default function GroceryGridFirstHomeScreen() {
                   <View
                     style={[
                       styles.gridFirstHeaderOverlay,
-                      { paddingTop: statusBarTopInset + STATUS_BAR_TO_HEADER_GAP },
+                      { paddingTop: statusBarTopInset + HOME_HEADER_BELOW_STATUS_GAP },
                     ]}
                     pointerEvents="box-none"
                     onLayout={(e) => {
                       const h = e.nativeEvent.layout.height;
-                      if (h > statusBarTopInset + STATUS_BAR_TO_HEADER_GAP) {
+                      if (h > statusBarTopInset + HOME_HEADER_BELOW_STATUS_GAP) {
                         setGridFirstHeaderBlockH(
-                          h - statusBarTopInset - STATUS_BAR_TO_HEADER_GAP
+                          h - statusBarTopInset - HOME_HEADER_BELOW_STATUS_GAP
                         );
                       }
                     }}

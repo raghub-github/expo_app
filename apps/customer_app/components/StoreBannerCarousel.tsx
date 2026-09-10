@@ -7,14 +7,15 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import {
   View,
   StyleSheet,
-  PanResponder,
   TouchableOpacity,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { Image } from "expo-image";
 import { prefetchImagesNow } from "@/lib/prefetchQueue";
 import { useCardAnimationsEnabled } from "@/hooks/useCardAnimationsEnabled";
+import { markFoodHomeListScrollEnded } from "@/lib/foodHomeScrollGuard";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import {
   isHeroMediaSessionReady,
@@ -243,10 +244,18 @@ export function StoreBannerCarousel({
     enableInfiniteLoop !== false && width > 0 ? -width : 0
   );
   const kenBurns = useSharedValue(0);
+  /** UI-thread mirrors for worklet snap (avoids 50/50 stuck from JS lag). */
+  const physicalIndexSV = useSharedValue(enableInfiniteLoop !== false ? 1 : 0);
+  const widthSV = useSharedValue(Math.max(1, width));
+  const slideCountSV = useSharedValue(1);
+  const loopLenSV = useSharedValue(1);
+  const useLoopSV = useSharedValue(enableInfiniteLoop !== false ? 1 : 0);
+  const gestureActiveSV = useSharedValue(0);
 
   holdMsRef.current = resolvedHoldMs;
   slideMsRef.current = resolvedSlideMs;
   widthRef.current = width;
+  widthSV.value = Math.max(1, width);
 
   const bannerAbs = useMemo(
     () => toAbsoluteImageUrl(bannerUri) ?? (typeof bannerUri === "string" ? bannerUri.trim() : ""),
@@ -343,21 +352,25 @@ export function StoreBannerCarousel({
   const stripSlides = useInfiniteLoop ? loopSlides : slides;
   loopSlidesRef.current = stripSlides;
   showCarouselRef.current = showCarousel;
+  slideCountSV.value = Math.max(1, slides.length);
+  loopLenSV.value = Math.max(1, stripSlides.length);
+  useLoopSV.value = useInfiniteLoop ? 1 : 0;
 
   const syncTranslateToPhysical = useCallback(
     (physicalIndex: number, animated: boolean) => {
       const target = -physicalIndex * widthRef.current;
+      physicalIndexSV.value = physicalIndex;
       if (animated) {
         translateX.value = withTiming(target, {
           duration: slideMsRef.current,
-          easing: Easing.linear,
+          easing: Easing.out(Easing.cubic),
         });
       } else {
         cancelAnimation(translateX);
         translateX.value = target;
       }
     },
-    [translateX]
+    [translateX, physicalIndexSV]
   );
 
   const resetToLogicalIndex = useCallback(
@@ -390,9 +403,9 @@ export function StoreBannerCarousel({
   activeIndexRef.current = activeIndex;
 
   useEffect(() => {
-    if (!isDraggingRef.current && !isAnimatingRef.current) {
-      resetToLogicalIndex(activeIndex, false);
-    }
+    // Never yank translate while the user is mid-swipe (causes 50/50 stuck frames).
+    if (isDraggingRef.current || isAnimatingRef.current) return;
+    resetToLogicalIndex(activeIndex, false);
   }, [activeIndex, resetToLogicalIndex]);
 
   const clearHoldTimer = useCallback(() => {
@@ -445,7 +458,7 @@ export function StoreBannerCarousel({
 
       translateX.value = withTiming(
         -nextPhysical * w,
-        { duration: slideMsRef.current, easing: Easing.linear },
+        { duration: slideMsRef.current, easing: Easing.out(Easing.cubic) },
         (finished) => {
           if (!finished) {
             runOnJS(() => {
@@ -456,11 +469,14 @@ export function StoreBannerCarousel({
 
           if (useInfiniteLoop && nextPhysical === loopLen - 1) {
             translateX.value = -w;
+            physicalIndexSV.value = 1;
             runOnJS(applyPhysicalIndex)(1, 0);
           } else if (useInfiniteLoop && nextPhysical === 0) {
             translateX.value = -len * w;
+            physicalIndexSV.value = len;
             runOnJS(applyPhysicalIndex)(len, len - 1);
           } else {
+            physicalIndexSV.value = nextPhysical;
             runOnJS(applyPhysicalIndex)(nextPhysical, nextLogical);
           }
 
@@ -468,7 +484,7 @@ export function StoreBannerCarousel({
         }
       );
     },
-    [applyPhysicalIndex, translateX, useInfiniteLoop]
+    [applyPhysicalIndex, translateX, useInfiniteLoop, physicalIndexSV]
   );
 
   const startAutoLoop = useCallback(() => {
@@ -517,115 +533,146 @@ export function StoreBannerCarousel({
   }, [enableKenBurns, motionAllowed, showCarousel, slides.length, kenBurns]);
 
   const resetAutoAfterGesture = useCallback(() => {
-    if (showCarouselRef.current) startAutoLoop();
-  }, [startAutoLoop]);
+    // Horizontal card swipe can leave the list scroll-guard stuck → all cards
+    // stop auto-rotating. Force settle so every carousel can resume.
+    markFoodHomeListScrollEnded();
+    if (showCarouselRef.current && enableAutoRotate) startAutoLoop();
+  }, [startAutoLoop, enableAutoRotate]);
 
-  const shouldCaptureHorizontal = useCallback(
-    (dx: number, dy: number) =>
-      enableSwipe &&
-      showCarouselRef.current &&
-      // Require a clear horizontal intent so slight diagonal jitter doesn't steal taps.
-      Math.abs(dx) > 12 &&
-      Math.abs(dx) > Math.abs(dy) * 1.5,
-    [enableSwipe]
+  const commitSwipeJS = useCallback(
+    (nextPhysical: number, nextLogical: number) => {
+      isDraggingRef.current = false;
+      isAnimatingRef.current = false;
+      physicalIndexRef.current = nextPhysical;
+      applyPhysicalIndex(nextPhysical, nextLogical);
+      onSwipeGesture?.();
+      resetAutoAfterGesture();
+      finishGesture();
+    },
+    [applyPhysicalIndex, finishGesture, onSwipeGesture, resetAutoAfterGesture]
   );
 
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => false,
-        onStartShouldSetPanResponderCapture: () => false,
-        onMoveShouldSetPanResponderCapture: (_, g) => shouldCaptureHorizontal(g.dx, g.dy),
-        onMoveShouldSetPanResponder: (_, g) => shouldCaptureHorizontal(g.dx, g.dy),
-        onPanResponderTerminationRequest: () => false,
-        onPanResponderGrant: () => {
-          didSwipeRef.current = false;
-          isDraggingRef.current = true;
-          clearHoldTimer();
-          cancelAnimation(translateX);
-          isAnimatingRef.current = false;
-        },
-        onPanResponderMove: (_, g) => {
-          const w = widthRef.current;
-          if (slidesRef.current.length <= 1) return;
+  const snapBackJS = useCallback(() => {
+    isDraggingRef.current = false;
+    isAnimatingRef.current = false;
+    resetAutoAfterGesture();
+    finishGesture();
+  }, [finishGesture, resetAutoAfterGesture]);
 
-          // Only block parent press once a real swipe is underway.
-          if (Math.abs(g.dx) > SWIPE_THRESHOLD) {
-            if (!didSwipeRef.current) onSwipeGesture?.();
-            didSwipeRef.current = true;
-          }
+  const onPanBeginJS = useCallback(() => {
+    didSwipeRef.current = false;
+    isDraggingRef.current = true;
+    isAnimatingRef.current = false;
+    clearHoldTimer();
+    cancelAnimation(translateX);
+    physicalIndexSV.value = physicalIndexRef.current;
+    widthSV.value = Math.max(1, widthRef.current);
+  }, [clearHoldTimer, translateX, physicalIndexSV, widthSV]);
 
-          translateX.value = -physicalIndexRef.current * w + g.dx;
-        },
-        onPanResponderRelease: (_, g) => {
-          isDraggingRef.current = false;
-          const absDx = Math.abs(g.dx);
-          const absDy = Math.abs(g.dy);
-          const len = slidesRef.current.length;
-          const w = widthRef.current;
+  /**
+   * RNGH pan on UI thread — snap always lands on a full slide (no 50/50 stuck).
+   * JS bridge only for index commit + auto-loop restart.
+   */
+  const swipeGesture = useMemo(() => {
+    if (!enableSwipe) {
+      return Gesture.Tap().enabled(false);
+    }
+    return Gesture.Pan()
+      .activeOffsetX([-10, 10])
+      .failOffsetY([-16, 16])
+      .onBegin(() => {
+        "worklet";
+        gestureActiveSV.value = 1;
+        runOnJS(onPanBeginJS)();
+      })
+      .onUpdate((e) => {
+        "worklet";
+        if (slideCountSV.value <= 1) return;
+        translateX.value = -physicalIndexSV.value * widthSV.value + e.translationX;
+      })
+      .onEnd((e) => {
+        "worklet";
+        gestureActiveSV.value = 0;
+        const w = widthSV.value;
+        const dx = e.translationX;
+        const absDx = Math.abs(dx);
+        const absDy = Math.abs(e.translationY);
+        const len = slideCountSV.value;
+        const loopLen = loopLenSV.value;
+        const useLoop = useLoopSV.value === 1;
+        const curPhysical = physicalIndexSV.value;
 
-          if ((didSwipeRef.current || absDx > SWIPE_THRESHOLD) && absDx > absDy && len > 1) {
-            didSwipeRef.current = true;
-            onSwipeGesture?.();
-            const dir: 1 | -1 = g.dx < 0 ? 1 : -1;
-            const progress = Math.min(1, absDx / Math.max(w, 1));
-
-            if (progress >= 0.22) {
-              runSlide(dir, () => {
-                resetAutoAfterGesture();
-                finishGesture();
-              });
-            } else {
-              translateX.value = withTiming(-physicalIndexRef.current * w, {
-                duration: 180,
-                easing: Easing.out(Easing.quad),
-              });
-              resetAutoAfterGesture();
-              finishGesture();
-            }
-            return;
-          }
-
-          if (!deferTapToParent && absDx < 10 && absDy < 10 && !didSwipeRef.current) {
-            onPress?.();
-            onPressOut?.();
-          } else if (absDx > 0) {
-            translateX.value = withTiming(-physicalIndexRef.current * w, {
-              duration: 180,
-              easing: Easing.out(Easing.quad),
-            });
-          }
-          resetAutoAfterGesture();
-          if (didSwipeRef.current) finishGesture();
-        },
-        onPanResponderTerminate: () => {
-          isDraggingRef.current = false;
-          const w = widthRef.current;
-          translateX.value = withTiming(-physicalIndexRef.current * w, {
+        if (len <= 1 || absDx < absDy || absDx < SWIPE_THRESHOLD) {
+          translateX.value = withTiming(-curPhysical * w, {
             duration: 180,
-            easing: Easing.out(Easing.quad),
+            easing: Easing.out(Easing.cubic),
           });
-          resetAutoAfterGesture();
-          if (didSwipeRef.current) finishGesture();
-        },
-      }),
-    [
-      enableSwipe,
-      clearHoldTimer,
-      deferTapToParent,
-      onPress,
-      onPressOut,
-      onSwipeGesture,
-      commitIndex,
-      resetAutoAfterGesture,
-      finishGesture,
-      runSlide,
-      shouldCaptureHorizontal,
-      translateX,
-    ]
-  );
+          runOnJS(snapBackJS)();
+          return;
+        }
 
-  const panHandlers = enableSwipe ? panResponder.panHandlers : undefined;
+        const dir = dx < 0 ? 1 : -1;
+        let nextPhysical = curPhysical + dir;
+        let nextLogical = 0;
+
+        if (useLoop) {
+          // strip = [last, ...slides, first] → logical = physical - 1 (mod len)
+          nextLogical = (((curPhysical - 1 + dir) % len) + len) % len;
+          if (nextPhysical < 0) nextPhysical = 0;
+          if (nextPhysical > loopLen - 1) nextPhysical = loopLen - 1;
+        } else {
+          nextPhysical = Math.max(0, Math.min(len - 1, nextPhysical));
+          nextLogical = nextPhysical;
+        }
+
+        translateX.value = withTiming(
+          -nextPhysical * w,
+          { duration: 260, easing: Easing.out(Easing.cubic) },
+          (finished) => {
+            if (!finished) {
+              runOnJS(snapBackJS)();
+              return;
+            }
+            if (useLoop && nextPhysical === loopLen - 1) {
+              translateX.value = -w;
+              physicalIndexSV.value = 1;
+              runOnJS(commitSwipeJS)(1, 0);
+            } else if (useLoop && nextPhysical === 0) {
+              translateX.value = -len * w;
+              physicalIndexSV.value = len;
+              runOnJS(commitSwipeJS)(len, len - 1);
+            } else {
+              physicalIndexSV.value = nextPhysical;
+              runOnJS(commitSwipeJS)(nextPhysical, nextLogical);
+            }
+          }
+        );
+      })
+      .onFinalize((_, success) => {
+        "worklet";
+        if (success || gestureActiveSV.value === 0) return;
+        gestureActiveSV.value = 0;
+        const w = widthSV.value;
+        const curPhysical = physicalIndexSV.value;
+        translateX.value = withTiming(-curPhysical * w, {
+          duration: 180,
+          easing: Easing.out(Easing.cubic),
+        });
+        runOnJS(snapBackJS)();
+      });
+  }, [
+    enableSwipe,
+    onPanBeginJS,
+    commitSwipeJS,
+    snapBackJS,
+    translateX,
+    physicalIndexSV,
+    widthSV,
+    slideCountSV,
+    loopLenSV,
+    useLoopSV,
+    gestureActiveSV,
+  ]);
 
   const stripStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: translateX.value }],
@@ -716,34 +763,33 @@ export function StoreBannerCarousel({
 
   return (
     <View style={[{ width, height }, radiusStyle, style]} collapsable={false}>
-      <View
-        style={[styles.clip, { width, height }]}
-        {...panHandlers}
-      >
-        {/* Permanent banner underlay — never blank while the strip recycles / slides. */}
-        {bannerAbs ? (
-          <View style={StyleSheet.absoluteFillObject} pointerEvents="none" collapsable={false}>
-            <BannerImage uri={bannerAbs} width={width} height={height} />
-          </View>
-        ) : null}
-        <Animated.View
-          style={[
-            styles.strip,
-            { width: width * stripSlides.length, height },
-            stripStyle,
-          ]}
-        >
-          {stripSlides.map((uri, i) => (
-            <BannerImage
-              key={`${uri}-${i}`}
-              uri={uri}
-              width={width}
-              height={height}
-              onLoadFail={onSlideLoadFail}
-            />
-          ))}
+      <GestureDetector gesture={swipeGesture}>
+        <Animated.View style={[styles.clip, { width, height }]} collapsable={false}>
+          {/* Permanent banner underlay — never blank while the strip recycles / slides. */}
+          {bannerAbs ? (
+            <View style={StyleSheet.absoluteFillObject} pointerEvents="none" collapsable={false}>
+              <BannerImage uri={bannerAbs} width={width} height={height} />
+            </View>
+          ) : null}
+          <Animated.View
+            style={[
+              styles.strip,
+              { width: width * stripSlides.length, height },
+              stripStyle,
+            ]}
+          >
+            {stripSlides.map((uri, i) => (
+              <BannerImage
+                key={`${uri}-${i}`}
+                uri={uri}
+                width={width}
+                height={height}
+                onLoadFail={onSlideLoadFail}
+              />
+            ))}
+          </Animated.View>
         </Animated.View>
-      </View>
+      </GestureDetector>
       {dimmed ? <View style={[styles.dim, { borderRadius }]} pointerEvents="none" /> : null}
       {showDots ? (
         <View style={styles.dots} pointerEvents="none">

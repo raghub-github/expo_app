@@ -1,28 +1,43 @@
 /**
  * Admin ELIGIBILITY_OVERRIDE management (§31) for a rider — list + create. Proxies to the
- * backend (authoritative); records the acting admin's email as the audit label.
+ * backend (authoritative); records the acting admin's name + email as the audit label.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import { fetchBackendInternal } from "@/lib/backend-internal";
+import { getSystemUserByAuthId, getSystemUserByEmail } from "@/lib/auth/user-mapping";
 
 export const runtime = "nodejs";
 
 async function gate() {
   const supabase = await createServerSupabaseClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
   if (error || !user) {
     if (isInvalidRefreshToken(error)) await signOutIfSessionDead(supabase, error);
-    return { ok: false as const, res: NextResponse.json({ error: "Not authenticated" }, { status: 401 }) };
+    return {
+      ok: false as const,
+      res: NextResponse.json({ error: "Not authenticated" }, { status: 401 }),
+    };
   }
   const sa = await isSuperAdmin(user.id, user.email!);
   const rider = await hasDashboardAccessByAuth(user.id, user.email!, "RIDER");
   if (!sa && !rider) {
-    return { ok: false as const, res: NextResponse.json({ error: "Insufficient permissions." }, { status: 403 }) };
+    return {
+      ok: false as const,
+      res: NextResponse.json({ error: "Insufficient permissions." }, { status: 403 }),
+    };
   }
-  return { ok: true as const, email: user.email!, isSuperAdmin: sa };
+  return {
+    ok: true as const,
+    email: user.email!,
+    authUserId: user.id,
+    isSuperAdmin: sa,
+  };
 }
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -36,7 +51,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       {
         method: "GET",
         actorRole: g.isSuperAdmin ? "super_admin" : "rider_admin",
-      }
+      },
     );
     return NextResponse.json(data, { status: response.status });
   } catch (e) {
@@ -61,6 +76,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
 
+  let systemUser = await getSystemUserByAuthId(g.authUserId);
+  if (!systemUser) systemUser = await getSystemUserByEmail(g.email);
+  const adminName = String(systemUser?.full_name || "").trim();
+  const createdByLabel = adminName ? `${adminName} (${g.email})` : g.email;
+
   try {
     const { response, data } = await fetchBackendInternal("/v1/rider-eligibility/rider-overrides", {
       method: "POST",
@@ -69,7 +89,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         riderId,
         service: body.service,
         reason: body.reason,
-        createdByLabel: g.email,
+        createdByLabel,
         effectiveTo: body.effectiveTo ?? null,
       }),
     });

@@ -150,18 +150,14 @@ export async function emitStoreStatusChanged(
     }
   }
 
-  // OPEN → CLOSED because the delivery window ended — update the same tray item.
-  const outOfTimings =
-    previousStatus === "OPEN" &&
-    newStatus === "CLOSED" &&
-    (reason === "schedule_closed" ||
-      reason === "schedule_expired" ||
-      reason === "schedule_end_timeout" ||
-      reason === "outside_operating_hours");
-  if (outOfTimings) {
+  // OPEN → CLOSED (manual OR schedule): instant Zomato-style offline tray.
+  // Same FCM tag replaces ONLINE in place — no delay, works killed/bg/open.
+  if (previousStatus === "OPEN" && newStatus === "CLOSED") {
     try {
-      const { notifyMerchantStoreStatus } = await import("../../lib/merchant-push-notify.js");
-      await notifyMerchantStoreStatus(sql, storeId, "OUT_OF_TIMINGS");
+      const { notifyMerchantOutsideDeliveryTimings } = await import(
+        "../../lib/merchant-push-notify.js"
+      );
+      await notifyMerchantOutsideDeliveryTimings(sql, storeId);
     } catch (e) {
       log.info({ storeId, err: e }, "store_out_of_timings_push_failed");
     }
@@ -253,13 +249,8 @@ async function applyScheduleClosed(
     VALUES (${storeId}, 'store_closed_auto', 'SCHEDULE', 'schedule_closed')
   `;
   log.info({ storeId, trigger: "schedule_closed" }, "store_auto_close");
+  // emitStoreStatusChanged → notifyMerchantOutsideDeliveryTimings (instant FCM).
   await emitStoreStatusChanged(sql, storeId, "OPEN", "CLOSED", "schedule_closed", "AUTO", log);
-  try {
-    const { notifyMerchantOutsideDeliveryTimings } = await import("../../lib/merchant-push-notify.js");
-    await notifyMerchantOutsideDeliveryTimings(sql, storeId);
-  } catch (e) {
-    log.info({ storeId, err: e }, "outside_delivery_push_failed");
-  }
 }
 
 /** 2. Schedule open – business hours started. Atomic full metadata update. */

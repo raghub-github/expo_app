@@ -6,21 +6,32 @@ import { useAuthStore } from "@/store/authStore";
 import {
   useLocationStore,
   coordsMovedSignificantly,
-  LOCATION_SIGNIFICANT_MOVE_METERS,
 } from "@/store/locationStore";
 import { reverseGeocode } from "@/services/location.service";
 import { saveLastKnownLocation } from "@/lib/lastKnownLocationCache";
-import { debouncedInvalidateFoodHomeListingQueries } from "@/lib/invalidateFoodHomeLocationQueries";
+import {
+  invalidateFoodHomeListingQueriesAfterMove,
+} from "@/lib/invalidateFoodHomeLocationQueries";
 import { syncActiveLocationFromStore } from "@/lib/syncActiveLocationFromStore";
 import { useActiveLocationReconcileReady } from "@/hooks/useActiveLocationReconcileReady";
 import { thermalAudit } from "@/lib/thermalAudit";
+import { isRawCoordinateText } from "@/lib/isRawCoordinateText";
 
 /**
  * Keep GPS fresh while the app is foregrounded (when not on an explicit
- * selected pin). Uses periodic low-accuracy reads — not a continuous
- * watchPosition subscription, which kept the GPS radio awake and heated phones.
+ * selected pin). Periodic low-accuracy reads — not continuous watchPosition
+ * (thermal). Tuned so meaningful physical movement updates header + stores
+ * promptly without reacting to GPS jitter.
  */
-const FOREGROUND_GPS_POLL_MS = 90_000;
+/** Poll often enough that walking/driving to a new area is noticed quickly. */
+const FOREGROUND_GPS_POLL_MS = 20_000;
+/**
+ * Customer discovery move gate — smaller than package reconcile (350 m).
+ * Ignores GPS noise; still updates when the user actually changes area.
+ */
+const CUSTOMER_GPS_MOVE_METERS = 100;
+/** Drop only absurdly bad Low-accuracy fixes (meters). */
+const MAX_ACCEPT_ACCURACY_M = 500;
 
 export function LocationWatchSync() {
   const queryClient = useQueryClient();
@@ -31,6 +42,8 @@ export function LocationWatchSync() {
   const lastAppliedRef = useRef<{ latitude: number; longitude: number } | null>(null);
   const geocodeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollInFlightRef = useRef(false);
+  /** Bumps on every accepted GPS apply — stale reverse-geocode results are dropped. */
+  const geocodeSeqRef = useRef(0);
 
   useEffect(() => {
     if (permissionStatus !== "granted") return;
@@ -52,12 +65,17 @@ export function LocationWatchSync() {
       };
       const accuracy =
         typeof loc.coords.accuracy === "number" ? loc.coords.accuracy : null;
+      if (accuracy != null && accuracy > MAX_ACCEPT_ACCURACY_M) return;
+
       const tsMs = typeof loc.timestamp === "number" ? loc.timestamp : Date.now();
       const prev = lastAppliedRef.current ?? useLocationStore.getState().coords;
-      if (!coordsMovedSignificantly(prev, next, LOCATION_SIGNIFICANT_MOVE_METERS)) return;
+      if (!coordsMovedSignificantly(prev, next, CUSTOMER_GPS_MOVE_METERS)) return;
 
       lastAppliedRef.current = next;
+      const geocodeSeq = ++geocodeSeqRef.current;
       thermalAudit("GPS_UPDATE", { source: "foreground_poll" });
+
+      // 1) Coords update immediately — listings/header consumers react now.
       useLocationStore.setState({
         coords: next,
         coordsAccuracy: accuracy,
@@ -76,12 +94,26 @@ export function LocationWatchSync() {
       });
       void useLocationStore.getState().clearPersistedSelection();
 
+      // 2) Store filtering must not wait on reverse geocode.
+      invalidateFoodHomeListingQueriesAfterMove(queryClient);
+
+      // 3) Resolve place name in parallel; never overwrite with raw coordinates.
       if (geocodeTimerRef.current) clearTimeout(geocodeTimerRef.current);
       geocodeTimerRef.current = setTimeout(() => {
         void (async () => {
           try {
             const address = await reverseGeocode(next.longitude, next.latitude);
+            if (cancelled) return;
+            if (geocodeSeq !== geocodeSeqRef.current) return;
             if (useLocationStore.getState().locationSource === "selected") return;
+
+            const secondary = address.secondary?.trim() ?? "";
+            const full = address.fullAddress?.trim() ?? "";
+            if (isRawCoordinateText(secondary) || isRawCoordinateText(full)) {
+              // Keep previous human-readable place; coords already updated.
+              return;
+            }
+
             useLocationStore.setState({ address, locationSource: "current" });
             saveLastKnownLocation({
               lat: next.latitude,
@@ -92,12 +124,11 @@ export function LocationWatchSync() {
               address,
             });
             await syncActiveLocationFromStore();
-            debouncedInvalidateFoodHomeListingQueries(queryClient);
           } catch {
-            debouncedInvalidateFoodHomeListingQueries(queryClient);
+            // Keep prior place name — never flash lat,lng on geocode failure.
           }
         })();
-      }, 400);
+      }, 250);
     };
 
     const pollGps = async () => {

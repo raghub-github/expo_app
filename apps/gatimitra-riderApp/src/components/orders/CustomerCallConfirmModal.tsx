@@ -3,6 +3,9 @@ import { View, Text, Pressable, Modal, StyleSheet } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { flexShrinkText } from "@/src/theme/responsiveText";
 
 type Props = {
   visible: boolean;
@@ -25,26 +28,40 @@ function CallOnlyIfRequiredIcon() {
 
 export function CustomerCallConfirmModal({ visible, onCancel, onConfirm }: Props) {
   const { t } = useTranslation();
+  const { height, isShortHeight } = useResponsiveLayout();
+  const cardMaxH = Math.round(height * (isShortHeight ? 0.7 : 0.78));
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
       <Pressable style={styles.backdrop} onPress={onCancel}>
-        <Pressable style={styles.card} onPress={(e) => e.stopPropagation()}>
-          <CallOnlyIfRequiredIcon />
-
-          <Text style={styles.title}>
-            {t("orders.customerCallConfirm.title", "Please call only if required")}
-          </Text>
-
-          <Pressable style={styles.callBtn} onPress={onConfirm}>
-            <Text style={styles.callBtnText}>{t("orders.customerCallConfirm.call", "Call")}</Text>
-          </Pressable>
-
-          <Pressable onPress={onCancel} style={styles.skipBtn}>
-            <Text style={styles.skipText}>
-              {t("orders.customerCallConfirm.dontCall", "Don't call")}
+        <Pressable
+          style={[styles.card, { maxHeight: cardMaxH }]}
+          onPress={(e) => e.stopPropagation()}
+        >
+          <ResponsiveSheetBody
+            maxHeight={cardMaxH - 16}
+            contentContainerStyle={styles.bodyContent}
+            footerStyle={styles.footerSlot}
+            footer={
+              <>
+                <Pressable style={styles.callBtn} onPress={onConfirm}>
+                  <Text style={styles.callBtnText} numberOfLines={1}>
+                    {t("orders.customerCallConfirm.call", "Call")}
+                  </Text>
+                </Pressable>
+                <Pressable onPress={onCancel} style={styles.skipBtn}>
+                  <Text style={styles.skipText} numberOfLines={1}>
+                    {t("orders.customerCallConfirm.dontCall", "Don't call")}
+                  </Text>
+                </Pressable>
+              </>
+            }
+          >
+            <CallOnlyIfRequiredIcon />
+            <Text style={[styles.title, flexShrinkText]} numberOfLines={isShortHeight ? 3 : 4}>
+              {t("orders.customerCallConfirm.title", "Please call only if required")}
             </Text>
-          </Pressable>
+          </ResponsiveSheetBody>
         </Pressable>
       </Pressable>
     </Modal>
@@ -66,15 +83,28 @@ const styles = StyleSheet.create({
     maxWidth: 320,
     backgroundColor: "#ffffff",
     borderRadius: 16,
-    paddingHorizontal: 24,
-    paddingTop: 28,
-    paddingBottom: 22,
-    alignItems: "center",
+    paddingTop: 12,
+    paddingBottom: 10,
+    alignItems: "stretch",
+    overflow: "hidden",
+    flexShrink: 1,
+    minHeight: 0,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.15,
     shadowRadius: 24,
     elevation: 12,
+  },
+  bodyContent: {
+    alignItems: "center",
+    paddingTop: 16,
+    paddingHorizontal: 24,
+  },
+  footerSlot: {
+    borderTopWidth: 0,
+    backgroundColor: "transparent",
+    gap: 0,
+    paddingHorizontal: 24,
   },
   iconStage: {
     width: ICON_SIZE,
@@ -82,6 +112,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 18,
+    alignSelf: "center",
   },
   phoneCircle: {
     width: ICON_SIZE,
@@ -113,8 +144,9 @@ const styles = StyleSheet.create({
     color: "#1C1C1C",
     textAlign: "center",
     lineHeight: 24,
-    marginBottom: 22,
+    marginBottom: 8,
     paddingHorizontal: 4,
+    alignSelf: "stretch",
   },
   callBtn: {
     alignSelf: "stretch",
@@ -131,6 +163,7 @@ const styles = StyleSheet.create({
   },
   skipBtn: {
     paddingVertical: 6,
+    alignItems: "center",
   },
   skipText: {
     fontSize: 15,

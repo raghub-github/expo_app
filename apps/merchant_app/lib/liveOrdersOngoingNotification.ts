@@ -1,19 +1,19 @@
 /**
  * Zomato-style Android sticky for merchant kitchen status.
  *
- * Shows an ongoing "🟢 {store} is online · Waiting for orders" tray row while
- * the store is open (see LiveOrdersOngoingNotification). Server push for
- * store_online / go-online is also enabled in pushBackgroundTask.
+ * Writes into the single STORE_STATUS tray id (not a second notification):
+ *   - 0 live orders → "Waiting for orders"
+ *   - live orders → Prep / Ready / Out progress lines
  */
 
 import { Platform } from "react-native";
 import Constants from "expo-constants";
-import { GatiMitraMerchant } from "@/constants/theme";
 import { isAppForeground } from "@/lib/appForeground";
 import {
   getActiveOrdersBreakdown,
   type ActiveOrdersBreakdown,
 } from "@/services/storeSettingsApi";
+import { updateOnlineStoreStatusKitchenBody } from "@/lib/storeStatusNotification";
 
 export const LIVE_ORDERS_ONGOING_ID = "merchant-live-orders-ongoing";
 /** Legacy idle id — dismiss so only one sticky shows. */
@@ -21,46 +21,50 @@ export const LEGACY_ONLINE_NOTIF_ID = "merchant-store-online-status";
 export const LIVE_ORDERS_CHANNEL_ID = "merchant_live_orders";
 export const LIVE_ORDERS_HREF = "/(tabs)/orders?tab=active";
 
-const BAR_LEN = 12;
-
 /** Zomato-style ongoing tray while the store is online (waiting for orders / kitchen status). */
 const KITCHEN_STICKY_ENABLED = true;
 
 /** When false, sticky must not be shown (store closed / logged out / feature off). */
 let kitchenStickyAllowed = false;
-/** Serialize native schedule/dismiss so they cannot overlap and crash the process. */
-let nativeBusy = false;
-let pendingDismiss = false;
+let lastStoreMeta: { storeId: number; storeName: string; merchantId?: string | null } | null =
+  null;
 
 /**
  * Gate for all kitchen sticky writers (poll, push, order transitions).
- * Dismisses only when transitioning from allowed → blocked.
  */
 export function setKitchenStickyAllowed(allowed: boolean): void {
   if (!KITCHEN_STICKY_ENABLED) {
-    const was = kitchenStickyAllowed;
     kitchenStickyAllowed = false;
-    if (was || allowed) {
-      void dismissLiveOrdersOngoingNotification();
-    }
     return;
   }
-  const was = kitchenStickyAllowed;
   kitchenStickyAllowed = allowed;
-  if (was && !allowed) {
-    void dismissLiveOrdersOngoingNotification();
-  }
 }
 
 export function isKitchenStickyAllowed(): boolean {
   return kitchenStickyAllowed;
 }
 
+/** Remember which store the ONLINE sticky belongs to (for push-driven updates). */
+export function setKitchenStickyStoreMeta(meta: {
+  storeId: number;
+  storeName?: string | null;
+  merchantId?: string | null;
+} | null): void {
+  if (!meta || !Number.isInteger(meta.storeId) || meta.storeId < 1) {
+    lastStoreMeta = null;
+    return;
+  }
+  lastStoreMeta = {
+    storeId: meta.storeId,
+    storeName: meta.storeName?.trim() || "Your restaurant",
+    merchantId: meta.merchantId ?? null,
+  };
+}
+
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
 }
 
-let channelReady = false;
 let lastSignature: string | null = null;
 let inFlight = false;
 
@@ -68,72 +72,22 @@ async function loadNotifications() {
   return import("expo-notifications");
 }
 
-async function ensureChannel(
-  Notifications: typeof import("expo-notifications")
-): Promise<void> {
-  if (channelReady || Platform.OS !== "android") return;
-  try {
-    await Notifications.setNotificationChannelAsync(LIVE_ORDERS_CHANNEL_ID, {
-      name: "Live kitchen status",
-      importance: Notifications.AndroidImportance.LOW,
-      sound: undefined,
-      vibrationPattern: undefined,
-      enableVibrate: false,
-      showBadge: true,
-    });
-    channelReady = true;
-  } catch {
-    /* best-effort */
-  }
-}
-
-/**
- * Compact status fractions for shade notifications (no View / CSS).
- * Avoids dense unicode "pill" glyphs that render as (●●●●●…) on many Android fonts.
- * Example: `Prep 1  ·  Ready 0  ·  Out 0` with a simple `▓▓▓░░░░░░░` meter.
- */
-function progressBar(prep: number, ready: number, ofd: number): string {
-  const total = prep + ready + ofd;
-  if (total <= 0) return "";
-  const prepSeg = Math.round((prep / total) * BAR_LEN);
-  const readySeg = Math.round((ready / total) * BAR_LEN);
-  const ofdSeg = Math.max(0, BAR_LEN - prepSeg - readySeg);
-  const filled = "▓".repeat(Math.max(0, prepSeg));
-  const mid = "▒".repeat(Math.max(0, readySeg));
-  const empty = "░".repeat(Math.max(0, ofdSeg));
-  return `${filled}${mid}${empty}`;
-}
-
 export function formatKitchenStickyBody(
   breakdown: ActiveOrdersBreakdown,
-  opts?: { eventSubtitle?: string | null }
+  _opts?: { eventSubtitle?: string | null }
 ): string {
+  // Zomato-style: only non-zero stages show; zero stages auto-hide.
+  // 0 live work → "Waiting for orders".
   const parts: string[] = [];
   if (breakdown.preparing > 0) parts.push(`🍳 ${breakdown.preparing} preparing`);
   if (breakdown.ready > 0) parts.push(`✅ ${breakdown.ready} ready`);
   if (breakdown.out_for_delivery > 0) {
-    parts.push(`🛵 ${breakdown.out_for_delivery} out`);
+    parts.push(`🛵 ${breakdown.out_for_delivery} out for delivery`);
   }
   if (breakdown.pending_accept > 0) {
     parts.push(`🔔 ${breakdown.pending_accept} new`);
   }
-  const line =
-    parts.length > 0 ? parts.join("  ·  ") : "Waiting for orders";
-  const bar = progressBar(
-    breakdown.preparing,
-    breakdown.ready,
-    breakdown.out_for_delivery
-  );
-  const legend =
-    breakdown.preparing + breakdown.ready + breakdown.out_for_delivery > 0
-      ? `Prep ${breakdown.preparing} · Ready ${breakdown.ready} · Out ${breakdown.out_for_delivery}`
-      : "";
-  const event = opts?.eventSubtitle?.trim();
-  const chunks = [line];
-  if (bar) chunks.push(bar);
-  if (legend) chunks.push(legend);
-  if (event) chunks.push(event);
-  return chunks.join("\n");
+  return parts.length > 0 ? parts.join("\n") : "Waiting for orders";
 }
 
 export function formatKitchenStickyTitle(storeName: string): string {
@@ -142,97 +96,56 @@ export function formatKitchenStickyTitle(storeName: string): string {
 }
 
 export async function dismissLiveOrdersOngoingNotification(): Promise<void> {
-  if (Platform.OS !== "android" || isExpoGo()) return;
+  if (Platform.OS !== "android") return;
   lastSignature = null;
-  if (nativeBusy) {
-    pendingDismiss = true;
-    return;
-  }
-  nativeBusy = true;
   try {
     const Notifications = await loadNotifications();
     await Notifications.dismissNotificationAsync(LIVE_ORDERS_ONGOING_ID);
     await Notifications.dismissNotificationAsync(LEGACY_ONLINE_NOTIF_ID);
   } catch {
     /* best-effort */
-  } finally {
-    nativeBusy = false;
-    if (pendingDismiss) {
-      pendingDismiss = false;
-      if (!kitchenStickyAllowed) {
-        void dismissLiveOrdersOngoingNotification();
-      }
-    }
   }
 }
 
 export type KitchenStickyOpts = {
   storeName: string;
   breakdown: ActiveOrdersBreakdown;
-  /** Optional one-line event (e.g. “Order #GMF… is ready”). */
+  /** Ignored — kept for call-site compat; sticky stays Prep/Ready/Out only. */
   eventSubtitle?: string | null;
   force?: boolean;
+  storeId?: number;
+  merchantId?: string | null;
 };
 
 export async function showOrUpdateKitchenSticky(
   opts: KitchenStickyOpts
 ): Promise<void> {
   if (!KITCHEN_STICKY_ENABLED) return;
-  if (Platform.OS !== "android" || isExpoGo()) return;
-  // Soft gate — do not dismiss here (avoids schedule/dismiss thrash → native crash).
+  if (Platform.OS !== "android") return;
   if (!kitchenStickyAllowed) return;
-  if (nativeBusy) return;
 
-  const title = formatKitchenStickyTitle(opts.storeName);
-  const body = formatKitchenStickyBody(opts.breakdown, {
-    eventSubtitle: opts.eventSubtitle,
-  });
-  const signature = `${title}|${body}|${opts.breakdown.active_orders}`;
+  const storeId = opts.storeId ?? lastStoreMeta?.storeId;
+  if (storeId == null || !Number.isInteger(storeId) || storeId < 1) return;
+
+  const storeName =
+    opts.storeName.trim() || lastStoreMeta?.storeName || "Your restaurant";
+  const body = formatKitchenStickyBody(opts.breakdown);
+  const signature = `${storeId}|${storeName}|${body}|${opts.breakdown.active_orders}`;
   if (!opts.force && signature === lastSignature) return;
 
-  nativeBusy = true;
-  try {
-    if (!kitchenStickyAllowed) return;
-    const Notifications = await loadNotifications();
-    await ensureChannel(Notifications);
-    try {
-      await Notifications.dismissNotificationAsync(LEGACY_ONLINE_NOTIF_ID);
-    } catch {
-      /* ignore */
-    }
-    await Notifications.scheduleNotificationAsync({
-      identifier: LIVE_ORDERS_ONGOING_ID,
-      content: {
-        title,
-        body,
-        data: {
-          type: "live_orders",
-          url: LIVE_ORDERS_HREF,
-          screen: "orders",
-          preparing: opts.breakdown.preparing,
-          ready: opts.breakdown.ready,
-          out_for_delivery: opts.breakdown.out_for_delivery,
-          pending_accept: opts.breakdown.pending_accept,
-          active_orders: opts.breakdown.active_orders,
-        },
-        color: GatiMitraMerchant.primary,
-        sticky: true,
-        autoDismiss: false,
-        sound: undefined,
-        ...(Platform.OS === "android" ? { channelId: LIVE_ORDERS_CHANNEL_ID } : {}),
-      },
-      trigger: null,
-    });
-    lastSignature = signature;
-  } catch {
-    /* best-effort */
-  } finally {
-    nativeBusy = false;
-    if (pendingDismiss || !kitchenStickyAllowed) {
-      pendingDismiss = false;
-      void dismissLiveOrdersOngoingNotification();
-    }
-  }
+  await updateOnlineStoreStatusKitchenBody({
+    storeId,
+    storeName,
+    merchantId: opts.merchantId ?? lastStoreMeta?.merchantId,
+    body,
+    force: opts.force === true,
+  });
+  lastSignature = signature;
+  lastStoreMeta = {
+    storeId,
+    storeName,
+    merchantId: opts.merchantId ?? lastStoreMeta?.merchantId ?? null,
+  };
 }
 
 /** @deprecated Prefer showOrUpdateKitchenSticky — kept for call sites that only have a count. */
@@ -263,18 +176,21 @@ export async function refreshLiveOrdersOngoingNotification(args: {
   storeName?: string | null;
   subtitle?: string | null;
   force?: boolean;
+  merchantId?: string | null;
 }): Promise<void> {
   if (!KITCHEN_STICKY_ENABLED) return;
-  if (Platform.OS !== "android" || isExpoGo()) return;
+  if (Platform.OS !== "android") return;
   if (!kitchenStickyAllowed) return;
   if (!args.force && !isAppForeground()) return;
-  if (inFlight || nativeBusy) return;
+  if (inFlight) return;
   inFlight = true;
   try {
     const breakdown = await getActiveOrdersBreakdown(args.storeId, args.token);
     if (!kitchenStickyAllowed) return;
     await showOrUpdateKitchenSticky({
+      storeId: args.storeId,
       storeName: args.storeName?.trim() || "Your restaurant",
+      merchantId: args.merchantId,
       breakdown,
       eventSubtitle: args.subtitle,
       force: args.force ?? Boolean(args.subtitle),
@@ -287,7 +203,7 @@ export async function refreshLiveOrdersOngoingNotification(args: {
 }
 
 /**
- * Apply count / breakdown embedded in a push payload.
+ * Apply count / breakdown embedded in a push payload (works in background).
  */
 export async function applyLiveOrdersCountFromPush(args: {
   activeOrdersCount: number;
@@ -297,6 +213,8 @@ export async function applyLiveOrdersCountFromPush(args: {
   ready?: number | null;
   outForDelivery?: number | null;
   pendingAccept?: number | null;
+  storeId?: number | null;
+  merchantId?: string | null;
 }): Promise<void> {
   if (!KITCHEN_STICKY_ENABLED) return;
   if (!kitchenStickyAllowed) return;
@@ -313,6 +231,8 @@ export async function applyLiveOrdersCountFromPush(args: {
   );
   const hasStages = preparing + ready + out_for_delivery + pending_accept > 0;
   await showOrUpdateKitchenSticky({
+    storeId: args.storeId ?? undefined,
+    merchantId: args.merchantId,
     storeName: args.storeName?.trim() || "Your restaurant",
     breakdown: {
       active_orders: active,
@@ -328,9 +248,7 @@ export async function applyLiveOrdersCountFromPush(args: {
 
 export function resetLiveOrdersOngoingCache(): void {
   lastSignature = null;
-  channelReady = false;
   kitchenStickyAllowed = false;
+  lastStoreMeta = null;
   inFlight = false;
-  nativeBusy = false;
-  pendingDismiss = false;
 }

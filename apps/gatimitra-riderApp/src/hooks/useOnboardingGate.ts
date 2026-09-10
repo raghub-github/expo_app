@@ -48,12 +48,8 @@ export function useOnboardingGate() {
   const serverStep = (riderStatus?.nextOnboardingStep ?? null) as ServerOnboardingStep | null;
 
   const completedOnboardingSteps = useMemo(() => {
-    const base = riderStatus?.completedOnboardingSteps ?? [];
-    if (riderStatus?.selfieUrl && !base.includes("pan_selfie")) {
-      return [...base, "pan_selfie"];
-    }
-    return base;
-  }, [riderStatus?.completedOnboardingSteps, riderStatus?.selfieUrl]);
+    return riderStatus?.completedOnboardingSteps ?? [];
+  }, [riderStatus?.completedOnboardingSteps]);
 
   const effectiveOnboardingStatus =
     riderStatus?.onboardingStatus ?? cachedOnboardingStatus ?? null;

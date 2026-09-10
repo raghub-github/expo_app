@@ -1,7 +1,10 @@
 import { Stack } from "expo-router";
 import { View } from "react-native";
 import { RIDER_AUTH_BG } from "@/src/theme/riderAuthTheme";
-import { OnboardingTopBar } from "@/src/components/onboarding/OnboardingTopBar";
+import {
+  OnboardingTopBar,
+  ONBOARDING_PAGE_BG,
+} from "@/src/components/onboarding/OnboardingTopBar";
 import { RiderLogoutSheetHost } from "@/src/components/profile/RiderLogoutSheetHost";
 
 /**
@@ -11,7 +14,7 @@ import { RiderLogoutSheetHost } from "@/src/components/profile/RiderLogoutSheetH
  */
 export default function OnboardingLayout() {
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, backgroundColor: ONBOARDING_PAGE_BG }}>
       <Stack
         screenOptions={{
           // Floating top bar on every step: back (to the previous step) + a ⋮ menu with
@@ -19,14 +22,15 @@ export default function OnboardingLayout() {
           // screen's own layout without shifting content.
           headerShown: true,
           headerTransparent: true,
+          headerStyle: { backgroundColor: ONBOARDING_PAGE_BG },
           header: (props) => <OnboardingTopBar route={props.route} />,
-          contentStyle: { backgroundColor: "#f4fbf6" },
+          contentStyle: { flex: 1, width: "100%", backgroundColor: ONBOARDING_PAGE_BG },
           animation: "fade",
         }}
       >
         <Stack.Screen
           name="language"
-          options={{ contentStyle: { backgroundColor: RIDER_AUTH_BG } }}
+          options={{ contentStyle: { flex: 1, width: "100%", backgroundColor: RIDER_AUTH_BG } }}
         />
         {/* help is a redirect — no top bar needed. */}
         <Stack.Screen name="help" options={{ headerShown: false }} />

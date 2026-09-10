@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, TextInput, ScrollView } from "react-native";
+import { View, Text, TextInput, ScrollView, StyleSheet } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
+import { RIDER_AUTH_BG } from "@/src/theme/riderAuthTheme";
 import { fetchRiderReferralConfig, previewRiderReferral } from "@/src/services/referral.service";
 import { REFERRAL_CODE_UNAVAILABLE_USER_MESSAGE } from "@/src/lib/referralCopy";
 import { storePendingReferral } from "@/src/lib/pendingReferral";
@@ -76,55 +77,60 @@ export default function ProfileScreen() {
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-white">
-      <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
-        <View className="flex-1 px-6 pt-8 pb-8">
-          <View className="mb-8">
-            <Text className="text-3xl font-bold text-gray-900 mb-2">{t("onboarding.profile.title")}</Text>
-            <Text className="text-base text-gray-600">{t("onboarding.profile.subtitle")}</Text>
+    <SafeAreaView style={styles.root}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        showsVerticalScrollIndicator={false}
+        style={styles.flex}
+      >
+        <View style={styles.body}>
+          <View style={styles.headerBlock}>
+            <Text style={styles.title}>{t("onboarding.profile.title")}</Text>
+            <Text style={styles.subtitle}>{t("onboarding.profile.subtitle")}</Text>
           </View>
 
-          <View className="flex-1">
-            <View className="mb-4">
-              <Text className="text-sm font-medium text-gray-700 mb-2">{t("onboarding.profile.fullName")} *</Text>
+          <View style={styles.flex}>
+            <View style={styles.field}>
+              <Text style={styles.label}>{t("onboarding.profile.fullName")} *</Text>
               <TextInput
                 value={name}
                 onChangeText={setName}
                 placeholder={t("onboarding.profile.fullNamePlaceholder")}
                 placeholderTextColor={colors.gray[400]}
-                className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base font-bold text-gray-900"
+                style={styles.input}
               />
             </View>
 
-            <View className="mb-4">
-              <Text className="text-sm font-medium text-gray-700 mb-2">{t("onboarding.profile.city")} *</Text>
+            <View style={styles.field}>
+              <Text style={styles.label}>{t("onboarding.profile.city")} *</Text>
               <TextInput
                 value={city}
                 onChangeText={setCity}
                 placeholder={t("onboarding.profile.cityPlaceholder")}
                 placeholderTextColor={colors.gray[400]}
-                className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base font-bold text-gray-900"
+                style={styles.input}
               />
             </View>
 
-            <View className="mb-4">
-              <Text className="text-sm font-medium text-gray-700 mb-2">{t("onboarding.profile.preferredLanguage")}</Text>
-              <View className="flex-row flex-wrap gap-2">
+            <View style={styles.field}>
+              <Text style={styles.label}>{t("onboarding.profile.preferredLanguage")}</Text>
+              <View style={styles.langWrap}>
                 {languages.map((lang) => (
-                  <Button
-                    key={lang.code}
-                    variant={language === lang.code ? "primary" : "outline"}
-                    size="sm"
-                    onPress={() => setLanguage(lang.code)}
-                  >
-                    {lang.label}
-                  </Button>
+                  <View key={lang.code} style={styles.langChip}>
+                    <Button
+                      variant={language === lang.code ? "primary" : "outline"}
+                      size="sm"
+                      onPress={() => setLanguage(lang.code)}
+                    >
+                      {lang.label}
+                    </Button>
+                  </View>
                 ))}
               </View>
             </View>
 
-            <View className="mb-6">
-              <Text className="text-sm font-medium text-gray-700 mb-2">{t("onboarding.profile.referralCode")}</Text>
+            <View style={styles.referralBlock}>
+              <Text style={styles.label}>{t("onboarding.profile.referralCode")}</Text>
               {riderReferralOn ? (
                 <>
                   <TextInput
@@ -149,11 +155,9 @@ export default function ProfileScreen() {
                     placeholder={t("onboarding.profile.referralPlaceholder")}
                     placeholderTextColor={colors.gray[400]}
                     autoCapitalize="characters"
-                    className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base font-bold text-gray-900"
+                    style={styles.input}
                   />
-                  {referralError ? (
-                    <Text className="mt-2 text-sm text-red-600">{referralError}</Text>
-                  ) : null}
+                  {referralError ? <Text style={styles.errorText}>{referralError}</Text> : null}
                 </>
               ) : (
                 <>
@@ -162,15 +166,19 @@ export default function ProfileScreen() {
                     editable={false}
                     placeholder={REFERRAL_CODE_UNAVAILABLE_USER_MESSAGE}
                     placeholderTextColor={colors.gray[400]}
-                    className="bg-gray-100 border border-gray-200 rounded-xl px-4 py-4 text-base text-gray-400"
+                    style={[styles.input, styles.inputDisabled]}
                   />
-                  <Text className="mt-2 text-xs text-gray-500">{REFERRAL_CODE_UNAVAILABLE_USER_MESSAGE}</Text>
+                  <Text style={styles.hint}>{REFERRAL_CODE_UNAVAILABLE_USER_MESSAGE}</Text>
                 </>
               )}
             </View>
           </View>
 
-          <Button onPress={() => void onContinue()} disabled={!canContinue || checkingReferral} size="lg">
+          <Button
+            onPress={() => void onContinue()}
+            disabled={!canContinue || checkingReferral}
+            size="lg"
+          >
             {t("onboarding.profile.continue")}
           </Button>
         </View>
@@ -178,3 +186,59 @@ export default function ProfileScreen() {
     </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1, alignSelf: "stretch", backgroundColor: RIDER_AUTH_BG },
+  flex: { flex: 1, alignSelf: "stretch" },
+  scroll: { flexGrow: 1 },
+  body: {
+    flexGrow: 1,
+    paddingHorizontal: 24,
+    paddingTop: 32,
+    paddingBottom: 32,
+  },
+  headerBlock: { marginBottom: 32 },
+  title: {
+    fontSize: 28,
+    fontWeight: "800",
+    color: colors.gray[900],
+    marginBottom: 8,
+  },
+  subtitle: { fontSize: 16, color: colors.gray[600] },
+  field: { marginBottom: 16 },
+  label: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: colors.gray[700],
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: colors.gray[200],
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
+    fontWeight: "700",
+    color: colors.gray[900],
+  },
+  inputDisabled: {
+    backgroundColor: colors.gray[100],
+    color: colors.gray[400],
+    fontWeight: "400",
+  },
+  langWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  langChip: {
+    flexGrow: 0,
+    flexShrink: 1,
+    minWidth: 88,
+  },
+  referralBlock: { marginBottom: 24 },
+  errorText: { marginTop: 8, fontSize: 14, color: colors.error[600] },
+  hint: { marginTop: 8, fontSize: 12, color: colors.gray[500] },
+});

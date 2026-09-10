@@ -37,7 +37,7 @@ export function ContinueButton({
       style={[styles.continueBtn, inactive && styles.continueBtnDisabled]}
     >
       {loading ? (
-        <ActivityIndicator color={ACCENT_DARK} />
+        <ActivityIndicator color="#ffffff" />
       ) : (
         <>
           <Text style={[styles.continueBtnText, inactive && styles.continueBtnTextDisabled]}>
@@ -46,7 +46,7 @@ export function ContinueButton({
           <Ionicons
             name="arrow-forward"
             size={18}
-            color={inactive ? "#7cb889" : "#ffffff"}
+            color="#ffffff"
           />
         </>
       )}
@@ -192,6 +192,9 @@ export function StepProgress({
                   styles.stepProgressLabel,
                   (isActive || isDone) && styles.stepProgressLabelActive,
                 ]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.75}
               >
                 {label}
               </Text>
@@ -214,31 +217,41 @@ export function StepProgress({
 export const onboardingFormStyles = StyleSheet.create({
   root: {
     flex: 1,
+    alignSelf: "stretch",
     backgroundColor: "#f4fbf6",
   },
   safeArea: {
     flex: 1,
+    alignSelf: "stretch",
     backgroundColor: "#f4fbf6",
   },
   flex: {
     flex: 1,
+    alignSelf: "stretch",
+    minWidth: 0,
   },
   scrollContent: {
     flexGrow: 1,
     paddingBottom: 28,
+    backgroundColor: "#f4fbf6",
   },
   header: {
+    alignSelf: "stretch",
     paddingHorizontal: 20,
-    paddingTop: 4,
-    paddingBottom: 20,
+    /** Clear floating OnboardingTopBar (back / Help / language) — prevents SKIP overlap. */
+    paddingTop: 80,
+    paddingBottom: 28,
     alignItems: "center",
+    minHeight: 200,
   },
   headerTopRow: {
     alignSelf: "stretch",
+    width: "100%",
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
     marginBottom: 8,
+    minHeight: 36,
   },
   backBtn: {
     alignSelf: "flex-start",
@@ -300,6 +313,7 @@ export const onboardingFormStyles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
     color: ACCENT_DARK,
+    flexShrink: 1,
   },
   title: {
     fontSize: 24,
@@ -308,15 +322,20 @@ export const onboardingFormStyles = StyleSheet.create({
     textAlign: "center",
     marginBottom: 6,
     letterSpacing: -0.3,
+    alignSelf: "stretch",
+    paddingHorizontal: 4,
   },
   subtitle: {
     fontSize: 14,
     lineHeight: 20,
     color: colors.gray[600],
     textAlign: "center",
-    maxWidth: 320,
+    alignSelf: "stretch",
+    maxWidth: "100%",
+    paddingHorizontal: 4,
   },
   formCard: {
+    alignSelf: "stretch",
     marginHorizontal: 16,
     backgroundColor: "#ffffff",
     borderRadius: 20,
@@ -396,9 +415,9 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   continueBtnDisabled: {
-    backgroundColor: "#edf8f0",
-    borderWidth: 1.5,
-    borderColor: "rgba(57, 211, 83, 0.25)",
+    backgroundColor: "#16a34a",
+    borderWidth: 0,
+    opacity: 0.45,
   },
   continueBtnText: {
     fontSize: 16,
@@ -406,7 +425,7 @@ const styles = StyleSheet.create({
     color: "#ffffff",
   },
   continueBtnTextDisabled: {
-    color: "#7cb889",
+    color: "#ffffff",
   },
   skipBtn: {
     flexDirection: "row",
@@ -491,16 +510,20 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    alignSelf: "stretch",
     paddingVertical: 4,
   },
   stepProgressSegment: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
+    minWidth: 0,
   },
   stepProgressItem: {
     alignItems: "center",
     gap: 6,
-    width: 56,
+    flex: 1,
+    minWidth: 0,
   },
   stepDot: {
     width: 28,
@@ -528,6 +551,8 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "600",
     color: colors.gray[400],
+    textAlign: "center",
+    maxWidth: "100%",
   },
   stepProgressLabelActive: {
     color: ACCENT_DARK,
@@ -539,6 +564,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 8,
     marginBottom: 18,
     maxWidth: 80,
+    minWidth: 12,
   },
   stepLineActive: {
     backgroundColor: ACCENT,

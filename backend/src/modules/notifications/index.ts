@@ -37,6 +37,11 @@ export {
   startReminderPoller,
   stopReminderPoller,
 } from "./reminderPoller.js";
+export {
+  scheduleAbandonedCartReminder,
+  cancelAbandonedCartReminder,
+  pollAbandonedCartReminders,
+} from "./abandonedCartReminder.js";
 export { emitEvent, registerDomainEventHandlers, type DomainEventMap } from "./eventBus.js";
 
 export type {

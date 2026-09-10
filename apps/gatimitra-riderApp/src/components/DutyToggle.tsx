@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import {
   View,
   Text,
@@ -14,21 +14,21 @@ import { useRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
 import { OffDutyConfirmModal } from "@/src/components/home/OffDutyConfirmModal";
 import { openSubscriptionDutyBlockedSheet } from "@/src/stores/subscriptionDutyBlockedSheetStore";
 import { headerControlText, HEADER_DUTY_PILL_WIDTH } from "@/src/theme/headerFonts";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
 interface DutyToggleProps {
   compact?: boolean;
   variant?: "default" | "pill" | "compact" | "status";
+  /** Short ON/OFF labels so the pill fits on zoomed / narrow headers. */
+  compactLabels?: boolean;
 }
 
-/** Merchant-style sliding duty switch — compact fixed width for stable header row. */
+/** Merchant-style sliding duty switch — width scales mildly with screen, never below touch target. */
 const PILL_HEIGHT = 36;
-const PILL_WIDTH = HEADER_DUTY_PILL_WIDTH;
 const KNOB_SIZE = 24;
 const KNOB_RADIUS = 7;
 const PILL_PADDING = 4;
-const KNOB_TRAVEL = PILL_WIDTH - PILL_PADDING * 2 - KNOB_SIZE;
 const LABEL_INSET = 6;
-const LABEL_SLOT = PILL_WIDTH - PILL_PADDING * 2 - KNOB_SIZE - 4;
 
 const ON_GREEN = "#16A34A";
 const OFF_SLATE = "#334155";
@@ -55,7 +55,11 @@ function springTo(anim: Animated.Value, toValue: number) {
   }).start();
 }
 
-export function DutyToggle({ compact = false, variant = "default" }: DutyToggleProps) {
+export function DutyToggle({
+  compact = false,
+  variant = "default",
+  compactLabels = false,
+}: DutyToggleProps) {
   const { t } = useTranslation();
   const { isOnDuty, setDuty, isPending, dutyGoOnBlocked } = useDutyToggle();
   const { refetch: refetchSubscription } = useRiderSubscriptionStatus();
@@ -64,6 +68,18 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
   const [optimisticOn, setOptimisticOn] = useState<boolean | null>(null);
   const animValue = useRef(new Animated.Value(isOnDuty ? 1 : 0)).current;
   const pressScale = useRef(new Animated.Value(1)).current;
+  const { rw, isCompactWidth } = useResponsiveLayout();
+
+  const useShortLabels = compactLabels || isCompactWidth;
+  const pillWidth = useMemo(() => {
+    if (useShortLabels) {
+      return Math.round(rw(76, { min: 72, max: 88, factor: 0.4 }));
+    }
+    const base = HEADER_DUTY_PILL_WIDTH;
+    return Math.round(rw(base, { min: 104, max: 120, factor: 0.35 }));
+  }, [rw, useShortLabels]);
+  const knobTravel = pillWidth - PILL_PADDING * 2 - KNOB_SIZE;
+  const labelSlot = pillWidth - PILL_PADDING * 2 - KNOB_SIZE - 4;
 
   const displayOn = optimisticOn ?? isOnDuty;
 
@@ -167,8 +183,12 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
   }
 
   if (variant === "pill") {
-    const onLabel = t("topbar.dutyOn", "ON-DUTY");
-    const offLabel = t("topbar.dutyOff", "OFF-DUTY");
+    const onLabel = useShortLabels
+      ? t("topbar.dutyOnShort", "ON")
+      : t("topbar.dutyOn", "ON-DUTY");
+    const offLabel = useShortLabels
+      ? t("topbar.dutyOffShort", "OFF")
+      : t("topbar.dutyOff", "OFF-DUTY");
     const dutyLabel = displayOn ? onLabel : offLabel;
 
     const backgroundColor = animValue.interpolate({
@@ -180,11 +200,11 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
     });
     const knobTranslateX = animValue.interpolate({
       inputRange: [0, 1],
-      outputRange: [0, KNOB_TRAVEL],
+      outputRange: [0, knobTravel],
     });
 
     return (
-      <View style={styles.pillHost} collapsable={false}>
+      <View style={[styles.pillHost, { width: pillWidth }]} collapsable={false}>
         <Pressable
           onPress={requestToggle}
           onPressIn={onPressIn}
@@ -199,23 +219,23 @@ export function DutyToggle({ compact = false, variant = "default" }: DutyToggleP
             <Animated.View
               style={[
                 styles.pill,
-                { backgroundColor },
+                { backgroundColor, width: pillWidth },
                 isPending && styles.pillBusy,
               ]}
             >
               <View
-                style={[styles.labelLeft, { width: LABEL_SLOT, paddingLeft: LABEL_INSET }]}
+                style={[styles.labelLeft, { width: labelSlot, paddingLeft: LABEL_INSET }]}
                 pointerEvents="none"
               >
-                <Text style={styles.pillText} numberOfLines={1}>
+                <Text style={styles.pillText} numberOfLines={1} allowFontScaling={false}>
                   {displayOn ? onLabel : ""}
                 </Text>
               </View>
               <View
-                style={[styles.labelRight, { width: LABEL_SLOT, paddingRight: LABEL_INSET }]}
+                style={[styles.labelRight, { width: labelSlot, paddingRight: LABEL_INSET }]}
                 pointerEvents="none"
               >
-                <Text style={styles.pillText} numberOfLines={1}>
+                <Text style={styles.pillText} numberOfLines={1} allowFontScaling={false}>
                   {!displayOn ? offLabel : ""}
                 </Text>
               </View>
@@ -311,7 +331,6 @@ const styles = StyleSheet.create({
   },
   pillHost: {
     flexShrink: 0,
-    width: PILL_WIDTH,
     height: PILL_HEIGHT,
     justifyContent: "center",
     alignItems: "center",
@@ -338,7 +357,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   pill: {
-    width: PILL_WIDTH,
     height: PILL_HEIGHT,
     borderRadius: 10,
     flexDirection: "row",
@@ -368,7 +386,7 @@ const styles = StyleSheet.create({
   pillText: {
     ...headerControlText,
     color: "#FFFFFF",
-    fontSize: 12,
+    fontSize: 11,
     textAlignVertical: "center",
   },
   knob: {

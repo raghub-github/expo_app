@@ -173,6 +173,7 @@ export type CustomersData = {
   period: string;
   stats: { total: number; active: number; newInPeriod: number; wallet: number };
   states: Array<{ state: string; count: number }>;
+  cities: Array<{ city: string; count: number }>;
   recent: Array<{
     id: string;
     name: string;

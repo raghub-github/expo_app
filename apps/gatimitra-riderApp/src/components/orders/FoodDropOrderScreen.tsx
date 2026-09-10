@@ -18,6 +18,9 @@ import { RiderEmergencySosBottomSheet } from "@/src/components/orders/RiderEmerg
 import { FoodSlideToReachStore } from "@/src/components/orders/FoodSlideToReachStore";
 import { OrderLocationPhotoBox } from "@/src/components/orders/OrderLocationPhotoBox";
 import { PartnerChatUnreadBadge } from "@/src/components/orders/PartnerChatUnreadBadge";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 import { colors } from "@/src/theme";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 import {
@@ -75,65 +78,84 @@ function DropOrderItemsSheet({
   onDismiss,
 }: DropOrderItemsSheetProps) {
   const { t } = useTranslation();
+  const { height, isShortHeight } = useResponsiveLayout();
+  const bodyMaxH = Math.round(height * (isShortHeight ? 0.58 : 0.52));
 
   return (
-    <DismissibleBottomSheetShell visible={visible} onDismiss={onDismiss} maxHeightRatio={0.72}>
-      <View style={styles.sheetContent}>
-        <View style={styles.sheetHeader}>
-          <View style={styles.sheetTitleRow}>
-            <View style={[styles.sheetIconWrap, styles.sheetIconWrapGreen]}>
+    <DismissibleBottomSheetShell
+      visible={visible}
+      onDismiss={onDismiss}
+      maxHeightRatio={isShortHeight ? 0.78 : 0.72}
+    >
+      <ResponsiveSheetBody
+        maxHeight={bodyMaxH}
+        contentContainerStyle={styles.sheetScrollContent}
+        footerStyle={styles.sheetFooterSlot}
+      >
+        <View style={[rowLayout.row, styles.sheetHeader]}>
+          <View style={[rowLayout.row, styles.sheetTitleRow, rowLayout.grow]}>
+            <View style={[styles.sheetIconWrap, styles.sheetIconWrapGreen, rowLayout.noShrink]}>
               <Ionicons name="fast-food-outline" size={20} color={REF_GREEN} />
             </View>
-            <View style={styles.sheetTitleCol}>
-              <Text style={styles.sheetTitle}>
+            <View style={[styles.sheetTitleCol, rowLayout.grow]}>
+              <Text style={[styles.sheetTitle, flexShrinkText]} numberOfLines={2}>
                 {t("orders.activeFood.allOrderItems", "All order items")}
               </Text>
-              <Text style={styles.sheetSubtitle}>
+              <Text style={[styles.sheetSubtitle, flexShrinkText]} numberOfLines={1}>
                 {t("orders.activeFood.totalItemsCount", "{{count}} items total", {
                   count: itemCount,
                 })}
               </Text>
             </View>
           </View>
-          <Pressable onPress={onDismiss} hitSlop={10} style={styles.sheetCloseBtn}>
+          <Pressable
+            onPress={onDismiss}
+            hitSlop={10}
+            style={[styles.sheetCloseBtn, rowLayout.noShrink]}
+          >
             <Ionicons name="close" size={22} color="#5F6368" />
           </Pressable>
         </View>
 
-        <ScrollView
-          style={styles.sheetScroll}
-          contentContainerStyle={styles.sheetScrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.allItemsPanel}>
-            {items.length > 0 ? (
-              items.map((item, idx) => {
-                const label = item.variantName
-                  ? `${item.quantity} x ${item.name} (${item.variantName})`
-                  : `${item.quantity} x ${item.name}`;
-                return (
-                  <View key={`${item.name}-${idx}`} style={styles.itemRow}>
-                    <View style={styles.itemBullet} />
-                    <Text style={styles.sheetItemLine}>{label}</Text>
-                  </View>
-                );
-              })
-            ) : (
-              <View style={styles.itemRow}>
-                <View style={styles.itemBullet} />
-                <Text style={styles.sheetItemLine}>{fallbackLine}</Text>
-              </View>
-            )}
-          </View>
-
-          {specialNotes.length > 0 ? (
-            <View style={styles.instructionBar}>
-              <Ionicons name="information-circle" size={16} color={REF_GREEN} />
-              <Text style={styles.instructionText}>{specialNotes.join(" | ")}</Text>
+        <View style={styles.allItemsPanel}>
+          {items.length > 0 ? (
+            items.map((item, idx) => {
+              const label = item.variantName
+                ? `${item.quantity} x ${item.name} (${item.variantName})`
+                : `${item.quantity} x ${item.name}`;
+              return (
+                <View key={`${item.name}-${idx}`} style={[rowLayout.rowStart, styles.itemRow]}>
+                  <View style={[styles.itemBullet, rowLayout.noShrink]} />
+                  <Text style={[styles.sheetItemLine, flexShrinkText]} numberOfLines={3}>
+                    {label}
+                  </Text>
+                </View>
+              );
+            })
+          ) : (
+            <View style={[rowLayout.rowStart, styles.itemRow]}>
+              <View style={[styles.itemBullet, rowLayout.noShrink]} />
+              <Text style={[styles.sheetItemLine, flexShrinkText]} numberOfLines={3}>
+                {fallbackLine}
+              </Text>
             </View>
-          ) : null}
-        </ScrollView>
-      </View>
+          )}
+        </View>
+
+        {specialNotes.length > 0 ? (
+          <View style={[rowLayout.rowStart, styles.instructionBar]}>
+            <Ionicons
+              name="information-circle"
+              size={16}
+              color={REF_GREEN}
+              style={rowLayout.noShrink}
+            />
+            <Text style={[styles.instructionText, flexShrinkText]} numberOfLines={4}>
+              {specialNotes.join(" | ")}
+            </Text>
+          </View>
+        ) : null}
+      </ResponsiveSheetBody>
     </DismissibleBottomSheetShell>
   );
 }
@@ -209,12 +231,12 @@ export function FoodDropOrderScreen({
       onRequestClose={onBack}
     >
       <View style={styles.root}>
-        <View style={[styles.headerWrap, { paddingTop: insets.top }]}>
-          <View style={styles.headerRow}>
-            <Text style={styles.headerTitle}>
+          <View style={[styles.headerWrap, { paddingTop: insets.top }]}>
+          <View style={[rowLayout.row, styles.headerRow]}>
+            <Text style={[styles.headerTitle, flexShrinkText]} numberOfLines={1}>
               {t("orders.activeFood.dropOrderHeader", "Drop order")}
             </Text>
-            <View style={styles.headerRight}>
+            <View style={[rowLayout.row, styles.headerRight, rowLayout.noShrink]}>
               <Pressable
                 onPress={() => {
                   setSosSheetOpen(true);
@@ -226,7 +248,9 @@ export function FoodDropOrderScreen({
                 <MaterialCommunityIcons name="alarm-light" size={22} color={EMERGENCY_PINK} />
               </Pressable>
               <Pressable onPress={onHelpPress} style={styles.helpBtn}>
-                <Text style={styles.helpBtnText}>{t("orders.activeFood.helpLabel", "HELP")}</Text>
+                <Text style={styles.helpBtnText} numberOfLines={1}>
+                  {t("orders.activeFood.helpLabel", "HELP")}
+                </Text>
               </Pressable>
             </View>
           </View>
@@ -258,39 +282,43 @@ export function FoodDropOrderScreen({
             </View>
           </View>
 
-          <View style={styles.paymentCard}>
-            <View style={styles.paymentIconWrap}>
+          <View style={[rowLayout.row, styles.paymentCard]}>
+            <View style={[styles.paymentIconWrap, rowLayout.noShrink]}>
               <Ionicons
                 name={isCod ? "cash-outline" : "checkmark-circle"}
                 size={22}
                 color={isCod ? "#B45309" : "#9AA0A6"}
               />
             </View>
-            <View style={styles.paymentTextCol}>
-              <Text style={styles.paymentTitle}>{paymentLabel}</Text>
-              <Text style={styles.paymentOrderLine}>
+            <View style={[styles.paymentTextCol, rowLayout.grow]}>
+              <Text style={[styles.paymentTitle, flexShrinkText]} numberOfLines={2}>
+                {paymentLabel}
+              </Text>
+              <Text style={[styles.paymentOrderLine, flexShrinkText]} numberOfLines={1}>
                 {t("orders.activeFood.orderPrefix", "Order")}: {orderIdLabel}
               </Text>
             </View>
           </View>
 
           <View style={styles.expandCard}>
-            <View style={styles.expandCardHeader}>
-              <View style={styles.expandIconWrap}>
+            <View style={[rowLayout.row, styles.expandCardHeader]}>
+              <View style={[styles.expandIconWrap, rowLayout.noShrink]}>
                 <Ionicons name="person-outline" size={18} color="#5F6368" />
               </View>
-              <View style={styles.expandTextCol}>
-                <Text style={styles.expandTitle}>{customerName}</Text>
+              <View style={[styles.expandTextCol, rowLayout.grow]}>
+                <Text style={[styles.expandTitle, flexShrinkText]} numberOfLines={2}>
+                  {customerName}
+                </Text>
                 {ratingLabel ? (
-                  <View style={styles.ratingRow}>
-                    <Text style={styles.ratingLabel}>
+                  <View style={[rowLayout.row, styles.ratingRow]}>
+                    <Text style={[styles.ratingLabel, flexShrinkText]} numberOfLines={1}>
                       {t("orders.activeFood.customerRating", "Rating")} {ratingLabel}
                     </Text>
-                    <Ionicons name="star" size={12} color="#F59E0B" />
+                    <Ionicons name="star" size={12} color="#F59E0B" style={rowLayout.noShrink} />
                   </View>
                 ) : (
                   <View style={styles.newUserTag}>
-                    <Text style={styles.newUserTagText}>
+                    <Text style={styles.newUserTagText} numberOfLines={1}>
                       {t("orders.activeFood.newUser", "New User")}
                     </Text>
                   </View>
@@ -299,7 +327,11 @@ export function FoodDropOrderScreen({
               <Pressable
                 onPress={onCallCustomer}
                 disabled={!hasCallablePhone}
-                style={[styles.phoneFab, !hasCallablePhone && styles.phoneFabDisabled]}
+                style={[
+                  styles.phoneFab,
+                  rowLayout.noShrink,
+                  !hasCallablePhone && styles.phoneFabDisabled,
+                ]}
                 accessibilityRole="button"
                 accessibilityLabel={t("orders.activeFood.call", "Call")}
               >
@@ -309,8 +341,8 @@ export function FoodDropOrderScreen({
           </View>
 
           <View style={styles.addressCard}>
-            <View style={styles.addressTopRow}>
-              <Text style={styles.addressText} numberOfLines={4}>
+            <View style={[rowLayout.rowStart, styles.addressTopRow]}>
+              <Text style={[styles.addressText, flexShrinkText]} numberOfLines={4}>
                 {deliveryAddress}
               </Text>
               <OrderLocationPhotoBox
@@ -319,27 +351,32 @@ export function FoodDropOrderScreen({
                 label={t("orders.activeFood.addressPhoto", "Address photo")}
               />
             </View>
-            <View style={styles.verifiedRow}>
-              <Ionicons name="checkmark-circle" size={16} color={REF_GREEN} />
-              <Text style={styles.verifiedText}>
+            <View style={[rowLayout.row, styles.verifiedRow]}>
+              <Ionicons name="checkmark-circle" size={16} color={REF_GREEN} style={rowLayout.noShrink} />
+              <Text style={[styles.verifiedText, flexShrinkText]} numberOfLines={1}>
                 {t("orders.activeFood.verifiedLocation", "Verified location")}
               </Text>
             </View>
-            <View style={styles.dualActionRow}>
-              <Pressable style={styles.outlineActionBtn} onPress={onChatCustomer}>
-                <View style={styles.chatIconWrap}>
+            <View style={[rowLayout.row, styles.dualActionRow]}>
+              <Pressable style={[rowLayout.row, styles.outlineActionBtn]} onPress={onChatCustomer}>
+                <View style={[styles.chatIconWrap, rowLayout.noShrink]}>
                   <Ionicons name="chatbubble-outline" size={18} color={REF_BLUE} />
                   <PartnerChatUnreadBadge count={chatUnreadCount} style={styles.chatUnreadBadge} />
                 </View>
-                <Text style={styles.outlineActionText}>
+                <Text style={[styles.outlineActionText, flexShrinkText]} numberOfLines={1}>
                   {chatUnreadCount > 0
                     ? t("orders.partnerChat.newMessages", "{{count}} new", { count: chatUnreadCount })
                     : t("orders.activeRide.chat", "Message")}
                 </Text>
               </Pressable>
-              <Pressable style={styles.outlineActionBtn} onPress={onOpenMaps}>
-                <Ionicons name="navigate-outline" size={18} color={REF_BLUE} />
-                <Text style={styles.outlineActionText}>
+              <Pressable style={[rowLayout.row, styles.outlineActionBtn]} onPress={onOpenMaps}>
+                <Ionicons
+                  name="navigate-outline"
+                  size={18}
+                  color={REF_BLUE}
+                  style={rowLayout.noShrink}
+                />
+                <Text style={[styles.outlineActionText, flexShrinkText]} numberOfLines={1}>
                   {t("orders.activeFood.goToMap", "Go to map")}
                 </Text>
               </Pressable>
@@ -350,19 +387,19 @@ export function FoodDropOrderScreen({
             style={styles.expandCard}
             onPress={() => setOrderItemsSheetOpen(true)}
           >
-            <View style={styles.expandCardHeader}>
-              <View style={styles.expandIconWrap}>
+            <View style={[rowLayout.row, styles.expandCardHeader]}>
+              <View style={[styles.expandIconWrap, rowLayout.noShrink]}>
                 <Ionicons name="receipt-outline" size={18} color="#5F6368" />
               </View>
-              <View style={styles.expandTextCol}>
-                <Text style={styles.expandTitle}>
+              <View style={[styles.expandTextCol, rowLayout.grow]}>
+                <Text style={[styles.expandTitle, flexShrinkText]} numberOfLines={1}>
                   {t("orders.activeFood.orderDetails", "Order details")}
                 </Text>
-                <Text style={styles.expandSub} numberOfLines={1}>
+                <Text style={[styles.expandSub, flexShrinkText]} numberOfLines={1}>
                   {orderDetailSubtitle}
                 </Text>
               </View>
-              <Ionicons name="chevron-down" size={18} color="#5F6368" />
+              <Ionicons name="chevron-down" size={18} color="#5F6368" style={rowLayout.noShrink} />
             </View>
           </Pressable>
         </ScrollView>
@@ -428,10 +465,10 @@ const styles = StyleSheet.create({
     }),
   },
   headerRow: {
-    flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
     minHeight: 48,
+    maxWidth: "100%",
   },
   headerHit: {
     width: 36,
@@ -441,12 +478,12 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     flex: 1,
+    minWidth: 0,
     fontSize: 18,
     fontWeight: "700",
     color: "#202124",
   },
   headerRight: {
-    flexDirection: "row",
     alignItems: "center",
     gap: 2,
   },
@@ -459,6 +496,7 @@ const styles = StyleSheet.create({
     borderColor: "#202124",
     alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
   },
   helpBtnText: {
     fontSize: 11,
@@ -468,6 +506,7 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flex: 1,
+    minHeight: 0,
   },
   scrollContent: {
     paddingBottom: 16,
@@ -497,13 +536,13 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   paymentCard: {
-    flexDirection: "row",
     alignItems: "center",
     gap: 12,
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E8EAED",
+    maxWidth: "100%",
   },
   paymentIconWrap: {
     width: 36,
@@ -535,9 +574,9 @@ const styles = StyleSheet.create({
     borderBottomColor: "#E8EAED",
   },
   expandCardHeader: {
-    flexDirection: "row",
     alignItems: "center",
     gap: 10,
+    maxWidth: "100%",
   },
   expandIconWrap: {
     width: 32,
@@ -563,15 +602,17 @@ const styles = StyleSheet.create({
     color: "#5F6368",
   },
   ratingRow: {
-    flexDirection: "row",
     alignItems: "center",
     gap: 4,
     marginTop: 2,
+    maxWidth: "100%",
   },
   ratingLabel: {
     fontSize: 12,
     fontWeight: "600",
     color: "#5F6368",
+    flexShrink: 1,
+    minWidth: 0,
   },
   newUserTag: {
     alignSelf: "flex-start",
@@ -595,9 +636,9 @@ const styles = StyleSheet.create({
     borderBottomColor: "#E8EAED",
   },
   addressTopRow: {
-    flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
+    maxWidth: "100%",
   },
   addressText: {
     flex: 1,
@@ -619,24 +660,26 @@ const styles = StyleSheet.create({
     opacity: 0.45,
   },
   verifiedRow: {
-    flexDirection: "row",
     alignItems: "center",
     gap: 6,
     marginTop: 10,
+    maxWidth: "100%",
   },
   verifiedText: {
     fontSize: 13,
     fontWeight: "600",
     color: REF_GREEN,
+    flexShrink: 1,
+    minWidth: 0,
   },
   dualActionRow: {
-    flexDirection: "row",
     gap: 10,
     marginTop: 12,
+    maxWidth: "100%",
   },
   outlineActionBtn: {
     flex: 1,
-    flexDirection: "row",
+    minWidth: 0,
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
@@ -645,6 +688,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: REF_BLUE,
     backgroundColor: "#ffffff",
+    paddingHorizontal: 8,
   },
   chatIconWrap: {
     width: 22,
@@ -661,23 +705,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     color: REF_BLUE,
-  },
-  sheetContent: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 8,
+    flexShrink: 1,
+    minWidth: 0,
   },
   sheetHeader: {
-    flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 12,
+    maxWidth: "100%",
   },
   sheetTitleRow: {
-    flexDirection: "row",
     alignItems: "center",
     gap: 10,
     flex: 1,
+    minWidth: 0,
   },
   sheetIconWrap: {
     width: 36,
@@ -692,6 +733,7 @@ const styles = StyleSheet.create({
   },
   sheetTitleCol: {
     flex: 1,
+    minWidth: 0,
     gap: 2,
   },
   sheetTitle: {
@@ -711,11 +753,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  sheetScroll: {
-    maxHeight: 360,
-  },
   sheetScrollContent: {
     paddingBottom: 8,
+  },
+  sheetFooterSlot: {
+    borderTopWidth: 0,
+    backgroundColor: "transparent",
   },
   allItemsPanel: {
     backgroundColor: "#F4F6F8",
@@ -725,9 +768,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   itemRow: {
-    flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
+    maxWidth: "100%",
   },
   itemBullet: {
     width: 6,
@@ -738,13 +781,13 @@ const styles = StyleSheet.create({
   },
   sheetItemLine: {
     flex: 1,
+    minWidth: 0,
     fontSize: 14,
     fontWeight: "600",
     color: "#3C4043",
     lineHeight: 20,
   },
   instructionBar: {
-    flexDirection: "row",
     alignItems: "flex-start",
     gap: 8,
     backgroundColor: colors.success[50],
@@ -754,9 +797,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.success[100],
     marginBottom: 8,
+    maxWidth: "100%",
   },
   instructionText: {
     flex: 1,
+    minWidth: 0,
     fontSize: 12,
     fontWeight: "600",
     color: colors.success[800],
@@ -768,5 +813,6 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E8EAED",
     backgroundColor: "#ffffff",
+    flexShrink: 0,
   },
 });

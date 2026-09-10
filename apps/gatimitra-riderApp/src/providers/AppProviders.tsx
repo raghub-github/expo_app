@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo } from "react";
-import { AppState, View, Text } from "react-native";
+import { AppState, View, Text, StyleSheet } from "react-native";
 import { QueryClient, QueryClientProvider, focusManager, onlineManager } from "@tanstack/react-query";
 import { I18nextProvider } from "react-i18next";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import { SafeAreaProvider, initialWindowMetrics } from "react-native-safe-area-context";
 import { RiderSystemChrome } from "@/src/components/RiderSystemChrome";
 import { initI18n } from "../i18n";
 import { useSessionStore } from "../stores/sessionStore";
@@ -143,24 +143,42 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
   if (!i18n || !queryClient) {
     return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.background.light }}>
+      <View style={shellStyles.errorRoot}>
         <Text style={{ color: colors.error[500] }}>Provider Error</Text>
       </View>
     );
   }
 
   return (
-    <SafeAreaProvider>
-      <RiderSystemChrome />
-      <I18nextProvider i18n={i18n}>
-        <QueryClientProvider client={queryClient}>
-          <AppAssetsPrefetch />
-          <RiderLocationLifecycle />
-          <SessionRevokedGate />
-          <PlayInAppUpdateBootstrap />
-          {children}
-        </QueryClientProvider>
-      </I18nextProvider>
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <View style={shellStyles.root}>
+        <RiderSystemChrome />
+        <I18nextProvider i18n={i18n}>
+          <QueryClientProvider client={queryClient}>
+            <AppAssetsPrefetch />
+            <RiderLocationLifecycle />
+            <SessionRevokedGate />
+            <PlayInAppUpdateBootstrap />
+            {children}
+          </QueryClientProvider>
+        </I18nextProvider>
+      </View>
     </SafeAreaProvider>
   );
 }
+
+const shellStyles = StyleSheet.create({
+  root: {
+    flex: 1,
+    alignSelf: "stretch",
+    width: "100%",
+  },
+  errorRoot: {
+    flex: 1,
+    alignSelf: "stretch",
+    width: "100%",
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: colors.background.light,
+  },
+});

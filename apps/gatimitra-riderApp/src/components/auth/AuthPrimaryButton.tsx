@@ -4,6 +4,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  View,
 } from "react-native";
 import {
   SLIDE_ACTION_GREEN,
@@ -21,7 +22,8 @@ type Props = {
 
 /** Same lime track + dark label as the incoming-order accept slider. */
 export function AuthPrimaryButton({ label, onPress, disabled, loading }: Props) {
-  const isInactive = Boolean(disabled || loading);
+  const isLoading = Boolean(loading);
+  const isInactive = Boolean(disabled) || isLoading;
 
   return (
     <TouchableOpacity
@@ -31,12 +33,29 @@ export function AuthPrimaryButton({ label, onPress, disabled, loading }: Props) 
       }}
       accessibilityRole="button"
       accessibilityState={{ disabled: isInactive }}
-      style={[styles.btn, isInactive && styles.btnDisabled]}
+      style={[styles.btn, Boolean(disabled) && !isLoading && styles.btnDisabled]}
     >
-      {loading ? (
-        <ActivityIndicator color={isInactive ? RIDER_AUTH_DISABLED_TEXT : RIDER_AUTH_INK} />
+      {isLoading ? (
+        <View style={styles.loadingRow}>
+          <ActivityIndicator color={RIDER_AUTH_INK} />
+          <Text
+            style={styles.label}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.7}
+          >
+            {label}
+          </Text>
+        </View>
       ) : (
-        <Text style={[styles.label, isInactive && styles.labelDisabled]}>{label}</Text>
+        <Text
+          style={[styles.label, Boolean(disabled) && styles.labelDisabled]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.7}
+        >
+          {label}
+        </Text>
       )}
     </TouchableOpacity>
   );
@@ -63,8 +82,17 @@ const styles = StyleSheet.create({
     fontFamily: RiderFonts.loraBold,
     fontSize: 20,
     color: RIDER_AUTH_INK,
+    flexShrink: 1,
+    textAlign: "center",
   },
   labelDisabled: {
     color: RIDER_AUTH_DISABLED_TEXT,
+  },
+  loadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    maxWidth: "100%",
   },
 });

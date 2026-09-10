@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { X, ZoomIn, ZoomOut, Download, Maximize2, Minimize2 } from "lucide-react";
+import { ModalPortal } from "@/components/ui/ModalPortal";
 
 interface DocumentViewerProps {
   isOpen: boolean;
@@ -63,7 +64,8 @@ export function DocumentViewer({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-90">
+    <ModalPortal>
+      <div className="fixed inset-0 z-[160] flex items-center justify-center bg-slate-950/70 backdrop-blur-md">
       {/* Close button */}
       <button
         onClick={onClose}
@@ -165,6 +167,7 @@ export function DocumentViewer({
         onClick={onClose}
         aria-hidden="true"
       />
-    </div>
+      </div>
+    </ModalPortal>
   );
 }

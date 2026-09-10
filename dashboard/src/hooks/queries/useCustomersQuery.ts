@@ -58,6 +58,17 @@ export async function fetchCustomers(
   if (response.status === 499) {
     throw new DOMException("Request aborted", "AbortError");
   }
+  // Gateway / upstream timeout — surface a clear error; react-query should not hammer retries.
+  if (response.status === 504 || response.status === 502 || response.status === 503) {
+    const err = new Error(
+      response.status === 504
+        ? "Customers request timed out. Please try again."
+        : "Customers service temporarily unavailable. Please try again."
+    ) as Error & { status?: number; digest?: string };
+    err.status = response.status;
+    err.digest = "TRANSIENT_GATEWAY";
+    throw err;
+  }
   let result: CustomersResponse = { success: false };
   try {
     const text = await response.text();
@@ -115,6 +126,13 @@ export function useCustomersQuery(params: CustomersQueryParams = {}) {
     ...getCacheConfig(CacheTier.MEDIUM), // Customers list is medium frequency
     // Never reuse previous search rows as placeholder — auto-redirect would open the wrong customer.
     placeholderData: undefined,
+    retry: (failureCount, error) => {
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return false;
+      const status = (error as { status?: number } | null)?.status;
+      if (status === 401 || status === 403 || status === 404) return false;
+      if (status === 502 || status === 503 || status === 504) return failureCount < 1;
+      return failureCount < 1;
+    },
   });
 
   return {

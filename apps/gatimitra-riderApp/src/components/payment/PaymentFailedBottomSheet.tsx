@@ -8,8 +8,11 @@ import {
   TouchableOpacity,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors } from "@/src/theme";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { flexShrinkText } from "@/src/theme/responsiveText";
 
 const ACCENT_DARK = "#22a745";
 
@@ -30,8 +33,11 @@ export function PaymentFailedBottomSheet({
   onContinue,
   onCancel,
 }: Props) {
-  const insets = useSafeAreaInsets();
+  const { rs, insets, height, isShortHeight } = useResponsiveLayout();
   if (!visible) return null;
+
+  const bottomPad = resolveRiderBottomInset(insets.bottom) + rs(12);
+  const maxH = Math.round(height * (isShortHeight ? 0.7 : 0.55));
 
   return (
     <Modal
@@ -44,36 +50,51 @@ export function PaymentFailedBottomSheet({
     >
       <View style={styles.overlay}>
         <Pressable style={styles.backdrop} onPress={onCancel} accessibilityRole="button" />
-        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+        <View style={styles.sheet}>
           <View style={styles.handle} />
-          <View style={styles.iconWrap}>
-            <Ionicons name="alert-circle" size={36} color="#DC2626" />
-          </View>
-          <Text style={styles.title}>Payment failed</Text>
-          <Text style={styles.subtitle}>
-            {message?.trim() ||
-              "Your payment was not completed. You can try again or cancel and stay on this screen."}
-          </Text>
+          <ResponsiveSheetBody
+            maxHeight={maxH}
+            contentContainerStyle={styles.body}
+            footerBottomInset={bottomPad}
+            footer={
+              <View>
+                <TouchableOpacity
+                  activeOpacity={0.88}
+                  onPress={onContinue}
+                  style={styles.primaryBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Continue"
+                >
+                  <Text style={styles.primaryBtnText} numberOfLines={1}>
+                    Continue
+                  </Text>
+                </TouchableOpacity>
 
-          <TouchableOpacity
-            activeOpacity={0.88}
-            onPress={onContinue}
-            style={styles.primaryBtn}
-            accessibilityRole="button"
-            accessibilityLabel="Continue"
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={onCancel}
+                  style={styles.outlineBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel"
+                >
+                  <Text style={styles.outlineBtnText} numberOfLines={1}>
+                    Cancel
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            }
           >
-            <Text style={styles.primaryBtnText}>Continue</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={onCancel}
-            style={styles.outlineBtn}
-            accessibilityRole="button"
-            accessibilityLabel="Cancel"
-          >
-            <Text style={styles.outlineBtnText}>Cancel</Text>
-          </TouchableOpacity>
+            <View style={styles.iconWrap}>
+              <Ionicons name="alert-circle" size={36} color="#DC2626" />
+            </View>
+            <Text style={[styles.title, flexShrinkText]} numberOfLines={2}>
+              Payment failed
+            </Text>
+            <Text style={[styles.subtitle, flexShrinkText]} numberOfLines={5}>
+              {message?.trim() ||
+                "Your payment was not completed. You can try again or cancel and stay on this screen."}
+            </Text>
+          </ResponsiveSheetBody>
         </View>
       </View>
     </Modal>
@@ -93,9 +114,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#ffffff",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    paddingHorizontal: 20,
     paddingTop: 10,
-    gap: 10,
+    maxWidth: "100%",
+    overflow: "hidden",
   },
   handle: {
     alignSelf: "center",
@@ -103,7 +124,10 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
     backgroundColor: colors.gray[200],
-    marginBottom: 8,
+    marginBottom: 4,
+  },
+  body: {
+    alignItems: "center",
   },
   iconWrap: {
     alignSelf: "center",
@@ -127,6 +151,7 @@ const styles = StyleSheet.create({
     color: colors.gray[600],
     textAlign: "center",
     marginBottom: 8,
+    marginTop: 6,
   },
   primaryBtn: {
     backgroundColor: ACCENT_DARK,
@@ -145,6 +170,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: "center",
+    marginTop: 8,
     marginBottom: 4,
   },
   outlineBtnText: {

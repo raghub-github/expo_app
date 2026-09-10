@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   Pressable,
   ActivityIndicator,
+  ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
@@ -30,6 +31,8 @@ import { resolveMilestoneGeoUi } from "@/src/lib/milestone-geo-hint";
 import { FoodPrepLiveStatus } from "@/src/components/orders/FoodPrepLiveStatus";
 import { NavSheetWaveShell, NAV_SHEET_WAVE_LOW_Y } from "@/src/components/orders/NavSheetWaveHeader";
 import { LORA_BOLD, POPPINS_BOLD } from "@/src/theme/headerFonts";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 export const FOOD_NAV_SHEET_HEIGHT = 460;
 export const FOOD_NAV_SHEET_COLLAPSED_HEIGHT = 132;
@@ -190,7 +193,9 @@ export function FoodNavigateBottomSheetInner({
   suppressDropDeliverSlider = false,
 }: Props) {
   const { t } = useTranslation();
+  const { isShortHeight, height } = useResponsiveLayout();
   const [deliveryInfoOpen, setDeliveryInfoOpen] = useState(false);
+  const detailsMaxH = Math.round(height * (isShortHeight ? 0.32 : 0.42));
 
   useEffect(() => {
     if (phase !== "drop") setDeliveryInfoOpen(false);
@@ -373,14 +378,20 @@ export function FoodNavigateBottomSheetInner({
 
         {sheetExpanded ? (
           <View style={styles.sheetBody}>
-            <View style={styles.detailsBody}>
-              <View style={styles.customerHeaderRow}>
-                <View style={styles.customerInfoCol}>
-                  <Text style={styles.locationName} numberOfLines={2}>
+            <ScrollView
+              style={{ maxHeight: detailsMaxH }}
+              contentContainerStyle={styles.detailsBody}
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+              nestedScrollEnabled
+            >
+              <View style={[rowLayout.rowStart, styles.customerHeaderRow]}>
+                <View style={[styles.customerInfoCol, rowLayout.grow]}>
+                  <Text style={[styles.locationName, flexShrinkText]} numberOfLines={2}>
                     {restaurantName}
                   </Text>
                   {phase === "drop" ? (
-                    <Text style={styles.orderIdLine}>
+                    <Text style={[styles.orderIdLine, flexShrinkText]} numberOfLines={1}>
                       <Text style={styles.orderIdPrefix}>
                         {t("orders.activeFood.orderPrefix", "Order")}:{" "}
                       </Text>
@@ -392,8 +403,8 @@ export function FoodNavigateBottomSheetInner({
 
               {activeAddress ? (
                 <View style={styles.routeCard}>
-                  <View style={styles.routeRow}>
-                    <View style={styles.routeDotCol}>
+                  <View style={[rowLayout.rowStart, styles.routeRow]}>
+                    <View style={[styles.routeDotCol, rowLayout.noShrink]}>
                       <View
                         style={[
                           styles.routeDot,
@@ -401,25 +412,29 @@ export function FoodNavigateBottomSheetInner({
                         ]}
                       />
                     </View>
-                    <View style={styles.routeTextWrap}>
-                      <Text style={styles.routeLabel}>
+                    <View style={[styles.routeTextWrap, rowLayout.grow]}>
+                      <Text style={styles.routeLabel} numberOfLines={1}>
                         {activeIsDrop
                           ? t("orders.activeRide.dropLocationLabel", "DROP")
                           : t("orders.activeRide.pickupLocationLabel", "PICKUP")}
                       </Text>
-                      <Text style={styles.routeAddress}>{activeAddress}</Text>
+                      <Text style={[styles.routeAddress, flexShrinkText]} numberOfLines={3}>
+                        {activeAddress}
+                      </Text>
                     </View>
                     <OrderLocationPhotoBox
                       inline
                       uri={activeIsDrop ? order.dropAddressImageUrl : null}
                       label={t("orders.activeFood.addressPhoto", "Address photo")}
                     />
-                    <Text style={styles.distanceLabel}>{distanceLabel}</Text>
+                    <Text style={[styles.distanceLabel, rowLayout.noShrink]} numberOfLines={1}>
+                      {distanceLabel}
+                    </Text>
                   </View>
                 </View>
               ) : null}
 
-              <View style={styles.tripleActionRow}>
+              <View style={[rowLayout.row, styles.tripleActionRow]}>
                 <ActionIconButton
                   icon="call"
                   label={t("orders.activeFood.call", "Call")}
@@ -450,9 +465,14 @@ export function FoodNavigateBottomSheetInner({
               />
 
               {phase === "drop" && deliveryInfoOpen ? (
-                <View style={styles.deliveryInfoCard}>
-                  <Ionicons name="alert-circle" size={18} color={colors.warning[700]} />
-                  <Text style={styles.deliveryInfoText}>
+                <View style={[rowLayout.rowStart, styles.deliveryInfoCard]}>
+                  <Ionicons
+                    name="alert-circle"
+                    size={18}
+                    color={colors.warning[700]}
+                    style={rowLayout.noShrink}
+                  />
+                  <Text style={[styles.deliveryInfoText, flexShrinkText]} numberOfLines={5}>
                     {t(
                       "orders.activeFood.deliveryPenaltyBody",
                       "If you miss or cancel this delivery without valid approval, you may be fined up to the full order value. Deliver only to the customer address shown on the map."
@@ -464,15 +484,17 @@ export function FoodNavigateBottomSheetInner({
               {phase === "drop" ? (
                 <View style={styles.dropSliderDock}>{dropSliders}</View>
               ) : null}
-            </View>
+            </ScrollView>
           </View>
         ) : (
           <View style={styles.sheetBody}>
-            <View style={styles.collapsedHeader}>
-              <Text style={styles.collapsedTitle} numberOfLines={1}>
+            <View style={[rowLayout.row, styles.collapsedHeader]}>
+              <Text style={[styles.collapsedTitle, flexShrinkText]} numberOfLines={1}>
                 {restaurantName}
               </Text>
-              <Text style={styles.collapsedDistance}>{distanceLabel}</Text>
+              <Text style={[styles.collapsedDistance, rowLayout.noShrink]} numberOfLines={1}>
+                {distanceLabel}
+              </Text>
             </View>
           </View>
         )}
@@ -833,6 +855,7 @@ const styles = StyleSheet.create({
   },
   actionIconBtn: {
     flex: 1,
+    minWidth: 0,
     minHeight: 52,
     borderRadius: 8,
     alignItems: "center",
@@ -867,6 +890,9 @@ const styles = StyleSheet.create({
     marginTop: 3,
     fontSize: 13,
     fontWeight: "600",
+    flexShrink: 1,
+    minWidth: 0,
+    textAlign: "center",
   },
   actionIconBtnTextOutline: {
     color: NAV_SHEET_CALL_BLUE,
@@ -885,6 +911,7 @@ const styles = StyleSheet.create({
   },
   collapsedTitle: {
     flex: 1,
+    minWidth: 0,
     fontSize: 16,
     fontWeight: "700",
     color: colors.gray[900],
@@ -1001,6 +1028,7 @@ const styles = StyleSheet.create({
   },
   deliveryInfoText: {
     flex: 1,
+    minWidth: 0,
     fontSize: 12,
     fontWeight: "600",
     color: colors.warning[900],
@@ -1030,6 +1058,7 @@ const styles = StyleSheet.create({
   },
   deliveredBannerText: {
     flex: 1,
+    minWidth: 0,
     fontSize: 14,
     fontWeight: "700",
     color: colors.success[800],

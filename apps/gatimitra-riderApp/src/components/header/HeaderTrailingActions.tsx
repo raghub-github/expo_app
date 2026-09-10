@@ -13,12 +13,17 @@ type Props = {
   onLanguagePress: () => void;
   onNotificationPress: () => void;
   notificationBadgeCount?: number;
+  /** Tight header (zoom / narrow) — slightly smaller MAX badge, slot still reserved. */
+  compact?: boolean;
 };
+
+const MAX_SLOT_WIDTH_COMPACT = 56;
 
 export function HeaderTrailingActions({
   onLanguagePress,
   onNotificationPress,
   notificationBadgeCount = 0,
+  compact = false,
 }: Props) {
   const { data: subscriptionStatus, isFetched } = useRiderSubscriptionStatus();
   const [cacheActive, setCacheActive] = useState(
@@ -37,9 +42,22 @@ export function HeaderTrailingActions({
     : Boolean(subscriptionStatus?.active) || cacheActive;
 
   return (
-    <View style={styles.row} pointerEvents="box-none" collapsable={false}>
-      <View style={styles.maxSlot} collapsable={false}>
-        {showMax ? <HeaderMaxSubscriptionBadge /> : null}
+    <View
+      style={[styles.row, compact && styles.rowCompact]}
+      pointerEvents="box-none"
+      collapsable={false}
+    >
+      <View
+        style={[
+          styles.maxSlot,
+          { width: compact ? MAX_SLOT_WIDTH_COMPACT : HEADER_MAX_SLOT_WIDTH },
+        ]}
+        collapsable={false}
+        pointerEvents={showMax ? "box-none" : "none"}
+        accessibilityElementsHidden={!showMax}
+        importantForAccessibility={showMax ? "yes" : "no-hide-descendants"}
+      >
+        {showMax ? <HeaderMaxSubscriptionBadge compact={compact} /> : null}
       </View>
       <HeaderActionIconGroup
         onLanguagePress={onLanguagePress}
@@ -58,9 +76,11 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     marginLeft: "auto",
   },
-  /** Always reserve MAX width — prevents late subscription fetch from shoving the row. */
+  rowCompact: {
+    gap: 4,
+  },
+  /** Always reserved — keeps language + notification pinned on the far right. */
   maxSlot: {
-    width: HEADER_MAX_SLOT_WIDTH,
     height: 36,
     alignItems: "flex-end",
     justifyContent: "center",

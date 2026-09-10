@@ -3,12 +3,15 @@ import {
   View,
   Text,
   StyleSheet,
-  useWindowDimensions,
+  ScrollView,
 } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { RidePickupOtpEntry } from "@/src/components/orders/RidePickupOtpEntry";
 import { LORA_BOLD } from "@/src/theme/headerFonts";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { flexShrinkText } from "@/src/theme/responsiveText";
 
 /** Same CIBIL-style cut as merchant login Verify OTP sheet. */
 const OTP_WAVE_H = 56;
@@ -61,7 +64,7 @@ function OtpSheetWaveCut({ width }: { width: number }) {
 export function OrderOtpVerifySheetContent({
   title,
   subtitle,
-  compactSubtitle: _compactSubtitle,
+  compactSubtitle,
   error,
   loading = false,
   resetKey = 0,
@@ -74,34 +77,50 @@ export function OrderOtpVerifySheetContent({
   onClearError,
   prependContent,
 }: Props) {
-  const { width } = useWindowDimensions();
+  const { width, height, isShortHeight } = useResponsiveLayout();
   const insets = useSafeAreaInsets();
-  const sheetBottomPad = Math.max(insets.bottom, 12) + 16;
+  const sheetBottomPad = resolveRiderBottomInset(insets.bottom) + 16;
+  const bodyMaxH = Math.round(height * (isShortHeight ? 0.55 : 0.62));
+  const resolvedSubtitle =
+    isShortHeight && compactSubtitle?.trim() ? compactSubtitle.trim() : subtitle;
 
   return (
     <View style={styles.root}>
       <View style={styles.otpSheetOuter} pointerEvents="box-none">
         <OtpSheetWaveCut width={width} />
-        <View style={[styles.otpSheet, { paddingBottom: sheetBottomPad }]}>
-          <Text style={styles.otpSheetTitle} numberOfLines={2}>
-            {title}
-          </Text>
-          <Text style={styles.otpSheetSub}>{subtitle}</Text>
+        <View style={[styles.otpSheet, { paddingBottom: sheetBottomPad, maxHeight: bodyMaxH }]}>
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+          >
+            <Text style={[styles.otpSheetTitle, flexShrinkText]} numberOfLines={2}>
+              {title}
+            </Text>
+            <Text
+              style={[styles.otpSheetSub, flexShrinkText]}
+              numberOfLines={isShortHeight ? 2 : 4}
+            >
+              {resolvedSubtitle}
+            </Text>
 
-          {prependContent ? <View style={styles.prependWrap}>{prependContent}</View> : null}
+            {prependContent ? <View style={styles.prependWrap}>{prependContent}</View> : null}
 
-          <RidePickupOtpEntry
-            loading={loading}
-            error={error}
-            resetKey={resetKey}
-            mode={otpMode}
-            autoSubmit={autoSubmit}
-            inputMode={inputMode}
-            pinStyle="underline"
-            hideSectionCopy
-            onSubmit={onSubmit}
-            onErrorClear={onClearError}
-          />
+            <RidePickupOtpEntry
+              loading={loading}
+              error={error}
+              resetKey={resetKey}
+              mode={otpMode}
+              autoSubmit={autoSubmit}
+              inputMode={inputMode}
+              pinStyle="underline"
+              hideSectionCopy
+              onSubmit={onSubmit}
+              onErrorClear={onClearError}
+            />
+          </ScrollView>
         </View>
       </View>
     </View>
@@ -124,6 +143,16 @@ const styles = StyleSheet.create({
     marginTop: -(OTP_WAVE_H - OTP_WAVE_LOW_Y),
     paddingHorizontal: 20,
     paddingTop: 14,
+    flexShrink: 1,
+    minHeight: 0,
+  },
+  scroll: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minHeight: 0,
+  },
+  scrollContent: {
+    flexGrow: 1,
   },
   otpSheetTitle: {
     fontFamily: LORA_BOLD,

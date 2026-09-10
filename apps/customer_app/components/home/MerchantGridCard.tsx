@@ -3,18 +3,23 @@
  * Static banner only (no carousel). Rating pill overlays image bottom-left.
  */
 
-import { memo } from "react";
-import { View, TouchableOpacity, StyleSheet, Dimensions, type GestureResponderEvent } from "react-native";
-import { useEffect, useMemo } from "react";
+import { memo, useLayoutEffect, useMemo, useState } from "react";
+import { View, Pressable, StyleSheet, Dimensions, type GestureResponderEvent } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
+import Animated from "react-native-reanimated";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { resolveMerchantBannerUri } from "@/lib/merchantBanner";
-import { warmMerchantHeroImage } from "@/lib/merchantHeroWarmCache";
-import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
+import {
+  warmMerchantHeroImage,
+  getWarmMerchantHeroUri,
+  prefetchMerchantHeroImageUri,
+} from "@/lib/merchantHeroWarmCache";
+import { markHeroMediaSessionReady, isHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
 import { useScrollSafePress } from "@/hooks/useScrollSafePress";
+import { useInstantPressScale } from "@/components/InstantPressable";
 import { formatGridOfferBadge, gridDeliveryLabel } from "@/lib/merchantOfferBadge";
 import {
   GridCardRatingCutout,
@@ -65,11 +70,31 @@ function MerchantGridCardInner({
 }: MerchantGridCardProps) {
   const { foodLocked } = usePreventServicesAtPin();
   const bannerUri = useMemo(() => {
+    const warm = getWarmMerchantHeroUri(merchant.id);
     const resolved = resolveMerchantBannerUri(merchant);
+    if (warm) return warm;
     if (resolved) return resolved;
     const raw = merchant.displayImage?.trim() || merchant.banner_url?.trim();
     return raw || null;
   }, [merchant]);
+  const [imageReady, setImageReady] = useState(() =>
+    bannerUri ? isHeroMediaSessionReady(bannerUri) : false,
+  );
+
+  useLayoutEffect(() => {
+    if (!bannerUri) {
+      setImageReady(false);
+      return;
+    }
+    if (isHeroMediaSessionReady(bannerUri)) {
+      setImageReady(true);
+      return;
+    }
+    setImageReady(false);
+    prefetchMerchantHeroImageUri(bannerUri);
+    warmMerchantHeroImage(merchant.id, bannerUri);
+  }, [merchant.id, bannerUri]);
+
   const handlePress = () => {
     if (foodLocked) return;
     onPress();
@@ -79,10 +104,7 @@ function MerchantGridCardInner({
   const cardPress = useScrollSafePress(handlePress, {
     onPressIn: foodLocked ? undefined : onPressIn,
   });
-
-  useEffect(() => {
-    warmMerchantHeroImage(merchant.id, bannerUri);
-  }, [merchant.id, bannerUri]);
+  const pressScale = useInstantPressScale(0.97);
 
   const offerBadge = formatGridOfferBadge(merchant.offerText);
   const { label: baseDeliveryLabel, isFast } = gridDeliveryLabel(merchant, weatherDelayMinutes);
@@ -92,46 +114,63 @@ function MerchantGridCardInner({
   const imageH = merchantRailImageHeight(width);
 
   return (
-    <View style={[styles.card, { width }, foodLocked && styles.cardBlocked]}>
+    <Animated.View style={pressScale.style} collapsable={false}>
+    <Pressable
+      style={[styles.card, { width }, foodLocked && styles.cardBlocked]}
+      onPress={cardPress.onPress}
+      onPressIn={(e) => {
+        if (!foodLocked) pressScale.pressIn();
+        cardPress.onPressIn(e);
+      }}
+      onPressOut={(e) => {
+        pressScale.pressOut();
+        cardPress.onPressOut(e);
+      }}
+      {...({ onTouchMove: cardPress.onTouchMove } as { onTouchMove?: (e: GestureResponderEvent) => void })}
+      disabled={foodLocked}
+    >
       <View style={[styles.imageStage, { width }]}>
         <View style={[styles.imageClip, { width, height: imageH }]}>
-          <TouchableOpacity
-            onPress={cardPress.onPress}
-            onPressIn={cardPress.onPressIn}
-            onPressOut={cardPress.onPressOut}
-            {...({ onTouchMove: cardPress.onTouchMove } as { onTouchMove?: (e: GestureResponderEvent) => void })}
-            activeOpacity={0.92}
-            style={styles.imageTap}
-            disabled={foodLocked}
-          >
+          <View style={styles.imageTap}>
+            {/* Soft shell always under the image so cold decode never flashes blank white. */}
+            <View style={styles.bannerPlaceholder} pointerEvents="none">
+              <LinearGradient
+                colors={[
+                  GatiMitraColors.softBackground,
+                  "#FFFFFF",
+                  GatiMitraColors.surfaceWarm,
+                ]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFill}
+              />
+              {!bannerUri ? (
+                <Ionicons name="restaurant" size={28} color="rgba(100,116,139,0.28)" />
+              ) : null}
+            </View>
             {bannerUri ? (
               <Image
                 source={{ uri: bannerUri }}
-                style={[styles.banner, foodLocked && styles.bannerDimmed]}
+                style={[
+                  styles.banner,
+                  foodLocked && styles.bannerDimmed,
+                  !imageReady && styles.bannerLoading,
+                ]}
                 contentFit="cover"
                 cachePolicy="memory-disk"
                 transition={0}
                 priority="high"
-                recyclingKey={bannerUri}
+                recyclingKey={`loved-${merchant.id}`}
                 onLoad={() => {
                   markHeroMediaSessionReady(bannerUri);
+                  setImageReady(true);
+                }}
+                onDisplay={() => {
+                  markHeroMediaSessionReady(bannerUri);
+                  setImageReady(true);
                 }}
               />
-            ) : (
-              <View style={styles.bannerPlaceholder}>
-                <LinearGradient
-                  colors={[
-                    GatiMitraColors.softBackground,
-                    "#FFFFFF",
-                    GatiMitraColors.surfaceWarm,
-                  ]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={StyleSheet.absoluteFill}
-                />
-                <Ionicons name="restaurant" size={28} color="rgba(100,116,139,0.28)" />
-              </View>
-            )}
+            ) : null}
             {foodLocked ? (
               <View style={styles.preventOverlay} pointerEvents="none">
                 <View style={styles.preventBadge}>
@@ -146,7 +185,7 @@ function MerchantGridCardInner({
                 </AppText>
               </View>
             ) : null}
-          </TouchableOpacity>
+          </View>
         </View>
 
         {!foodLocked ? (
@@ -157,15 +196,7 @@ function MerchantGridCardInner({
         ) : null}
       </View>
 
-      <TouchableOpacity
-        onPress={cardPress.onPress}
-        onPressIn={cardPress.onPressIn}
-        onPressOut={cardPress.onPressOut}
-        {...({ onTouchMove: cardPress.onTouchMove } as { onTouchMove?: (e: GestureResponderEvent) => void })}
-        activeOpacity={0.7}
-        style={styles.body}
-        disabled={foodLocked}
-      >
+      <View style={styles.body}>
         <AppText style={styles.name} numberOfLines={1}>
           {merchant.name}
         </AppText>
@@ -194,14 +225,19 @@ function MerchantGridCardInner({
             </>
           )}
         </View>
-      </TouchableOpacity>
-    </View>
+      </View>
+    </Pressable>
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
     marginBottom: 14,
+  },
+  cardPressed: {
+    opacity: 0.92,
+    transform: [{ scale: 0.985 }],
   },
   cardBlocked: {
     opacity: 0.78,
@@ -219,6 +255,9 @@ const styles = StyleSheet.create({
   },
   bannerDimmed: {
     opacity: 0.55,
+  },
+  bannerLoading: {
+    opacity: 0,
   },
   preventOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -249,11 +288,12 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   banner: {
+    ...StyleSheet.absoluteFillObject,
     width: "100%",
     height: "100%",
   },
   bannerPlaceholder: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: GatiMitraColors.softBackground,

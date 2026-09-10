@@ -54,6 +54,8 @@ type SelfieAutoCaptureProps = {
   capturedAction?: React.ReactNode;
   /** Hide the in-card button when the parent renders a sticky Capture selfie footer. */
   hideManualCapture?: boolean;
+  /** Parent sticky footer: true when face is aligned and capture is allowed. */
+  onCaptureReadinessChange?: (ready: boolean) => void;
 };
 
 export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoCaptureProps>(
@@ -70,6 +72,7 @@ export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoC
       liveProbe = true,
       capturedAction,
       hideManualCapture = false,
+      onCaptureReadinessChange,
     },
     ref
   ) {
@@ -91,8 +94,11 @@ export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoC
   const captureFinal = useCallback(async (manual = false) => {
     if (capturingRef.current || disabled || uri) return;
     const expoGoBypass = manual && ALLOW_EXPO_GO_MANUAL_CAPTURE;
-    // Blink auto-capture still needs a face. Manual tap is always allowed (blink fallback).
-    if (!manual && liveProbe && !expoGoBypass && !facePresentRef.current) return;
+    // Face must be aligned before capture (Expo Go bypass only for onboarding QA).
+    if (!expoGoBypass) {
+      if (!facePresentRef.current) return;
+      if (liveProbe && manual && blinkTrackerRef.current.getPhase() !== "blink") return;
+    }
     capturingRef.current = true;
     setStatus("capturing");
     try {
@@ -110,7 +116,8 @@ export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoC
         }
 
         const validation = await validateSelfieFace(photo.uri, {
-          allowWithoutDetector: manual,
+          // Never skip detector in production — reject screen/photo spoofs without a face.
+          allowWithoutDetector: false,
         });
         if (!validation.ok) {
           setRejection(validation.message);
@@ -173,7 +180,8 @@ export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoC
   }, [active, uri, disabled, permission?.granted, requestPermission, cameraReady]);
 
   useEffect(() => {
-    if (!liveProbe) return;
+    // Always probe for face alignment when the detector is available.
+    // Auto shutter-on-blink only runs when liveProbe is enabled.
     if (!active || uri || disabled || !permission?.granted || !cameraReady) return;
     if (detectorUnavailable) return;
 
@@ -232,7 +240,7 @@ export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoC
           const nextStatus = phase === "blink" ? "waiting_blink" : "searching";
           setStatus((prev) => (prev === nextStatus ? prev : nextStatus));
 
-          if (action === "capture") {
+          if (liveProbe && action === "capture") {
             clearInterval(interval);
             await captureFinal();
           }
@@ -280,20 +288,36 @@ export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoC
         : detectorUnavailable
           ? ALLOW_EXPO_GO_MANUAL_CAPTURE
             ? "Dev mode — tap Capture below to test onboarding"
-            : "Align your face inside the circle"
+            : "Align your face inside the circle — live face required"
           : !liveProbe
             ? "Align your face, then tap Capture selfie"
             : eyesObscured
             ? "Eyes not visible — remove sunglasses or goggles"
             : status === "waiting_blink"
-              ? "Face detected — blink your eyes to capture"
+              ? "✓ Face detected — blink, then capture"
               : status === "searching"
                 ? facePresent
                   ? "Hold still — get ready to blink"
-                  : "Position your face inside the red circle"
+                  : "Please align your face in the center"
                 : status === "capturing"
                   ? "Capturing…"
                   : "Selfie captured";
+
+  const captureReady =
+    ALLOW_EXPO_GO_MANUAL_CAPTURE ||
+    (facePresent &&
+      (!liveProbe || (blinkPhase === "blink" && status === "waiting_blink")));
+
+  const captureEnabled =
+    captureReady &&
+    !disabled &&
+    cameraReady &&
+    Boolean(permission?.granted) &&
+    status !== "capturing";
+
+  useEffect(() => {
+    onCaptureReadinessChange?.(Boolean(!uri && captureEnabled));
+  }, [uri, captureEnabled, onCaptureReadinessChange]);
 
   const ringBorderStyle = uri
     ? styles.ringCaptured
@@ -459,15 +483,18 @@ export const SelfieAutoCapture = forwardRef<SelfieAutoCaptureHandle, SelfieAutoC
       {!uri && !hideManualCapture ? (
         <View collapsable={false} style={styles.captureSelfieBtnWrap}>
           <Pressable
-            onPress={() => void captureFinal(true)}
-            disabled={disabled || !cameraReady || !permission?.granted || status === "capturing"}
+            onPress={() => {
+              if (!captureEnabled) return;
+              void captureFinal(true);
+            }}
+            disabled={!captureEnabled}
             style={({ pressed }) => [
               styles.captureSelfieBtn,
-              pressed && styles.devCaptureBtnPressed,
-              (disabled || !cameraReady || !permission?.granted || status === "capturing") &&
-                styles.devCaptureBtnDisabled,
+              pressed && captureEnabled && styles.devCaptureBtnPressed,
+              !captureEnabled && styles.devCaptureBtnDisabled,
             ]}
             accessibilityRole="button"
+            accessibilityState={{ disabled: !captureEnabled }}
             accessibilityLabel="Capture selfie"
           >
             {status === "capturing" ? (

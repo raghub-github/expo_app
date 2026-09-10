@@ -3,7 +3,7 @@
  * Super-admin can add/remove tiles; an empty list hides the rail.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { View, TouchableOpacity, StyleSheet } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
@@ -16,6 +16,7 @@ import {
   type DiscoveryCtaAction,
   type DiscoveryCtaTile,
 } from "@/lib/foodHomeLayout";
+import { prefetchFoodHomeImageUri } from "@/lib/prefetchGridFirstHeroMedia";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { DiscoveryColors, DISCOVERY_PAGE_PAD } from "./discoveryTheme";
 
@@ -105,6 +106,12 @@ export function DiscoveryPromoRail({
 }: Props) {
   const crazyBadge = useMemo(() => pickCrazyBadge(offers), [offers]);
 
+  useEffect(() => {
+    for (const tile of tiles.slice(0, 3)) {
+      prefetchFoodHomeImageUri(tile.imageUrl);
+    }
+  }, [tiles]);
+
   if (!tiles.length) return null;
 
   return (
@@ -132,6 +139,7 @@ export function DiscoveryPromoRail({
                   style={styles.image}
                   contentFit="cover"
                   cachePolicy="memory-disk"
+                  priority="high"
                   recyclingKey={imageUrl}
                   transition={0}
                 />

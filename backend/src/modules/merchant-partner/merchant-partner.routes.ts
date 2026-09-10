@@ -5888,8 +5888,10 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             } = await import("../../lib/merchant-waiting-for-order.js");
             if (body.is_open === true) {
               await ensureWaitingForOrderInbox(storeId);
+              // emitStoreStatusChanged already fires ONLINE FCM — do not twin-push.
             } else {
               await deleteWaitingForOrderInbox(storeId);
+              // emitStoreStatusChanged already fires OUT_OF_TIMINGS FCM — do not twin-push.
             }
           } catch (e) {
             req.log.warn({ err: e, storeId }, "waiting_for_order_inbox_sync_failed");

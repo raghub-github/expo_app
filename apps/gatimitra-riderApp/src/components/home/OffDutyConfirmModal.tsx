@@ -9,6 +9,9 @@ import {
 } from "react-native";
 import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 type OffDutyConfirmModalProps = {
   visible: boolean;
@@ -24,38 +27,59 @@ export function OffDutyConfirmModal({
   loading,
 }: OffDutyConfirmModalProps) {
   const { t } = useTranslation();
+  const { height, isShortHeight } = useResponsiveLayout();
+  const cardMaxH = Math.round(height * (isShortHeight ? 0.72 : 0.8));
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
       <Pressable style={styles.backdrop} onPress={onCancel}>
-        <Pressable style={styles.card} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.pill}>
-            <View style={styles.pillIcon} />
-            <Text style={styles.pillText}>{t("topbar.dutyOff", "OFF DUTY")}</Text>
-          </View>
+        <Pressable
+          style={[styles.card, { maxHeight: cardMaxH }]}
+          onPress={(e) => e.stopPropagation()}
+        >
+          <ResponsiveSheetBody
+            maxHeight={cardMaxH - 16}
+            contentContainerStyle={styles.bodyContent}
+            footerStyle={styles.footerSlot}
+            footer={
+              <View style={[rowLayout.row, styles.actions]}>
+                <Pressable onPress={onCancel} disabled={loading} style={styles.cancelBtn}>
+                  <Text style={styles.cancelText} numberOfLines={1}>
+                    {t("common.cancel", "Cancel")}
+                  </Text>
+                </Pressable>
+                <Pressable onPress={onConfirm} disabled={loading} style={styles.confirmBtn}>
+                  {loading ? (
+                    <ActivityIndicator size="small" color={colors.primary[600]} />
+                  ) : (
+                    <Text style={styles.confirmText} numberOfLines={1}>
+                      {t("common.confirm", "Confirm")}
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
+            }
+          >
+            <View style={styles.pill}>
+              <View style={styles.pillIcon} />
+              <Text style={styles.pillText} numberOfLines={1}>
+                {t("topbar.dutyOff", "OFF DUTY")}
+              </Text>
+            </View>
 
-          <Text style={styles.title}>
-            {t("home.offDutyConfirmTitle", "Are you sure you want to go off duty?")}
-          </Text>
-          <Text style={styles.subtitle}>
-            {t(
-              "home.offDutyConfirmSub",
-              "You will stop receiving orders once you have turned your duty OFF"
-            )}
-          </Text>
-
-          <View style={styles.actions}>
-            <Pressable onPress={onCancel} disabled={loading} style={styles.cancelBtn}>
-              <Text style={styles.cancelText}>{t("common.cancel", "Cancel")}</Text>
-            </Pressable>
-            <Pressable onPress={onConfirm} disabled={loading} style={styles.confirmBtn}>
-              {loading ? (
-                <ActivityIndicator size="small" color={colors.primary[600]} />
-              ) : (
-                <Text style={styles.confirmText}>{t("common.confirm", "Confirm")}</Text>
+            <Text style={[styles.title, flexShrinkText]} numberOfLines={isShortHeight ? 3 : 4}>
+              {t("home.offDutyConfirmTitle", "Are you sure you want to go off duty?")}
+            </Text>
+            <Text
+              style={[styles.subtitle, flexShrinkText]}
+              numberOfLines={isShortHeight ? 3 : 5}
+            >
+              {t(
+                "home.offDutyConfirmSub",
+                "You will stop receiving orders once you have turned your duty OFF"
               )}
-            </Pressable>
-          </View>
+            </Text>
+          </ResponsiveSheetBody>
         </Pressable>
       </Pressable>
     </Modal>
@@ -75,15 +99,27 @@ const styles = StyleSheet.create({
     maxWidth: 340,
     backgroundColor: "#ffffff",
     borderRadius: 16,
-    paddingHorizontal: 22,
-    paddingTop: 20,
-    paddingBottom: 18,
-    alignItems: "center",
+    paddingTop: 8,
+    paddingBottom: 10,
+    alignItems: "stretch",
+    overflow: "hidden",
+    flexShrink: 1,
+    minHeight: 0,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.15,
     shadowRadius: 24,
     elevation: 12,
+  },
+  bodyContent: {
+    alignItems: "center",
+    paddingTop: 12,
+    paddingHorizontal: 22,
+  },
+  footerSlot: {
+    borderTopWidth: 0,
+    backgroundColor: "transparent",
+    paddingHorizontal: 22,
   },
   pill: {
     flexDirection: "row",
@@ -94,6 +130,7 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     borderRadius: 8,
     marginBottom: 18,
+    alignSelf: "center",
   },
   pillIcon: {
     width: 16,
@@ -114,18 +151,18 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 24,
     marginBottom: 10,
+    alignSelf: "stretch",
   },
   subtitle: {
     fontSize: 13,
     color: colors.gray[500],
     textAlign: "center",
     lineHeight: 19,
-    marginBottom: 22,
+    marginBottom: 8,
     paddingHorizontal: 4,
+    alignSelf: "stretch",
   },
   actions: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "flex-end",
     alignSelf: "stretch",
     gap: 20,
@@ -133,6 +170,8 @@ const styles = StyleSheet.create({
   cancelBtn: {
     paddingVertical: 8,
     paddingHorizontal: 4,
+    flexShrink: 1,
+    minWidth: 0,
   },
   cancelText: {
     fontSize: 15,
@@ -144,6 +183,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     minWidth: 72,
     alignItems: "center",
+    flexShrink: 0,
   },
   confirmText: {
     fontSize: 15,

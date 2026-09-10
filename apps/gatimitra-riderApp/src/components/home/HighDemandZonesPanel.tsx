@@ -7,11 +7,13 @@ import {
   StyleSheet,
   Text,
   UIManager,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { DemandZone } from "@/src/lib/demand-zones";
 import { openGoogleMapsNavigation } from "@/src/lib/open-google-maps-navigation";
+import { responsiveFont, responsiveSpacing } from "@/src/theme/responsive";
 
 /** Fabric / New Arch — LayoutAnimation often crashes with "Unable to find viewState for tag". */
 const IS_FABRIC =
@@ -49,6 +51,7 @@ type Props = {
 
 /**
  * Bottom map banner — mirrors OffDutyBanner layout (icon + title/sub + CTA).
+ * Flex row with shrinkable text so narrow widths / large fonts never overflow.
  */
 export function HighDemandZonesPanel({
   zones,
@@ -58,6 +61,11 @@ export function HighDemandZonesPanel({
   isLoading = false,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const { width, fontScale } = useWindowDimensions();
+  const titleSize = responsiveFont(14, width, fontScale, { min: 12, max: 16 });
+  const subSize = responsiveFont(11, width, fontScale, { min: 10, max: 13 });
+  const padH = responsiveSpacing(14, width);
+  const padV = responsiveSpacing(14, width);
 
   useEffect(() => {
     if (zones.length === 0) setExpanded(false);
@@ -92,17 +100,19 @@ export function HighDemandZonesPanel({
       ? "Maximize your earnings in these areas!"
       : "No busy areas nearby right now";
 
+  const listMaxH = Math.min(200, Math.round(width * 0.45));
+
   return (
     <View style={styles.root} collapsable={false}>
       {expanded && hasZones ? (
-        <View style={styles.list}>
+        <View style={[styles.list, { maxHeight: listMaxH }]}>
           {zones.map((zone) => (
             <View key={zone.id} style={styles.row}>
               <View style={styles.rowText}>
-                <Text style={styles.zoneTitle} numberOfLines={1}>
+                <Text style={[styles.zoneTitle, { fontSize: titleSize }]} numberOfLines={1}>
                   {zone.label}
                 </Text>
-                <Text style={styles.zoneMeta} numberOfLines={1}>
+                <Text style={[styles.zoneMeta, { fontSize: subSize }]} numberOfLines={1}>
                   {zone.distanceKm < 1
                     ? `${Math.round(zone.distanceKm * 1000)} m`
                     : `${zone.distanceKm} km`}
@@ -123,7 +133,7 @@ export function HighDemandZonesPanel({
         </View>
       ) : null}
 
-      <View style={styles.banner}>
+      <View style={[styles.banner, { paddingHorizontal: padH, paddingVertical: padV }]}>
         <View style={styles.icon}>
           {isLoading ? (
             <ActivityIndicator size="small" color="#ffffff" />
@@ -132,10 +142,10 @@ export function HighDemandZonesPanel({
           )}
         </View>
         <View style={styles.textCol}>
-          <Text style={styles.title} numberOfLines={1}>
+          <Text style={[styles.title, { fontSize: titleSize }]} numberOfLines={1} ellipsizeMode="tail">
             High demand zones
           </Text>
-          <Text style={styles.sub} numberOfLines={1}>
+          <Text style={[styles.sub, { fontSize: subSize }]} numberOfLines={2} ellipsizeMode="tail">
             {subtitle}
           </Text>
         </View>
@@ -146,7 +156,7 @@ export function HighDemandZonesPanel({
           accessibilityRole="button"
           accessibilityLabel={expanded ? "Hide zones" : "View zones"}
         >
-          <Text style={styles.ctaText}>
+          <Text style={[styles.ctaText, { fontSize: responsiveFont(13, width, fontScale, { min: 11, max: 14 }) }]} numberOfLines={1}>
             {hasZones ? (expanded ? "Hide" : "View") : "Soon"}
           </Text>
         </Pressable>
@@ -160,13 +170,10 @@ const styles = StyleSheet.create({
     width: "100%",
     alignSelf: "stretch",
   },
-  /** Match OffDutyBanner.offDutyWrap */
   banner: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#0f172a",
-    paddingHorizontal: 14,
-    paddingVertical: 14,
     gap: 10,
     minHeight: DEMAND_ZONES_COLLAPSED_HEIGHT,
     width: "100%",
@@ -184,14 +191,13 @@ const styles = StyleSheet.create({
   textCol: {
     flex: 1,
     minWidth: 0,
+    flexShrink: 1,
   },
   title: {
-    fontSize: 14,
     fontWeight: "800",
     color: "#ffffff",
   },
   sub: {
-    fontSize: 11,
     color: "rgba(255,255,255,0.92)",
     marginTop: 2,
   },
@@ -201,12 +207,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
     flexShrink: 0,
+    minWidth: 52,
+    alignItems: "center",
+    justifyContent: "center",
   },
   ctaDisabled: {
     opacity: 0.7,
   },
   ctaText: {
-    fontSize: 13,
     fontWeight: "800",
     color: "#EA580C",
   },
@@ -214,7 +222,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E5E7EB",
-    maxHeight: 200,
   },
   row: {
     flexDirection: "row",
@@ -230,13 +237,11 @@ const styles = StyleSheet.create({
     paddingRight: 10,
   },
   zoneTitle: {
-    fontSize: 14,
     fontWeight: "800",
     color: "#0f172a",
   },
   zoneMeta: {
     marginTop: 2,
-    fontSize: 11,
     color: "#64748b",
     fontWeight: "600",
   },

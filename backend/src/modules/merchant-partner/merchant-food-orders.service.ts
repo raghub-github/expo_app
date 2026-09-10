@@ -3265,10 +3265,23 @@ export async function patchMerchantFoodOrderStatus(
   }
 
   try {
-    await sql`
-      UPDATE orders_core SET current_status = ${status}, updated_at = ${now}::timestamptz
-      WHERE id = ${corePk}
-    `;
+    if (status === "DELIVERED") {
+      // Keep lifecycle enum in sync with food pipeline (Coredash / GMV use status='delivered').
+      // Self-pickup completion only went through current_status before and left status='assigned'.
+      await sql`
+        UPDATE orders_core
+        SET current_status = ${status},
+            status = 'delivered',
+            actual_delivery_time = COALESCE(actual_delivery_time, ${now}::timestamptz),
+            updated_at = ${now}::timestamptz
+        WHERE id = ${corePk}
+      `;
+    } else {
+      await sql`
+        UPDATE orders_core SET current_status = ${status}, updated_at = ${now}::timestamptz
+        WHERE id = ${corePk}
+      `;
+    }
   } catch {
     /* non-fatal */
   }
@@ -3449,15 +3462,25 @@ export async function patchMerchantFoodOrderStatus(
       SELECT
         c.customer_id AS customer_user_id,
         mp.parent_merchant_id AS merchant_user_id,
-        s.store_display_name AS store_name
+        s.store_display_name AS store_name,
+        oc.rider_id AS rider_id,
+        r.name AS rider_name
       FROM public.orders_core oc
       LEFT JOIN public.customers c ON c.id = oc.customer_id
       LEFT JOIN public.merchant_stores s ON s.id = ${storeId}
       LEFT JOIN public.merchant_parents mp ON mp.id = s.parent_id
+      LEFT JOIN public.riders r ON r.id = oc.rider_id
       WHERE oc.id = ${corePk}
       LIMIT 1
-    `) as unknown as Array<{ customer_user_id: string | null; merchant_user_id: string | null; store_name: string | null }>;
+    `) as unknown as Array<{
+      customer_user_id: string | null;
+      merchant_user_id: string | null;
+      store_name: string | null;
+      rider_id: number | null;
+      rider_name: string | null;
+    }>;
     const owner = ownerRows[0];
+    const assignedRiderId = Number(owner?.rider_id ?? 0);
     emitEvent("order.status_changed", {
       orderId: orderIdText,
       orderShortId: order.formatted_order_id ?? orderIdText,
@@ -3467,6 +3490,11 @@ export async function patchMerchantFoodOrderStatus(
       merchantUserId: owner?.merchant_user_id ?? null,
       merchantStoreId: storeId,
       merchantName: owner?.store_name ?? null,
+      riderUserId:
+        Number.isInteger(assignedRiderId) && assignedRiderId > 0
+          ? `usr_${assignedRiderId}`
+          : null,
+      riderName: owner?.rider_name ?? null,
       reason: rejectedReason ?? undefined,
       ...(status === "CANCELLED" && cancelNotifyRefund
         ? {

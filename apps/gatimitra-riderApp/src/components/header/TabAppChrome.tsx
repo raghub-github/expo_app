@@ -123,6 +123,7 @@ const styles = StyleSheet.create({
     height: 36,
     justifyContent: "center",
     flexShrink: 1,
+    flexGrow: 1,
     minWidth: 0,
   },
   leadingSpacer: {

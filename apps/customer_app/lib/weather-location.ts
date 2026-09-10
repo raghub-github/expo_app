@@ -1,6 +1,7 @@
 /** City/area hints for /v1/weather/location — never pass state names or placeholders. */
 
 import type { ReverseGeocodeResult } from "@/services/location.service";
+import { filterCoordinateAddressParts, isRawCoordinateText } from "@/lib/isRawCoordinateText";
 
 function isPincode(value?: string | null): boolean {
   return !!value && /^\d{6}$/.test(value.trim());
@@ -9,14 +10,18 @@ function isPincode(value?: string | null): boolean {
 export function resolveHomeLocationPrimary(address: ReverseGeocodeResult | null): string {
   if (!address) return "Current location";
 
-  const fullParts = (address.fullAddress ?? "")
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean);
-  const secondaryParts = (address.secondary ?? "")
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean);
+  const fullParts = filterCoordinateAddressParts(
+    (address.fullAddress ?? "")
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean)
+  );
+  const secondaryParts = filterCoordinateAddressParts(
+    (address.secondary ?? "")
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean)
+  );
   const stateCandidate =
     address.state ??
     [...fullParts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== "india");
@@ -27,7 +32,9 @@ export function resolveHomeLocationPrimary(address: ReverseGeocodeResult | null)
       (p) =>
         !!p &&
         !isPincode(p) &&
+        !isRawCoordinateText(p) &&
         p.toLowerCase() !== "india" &&
+        p.toLowerCase() !== "current location" &&
         p.toLowerCase() !== normalizedState
     );
 

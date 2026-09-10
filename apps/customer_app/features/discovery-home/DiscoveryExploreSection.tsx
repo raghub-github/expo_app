@@ -15,6 +15,8 @@ type Props = {
   noPackagingCharges: boolean;
   hasActiveFilters: boolean;
   activeFilterCount: number;
+  /** When false (cart/track footing live), only the section title remains. */
+  showFilterChips?: boolean;
   onToggleOpenNow: () => void;
   onToggleTopBrands: () => void;
   onToggleSort: () => void;
@@ -39,6 +41,7 @@ export function DiscoveryExploreSection({
   noPackagingCharges,
   hasActiveFilters,
   activeFilterCount,
+  showFilterChips = true,
   onToggleOpenNow,
   onToggleTopBrands,
   onToggleSort,
@@ -60,6 +63,7 @@ export function DiscoveryExploreSection({
           style={styles.rule}
         />
       </View>
+      {showFilterChips ? (
       <ScrollView
         horizontal
         nestedScrollEnabled
@@ -152,6 +156,7 @@ export function DiscoveryExploreSection({
           <AppText style={styles.chipText}>Near & Fast</AppText>
         </TouchableOpacity>
       </ScrollView>
+      ) : null}
     </View>
   );
 }

@@ -64,6 +64,7 @@ import {
 } from "@/lib/riderActivityLogCache";
 import { prefetchCancellationCatalogClient } from "@/lib/orders/cancellation-catalog-client-cache";
 import { isRefundSettled } from "@/lib/orders/refund-status";
+import { isIntentionalNoRefundCancel } from "@/lib/orders/skip-auto-refund";
 import { prefetchPartnerChat, seedPartnerChatCache, type PartnerChatCacheEntry } from "@/lib/partnerChatCache";
 import {
   mapNotificationsFromApi,
@@ -1189,8 +1190,16 @@ export default function OrderDetailClient({
                 cancelType !== "customer" &&
                 cancelType !== "cx" &&
                 ["store", "merchant", "system", "rider", "admin"].includes(cancelType);
+              const intentionalNoRefund = isIntentionalNoRefundCancel({
+                refundStatus: cancelInfo?.refundStatus,
+                reasonCode: cancelInfo?.reasonCode,
+              });
 
-              if (merchantOrSystemCancel && !refunds.some(isRefundSettled)) {
+              if (
+                merchantOrSystemCancel &&
+                !intentionalNoRefund &&
+                !refunds.some(isRefundSettled)
+              ) {
                 const repairRes = await fetch(`/api/orders/${row.id}/refunds/ensure-auto`, {
                   method: "POST",
                 });

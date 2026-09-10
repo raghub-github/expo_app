@@ -25,12 +25,26 @@ export async function GET() {
     });
 
     if (!cookieSession || !isCookieAccessTokenUsable(cookieSession)) {
-      return NextResponse.json({ success: false, code: "NO_SESSION" }, { status: 401 });
+      // 200 (not 401): expected when cookies are missing/expired for the Realtime
+      // bridge — avoids Chrome "Failed to load resource" spam on every hydrate.
+      return NextResponse.json(
+        { success: false, code: "NO_SESSION" },
+        {
+          status: 200,
+          headers: { "Cache-Control": "no-store" },
+        }
+      );
     }
 
     const refreshToken = cookieSession.refreshToken?.trim() ?? "";
     if (!refreshToken) {
-      return NextResponse.json({ success: false, code: "NO_SESSION" }, { status: 401 });
+      return NextResponse.json(
+        { success: false, code: "NO_SESSION" },
+        {
+          status: 200,
+          headers: { "Cache-Control": "no-store" },
+        }
+      );
     }
 
     return NextResponse.json(

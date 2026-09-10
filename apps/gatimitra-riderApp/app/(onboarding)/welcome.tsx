@@ -1,30 +1,32 @@
 import React from "react";
-import { View, Text, ScrollView } from "react-native";
+import { View, Text, ScrollView, StyleSheet } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
 import { Button } from "@/src/components/ui/Button";
 import { Logo } from "@/src/components/Logo";
+import { colors } from "@/src/theme";
+import { RIDER_AUTH_BG } from "@/src/theme/riderAuthTheme";
 
 export default function WelcomeScreen() {
   const { t } = useTranslation();
 
   return (
-    <SafeAreaView className="flex-1 bg-white">
-      <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
-        <View className="flex-1 px-6 pt-12 pb-8 justify-between">
+    <SafeAreaView style={styles.root}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        showsVerticalScrollIndicator={false}
+        style={styles.flex}
+      >
+        <View style={styles.body}>
           <View>
-            <View className="items-center mb-12">
+            <View style={styles.hero}>
               <Logo size="large" vertical style={{ marginBottom: 24 }} />
-              <Text className="text-4xl font-bold text-gray-900 mb-4 text-center">
-                {t("onboarding.welcome.title")}
-              </Text>
-              <Text className="text-lg text-gray-600 text-center px-4">
-                {t("onboarding.welcome.subtitle")}
-              </Text>
+              <Text style={styles.title}>{t("onboarding.welcome.title")}</Text>
+              <Text style={styles.subtitle}>{t("onboarding.welcome.subtitle")}</Text>
             </View>
 
-            <View className="space-y-4 mb-8">
+            <View style={styles.features}>
               <FeatureItem
                 icon="🚀"
                 title={t("onboarding.welcome.flexibleEarnings")}
@@ -52,9 +54,7 @@ export default function WelcomeScreen() {
             <Button onPress={() => router.push("/(onboarding)/profile")} size="lg">
               {t("onboarding.welcome.getStarted")}
             </Button>
-            <Text className="text-xs text-center text-gray-500 mt-4">
-              {t("onboarding.welcome.timeNote")}
-            </Text>
+            <Text style={styles.note}>{t("onboarding.welcome.timeNote")}</Text>
           </View>
         </View>
       </ScrollView>
@@ -62,14 +62,73 @@ export default function WelcomeScreen() {
   );
 }
 
-function FeatureItem({ icon, title, description }: { icon: string; title: string; description: string }) {
+function FeatureItem({
+  icon,
+  title,
+  description,
+}: {
+  icon: string;
+  title: string;
+  description: string;
+}) {
   return (
-    <View className="flex-row items-start p-4 bg-gray-50 rounded-xl mb-3">
-      <Text className="text-3xl mr-4">{icon}</Text>
-      <View className="flex-1">
-        <Text className="text-base font-semibold text-gray-900 mb-1">{title}</Text>
-        <Text className="text-sm text-gray-600">{description}</Text>
+    <View style={styles.featureRow}>
+      <Text style={styles.featureIcon}>{icon}</Text>
+      <View style={styles.featureCopy}>
+        <Text style={styles.featureTitle}>{title}</Text>
+        <Text style={styles.featureDesc}>{description}</Text>
       </View>
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1, alignSelf: "stretch", backgroundColor: RIDER_AUTH_BG },
+  flex: { flex: 1, alignSelf: "stretch" },
+  scroll: { flexGrow: 1 },
+  body: {
+    flexGrow: 1,
+    paddingHorizontal: 24,
+    paddingTop: 48,
+    paddingBottom: 32,
+    justifyContent: "space-between",
+  },
+  hero: { alignItems: "center", marginBottom: 48 },
+  title: {
+    fontSize: 32,
+    fontWeight: "800",
+    color: colors.gray[900],
+    marginBottom: 16,
+    textAlign: "center",
+  },
+  subtitle: {
+    fontSize: 17,
+    color: colors.gray[600],
+    textAlign: "center",
+    paddingHorizontal: 16,
+  },
+  features: { marginBottom: 32 },
+  featureRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    padding: 16,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  featureIcon: { fontSize: 28, marginRight: 16 },
+  featureCopy: { flex: 1, minWidth: 0 },
+  featureTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: colors.gray[900],
+    marginBottom: 4,
+  },
+  featureDesc: { fontSize: 14, color: colors.gray[600] },
+  note: {
+    marginTop: 16,
+    fontSize: 12,
+    textAlign: "center",
+    color: colors.gray[500],
+  },
+});

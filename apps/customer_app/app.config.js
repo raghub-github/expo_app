@@ -114,13 +114,14 @@ module.exports = {
         {
           backgroundColor: LAUNCHER_SPLASH_BG,
           image: LAUNCHER_SPLASH_ANDROID12,
-          imageWidth: 240,
+          // Match JS bootstrap wordmark size — 240 looked like a "small then big" jump.
+          imageWidth: 400,
           resizeMode: "contain",
           enableFullScreenImage_legacy: true,
           android: {
             image: LAUNCHER_SPLASH_ANDROID12,
             backgroundColor: LAUNCHER_SPLASH_BG,
-            imageWidth: 240,
+            imageWidth: 400,
           },
           ios: {
             image: LAUNCHER_SPLASH_IMAGE,

@@ -5,7 +5,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   Modal,
-  Dimensions,
+  useWindowDimensions,
   Platform,
   ActivityIndicator,
 } from "react-native";
@@ -22,6 +22,7 @@ import {
 } from "@/src/lib/rider-service-eligibility-rows";
 import { ServiceEligibilityReasonSheet } from "@/src/components/header/ServiceEligibilityReasonSheet";
 import { headerControlText, HEADER_SERVICES_WIDTH } from "@/src/theme/headerFonts";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
 const GREEN = "#16A34A";
 const POPOVER_WIDTH = 188;
@@ -40,6 +41,8 @@ type MenuAnchor = {
 
 type RiderServiceTypeDropdownProps = {
   headerAnchorRef?: React.RefObject<View | null>;
+  /** Narrow / zoomed header — fill remaining space, allow ellipsis. */
+  compact?: boolean;
 };
 
 type ServiceMeta = {
@@ -115,10 +118,10 @@ function computeAnchor(
   headerBottom: number,
   triggerX: number,
   triggerWidth: number,
+  screenW: number,
 ): MenuAnchor {
   const width = triggerWidth > 0 ? triggerWidth : FALLBACK_TRIGGER_WIDTH;
   const triggerCenterX = triggerX + width / 2;
-  const screenW = Dimensions.get("window").width;
   const popoverWidth = Math.min(POPOVER_WIDTH, screenW - 24);
   let left = triggerCenterX - popoverWidth / 2;
   // Keep the sheet from sliding left over the duty toggle.
@@ -135,8 +138,24 @@ function computeAnchor(
 
 export function RiderServiceTypeDropdown({
   headerAnchorRef,
+  compact = false,
 }: RiderServiceTypeDropdownProps) {
   const { t } = useTranslation();
+  const { width: windowWidth } = useWindowDimensions();
+  const { isCompactWidth, rw } = useResponsiveLayout();
+  const tight = compact || isCompactWidth;
+  const servicesWidth = tight
+    ? undefined
+    : Math.round(
+        rw(HEADER_SERVICES_WIDTH, {
+          min: 100,
+          max: 128,
+          factor: 0.4,
+        })
+      );
+  const chipWidthStyle = tight
+    ? styles.chipFlex
+    : { width: servicesWidth as number };
   const {
     selectedServices,
     eligibleServices,
@@ -194,7 +213,7 @@ export function RiderServiceTypeDropdown({
 
         const finish = (headerBottom: number) => {
           triggerNode.measureInWindow((tx, _ty, tw) => {
-            resolve(computeAnchor(headerBottom, tx, tw));
+            resolve(computeAnchor(headerBottom, tx, tw, windowWidth));
           });
         };
 
@@ -209,16 +228,16 @@ export function RiderServiceTypeDropdown({
 
         triggerNode.measureInWindow((tx, ty, _tw, th) => {
           const triggerHeight = th > 0 ? th : 40;
-          resolve(computeAnchor(ty + triggerHeight, tx, _tw));
+          resolve(computeAnchor(ty + triggerHeight, tx, _tw, windowWidth));
         });
       });
     });
-  }, [headerAnchorRef]);
+  }, [headerAnchorRef, windowWidth]);
 
   const openMenu = useCallback(async () => {
     if (!eligibleServices.length || isUpdating) return;
     // Open immediately so the first tap always works; refine anchor after measure.
-    const fallbackWidth = Math.min(POPOVER_WIDTH, Dimensions.get("window").width - 24);
+    const fallbackWidth = Math.min(POPOVER_WIDTH, windowWidth - 24);
     setAnchor({
       top: FALLBACK_HEADER_HEIGHT + GAP_BELOW_HEADER,
       left: 12,
@@ -228,7 +247,7 @@ export function RiderServiceTypeDropdown({
     setOpen(true);
     const nextAnchor = await measureAndAnchor();
     if (nextAnchor) setAnchor(nextAnchor);
-  }, [eligibleServices.length, isUpdating, measureAndAnchor]);
+  }, [eligibleServices.length, isUpdating, measureAndAnchor, windowWidth]);
 
   const closeMenu = useCallback(() => {
     setOpen(false);
@@ -236,11 +255,11 @@ export function RiderServiceTypeDropdown({
   }, []);
 
   if (!visible) {
-    // Same fixed-width chip as loaded state — prevents first-paint row reflow.
+    // Same width chip as loaded state — prevents first-paint row reflow.
     return (
-      <View style={[styles.wrap, styles.trigger, styles.triggerPlaceholder]} pointerEvents="none">
+      <View style={[styles.wrap, styles.trigger, styles.triggerPlaceholder, chipWidthStyle]} pointerEvents="none">
         <View style={styles.triggerRow}>
-          <Text style={styles.triggerText} numberOfLines={1}>
+          <Text style={styles.triggerText} numberOfLines={1} allowFontScaling={false}>
             {allServicesLabel}
           </Text>
           <Ionicons name="chevron-down" size={13} color={GREEN} />
@@ -262,11 +281,11 @@ export function RiderServiceTypeDropdown({
     : BEAK_WIDTH;
 
   return (
-    <View style={styles.wrap} collapsable={false}>
+    <View style={[styles.wrap, chipWidthStyle]} collapsable={false}>
       <View
         ref={triggerRef}
         collapsable={false}
-        style={styles.triggerHost}
+        style={[styles.triggerHost, chipWidthStyle]}
         onLayout={() => {
           if (open) {
             void measureAndAnchor().then((next) => {
@@ -280,7 +299,7 @@ export function RiderServiceTypeDropdown({
           delayPressIn={0}
           onPress={() => (open ? closeMenu() : void openMenu())}
           disabled={!canOpen}
-          style={styles.trigger}
+          style={[styles.trigger, chipWidthStyle]}
           accessibilityRole="button"
           accessibilityState={{ expanded: open }}
           accessibilityLabel={triggerLabel}
@@ -289,7 +308,7 @@ export function RiderServiceTypeDropdown({
             <ActivityIndicator size="small" color={GREEN} />
           ) : (
             <View style={styles.triggerRow}>
-              <Text style={styles.triggerText} numberOfLines={1}>
+              <Text style={styles.triggerText} numberOfLines={1} allowFontScaling={false}>
                 {triggerLabel}
               </Text>
               {showChevron ? (
@@ -456,16 +475,25 @@ export function RiderServiceTypeDropdown({
 
 const styles = StyleSheet.create({
   wrap: {
-    flexShrink: 0,
-    width: HEADER_SERVICES_WIDTH,
-    alignSelf: "center",
+    flexShrink: 1,
+    minWidth: 0,
+    alignSelf: "stretch",
+    justifyContent: "center",
+  },
+  chipFlex: {
+    flex: 1,
+    width: "100%",
+    minWidth: 0,
+    maxWidth: "100%",
   },
   triggerHost: {
-    width: HEADER_SERVICES_WIDTH,
+    minWidth: 0,
+    width: "100%",
   },
   trigger: {
     height: 36,
-    width: HEADER_SERVICES_WIDTH,
+    minWidth: 0,
+    width: "100%",
     justifyContent: "center",
     paddingHorizontal: 8,
     paddingVertical: 0,

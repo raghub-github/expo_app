@@ -13,6 +13,8 @@ export interface SaveDocumentRequest {
   extractedName?: string;
   extractedDob?: string;
   metadata?: Record<string, any>;
+  /** Force selfie auto-verify after upload (onboarding Continue). */
+  autoVerify?: boolean;
   files?: {
     side: "front" | "back" | "single";
     fileUrl: string;

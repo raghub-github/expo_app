@@ -237,11 +237,58 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
     let verificationHistory: Array<Record<string, unknown>> = [];
     try {
       const { getSql } = await import("../../db/client.js");
+      const {
+        healStuckInitiatedVerificationRequests,
+        cancelStaleInitiatedRequests,
+      } = await import("../verification/history.js");
+
+      // Repair / tidy before read so the agent doesn't see a wall of "initiated".
+      try {
+        await healStuckInitiatedVerificationRequests({
+          subjectType: "rider",
+          subjectId: riderId,
+        });
+      } catch {
+        /* best-effort */
+      }
+      try {
+        await cancelStaleInitiatedRequests({
+          subjectType: "rider",
+          subjectId: riderId,
+          documentKind: "driving_licence",
+        });
+        await cancelStaleInitiatedRequests({
+          subjectType: "rider",
+          subjectId: riderId,
+          documentKind: "vehicle_rc",
+        });
+      } catch {
+        /* best-effort */
+      }
+      // Abandon long-stuck initiated rows that never got a provider outcome event.
+      try {
+        await getSql()`
+          UPDATE public.verification_requests
+          SET
+            status = ${"cancelled"},
+            status_reason = ${"abandoned_incomplete_attempt"},
+            updated_at = NOW()
+          WHERE subject_type = ${"rider"}
+            AND subject_id = ${riderId}
+            AND document_kind IN ('driving_licence', 'vehicle_rc')
+            AND status = ${"initiated"}
+            AND created_at < NOW() - INTERVAL '2 minutes'
+        `;
+      } catch {
+        /* best-effort */
+      }
+
       const rows = (await getSql()`
         SELECT document_kind, status, status_reason, attempt_number, created_at
         FROM verification_requests
         WHERE subject_type = 'rider' AND subject_id = ${riderId}
           AND document_kind IN ('driving_licence', 'vehicle_rc')
+          AND status <> 'cancelled'
         ORDER BY created_at DESC
         LIMIT 20
       `) as Array<Record<string, unknown>>;

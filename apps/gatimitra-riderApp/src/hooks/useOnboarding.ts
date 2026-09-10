@@ -177,7 +177,10 @@ export function useSubmitOnboarding() {
 /**
  * Get rider onboarding status
  */
-export function useRiderStatus(riderId: string | undefined) {
+export function useRiderStatus(
+  riderId: string | undefined,
+  opts?: { refetchInterval?: number | false }
+) {
   const session = useSessionStore((s) => s.session);
   
   return useQuery({
@@ -211,6 +214,7 @@ export function useRiderStatus(riderId: string | undefined) {
         rating?: number | null;
         panNumber?: string | null;
         panVerified?: boolean;
+        panSkipOverride?: boolean;
         panVerifiedData?: Record<string, unknown> | null;
         aadhaarNumber?: string | null;
         aadhaarVerified?: boolean;
@@ -241,7 +245,9 @@ export function useRiderStatus(riderId: string | undefined) {
       });
     },
     enabled: !!riderId && !!session?.accessToken,
-    staleTime: 15_000,
+    staleTime: 5_000,
+    refetchInterval: opts?.refetchInterval,
+    refetchIntervalInBackground: false,
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
     retry: (failureCount, error) => {

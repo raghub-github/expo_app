@@ -34,7 +34,8 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    zIndex: 100000,
-    elevation: 100000,
+    // Stay under the floating tab sheet (was 100000 and could cover nav chrome).
+    zIndex: 1,
+    elevation: 1,
   },
 });

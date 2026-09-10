@@ -151,8 +151,13 @@ export function RiderPushSetup() {
           vibrationPattern: [0, 450, 120, 450, 120, 450],
           lightColor: "#0d9488",
         },
-        { channelId: "default", name: "Orders & alerts", lightColor: "#0d9488" },
-        { channelId: "rider_default", name: "Orders & alerts", lightColor: "#0d9488" },
+        {
+          channelId: "rider_default",
+          name: "Orders & alerts",
+          importance: 5,
+          lightColor: "#0d9488",
+        },
+        { channelId: "default", name: "Orders & alerts", importance: 5, lightColor: "#0d9488" },
       ],
       getAuth: () => {
         const { session: s, hydrated: h } = authRef.current;

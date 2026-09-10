@@ -6,7 +6,7 @@
  */
 
 import { useLayoutEffect, useEffect, useRef, useState, useCallback } from "react";
-import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
+import { View, StyleSheet, Dimensions, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
@@ -19,10 +19,12 @@ import { prefetchCriticalHomeAssetImagesSync } from "@/lib/homeCriticalAssets";
 import { navigateToFoodHome } from "@/lib/navigateToFoodHome";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
 import { useServiceCardOfferPills } from "@/hooks/useServiceCardOfferPills";
+import { InstantPressable } from "@/components/InstantPressable";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
-const GAP = 8;
+/** Clear gutter between cards (row + column). */
+const GAP = 12;
 const COLS = 2;
 const CARD_W = Math.floor((SCREEN_W - PAD * 2 - GAP * (COLS - 1)) / COLS);
 const DEFAULT_CARD_H = 118;
@@ -48,7 +50,10 @@ function ServiceCardImage({
   assetKey: string;
   imageScale?: number;
 }) {
-  const assetUrl = useAppAssetsStore((s) => s.assets[assetKey]?.url ?? s.assets[assetKey]?.proxyUrl ?? null);
+  // Prefer proxy (stable cache key) — same order as AppAssetImage / getAppAssetUrl.
+  const assetUrl = useAppAssetsStore(
+    (s) => s.assets[assetKey]?.proxyUrl ?? s.assets[assetKey]?.url ?? null
+  );
   const hasCachedUrl = Boolean(assetUrl?.trim());
   const imageReadyRef = useRef(hasCachedUrl);
   const [showSkeleton, setShowSkeleton] = useState(false);
@@ -95,6 +100,7 @@ function ServiceCardImage({
         assetKey={assetKey}
         style={{ width: drawSize, height: drawSize }}
         contentFit="contain"
+        transition={0}
         onLoad={handleImageLoad}
       />
     </View>
@@ -279,102 +285,110 @@ function ServiceTile({
   const router = useRouter();
   const isAccountBlocked = Boolean(accountBlockReason);
   const overlayIconSize = Math.round(cardHeight * 0.26);
+  /** True after pressIn already started Food nav — blocks onPress from a second navigate. */
+  const foodNavStartedRef = useRef(false);
 
   return (
-    <TouchableOpacity
-      style={[
-        styles.card,
-        { height: cardHeight },
-        offerPillLabel ? styles.cardWithOffer : null,
-      ]}
-      activeOpacity={enabled || isAccountBlocked ? 0.88 : 1}
-      disabled={!enabled && !isAccountBlocked}
-      delayPressIn={0}
-      onPressIn={() => {
-        if (isAccountBlocked) return;
-        if (!enabled) return;
-        // Food: navigate only on press-in (same gesture). Do NOT also push on onPress —
-        // that stacked two /home screens (few stores → full list + double back).
-        if (item.id === "food") {
-          navigateToFoodHome(router);
-        }
-      }}
-      onPress={() => {
-        if (isAccountBlocked && accountBlockReason) {
-          onAccountBlockedPress?.(
-            item.id,
-            accountBlockReason,
-            item.title,
-            item.assetKey
-          );
-          return;
-        }
-        if (!enabled) return;
-        if (item.id === "food") {
-          // Already handled in onPressIn.
-          return;
-        }
-        router.push(item.route as never);
-      }}
-    >
-      {offerPillLabel ? (
-        <View style={styles.offerCornerPill} pointerEvents="none">
-          <View style={styles.offerCornerPillFill}>
-            <AppText style={styles.offerCornerPillText} numberOfLines={1}>
-              {offerPillLabel}
-            </AppText>
-          </View>
-        </View>
-      ) : null}
-
-      <AppText
+    <View style={[styles.cardShadow, { height: cardHeight }]}>
+      <InstantPressable
         style={[
-          styles.title,
-          !enabled && styles.textMuted,
-          offerPillLabel ? styles.titleWithOffer : null,
+          styles.card,
+          { height: cardHeight },
+          offerPillLabel ? styles.cardWithOffer : null,
         ]}
-        numberOfLines={1}
+        pressedScale={0.97}
+        pressedOpacity={0.92}
+        disabled={!enabled && !isAccountBlocked}
+        onPressIn={() => {
+          foodNavStartedRef.current = false;
+          if (isAccountBlocked) return;
+          if (!enabled) return;
+          // Same instant entry as Ride: start navigation on press-in.
+          if (item.id === "food") {
+            foodNavStartedRef.current = true;
+            navigateToFoodHome(router);
+          }
+        }}
+        onPress={() => {
+          if (isAccountBlocked && accountBlockReason) {
+            onAccountBlockedPress?.(
+              item.id,
+              accountBlockReason,
+              item.title,
+              item.assetKey
+            );
+            return;
+          }
+          if (!enabled) return;
+          if (item.id === "food") {
+            // Only if press-in was skipped (e.g. accessibility activate).
+            if (!foodNavStartedRef.current) {
+              navigateToFoodHome(router);
+            }
+            return;
+          }
+          router.push(item.route as never);
+        }}
       >
-        {item.title}
-      </AppText>
-      <AppText
-        style={[
-          styles.description,
-          !enabled && styles.textMuted,
-          offerPillLabel ? styles.descriptionWithOffer : null,
-        ]}
-        numberOfLines={3}
-      >
-        {item.description}
-      </AppText>
-
-      {item.pill ? (
-        <View style={styles.tagCornerPill} pointerEvents="none">
-          <View
-            style={[
-              styles.tagCornerPillFill,
-              { backgroundColor: enabled ? item.accentColor : "#9CA3AF" },
-            ]}
-          >
-            <AppText style={styles.tagCornerPillText} numberOfLines={1} maxFontSizeMultiplier={1}>
-              {item.pill}
-            </AppText>
+        {offerPillLabel ? (
+          <View style={styles.offerCornerPill} pointerEvents="none">
+            <View style={styles.offerCornerPillFill}>
+              <AppText style={styles.offerCornerPillText} numberOfLines={1}>
+                {offerPillLabel}
+              </AppText>
+            </View>
           </View>
-        </View>
-      ) : null}
+        ) : null}
 
-      <View style={styles.mediaCol} pointerEvents="none">
-        <ServiceCardImage assetKey={item.assetKey} imageScale={item.imageScale ?? 1} />
-      </View>
+        <AppText
+          style={[
+            styles.title,
+            !enabled && styles.textMuted,
+            offerPillLabel ? styles.titleWithOffer : null,
+          ]}
+          numberOfLines={1}
+        >
+          {item.title}
+        </AppText>
+        <AppText
+          style={[
+            styles.description,
+            !enabled && styles.textMuted,
+            offerPillLabel ? styles.descriptionWithOffer : null,
+          ]}
+          numberOfLines={3}
+        >
+          {item.description}
+        </AppText>
 
-      {!enabled && !isAccountBlocked ? <View style={styles.disabledWash} pointerEvents="none" /> : null}
-      {isAccountBlocked ? (
-        <View style={styles.blockedOverlay} pointerEvents="none">
-          <FrozenServiceIconCircle assetKey={item.assetKey} size={overlayIconSize} />
-          <AppText style={styles.frozenLabel}>Frozen</AppText>
+        {item.pill ? (
+          <View style={styles.tagCornerPill} pointerEvents="none">
+            <View
+              style={[
+                styles.tagCornerPillFill,
+                { backgroundColor: enabled ? item.accentColor : "#9CA3AF" },
+              ]}
+            >
+              <AppText style={styles.tagCornerPillText} numberOfLines={1} maxFontSizeMultiplier={1}>
+                {item.pill}
+              </AppText>
+            </View>
+          </View>
+        ) : null}
+
+        <View style={styles.mediaCol} pointerEvents="none">
+          <ServiceCardImage assetKey={item.assetKey} imageScale={item.imageScale ?? 1} />
         </View>
-      ) : null}
-    </TouchableOpacity>
+
+        {!enabled && !isAccountBlocked ? <View style={styles.disabledWash} pointerEvents="none" /> : null}
+        {isAccountBlocked ? (
+          <View style={styles.blockedOverlay} pointerEvents="none">
+            <FrozenServiceIconCircle assetKey={item.assetKey} size={overlayIconSize} />
+            <AppText style={styles.frozenLabel}>Frozen</AppText>
+          </View>
+        ) : null}
+      </InstantPressable>
+    </View>
   );
 }
 
@@ -415,10 +429,30 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     paddingHorizontal: PAD,
     gap: GAP,
+    rowGap: GAP,
+    columnGap: GAP,
     marginTop: 10,
+    overflow: "visible",
+  },
+  cardShadow: {
+    width: CARD_W,
+    borderRadius: CARD_RADIUS,
+    backgroundColor: "#FFFFFF",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0F172A",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.03,
+        shadowRadius: 2,
+      },
+      android: {
+        elevation: 0,
+      },
+      default: {},
+    }),
   },
   card: {
-    width: CARD_W,
+    width: "100%",
     backgroundColor: "#FFFFFF",
     borderRadius: CARD_RADIUS,
     borderWidth: 1,
@@ -426,11 +460,6 @@ const styles = StyleSheet.create({
     paddingTop: 9,
     paddingBottom: 28,
     paddingHorizontal: 9,
-    shadowColor: "transparent",
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0,
-    shadowRadius: 0,
-    elevation: 0,
     overflow: "hidden",
   },
   cardWithOffer: {

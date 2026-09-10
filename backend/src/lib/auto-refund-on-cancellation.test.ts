@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   isCustomerCancellationActor,
   shouldAutoRefundForCancellationActor,
+  isIntentionalNoRefundCancel,
   resolveCustomerShownRefundAmount,
 } from "./auto-refund-on-cancellation.js";
 
@@ -18,6 +19,32 @@ describe("auto-refund actor gates", () => {
     assert.equal(shouldAutoRefundForCancellationActor("store"), true);
     assert.equal(shouldAutoRefundForCancellationActor("system"), true);
     assert.equal(shouldAutoRefundForCancellationActor("rider"), true);
+  });
+});
+
+describe("isIntentionalNoRefundCancel", () => {
+  it("skips when refund_status is no_refund", () => {
+    assert.equal(isIntentionalNoRefundCancel({ refundStatus: "no_refund" }), true);
+  });
+
+  it("skips when metadata marks cancel_without_refund", () => {
+    assert.equal(
+      isIntentionalNoRefundCancel({
+        metadata: { refundType: "cancel_without_refund", skipAutoRefund: true },
+      }),
+      true
+    );
+  });
+
+  it("does not skip ordinary admin cancels", () => {
+    assert.equal(
+      isIntentionalNoRefundCancel({
+        refundStatus: "pending",
+        reasonCode: "customer_denying_order",
+        metadata: { attribute: "Customer" },
+      }),
+      false
+    );
   });
 });
 

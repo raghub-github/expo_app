@@ -4,6 +4,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { RiderFonts } from "@/src/theme/fonts";
 import { RIDER_AUTH_BG, RIDER_AUTH_INK, RIDER_AUTH_MUTED } from "@/src/theme/riderAuthTheme";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 type Props = {
   title: string;
@@ -15,21 +17,46 @@ type Props = {
 
 export function SupportScreenHeader({ title, subtitle, variant = "default", onBack }: Props) {
   const premium = variant === "premium";
+  const { rs } = useResponsiveLayout();
 
   return (
-    <View style={[styles.header, premium && styles.headerPremium]}>
+    <View
+      style={[
+        rowLayout.row,
+        styles.header,
+        premium && styles.headerPremium,
+        { paddingHorizontal: rs(16), paddingVertical: premium ? rs(20) : rs(12) },
+      ]}
+    >
       <Pressable
         onPress={onBack ?? (() => router.back())}
-        style={({ pressed }) => [styles.backBtn, premium && styles.backBtnPremium, pressed && styles.backBtnPressed]}
+        style={({ pressed }) => [
+          styles.backBtn,
+          rowLayout.noShrink,
+          premium && styles.backBtnPremium,
+          pressed && styles.backBtnPressed,
+        ]}
         accessibilityRole="button"
         accessibilityLabel="Back"
       >
         <Ionicons name="arrow-back" size={22} color={RIDER_AUTH_INK} />
       </Pressable>
-      <View style={styles.headerText}>
-        <Text style={[styles.headerTitle, premium && styles.headerTitlePremium]}>{title}</Text>
+      <View style={[styles.headerText, rowLayout.grow]}>
+        <Text
+          style={[styles.headerTitle, premium && styles.headerTitlePremium, flexShrinkText]}
+          numberOfLines={premium ? 3 : 2}
+          ellipsizeMode="tail"
+        >
+          {title}
+        </Text>
         {subtitle ? (
-          <Text style={[styles.headerSub, premium && styles.headerSubPremium]}>{subtitle}</Text>
+          <Text
+            style={[styles.headerSub, premium && styles.headerSubPremium, flexShrinkText]}
+            numberOfLines={3}
+            ellipsizeMode="tail"
+          >
+            {subtitle}
+          </Text>
         ) : null}
       </View>
     </View>
@@ -38,17 +65,13 @@ export function SupportScreenHeader({ title, subtitle, variant = "default", onBa
 
 const styles = StyleSheet.create({
   header: {
-    flexDirection: "row",
-    alignItems: "center",
     gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
     backgroundColor: "#FFFFFF",
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E2E8F0",
+    maxWidth: "100%",
   },
   headerPremium: {
-    paddingVertical: 20,
     backgroundColor: RIDER_AUTH_BG,
     borderBottomWidth: 0,
   },

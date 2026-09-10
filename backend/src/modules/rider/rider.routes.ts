@@ -2075,6 +2075,7 @@ export async function riderRoutes(app: FastifyInstance) {
             rating: z.number().nullable(),
             panNumber: z.string().nullable(),
             panVerified: z.boolean(),
+            panSkipOverride: z.boolean(),
             panVerifiedData: z.record(z.string(), z.unknown()).nullable(),
             aadhaarNumber: z.string().nullable(),
             aadhaarVerified: z.boolean(),
@@ -2180,6 +2181,7 @@ export async function riderRoutes(app: FastifyInstance) {
         rating,
         panNumber: progress.panNumber,
         panVerified: progress.panVerified,
+        panSkipOverride: Boolean(progress.panSkipOverride),
         panVerifiedData: progress.panVerifiedData,
         aadhaarNumber: progress.aadhaarNumber,
         aadhaarVerified: progress.aadhaarVerified,
@@ -2501,23 +2503,59 @@ export async function riderRoutes(app: FastifyInstance) {
               ? (existing[0]!.metadata as Record<string, unknown>)
               : {};
           const prevMethod = String(existing[0]!.verificationMethod || "").toUpperCase();
+          const electronicCashfree =
+            (docType === "pan" &&
+              (metadata?.panVerified === true ||
+                metadata?.verificationMethod === "cashfree_pan" ||
+                String(fileUrl || "").includes("cashfree_pan_verified"))) ||
+            (docType === "dl" &&
+              (metadata?.verificationMethod === "cashfree_dl" ||
+                String(fileUrl || "").includes("cashfree_dl_verified"))) ||
+            (docType === "rc" &&
+              (metadata?.verificationMethod === "cashfree_rc" ||
+                String(fileUrl || "").includes("cashfree_rc_verified")));
           const keepElectronic =
-            existing[0]!.verified === true &&
-            (prevMethod === "APP_VERIFIED" ||
-              prevMethod.startsWith("CASHFREE_") ||
-              prevMethod === "RAZORPAY_BANK" ||
-              String(existing[0]!.verificationStatus || "").toLowerCase() === "auto_verified");
-          const mergedMeta = {
+            electronicCashfree ||
+            (existing[0]!.verified === true &&
+              (prevMethod === "APP_VERIFIED" ||
+                prevMethod.startsWith("CASHFREE_") ||
+                prevMethod === "RAZORPAY_BANK" ||
+                String(existing[0]!.verificationStatus || "").toLowerCase() === "auto_verified"));
+          const mergedMeta: Record<string, unknown> = {
             ...prevMeta,
             ...(metadata && typeof metadata === "object" ? metadata : {}),
-            // Keep prior auto mismatch evidence for admin when rider uploads photos.
-            ...(prevMeta.autoVerification && !keepElectronic
-              ? { autoVerification: prevMeta.autoVerification, crossCheckFailed: true }
-              : {}),
             ...(keepElectronic
               ? { photoAttachedAt: new Date().toISOString() }
               : { manualSubmissionAt: new Date().toISOString() }),
           };
+          // Successful electronic verify must clear stale mismatch stubs.
+          if (electronicCashfree || keepElectronic) {
+            delete mergedMeta.crossCheckFailed;
+            delete mergedMeta.panNameMismatch;
+            delete mergedMeta.aadhaarCrossCheckOk;
+            delete mergedMeta.requiresManualReview;
+            if (
+              mergedMeta.autoVerification &&
+              typeof mergedMeta.autoVerification === "object" &&
+              (mergedMeta.autoVerification as { status?: string }).status === "mismatch"
+            ) {
+              delete mergedMeta.autoVerification;
+            }
+          } else if (prevMeta.autoVerification) {
+            mergedMeta.autoVerification = prevMeta.autoVerification;
+            mergedMeta.crossCheckFailed = true;
+          }
+          const verifiedDetails =
+            metadata?.verifiedDetails &&
+            typeof metadata.verifiedDetails === "object" &&
+            !Array.isArray(metadata.verifiedDetails)
+              ? (metadata.verifiedDetails as Record<string, unknown>)
+              : null;
+          const prevSummary =
+            existing[0]!.extractedDataSummary &&
+            typeof existing[0]!.extractedDataSummary === "object"
+              ? (existing[0]!.extractedDataSummary as Record<string, unknown>)
+              : {};
           await db
             .update(riderDocuments)
             .set({
@@ -2527,18 +2565,43 @@ export async function riderRoutes(app: FastifyInstance) {
               extractedDob: extractedDob || null,
               ...(docNumber ? { docNumber } : {}),
               metadata: mergedMeta,
-              ...(keepElectronic
-                ? {}
-                : {
-                    verificationMethod: "MANUAL_UPLOAD" as const,
-                    requiresManualReview: true,
-                    verified: false,
-                    verificationStatus: "pending" as const,
-                  }),
+              ...(electronicCashfree && verifiedDetails
+                ? {
+                    extractedDataSummary: {
+                      ...prevSummary,
+                      provider: "cashfree",
+                      method: "APP_VERIFIED",
+                      verifiedData: verifiedDetails,
+                    },
+                  }
+                : {}),
+              ...(electronicCashfree
+                ? {
+                    verificationMethod: "APP_VERIFIED" as const,
+                    requiresManualReview: false,
+                    verified: true,
+                    verificationStatus: "auto_verified" as const,
+                    verifiedAt: new Date(),
+                    rejectedReason: null,
+                  }
+                : keepElectronic
+                  ? {}
+                  : {
+                      verificationMethod: "MANUAL_UPLOAD" as const,
+                      requiresManualReview: true,
+                      verified: false,
+                      verificationStatus: "pending" as const,
+                    }),
               updatedAt: new Date(),
             })
             .where(eq(riderDocuments.id, existing[0]!.id));
           documentId = existing[0]!.id;
+          if (docType === "pan" && docNumber) {
+            await db
+              .update(riders)
+              .set({ panNumber: docNumber, updatedAt: new Date() })
+              .where(eq(riders.id, riderId));
+          }
         } else {
           const docNumber =
             docType === "dl" && typeof metadata?.dlNumber === "string"
@@ -2548,6 +2611,23 @@ export async function riderRoutes(app: FastifyInstance) {
                 : docType === "pan" && typeof metadata?.panNumber === "string"
                   ? normalizePan(metadata.panNumber)
                   : null;
+          const electronicCashfree =
+            (docType === "pan" &&
+              (metadata?.panVerified === true ||
+                metadata?.verificationMethod === "cashfree_pan" ||
+                String(fileUrl || "").includes("cashfree_pan_verified"))) ||
+            (docType === "dl" &&
+              (metadata?.verificationMethod === "cashfree_dl" ||
+                String(fileUrl || "").includes("cashfree_dl_verified"))) ||
+            (docType === "rc" &&
+              (metadata?.verificationMethod === "cashfree_rc" ||
+                String(fileUrl || "").includes("cashfree_rc_verified")));
+          const verifiedDetails =
+            metadata?.verifiedDetails &&
+            typeof metadata.verifiedDetails === "object" &&
+            !Array.isArray(metadata.verifiedDetails)
+              ? (metadata.verifiedDetails as Record<string, unknown>)
+              : null;
           const [newDoc] = await db
             .insert(riderDocuments)
             .values({
@@ -2560,15 +2640,34 @@ export async function riderRoutes(app: FastifyInstance) {
               docNumber: docNumber || null,
               metadata: {
                 ...(metadata && typeof metadata === "object" ? metadata : {}),
-                manualSubmissionAt: new Date().toISOString(),
+                ...(electronicCashfree
+                  ? { electronicVerifiedAt: new Date().toISOString() }
+                  : { manualSubmissionAt: new Date().toISOString() }),
               },
-              verificationMethod: "MANUAL_UPLOAD",
-              requiresManualReview: true,
-              verified: false,
-              verificationStatus: "pending",
+              ...(electronicCashfree && verifiedDetails
+                ? {
+                    extractedDataSummary: {
+                      provider: "cashfree",
+                      method: "APP_VERIFIED",
+                      verifiedData: verifiedDetails,
+                    },
+                  }
+                : {}),
+              verificationMethod: electronicCashfree ? "APP_VERIFIED" : "MANUAL_UPLOAD",
+              requiresManualReview: !electronicCashfree,
+              verified: electronicCashfree,
+              verificationStatus: electronicCashfree ? "auto_verified" : "pending",
+              ...(electronicCashfree ? { verifiedAt: new Date(), rejectedReason: null } : {}),
             })
             .returning({ id: riderDocuments.id });
           documentId = newDoc!.id;
+          // Always sync riders.pan_number when a valid PAN is submitted.
+          if (docType === "pan" && docNumber) {
+            await db
+              .update(riders)
+              .set({ panNumber: docNumber, updatedAt: new Date() })
+              .where(eq(riders.id, riderId));
+          }
         }
 
         if (files?.length) {
@@ -2622,6 +2721,32 @@ export async function riderRoutes(app: FastifyInstance) {
             console.warn(
               "[save-document] selfie auto-verify failed:",
               (selfieErr as Error).message,
+            );
+          }
+        } else if (docType === "rc") {
+          // verify-document uses deferProjection — project rider_vehicles on Continue.
+          try {
+            const verifiedDetails =
+              metadata?.verifiedDetails &&
+              typeof metadata.verifiedDetails === "object" &&
+              !Array.isArray(metadata.verifiedDetails)
+                ? (metadata.verifiedDetails as Record<string, unknown>)
+                : metadata?.cashfreeVerifiedData &&
+                    typeof metadata.cashfreeVerifiedData === "object" &&
+                    !Array.isArray(metadata.cashfreeVerifiedData)
+                  ? (metadata.cashfreeVerifiedData as Record<string, unknown>)
+                  : null;
+            const { ensureRiderVehicleFromStoredRc } = await import(
+              "../../lib/rider-vehicle-from-rc.js"
+            );
+            await ensureRiderVehicleFromStoredRc(riderId, {
+              verifiedData: verifiedDetails,
+              rcDocumentUrl: storedFileUrl,
+            });
+          } catch (vehicleErr) {
+            console.warn(
+              "[save-document] RC → rider_vehicles project failed:",
+              (vehicleErr as Error).message,
             );
           }
         }

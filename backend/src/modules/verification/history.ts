@@ -72,7 +72,180 @@ export async function createRequest(args: CreateRequestArgs): Promise<number> {
   return Number(rows[0]!.id);
 }
 
-/** Update a request to a terminal / intermediate outcome. */
+/** Next attempt # for this subject + document (dashboard history). */
+export async function nextAttemptNumber(args: {
+  subjectType: VerificationSubjectKind;
+  subjectId: number;
+  documentKind: VerificationDocumentKind;
+}): Promise<number> {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT COALESCE(MAX(attempt_number), 0)::int + 1 AS n
+    FROM public.verification_requests
+    WHERE subject_type = ${args.subjectType}
+      AND subject_id = ${args.subjectId}
+      AND document_kind = ${args.documentKind}
+  `) as unknown as Array<{ n: number }>;
+  return Math.max(1, Number(rows[0]?.n ?? 1));
+}
+
+/**
+ * Cancel leftover `initiated` rows for the same subject+doc (double-taps /
+ * retries that never finished). Keeps the dashboard history readable.
+ */
+export async function cancelStaleInitiatedRequests(args: {
+  subjectType: VerificationSubjectKind;
+  subjectId: number;
+  documentKind: VerificationDocumentKind;
+  exceptRequestId?: number | null;
+}): Promise<void> {
+  const sql = getSql();
+  await sql`
+    UPDATE public.verification_requests
+    SET
+      status = ${"cancelled"},
+      status_reason = ${"superseded_by_newer_attempt"},
+      updated_at = NOW()
+    WHERE subject_type = ${args.subjectType}
+      AND subject_id = ${args.subjectId}
+      AND document_kind = ${args.documentKind}
+      AND status = ${"initiated"}
+      AND (${args.exceptRequestId ?? null}::bigint IS NULL OR id <> ${args.exceptRequestId ?? 0})
+  `;
+}
+
+/**
+ * Unique index verification_requests_business_id_verified_uq only allows ONE
+ * verified row per (document_kind, business_identifier) globally.
+ * Same subject re-verify → supersede their prior verified row.
+ * Different subject → mark this attempt as duplicate (do not leave `initiated`).
+ */
+export async function resolveVerifiedIdentifierConflict(args: {
+  requestId: number;
+  documentKind: VerificationDocumentKind;
+  businessIdentifier: string | null | undefined;
+  subjectType: VerificationSubjectKind;
+  subjectId: number;
+}): Promise<"ok" | "duplicate"> {
+  const biz = String(args.businessIdentifier || "").trim();
+  if (!biz) return "ok";
+  const sql = getSql();
+
+  const others = (await sql`
+    SELECT id, subject_type, subject_id
+    FROM public.verification_requests
+    WHERE document_kind = ${args.documentKind}
+      AND business_identifier = ${biz}
+      AND status = ${"verified"}
+      AND id <> ${args.requestId}
+    ORDER BY updated_at DESC NULLS LAST, id DESC
+    LIMIT 5
+  `) as unknown as Array<{
+    id: number;
+    subject_type: string;
+    subject_id: number;
+  }>;
+
+  if (others.length === 0) return "ok";
+
+  const foreign = others.find(
+    (r) =>
+      String(r.subject_type) !== String(args.subjectType) ||
+      Number(r.subject_id) !== Number(args.subjectId),
+  );
+  if (foreign) {
+    return "duplicate";
+  }
+
+  // Same subject only — free the unique slot for this newer attempt.
+  await sql`
+    UPDATE public.verification_requests
+    SET
+      status = ${"overridden"},
+      status_reason = ${"superseded_by_newer_attempt"},
+      updated_at = NOW()
+    WHERE document_kind = ${args.documentKind}
+      AND business_identifier = ${biz}
+      AND status = ${"verified"}
+      AND subject_type = ${args.subjectType}
+      AND subject_id = ${args.subjectId}
+      AND id <> ${args.requestId}
+  `;
+  return "ok";
+}
+
+/**
+ * Repair rows left on `initiated` after Cashfree already returned (old bug:
+ * unique verified-identifier constraint aborted applyOutcome). Uses the latest
+ * provider_response event when present.
+ */
+export async function healStuckInitiatedVerificationRequests(args: {
+  subjectType: VerificationSubjectKind;
+  subjectId: number;
+}): Promise<number> {
+  const sql = getSql();
+  const stuck = (await sql`
+    SELECT r.id, r.document_kind, r.business_identifier, r.subject_type, r.subject_id,
+           e.to_status AS event_status
+    FROM public.verification_requests r
+    INNER JOIN LATERAL (
+      SELECT to_status
+      FROM public.verification_events ev
+      WHERE ev.request_id = r.id
+        AND ev.event_kind = 'provider_response'
+      ORDER BY ev.id DESC
+      LIMIT 1
+    ) e ON TRUE
+    WHERE r.subject_type = ${args.subjectType}
+      AND r.subject_id = ${args.subjectId}
+      AND r.status = ${"initiated"}
+      AND e.to_status IS NOT NULL
+      AND e.to_status::text <> 'initiated'
+    ORDER BY r.created_at DESC
+    LIMIT 40
+  `) as unknown as Array<{
+    id: number;
+    document_kind: VerificationDocumentKind;
+    business_identifier: string | null;
+    subject_type: VerificationSubjectKind;
+    subject_id: number;
+    event_status: VerificationStatus;
+  }>;
+
+  let healed = 0;
+  for (const row of stuck) {
+    let status = row.event_status;
+    let statusReason: string | null = "healed_from_provider_event";
+    if (status === "verified") {
+      const conflict = await resolveVerifiedIdentifierConflict({
+        requestId: row.id,
+        documentKind: row.document_kind,
+        businessIdentifier: row.business_identifier,
+        subjectType: row.subject_type,
+        subjectId: row.subject_id,
+      });
+      if (conflict === "duplicate") {
+        status = "duplicate";
+        statusReason = "This document number is already verified on another account.";
+      }
+    }
+    try {
+      await applyOutcome(row.id, { status, statusReason });
+      healed += 1;
+    } catch {
+      try {
+        await applyOutcome(row.id, {
+          status: "failed",
+          statusReason: "heal_failed_unique_conflict",
+        });
+        healed += 1;
+      } catch {
+        /* leave as-is */
+      }
+    }
+  }
+  return healed;
+}
 export async function applyOutcome(requestId: number, outcome: {
   status: VerificationStatus;
   statusReason?: string | null;
@@ -230,73 +403,175 @@ export async function persistOutcome(
   outcome: NormalizedVerification,
   opts?: { deferProjection?: boolean },
 ): Promise<void> {
-  const payloadRefReq = await storePayload({
-    requestId,
-    direction: "request",
-    body: outcome.rawRequest ?? {},
-  });
-  const payloadRefRes = await storePayload({
-    requestId,
-    direction: "response",
-    httpStatus: outcome.httpStatus,
-    headers: outcome.responseHeaders,
-    body: outcome.rawResponse ?? {},
-  });
+  let status = outcome.status;
+  let statusReason = outcome.statusReason ?? null;
 
-  await applyOutcome(requestId, {
-    status: outcome.status,
-    statusReason: outcome.statusReason,
-    providerReference: outcome.providerReference,
-    businessIdentifier: outcome.businessIdentifier,
-    confidence: outcome.confidence,
-    httpStatus: outcome.httpStatus,
-    durationMs: outcome.durationMs,
-  });
+  // Resolve unique verified-identifier conflicts BEFORE writing status so the
+  // request never gets stuck on `initiated` after Cashfree already succeeded.
+  if (status === "verified") {
+    const conflict = await resolveVerifiedIdentifierConflict({
+      requestId,
+      documentKind: outcome.documentKind,
+      businessIdentifier: outcome.businessIdentifier,
+      subjectType: outcome.subjectType,
+      subjectId: outcome.subjectId,
+    });
+    if (conflict === "duplicate") {
+      status = "duplicate";
+      statusReason =
+        "This document number is already verified on another account.";
+    }
+  }
 
-  await appendEvent({
-    requestId,
-    eventKind: "provider_response",
-    fromStatus: "initiated",
-    toStatus: outcome.status,
-    actorType: "provider",
-    payloadRef: payloadRefRes,
-    details: {
-      requestPayloadRef: payloadRefReq,
-      verifiedData: outcome.verifiedData,
-      deferProjection: !!opts?.deferProjection,
-    },
-  });
+  // Apply status first — payloads/events are secondary; history must be truthful.
+  try {
+    await applyOutcome(requestId, {
+      status,
+      statusReason,
+      providerReference: outcome.providerReference,
+      businessIdentifier: outcome.businessIdentifier,
+      confidence: outcome.confidence,
+      httpStatus: outcome.httpStatus,
+      durationMs: outcome.durationMs,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("verification_requests_business_id_verified_uq") && status === "verified") {
+      // Race: another verified row landed between conflict check and update.
+      await resolveVerifiedIdentifierConflict({
+        requestId,
+        documentKind: outcome.documentKind,
+        businessIdentifier: outcome.businessIdentifier,
+        subjectType: outcome.subjectType,
+        subjectId: outcome.subjectId,
+      });
+      try {
+        await applyOutcome(requestId, {
+          status,
+          statusReason,
+          providerReference: outcome.providerReference,
+          businessIdentifier: outcome.businessIdentifier,
+          confidence: outcome.confidence,
+          httpStatus: outcome.httpStatus,
+          durationMs: outcome.durationMs,
+        });
+      } catch {
+        status = "duplicate";
+        statusReason =
+          "This document number is already verified on another account.";
+        await applyOutcome(requestId, {
+          status,
+          statusReason,
+          providerReference: outcome.providerReference,
+          businessIdentifier: outcome.businessIdentifier,
+          confidence: outcome.confidence,
+          httpStatus: outcome.httpStatus,
+          durationMs: outcome.durationMs,
+        });
+      }
+    } else {
+      throw e;
+    }
+  }
+
+  // Clear double-tap leftovers for this subject+doc.
+  try {
+    await cancelStaleInitiatedRequests({
+      subjectType: outcome.subjectType,
+      subjectId: outcome.subjectId,
+      documentKind: outcome.documentKind,
+      exceptRequestId: requestId,
+    });
+  } catch {
+    /* best-effort */
+  }
+
+  let payloadRefReq: number | null = null;
+  let payloadRefRes: number | null = null;
+  try {
+    payloadRefReq = await storePayload({
+      requestId,
+      direction: "request",
+      body: outcome.rawRequest ?? {},
+    });
+    payloadRefRes = await storePayload({
+      requestId,
+      direction: "response",
+      httpStatus: outcome.httpStatus,
+      headers: outcome.responseHeaders,
+      body: outcome.rawResponse ?? {},
+    });
+  } catch (payloadErr) {
+    console.warn(
+      "[verification] storePayload failed (status already applied):",
+      payloadErr instanceof Error ? payloadErr.message : payloadErr,
+    );
+  }
+
+  try {
+    await appendEvent({
+      requestId,
+      eventKind: "provider_response",
+      fromStatus: "initiated",
+      toStatus: status,
+      actorType: "provider",
+      payloadRef: payloadRefRes,
+      details: {
+        requestPayloadRef: payloadRefReq,
+        // Do not dump full verifiedData here — keep events small & durable.
+        businessIdentifier: outcome.businessIdentifier ?? null,
+        deferProjection: !!opts?.deferProjection,
+      },
+    });
+  } catch (eventErr) {
+    console.warn(
+      "[verification] appendEvent failed (status already applied):",
+      eventErr instanceof Error ? eventErr.message : eventErr,
+    );
+  }
 
   // Track any provider-issued artifacts so the R2 mirror worker can pick them up.
   for (const art of outcome.providerArtifacts) {
-    await trackArtifact({
-      requestId,
-      kind: art.kind,
-      source: "provider_response",
-      providerUrl: art.url,
-      providerUrlExpiresAt: art.expiresAt,
-      contentType: art.contentType ?? null,
-    });
+    try {
+      await trackArtifact({
+        requestId,
+        kind: art.kind,
+        source: "provider_response",
+        providerUrl: art.url,
+        providerUrlExpiresAt: art.expiresAt,
+        contentType: art.contentType ?? null,
+      });
+    } catch {
+      /* best-effort */
+    }
   }
 
   // Emit kyc.decision on terminal outcomes so the notification bus can push
   // the correct template to the user. Reject / verify only — non-terminal
   // statuses (initiated, pending_provider, awaiting_consent, …) don't ring.
   // Agent "deferProjection" keeps rider/merchant docs untouched until Approve.
-  if (outcome.status === "verified" || outcome.status === "rejected") {
+  // Mutate caller's outcome so auto-approve gating sees duplicate status.
+  outcome.status = status;
+  outcome.statusReason = statusReason;
+
+  if (status === "verified" || status === "rejected") {
     if (opts?.deferProjection) {
-      await appendEvent({
-        requestId,
-        eventKind: "manual_review_queued",
-        fromStatus: outcome.status,
-        toStatus: "manual_review",
-        actorType: "admin",
-        details: { reason: "agent_defer_projection" },
-      });
+      try {
+        await appendEvent({
+          requestId,
+          eventKind: "manual_review_queued",
+          fromStatus: status,
+          toStatus: "manual_review",
+          actorType: "admin",
+          details: { reason: "agent_defer_projection" },
+        });
+      } catch {
+        /* best-effort — request.status stays verified/rejected */
+      }
       return;
     }
-    await emitKycDecisionForRequest(requestId, outcome.status, outcome.documentKind, outcome.statusReason);
-    await projectOutcomeToDocuments(requestId, outcome);
+    await emitKycDecisionForRequest(requestId, status, outcome.documentKind, statusReason);
+    await projectOutcomeToDocuments(requestId, { ...outcome, status, statusReason });
   }
 }
 

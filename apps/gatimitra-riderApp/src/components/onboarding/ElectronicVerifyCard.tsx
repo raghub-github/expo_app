@@ -36,9 +36,21 @@ try {
 export type EvState =
   | { phase: "idle" }
   | { phase: "verifying" }
-  | { phase: "verified"; details: Record<string, unknown> }
+  | {
+      phase: "verified";
+      details: Record<string, unknown>;
+      /** Soft RC owner↔Aadhaar mismatch: show full Cashfree rows but require an RC image. */
+      requirePhoto?: boolean;
+      photoHint?: string;
+    }
   | { phase: "failed"; error: string; providerReference?: string | null; verificationId?: string | null }
-  | { phase: "mismatch"; error: string; reasons?: string[] }
+  | {
+      phase: "mismatch";
+      error: string;
+      reasons?: string[];
+      /** Soft RC owner mismatch still keeps Cashfree rows for display. */
+      details?: Record<string, unknown>;
+    }
   | { phase: "manual" };
 
 const DETAIL_LABELS: Record<string, string> = {
@@ -98,7 +110,7 @@ const DETAIL_PRIORITY: Record<string, string[]> = {
   "Vehicle class": ["vehicle_class"],
   "Maker / model": ["maker_model", "model", "vehicle_manufacturer_name"],
   Colour: ["vehicle_colour"],
-  "Fuel type": ["fuel_type", "type"],
+  "Fuel type": ["fuel_type"],
   Registered: ["reg_date", "registration_date"],
   "Insurance valid till": ["vehicle_insurance_upto", "insurance_upto"],
   "Fitness valid till": ["fitness_upto"],
@@ -242,7 +254,7 @@ function defaultVerifiedHint(documentLabel: string, hasDetailRows: boolean): str
   }
   const label = String(documentLabel || "").toLowerCase();
   if (label.includes("rc") || label.includes("registration")) {
-    return "Your RC has been verified successfully. Confirm the vehicle details below before continuing.";
+    return "Matched with your Aadhaar identity. No photo needed.";
   }
   if (label.includes("pan")) {
     return "PAN verified. Change the PAN number above only if you need to re-verify.";
@@ -351,8 +363,10 @@ export function ElectronicVerifyCard(props: {
     const hasDetailRows = verifiedRows.length > 0;
     const title =
       verifiedTitle || defaultVerifiedTitle(documentLabel, requiresDob);
-    const hint =
-      verifiedHint || defaultVerifiedHint(documentLabel, hasDetailRows);
+    const hint = state.requirePhoto
+      ? state.photoHint ||
+        "RC details fetched. Owner name does not match Aadhaar — upload a clear RC photo to continue."
+      : verifiedHint || defaultVerifiedHint(documentLabel, hasDetailRows);
     return (
       <View style={[styles.card, styles.cardVerified]}>
         <View style={styles.headerRow}>
@@ -372,7 +386,17 @@ export function ElectronicVerifyCard(props: {
             run Verify Instantly again.
           </Text>
         )}
-        <Text style={styles.verifiedHint}>{hint}</Text>
+        {state.requirePhoto ? (
+          <View style={[styles.notice, styles.noticeWarn, { marginTop: 8 }]}>
+            <Ionicons name="alert-circle" size={16} color="#b45309" />
+            <View style={{ flex: 1, gap: 4 }}>
+              <Text style={styles.noticeWarnTitle}>RC photo required</Text>
+              <Text style={styles.noticeWarnText}>{hint}</Text>
+            </View>
+          </View>
+        ) : (
+          <Text style={styles.verifiedHint}>{hint}</Text>
+        )}
       </View>
     );
   }
@@ -478,9 +502,9 @@ export function ElectronicVerifyCard(props: {
         activeOpacity={0.8}
       >
         {state.phase === "verifying" ? (
-          <ActivityIndicator size="small" color="#7cb889" />
+          <ActivityIndicator size="small" color="#fff" />
         ) : (
-          <Ionicons name="flash" size={16} color={verifyDisabled ? "#7cb889" : "#fff"} />
+          <Ionicons name="flash" size={16} color="#fff" />
         )}
         <Text style={[styles.buttonText, verifyDisabled && styles.buttonTextDisabled]}>
           {buttonLabel}
@@ -491,11 +515,20 @@ export function ElectronicVerifyCard(props: {
         <View style={[styles.notice, styles.noticeWarn]}>
           <Ionicons name="alert-circle" size={16} color="#b45309" />
           <View style={{ flex: 1, gap: 4 }}>
-            <Text style={styles.noticeWarnTitle}>Auto Verification Failed – Data Mismatch</Text>
+            <Text style={styles.noticeWarnTitle}>
+              {documentLabel.toLowerCase().includes("rc") ||
+              documentLabel.toLowerCase().includes("registration")
+                ? "RC owner name does not match Aadhaar"
+                : "Auto Verification Failed – Data Mismatch"}
+            </Text>
             <Text style={styles.noticeWarnReason}>Reason: {state.error}</Text>
             <Text style={styles.noticeWarnText}>
-              Upload a clear photo of the original document below. Our team will review it manually
-              — onboarding can continue.
+              {documentLabel.toLowerCase().includes("pan")
+                ? "Enter a different PAN that matches your Aadhaar name, then tap Verify again. Photo upload stays locked until the number changes."
+                : documentLabel.toLowerCase().includes("rc") ||
+                    documentLabel.toLowerCase().includes("registration")
+                  ? "Upload a clear photo of a valid RC below to continue. Cashfree still verified the registration number."
+                  : `Check the ${documentLabel} details against your Aadhaar name, then try Verify again.`}
             </Text>
           </View>
           {dismissBtn}
@@ -509,8 +542,9 @@ export function ElectronicVerifyCard(props: {
             <Text style={styles.noticeErrorTitle}>Couldn't verify automatically</Text>
             <Text style={styles.noticeErrorReason}>Reason: {state.error}</Text>
             <Text style={styles.noticeErrorText}>
-              Re-check the {documentLabel} number and date of birth, then tap Try Again — or upload
-              a clear photo below for manual review.
+              {documentLabel.toLowerCase().includes("pan")
+                ? `Enter a correct ${documentLabel} number, then tap Verify again. Verify stays locked until the number changes.`
+                : `Re-check the ${documentLabel} number and try again — or upload a clear photo below for manual review.`}
             </Text>
           </View>
           {dismissBtn}
@@ -523,8 +557,9 @@ export function ElectronicVerifyCard(props: {
             <Text style={styles.noticeWarnTitle}>Couldn't verify automatically</Text>
             <Text style={styles.noticeWarnReason}>Reason: {state.error}</Text>
             <Text style={styles.noticeWarnText}>
-              Check licence number + DOB (as on DL), try again, or upload a clear photo for manual
-              review.
+              {documentLabel.toLowerCase().includes("pan")
+                ? `Enter a correct ${documentLabel} number and try Verify again. Actions stay locked until the number changes.`
+                : `Check licence number + DOB (as on DL), try again, or upload a clear photo for manual review.`}
             </Text>
           </View>
           {dismissBtn}
@@ -607,13 +642,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   buttonDisabled: {
-    backgroundColor: "#edf8f0",
-    borderWidth: 1.5,
-    borderColor: "rgba(57, 211, 83, 0.25)",
-    opacity: 1,
+    backgroundColor: "#16a34a",
+    borderWidth: 0,
+    opacity: 0.45,
   },
   buttonText: { color: "#fff", fontSize: 15, fontWeight: "700" },
-  buttonTextDisabled: { color: "#7cb889" },
+  buttonTextDisabled: { color: "#fff" },
   notice: {
     flexDirection: "row",
     alignItems: "flex-start",

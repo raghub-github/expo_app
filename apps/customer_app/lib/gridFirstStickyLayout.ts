@@ -1,4 +1,4 @@
-import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { HOME_HEADER_BELOW_STATUS_GAP } from "@/constants/layout";
 import { GRID_FIRST_LOCATION_ROW_H } from "@/components/home/FoodHomeGridFirstHeader";
 
 /** Default search row height (pill + veg toggle). */
@@ -119,7 +119,7 @@ export function defaultGridFirstStickyMetrics(
 /** Scroll offset when the in-flow search row should pin below the status bar. */
 export function gridFirstSearchStickScrollY(m: GridFirstStickyMetrics): number {
   const searchRowTopInContent =
-    m.topInset + STATUS_BAR_TO_HEADER_GAP + GRID_FIRST_LOCATION_ROW_H;
+    m.topInset + HOME_HEADER_BELOW_STATUS_GAP + GRID_FIRST_LOCATION_ROW_H;
   const searchRowPinsAt = Math.max(0, searchRowTopInContent - m.topInset);
   // Grid-first search sits in the hero overlay at the top of the sky block — pin as soon
   // as that row would scroll off, not after the full hero media height clears.

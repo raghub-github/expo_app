@@ -2,7 +2,7 @@
  * Single persistent STORE STATUS notification (not NEW_ORDER).
  *
  * States (only one visible):
- *   ONLINE            🟢 The {store} is online / Waiting for orders
+ *   ONLINE            🟢 The {store} is online / Waiting for orders OR Prep·Ready·Out
  *   OUT_OF_TIMINGS    🔴 The {store} is out of delivery timings / Go online now…
  *   RECONNECT         Reconnect to receive orders / device was restarted…
  *
@@ -15,7 +15,8 @@ import * as FileSystem from "expo-file-system/legacy";
 import { GatiMitraMerchant } from "@/constants/theme";
 
 export const STORE_STATUS_NOTIFICATION_ID = "merchant-store-status";
-export const STORE_STATUS_CHANNEL_ID = "merchant_store_status";
+/** v2 — Android channels are immutable; v1 may have been created too quiet to show. */
+export const STORE_STATUS_CHANNEL_ID = "merchant_store_status_v2";
 export const STORE_STATUS_SESSION_FILE = "merchant_store_status_session.json";
 
 /** Legacy kitchen / online / boot ids — always dismiss so only one status row exists. */
@@ -34,6 +35,8 @@ export type StoreStatusNotifArgs = {
   source?: string;
   eventId?: string | null;
   force?: boolean;
+  /** When ONLINE: kitchen progress body (else default "Waiting for orders"). */
+  bodyOverride?: string | null;
 };
 
 const OUT_OF_TIMINGS_REASONS = new Set([
@@ -45,6 +48,11 @@ const OUT_OF_TIMINGS_REASONS = new Set([
 
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
+}
+
+/** Local tray sticky works in Expo Go; remote FCM does not. */
+function canPostLocalStoreStatus(): boolean {
+  return Platform.OS === "android";
 }
 
 function logStatus(fields: Record<string, string | number | boolean | null | undefined>): void {
@@ -164,6 +172,9 @@ async function persistNativeSession(args: {
 let lastSignature = "";
 let lastEventKey = "";
 let posting = false;
+let pendingPost: StoreStatusNotifArgs | null = null;
+/** Last ONLINE kitchen body — used so FCM "Waiting" does not wipe live progress. */
+let lastOnlineKitchenBody = "";
 
 async function loadNotifications() {
   return import("expo-notifications");
@@ -176,21 +187,57 @@ async function ensureChannel(
   try {
     await Notifications.setNotificationChannelAsync(STORE_STATUS_CHANNEL_ID, {
       name: "Store status",
-      importance: Notifications.AndroidImportance.DEFAULT,
-      sound: null,
+      // HIGH — shade must stay visible for Waiting / Prep·Ready·Out while open.
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: undefined,
       enableVibrate: false,
       showBadge: true,
+      bypassDnd: false,
     });
   } catch {
     /* best-effort */
   }
 }
 
+async function ensureNotificationPermission(
+  Notifications: typeof import("expo-notifications")
+): Promise<boolean> {
+  try {
+    const current = await Notifications.getPermissionsAsync();
+    if (current.granted) return true;
+    const next = await Notifications.requestPermissionsAsync();
+    return Boolean(next.granted);
+  } catch {
+    return false;
+  }
+}
+
+async function isStoreStatusPresented(
+  Notifications: typeof import("expo-notifications")
+): Promise<boolean> {
+  try {
+    const presented = await Notifications.getPresentedNotificationsAsync();
+    return presented.some((n) => {
+      const id = String(n.request?.identifier ?? "");
+      if (id === STORE_STATUS_NOTIFICATION_ID) return true;
+      return looksLikeStoreStatusNotification(n);
+    });
+  } catch {
+    return false;
+  }
+}
+
 function looksLikeStoreStatusNotification(n: {
-  request?: { identifier?: string; content?: { title?: string | null; data?: Record<string, unknown> } };
+  request?: {
+    identifier?: string;
+    content?: { title?: string | null; data?: Record<string, unknown> };
+  };
 }): boolean {
   const id = String(n.request?.identifier ?? "");
-  if (id === STORE_STATUS_NOTIFICATION_ID || LEGACY_STATUS_IDS.includes(id as (typeof LEGACY_STATUS_IDS)[number])) {
+  if (
+    id === STORE_STATUS_NOTIFICATION_ID ||
+    LEGACY_STATUS_IDS.includes(id as (typeof LEGACY_STATUS_IDS)[number])
+  ) {
     return true;
   }
   const data = n.request?.content?.data ?? {};
@@ -236,8 +283,10 @@ async function dismissPresentedStoreStatus(
 export async function removeStoreStatusNotification(reason: string): Promise<void> {
   lastSignature = "";
   lastEventKey = "";
+  lastOnlineKitchenBody = "";
+  pendingPost = null;
   await persistNativeSession({ active: false });
-  if (Platform.OS !== "android" || isExpoGo()) return;
+  if (!canPostLocalStoreStatus()) return;
   try {
     const Notifications = await loadNotifications();
     await Notifications.dismissNotificationAsync(STORE_STATUS_NOTIFICATION_ID);
@@ -249,37 +298,82 @@ export async function removeStoreStatusNotification(reason: string): Promise<voi
 }
 
 export async function postStoreStatusNotification(args: StoreStatusNotifArgs): Promise<void> {
-  if (Platform.OS !== "android" || isExpoGo()) return;
+  if (!canPostLocalStoreStatus()) return;
   const storeId = Number(args.storeId);
   if (!Number.isInteger(storeId) || storeId < 1) return;
 
+  // Never drop a kitchen progress update while another post is in flight.
+  if (posting) {
+    pendingPost = args;
+    return;
+  }
+
   const name = sanitizeStoreDisplayName(args.storeName);
   const copy = formatStoreStatusCopy(args.state, name);
-  const signature = `${storeId}|${args.state}|${copy.title}|${copy.body}`;
+  // Never schedule a blank shade row (Android may show icon-only sticky).
+  const title = String(copy.title ?? "").trim() || "🟢 Your store is online";
+  let body =
+    args.state === "ONLINE" && typeof args.bodyOverride === "string" && args.bodyOverride.trim()
+      ? args.bodyOverride.trim()
+      : copy.body;
+  body = String(body ?? "").trim() || "Waiting for orders";
+
+  // FCM / bare ONLINE must not wipe Prep·Ready·Out with "Waiting for orders".
+  if (
+    args.state === "ONLINE" &&
+    !(typeof args.bodyOverride === "string" && args.bodyOverride.trim()) &&
+    body === "Waiting for orders" &&
+    lastOnlineKitchenBody &&
+    lastOnlineKitchenBody !== "Waiting for orders"
+  ) {
+    body = lastOnlineKitchenBody;
+  }
+
+  const hasKitchenProgress =
+    args.state === "ONLINE" &&
+    body !== "Waiting for orders" &&
+    /preparing|ready|out|new/i.test(body);
+  const url = hasKitchenProgress ? "/(tabs)/orders?tab=active" : copy.url;
+  const signature = `${storeId}|${args.state}|${title}|${body}`;
   const eventKey = [args.eventId, args.merchantId, storeId, args.state].filter(Boolean).join(":");
-  if (eventKey && eventKey === lastEventKey && !args.force) {
-    return;
-  }
-  if (signature === lastSignature && !args.force && !posting) {
-    await persistNativeSession({
-      active: true,
-      storeId,
-      merchantId: args.merchantId,
-      storeName: name,
-    });
-    return;
-  }
-  if (posting) return;
+
   posting = true;
   try {
     const Notifications = await loadNotifications();
+    const permitted = await ensureNotificationPermission(Notifications);
+    if (!permitted) {
+      logStatus({
+        storeId,
+        action: "SKIPPED",
+        reason: "NOTIFICATION_PERMISSION_DENIED",
+        source: args.source ?? "JS",
+      });
+      return;
+    }
+
+    // Same copy but tray was dismissed → must re-post (signature match alone is not enough).
+    const stillVisible = await isStoreStatusPresented(Notifications);
+    const force = args.force === true || !stillVisible;
+    if (eventKey && eventKey === lastEventKey && !force) {
+      return;
+    }
+    if (signature === lastSignature && !force) {
+      await persistNativeSession({
+        active: true,
+        storeId,
+        merchantId: args.merchantId,
+        storeName: name,
+      });
+      return;
+    }
+
     await ensureChannel(Notifications);
     await dismissPresentedStoreStatus(Notifications, true);
     await Notifications.scheduleNotificationAsync({
       identifier: STORE_STATUS_NOTIFICATION_ID,
       content: {
-        title: copy.title,
-        body: copy.body,
+        title,
+        body,
         data: {
           type: "STORE_STATUS",
           state: args.state,
@@ -288,25 +382,70 @@ export async function postStoreStatusNotification(args: StoreStatusNotifArgs): P
           storeName: name ?? "",
           eventId: args.eventId ?? `STORE_STATUS:${args.state}:${storeId}`,
           timestamp: new Date().toISOString(),
-          url: copy.url,
+          url,
           screen: args.state === "OUT_OF_TIMINGS" ? "restaurant_status" : "home",
+          kitchenBody: args.state === "ONLINE" ? body : "",
         },
         color: GatiMitraMerchant.primary,
         sticky: args.state === "ONLINE",
         autoDismiss: args.state !== "ONLINE",
-        sound: false,
+        sound: undefined,
+        priority: Notifications.AndroidNotificationPriority.HIGH,
         ...(Platform.OS === "android" ? { channelId: STORE_STATUS_CHANNEL_ID } : {}),
       },
       trigger: null,
     });
     lastSignature = signature;
     lastEventKey = eventKey;
+    if (args.state === "ONLINE") {
+      lastOnlineKitchenBody = body;
+    } else {
+      lastOnlineKitchenBody = "";
+    }
     await persistNativeSession({
       active: true,
       storeId,
       merchantId: args.merchantId,
       storeName: name,
     });
+
+    // Verify shade row exists — Android sometimes drops the first schedule.
+    const visible = await isStoreStatusPresented(Notifications);
+    if (!visible) {
+      await Notifications.scheduleNotificationAsync({
+        identifier: STORE_STATUS_NOTIFICATION_ID,
+        content: {
+          title,
+          body,
+          data: {
+            type: "STORE_STATUS",
+            state: args.state,
+            storeId,
+            merchantId: args.merchantId ?? "",
+            storeName: name ?? "",
+            eventId: args.eventId ?? `STORE_STATUS:${args.state}:${storeId}:retry`,
+            timestamp: new Date().toISOString(),
+            url,
+            screen: args.state === "OUT_OF_TIMINGS" ? "restaurant_status" : "home",
+            kitchenBody: args.state === "ONLINE" ? body : "",
+          },
+          color: GatiMitraMerchant.primary,
+          sticky: args.state === "ONLINE",
+          autoDismiss: args.state !== "ONLINE",
+          sound: undefined,
+          priority: Notifications.AndroidNotificationPriority.HIGH,
+          ...(Platform.OS === "android" ? { channelId: STORE_STATUS_CHANNEL_ID } : {}),
+        },
+        trigger: null,
+      });
+      logStatus({
+        storeId,
+        action: "REPOST_AFTER_MISS",
+        source: args.source ?? "JS",
+        bodyPreview: body.slice(0, 80),
+      });
+    }
+
     logStatus({
       merchantId: args.merchantId ?? "",
       storeId,
@@ -315,12 +454,49 @@ export async function postStoreStatusNotification(args: StoreStatusNotifArgs): P
       source: args.source ?? "JS",
       notificationId: STORE_STATUS_NOTIFICATION_ID,
       action: args.source === "APP_START" ? "REPOST_AFTER_APP_START" : "POSTED",
+      bodyPreview: body.slice(0, 80),
+      expoGo: isExpoGo() ? 1 : 0,
     });
-  } catch {
-    /* best-effort */
+  } catch (err) {
+    logStatus({
+      storeId,
+      action: "ERROR",
+      source: args.source ?? "JS",
+      reason: err instanceof Error ? err.message.slice(0, 120) : "POST_FAILED",
+    });
   } finally {
     posting = false;
+    const next = pendingPost;
+    pendingPost = null;
+    if (next) {
+      void postStoreStatusNotification({ ...next, force: true });
+    }
   }
+}
+
+/**
+ * Update ONLINE sticky body with kitchen progress / Waiting for orders.
+ */
+export async function updateOnlineStoreStatusKitchenBody(args: {
+  storeId: number;
+  storeName?: string | null;
+  merchantId?: string | null;
+  body: string;
+  force?: boolean;
+}): Promise<void> {
+  const storeId = Number(args.storeId);
+  if (!Number.isInteger(storeId) || storeId < 1) return;
+  const body = String(args.body ?? "").trim() || "Waiting for orders";
+  await postStoreStatusNotification({
+    state: "ONLINE",
+    storeId,
+    merchantId: args.merchantId,
+    storeName: args.storeName,
+    source: "KITCHEN_PROGRESS",
+    bodyOverride: body,
+    force: args.force === true,
+    eventId: `KITCHEN:${storeId}:${body.slice(0, 48)}`,
+  });
 }
 
 /**
@@ -341,8 +517,6 @@ export async function reconcileStoreStatusNotification(args: {
     return;
   }
   const force = args.source === "APP_START" || args.source === "APP_RESUME";
-  const outOfTimings =
-    !args.isOnline && isOutOfDeliveryTimingsReason(args.statusReason, args.unavailableReason);
 
   if (args.isOnline) {
     await postStoreStatusNotification({
@@ -352,29 +526,30 @@ export async function reconcileStoreStatusNotification(args: {
       storeName: args.storeName,
       source: args.source ?? "RECONCILE",
       force,
+      ...(lastOnlineKitchenBody ? { bodyOverride: lastOnlineKitchenBody } : {}),
     });
     return;
   }
-  if (outOfTimings) {
-    await postStoreStatusNotification({
-      state: "OUT_OF_TIMINGS",
+
+  // Any offline (manual / schedule / out of hours) → Zomato offline tray.
+  // Never silently remove the shade item while the merchant is logged in.
+  await postStoreStatusNotification({
+    state: "OUT_OF_TIMINGS",
+    storeId: args.storeId,
+    merchantId: args.merchantId,
+    storeName: args.storeName,
+    source: args.source ?? "RECONCILE",
+    force: true,
+  });
+  if (args.source !== "APP_START") {
+    logStatus({
       storeId: args.storeId,
-      merchantId: args.merchantId,
-      storeName: args.storeName,
-      source: args.source ?? "RECONCILE",
-      force,
+      storeName: sanitizeStoreDisplayName(args.storeName) ?? "Your store",
+      state: "OUT_OF_TIMINGS",
+      action: "UPDATED",
+      reason: args.statusReason ?? args.unavailableReason ?? "STORE_OFFLINE",
     });
-    if (args.source !== "APP_START") {
-      logStatus({
-        storeId: args.storeId,
-        storeName: sanitizeStoreDisplayName(args.storeName) ?? "Your store",
-        state: "OUT_OF_TIMINGS",
-        action: "UPDATED",
-      });
-    }
-    return;
   }
-  await removeStoreStatusNotification("STORE_OFFLINE");
 }
 
 export async function applyStoreStatusFromPush(
@@ -401,6 +576,70 @@ export async function applyStoreStatusFromPush(
     await removeStoreStatusNotification("SERVER_OFFLINE");
     return;
   }
+  // Already ONLINE with kitchen progress — do not let a bare FCM "Waiting"
+  // (missing counts) overwrite live Prep/Ready/Out. Explicit zero counts may.
+  const pushActiveRaw = data.activeOrdersCount ?? data.active_orders_count;
+  const pushActive =
+    typeof pushActiveRaw === "number"
+      ? pushActiveRaw
+      : Number.isFinite(Number(pushActiveRaw))
+        ? Number(pushActiveRaw)
+        : null;
+  const stageNum = (...keys: string[]) => {
+    for (const k of keys) {
+      const n = Number(data[k]);
+      if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    }
+    return 0;
+  };
+  const stageSum =
+    stageNum("preparing") +
+    stageNum("ready") +
+    stageNum("outForDelivery", "out_for_delivery") +
+    stageNum("pendingAccept", "pending_accept");
+  const hasExplicitCounts =
+    data.activeOrdersCount != null ||
+    data.active_orders_count != null ||
+    data.preparing != null ||
+    data.ready != null ||
+    data.outForDelivery != null ||
+    data.out_for_delivery != null ||
+    data.pendingAccept != null ||
+    data.pending_accept != null;
+  const pushSaysIdle =
+    (pushActive != null && pushActive <= 0) ||
+    (hasExplicitCounts && stageSum === 0) ||
+    (typeof data.kitchenBody === "string" &&
+      /waiting for orders/i.test(data.kitchenBody));
+  const kitchenBodyFromPush =
+    typeof data.kitchenBody === "string" && data.kitchenBody.trim()
+      ? data.kitchenBody.trim()
+      : null;
+
+  if (
+    state === "ONLINE" &&
+    !pushSaysIdle &&
+    !kitchenBodyFromPush &&
+    lastOnlineKitchenBody &&
+    lastOnlineKitchenBody !== "Waiting for orders" &&
+    lastSignature.startsWith(`${storeId}|ONLINE|`)
+  ) {
+    logStatus({
+      storeId,
+      action: "IGNORED",
+      reason: "KEEP_KITCHEN_PROGRESS",
+    });
+    return;
+  }
+
+  const bodyOverride =
+    kitchenBodyFromPush ??
+    (pushSaysIdle
+      ? "Waiting for orders"
+      : state === "ONLINE" && lastOnlineKitchenBody
+        ? lastOnlineKitchenBody
+        : null);
+
   await postStoreStatusNotification({
     state,
     storeId,
@@ -408,6 +647,8 @@ export async function applyStoreStatusFromPush(
     storeName: typeof data.storeName === "string" ? data.storeName : null,
     source: "FCM",
     eventId: data.eventId != null ? String(data.eventId) : null,
+    force: pushSaysIdle === true || state !== "ONLINE",
+    ...(state === "ONLINE" && bodyOverride ? { bodyOverride } : {}),
   });
 }
 
@@ -415,4 +656,6 @@ export function resetStoreStatusNotificationCache(): void {
   lastSignature = "";
   lastEventKey = "";
   posting = false;
+  pendingPost = null;
+  lastOnlineKitchenBody = "";
 }

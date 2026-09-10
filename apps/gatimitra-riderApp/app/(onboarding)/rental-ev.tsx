@@ -305,7 +305,11 @@ export default function RentalEvScreen() {
             });
 
       if (!result.canceled && result.assets[0]) {
-        return result.assets[0].uri;
+        const raw = result.assets[0].uri;
+        const { persistLocalOnboardingPhoto } = await import(
+          "@/src/lib/persistLocalOnboardingPhoto"
+        );
+        return persistLocalOnboardingPhoto(raw, "rental");
       }
     } catch {
       notifyOnboardingToast(source === "camera" ? tx("captureFailed") : tx("uploadFailed"));
@@ -466,10 +470,6 @@ export default function RentalEvScreen() {
               end={{ x: 0.5, y: 1 }}
               style={form.header}
             >
-              <Pressable onPress={handleBack} style={form.backBtn} accessibilityRole="button">
-                <Ionicons name="arrow-back" size={20} color={colors.gray[700]} />
-              </Pressable>
-
               <View style={form.stepPill}>
                 <Ionicons name="document-text-outline" size={14} color={ACCENT_DARK} />
                 <Text style={form.stepPillText}>{tx("stepLabel")}</Text>

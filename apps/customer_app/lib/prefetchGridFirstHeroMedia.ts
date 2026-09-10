@@ -17,9 +17,19 @@ function absoluteUri(uri: string | null | undefined): string | null {
 export function prefetchFoodHomeImageUri(uri: string | null | undefined): void {
   const absolute = absoluteUri(uri);
   if (!absolute) return;
-  if (prefetched.has(absolute)) return;
+  if (prefetched.has(absolute)) {
+    // Already warmed this session — treat as ready so opacity:0 hero can paint.
+    markHeroMediaSessionReady(absolute);
+    return;
+  }
   prefetched.add(absolute);
-  void Image.prefetch(absolute, { cachePolicy: "memory-disk" });
+  void Image.prefetch(absolute, { cachePolicy: "memory-disk" })
+    .then(() => {
+      markHeroMediaSessionReady(absolute);
+    })
+    .catch(() => {
+      prefetched.delete(absolute);
+    });
 }
 
 export function markHeroMediaSessionReady(uri: string | null | undefined): void {

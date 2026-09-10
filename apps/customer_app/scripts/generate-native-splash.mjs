@@ -27,12 +27,11 @@ const ICON = 1024;
 
 function brandSvg(width, height) {
   const cx = width / 2;
-  const titleSize = Math.round(width * 0.072);
-  const tagSize = Math.round(width * 0.018);
+  // Match JS bootstrap (~56–64pt wordmark) — always large, never a tiny native jump.
+  const titleSize = Math.round(width * 0.11);
+  const tagSize = Math.round(width * 0.022);
   const titleY = height * 0.48;
-  const lineY = titleY + titleSize * 0.55;
-  const tagY = lineY + tagSize * 2.4;
-  const lineW = width * 0.48;
+  const tagY = titleY + titleSize * 0.72;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
   <defs>
@@ -44,27 +43,23 @@ function brandSvg(width, height) {
   </defs>
   <rect width="${width}" height="${height}" fill="url(#bg)"/>
   <text x="${cx}" y="${titleY}" text-anchor="middle" fill="#ffffff" font-size="${titleSize}" font-family="Georgia, 'Times New Roman', Times, serif" font-weight="700">GatiMitra</text>
-  <rect x="${(width - lineW) / 2}" y="${lineY}" width="${lineW}" height="2" fill="#ffffff" fill-opacity="0.92"/>
   <text x="${cx}" y="${tagY}" text-anchor="middle" fill="#ffffff" fill-opacity="0.94" font-size="${tagSize}" font-family="Georgia, 'Times New Roman', Times, serif" font-weight="700" letter-spacing="${tagSize * 0.28}">CRAFTED FOR CONVENIENCE</text>
 </svg>`;
 }
 
 function android12Svg() {
   // Window + icon share SPLASH_MINT so the Android 12 circle is invisible.
-  // Keep copy inside the center ~60% (system icon safe zone).
+  // Large wordmark in the center safe zone (matches JS bootstrap scale).
   const cx = ICON / 2;
-  const titleSize = 92;
-  const tagSize = 18;
-  const titleY = 500;
-  const lineY = 548;
-  const tagY = 590;
-  const lineW = 520;
+  const titleSize = 168;
+  const tagSize = 24;
+  const titleY = 520;
+  const tagY = 600;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${ICON}" height="${ICON}" viewBox="0 0 ${ICON} ${ICON}">
   <rect width="${ICON}" height="${ICON}" fill="${SPLASH_MINT}"/>
   <text x="${cx}" y="${titleY}" text-anchor="middle" fill="#ffffff" font-size="${titleSize}" font-family="Georgia, 'Times New Roman', Times, serif" font-weight="700">GatiMitra</text>
-  <rect x="${(ICON - lineW) / 2}" y="${lineY}" width="${lineW}" height="2" fill="#ffffff" fill-opacity="0.92"/>
-  <text x="${cx}" y="${tagY}" text-anchor="middle" fill="#ffffff" fill-opacity="0.94" font-size="${tagSize}" font-family="Georgia, 'Times New Roman', Times, serif" font-weight="700" letter-spacing="4">CRAFTED FOR CONVENIENCE</text>
+  <text x="${cx}" y="${tagY}" text-anchor="middle" fill="#ffffff" fill-opacity="0.94" font-size="${tagSize}" font-family="Georgia, 'Times New Roman', Times, serif" font-weight="700" letter-spacing="5">CRAFTED FOR CONVENIENCE</text>
 </svg>`;
 }
 

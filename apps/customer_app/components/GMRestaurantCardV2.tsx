@@ -12,6 +12,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { warmMerchantHeroImage, prefetchMerchantHeroImageUri } from "@/lib/merchantHeroWarmCache";
 import { useScrollSafePress } from "@/hooks/useScrollSafePress";
+import { useInstantPressScale } from "@/components/InstantPressable";
+import Animated from "react-native-reanimated";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { setStoreBookmark } from "@/services/merchant.service";
 import { useStoreBookmarkMutations, useStoreBookmarks } from "@/hooks/useStoreBookmarks";
@@ -148,6 +150,7 @@ function GMRestaurantCardV2Inner({
       if (firstGallery) prefetchMerchantHeroImageUri(firstGallery);
     },
   });
+  const pressScale = useInstantPressScale(0.985);
 
   const onCarouselSwipe = useCallback(() => {
     cardPress.blockPress();
@@ -160,11 +163,18 @@ function GMRestaurantCardV2Inner({
 
   return (
     <>
+    <Animated.View style={pressScale.style} collapsable={false}>
     <Pressable
       style={[styles.card, { width: cardWidth, marginBottom: bottomSpacing }, listingBlocked && styles.cardBlocked]}
       onPress={cardPress.onPress}
-      onPressIn={cardPress.onPressIn}
-      onPressOut={cardPress.onPressOut}
+      onPressIn={(e) => {
+        pressScale.pressIn();
+        cardPress.onPressIn(e);
+      }}
+      onPressOut={(e) => {
+        pressScale.pressOut();
+        cardPress.onPressOut(e);
+      }}
       onTouchMove={cardPress.onTouchMove}
       disabled={listingBlocked}
       accessibilityState={{ disabled: listingBlocked }}
@@ -269,6 +279,7 @@ function GMRestaurantCardV2Inner({
           </View>
         </View>
     </Pressable>
+    </Animated.View>
     <MerchantRatingExplainerSheet
       visible={ratingSheetOpen}
       onClose={() => {

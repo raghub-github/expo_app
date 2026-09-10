@@ -48,6 +48,7 @@ type Props = {
   issueTitle: string;
   order?: RiderRecentOrder | null;
   isPreLogin?: boolean;
+  initialDescription?: string;
   onCanSubmitChange?: (canSubmit: boolean) => void;
   onSubmit: (payload: RaiseTicketSubmitPayload) => void;
   onPhotoPreviewChange?: (preview: PhotoPreviewState) => void;
@@ -64,9 +65,20 @@ function isValidMobile(value: string): boolean {
 }
 
 export const RaiseTicketSubmitForm = forwardRef<RaiseTicketSubmitFormHandle, Props>(
-  function RaiseTicketSubmitForm({ issueTitle, order, isPreLogin = false, onCanSubmitChange, onSubmit, onPhotoPreviewChange, onDescriptionFocus }, ref) {
+  function RaiseTicketSubmitForm({
+    issueTitle,
+    order,
+    isPreLogin = false,
+    initialDescription = "",
+    onCanSubmitChange,
+    onSubmit,
+    onPhotoPreviewChange,
+    onDescriptionFocus,
+  }, ref) {
   const { t } = useTranslation();
-  const [description, setDescription] = useState("");
+  const [description, setDescription] = useState(() =>
+    String(initialDescription || "").slice(0, MAX_CHARS),
+  );
   const [contactName, setContactName] = useState("");
   const [contactMobile, setContactMobile] = useState("");
   const [contactEmail, setContactEmail] = useState("");

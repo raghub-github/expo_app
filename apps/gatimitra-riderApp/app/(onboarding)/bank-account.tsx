@@ -7,7 +7,7 @@
  * Fallback (hybrid fail): slim form like earnings withdraw — holder (Aadhaar),
  * account, confirm, IFSC (+ bank name from Cashfree when available).
  */
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -18,6 +18,7 @@ import {
   Pressable,
   TouchableOpacity,
   ActivityIndicator,
+  BackHandler,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
@@ -36,6 +37,8 @@ import {
   useVerifyDocument,
 } from "@/src/hooks/useOnboarding";
 import { canAccessOnboardingBankAccountScreen } from "@/src/lib/onboarding-routes";
+import { setOnboardingBackOverride } from "@/src/lib/onboarding-back-override";
+import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
 import { extractApiErrorMessage } from "@/src/services/http";
 import {
   ContinueButton,
@@ -53,11 +56,6 @@ const ACCENT_DARK = "#22a745";
 const BG = "#f4fbf6";
 const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/i;
 const ACCOUNT_RE = /^\d{9,18}$/;
-
-function goBackOrReplace(href: `/(onboarding)/${string}`) {
-  if (router.canGoBack()) router.back();
-  else router.replace(href);
-}
 
 function maskAccount(raw: string): string {
   const d = raw.replace(/\D/g, "");
@@ -175,13 +173,29 @@ export default function BankAccountOnboardingScreen() {
     !dupCheck.checking &&
     !addLocked;
 
-  const handleBack = () => {
+  const handleBack = useCallback(() => {
     if (data.vehicleOnboardingFlow === "rental_ev") {
       goBackOrReplace("/(onboarding)/rental-ev");
       return;
     }
     goBackOrReplace("/(onboarding)/dl-rc");
-  };
+  }, [data.vehicleOnboardingFlow]);
+
+  useEffect(() => {
+    setOnboardingBackOverride(() => {
+      handleBack();
+      return true;
+    });
+    return () => setOnboardingBackOverride(null);
+  }, [handleBack]);
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      handleBack();
+      return true;
+    });
+    return () => sub.remove();
+  }, [handleBack]);
 
   const goToPayment = async (opts?: { skipped?: boolean }) => {
     await setData({
@@ -347,10 +361,6 @@ export default function BankAccountOnboardingScreen() {
               end={{ x: 0.5, y: 1 }}
               style={form.header}
             >
-              <Pressable onPress={handleBack} style={form.backBtn} accessibilityRole="button">
-                <Ionicons name="arrow-back" size={20} color={colors.gray[700]} />
-              </Pressable>
-
               <View style={form.stepPill}>
                 <Ionicons name="business-outline" size={14} color={ACCENT_DARK} />
                 <Text style={form.stepPillText}>Step 4 · Bank Account Verification</Text>
@@ -710,9 +720,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   verifyBtnDisabled: {
-    backgroundColor: "#edf8f0",
-    borderWidth: 1.5,
-    borderColor: "rgba(57, 211, 83, 0.25)",
+    backgroundColor: "#16a34a",
+    borderWidth: 0,
+    opacity: 0.45,
   },
   verifyBtnText: {
     color: "#fff",

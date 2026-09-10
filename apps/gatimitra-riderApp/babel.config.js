@@ -1,13 +1,14 @@
 module.exports = function (api) {
-  // Bust transform cache when typography plugin changes.
-  api.cache.using(() => "rider-app-text-v1");
+  // Bust transform cache when NativeWind wrap-jsx is removed (fixes Display-size zoom width).
+  api.cache.using(() => "rider-app-text-v2-no-nativewind");
 
   const reanimated = require("react-native-reanimated/plugin");
 
   return {
-    // IMPORTANT:
-    // `nativewind/babel` is a *preset* (it returns `{ plugins: [...] }`), not a plugin.
-    presets: ["babel-preset-expo", "nativewind/babel"],
+    // Do NOT enable nativewind/babel — it rewrites every JSX node through css-interop and
+    // breaks full-bleed layout when Android Display size / font zoom changes.
+    // Rider UI is StyleSheet-first; legacy className screens were converted.
+    presets: ["babel-preset-expo"],
     plugins: [
       [
         "module-resolver",

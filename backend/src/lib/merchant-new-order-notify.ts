@@ -104,9 +104,27 @@ export async function notifyMerchantStoreNewOrder(
     actionUrl: href,
   });
 
-  // v2 send — store_id resolves Expo + native FCM for this store's merchants
-  // (multi-device). Idempotency key = MERCHANT_NEW_ORDER:<order-id>:<store-id>
-  // dedupes if the placement service retries mid-transaction.
+  // Primary tray delivery: same direct Expo + native FCM path as store-status /
+  // rider-assigned (survives background/killed). notificationService alone can
+  // miss devices when Expo credentials fail and native lookup is incomplete.
+  const { notifyMerchantStoreNewOrderPush } = await import("./merchant-push-notify.js");
+  await notifyMerchantStoreNewOrderPush(sql, {
+    storeId: merchantStoreId,
+    title,
+    body,
+    foodOrderId: foodId ? Number(foodId) : null,
+    orderIdText,
+    displayId,
+    href,
+    itemCount,
+    amount: total ?? 0,
+    customerName,
+  }).catch((e) =>
+    console.warn("[merchant-new-order] direct FCM failed (tolerated)", (e as Error).message)
+  );
+
+  // v2 inbox / audit — push channel omitted so we do not twin the direct FCM above.
+  // Idempotency still blocks eventBus MERCHANT_NEW_ORDER retries for this order.
   await sendNotification({
     templateCode: "MERCHANT_NEW_ORDER",
     variables: {
@@ -119,6 +137,7 @@ export async function notifyMerchantStoreNewOrder(
     },
     target: { store_id: merchantStoreId },
     priority: "critical",
+    channel: "in_app",
     idempotencyKey: `MERCHANT_NEW_ORDER:${orderIdText}:${merchantStoreId}`,
     overrides: {
       title,

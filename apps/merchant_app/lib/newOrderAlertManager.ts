@@ -1,7 +1,12 @@
 /**
- * Single NEW_ORDER alert session shared by the background notification path
+ * Single NEW_ORDER alert session shared by notification tap / cold start
  * and the Incoming Order Modal. One order = one session; ownership can move
  * but playback never restarts from zero.
+ *
+ * Sound ownership:
+ *   OPEN / MODAL / TAP — JS Incoming chime (OS muted while active)
+ *   BACKGROUND         — OS channel only; JS tracks remaining repeats
+ *   KILLED             — FCM channel sound (this module never runs)
  */
 import * as SecureStore from "expo-secure-store";
 import { AppState } from "react-native";
@@ -154,6 +159,9 @@ export function startedAtFromPush(
 }
 
 function jsShouldPlay(source: NewOrderAlertSource): boolean {
+  // OPEN / modal / tap / cold-start resume: JS Incoming chime.
+  // BACKGROUND: OS channel owns sound — only track session for remaining repeats.
+  // Killed: never reaches here (FCM channel sound).
   return (
     source === "FOREGROUND" ||
     source === "MODAL" ||

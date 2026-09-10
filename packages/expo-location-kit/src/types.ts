@@ -35,9 +35,9 @@ export type FastPosition = ValidatedCoords & {
 };
 
 export type FastPositionOptions = {
-  /** Accept an OS last-known fix no older than this (ms). Default 120000 (2 min). */
+  /** Accept an OS last-known fix no older than this (ms). Default 300000 (5 min). */
   lastKnownMaxAgeMs?: number;
-  /** Timeout for the quick live fix when no last-known is available (ms). Default 4000. */
+  /** Timeout for each raced live fix when no last-known is available (ms). Default 2200. */
   quickTimeoutMs?: number;
   /** Optional debug logger. */
   log?: (event: string, data: Record<string, unknown>) => void;

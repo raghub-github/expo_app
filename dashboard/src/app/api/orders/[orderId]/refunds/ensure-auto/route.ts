@@ -3,6 +3,7 @@ import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-ses
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { listOrderRefunds } from "@/lib/db/operations/order-refunds";
 import { isRefundSettled } from "@/lib/orders/refund-status";
+import { isIntentionalNoRefundCancel } from "@/lib/orders/skip-auto-refund";
 import { triggerOrderAutoRefund } from "@/lib/triggerOrderAutoRefund";
 import { getSql } from "@/lib/db/client";
 
@@ -23,6 +24,7 @@ function isMerchantOrSystemCancel(cancelledByType: string | null | undefined): b
 /**
  * POST — repair missing customer refund ledger for merchant/system cancellations.
  * Idempotent: no-ops when a settled refund already exists.
+ * Never repairs admin "Cancel without refund" (intentional no refund).
  */
 export async function POST(
   _request: NextRequest,
@@ -65,12 +67,18 @@ export async function POST(
         cancelled_by_type: string | null;
         display_reason: string | null;
         rejected_reason: string | null;
+        refund_status: string | null;
+        reason_code: string | null;
+        metadata: Record<string, unknown> | null;
       }>
     >`
       SELECT
         cancelled_by_type,
         display_reason,
-        COALESCE(metadata->>'rejected_reason', reason_text) AS rejected_reason
+        COALESCE(metadata->>'rejected_reason', reason_text) AS rejected_reason,
+        refund_status,
+        reason_code,
+        metadata
       FROM order_cancellation_reasons
       WHERE order_id = ${orderId}
       ORDER BY created_at DESC
@@ -84,6 +92,53 @@ export async function POST(
         data: existing,
         skipped: "not_merchant_system_cancel",
       });
+    }
+
+    const meta =
+      cancel.metadata &&
+      typeof cancel.metadata === "object" &&
+      !Array.isArray(cancel.metadata)
+        ? cancel.metadata
+        : null;
+
+    if (
+      isIntentionalNoRefundCancel({
+        refundStatus: cancel.refund_status,
+        reasonCode: cancel.reason_code,
+        metadata: meta,
+      })
+    ) {
+      return NextResponse.json({
+        success: true,
+        repaired: false,
+        data: existing,
+        skipped: "cancel_without_refund",
+      });
+    }
+
+    // Legacy admin cancels: refundType only lived on routed-to history.
+    try {
+      const routedSkip = await sql<Array<{ ok: number }>>`
+        SELECT 1 AS ok
+        FROM order_routed_to_history
+        WHERE order_id = ${orderId}
+          AND (
+            COALESCE(metadata->>'refundType', '') = 'cancel_without_refund'
+            OR COALESCE(metadata->>'skipAutoRefund', '') = 'true'
+          )
+        ORDER BY created_at DESC
+        LIMIT 1
+      `;
+      if (routedSkip.length > 0) {
+        return NextResponse.json({
+          success: true,
+          repaired: false,
+          data: existing,
+          skipped: "cancel_without_refund_routed",
+        });
+      }
+    } catch {
+      // History table may be unavailable — fall through to normal repair.
     }
 
     const actorRole =

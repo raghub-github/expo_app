@@ -24,6 +24,8 @@ import { useEarningsBankSheetStore } from "@/src/stores/earningsBankSheetStore";
 import { extractApiErrorMessage } from "@/src/services/http";
 import type { RiderBankPaymentMethod } from "@/src/services/api/riderApi";
 import { useUnlockCountdown } from "@/src/hooks/useUnlockCountdown";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 const TEAL = colors.primary[600];
 const PAGE_BG = "#F4F6F8";
@@ -39,6 +41,8 @@ function statusLabel(status: RiderBankPaymentMethod["verificationStatus"], t: (k
 
 export function PayoutAccountsScreen() {
   const { t } = useTranslation();
+  const { rs } = useResponsiveLayout();
+  const padX = rs(12);
   const { data: accounts = [], isLoading, isError, refetch, isRefetching } =
     useRiderBankPaymentMethodsList();
   const setPrimary = useSetPrimaryRiderBankPaymentMethod();
@@ -119,21 +123,21 @@ export function PayoutAccountsScreen() {
 
   return (
     <SafeAreaView style={styles.root} edges={["top", "bottom"]}>
-      <View style={styles.header}>
+      <View style={[rowLayout.row, styles.header, { paddingHorizontal: padX }]}>
         <TouchableOpacity
           onPress={() => router.back()}
-          style={styles.backBtn}
+          style={[styles.backBtn, rowLayout.noShrink]}
           accessibilityRole="button"
           accessibilityLabel={t("common.back", "Back")}
           activeOpacity={0.7}
         >
           <Ionicons name="arrow-back" size={22} color={TEXT} />
         </TouchableOpacity>
-        <View style={styles.headerText}>
-          <Text style={styles.headerTitle}>
+        <View style={[styles.headerText, rowLayout.grow]}>
+          <Text style={[styles.headerTitle, flexShrinkText]} numberOfLines={1} ellipsizeMode="tail">
             {t("earnings.payout.title", "Payout accounts")}
           </Text>
-          <Text style={styles.headerSub}>
+          <Text style={[styles.headerSub, flexShrinkText]} numberOfLines={3} ellipsizeMode="tail">
             {t(
               "earnings.payout.subtitle",
               "Choose which bank account receives withdrawals. Old accounts stay deactivated, not deleted.",
@@ -190,22 +194,31 @@ export function PayoutAccountsScreen() {
                     isRejected && styles.accountCardRejected,
                   ]}
                 >
-                  <View style={styles.accountTop}>
-                    <View style={[styles.accountIcon, isRejected && styles.accountIconRejected]}>
+                  <View style={[rowLayout.rowStart, styles.accountTop]}>
+                    <View
+                      style={[
+                        styles.accountIcon,
+                        rowLayout.noShrink,
+                        isRejected && styles.accountIconRejected,
+                      ]}
+                    >
                       <Ionicons
                         name="business-outline"
                         size={20}
                         color={isRejected ? "#B91C1C" : isPrimary ? TEAL : MUTED}
                       />
                     </View>
-                    <View style={styles.accountMeta}>
-                      <Text style={styles.bankName} numberOfLines={1}>
+                    <View style={[styles.accountMeta, rowLayout.grow]}>
+                      <Text style={[styles.bankName, flexShrinkText]} numberOfLines={1}>
                         {account.bankName || "Bank"}
                       </Text>
-                      <Text style={[styles.masked, isRejected && styles.maskedRejected]}>
+                      <Text
+                        style={[styles.masked, flexShrinkText, isRejected && styles.maskedRejected]}
+                        numberOfLines={1}
+                      >
                         {account.accountNumberMasked}
                       </Text>
-                      <Text style={styles.holder} numberOfLines={1}>
+                      <Text style={[styles.holder, flexShrinkText]} numberOfLines={1}>
                         {account.accountHolderName}
                         {account.ifsc ? ` · ${account.ifsc}` : ""}
                       </Text>
@@ -290,7 +303,7 @@ export function PayoutAccountsScreen() {
             activeOpacity={0.85}
           >
             <Ionicons name="add-circle-outline" size={20} color="#FFFFFF" />
-            <Text style={styles.addBtnText}>
+            <Text style={[styles.addBtnText, flexShrinkText]} numberOfLines={1}>
               {addLocked
                 ? t("earnings.tryAfter", "Try after {{time}}", { time: countdown.label ?? "—" })
                 : t("earnings.payout.addNew", "Add new bank account")}
@@ -314,14 +327,12 @@ export function PayoutAccountsScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: PAGE_BG },
   header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
     paddingVertical: 10,
     gap: 8,
     backgroundColor: "#fff",
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: BORDER,
+    maxWidth: "100%",
   },
   backBtn: {
     width: 40,
@@ -331,7 +342,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#F8FAFC",
   },
-  headerText: { flex: 1 },
+  headerText: { flex: 1, minWidth: 0 },
   headerTitle: { fontSize: 18, fontWeight: "800", color: TEXT },
   headerSub: { fontSize: 12, color: MUTED, marginTop: 2, lineHeight: 16 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 10 },
@@ -363,6 +374,7 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     padding: 14,
     gap: 10,
+    maxWidth: "100%",
   },
   accountCardPrimary: {
     borderColor: "#99F6E4",
@@ -376,7 +388,7 @@ const styles = StyleSheet.create({
     borderColor: "#FECACA",
     opacity: 1,
   },
-  accountTop: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
+  accountTop: { gap: 12 },
   accountIcon: {
     width: 40,
     height: 40,
@@ -427,15 +439,16 @@ const styles = StyleSheet.create({
   primaryHint: { fontSize: 12, color: MUTED, lineHeight: 16 },
   addBtn: {
     marginTop: 8,
-    height: 52,
+    minHeight: 52,
     borderRadius: 12,
     backgroundColor: TEAL,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
+    paddingHorizontal: 12,
   },
-  addBtnText: { color: "#fff", fontWeight: "800", fontSize: 15 },
+  addBtnText: { color: "#fff", fontWeight: "800", fontSize: 15, flexShrink: 1 },
   addHint: { fontSize: 12, color: MUTED, lineHeight: 17, textAlign: "center" },
   btnDisabled: { opacity: 0.55 },
 });

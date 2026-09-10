@@ -12,6 +12,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { DismissibleBottomSheetShell } from "@/src/components/language/DismissibleBottomSheetShell";
 import { useTabBarBottomOffset } from "@/src/hooks/useTabBarBottomOffset";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 import {
   formatActiveOrderEarning,
@@ -90,9 +92,11 @@ function StatBox({
       <View style={styles.statIconWrap}>
         <Ionicons name={icon} size={13} color={colors.primary[700]} />
       </View>
-      <View style={styles.statTextWrap}>
-        <Text style={styles.statLabel}>{label}</Text>
-        <Text style={styles.statValue} numberOfLines={1}>
+      <View style={[rowLayout.grow, styles.statTextWrap]}>
+        <Text style={[styles.statLabel, flexShrinkText]} numberOfLines={1}>
+          {label}
+        </Text>
+        <Text style={[styles.statValue, flexShrinkText]} numberOfLines={1}>
           {value}
         </Text>
       </View>
@@ -146,14 +150,18 @@ function ActiveOrderPickerCard({
             </LinearGradient>
           </View>
 
-          <View style={styles.headCopy}>
-            <View style={styles.idRow}>
-              <Text style={styles.tripId} numberOfLines={1}>
+          <View style={[rowLayout.grow, styles.headCopy]}>
+            <View style={[rowLayout.row, styles.idRow]}>
+              <Text style={[styles.tripId, flexShrinkText]} numberOfLines={1}>
                 {tripId}
               </Text>
-              {earning ? <Text style={styles.earn}>{earning}</Text> : null}
+              {earning ? (
+                <Text style={[styles.earn, rowLayout.noShrink]} numberOfLines={1}>
+                  {earning}
+                </Text>
+              ) : null}
             </View>
-            <Text style={styles.merchant} numberOfLines={1}>
+            <Text style={[styles.merchant, flexShrinkText]} numberOfLines={1}>
               {subtitle}
             </Text>
           </View>
@@ -187,7 +195,7 @@ function ActiveOrderPickerCard({
             <View style={styles.navBtnIconCircle}>
               <Ionicons name="navigate" size={14} color={colors.primary[800]} />
             </View>
-            <Text style={styles.navBtnText}>
+            <Text style={[styles.navBtnText, flexShrinkText]} numberOfLines={1}>
               {t("orders.activeFloat.startTrip", "Start Trip")}
             </Text>
             <View style={styles.navBtnArrow}>
@@ -202,7 +210,10 @@ function ActiveOrderPickerCard({
 
 export function ActiveOrderPickerSheet({ visible, orders, onDismiss, onSelect }: Props) {
   const { t } = useTranslation();
+  // Measured dock (tab bar + system inset) keeps the sheet above the live tab bar.
   const tabBarOffset = useTabBarBottomOffset();
+  const { height, isShortHeight } = useResponsiveLayout();
+  const listMaxH = Math.round(height * (isShortHeight ? 0.38 : 0.48));
 
   const { sortedOrders, primaryId } = useMemo(() => {
     if (orders.length <= 1) {
@@ -218,7 +229,7 @@ export function ActiveOrderPickerSheet({ visible, orders, onDismiss, onSelect }:
     <DismissibleBottomSheetShell
       visible={visible}
       onDismiss={onDismiss}
-      maxHeightRatio={0.7}
+      maxHeightRatio={isShortHeight ? 0.62 : 0.7}
       showOuterHandle={false}
       bottomOffset={tabBarOffset}
       sheetStyle={styles.sheet}
@@ -226,23 +237,27 @@ export function ActiveOrderPickerSheet({ visible, orders, onDismiss, onSelect }:
       <View style={styles.handle} />
 
       <View style={styles.header}>
-        <View style={styles.headerTop}>
-          <Text style={styles.headerTitle}>
+        <View style={[rowLayout.row, styles.headerTop]}>
+          <Text style={[styles.headerTitle, flexShrinkText]} numberOfLines={1}>
             {t("orders.activeFloat.activeOrdersTitle", "Active Orders")}
           </Text>
           <View style={styles.countPill}>
-            <Text style={styles.countPillText}>{orders.length}</Text>
+            <Text style={styles.countPillText} numberOfLines={1}>
+              {orders.length}
+            </Text>
           </View>
         </View>
-        <Text style={styles.headerSub}>
+        <Text style={[styles.headerSub, flexShrinkText]} numberOfLines={2}>
           {t("orders.activeFloat.activeOrdersHint", "Choose an order to start navigation")}
         </Text>
       </View>
 
       <ScrollView
-        style={styles.list}
+        style={[styles.list, { maxHeight: listMaxH }]}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
+        bounces={false}
+        keyboardShouldPersistTaps="handled"
       >
         {sortedOrders.map((order) => (
           <ActiveOrderPickerCard
@@ -290,11 +305,11 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.gray[100],
   },
   headerTop: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
+    gap: 8,
   },
   headerTitle: {
+    flex: 1,
     fontSize: 18,
     fontWeight: "800",
     color: colors.gray[900],
@@ -310,6 +325,7 @@ const styles = StyleSheet.create({
     borderColor: colors.primary[100],
     alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
   },
   countPillText: {
     fontSize: 12,
@@ -322,7 +338,11 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     color: colors.gray[500],
   },
-  list: { maxHeight: 400 },
+  list: {
+    flexGrow: 0,
+    flexShrink: 1,
+    minHeight: 0,
+  },
   listContent: {
     paddingHorizontal: 14,
     paddingTop: 12,
@@ -398,19 +418,14 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   headCopy: {
-    flex: 1,
-    minWidth: 0,
     paddingRight: 52,
   },
   idRow: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
     gap: 8,
   },
   tripId: {
     flex: 1,
-    minWidth: 0,
     fontSize: 16,
     fontWeight: "800",
     color: colors.gray[900],
@@ -419,7 +434,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "800",
     color: colors.primary[700],
-    flexShrink: 0,
   },
   merchant: {
     marginTop: 2,
@@ -454,10 +468,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexShrink: 0,
   },
-  statTextWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
+  statTextWrap: {},
   statLabel: {
     fontSize: 9,
     fontWeight: "800",
@@ -490,9 +501,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginLeft: 4,
+    flexShrink: 0,
   },
   navBtnText: {
     flex: 1,
+    minWidth: 0,
     textAlign: "center",
     fontSize: 14,
     fontWeight: "800",
@@ -507,6 +520,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginRight: 4,
+    flexShrink: 0,
   },
   navBtnPressed: {
     opacity: 0.9,

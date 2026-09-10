@@ -98,7 +98,7 @@ module.exports = ({ config }) => ({
         {
           title: "Reconnect to receive orders",
           body: "Your device was restarted. Open the app to resume order notifications.",
-          channelId: "merchant_store_status",
+          channelId: "merchant_store_status_v2",
           channelName: "Store status",
           notificationId: 91001,
         },
@@ -132,7 +132,13 @@ module.exports = ({ config }) => ({
             { id: "merchant_order_lifecycle", name: "Order updates", importance: 5 },
             { id: "merchant_default", name: "Store & Orders", importance: 4 },
             { id: "merchant_online", name: "Store online status", importance: 3 },
-            { id: "merchant_store_status", name: "Store status", importance: 3 },
+            {
+              id: "merchant_store_status_v2",
+              name: "Store status",
+              importance: 4,
+            },
+            // Legacy quiet channel — keep registered so old FCM payloads still resolve.
+            { id: "merchant_store_status", name: "Store status (legacy)", importance: 3 },
             { id: "default", name: "Store & Orders", importance: 4 },
           ],
         },

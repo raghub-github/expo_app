@@ -6,15 +6,16 @@ import {
   Modal,
   Pressable,
   Platform,
-  ScrollView,
   TextInput,
   KeyboardAvoidingView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors } from "@/src/theme";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 const SUBMIT_GREEN = colors.success[500];
 const SKIP_PINK = "#E85D75";
@@ -76,13 +77,14 @@ export function CustomerFeedbackBottomSheet({
   onSubmit,
 }: Props) {
   const { t } = useTranslation();
-  const insets = useSafeAreaInsets();
+  const { height, isShortHeight, insets, rs } = useResponsiveLayout();
   const [rating, setRating] = useState<number | null>(4);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [comment, setComment] = useState("");
 
   const availableTags = useMemo(() => tagsForRating(rating), [rating]);
-  const bottomPad = resolveRiderBottomInset(insets.bottom) + 12;
+  const bottomPad = resolveRiderBottomInset(insets.bottom) + rs(12);
+  const bodyMaxH = Math.round(height * (isShortHeight ? 0.82 : 0.76));
 
   useEffect(() => {
     if (!visible) return;
@@ -118,42 +120,73 @@ export function CustomerFeedbackBottomSheet({
       >
         <View style={styles.backdrop} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />
 
-        <View style={[styles.sheet, { paddingBottom: bottomPad }]}>
-          <View style={styles.header}>
-            <Text style={styles.title}>
+        <View style={[styles.sheet, { maxHeight: Math.round(height * 0.92) }]}>
+          <View style={[rowLayout.row, styles.header]}>
+            <Text style={[styles.title, flexShrinkText]} numberOfLines={2}>
               {t("orders.activeFood.customerFeedbackTitle", "Customer Feedback")}
             </Text>
             <Pressable
               onPress={onSkip}
               disabled={loading}
               hitSlop={12}
+              style={rowLayout.noShrink}
               accessibilityRole="button"
               accessibilityLabel={t("orders.activeFood.feedbackSkip", "Skip")}
             >
-              <Text style={styles.skipText}>{t("orders.activeFood.feedbackSkip", "Skip")}</Text>
+              <Text style={styles.skipText} numberOfLines={1}>
+                {t("orders.activeFood.feedbackSkip", "Skip")}
+              </Text>
             </Pressable>
           </View>
 
-          <ScrollView
-            style={styles.scroll}
+          <ResponsiveSheetBody
+            maxHeight={bodyMaxH}
             contentContainerStyle={styles.scrollContent}
-            showsVerticalScrollIndicator={false}
-            bounces={false}
-            keyboardShouldPersistTaps="handled"
+            footerStyle={styles.footerSlot}
+            footerBottomInset={bottomPad}
+            footer={
+              <Pressable
+                onPress={() => {
+                  if (!canSubmit || rating == null) return;
+                  const trimmedComment = comment.trim();
+                  const messages = selectedTags.map((id) => {
+                    const tag = availableTags.find((item) => item.id === id);
+                    return tag ? t(tag.labelKey, tag.fallback) : id;
+                  });
+                  if (trimmedComment) messages.push(trimmedComment);
+                  onSubmit({
+                    rating,
+                    tags: selectedTags,
+                    messages,
+                    comment: trimmedComment || undefined,
+                  });
+                }}
+                disabled={!canSubmit}
+                style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
+                accessibilityRole="button"
+                accessibilityLabel={t("orders.activeFood.feedbackSubmit", "Submit")}
+              >
+                <Text style={styles.submitText} numberOfLines={1}>
+                  {loading
+                    ? t("orders.activeFood.feedbackSubmitting", "Submitting…")
+                    : t("orders.activeFood.feedbackSubmit", "Submit")}
+                </Text>
+              </Pressable>
+            }
           >
-            <Text style={styles.lead}>
+            <Text style={[styles.lead, flexShrinkText]} numberOfLines={2}>
               {t("orders.activeFood.customerFeedbackLead", "You just delivered an order")}
             </Text>
 
-            <View style={styles.orderRow}>
-              <View style={styles.orderIcon}>
+            <View style={[rowLayout.rowStart, styles.orderRow]}>
+              <View style={[styles.orderIcon, rowLayout.noShrink]}>
                 <Ionicons name="home" size={22} color="#fff" />
               </View>
-              <View style={styles.orderTextCol}>
-                <Text style={styles.orderIdLine}>
+              <View style={[styles.orderTextCol, rowLayout.grow]}>
+                <Text style={[styles.orderIdLine, flexShrinkText]} numberOfLines={1}>
                   {t("orders.activeFood.orderIdLabel", "Order ID")}: {orderIdLabel}
                 </Text>
-                <Text style={styles.customerName} numberOfLines={2}>
+                <Text style={[styles.customerName, flexShrinkText]} numberOfLines={2}>
                   {customerName}
                 </Text>
               </View>
@@ -161,14 +194,14 @@ export function CustomerFeedbackBottomSheet({
 
             <View style={styles.divider} />
 
-            <Text style={styles.sectionLabel}>
+            <Text style={[styles.sectionLabel, flexShrinkText]} numberOfLines={3}>
               {t(
                 "orders.activeFood.customerRatingPrompt",
                 "Please rate your experience with the customer"
               )}
             </Text>
 
-            <View style={styles.emojiRow}>
+            <View style={[rowLayout.row, styles.emojiRow]}>
               {RATING_EMOJIS.map((emoji, index) => {
                 const value = index + 1;
                 const selected = rating === value;
@@ -187,7 +220,7 @@ export function CustomerFeedbackBottomSheet({
               })}
             </View>
 
-            <Text style={styles.sectionLabel}>
+            <Text style={[styles.sectionLabel, flexShrinkText]} numberOfLines={2}>
               {t("orders.activeFood.customerFeedbackImprove", "Tell us more so we can improve")}
             </Text>
 
@@ -201,7 +234,10 @@ export function CustomerFeedbackBottomSheet({
                     disabled={loading}
                     style={[styles.tagPill, active && styles.tagPillActive]}
                   >
-                    <Text style={[styles.tagText, active && styles.tagTextActive]}>
+                    <Text
+                      style={[styles.tagText, active && styles.tagTextActive, flexShrinkText]}
+                      numberOfLines={2}
+                    >
                       {t(tag.labelKey, tag.fallback)}
                     </Text>
                   </Pressable>
@@ -223,35 +259,7 @@ export function CustomerFeedbackBottomSheet({
               textAlignVertical="top"
               editable={!loading}
             />
-          </ScrollView>
-
-          <Pressable
-            onPress={() => {
-              if (!canSubmit || rating == null) return;
-              const trimmedComment = comment.trim();
-              const messages = selectedTags.map((id) => {
-                const tag = availableTags.find((item) => item.id === id);
-                return tag ? t(tag.labelKey, tag.fallback) : id;
-              });
-              if (trimmedComment) messages.push(trimmedComment);
-              onSubmit({
-                rating,
-                tags: selectedTags,
-                messages,
-                comment: trimmedComment || undefined,
-              });
-            }}
-            disabled={!canSubmit}
-            style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
-            accessibilityRole="button"
-            accessibilityLabel={t("orders.activeFood.feedbackSubmit", "Submit")}
-          >
-            <Text style={styles.submitText}>
-              {loading
-                ? t("orders.activeFood.feedbackSubmitting", "Submitting…")
-                : t("orders.activeFood.feedbackSubmit", "Submit")}
-            </Text>
-          </Pressable>
+          </ResponsiveSheetBody>
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -271,33 +279,39 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: "92%",
     paddingTop: 20,
-    paddingHorizontal: 20,
+    overflow: "hidden",
+    flexShrink: 1,
+    minHeight: 0,
+    width: "100%",
   },
   header: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 16,
+    marginBottom: 8,
+    paddingHorizontal: 20,
+    gap: 12,
+    maxWidth: "100%",
   },
   title: {
     fontSize: 20,
     fontWeight: "700",
     color: "#111827",
     flex: 1,
-    paddingRight: 12,
+    minWidth: 0,
   },
   skipText: {
     fontSize: 16,
     fontWeight: "600",
     color: SKIP_PINK,
   },
-  scroll: {
-    flexGrow: 0,
-  },
   scrollContent: {
     paddingBottom: 8,
+    paddingHorizontal: 4,
+  },
+  footerSlot: {
+    borderTopWidth: 0,
+    backgroundColor: "transparent",
+    paddingHorizontal: 4,
   },
   lead: {
     fontSize: 15,
@@ -305,10 +319,9 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   orderRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
     gap: 12,
     marginBottom: 16,
+    maxWidth: "100%",
   },
   orderIcon: {
     width: 44,
@@ -344,14 +357,17 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   emojiRow: {
-    flexDirection: "row",
     justifyContent: "space-between",
     marginBottom: 22,
     gap: 8,
+    maxWidth: "100%",
   },
   emojiBtn: {
-    width: 52,
-    height: 52,
+    flex: 1,
+    minWidth: 0,
+    aspectRatio: 1,
+    maxWidth: 52,
+    maxHeight: 52,
     borderRadius: 26,
     borderWidth: 2,
     borderColor: "#E5E7EB",
@@ -371,6 +387,7 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 10,
     marginBottom: 14,
+    maxWidth: "100%",
   },
   tagPill: {
     borderWidth: 1.5,
@@ -379,6 +396,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     backgroundColor: "#fff",
+    maxWidth: "100%",
   },
   tagPillActive: {
     borderColor: SUBMIT_GREEN,
@@ -403,13 +421,15 @@ const styles = StyleSheet.create({
     color: "#111827",
     backgroundColor: "#F9FAFB",
     marginBottom: 8,
+    maxWidth: "100%",
   },
   submitBtn: {
-    marginTop: 8,
+    marginTop: 4,
     marginBottom: 4,
     backgroundColor: SUBMIT_GREEN,
     borderRadius: 14,
     paddingVertical: 16,
+    paddingHorizontal: 12,
     alignItems: "center",
     justifyContent: "center",
   },

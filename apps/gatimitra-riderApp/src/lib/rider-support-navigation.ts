@@ -9,6 +9,13 @@ export const ACCOUNT_RESTRICTED_DUTY_LOG_SUPPORT = {
   issueTitle: "Account Restricted State Affecting Duty Logs",
 } as const;
 
+/** PAN / KYC mismatch → onboarding issue compose (skip category + topic pickers). */
+export const ONBOARDING_ISSUE_SUPPORT = {
+  groupCode: "gatimnitra_non_order_foods",
+  titleCode: "ONBOARDING_ISSUE",
+  issueTitle: "onboarding issue",
+} as const;
+
 /** Red Account Restricted banner → ticket compose (skip category + topic pickers). */
 export function openAccountRestrictedSupportTicket(): void {
   router.push({
@@ -17,6 +24,26 @@ export function openAccountRestrictedSupportTicket(): void {
       issue_title: ACCOUNT_RESTRICTED_DUTY_LOG_SUPPORT.issueTitle,
       section_code: ACCOUNT_RESTRICTED_DUTY_LOG_SUPPORT.groupCode,
       title_code: ACCOUNT_RESTRICTED_DUTY_LOG_SUPPORT.titleCode,
+    },
+  });
+}
+
+/** PAN name mismatch / KYC help → onboarding issue ticket form directly. */
+export function openOnboardingIssueSupportTicket(options?: {
+  prefillHint?: string;
+}): void {
+  router.push({
+    pathname: "/raise-ticket-chat",
+    params: {
+      issue_title: ONBOARDING_ISSUE_SUPPORT.issueTitle,
+      section_code: ONBOARDING_ISSUE_SUPPORT.groupCode,
+      title_code: ONBOARDING_ISSUE_SUPPORT.titleCode,
+      ...(options?.prefillHint
+        ? { prefill_description: options.prefillHint }
+        : {
+            prefill_description:
+              "My PAN name does not match my Aadhaar name. Please help me complete KYC.",
+          }),
     },
   });
 }

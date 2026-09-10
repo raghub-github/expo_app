@@ -145,5 +145,7 @@ const styles = StyleSheet.create({
     marginTop: -(WAVE_HEIGHT - WAVE_SIDE_Y),
     overflow: "hidden",
     flexShrink: 1,
+    minHeight: 0,
+    maxWidth: "100%",
   },
 });

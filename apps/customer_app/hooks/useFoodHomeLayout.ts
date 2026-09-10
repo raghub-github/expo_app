@@ -21,7 +21,7 @@ import {
   FOOD_HOME_LAYOUT_STALE_MS,
   getSyncFoodHomeLayoutFromQueryClient,
   hydrateFoodHomeLayoutForHints,
-  readCachedFoodHomeLayout,
+  readSyncFoodHomeLayout,
 } from "@/lib/foodHomeLayoutCache";
 import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
@@ -52,7 +52,10 @@ export function useFoodHomeLayout(
   const canQuery = !!(hints.pincode || hints.state || (hints.lat != null && hints.lng != null));
   const queryKey = useMemo(() => buildFoodHomeLayoutQueryKey(hints), [hints]);
 
-  const syncCached = canQuery ? getSyncFoodHomeLayoutFromQueryClient(queryClient, hints) : undefined;
+  const syncCached = canQuery
+    ? (getSyncFoodHomeLayoutFromQueryClient(queryClient, hints) ??
+      readSyncFoodHomeLayout(hints))
+    : undefined;
   const [bootLayout, setBootLayout] = useState<FoodHomeLayoutResult | undefined>(() => syncCached);
 
   useLayoutEffect(() => {
@@ -60,22 +63,14 @@ export function useFoodHomeLayout(
       setBootLayout(undefined);
       return;
     }
-    const memoryHit = getSyncFoodHomeLayoutFromQueryClient(queryClient, hints);
+    const memoryHit =
+      getSyncFoodHomeLayoutFromQueryClient(queryClient, hints) ?? readSyncFoodHomeLayout(hints);
     if (memoryHit?.layoutKey) {
       setBootLayout(memoryHit);
-      return;
+      queryClient.setQueryData(queryKey, (prev) => prev ?? memoryHit);
+      prefetchGridFirstHeroMedia(memoryHit.gridFirstHeroMedia);
+      prefetchMealsUnder250HeroMedia(memoryHit);
     }
-    let cancelled = false;
-    void readCachedFoodHomeLayout(hints).then((cached) => {
-      if (cancelled || !cached?.layoutKey) return;
-      setBootLayout(cached);
-      queryClient.setQueryData(queryKey, (prev) => prev ?? cached);
-      prefetchGridFirstHeroMedia(cached.gridFirstHeroMedia);
-      prefetchMealsUnder250HeroMedia(cached);
-    });
-    return () => {
-      cancelled = true;
-    };
   }, [canQuery, hints, queryClient, queryKey]);
 
   useEffect(() => {

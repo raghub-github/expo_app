@@ -53,7 +53,7 @@ export {
 };
 export type { LocationPermissionStatus, DeviceLocationReadiness };
 
-const GEOCODE_MS = 10_000;
+const GEOCODE_MS = 2_000;
 const STORAGE_KEY = "@gatimitra/last_selected_location_v1";
 /** Toggle verbose location logging for field debugging (raw coords, accuracy, PIN). */
 const LOCATION_DEBUG = __DEV__;
@@ -96,11 +96,11 @@ async function geocodeOrFallback(longitude: number, latitude: number): Promise<R
     }
     return result;
   } catch {
-    const coords = `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+    // Never put raw lat,lng into customer-facing address fields.
     return {
       primary: "Current location",
-      secondary: coords,
-      fullAddress: coords,
+      secondary: "",
+      fullAddress: "Current location",
       city: null,
       state: null,
       pincode: null,
@@ -198,7 +198,8 @@ function commitDeviceFix(fix: DeviceFix, opts: { refining: boolean }): void {
     if (addrToken !== addressCommitSeq) return; // superseded by a newer fix
     if (useLocationStore.getState().locationSource === "selected") return;
     logMetric("reverse_geocode_ms", Date.now() - geoT0);
-    useLocationStore.setState({ address });
+    // Address is the user-visible signal — stop the "Updating…" hint even if GPS refine continues.
+    useLocationStore.setState({ address, refining: false });
     saveLastKnownLocation({
       lat: fix.latitude,
       lon: fix.longitude,
@@ -231,10 +232,19 @@ function hasFreshUsableCurrentCoords(): boolean {
 
 /** Phase-2 accurate refine — never awaited by progressiveDeviceFetch callers. */
 function scheduleAccurateDeviceRefine(seq: number, t0: number): void {
-  useLocationStore.setState({ refining: true });
+  // Do not flip refining=true here — that kept "Updating location…" on after the
+  // address already painted. Fast commit owns refining until reverse-geocode lands.
   void (async () => {
     try {
-      const best = await getBestEffortPosition({ log: logLocation });
+      const best = await getBestEffortPosition({
+        log: logLocation,
+        // Customer home only needs a usable refine — don't burn 9–14s on Highest polls.
+        attemptTimeoutMs: 7_000,
+        stableWaitMs: 5_000,
+        maxAttempts: 2,
+        acceptableAccuracyM: 45,
+        repollGapMs: 400,
+      });
       if (seq !== locationFetchSeq) return;
       logMetric("accurate_location_fix_ms", Date.now() - t0);
       const next: DeviceFix = {
@@ -297,9 +307,14 @@ async function runProgressiveDeviceFetch(): Promise<boolean> {
 
   let committedAny = false;
 
-  // Phase 1 — fast, usable fix (OS last-known → quick balanced).
+  // Phase 1 — fast, usable fix (OS last-known → raced Balanced/Low).
   try {
-    const fast = await getFastPosition({ log: logLocation });
+    const fast = await getFastPosition({
+      log: logLocation,
+      // Prefer a slightly older OS cache over waiting on GPS warm-up.
+      lastKnownMaxAgeMs: 600_000,
+      quickTimeoutMs: 2_000,
+    });
     if (seq !== locationFetchSeq) return committedAny;
     logMetric(
       fast.source === "last-known" ? "last_known_location_ms" : "first_location_fix_ms",

@@ -16,6 +16,7 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useCallback, useRef, useState } from "react";
 import {
   View,
+  StyleSheet,
   LogBox,
   Alert,
   AppState,
@@ -52,6 +53,7 @@ import { CustomerServiceBlockSheetHost } from "@/components/CustomerServiceBlock
 import { CustomerServiceBlocksSync } from "@/components/CustomerServiceBlocksSync";
 import { useSmsPermissionStore } from "@/store/smsPermissionStore";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
+import { AbandonedCartReminderBootstrap } from "@/components/AbandonedCartReminderBootstrap";
 import { MerchantNavTransitionShutter } from "@/components/MerchantNavTransitionShutter";
 import { CheckoutBottomSheetHost } from "@/components/checkout/CheckoutBottomSheetHost";
 import { CheckoutPaymentFailureHost } from "@/components/checkout/CheckoutPaymentFailedSheet";
@@ -99,6 +101,8 @@ import {
   getSmsPermissionGranted,
 } from "@/lib/device-permissions";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
+import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
 import { colors } from "@/theme";
 import { resolveTopSafeInset, DEFAULT_STATUS_BAR_HEIGHT, DEFAULT_ANDROID_NAV_BOTTOM_INSET } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
@@ -426,21 +430,24 @@ export default function RootLayout() {
                 <NavigatorWithRecovery>
                   <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
                 </NavigatorWithRecovery>
-                {/* Overlay hosts: a throw here must not blank the navigator behind them. */}
+                {/* Overlay hosts: a throw here must not blank the navigator behind them.
+                    absoluteFill host so floating cart / edge peeks have a real window box. */}
                 <AppErrorBoundary source="overlay-hosts" fallback={() => null}>
-                  <CheckoutBottomSheetHost />
-                  <CheckoutPaymentFailureHost />
-                  <CartCheckoutGateHost />
-                  <CartUpdatedModal />
-                  <GlobalFloatingCart />
-                  <CustomerPermissionSheetsHost />
-                  <ServiceBlockedGateHost />
-                  <CustomerAccountBlockedGateHost />
-                  <CustomerServiceBlockSheetHost />
-                  <LiveOrderProgressNotification />
-                  <LegalConsentGate />
-                  {/* Absolute shutter over home — no Modal fade; drops when store page is ready */}
-                  <MerchantNavTransitionShutter />
+                  <View pointerEvents="box-none" style={StyleSheet.absoluteFillObject}>
+                    <CheckoutBottomSheetHost />
+                    <CheckoutPaymentFailureHost />
+                    <CartCheckoutGateHost />
+                    <CartUpdatedModal />
+                    <GlobalFloatingCart />
+                    <CustomerPermissionSheetsHost />
+                    <ServiceBlockedGateHost />
+                    <CustomerAccountBlockedGateHost />
+                    <CustomerServiceBlockSheetHost />
+                    <LiveOrderProgressNotification />
+                    <LegalConsentGate />
+                    {/* Absolute shutter over home — no Modal fade; drops when store page is ready */}
+                    <MerchantNavTransitionShutter />
+                  </View>
                 </AppErrorBoundary>
                 {/* Above navigator content so mint paints in the system-nav inset (tab bar
                     already draws this on main Home; Food / merchant pages need this layer). */}
@@ -448,6 +455,7 @@ export default function RootLayout() {
                 {/* Fire-and-forget prefetch/bootstrap — never user-visible. */}
                 <AppErrorBoundary source="prefetch" fallback={() => null}>
                   <PushNotificationBootstrap />
+                  <AbandonedCartReminderBootstrap />
                   <PlayInAppUpdateBootstrap />
                   <AddressesPrefetch />
                   <FeaturedOffersPrefetch />
@@ -931,11 +939,21 @@ function RootStack({
 }) {
   const insets = useSafeAreaInsets();
   const segments = useSegments();
+  const discoveryLayout = useDiscoveryLayout();
   const inAuthStack = segments[0] === "(auth)";
   const inProfileStack = segments[0] === "profile";
   const inLegalStack = segments[0] === "legal";
   const inCheckoutStack = segments[0] === "checkout";
   const inOrdersStack = segments[0] === "orders";
+  const inTabsHome =
+    segments[0] === "(tabs)" &&
+    (segments[1] == null || segments[1] === "" || segments[1] === "index");
+  /** All main tabs self-pad — root spacer must stay off or Home↔Orders/Profile jerks vertically. */
+  const inTabs = segments[0] === "(tabs)";
+  const inDiscoveryFood =
+    discoveryLayout &&
+    ((segments[0] === "(tabs)" && segments[1] === "food") ||
+      (segments[0] === "home" && (segments[1] == null || segments[1] === "index")));
   const statusBarHeight =
     inProfileStack || inLegalStack || inCheckoutStack || inOrdersStack
       ? 0
@@ -944,9 +962,19 @@ function RootStack({
   const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
   const bootstrapActive = useScreenChromeStore((s) => s.bootstrapActive);
   const splashChromeActive = splashActive || bootstrapActive;
-  const immersiveStatusBar = hideStatusBarSpacer || splashChromeActive;
+  // Tabs Home always self-pads — never stack root spacer + header inset (large white gap).
+  // All (tabs) screens share the same immersive top chrome so tab switches don't reflow height.
+  const immersiveStatusBar =
+    hideStatusBarSpacer || splashChromeActive || inTabsHome || inTabs;
   const effectiveStatusBarHeight =
-    inProfileStack || inLegalStack || inCheckoutStack || inOrdersStack || hideStatusBarSpacer || splashChromeActive
+    inProfileStack ||
+    inLegalStack ||
+    inCheckoutStack ||
+    inOrdersStack ||
+    hideStatusBarSpacer ||
+    splashChromeActive ||
+    inTabsHome ||
+    inTabs
       ? 0
       : statusBarHeight;
   // Never pad the stack for Android/iOS system nav — that created a white gap row
@@ -954,7 +982,9 @@ function RootStack({
   const AUTH_CHROME = "#F0F4F3";
   const resolvedStatusBarBackground = splashChromeActive
     ? SPLASH_CHROME_COLOR
-    : inAuthStack
+    : inDiscoveryFood
+      ? DiscoveryColors.bg
+      : inAuthStack
       ? AUTH_CHROME
       : immersiveStatusBar && statusBarBackground === "transparent"
       ? "transparent"
@@ -963,16 +993,18 @@ function RootStack({
         : statusBarBackground;
   // Derive the icon style from the ACTUAL bar background so icons can never be
   // invisible (e.g. a screen that leaves "light" icons on a white bar). Splash keeps
-  // its light icons over the mint chrome.
+  // its light icons over the mint chrome. Discovery Food always forces white icons.
   const barBgForContrast =
     resolvedStatusBarBackground === "transparent"
       ? GatiMitraColors.softBackground
       : resolvedStatusBarBackground;
   const resolvedStatusBarStyle = splashChromeActive
     ? "light"
-    : isLightBarColor(barBgForContrast)
-      ? "dark"
-      : "light";
+    : inDiscoveryFood
+      ? "light"
+      : isLightBarColor(barBgForContrast)
+        ? "dark"
+        : "light";
 
   useEffect(() => {
     if (!splashChromeActive) return;
@@ -984,6 +1016,16 @@ function RootStack({
       NativeStatusBar.setBarStyle("light-content", true);
     }
   }, [splashChromeActive]);
+
+  useEffect(() => {
+    if (!inDiscoveryFood || splashChromeActive) return;
+    NativeStatusBar.setHidden(false, "none");
+    NativeStatusBar.setBarStyle("light-content", true);
+    if (Platform.OS === "android") {
+      NativeStatusBar.setTranslucent(true);
+      NativeStatusBar.setBackgroundColor(DiscoveryColors.bg, true);
+    }
+  }, [inDiscoveryFood, splashChromeActive]);
 
   return (
     <>

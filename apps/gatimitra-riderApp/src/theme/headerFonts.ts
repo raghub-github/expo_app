@@ -15,13 +15,14 @@ export const HEADER_BADGE_RADIUS = 12;
 /** Shared edge inset — duty toggle left ↔ lang/bell group right. */
 export const HEADER_EDGE_INSET = 16;
 
-/** Fixed duty pill width — keeps first paint / later paint identical. */
+/** Fixed duty pill width — keeps first paint / later paint identical.
+ * Prefer DutyToggle's responsive width (scales from this base). */
 export const HEADER_DUTY_PILL_WIDTH = 108;
 
-/** Services chip: fixed box so "All Services" → "Food, Person" does not reflow the row. */
+/** Services chip base width — RiderServiceTypeDropdown scales from this. */
 export const HEADER_SERVICES_WIDTH = 108;
 
-/** MAX badge slot — reserved even while subscription status loads. */
+/** MAX badge slot base — HeaderTrailingActions scales on compact widths. */
 export const HEADER_MAX_SLOT_WIDTH = 64;
 
 /**

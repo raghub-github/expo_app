@@ -3,8 +3,10 @@ import { validateCoords, withTimeout } from "./coords";
 import type { FastPosition, FastPositionOptions } from "./types";
 
 const DEFAULTS = {
-  lastKnownMaxAgeMs: 120_000,
-  quickTimeoutMs: 4_000,
+  /** Prefer OS cache longer so cold start paints without waiting on GPS warm-up. */
+  lastKnownMaxAgeMs: 300_000,
+  /** Bound live GPS so UI never waits multi-second sequential Balanced→Low. */
+  quickTimeoutMs: 2_200,
 } as const;
 
 /**
@@ -15,8 +17,7 @@ const DEFAULTS = {
  * background. Order of preference:
  *
  *   1. OS last-known position (near-instant) when fresh enough — no GPS warm-up.
- *   2. One quick `Balanced` live fix (short timeout) — network/fused, seconds not tens of seconds.
- *   3. One quick `Low` live fix — coarse but fast, last resort before giving up.
+ *   2. Race `Balanced` + `Low` live fixes (short timeout) — first usable wins.
  *
  * This never polls for `Highest` accuracy and never blocks on a stable fix. Callers
  * should follow it with `getBestEffortPosition` (or the shared watcher) to refine.
@@ -50,14 +51,15 @@ export async function getFastPosition(
     // fall through to a live quick fix
   }
 
-  // 2) Quick Balanced live fix — bounded so we never wait tens of seconds.
-  try {
-    const loc = await withTimeout(
-      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
-      quickTimeoutMs
-    );
-    const v = validateCoords(loc);
-    if (v) {
+  // 2) Race Balanced + Low — first usable fix wins (avoids sequential 2× timeout wait).
+  const liveRace: Array<Promise<FastPosition>> = [
+    (async (): Promise<FastPosition> => {
+      const loc = await withTimeout(
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+        quickTimeoutMs
+      );
+      const v = validateCoords(loc);
+      if (!v) throw new Error("invalid balanced fix");
       log?.("fast-balanced", {
         latitude: v.latitude,
         longitude: v.longitude,
@@ -68,19 +70,14 @@ export async function getFastPosition(
         source: "balanced",
         timestampMs: typeof loc?.timestamp === "number" ? loc.timestamp : Date.now(),
       };
-    }
-  } catch {
-    // fall through to a coarse Low fix
-  }
-
-  // 3) Coarse Low live fix — fast, network-assisted, last resort.
-  try {
-    const loc = await withTimeout(
-      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }),
-      quickTimeoutMs
-    );
-    const v = validateCoords(loc);
-    if (v) {
+    })(),
+    (async (): Promise<FastPosition> => {
+      const loc = await withTimeout(
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }),
+        quickTimeoutMs
+      );
+      const v = validateCoords(loc);
+      if (!v) throw new Error("invalid low fix");
       log?.("fast-low", {
         latitude: v.latitude,
         longitude: v.longitude,
@@ -91,10 +88,12 @@ export async function getFastPosition(
         source: "low",
         timestampMs: typeof loc?.timestamp === "number" ? loc.timestamp : Date.now(),
       };
-    }
-  } catch {
-    // give up below
-  }
+    })(),
+  ];
 
-  throw new Error("Could not get a fast device location");
+  try {
+    return await Promise.any(liveRace);
+  } catch {
+    throw new Error("Could not get a fast device location");
+  }
 }

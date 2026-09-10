@@ -7,7 +7,9 @@ function store(overrides: Partial<NearbyStore> = {}): NearbyStore {
 }
 
 test("nearbyStoresToGeoJson emits [lng,lat] point features with id/name/isOpen", () => {
-  const fc = nearbyStoresToGeoJson([store({ id: "a", name: "A", lat: 22.5, lng: 88.3, isOpen: true })]);
+  const fc = nearbyStoresToGeoJson([
+    store({ id: "a", name: "A", lat: 22.5, lng: 88.3, isOpen: true, bannerUrl: "https://cdn/x.jpg" }),
+  ]);
   assert.equal(fc.type, "FeatureCollection");
   assert.equal(fc.features.length, 1);
   const f = fc.features[0]!;
@@ -15,6 +17,7 @@ test("nearbyStoresToGeoJson emits [lng,lat] point features with id/name/isOpen",
   assert.deepEqual(f.geometry.coordinates, [88.3, 22.5]); // lng,lat order for Mapbox
   assert.equal(f.properties.name, "A");
   assert.equal(f.properties.isOpen, true);
+  assert.equal(f.properties.hasBanner, true);
 });
 
 test("drops stores with non-finite coordinates", () => {

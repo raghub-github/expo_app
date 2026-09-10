@@ -1,12 +1,11 @@
 /**
- * GMitra Plus membership — profile & promo bottom sheet (active benefits or join pitch).
+ * GMitra Plus membership bottom sheet — GatiMitra-branded renew / active promo.
+ * Layout mirrors a centered membership card (eyebrow → crown → title → CTA).
  */
 
 import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import { AppText } from "@/components/AppText";
-
-import { LinearGradient } from "expo-linear-gradient";
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
+import { MaterialCommunityIcons, Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -34,190 +33,241 @@ export type GmitraPlusMembershipSheetProps = {
   visible: boolean;
   onClose: () => void;
   active: boolean;
+  /** True when user had Plus before and it lapsed (vs never joined). */
+  expired?: boolean;
   planName: string;
   benefits: string[];
   freeDeliveryNote?: string | null;
   expiryCountdown?: string | null;
   description?: string | null;
+  /** e.g. "for 3 months at ₹99" under the primary CTA. */
+  ctaSubtitle?: string | null;
+  /** Headline price line when joining/renewing, e.g. "₹99". */
+  highlightPrice?: string | null;
   onBrowseRestaurants?: () => void;
+  onRenew?: () => void;
 };
 
 export function GmitraPlusMembershipSheet({
   visible,
   onClose,
   active,
+  expired = false,
   planName,
   benefits,
   freeDeliveryNote,
   expiryCountdown,
   description,
+  ctaSubtitle,
+  highlightPrice,
   onBrowseRestaurants,
+  onRenew,
 }: GmitraPlusMembershipSheetProps) {
   const insets = useSafeAreaInsets();
+  const displayName = planName?.trim() || "GMitra Plus";
   const benefitLines =
     benefits.length > 0
       ? benefits
-      : active
-        ? ["Member perks apply automatically on eligible orders."]
-        : [
-            "Save on delivery fees",
-            "Exclusive member-only offers",
-            "Priority support on orders",
-          ];
+      : [
+          "Unlimited free deliveries on eligible orders",
+          "Exclusive member-only offers",
+          "Priority support when you need it",
+        ];
+
+  const eyebrow = active
+    ? "GMITRA PLUS"
+    : expired
+      ? "MEMBERSHIP EXPIRED"
+      : "GMITRA PLUS";
+
+  const title = active
+    ? `${displayName} is active`
+    : expired
+      ? highlightPrice
+        ? `Renew ${displayName} at just ${highlightPrice}`
+        : `Renew ${displayName}`
+      : highlightPrice
+        ? `Get ${displayName} at just ${highlightPrice}`
+        : `Join ${displayName}`;
+
+  const body =
+    description?.trim() ||
+    (active
+      ? expiryCountdown
+        ? `${expiryCountdown}. Perks apply automatically on every eligible order.`
+        : "Your membership perks apply automatically on every eligible order — no coupon needed."
+      : expired
+        ? "Renew now to enjoy unlimited free deliveries and other GatiMitra member benefits."
+        : `Unlock free deliveries and member-only offers with ${displayName} on GatiMitra.`);
+
+  const primaryLabel = active ? "Got it" : expired ? "Renew now" : "Join now";
+  const primarySub =
+    active
+      ? null
+      : ctaSubtitle?.trim() ||
+        (highlightPrice ? `Save on every eligible order` : null);
+
+  const handlePrimary = () => {
+    if (active) {
+      onClose();
+      return;
+    }
+    onClose();
+    if (expired && onRenew) {
+      onRenew();
+      return;
+    }
+    onBrowseRestaurants?.();
+  };
 
   return (
-    <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.82} flushBottom>
-      <LinearGradient
-        colors={active ? ["#FEF3C7", "#FFFBEB", "#FFFFFF"] : ["#ECFDF5", "#F0FDF4", "#FFFFFF"]}
-        locations={[0, 0.35, 1]}
-        style={styles.heroGradient}
-      >
-        <View style={styles.handle} />
-        <View style={styles.heroRow}>
-          <View style={[styles.crownRing, active && styles.crownRingActive]}>
-            <MaterialCommunityIcons name="crown" size={28} color={active ? GOLD_DARK : MINT_DARK} />
-          </View>
-          <View style={styles.heroCopy}>
-            <View style={styles.titleRow}>
-              <AppText style={styles.planTitle}>{planName}</AppText>
-              {active ? (
-                <View style={styles.activePill}>
-                  <View style={styles.activeDot} />
-                  <AppText style={styles.activePillText}>Active</AppText>
-                </View>
-              ) : null}
-            </View>
-            <AppText style={styles.heroSubtitle}>
-              {active
-                ? expiryCountdown
-                  ? `${expiryCountdown}. Perks apply on every eligible order.`
-                  : "Your membership perks are live on every eligible order."
-                : `Unlock delivery savings and member-only offers with ${planName}.`}
-            </AppText>
-          </View>
+    <StoreBottomSheetShell visible={visible} onClose={onClose} maxHeightRatio={0.78} flushBottom>
+      <View style={styles.body}>
+        <AppText style={styles.eyebrow}>{eyebrow}</AppText>
+
+        <View style={[styles.crownWrap, active && styles.crownWrapActive]}>
+          <MaterialCommunityIcons
+            name="crown"
+            size={36}
+            color={active || expired ? GOLD_DARK : MINT_DARK}
+          />
         </View>
-      </LinearGradient>
 
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        {!active && description ? <AppText style={styles.lead}>{description}</AppText> : null}
+        <AppText style={styles.title}>{title}</AppText>
+        <AppText style={styles.subtitle}>{body}</AppText>
 
-        <AppText style={styles.sectionLabel}>{active ? "Your benefits" : "What you get"}</AppText>
-
-        {benefitLines.map((benefit) => (
-          <View key={benefit} style={styles.benefitRow}>
-            <View style={[styles.benefitIconWrap, active && styles.benefitIconWrapActive]}>
-              <Ionicons name={benefitIcon(benefit)} size={18} color={active ? GOLD_DARK : MINT_DARK} />
-            </View>
-            <AppText style={styles.benefitText}>{benefit}</AppText>
-          </View>
-        ))}
-
-        {freeDeliveryNote ? (
-          <View style={styles.deliveryNoteCard}>
-            <Ionicons name="navigate-circle-outline" size={20} color={MINT_DARK} />
-            <AppText style={styles.deliveryNoteText}>{freeDeliveryNote}</AppText>
-          </View>
-        ) : null}
-
-        {active ? (
-          <View style={styles.autoApplyBanner}>
-            <Ionicons name="sparkles" size={16} color={GOLD_DARK} />
-            <AppText style={styles.autoApplyText}>
-              Benefits apply automatically — no coupon code needed at checkout.
-            </AppText>
+        {!active ? (
+          <View style={styles.perkPreview}>
+            {benefitLines.slice(0, 3).map((benefit) => (
+              <View key={benefit} style={styles.perkRow}>
+                <Ionicons name={benefitIcon(benefit)} size={16} color={MINT_DARK} />
+                <AppText style={styles.perkText} numberOfLines={2}>
+                  {benefit}
+                </AppText>
+              </View>
+            ))}
           </View>
         ) : (
-          <AppText style={styles.joinHint}>
-            Add {planName} at checkout on your next food order to start saving instantly.
-          </AppText>
+          <ScrollView
+            style={styles.activeScroll}
+            contentContainerStyle={styles.activeScrollContent}
+            showsVerticalScrollIndicator={false}
+          >
+            <AppText style={styles.sectionLabel}>Your benefits</AppText>
+            {benefitLines.map((benefit) => (
+              <View key={benefit} style={styles.benefitRow}>
+                <View style={styles.benefitIconWrap}>
+                  <Ionicons name={benefitIcon(benefit)} size={18} color={GOLD_DARK} />
+                </View>
+                <AppText style={styles.benefitText}>{benefit}</AppText>
+              </View>
+            ))}
+            {freeDeliveryNote ? (
+              <View style={styles.deliveryNoteCard}>
+                <Ionicons name="navigate-circle-outline" size={20} color={MINT_DARK} />
+                <AppText style={styles.deliveryNoteText}>{freeDeliveryNote}</AppText>
+              </View>
+            ) : null}
+          </ScrollView>
         )}
-      </ScrollView>
+      </View>
 
-      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 14) }]}>
-        {active ? (
-          <TouchableOpacity style={styles.primaryBtn} onPress={onClose} activeOpacity={0.9}>
-            <AppText style={styles.primaryBtnText}>Got it</AppText>
+      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+        <TouchableOpacity style={styles.primaryBtn} onPress={handlePrimary} activeOpacity={0.9}>
+          <AppText style={styles.primaryBtnText}>{primaryLabel}</AppText>
+          {primarySub ? <AppText style={styles.primaryBtnSub}>{primarySub}</AppText> : null}
+        </TouchableOpacity>
+        {!active ? (
+          <TouchableOpacity onPress={onClose} activeOpacity={0.8} style={styles.skipBtn}>
+            <AppText style={styles.skipText}>Not now</AppText>
           </TouchableOpacity>
-        ) : (
-          <View style={styles.footerRow}>
-            <TouchableOpacity style={styles.secondaryBtn} onPress={onClose} activeOpacity={0.85}>
-              <AppText style={styles.secondaryBtnText}>Not now</AppText>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.primaryBtn, styles.primaryBtnFlex]}
-              onPress={() => {
-                onClose();
-                onBrowseRestaurants?.();
-              }}
-              activeOpacity={0.9}
-            >
-              <AppText style={styles.primaryBtnText}>Browse restaurants</AppText>
-              <Ionicons name="arrow-forward" size={16} color="#fff" />
-            </TouchableOpacity>
-          </View>
-        )}
+        ) : null}
       </View>
     </StoreBottomSheetShell>
   );
 }
 
 const styles = StyleSheet.create({
-  heroGradient: {
-    paddingTop: 8,
-    paddingHorizontal: 20,
-    paddingBottom: 18,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#E5E7EB",
+  body: {
+    paddingHorizontal: 24,
+    paddingTop: 28,
+    paddingBottom: 8,
+    alignItems: "center",
   },
-  handle: {
-    alignSelf: "center",
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "rgba(0,0,0,0.12)",
-    marginBottom: 16,
+  eyebrow: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: GOLD_DARK,
+    letterSpacing: 2.4,
+    textTransform: "uppercase",
+    marginBottom: 18,
   },
-  heroRow: { flexDirection: "row", alignItems: "flex-start", gap: 14 },
-  crownRing: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: "#ECFDF5",
+  crownWrap: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: GOLD_SOFT,
+    borderWidth: 2,
+    borderColor: "#FDE68A",
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 1.5,
-    borderColor: "#BBF7D0",
+    marginBottom: 20,
   },
-  crownRingActive: {
+  crownWrapActive: {
     backgroundColor: GOLD_SOFT,
-    borderColor: "#FDE68A",
+    borderColor: GOLD,
   },
-  heroCopy: { flex: 1, paddingTop: 2 },
-  titleRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 },
-  planTitle: { fontSize: 20, fontWeight: "800", color: TEXT, letterSpacing: -0.3 },
-  activePill: {
+  title: {
+    fontSize: 24,
+    fontWeight: "800",
+    color: TEXT,
+    textAlign: "center",
+    letterSpacing: -0.4,
+    lineHeight: 30,
+    marginBottom: 10,
+    paddingHorizontal: 8,
+  },
+  subtitle: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: MUTED,
+    textAlign: "center",
+    lineHeight: 21,
+    marginBottom: 18,
+    paddingHorizontal: 4,
+  },
+  perkPreview: {
+    width: "100%",
+    gap: 10,
+    marginBottom: 4,
+  },
+  perkRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    backgroundColor: "#ECFDF5",
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    gap: 10,
+    backgroundColor: "#F0FDF4",
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     borderWidth: 1,
     borderColor: "#BBF7D0",
   },
-  activeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: MINT_DARK },
-  activePillText: { fontSize: 11, fontWeight: "800", color: MINT_DARK },
-  heroSubtitle: { fontSize: 13, color: MUTED, lineHeight: 19, marginTop: 6 },
-  scroll: { flexGrow: 0 },
-  scrollContent: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 8 },
-  lead: { fontSize: 14, color: MUTED, lineHeight: 21, marginBottom: 14 },
+  perkText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "600",
+    color: TEXT,
+    lineHeight: 18,
+  },
+  activeScroll: {
+    width: "100%",
+    maxHeight: 220,
+  },
+  activeScrollContent: {
+    paddingBottom: 4,
+  },
   sectionLabel: {
+    alignSelf: "flex-start",
     fontSize: 11,
     fontWeight: "800",
     color: MUTED,
@@ -229,21 +279,25 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 12,
-    marginBottom: 14,
+    marginBottom: 12,
   },
   benefitIconWrap: {
     width: 36,
     height: 36,
     borderRadius: 12,
-    backgroundColor: "#ECFDF5",
+    backgroundColor: GOLD_SOFT,
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
   },
-  benefitIconWrapActive: {
-    backgroundColor: GOLD_SOFT,
+  benefitText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "600",
+    color: TEXT,
+    lineHeight: 22,
+    paddingTop: 6,
   },
-  benefitText: { flex: 1, fontSize: 15, fontWeight: "600", color: TEXT, lineHeight: 22, paddingTop: 6 },
   deliveryNoteCard: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -255,49 +309,45 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#BBF7D0",
   },
-  deliveryNoteText: { flex: 1, fontSize: 13, fontWeight: "600", color: MINT_DARK, lineHeight: 19 },
-  autoApplyBanner: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    marginTop: 8,
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: GOLD_SOFT,
-    borderWidth: 1,
-    borderColor: "#FDE68A",
+  deliveryNoteText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "600",
+    color: MINT_DARK,
+    lineHeight: 19,
   },
-  autoApplyText: { flex: 1, fontSize: 12, fontWeight: "600", color: "#92400E", lineHeight: 17 },
-  joinHint: { fontSize: 13, color: MUTED, lineHeight: 20, marginTop: 6 },
   footer: {
     paddingHorizontal: 20,
-    paddingTop: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#E5E7EB",
+    paddingTop: 8,
     backgroundColor: "#fff",
   },
-  footerRow: { flexDirection: "row", gap: 10 },
   primaryBtn: {
-    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    backgroundColor: MINT_DARK,
-    borderRadius: 14,
-    paddingVertical: 15,
-    paddingHorizontal: 20,
+    backgroundColor: MINT,
+    borderRadius: 999,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    minHeight: 56,
   },
-  primaryBtnFlex: { flex: 1 },
-  primaryBtnText: { fontSize: 15, fontWeight: "800", color: "#fff" },
-  secondaryBtn: {
+  primaryBtnText: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#fff",
+  },
+  primaryBtnSub: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.92)",
+  },
+  skipBtn: {
     alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 15,
-    paddingHorizontal: 18,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#F9FAFB",
+    paddingVertical: 14,
   },
-  secondaryBtnText: { fontSize: 15, fontWeight: "700", color: TEXT },
+  skipText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: MUTED,
+  },
 });

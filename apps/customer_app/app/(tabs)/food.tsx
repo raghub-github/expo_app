@@ -1,18 +1,6 @@
 /**
- * Food tab placeholder — navigation to /home is handled in CustomerTabBar.
+ * Food tab — same screen as /home Food listing.
+ * Mounted inside the tab navigator so Home→Food is an instant tab switch
+ * (Orders/Profile architecture), not a stack push of a cold /home route.
  */
-
-import { View, StyleSheet } from "react-native";
-
-import { GatiMitraColors } from "@/constants/gatimitra";
-
-export default function FoodTabScreen() {
-  return <View style={styles.wrap} />;
-}
-
-const styles = StyleSheet.create({
-  wrap: {
-    flex: 1,
-    backgroundColor: GatiMitraColors.softBackground,
-  },
-});
+export { default } from "@/app/home/index";

@@ -16,18 +16,16 @@ export function useRiderHomeLocation(riderId: string | undefined) {
   const { data: riderStatus, isLoading: statusLoading } = useRiderStatus(riderId);
   const [localError, setLocalError] = useState<string | null>(null);
 
+  /** Status loaded enough to decide whether the location sheet should show. */
+  const locationStatusReady = Boolean(riderId) && !statusLoading && riderStatus != null;
+
   const needsHomeLocation =
-    !!riderId &&
-    !statusLoading &&
-    riderStatus != null &&
-    riderStatus.hasHomeLocation !== true;
+    locationStatusReady && riderStatus.hasHomeLocation !== true;
 
   // Treat missing flag from older API responses as "needs location" only when lat/lon absent in payload.
   const needsLocationSave =
     needsHomeLocation ||
-    (!!riderId &&
-      !statusLoading &&
-      riderStatus != null &&
+    (locationStatusReady &&
       riderStatus.hasHomeLocation == null &&
       !riderStatus.homeAddress?.lat);
 
@@ -96,6 +94,8 @@ export function useRiderHomeLocation(riderId: string | undefined) {
   return {
     needsHomeLocation: needsLocationSave,
     statusLoading,
+    /** False until rider status is known — other home sheets must wait to avoid Modal overlap. */
+    locationStatusReady,
     saving: saveMutation.isPending,
     error: localError,
     savedAddress: riderStatus?.homeAddress ?? null,

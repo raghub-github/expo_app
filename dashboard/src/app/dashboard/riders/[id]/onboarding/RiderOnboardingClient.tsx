@@ -1,18 +1,34 @@
 "use client";
 import { useAppParams } from "@/hooks/useAppSearchParams";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, Fragment } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
 import { invalidateRiderSummary } from "@/lib/cache-invalidation";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
-import { DocumentStatusBadge } from "@/components/riders/DocumentStatusBadge";
 import { DocumentViewer } from "@/components/riders/DocumentViewer";
 import { DocumentEditModal } from "@/components/riders/DocumentEditModal";
-import { Edit, CheckCircle, XCircle, Eye, Loader2, AlertCircle, X, Upload } from "lucide-react";
+import {
+  DocumentDetailModalShell,
+  DocumentSummaryBlock,
+  maskDocNumberForBlock,
+} from "@/components/riders/DocumentSummaryBlock";
+import { PanSkipInlineControl } from "@/components/riders/PanSkipOverridePanel";
+import {
+  Edit,
+  CheckCircle,
+  XCircle,
+  Eye,
+  Loader2,
+  AlertCircle,
+  X,
+  Upload,
+} from "lucide-react";
 import { LoadingButton } from "@/components/ui/LoadingButton";
+import { CopyTextButton } from "@/components/ui/CopyTextButton";
+import { ModalPortal } from "@/components/ui/ModalPortal";
 import { ONBOARDING_STAGE_LABELS } from "@/types/rider-dashboard";
 import { computeIdentityVerificationProgress } from "@/lib/rider-identity-doc-requirements";
 import { documentActionKey } from "@/lib/rider-document-side-verification";
@@ -26,6 +42,8 @@ import {
   ElectronicVerifyReviewModal,
   type ElectronicVerifyPending,
 } from "@/components/verification/ElectronicVerifyReviewModal";
+import { usePermission } from "@/hooks/usePermission";
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 
 interface Rider {
   id: number;
@@ -44,6 +62,12 @@ interface Rider {
   state: string | null;
   createdAt: string;
   updatedAt: string;
+  panSkipOverride?: boolean | null;
+  panSkipReason?: string | null;
+  panSkipEnabledBy?: number | null;
+  panSkipEnabledByEmail?: string | null;
+  panSkipEnabledByName?: string | null;
+  panSkipEnabledAt?: string | Date | null;
 }
 
 interface VehicleInfo {
@@ -172,12 +196,28 @@ const NON_IMAGE_FILE_URLS = new Set([
   "digilocker_verified",
   "aadhaar_masking_verified",
   "electronic_verified",
+  "cashfree_dl_verified",
+  "cashfree_rc_verified",
+  "cashfree_pan_verified",
+  "pan_number_submitted",
+  "n/a",
+  "na",
 ]);
 
 function isNonImageFileRef(raw: string | null | undefined): boolean {
   const value = String(raw || "").trim().toLowerCase();
   if (!value) return true;
   if (NON_IMAGE_FILE_URLS.has(value)) return true;
+  // Electronic / stub markers stored as fileUrl (no real bytes in R2).
+  if (
+    value.includes("cashfree_") &&
+    (value.includes("_verified") || value.includes("electronic"))
+  ) {
+    return true;
+  }
+  if (value.endsWith("_verified") && !value.includes("/") && !value.startsWith("http")) {
+    return true;
+  }
   for (const placeholder of NON_IMAGE_FILE_URLS) {
     if (
       value.includes(`key=${placeholder}`) ||
@@ -192,33 +232,46 @@ function isNonImageFileRef(raw: string | null | undefined): boolean {
 
 /** True when the doc has a real image/file the browser can show (any verify method). */
 function hasDocumentPreview(document: Document | null, fallbackUrl?: string | null): boolean {
-  if (!document && !fallbackUrl?.trim()) return false;
-  const candidates = [document?.r2Key, document?.fileUrl, fallbackUrl];
-  for (const raw of candidates) {
-    const value = String(raw || "").trim();
-    if (!value || isNonImageFileRef(value)) continue;
-    if (
-      value.startsWith("http://") ||
-      value.startsWith("https://") ||
-      value.startsWith("/api/attachments/proxy") ||
-      value.startsWith("/v1/attachments/proxy") ||
-      value.includes("/") ||
-      value.includes(".")
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return Boolean(resolveDocumentPreviewUrl(document, fallbackUrl));
 }
 
 function resolveDocumentPreviewUrl(
   document: Document | null,
   fallbackUrl?: string | null,
 ): string {
-  const primary = String(document?.fileUrl || "").trim();
-  if (primary && !isNonImageFileRef(primary)) return primary;
-  const fallback = String(fallbackUrl || "").trim();
-  if (fallback && !isNonImageFileRef(fallback)) return fallback;
+  const candidates = [
+    document?.fileUrl,
+    document?.r2Key,
+    fallbackUrl,
+  ];
+  for (const raw of candidates) {
+    const value = String(raw || "").trim();
+    if (!value || isNonImageFileRef(value)) continue;
+    const resolved = resolveAttachmentProxyUrl(value);
+    if (resolved && !isNonImageFileRef(resolved)) {
+      // Only accept browser-loadable absolute/relative image URLs.
+      if (
+        resolved.startsWith("http://") ||
+        resolved.startsWith("https://") ||
+        resolved.startsWith("/api/attachments/proxy") ||
+        resolved.startsWith("/v1/attachments/proxy") ||
+        resolved.startsWith("data:") ||
+        resolved.startsWith("blob:")
+      ) {
+        return resolved;
+      }
+    }
+    if (
+      value.startsWith("http://") ||
+      value.startsWith("https://") ||
+      value.startsWith("/api/attachments/proxy") ||
+      value.startsWith("/v1/attachments/proxy")
+    ) {
+      return value.startsWith("/v1/attachments/proxy")
+        ? value.replace("/v1/attachments/proxy", "/api/attachments/proxy")
+        : value;
+    }
+  }
   return "";
 }
 
@@ -228,15 +281,78 @@ const DOCUMENT_SECTIONS = {
   additional: ["rental_proof", "ev_proof", "bank_proof", "insurance", "vehicle_image", "upi_qr_proof"],
 };
 
+function readSkippedOnboardingDocs(documents: Document[] | null | undefined): string[] {
+  const selection = (documents || []).find((d) => d.docType === "onboarding_vehicle_selection");
+  const meta = (selection?.metadata || {}) as Record<string, unknown>;
+  if (!Array.isArray(meta.skippedOnboardingDocs)) return [];
+  return meta.skippedOnboardingDocs.map((c) => String(c || "").trim()).filter(Boolean);
+}
+
+function resolveDocBlockMeta(
+  doc: Document | null | undefined,
+  docType: string,
+  panSkipOverride: boolean,
+  skippedOnboardingDocs: string[] = [],
+): {
+  status: "verified" | "pending" | "rejected" | "skipped" | "missing";
+  statusLabel: string;
+  subtitle?: string | null;
+} {
+  if (docType === "pan" && panSkipOverride && !doc?.verified) {
+    return {
+      status: "skipped",
+      statusLabel: "Skipped",
+      subtitle: "PAN skip override enabled",
+    };
+  }
+  const skippedSet = new Set(
+    skippedOnboardingDocs.map((c) => String(c || "").trim().toLowerCase()).filter(Boolean),
+  );
+  const isSkippedByRider =
+    !doc?.verified &&
+    (skippedSet.has(docType.toLowerCase()) ||
+      (docType.startsWith("dl") && skippedSet.has("dl")) ||
+      (docType === "rc" && skippedSet.has("rc")) ||
+      (docType.startsWith("aadhaar") && skippedSet.has("aadhaar")));
+  if (isSkippedByRider && (!doc || !doc.fileUrl || doc.fileUrl === "pending" || isNonImageFileRef(doc.fileUrl))) {
+    return {
+      status: "skipped",
+      statusLabel: "Skipped by rider",
+      subtitle: "Optional document skipped during onboarding",
+    };
+  }
+  if (doc?.rejectedReason) {
+    return { status: "rejected", statusLabel: "Rejected", subtitle: "Needs re-upload" };
+  }
+  if (doc?.verified) {
+    return {
+      status: "verified",
+      statusLabel: "Verified",
+      subtitle: isAppVerifiedMethod(doc.verificationMethod)
+        ? "App Verified"
+        : isDashboardElectronicMethod(doc.verificationMethod)
+          ? "Dashboard electronic"
+          : "Manual",
+    };
+  }
+  if (doc) {
+    return { status: "pending", statusLabel: "Pending", subtitle: "Awaiting verification" };
+  }
+  return { status: "missing", statusLabel: "Pending", subtitle: "No document uploaded" };
+}
+
 export default function RiderOnboardingClient() {
   // ALL HOOKS MUST BE CALLED FIRST - BEFORE ANY CONDITIONAL RETURNS
   const { data: permissionsData, isLoading: permissionsLoading, error: permissionsError } = usePermissionsQuery();
   const { data: dashboardAccessData, isLoading: dashboardAccessLoading, error: dashboardAccessError } = useDashboardAccessQuery();
+  const { canPerformAction, isSuperAdmin: permissionIsSuperAdmin } = usePermission();
 
   const hasCachedPermissions = permissionsData != null;
   const hasCachedDashboardAccess = dashboardAccessData != null;
-  const isSuperAdmin = permissionsData?.isSuperAdmin ?? false;
+  const isSuperAdmin = permissionsData?.isSuperAdmin ?? permissionIsSuperAdmin ?? false;
   const exists = permissionsData?.exists ?? false;
+  const canEditPanSkip =
+    isSuperAdmin || canPerformAction("RIDER", "UPDATE");
 
   const params = useAppParams();
   const router = useRouter();
@@ -267,6 +383,7 @@ export default function RiderOnboardingClient() {
   const [evReviewBusy, setEvReviewBusy] = useState(false);
   // Force image reload on card when document is updated (fixes stale image after edit)
   const [imageRefreshKeys, setImageRefreshKeys] = useState<Record<number, number>>({});
+  const [detailDocType, setDetailDocType] = useState<string | null>(null);
 
   // Check if user has rider access
   const hasRiderAccess = dashboardAccessData?.dashboards.some(
@@ -344,8 +461,17 @@ export default function RiderOnboardingClient() {
             type: "invalid_id",
             message: "The rider ID in this URL is not valid.",
           });
+        } else if (response.status === 401) {
+          setPageError({
+            type: "generic",
+            message: "Not authenticated",
+          });
         } else {
-          setPageError({ type: "generic", message: apiMessage });
+          const safe =
+            /Failed query:|column .* does not exist|PostgresError/i.test(apiMessage)
+              ? "Unable to load this rider right now. Please try again in a moment."
+              : apiMessage;
+          setPageError({ type: "generic", message: safe });
         }
         setRiderData(null);
         return;
@@ -940,8 +1066,11 @@ export default function RiderOnboardingClient() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-[#C4E8D1]">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+      <div className="flex min-h-screen items-center justify-center bg-[#E8F5EC] p-6">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="h-8 w-8 animate-spin text-[#0A2342]" />
+          <p className="text-sm font-medium text-[#0A2342]">Loading rider verification…</p>
+        </div>
       </div>
     );
   }
@@ -949,48 +1078,53 @@ export default function RiderOnboardingClient() {
   if (pageError) {
     const isNotFound = pageError.type === "not_found";
     const isInvalidId = pageError.type === "invalid_id";
+    const isAuth =
+      /not authenticated|session/i.test(pageError.message);
 
     return (
-      <div className="flex min-h-[60vh] items-center justify-center p-6">
-        <div className="w-full max-w-lg rounded-xl border border-gray-200 bg-white p-8 shadow-sm text-center">
-          <div
-            className={`mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full ${
-              isNotFound || isInvalidId ? "bg-amber-100" : "bg-red-100"
-            }`}
-          >
-            <AlertCircle
-              className={`h-7 w-7 ${isNotFound || isInvalidId ? "text-amber-600" : "text-red-600"}`}
-            />
-          </div>
-          <h1 className="text-xl font-semibold text-gray-900">
-            {isNotFound
+      <div className="flex min-h-[70vh] flex-col items-center justify-center bg-[#E8F5EC] px-6 py-12">
+        <AlertCircle
+          className={`mb-4 h-10 w-10 ${
+            isNotFound || isInvalidId ? "text-amber-600" : "text-rose-600"
+          }`}
+        />
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">
+          Verification desk
+        </p>
+        <h1 className="mt-2 text-center text-2xl font-semibold tracking-tight text-[#0A2342]">
+          {isAuth
+            ? "Session expired"
+            : isNotFound
               ? "Rider not found"
               : isInvalidId
                 ? "Invalid rider ID"
                 : "Could not load rider"}
-          </h1>
-          <p className="mt-2 text-sm text-gray-600 leading-relaxed">{pageError.message}</p>
-          {isNotFound && !isNaN(riderId) && (
-            <p className="mt-1 text-xs text-gray-500">Rider ID: GMR{riderId}</p>
-          )}
-          <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3">
+        </h1>
+        <p className="mx-auto mt-3 max-w-md text-center text-sm leading-relaxed text-gray-600">
+          {isAuth
+            ? "Please sign in again, then open this rider from the list."
+            : pageError.message}
+        </p>
+        {isNotFound && !isNaN(riderId) && (
+          <p className="mt-2 font-mono text-xs text-gray-400">GMR{riderId}</p>
+        )}
+        <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          <button
+            type="button"
+            onClick={() => router.push(isAuth ? "/login" : "/dashboard/riders")}
+            className="w-full rounded-lg bg-[#0A2342] px-5 py-2.5 text-sm font-semibold text-white sm:w-auto"
+          >
+            {isAuth ? "Go to login" : "Back to riders list"}
+          </button>
+          {!isInvalidId && !isAuth && (
             <button
               type="button"
-              onClick={() => router.push("/dashboard/riders")}
-              className="px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+              onClick={() => void fetchRiderData()}
+              className="w-full rounded-lg border border-gray-300 bg-transparent px-5 py-2.5 text-sm font-semibold text-gray-700 sm:w-auto"
             >
-              Back to riders list
+              Try again
             </button>
-            {!isInvalidId && (
-              <button
-                type="button"
-                onClick={() => void fetchRiderData()}
-                className="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                Try again
-              </button>
-            )}
-          </div>
+          )}
         </div>
       </div>
     );
@@ -998,43 +1132,66 @@ export default function RiderOnboardingClient() {
 
   if (!riderData) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center p-6">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+      <div className="flex min-h-[60vh] items-center justify-center bg-[#E8F5EC] p-6">
+        <Loader2 className="h-8 w-8 animate-spin text-[#0A2342]" />
       </div>
     );
   }
 
   const isAlreadyVerified = riderData.rider.onboardingStage === "ACTIVE" && riderData.rider.kycStatus === "APPROVED";
   const isBlocked = riderData.rider.status === "BLOCKED" || riderData.rider.status === "BANNED";
+  const riderInitials = (riderData.rider.name || "R")
+    .trim()
+    .split(/\s+/)
+    .map((n) => n[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
 
   return (
-    <div className="space-y-10 w-full max-w-full overflow-x-hidden p-6 min-h-screen bg-[#C4E8D1]">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-[#0A2342]">Rider Onboarding Verification</h1>
-          <p className="text-sm text-gray-600 mt-1">
-            Verify and approve rider documents for onboarding
+    <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-[#E8F5EC]">
+      <div className="mx-auto max-w-7xl space-y-6 p-4 sm:space-y-8 sm:p-6 lg:p-8">
+      {/* Plain header — no card */}
+      <div className="flex flex-col gap-4 border-b border-black/5 pb-5 sm:flex-row sm:items-end sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+            Rider KYC · Verification desk
           </p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-[#0A2342] sm:text-3xl">
+            Rider Onboarding Verification
+          </h1>
+          <p className="mt-1 max-w-2xl text-sm text-gray-600">
+            Review identity, vehicle, and supporting documents. Approve, reject, or verify electronically.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-semibold text-[#0A2342]">
+              GMR{riderData.rider.id}
+            </span>
+            <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-semibold text-emerald-800">
+              {riderData.rider.kycStatus}
+            </span>
+            <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-medium text-gray-700">
+              {ONBOARDING_STAGE_LABELS[riderData.rider.onboardingStage] ?? riderData.rider.onboardingStage}
+            </span>
+          </div>
         </div>
         <button
           onClick={() => router.push("/dashboard/riders")}
-          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          className="shrink-0 rounded-lg border border-gray-300 bg-white/80 px-4 py-2.5 text-sm font-semibold text-gray-800"
         >
-          Back
+          ← Back to riders
         </button>
       </div>
 
       {/* Warning Banners */}
       {isAlreadyVerified && (
-        <div className="rounded-xl border-2 border-green-200 bg-green-50 p-4 shadow-sm">
+        <div className="rounded-2xl border border-emerald-200/80 bg-emerald-50/90 p-4 shadow-sm backdrop-blur">
           <div className="flex items-start gap-3">
-            <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+            <CheckCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-emerald-600" />
             <div>
-              <h3 className="text-sm font-semibold text-green-900">Rider Already Verified</h3>
-              <p className="text-sm text-green-800 mt-1">
-                This rider has completed onboarding and all documents have been verified. 
-                The verification process should not be repeated unless re-verification is required.
+              <h3 className="text-sm font-semibold text-emerald-900">Rider already verified</h3>
+              <p className="mt-1 text-sm text-emerald-800">
+                Onboarding is complete and documents are verified. Re-run verification only when required.
               </p>
             </div>
           </div>
@@ -1042,14 +1199,14 @@ export default function RiderOnboardingClient() {
       )}
 
       {isBlocked && (
-        <div className="rounded-xl border-2 border-red-200 bg-red-50 p-4 shadow-sm">
+        <div className="rounded-2xl border border-rose-200/80 bg-rose-50/90 p-4 shadow-sm backdrop-blur">
           <div className="flex items-start gap-3">
-            <AlertCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+            <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-rose-600" />
             <div>
-              <h3 className="text-sm font-semibold text-red-900">Rider Account Blocked</h3>
-              <p className="text-sm text-red-800 mt-1">
-                This rider's account is currently blocked. Please unblock the rider from the main dashboard 
-                before attempting to verify documents. Status: <span className="font-semibold">{riderData.rider.status}</span>
+              <h3 className="text-sm font-semibold text-rose-900">Rider account blocked</h3>
+              <p className="mt-1 text-sm text-rose-800">
+                Unblock this rider from the main dashboard before verifying documents. Status:{" "}
+                <span className="font-semibold">{riderData.rider.status}</span>
               </p>
             </div>
           </div>
@@ -1057,78 +1214,79 @@ export default function RiderOnboardingClient() {
       )}
 
       {/* Rider Info Summary */}
-      <div className="rounded-xl border border-gray-200/90 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold mb-4 text-[#0A2342]">Rider Information</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          <div>
-            <p className="text-xs text-gray-500 mb-1">Rider ID</p>
-            <p className="text-sm font-medium text-gray-900">GMR{riderData.rider.id}</p>
+      <div className="overflow-hidden rounded-3xl border border-white/80 bg-white/95 shadow-[0_18px_50px_-32px_rgba(10,35,66,0.35)] backdrop-blur">
+        <div className="flex flex-col gap-4 border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-[#0A2342] text-lg font-semibold text-white shadow-lg shadow-[#0A2342]/25">
+              {riderInitials}
+            </div>
+            <div className="min-w-0">
+              <h2 className="truncate text-lg font-semibold text-[#0A2342]">
+                {riderData.rider.name || "Unnamed rider"}
+              </h2>
+              <p className="mt-0.5 text-sm text-gray-500">
+                GMR{riderData.rider.id} · {riderData.rider.mobile}
+              </p>
+            </div>
           </div>
-          <div>
-            <p className="text-xs text-gray-500 mb-1">Name</p>
-            <p className="text-sm font-medium text-gray-900">{riderData.rider.name || "-"}</p>
+          <div className="flex flex-wrap gap-2">
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+              {riderData.rider.status}
+            </span>
+            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-100">
+              KYC · {riderData.rider.kycStatus}
+            </span>
           </div>
-          <div>
-            <p className="text-xs text-gray-500 mb-1">Mobile</p>
-            <p className="text-sm font-medium text-gray-900">{riderData.rider.mobile}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 mb-1">Onboarding Stage</p>
-            <p className="text-sm font-medium text-gray-900">{ONBOARDING_STAGE_LABELS[riderData.rider.onboardingStage] ?? riderData.rider.onboardingStage}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 mb-1">KYC Status</p>
-            <p className="text-sm font-medium text-gray-900">{riderData.rider.kycStatus}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 mb-1">Status</p>
-            <p className="text-sm font-medium text-gray-900">{riderData.rider.status}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 mb-1">City</p>
-            <p className="text-sm font-medium text-gray-900">{riderData.rider.city || "-"}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 mb-1">State</p>
-            <p className="text-sm font-medium text-gray-900">{riderData.rider.state || "-"}</p>
-          </div>
-          {/* Vehicle details: show when rider has vehicle or vehicleChoice */}
+        </div>
+        <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-2 sm:p-6 md:grid-cols-3 lg:grid-cols-4">
+          {[
+            ["Rider ID", `GMR${riderData.rider.id}`],
+            ["Name", riderData.rider.name || "—"],
+            ["Mobile", riderData.rider.mobile],
+            ["Onboarding stage", ONBOARDING_STAGE_LABELS[riderData.rider.onboardingStage] ?? riderData.rider.onboardingStage],
+            ["KYC status", riderData.rider.kycStatus],
+            ["Account status", riderData.rider.status],
+            ["City", riderData.rider.city || "—"],
+            ["State", riderData.rider.state || "—"],
+          ].map(([label, value]) => (
+            <div
+              key={label}
+              className="rounded-2xl border border-gray-100 bg-gradient-to-b from-gray-50/80 to-white px-4 py-3"
+            >
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">{label}</p>
+              <p className="mt-1 truncate text-sm font-semibold text-gray-900">{value}</p>
+            </div>
+          ))}
           {(riderData.vehicle || riderData.rider.vehicleChoice) && (
             <>
-              <div>
-                <p className="text-xs text-gray-500 mb-1">Vehicle / Fuel type</p>
-                <p className="text-sm font-medium text-gray-900">
-                  {riderData.vehicle?.fuelType || riderData.rider.vehicleChoice || "-"}
+              <div className="rounded-2xl border border-gray-100 bg-gradient-to-b from-gray-50/80 to-white px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Vehicle / Fuel</p>
+                <p className="mt-1 truncate text-sm font-semibold text-gray-900">
+                  {riderData.vehicle?.fuelType || riderData.rider.vehicleChoice || "—"}
                 </p>
               </div>
               {riderData.vehicle && (
                 <>
-                  <div>
-                    <p className="text-xs text-gray-500 mb-1">Vehicle type</p>
-                    <p className="text-sm font-medium text-gray-900">
-                      {String(riderData.vehicle.vehicleType || "-").charAt(0).toUpperCase() +
+                  <div className="rounded-2xl border border-gray-100 bg-gradient-to-b from-gray-50/80 to-white px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Vehicle type</p>
+                    <p className="mt-1 truncate text-sm font-semibold text-gray-900">
+                      {String(riderData.vehicle.vehicleType || "—").charAt(0).toUpperCase() +
                         String(riderData.vehicle.vehicleType || "").slice(1).toLowerCase()}
                     </p>
                   </div>
-                  <div>
-                    <p className="text-xs text-gray-500 mb-1">Make</p>
-                    <p className="text-sm font-medium text-gray-900">{riderData.vehicle.make || "-"}</p>
+                  <div className="rounded-2xl border border-gray-100 bg-gradient-to-b from-gray-50/80 to-white px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Make</p>
+                    <p className="mt-1 truncate text-sm font-semibold text-gray-900">{riderData.vehicle.make || "—"}</p>
                   </div>
-                  <div>
-                    <p className="text-xs text-gray-500 mb-1">Model</p>
-                    <p className="text-sm font-medium text-gray-900">{riderData.vehicle.model || "-"}</p>
+                  <div className="rounded-2xl border border-gray-100 bg-gradient-to-b from-gray-50/80 to-white px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Model</p>
+                    <p className="mt-1 truncate text-sm font-semibold text-gray-900">{riderData.vehicle.model || "—"}</p>
                   </div>
                   {riderData.vehicle.registrationNumber && (
-                    <div>
-                      <p className="text-xs text-gray-500 mb-1">Registration</p>
-                      <p className="text-sm font-medium text-gray-900">{riderData.vehicle.registrationNumber}</p>
-                    </div>
-                  )}
-                  {(riderData.vehicle.vehicleCategory || riderData.vehicle.acType) && (
-                    <div>
-                      <p className="text-xs text-gray-500 mb-1">Category / AC</p>
-                      <p className="text-sm font-medium text-gray-900">
-                        {[riderData.vehicle.vehicleCategory, riderData.vehicle.acType].filter(Boolean).join(" / ") || "-"}
+                    <div className="rounded-2xl border border-gray-100 bg-gradient-to-b from-gray-50/80 to-white px-4 py-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Registration</p>
+                      <p className="mt-1 truncate font-mono text-sm font-semibold text-gray-900">
+                        {riderData.vehicle.registrationNumber}
                       </p>
                     </div>
                   )}
@@ -1141,18 +1299,17 @@ export default function RiderOnboardingClient() {
 
       {/* Onboarding Fees Section */}
       {riderData.onboardingPayments && riderData.onboardingPayments.length > 0 && (
-        <div className="rounded-xl border-2 border-purple-200/80 bg-gradient-to-br from-purple-50 to-pink-50 p-6 shadow-md">
-          <h2 className="text-lg font-bold mb-4 text-purple-900 flex items-center gap-2">
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
-            </svg>
-            Onboarding Fees / Registration Payment
-          </h2>
-          <div className="mb-4 p-4 bg-white rounded-lg shadow-sm border border-purple-100">
+        <div className="overflow-hidden rounded-3xl border border-violet-100 bg-white shadow-[0_18px_50px_-32px_rgba(10,35,66,0.3)]">
+          <div className="border-b border-violet-100 bg-gradient-to-r from-violet-50 to-white px-6 py-5">
+            <h2 className="text-lg font-semibold text-[#0A2342]">Onboarding fees</h2>
+            <p className="mt-1 text-sm text-gray-500">Registration payments linked to this rider</p>
+          </div>
+          <div className="p-6">
+          <div className="mb-4 rounded-2xl border border-violet-100 bg-violet-50/50 p-4">
             <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Total Paid:</span>
-              <span className="text-2xl font-bold text-purple-900 tabular-nums">
-                ?{riderData.onboardingPayments.filter((p) => p.status === "completed").reduce((sum, p) => sum + Number(p.amount), 0).toFixed(2)}
+              <span className="text-sm text-gray-600">Total paid</span>
+              <span className="text-2xl font-bold tabular-nums text-[#0A2342]">
+                ₹{riderData.onboardingPayments.filter((p) => p.status === "completed").reduce((sum, p) => sum + Number(p.amount), 0).toFixed(2)}
               </span>
             </div>
             {riderData.onboardingPayments.some(p => p.status !== "completed") && (
@@ -1161,52 +1318,58 @@ export default function RiderOnboardingClient() {
               </div>
             )}
           </div>
-          <div className="overflow-x-auto rounded-lg border border-purple-100">
-            <table className="min-w-full divide-y divide-gray-200 text-sm">
-              <thead className="bg-purple-50">
+          <div className="overflow-x-auto rounded-2xl border border-gray-100">
+            <table className="min-w-full divide-y divide-gray-100 text-sm">
+              <thead className="bg-slate-50">
                 <tr>
-                  <th className="px-3 py-2 text-left font-medium text-gray-700 text-xs">Ref ID</th>
-                  <th className="px-3 py-2 text-left font-medium text-gray-700 text-xs">Amount</th>
-                  <th className="px-3 py-2 text-left font-medium text-gray-700 text-xs">Provider</th>
-                  <th className="px-3 py-2 text-left font-medium text-gray-700 text-xs">Status</th>
-                  <th className="px-3 py-2 text-left font-medium text-gray-700 text-xs">Payment ID</th>
-                  <th className="px-3 py-2 text-left font-medium text-gray-700 text-xs">Date</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-gray-500">Ref ID</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-gray-500">Amount</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-gray-500">Provider</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-gray-500">Status</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-gray-500">Payment ID</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold text-gray-500">Date</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-200 bg-white">
+              <tbody className="divide-y divide-gray-100 bg-white">
                 {riderData.onboardingPayments.map((p) => (
-                  <tr key={p.id} className="hover:bg-gray-50">
-                    <td className="px-3 py-2 font-mono text-gray-900 text-xs">{p.refId || "?"}</td>
-                    <td className="px-3 py-2 font-bold text-gray-900 tabular-nums">?{Number(p.amount).toFixed(2)}</td>
-                    <td className="px-3 py-2 text-gray-600 text-xs">{p.provider || "?"}</td>
-                    <td className="px-3 py-2">
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                  <tr key={p.id} className="hover:bg-slate-50/80">
+                    <td className="px-3 py-2.5 font-mono text-xs text-gray-900">{p.refId || "—"}</td>
+                    <td className="px-3 py-2.5 font-bold tabular-nums text-gray-900">₹{Number(p.amount).toFixed(2)}</td>
+                    <td className="px-3 py-2.5 text-xs text-gray-600">{p.provider || "—"}</td>
+                    <td className="px-3 py-2.5">
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                         p.status === "completed" ? "bg-emerald-100 text-emerald-800" :
                         p.status === "failed" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"
                       }`}>
                         {p.status}
                       </span>
                     </td>
-                    <td className="px-3 py-2 font-mono text-gray-600 text-xs">{p.paymentId || "?"}</td>
-                    <td className="px-3 py-2 text-gray-600 text-xs">{new Date(p.createdAt).toLocaleString()}</td>
+                    <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{p.paymentId || "—"}</td>
+                    <td className="px-3 py-2.5 text-xs text-gray-600">{new Date(p.createdAt).toLocaleString()}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          </div>
         </div>
       )}
 
       {/* Verification Progress Summary */}
-      <div className="rounded-xl border-2 border-blue-200/80 bg-gradient-to-br from-blue-50 to-indigo-50 p-6 shadow-md">
-        <h2 className="text-lg font-bold mb-4 text-blue-900">Verification Progress</h2>
-        <div className="space-y-5">
+      <div className="overflow-hidden rounded-2xl border border-white/80 bg-white shadow-[0_18px_50px_-32px_rgba(10,35,66,0.3)]">
+        <div className="border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white px-4 py-2.5 sm:px-5">
+          <h2 className="text-base font-semibold text-[#0A2342]">Verification progress</h2>
+          <p className="text-xs text-gray-500">Identity and vehicle document completion</p>
+        </div>
+        <div className="space-y-2.5 p-3 sm:p-4">
           {(() => {
             const allDocs = riderData.documents || [];
+            const panSkipOverride = Boolean(riderData.rider.panSkipOverride);
             const identityProgress = computeIdentityVerificationProgress(
               allDocs,
               (docType) => Boolean(getLatestDocument(docType)?.verified),
-              (docType) => getLatestDocument(docType) != null
+              (docType) => getLatestDocument(docType) != null,
+              { panSkipOverride },
             );
             const identityVerified = identityProgress.verified;
             const identityUploaded = identityProgress.uploaded;
@@ -1228,34 +1391,36 @@ export default function RiderOnboardingClient() {
             
             return (
               <>
-                <ProgressBar label="Identity Documents" current={identityVerified} total={identityTotal} uploaded={identityUploaded} />
-                <ProgressBar label="Vehicle Documents" current={vehicleVerified} total={vehicleTotal} uploaded={vehicleUploaded} />
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  <ProgressBar label="Identity Documents" current={identityVerified} total={identityTotal} uploaded={identityUploaded} />
+                  <ProgressBar label="Vehicle Documents" current={vehicleVerified} total={vehicleTotal} uploaded={vehicleUploaded} />
+                </div>
                 {additionalDocs.length > 0 && (
                   <ProgressBar label="Additional Documents" current={additionalVerified} total={additionalDocs.length} />
                 )}
                 
                 {allRequiredVerified && paymentCompleted && isActive && (
-                  <div className="mt-4 p-4 bg-green-100 border-2 border-green-300 rounded-lg shadow-sm">
-                    <p className="text-sm font-semibold text-green-900 flex items-center gap-2">
-                      <CheckCircle className="h-5 w-5" />
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-emerald-900">
+                      <CheckCircle className="h-4 w-4 shrink-0" />
                       Rider is active and ready to accept orders.
                     </p>
                   </div>
                 )}
 
                 {allRequiredVerified && paymentCompleted && !isActive && (
-                  <div className="mt-4 p-4 bg-amber-100 border-2 border-amber-300 rounded-lg shadow-sm">
-                    <p className="text-sm font-semibold text-amber-900 flex items-center gap-2">
-                      <AlertCircle className="h-5 w-5" />
-                      All documents verified and payment received. Refresh the page to sync rider status to ACTIVE.
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-amber-900">
+                      <AlertCircle className="h-4 w-4 shrink-0" />
+                      All documents verified and payment received. Refresh to sync rider status to ACTIVE.
                     </p>
                   </div>
                 )}
 
                 {allRequiredVerified && !paymentCompleted && (
-                  <div className="mt-4 p-4 bg-blue-100 border-2 border-blue-300 rounded-lg shadow-sm">
-                    <p className="text-sm font-semibold text-blue-900 flex items-center gap-2">
-                      <AlertCircle className="h-5 w-5" />
+                  <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-sky-900">
+                      <AlertCircle className="h-4 w-4 shrink-0" />
                       Documents verified. Waiting for onboarding payment before activation.
                     </p>
                   </div>
@@ -1274,17 +1439,17 @@ export default function RiderOnboardingClient() {
       <RiderVehiclesCard riderId={riderId} />
 
       {/* Identity Documents */}
-      <div className="rounded-xl border border-gray-200/90 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold mb-3 text-[#0A2342]">Identity Documents</h2>
-        <p className="text-sm text-gray-500 mb-8">
-          If the rider is stuck in the app, upload and verify here. Manual approve and electronic
-          Cashfree verify write to the same <span className="font-medium text-gray-700">rider_documents</span> records as onboarding.
-          Aadhaar electronic verify is on the Front card (masking if a photo exists, otherwise DigiLocker).
-        </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+        <div className="border-b border-slate-100 px-4 py-3.5 sm:px-5">
+          <h2 className="text-base font-semibold text-[#0A2342]">Identity Documents</h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Click a block for details. Manual approve and Cashfree verify use the same{" "}
+            <span className="font-medium text-slate-700">rider_documents</span> records.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-3 xl:items-stretch">
           {DOCUMENT_SECTIONS.identity.map((docType) => {
             const doc = getLatestDocument(docType);
-            // DigiLocker / app auto-verify: single Aadhaar card is enough — hide Back.
             if (docType === "aadhaar_back") {
               const aadhaarMethod =
                 getLatestDocument("aadhaar_front")?.verificationMethod ||
@@ -1296,106 +1461,87 @@ export default function RiderOnboardingClient() {
               isElectronicallyVerifiedMethod(doc?.verificationMethod)
                 ? "Aadhaar Card"
                 : undefined;
+            const title = aadhaarFrontLabel || DOCUMENT_LABELS[docType] || docType;
+            const panSkip = Boolean(riderData.rider.panSkipOverride);
+            const skippedDocs = readSkippedOnboardingDocs(riderData.documents);
+            const meta = resolveDocBlockMeta(doc, docType, panSkip, skippedDocs);
+            const rawNumber =
+              doc?.docNumber ||
+              (docType === "aadhaar_front" || docType === "aadhaar_back"
+                ? riderData.rider.aadhaarNumber
+                : docType === "pan"
+                  ? riderData.rider.panNumber
+                  : null);
+            const kind =
+              docType.startsWith("aadhaar") ? "aadhaar" : docType === "pan" ? "pan" : undefined;
+            const selfiePreview =
+              docType === "selfie"
+                ? resolveDocumentPreviewUrl(doc, riderData.rider.selfieUrl)
+                : null;
             return (
-              <DocumentCard
-                riderId={riderId}
+              <DocumentSummaryBlock
                 key={docType}
-                docType={docType}
-                document={doc}
-                isOptional={docType === "pan"}
-                titleOverride={aadhaarFrontLabel}
-                riderDob={riderData?.rider?.dob ?? null}
-                riderAadhaarNumber={riderData?.rider?.aadhaarNumber ?? null}
-                fallbackPreviewUrl={
-                  docType === "selfie" ? riderData?.rider?.selfieUrl ?? null : null
+                title={title}
+                status={meta.status}
+                statusLabel={meta.statusLabel}
+                subtitle={meta.subtitle}
+                maskedNumber={
+                  DOC_TYPES_WITH_NUMBER.has(docType)
+                    ? maskDocNumberForBlock(rawNumber, kind)
+                    : "—"
                 }
-                imageRefreshKey={doc ? imageRefreshKeys[doc.id] : undefined}
-                onView={() =>
-                  doc &&
-                  hasDocumentPreview(doc, docType === "selfie" ? riderData?.rider?.selfieUrl : null) &&
-                  handleViewDocument({
-                    ...doc,
-                    fileUrl:
-                      resolveDocumentPreviewUrl(
-                        doc,
-                        docType === "selfie" ? riderData?.rider?.selfieUrl : null,
-                      ) || doc.fileUrl,
-                  })
-                }
-                onEdit={() => doc && isManualUploadMethod(doc.verificationMethod) && !isBlocked && handleEditDocument(doc)}
-                onUpload={() => !isBlocked && handleStartUpload(docType)}
-                onApprove={() => doc && isManualUploadMethod(doc.verificationMethod) && !doc.verified && !isBlocked && handleApproveDocument(doc)}
-                onReject={() => doc && isManualUploadMethod(doc.verificationMethod) && !doc.verified && !isBlocked && handleRejectDocument(doc)}
-                onElectronicVerified={
-                  doc
-                    ? (data, meta) => handleElectronicVerified(doc, data, meta)
-                    : EV_KIND_BY_DOC_TYPE[docType]
-                      ? (data, meta) => handleElectronicWithoutDoc(docType, data, meta)
-                      : undefined
-                }
-                pendingElectronicReview={
-                  doc ? pendingEvByDocId[doc.id] ?? null : null
-                }
-                onOpenPendingElectronicReview={
-                  doc ? () => setEvReviewDocId(doc.id) : undefined
-                }
-                isLoading={
-                  doc
-                    ? actionLoading === documentActionKey(doc)
-                    : actionLoading === `upload:${docType}`
-                }
-                isDisabled={isBlocked}
-                allVersions={getDocumentsByType(docType)}
-                allowEmptyElectronicVerify={Boolean(EV_KIND_BY_DOC_TYPE[docType])}
+                previewImageUrl={selfiePreview || null}
+                onClick={() => setDetailDocType(docType)}
               />
             );
           })}
         </div>
+        <div className="border-t border-slate-100 px-4 py-3 sm:px-5">
+          <PanSkipInlineControl
+            riderId={riderId}
+            panSkipOverride={Boolean(riderData.rider.panSkipOverride)}
+            panSkipReason={riderData.rider.panSkipReason}
+            panSkipEnabledByName={riderData.rider.panSkipEnabledByName}
+            panSkipEnabledByEmail={riderData.rider.panSkipEnabledByEmail}
+            panSkipEnabledAt={riderData.rider.panSkipEnabledAt}
+            panVerified={Boolean(getLatestDocument("pan")?.verified)}
+            canEdit={canEditPanSkip && !isBlocked}
+            onUpdated={() => void fetchRiderData()}
+            compact
+          />
+        </div>
       </div>
 
       {/* Vehicle Documents */}
-      <div className="rounded-lg border border-gray-200 bg-white p-6">
-        <h2 className="text-lg font-semibold mb-3 text-[#0A2342]">Vehicle Documents</h2>
-        <p className="text-sm text-gray-500 mb-8">
-          Same DL / RC upload and Cashfree electronic verify as the rider app. Approved data is stored on the rider document row.
-        </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-stretch">
+      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+        <div className="border-b border-slate-100 px-4 py-3.5 sm:px-5">
+          <h2 className="text-base font-semibold text-[#0A2342]">Vehicle Documents</h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            DL / RC upload and Cashfree electronic verify. Click a block for details.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-3 xl:items-stretch">
           {DOCUMENT_SECTIONS.vehicle.map((docType) => {
             const doc = getLatestDocument(docType);
+            const meta = resolveDocBlockMeta(
+              doc,
+              docType,
+              false,
+              readSkippedOnboardingDocs(riderData.documents),
+            );
             return (
-              <DocumentCard
-                riderId={riderId}
+              <DocumentSummaryBlock
                 key={docType}
-                docType={docType}
-                document={doc}
-                imageRefreshKey={doc ? imageRefreshKeys[doc.id] : undefined}
-                riderDob={riderData?.rider?.dob ?? null}
-                onView={() => doc && hasDocumentPreview(doc) && handleViewDocument(doc)}
-                onEdit={() => doc && isManualUploadMethod(doc.verificationMethod) && !isBlocked && handleEditDocument(doc)}
-                onUpload={() => !isBlocked && handleStartUpload(docType)}
-                onApprove={() => doc && isManualUploadMethod(doc.verificationMethod) && !doc.verified && !isBlocked && handleApproveDocument(doc)}
-                onReject={() => doc && isManualUploadMethod(doc.verificationMethod) && !doc.verified && !isBlocked && handleRejectDocument(doc)}
-                onElectronicVerified={
-                  doc
-                    ? (data, meta) => handleElectronicVerified(doc, data, meta)
-                    : EV_KIND_BY_DOC_TYPE[docType]
-                      ? (data, meta) => handleElectronicWithoutDoc(docType, data, meta)
-                      : undefined
+                title={DOCUMENT_LABELS[docType] || docType}
+                status={meta.status}
+                statusLabel={meta.statusLabel}
+                subtitle={meta.subtitle}
+                maskedNumber={
+                  DOC_TYPES_WITH_NUMBER.has(docType)
+                    ? maskDocNumberForBlock(doc?.docNumber)
+                    : "—"
                 }
-                pendingElectronicReview={
-                  doc ? pendingEvByDocId[doc.id] ?? null : null
-                }
-                onOpenPendingElectronicReview={
-                  doc ? () => setEvReviewDocId(doc.id) : undefined
-                }
-                isLoading={
-                  doc
-                    ? actionLoading === documentActionKey(doc)
-                    : actionLoading === `upload:${docType}`
-                }
-                isDisabled={isBlocked}
-                allVersions={getDocumentsByType(docType)}
-                allowEmptyElectronicVerify={Boolean(EV_KIND_BY_DOC_TYPE[docType])}
+                onClick={() => setDetailDocType(docType)}
               />
             );
           })}
@@ -1403,77 +1549,175 @@ export default function RiderOnboardingClient() {
       </div>
 
       {/* Additional Documents */}
-      <div className="rounded-xl border border-gray-200/90 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold mb-3 text-[#0A2342]">Additional Documents</h2>
-        <p className="text-sm text-gray-500 mb-8">
-          Optional proofs (rental, EV, bank, insurance, vehicle photo, UPI). Bank can be verified electronically without a passbook scan.
-        </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-stretch">
+      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+        <div className="border-b border-slate-100 px-4 py-3.5 sm:px-5">
+          <h2 className="text-base font-semibold text-[#0A2342]">Additional Documents</h2>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Optional proofs (rental, EV, bank, insurance, vehicle photo, UPI). Click a block for details.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-3 xl:items-stretch">
           {DOCUMENT_SECTIONS.additional.map((docType) => {
             const doc = getLatestDocument(docType);
+            const meta = resolveDocBlockMeta(
+              doc,
+              docType,
+              false,
+              readSkippedOnboardingDocs(riderData.documents),
+            );
+            return (
+              <DocumentSummaryBlock
+                key={docType}
+                title={
+                  docType === "bank_proof"
+                    ? `${DOCUMENT_LABELS[docType] || docType} (Optional)`
+                    : DOCUMENT_LABELS[docType] || docType
+                }
+                status={meta.status}
+                statusLabel={meta.statusLabel}
+                subtitle={meta.subtitle}
+                maskedNumber={
+                  DOC_TYPES_WITH_NUMBER.has(docType)
+                    ? maskDocNumberForBlock(doc?.docNumber)
+                    : "—"
+                }
+                onClick={() => setDetailDocType(docType)}
+              />
+            );
+          })}
+        </div>
+      </div>
+
+      <DocumentDetailModalShell
+        open={Boolean(detailDocType)}
+        size={
+          detailDocType &&
+          (detailDocType.startsWith("dl") ||
+            detailDocType === "rc" ||
+            detailDocType.startsWith("aadhaar") ||
+            detailDocType === "pan")
+            ? "wide"
+            : "default"
+        }
+        title={
+          detailDocType
+            ? (() => {
+                const doc = getLatestDocument(detailDocType);
+                if (
+                  detailDocType === "aadhaar_front" &&
+                  isElectronicallyVerifiedMethod(doc?.verificationMethod)
+                ) {
+                  return "Aadhaar Card";
+                }
+                return DOCUMENT_LABELS[detailDocType] || detailDocType;
+              })()
+            : "Document details"
+        }
+        statusLabel={
+          detailDocType
+            ? resolveDocBlockMeta(
+                getLatestDocument(detailDocType),
+                detailDocType,
+                Boolean(riderData.rider.panSkipOverride),
+                readSkippedOnboardingDocs(riderData.documents),
+              ).statusLabel
+            : null
+        }
+        onClose={() => setDetailDocType(null)}
+      >
+        {detailDocType ? (
+          (() => {
+            const docType = detailDocType;
+            const doc = getLatestDocument(docType);
+            const isIdentity = DOCUMENT_SECTIONS.identity.includes(docType);
+            const isAdditional = DOCUMENT_SECTIONS.additional.includes(docType);
+            const aadhaarFrontLabel =
+              docType === "aadhaar_front" &&
+              isElectronicallyVerifiedMethod(doc?.verificationMethod)
+                ? "Aadhaar Card"
+                : undefined;
             const isSyntheticBank = docType === "bank_proof" && doc != null && doc.id < 0;
             const realBankDoc =
               docType === "bank_proof"
                 ? getDocumentsByType("bank_proof")[0] ?? null
                 : doc;
+            const actionDoc = isAdditional && docType === "bank_proof" ? realBankDoc : doc;
             return (
               <DocumentCard
                 riderId={riderId}
-                key={docType}
                 docType={docType}
                 document={doc}
                 isOptional={docType === "bank_proof"}
+                titleOverride={aadhaarFrontLabel}
+                riderDob={riderData?.rider?.dob ?? null}
+                riderAadhaarNumber={
+                  isIdentity ? riderData?.rider?.aadhaarNumber ?? null : null
+                }
+                riderPanNumber={
+                  isIdentity ? riderData?.rider?.panNumber ?? null : null
+                }
+                fallbackPreviewUrl={
+                  docType === "selfie" ? riderData?.rider?.selfieUrl ?? null : null
+                }
                 imageRefreshKey={
-                  realBankDoc ? imageRefreshKeys[realBankDoc.id] : undefined
+                  actionDoc && actionDoc.id > 0
+                    ? imageRefreshKeys[actionDoc.id]
+                    : doc
+                      ? imageRefreshKeys[doc.id]
+                      : undefined
                 }
-                onView={() =>
-                  doc &&
-                  !isSyntheticBank &&
-                  hasDocumentPreview(doc) &&
-                  handleViewDocument(doc)
-                }
+                onView={() => {
+                  if (!doc || (isSyntheticBank && docType === "bank_proof")) return;
+                  const previewFallback =
+                    docType === "selfie" ? riderData?.rider?.selfieUrl : null;
+                  if (!hasDocumentPreview(doc, previewFallback)) return;
+                  handleViewDocument({
+                    ...doc,
+                    fileUrl:
+                      resolveDocumentPreviewUrl(doc, previewFallback) || doc.fileUrl,
+                  });
+                }}
                 onEdit={() =>
-                  realBankDoc &&
-                  isManualUploadMethod(realBankDoc.verificationMethod) &&
+                  actionDoc &&
+                  isManualUploadMethod(actionDoc.verificationMethod) &&
                   !isBlocked &&
-                  handleEditDocument(realBankDoc)
+                  handleEditDocument(actionDoc)
                 }
                 onUpload={() => !isBlocked && handleStartUpload(docType)}
                 onApprove={() =>
-                  realBankDoc &&
-                  isManualUploadMethod(realBankDoc.verificationMethod) &&
-                  !realBankDoc.verified &&
+                  actionDoc &&
+                  isManualUploadMethod(actionDoc.verificationMethod) &&
+                  !actionDoc.verified &&
                   !isBlocked &&
-                  handleApproveDocument(realBankDoc)
+                  handleApproveDocument(actionDoc)
                 }
                 onReject={() =>
-                  realBankDoc &&
-                  isManualUploadMethod(realBankDoc.verificationMethod) &&
-                  !realBankDoc.verified &&
+                  actionDoc &&
+                  isManualUploadMethod(actionDoc.verificationMethod) &&
+                  !actionDoc.verified &&
                   !isBlocked &&
-                  handleRejectDocument(realBankDoc)
+                  handleRejectDocument(actionDoc)
                 }
                 onElectronicVerified={
-                  realBankDoc
-                    ? (data, meta) =>
-                        handleElectronicVerified(realBankDoc, data, meta)
+                  actionDoc
+                    ? (data, meta) => handleElectronicVerified(actionDoc, data, meta)
                     : EV_KIND_BY_DOC_TYPE[docType]
                       ? (data, meta) => handleElectronicWithoutDoc(docType, data, meta)
                       : undefined
                 }
                 pendingElectronicReview={
-                  realBankDoc
-                    ? pendingEvByDocId[realBankDoc.id] ?? null
+                  actionDoc && actionDoc.id > 0
+                    ? pendingEvByDocId[actionDoc.id] ?? null
                     : null
                 }
                 onOpenPendingElectronicReview={
-                  realBankDoc
-                    ? () => setEvReviewDocId(realBankDoc.id)
+                  actionDoc && actionDoc.id > 0
+                    ? () => setEvReviewDocId(actionDoc.id)
                     : undefined
                 }
                 isLoading={
-                  realBankDoc
-                    ? actionLoading === documentActionKey(realBankDoc)
+                  actionDoc
+                    ? actionLoading === documentActionKey(actionDoc)
                     : actionLoading === `upload:${docType}`
                 }
                 isDisabled={isBlocked}
@@ -1481,9 +1725,9 @@ export default function RiderOnboardingClient() {
                 allowEmptyElectronicVerify={Boolean(EV_KIND_BY_DOC_TYPE[docType])}
               />
             );
-          })}
-        </div>
-      </div>
+          })()
+        ) : null}
+      </DocumentDetailModalShell>
 
       {/* Document Viewer */}
       {selectedDocument && (
@@ -1493,7 +1737,12 @@ export default function RiderOnboardingClient() {
             setViewerOpen(false);
             setSelectedDocument(null);
           }}
-          imageUrl={selectedDocument.fileUrl ?? ""}
+          imageUrl={
+            resolveDocumentPreviewUrl(
+              selectedDocument,
+              selectedDocument.docType === "selfie" ? riderData?.rider?.selfieUrl : null,
+            ) || selectedDocument.fileUrl || ""
+          }
           documentName={DOCUMENT_LABELS[selectedDocument.docType] ?? selectedDocument.docType ?? "Document"}
           documentNumber={selectedDocument.docNumber ?? null}
         />
@@ -1573,6 +1822,7 @@ export default function RiderOnboardingClient() {
         onApprove={handleApproveFromEvReview}
         onDiscard={handleDiscardEvReview}
       />
+      </div>
     </div>
   );
 }
@@ -1613,6 +1863,7 @@ interface DocumentCardProps {
   titleOverride?: string;
   riderDob?: string | null;
   riderAadhaarNumber?: string | null;
+  riderPanNumber?: string | null;
   /** Extra image URL (e.g. riders.selfie_url) when doc.fileUrl is missing/placeholder. */
   fallbackPreviewUrl?: string | null;
   imageRefreshKey?: number;
@@ -1648,6 +1899,7 @@ function DocumentCard({
   titleOverride,
   riderDob,
   riderAadhaarNumber,
+  riderPanNumber,
   fallbackPreviewUrl,
   imageRefreshKey,
   onView,
@@ -1663,6 +1915,9 @@ function DocumentCard({
   allVersions,
   allowEmptyElectronicVerify = false,
 }: DocumentCardProps) {
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [evModalOpen, setEvModalOpen] = useState(false);
+  const [previewBroken, setPreviewBroken] = useState(false);
   const hasMultipleVersions = allVersions.length > 1;
   const showDocNumber = DOC_TYPES_WITH_NUMBER.has(docType);
   const autoVerifyDisplay =
@@ -1680,243 +1935,388 @@ function DocumentCard({
         "Account number",
       ].includes(r.label),
     )?.value ?? null;
-  const docNumberDisplay = document
-    ? showDocNumber
-      ? (document.docNumber?.trim() || numberFromAuto || "?")
-      : "N/A"
-    : "?";
-  // Use fileUrl as-is: presigned URLs break if we append query params (signature is over exact URL)
+  const docNumberDisplay = showDocNumber
+    ? (
+        document?.docNumber?.trim() ||
+        numberFromAuto ||
+        (docType === "pan" ? riderPanNumber?.trim() : null) ||
+        (docType === "aadhaar_front" || docType === "aadhaar"
+          ? riderAadhaarNumber?.trim()
+          : null) ||
+        "?"
+      )
+    : document
+      ? "N/A"
+      : "?";
   const imageUrl = resolveDocumentPreviewUrl(document, fallbackPreviewUrl);
   const imageKey = imageUrl ? `${imageUrl}-${imageRefreshKey ?? document?.id ?? ""}` : "no-image";
-  const showPreview = hasDocumentPreview(document, fallbackPreviewUrl);
+  const showPreview =
+    Boolean(imageUrl) &&
+    !previewBroken &&
+    hasDocumentPreview(document, fallbackPreviewUrl);
+
+  useEffect(() => {
+    setPreviewBroken(false);
+  }, [imageUrl, document?.id, imageRefreshKey]);
+  const hasRealUpload =
+    Boolean(document?.r2Key) ||
+    (Boolean(document?.fileUrl) &&
+      !isNonImageFileRef(document!.fileUrl) &&
+      document!.fileUrl !== "pending" &&
+      !String(document!.fileUrl).startsWith("placeholder"));
+  const canApproveReject =
+    Boolean(document) &&
+    hasRealUpload &&
+    isManualUploadMethod(document!.verificationMethod) &&
+    !document!.verified &&
+    !isDisabled;
+  const canOfferEmptyActions =
+    !isDisabled &&
+    (!document || !hasRealUpload) &&
+    !isElectronicallyVerifiedMethod(document?.verificationMethod);
+  const canEv =
+    Boolean(EV_KIND_BY_DOC_TYPE[docType]) &&
+    (allowEmptyElectronicVerify || Boolean(document)) &&
+    Boolean(onElectronicVerified);
 
   return (
-    <div className="border border-gray-200/90 rounded-xl p-5 bg-white shadow-sm hover:shadow-lg transition-all duration-200 h-full flex flex-col min-h-[340px]">
-      <div className="flex items-start justify-between gap-2 mb-5 min-h-[56px]">
-        <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-semibold text-gray-900">
+    <div className="space-y-3">
+      {/* Summary rows */}
+      <div className="overflow-hidden rounded-lg border border-slate-200">
+        <div className="grid grid-cols-[minmax(0,7.5rem)_minmax(0,1fr)] gap-2 border-b border-slate-100 px-3 py-2 sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)]">
+          <p className="text-[11px] font-medium text-slate-500">Document</p>
+          <p className="min-w-0 truncate text-[13px] font-semibold text-[#0A2342]">
             {titleOverride || DOCUMENT_LABELS[docType] || docType}
             {isOptional ? (
-              <span className="ml-1.5 text-xs font-medium text-gray-500">(Optional)</span>
+              <span className="ml-1 text-[11px] font-medium text-slate-400">(Optional)</span>
             ) : null}
-          </h3>
-          {hasMultipleVersions && (
-            <p className="text-xs text-gray-500 mt-0.5">
-              {allVersions.length} version{allVersions.length > 1 ? "s" : ""}
-            </p>
-          )}
+            {hasMultipleVersions ? (
+              <span className="ml-1.5 text-[11px] font-medium text-slate-400">
+                · {allVersions.length} versions
+              </span>
+            ) : null}
+          </p>
         </div>
-        {document && (
-          <div className="flex-shrink-0 max-w-[55%] min-w-0 text-right line-clamp-2">
-            <DocumentStatusBadge
-              verified={document.verified}
-              rejectedReason={document.rejectedReason}
-              verifierName={document.verifierName}
-              verifiedAt={document.createdAt}
-            />
+
+        {document ? (
+          <>
+            {showDocNumber ? (
+              <div className="grid grid-cols-1 items-start gap-2 border-b border-slate-100 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-center">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-medium text-slate-500">Method</p>
+                  <div className="mt-0.5 min-w-0">
+                    {(() => {
+                      const badge = verificationMethodBadge(document.verificationMethod);
+                      return (
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${badge.className}`}
+                        >
+                          <CheckCircle className="h-3 w-3" />
+                          {badge.label}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                <div className="min-w-0">
+                  <p className="text-[11px] font-medium text-slate-500">Number</p>
+                  <div className="mt-0.5 flex min-w-0 items-center gap-2">
+                    <p className="min-w-0 flex-1 truncate font-mono text-[13px] font-semibold tabular-nums text-slate-900">
+                      {docNumberDisplay}
+                    </p>
+                  </div>
+                </div>
+
+                {docNumberDisplay && docNumberDisplay !== "?" && docNumberDisplay !== "N/A" ? (
+                  <div className="pt-5 sm:pt-0">
+                    <CopyTextButton value={String(docNumberDisplay)} />
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="grid grid-cols-[minmax(0,7.5rem)_minmax(0,1fr)] items-center gap-2 border-b border-slate-100 px-3 py-2 sm:grid-cols-[minmax(0,9rem)_minmax(0,1fr)]">
+                <p className="text-[11px] font-medium text-slate-500">Method</p>
+                <div className="min-w-0">
+                  {(() => {
+                    const badge = verificationMethodBadge(document.verificationMethod);
+                    return (
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${badge.className}`}
+                      >
+                        <CheckCircle className="h-3 w-3" />
+                        {badge.label}
+                      </span>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="px-3 py-4 text-center">
+            <p className="text-sm font-semibold text-slate-700">
+              {isOptional ? "Optional — not submitted" : "No document uploaded"}
+            </p>
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              Upload and verify here if the rider cannot finish this step in the app.
+            </p>
           </div>
         )}
       </div>
 
-      {document ? (
-        <>
-          {/* Verification Method Badge */}
-          <div className="mb-2">
-            {(() => {
-              const badge = verificationMethodBadge(document.verificationMethod);
-              return (
-                <span
-                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${badge.className}`}
-                >
-                  <CheckCircle className="h-3 w-3" />
-                  {badge.label}
-                </span>
-              );
-            })()}
-          </div>
-
-          {/* Document Number - always show for Aadhaar, PAN, DL, RC (show "?" when empty) */}
-          {showDocNumber && (
-            <div className="mb-3 min-h-[40px] flex flex-col justify-center">
-              <p className="text-xs font-medium uppercase tracking-wider text-gray-500 mb-0.5">Document Number</p>
-              <p className="text-sm font-semibold text-gray-900 tabular-nums">{docNumberDisplay}</p>
+      {document && showPreview ? (
+        <button
+          type="button"
+          onClick={onView}
+          className={
+            docType === "selfie"
+              ? "group relative mx-auto flex h-52 w-52 items-center justify-center overflow-hidden rounded-full border-2 border-emerald-200 bg-slate-100 shadow-sm"
+              : "group relative block h-28 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-100"
+          }
+        >
+          {imageUrl ? (
+            <img
+              key={imageKey}
+              src={imageUrl}
+              alt={DOCUMENT_LABELS[docType]}
+              className="h-full w-full object-cover object-center"
+              onError={() => setPreviewBroken(true)}
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-sm text-slate-400">
+              No image
             </div>
           )}
+          <span className="absolute inset-0 flex items-center justify-center bg-black/0 transition group-hover:bg-black/25">
+            <Eye className="h-5 w-5 text-white opacity-0 drop-shadow transition group-hover:opacity-100" />
+          </span>
+        </button>
+      ) : !document && docType === "selfie" && fallbackPreviewUrl ? (
+        <button
+          type="button"
+          onClick={onView}
+          className="group relative mx-auto flex h-52 w-52 items-center justify-center overflow-hidden rounded-full border-2 border-emerald-200 bg-slate-100 shadow-sm"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={fallbackPreviewUrl} alt="Selfie" className="h-full w-full object-cover" />
+          <span className="absolute inset-0 flex items-center justify-center bg-black/0 transition group-hover:bg-black/25">
+            <Eye className="h-5 w-5 text-white opacity-0 drop-shadow transition group-hover:opacity-100" />
+          </span>
+        </button>
+      ) : null}
 
-          {/* Document Preview — show whenever a real image exists (app / dashboard / manual). */}
-          {showPreview && (
-            <div className="mb-3 relative flex-shrink-0">
-              <button
-                type="button"
-                onClick={onView}
-                className="w-full h-36 bg-gray-100 rounded-xl overflow-hidden border border-gray-200/80 shadow-inner hover:border-blue-400 hover:shadow-md transition-all duration-200 group block"
-              >
-                {imageUrl ? (
-                  <img
-                    key={imageKey}
-                    src={imageUrl}
-                    alt={DOCUMENT_LABELS[docType]}
-                    className="w-full h-full object-cover object-center group-hover:scale-[1.02] transition-transform duration-200"
-                    onError={(e) => {
-                      const target = e.target as HTMLImageElement;
-                      target.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='150'%3E%3Crect fill='%23f3f4f6' width='200' height='150'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='12' fill='%236b7280'%3EImage%3C/text%3E%3C/svg%3E";
-                    }}
-                  />
+      {document && autoVerifyDisplay ? (
+        <DocAutoVerificationDetailsView display={autoVerifyDisplay} variant="premium" />
+      ) : document &&
+        isElectronicallyVerifiedMethod(document.verificationMethod) &&
+        !showPreview ? (
+        <p className="rounded-lg border border-dashed border-sky-200 bg-sky-50/70 px-3 py-2 text-center text-[11px] text-sky-900">
+          {isDashboardElectronicMethod(document.verificationMethod)
+            ? "Verified electronically from dashboard. No structured provider fields were stored."
+            : "Verified through the app. No structured provider fields were stored."}
+        </p>
+      ) : null}
+
+      {(() => {
+        const electronicOnly =
+          document &&
+          hasRealUpload &&
+          isElectronicallyVerifiedMethod(document.verificationMethod);
+        if (electronicOnly) return null;
+
+        return (
+          <div className="rounded-lg border border-slate-200 px-3 py-2.5">
+            <p className="mb-2 text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+              Actions
+            </p>
+
+            {canOfferEmptyActions ? (
+              <div className="grid grid-cols-2 gap-2">
+                {onUpload ? (
+                  <button
+                    type="button"
+                    disabled={isLoading}
+                    onClick={() => setUploadModalOpen(true)}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    <Upload className="h-3.5 w-3.5" />
+                    Upload manually
+                  </button>
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center text-gray-400 text-sm">
-                    No image
-                  </div>
+                  <div />
                 )}
-                <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/20 transition-colors duration-200">
-                  <Eye className="h-7 w-7 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow" />
-                </div>
-              </button>
-            </div>
-          )}
-
-          {/* Auto-verify / DigiLocker captured provider details */}
-          {autoVerifyDisplay ? (
-            <div className="mb-3 flex-shrink-0">
-              <DocAutoVerificationDetailsView display={autoVerifyDisplay} />
-            </div>
-          ) : isElectronicallyVerifiedMethod(document.verificationMethod) && !showPreview ? (
-            <div className="mb-3 min-h-[5rem] flex-shrink-0 flex items-center justify-center p-3 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200/80 rounded-xl">
-              <p className="text-xs text-blue-800 text-center">
-                {isDashboardElectronicMethod(document.verificationMethod)
-                  ? "Verified electronically from dashboard. No structured provider fields were stored."
-                  : "Verified through the app. No structured provider fields were stored."}
-              </p>
-            </div>
-          ) : null}
-
-          {/* Actions - Different for electronic vs MANUAL_UPLOAD */}
-          {isElectronicallyVerifiedMethod(document.verificationMethod) ? (
-            <div className="text-center py-2">
-              <p className="text-xs text-gray-500">
+                {canEv ? (
+                  <button
+                    type="button"
+                    disabled={isLoading}
+                    onClick={() => setEvModalOpen(true)}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2.5 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+                  >
+                    Verify electronically
+                  </button>
+                ) : (
+                  <div />
+                )}
+              </div>
+            ) : document && hasRealUpload && isManualUploadMethod(document.verificationMethod) ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {document.r2Key ? (
+                  <button
+                    onClick={onView}
+                    className="rounded-md bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200"
+                  >
+                    View
+                  </button>
+                ) : null}
+                <button
+                  onClick={onEdit}
+                  disabled={isLoading || isDisabled}
+                  className="rounded-md bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  title={isDisabled ? "Cannot edit - rider is blocked" : "Edit document"}
+                >
+                  <Edit className="h-3.5 w-3.5" />
+                </button>
+                {canApproveReject ? (
+                  <>
+                    <button
+                      onClick={onApprove}
+                      disabled={isLoading || isDisabled}
+                      className="rounded-md bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      title="Approve"
+                    >
+                      {isLoading ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <CheckCircle className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                    <button
+                      onClick={onReject}
+                      disabled={isLoading || isDisabled}
+                      className="rounded-md bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      title="Reject"
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                    </button>
+                  </>
+                ) : null}
+                {canEv && !document.verified ? (
+                  <button
+                    type="button"
+                    onClick={() => setEvModalOpen(true)}
+                    className="rounded-md bg-violet-50 px-2.5 py-1.5 text-xs font-semibold text-violet-700 hover:bg-violet-100"
+                  >
+                    Verify electronically
+                  </button>
+                ) : null}
+              </div>
+            ) : document && isElectronicallyVerifiedMethod(document.verificationMethod) ? (
+              <p className="text-center text-xs text-slate-500">
                 {verificationMethodFooter(document.verificationMethod)}
               </p>
-            </div>
-          ) : (
-            // MANUAL_UPLOAD: Show edit/approve/reject actions
-            <div className="flex items-center gap-2">
-              {document.r2Key && (
-                <button
-                  onClick={onView}
-                  className="flex-1 px-3 py-1.5 text-xs font-medium text-gray-700 bg-gray-100 rounded hover:bg-gray-200 transition-colors"
-                >
-                  View
-                </button>
-              )}
-              <button
-                onClick={onEdit}
-                disabled={isLoading || isDisabled}
-                className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 rounded hover:bg-blue-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                title={isDisabled ? "Cannot edit - rider is blocked" : "Edit document number or upload new image"}
-              >
-                <Edit className="h-3.5 w-3.5" />
-              </button>
-              {!document.verified && (
-                <>
-                  <button
-                    onClick={onApprove}
-                    disabled={isLoading || isDisabled}
-                    className="px-3 py-1.5 text-xs font-medium text-green-700 bg-green-50 rounded hover:bg-green-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    title={isDisabled ? "Cannot approve - rider is blocked" : "Approve this document"}
-                  >
-                    {isLoading ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <CheckCircle className="h-3.5 w-3.5" />
-                    )}
-                  </button>
-                  <button
-                    onClick={onReject}
-                    disabled={isLoading || isDisabled}
-                    className="px-3 py-1.5 text-xs font-medium text-red-700 bg-red-50 rounded hover:bg-red-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    title={isDisabled ? "Cannot reject - rider is blocked" : "Reject this document"}
-                  >
-                    <XCircle className="h-3.5 w-3.5" />
-                  </button>
-                </>
-              )}
-            </div>
-          )}
+            ) : (
+              <p className="text-center text-xs text-slate-500">No actions available.</p>
+            )}
 
-          {/* Agent electronic verification — only for unverified manual uploads
-              of doc kinds the engine supports. Verified docs never show this. */}
-          {isManualUploadMethod(document.verificationMethod) &&
-            !document.verified &&
-            !isDisabled &&
-            EV_KIND_BY_DOC_TYPE[docType] ? (
-            <ElectronicVerifyPanel
-              subjectType="rider"
-              subjectId={riderId}
-              docKind={EV_KIND_BY_DOC_TYPE[docType]}
-              verified={document.verified}
-              hasPendingReview={!!pendingElectronicReview}
-              onOpenPendingReview={onOpenPendingElectronicReview}
-              imageKey={document.r2Key}
-              prefill={{
-                number:
-                  document.docNumber?.trim() &&
-                  document.docNumber.trim() !== "?"
-                    ? document.docNumber
-                    : riderAadhaarNumber ?? null,
-                name: null,
-                dob: document.extractedDob || riderDob || null,
-              }}
-              onVerified={(data, meta) => onElectronicVerified?.(data, meta)}
-            />
-          ) : null}
-        </>
-      ) : (
-        <div className="flex-1 flex flex-col">
-          <div className="text-center py-6 text-gray-400">
-            <p className="text-sm">
-              {isOptional ? "Optional — not submitted" : "No document uploaded"}
-            </p>
-            <p className="text-xs text-gray-500 mt-1">
-              Upload and verify here if the rider cannot finish this step in the app.
-            </p>
+            {uploadModalOpen ? (
+              <ModalPortal>
+                <div className="fixed inset-0 z-[160] flex items-center justify-center p-4">
+                  <button
+                    type="button"
+                    className="absolute inset-0 bg-slate-900/35 backdrop-blur-md"
+                    aria-label="Close"
+                    onClick={() => setUploadModalOpen(false)}
+                  />
+                  <div className="relative z-[161] w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+                    <h4 className="text-base font-semibold text-[#0A2342]">Upload manually</h4>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Upload a document file from the dashboard if the rider cannot finish this step
+                      in the app.
+                    </p>
+                    <div className="mt-4 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setUploadModalOpen(false)}
+                        className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-700"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isLoading}
+                        onClick={() => {
+                          setUploadModalOpen(false);
+                          onUpload?.();
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#0A2342] px-3 py-1.5 text-sm font-semibold text-white"
+                      >
+                        {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                        Continue to upload
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </ModalPortal>
+            ) : null}
+
+            {evModalOpen && canEv && EV_KIND_BY_DOC_TYPE[docType] ? (
+              <ModalPortal>
+                <div className="fixed inset-0 z-[160] flex items-center justify-center p-4">
+                  <button
+                    type="button"
+                    className="absolute inset-0 bg-slate-900/35 backdrop-blur-md"
+                    aria-label="Close"
+                    onClick={() => setEvModalOpen(false)}
+                  />
+                  <div className="relative z-[161] max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
+                    <div className="mb-3 flex items-start justify-between gap-2">
+                      <div>
+                        <h4 className="text-base font-semibold text-[#0A2342]">
+                          Verify electronically
+                        </h4>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          Same Cashfree check as the rider app. Does not require a photo upload.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setEvModalOpen(false)}
+                        className="rounded-lg p-1 text-slate-500 hover:bg-slate-100"
+                        aria-label="Close"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <ElectronicVerifyPanel
+                      subjectType="rider"
+                      subjectId={riderId}
+                      docKind={EV_KIND_BY_DOC_TYPE[docType]}
+                      verified={Boolean(document?.verified)}
+                      hasPendingReview={!!pendingElectronicReview}
+                      onOpenPendingReview={onOpenPendingElectronicReview}
+                      imageKey={document?.r2Key}
+                      prefill={{
+                        number:
+                          document?.docNumber?.trim() && document.docNumber.trim() !== "?"
+                            ? document.docNumber
+                            : riderAadhaarNumber ?? null,
+                        name: null,
+                        dob: document?.extractedDob || riderDob || null,
+                        ifsc: null,
+                      }}
+                      onVerified={(data, meta) => {
+                        onElectronicVerified?.(data, meta);
+                        setEvModalOpen(false);
+                      }}
+                    />
+                  </div>
+                </div>
+              </ModalPortal>
+            ) : null}
           </div>
-          {onUpload && !isDisabled ? (
-            <button
-              type="button"
-              onClick={onUpload}
-              disabled={isLoading}
-              className="mb-2 inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-800 hover:bg-blue-100 disabled:opacity-50"
-            >
-              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-              Upload document
-            </button>
-          ) : null}
-          {allowEmptyElectronicVerify ? (
-            <p className="text-xs text-gray-500 mb-1">
-              Or verify electronically below — same Cashfree check as the rider app.
-            </p>
-          ) : null}
-          {allowEmptyElectronicVerify &&
-          !isDisabled &&
-          EV_KIND_BY_DOC_TYPE[docType] &&
-          onElectronicVerified ? (
-            <ElectronicVerifyPanel
-              subjectType="rider"
-              subjectId={riderId}
-              docKind={EV_KIND_BY_DOC_TYPE[docType]}
-              verified={false}
-              hasPendingReview={!!pendingElectronicReview}
-              onOpenPendingReview={onOpenPendingElectronicReview}
-              prefill={{
-                number: riderAadhaarNumber ?? null,
-                name: null,
-                dob: riderDob || null,
-                ifsc: null,
-              }}
-              onVerified={(data, meta) => onElectronicVerified?.(data, meta)}
-            />
-          ) : null}
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -1944,10 +2344,11 @@ function RejectModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-md">
-        <div className="flex items-center justify-between p-6 border-b">
-          <h2 className="text-xl font-semibold text-gray-900">Reject Document</h2>
+    <ModalPortal>
+      <div className="fixed inset-0 z-[160] flex items-center justify-center bg-slate-900/35 p-4 backdrop-blur-md">
+        <div className="relative z-[161] w-full max-w-md rounded-2xl bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b p-6">
+            <h2 className="text-xl font-semibold text-gray-900">Reject Document</h2>
           <button
             onClick={onClose}
             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
@@ -1994,11 +2395,12 @@ function RejectModal({
           </LoadingButton>
         </div>
       </div>
-    </div>
+      </div>
+    </ModalPortal>
   );
 }
 
-// Progress Bar Component for Verification Progress
+// Step circles connected by lines — one circle per required document step.
 function ProgressBar({
   label,
   current,
@@ -2010,26 +2412,48 @@ function ProgressBar({
   total: number;
   uploaded?: number;
 }) {
-  const percentage = total > 0 ? (current / total) * 100 : 0;
-  const isComplete = current === total && total > 0;
-  
+  const steps = Math.max(1, total);
+  const done = Math.max(0, Math.min(current, steps));
+  const isComplete = done === steps && total > 0;
+
   return (
-    <div>
-      <div className="flex justify-between items-center mb-2.5">
-        <span className="text-sm font-medium text-gray-700">{label}</span>
-        <span className={`text-sm font-bold ${isComplete ? 'text-green-600' : 'text-gray-900'}`}>
-          {current}/{total} verified
-          {typeof uploaded === "number" ? ` · ${uploaded}/${total} uploaded` : ""}
-          {isComplete && ' ✓'}
+    <div className="rounded-xl border border-gray-100 bg-gradient-to-b from-slate-50/80 to-white px-3 py-2.5">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="truncate text-xs font-semibold text-[#0A2342]">{label}</span>
+        <span
+          className={`shrink-0 text-[11px] font-semibold tabular-nums ${
+            isComplete ? "text-emerald-600" : "text-gray-500"
+          }`}
+        >
+          {done}/{steps} verified
+          {typeof uploaded === "number" ? ` · ${uploaded}/${steps} uploaded` : ""}
+          {isComplete ? " ✓" : ""}
         </span>
       </div>
-      <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden shadow-inner">
-        <div
-          className={`h-3 rounded-full transition-all duration-500 ${
-            isComplete ? 'bg-gradient-to-r from-green-500 to-emerald-500' : 'bg-gradient-to-r from-blue-500 to-indigo-500'
-          }`}
-          style={{ width: `${percentage}%` }}
-        />
+      <div className="flex w-full items-center" aria-hidden>
+        {Array.from({ length: steps }, (_, i) => {
+          const filled = i < done;
+          const connectorFilled = i < done;
+          return (
+            <Fragment key={i}>
+              <span
+                className={`h-3 w-3 shrink-0 rounded-full border-2 transition-colors ${
+                  filled
+                    ? "border-emerald-500 bg-emerald-500"
+                    : "border-gray-300 bg-white"
+                }`}
+                title={`Step ${i + 1}${filled ? " complete" : ""}`}
+              />
+              {i < steps - 1 ? (
+                <span
+                  className={`mx-1.5 h-[2px] min-w-[12px] flex-1 rounded-full ${
+                    connectorFilled ? "bg-emerald-500" : "bg-gray-200"
+                  }`}
+                />
+              ) : null}
+            </Fragment>
+          );
+        })}
       </div>
     </div>
   );

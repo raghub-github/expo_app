@@ -1,11 +1,21 @@
-import React from "react";
-import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
+import React, { useMemo } from "react";
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  Platform,
+  type LayoutChangeEvent,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { resolveRiderTabBarBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { useRiderBottomDockStore } from "@/src/stores/riderBottomDockStore";
 import { colors } from "@/src/theme";
 import { TAB_LABEL_SIZE } from "@/src/theme/headerFonts";
+import { MIN_TOUCH_TARGET } from "@/src/theme/responsive";
 
 const BRAND = colors.primary[500];
 
@@ -24,12 +34,35 @@ const TABS: TabConfig[] = [
   { routeName: "profile", label: "Profile", icon: "person-outline", iconFocused: "person" },
 ];
 
+/**
+ * allowFontScaling={false} on tab labels:
+ * System fontScale 1.3–1.5 otherwise clips 5 labels or wraps into the map.
+ * Icons still scale via responsiveIconSize; labels use moderated rf() size.
+ */
 export function RiderTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const bottomPad = resolveRiderTabBarBottomInset(insets.bottom);
+  const setTabBarTotalHeight = useRiderBottomDockStore((s) => s.setTabBarTotalHeight);
+  const { rf, ri, rs, isCompactWidth, layoutFontScale } = useResponsiveLayout();
+
+  const labelSize = useMemo(
+    () => rf(TAB_LABEL_SIZE, { min: 10, max: isCompactWidth ? 11 : 12 }),
+    [rf, isCompactWidth]
+  );
+  const iconSize = ri(22);
+  const tabMinHeight = Math.max(MIN_TOUCH_TARGET, Math.round(40 * layoutFontScale));
+
+  const onShellLayout = (e: LayoutChangeEvent) => {
+    const h = Math.round(e.nativeEvent.layout.height);
+    if (h > 0) setTabBarTotalHeight(h);
+  };
 
   return (
-    <View style={[styles.shell, { paddingBottom: bottomPad }]} collapsable={false}>
+    <View
+      style={[styles.shell, { paddingBottom: bottomPad, paddingTop: rs(4) }]}
+      collapsable={false}
+      onLayout={onShellLayout}
+    >
       <View style={styles.bar}>
         {state.routes.map((route) => {
           if (route.name === "index") return null;
@@ -56,17 +89,22 @@ export function RiderTabBar({ state, descriptors, navigation }: BottomTabBarProp
             <Pressable
               key={route.key}
               onPress={onPress}
-              style={styles.tabBtn}
+              style={[styles.tabBtn, { minHeight: tabMinHeight }]}
               accessibilityRole="button"
               accessibilityState={focused ? { selected: true } : {}}
             >
               {focused ? <View style={styles.activeLine} /> : <View style={styles.activeLineSpacer} />}
               <Ionicons
                 name={focused ? tab.iconFocused : tab.icon}
-                size={22}
+                size={iconSize}
                 color={focused ? BRAND : colors.gray[500]}
               />
-              <Text style={[styles.label, focused && styles.labelActive]} numberOfLines={1}>
+              <Text
+                style={[styles.label, { fontSize: labelSize }, focused && styles.labelActive]}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                allowFontScaling={false}
+              >
                 {label}
               </Text>
             </Pressable>
@@ -80,8 +118,7 @@ export function RiderTabBar({ state, descriptors, navigation }: BottomTabBarProp
 const styles = StyleSheet.create({
   shell: {
     backgroundColor: "#ffffff",
-    paddingTop: 4,
-    paddingHorizontal: 6,
+    paddingHorizontal: 4,
     ...Platform.select({
       ios: {
         shadowColor: "#0f172a",
@@ -104,6 +141,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingVertical: 2,
     gap: 2,
+    minWidth: 0,
   },
   activeLine: {
     width: 28,
@@ -118,12 +156,12 @@ const styles = StyleSheet.create({
     marginBottom: 2,
     opacity: 0,
   },
-  // System face — avoid Lora blank on first paint before brand fonts finish.
   label: {
-    fontSize: TAB_LABEL_SIZE,
     fontWeight: "600",
     color: colors.gray[500],
     includeFontPadding: false,
+    textAlign: "center",
+    maxWidth: "100%",
   },
   labelActive: {
     fontWeight: "700",

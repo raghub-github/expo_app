@@ -63,7 +63,6 @@ export function GatiMitraBootstrapScreen({
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
   const opacity = useSharedValue(1);
-  const brandScale = useSharedValue(1);
   const exitStartedRef = useRef(false);
   const completedRef = useRef(false);
   const splashReadyFiredRef = useRef(false);
@@ -107,17 +106,16 @@ export function GatiMitraBootstrapScreen({
     if (variant !== "root" || !appReady || exitStartedRef.current) return;
     exitStartedRef.current = true;
     const easing = Easing.bezier(0.22, 0.94, 0.36, 1);
-    brandScale.value = withTiming(1.04, { duration: EXIT_MS, easing });
+    // Fade only — never scale up (that read as small → big).
     opacity.value = withTiming(0, { duration: EXIT_MS, easing }, (finished) => {
       if (finished) {
         runOnJS(finishExit)();
       }
     });
-  }, [variant, appReady, opacity, brandScale, finishExit]);
+  }, [variant, appReady, opacity, finishExit]);
 
   const exitStyle = useAnimatedStyle(() => ({
     opacity: opacity.value,
-    transform: [{ scale: brandScale.value }],
   }));
 
   const statusFallback =
@@ -141,22 +139,10 @@ export function GatiMitraBootstrapScreen({
       <View style={styles.logoLayer} pointerEvents="none">
         {fontsReady ? (
           <>
-            <AppText
-              style={styles.title}
-              bold
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.7}
-            >
+            <AppText style={styles.title} bold numberOfLines={1}>
               GatiMitra
             </AppText>
-            <AppText
-              style={styles.subtitle}
-              bold
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.6}
-            >
+            <AppText style={styles.subtitle} bold numberOfLines={1}>
               CRAFTED FOR CONVENIENCE
             </AppText>
           </>
@@ -270,8 +256,8 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   title: {
-    fontSize: 56,
-    lineHeight: 64,
+    fontSize: 64,
+    lineHeight: 72,
     fontFamily: "Lora_700Bold",
     fontWeight: "700",
     color: "#FFFFFF",
@@ -280,8 +266,8 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   subtitle: {
-    marginTop: 14,
-    fontSize: 11,
+    marginTop: 16,
+    fontSize: 12,
     fontFamily: "Lora_700Bold",
     fontWeight: "700",
     color: "rgba(255,255,255,0.9)",

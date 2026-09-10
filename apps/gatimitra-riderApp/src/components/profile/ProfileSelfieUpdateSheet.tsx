@@ -44,6 +44,7 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
   const queryClient = useQueryClient();
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [captureReady, setCaptureReady] = useState(false);
   const captureRef = useRef<SelfieAutoCaptureHandle>(null);
 
   const riderIdRaw = session?.riderId ?? session?.userId;
@@ -56,6 +57,7 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
     if (!visible) {
       setSelfieUri(null);
       setUploading(false);
+      setCaptureReady(false);
     }
   }, [visible]);
 
@@ -223,6 +225,7 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
               disabled={uploading}
               liveProbe={false}
               hideManualCapture
+              onCaptureReadinessChange={setCaptureReady}
               onCaptured={async (uri) => setSelfieUri(uri)}
               onRemove={() => setSelfieUri(null)}
               onRejected={(message) => notifyOnboardingToast(message)}
@@ -242,15 +245,19 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
             style={[styles.stickyFooter, { paddingBottom: Math.max(insets.bottom, 16) }]}
           >
             <TouchableOpacity
-              activeOpacity={uploading ? 1 : 0.88}
-            onPress={() => {
-              if (uploading) return;
-              captureRef.current?.capture();
-            }}
-              disabled={uploading}
+              activeOpacity={uploading || !captureReady ? 1 : 0.88}
+              onPress={() => {
+                if (uploading || !captureReady) return;
+                captureRef.current?.capture();
+              }}
+              disabled={uploading || !captureReady}
               accessibilityRole="button"
+              accessibilityState={{ disabled: uploading || !captureReady }}
               accessibilityLabel={t("profile.selfieUpdate.capture", "Capture selfie")}
-              style={[styles.stickyCaptureBtn, uploading && styles.stickyCaptureBtnDisabled]}
+              style={[
+                styles.stickyCaptureBtn,
+                (uploading || !captureReady) && styles.stickyCaptureBtnDisabled,
+              ]}
             >
               <Ionicons name="camera-outline" size={22} color="#FFFFFF" />
               <Text style={styles.stickyCaptureText}>

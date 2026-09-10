@@ -236,19 +236,6 @@ export default function OnboardingReferralScreen() {
     <View style={styles.root}>
       <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
         <View style={styles.flex}>
-          <View style={styles.topBar}>
-            <TouchableOpacity
-              onPress={onBack}
-              style={styles.backBtn}
-              activeOpacity={0.85}
-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-              accessibilityRole="button"
-              accessibilityLabel="Back"
-            >
-              <Ionicons name="chevron-back" size={22} color={colors.gray[800]} />
-            </TouchableOpacity>
-          </View>
-
           {phase === "choice" ? (
             <View style={styles.choiceScreen}>
               <View style={styles.headerBlock}>
@@ -422,7 +409,7 @@ export default function OnboardingReferralScreen() {
                         <Ionicons
                           name="shield-checkmark-outline"
                           size={20}
-                          color={!codeReady ? "#7cb889" : "#ffffff"}
+                          color="#ffffff"
                         />
                         <Text
                           style={[
@@ -715,11 +702,11 @@ const styles = StyleSheet.create({
     color: ACCENT_DARK,
   },
   primaryBtnDisabled: {
-    backgroundColor: "#edf8f0",
-    borderWidth: 1.5,
-    borderColor: "rgba(57, 211, 83, 0.25)",
+    backgroundColor: "#16a34a",
+    borderWidth: 0,
+    opacity: 0.45,
   },
   primaryBtnTextDisabled: {
-    color: "#7cb889",
+    color: "#ffffff",
   },
 });

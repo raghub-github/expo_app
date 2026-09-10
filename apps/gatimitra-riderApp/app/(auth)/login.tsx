@@ -26,7 +26,10 @@ import {
 } from "@/src/services/auth/auth.service";
 import { resetSessionRevokedFlag } from "@/src/services/sessionEvents";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
-import { getRiderLoginGeoFromDevice } from "@/src/lib/getRiderLoginGeoFromDevice";
+import {
+  getRiderLoginGeoFromDevice,
+  getRiderLoginGeoWithBudget,
+} from "@/src/lib/getRiderLoginGeoFromDevice";
 import { AnotherDeviceLoggedInSheet } from "@/src/components/auth/AnotherDeviceLoggedInSheet";
 import { LanguageSelectionSheet } from "@/src/components/language/LanguageSelectionSheet";
 import { AuthPrimaryButton } from "@/src/components/auth/AuthPrimaryButton";
@@ -55,10 +58,20 @@ const RIDER_TERMS_URL = "https://rider.gatimitra.com/terms";
 function AuthBrandHeader() {
   return (
     <View style={styles.brandWrap}>
-      <Text style={styles.brandTitle} numberOfLines={1}>
+      <Text
+        style={styles.brandTitle}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.65}
+      >
         GatiMitra
       </Text>
-      <Text style={styles.brandSubtitle} numberOfLines={1}>
+      <Text
+        style={styles.brandSubtitle}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.7}
+      >
         Moving India Forward
       </Text>
     </View>
@@ -230,6 +243,8 @@ export default function LoginScreen() {
   const [keyboardLift, setKeyboardLift] = useState(0);
   const [languageSheetOpen, setLanguageSheetOpen] = useState(false);
   const riderHero = useAppAssetSource(RX.auth.hero);
+  /** Prefetch while rider types OTP so verify does not wait on GPS. */
+  const loginGeoPrefetchRef = useRef<ReturnType<typeof getRiderLoginGeoFromDevice> | null>(null);
 
   const phoneDigits = phoneE164.replace(/\D/g, "");
   const phoneValid = phoneDigits.length >= 10;
@@ -257,6 +272,15 @@ export default function LoginScreen() {
       hideSub.remove();
     };
   }, []);
+
+  // Warm GPS/geocode in the background as soon as OTP step opens.
+  useEffect(() => {
+    if (step !== "otp") {
+      loginGeoPrefetchRef.current = null;
+      return;
+    }
+    loginGeoPrefetchRef.current = getRiderLoginGeoFromDevice();
+  }, [step]);
 
   const startCountdown = () => {
     setCountdown(60);
@@ -337,6 +361,22 @@ export default function LoginScreen() {
     }
   };
 
+  const resolveLoginGeoFast = async () => {
+    const pending = loginGeoPrefetchRef.current ?? getRiderLoginGeoFromDevice();
+    loginGeoPrefetchRef.current = pending;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        pending,
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), 350);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   const onVerifyOtp = async () => {
     if (!otp.trim() || otp.trim().length !== OTP_LENGTH) {
       setError(`Please enter a valid ${OTP_LENGTH}-digit OTP`);
@@ -346,8 +386,10 @@ export default function LoginScreen() {
     setBusy(true);
     setError(null);
     try {
-      const deviceId = await getOrCreateDeviceId();
-      const loginGeo = await getRiderLoginGeoFromDevice();
+      const [deviceId, loginGeo] = await Promise.all([
+        getOrCreateDeviceId(),
+        resolveLoginGeoFast(),
+      ]);
       const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
       const otpValue = otp.trim();
 
@@ -384,13 +426,34 @@ export default function LoginScreen() {
     }
   };
 
+  // Auto-verify as soon as all 6 digits are entered (once per OTP value).
+  const autoVerifyOtpRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (step !== "otp") {
+      autoVerifyOtpRef.current = null;
+      return;
+    }
+    if (!otpValid) {
+      // User is still editing — allow auto-verify again when 6 digits are complete.
+      if (otp.trim().length < OTP_LENGTH) autoVerifyOtpRef.current = null;
+      return;
+    }
+    if (busy || sessionConflict != null) return;
+    const code = otp.trim();
+    if (autoVerifyOtpRef.current === code) return;
+    autoVerifyOtpRef.current = code;
+    void onVerifyOtp();
+  }, [otp, otpValid, busy, step, sessionConflict]);
+
   const onMarkLogout = async () => {
     if (!sessionConflict || takeoverBusy) return;
     setTakeoverBusy(true);
     setError(null);
     try {
-      const deviceId = await getOrCreateDeviceId();
-      const loginGeo = await getRiderLoginGeoFromDevice();
+      const [deviceId, loginGeo] = await Promise.all([
+        getOrCreateDeviceId(),
+        getRiderLoginGeoWithBudget(350),
+      ]);
       const session = await riderAuthService.takeoverDeviceSession({
         takeoverToken: sessionConflict.takeoverToken,
         deviceId,
@@ -433,8 +496,10 @@ export default function LoginScreen() {
     setBusy(true);
     setError(null);
     try {
-      const deviceId = await getOrCreateDeviceId();
-      const loginGeo = await getRiderLoginGeoFromDevice();
+      const [deviceId, loginGeo] = await Promise.all([
+        getOrCreateDeviceId(),
+        getRiderLoginGeoWithBudget(350),
+      ]);
       const normalizedPhone = phoneDigits.length === 10 ? `+91${phoneDigits}` : phoneE164.trim();
       const result = await riderAuthService.exchangeRiderFromCurrentSupabaseSession({
         phoneE164: normalizedPhone,
@@ -679,12 +744,12 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    width: "100%",
+    alignSelf: "stretch",
     backgroundColor: RIDER_AUTH_BG,
   },
   hero: {
     flex: 1,
-    width: "100%",
+    alignSelf: "stretch",
     minHeight: 0,
     backgroundColor: RIDER_AUTH_BG,
   },
@@ -708,14 +773,17 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 16,
     paddingTop: 14,
+    alignSelf: "stretch",
   },
   chromeSafe: {
+    alignSelf: "stretch",
     paddingBottom: 0,
   },
   chromeTop: {
     paddingHorizontal: 12,
     minHeight: 44,
     justifyContent: "center",
+    alignSelf: "stretch",
   },
   iconBtn: {
     width: 40,
@@ -741,6 +809,8 @@ const styles = StyleSheet.create({
   },
   brandWrap: {
     alignItems: "center",
+    alignSelf: "stretch",
+    paddingHorizontal: 16,
     marginTop: 0,
     marginBottom: 4,
   },
@@ -749,6 +819,8 @@ const styles = StyleSheet.create({
     fontSize: 40,
     color: "#000000",
     letterSpacing: 0.2,
+    maxWidth: "100%",
+    textAlign: "center",
   },
   brandSubtitle: {
     fontFamily: RiderFonts.poppinsBold,
@@ -756,9 +828,11 @@ const styles = StyleSheet.create({
     color: "#000000",
     letterSpacing: 0.4,
     marginTop: 4,
+    maxWidth: "100%",
+    textAlign: "center",
   },
   sheet: {
-    width: "100%",
+    alignSelf: "stretch",
     flexGrow: 0,
     flexShrink: 0,
     backgroundColor: RIDER_AUTH_BG,
@@ -775,7 +849,7 @@ const styles = StyleSheet.create({
     minHeight: 16,
   },
   ctaBlock: {
-    width: "100%",
+    alignSelf: "stretch",
     marginTop: 8,
     flexShrink: 0,
   },
@@ -821,6 +895,7 @@ const styles = StyleSheet.create({
   phoneField: {
     flexDirection: "row",
     alignItems: "center",
+    alignSelf: "stretch",
     borderWidth: 1.5,
     borderColor: RIDER_AUTH_INK,
     borderRadius: 12,
@@ -913,6 +988,7 @@ const styles = StyleSheet.create({
   otpRow: {
     position: "relative",
     flexDirection: "row",
+    alignSelf: "stretch",
     justifyContent: "space-between",
     gap: 8,
     marginBottom: 14,
@@ -920,6 +996,7 @@ const styles = StyleSheet.create({
   },
   otpBox: {
     flex: 1,
+    minWidth: 0,
     height: 62,
     borderRadius: 12,
     backgroundColor: RIDER_AUTH_SURFACE,

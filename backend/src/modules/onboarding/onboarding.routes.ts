@@ -586,6 +586,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
             vehicleModelLabel: z.string().optional(),
             onboardingFlow: z.enum(["dl_rc", "rental_ev", "payment"]).optional(),
             submitVehicleDocs: z.boolean().optional(),
+            /** Optional docs the rider skipped during vehicle onboarding. */
+            skippedOnboardingDocs: z.array(z.string()).optional(),
             rentalProofSignedUrl: z.string().optional(),
             evProofSignedUrl: z.string().optional(),
             maxSpeedDeclaration: z.number().optional(),
@@ -649,6 +651,66 @@ export async function onboardingRoutes(app: FastifyInstance) {
             error: "aadhaar_already_registered",
             message: "This Aadhaar is already associated with another account.",
           });
+        }
+      }
+
+      if (step === "pan_selfie" && stepData.selfieSignedUrl) {
+        const skipPan = Boolean(riderRows[0]?.panSkipOverride);
+        // Admin PAN skip: selfie Continue must not be blocked.
+        if (!skipPan) {
+          const panDocs = await db
+            .select({
+              verified: riderDocuments.verified,
+              verificationMethod: riderDocuments.verificationMethod,
+              rejectedReason: riderDocuments.rejectedReason,
+              metadata: riderDocuments.metadata,
+              docNumber: riderDocuments.docNumber,
+            })
+            .from(riderDocuments)
+            .where(
+              and(eq(riderDocuments.riderId, riderIdInt), eq(riderDocuments.docType, "pan")),
+            )
+            .limit(1);
+          const pan = panDocs[0];
+          const meta =
+            pan?.metadata && typeof pan.metadata === "object" && !Array.isArray(pan.metadata)
+              ? (pan.metadata as Record<string, unknown>)
+              : {};
+          if (
+            meta.aadhaarCrossCheckOk === false ||
+            meta.panNameMismatch === true ||
+            meta.crossCheckFailed === true
+          ) {
+            const method = String(pan?.verificationMethod || "").toUpperCase();
+            const panOkNow =
+              Boolean(pan?.verified) &&
+              !pan?.rejectedReason &&
+              (method === "APP_VERIFIED" ||
+                method.startsWith("CASHFREE_") ||
+                method === "RAZORPAY_BANK");
+            // Stale mismatch after a successful re-verify should not block.
+            if (!panOkNow) {
+              return reply.code(403).send({
+                error: "pan_name_mismatch",
+                message:
+                  "Authorized name should match the name on your Aadhaar. Please verify your PAN details or contact support.",
+              });
+            }
+          }
+          const method = String(pan?.verificationMethod || "").toUpperCase();
+          const electronicallyOk =
+            Boolean(pan?.verified) &&
+            (method === "APP_VERIFIED" ||
+              method.startsWith("CASHFREE_") ||
+              method === "RAZORPAY_BANK");
+          const adminOk = Boolean(pan?.verified) && !pan?.rejectedReason;
+          if (!electronicallyOk && !adminOk) {
+            return reply.code(403).send({
+              error: "pan_required",
+              message:
+                "PAN verification is required before continuing. Contact GatiMitra Support if you need help.",
+            });
+          }
         }
       }
 
@@ -850,6 +912,13 @@ export async function onboardingRoutes(app: FastifyInstance) {
             stepData.onboardingFlow === "payment"
               ? stepData.onboardingFlow
               : undefined,
+          hasOwnVehicle:
+            typeof stepData.hasOwnVehicle === "boolean" ? stepData.hasOwnVehicle : undefined,
+          skippedOnboardingDocs: Array.isArray(stepData.skippedOnboardingDocs)
+            ? stepData.skippedOnboardingDocs
+                .map((c) => String(c || "").trim())
+                .filter(Boolean)
+            : undefined,
         };
 
         const submitVehicleDocs = stepData.submitVehicleDocs === true;
@@ -859,6 +928,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
           selectionMeta.vehicleCategoryCode ||
           selectionMeta.vehicleModelLabel ||
           selectionMeta.onboardingFlow ||
+          selectionMeta.hasOwnVehicle !== undefined ||
+          selectionMeta.skippedOnboardingDocs ||
           submitVehicleDocs
         ) {
           const existingSelection = await db
@@ -927,7 +998,15 @@ export async function onboardingRoutes(app: FastifyInstance) {
             ))
             .limit(1);
 
-          const metadata = {
+          const prevMeta =
+            existingDl[0]?.metadata &&
+            typeof existingDl[0].metadata === "object" &&
+            !Array.isArray(existingDl[0].metadata)
+              ? (existingDl[0].metadata as Record<string, unknown>)
+              : {};
+          // Merge — never wipe cashfreeVerifiedData from a prior Verify Instantly.
+          const metadata: Record<string, unknown> = {
+            ...prevMeta,
             dlNumber: dlNormalized || String(stepData.dlNumber),
           };
 
@@ -1213,10 +1292,12 @@ export async function onboardingRoutes(app: FastifyInstance) {
         }
 
         try {
-          const { maybeAutoVerifyRiderSelfie } = await import(
+          const { maybeAutoVerifyRiderSelfie, autoVerifyUploadedRiderSelfie } = await import(
             "../../lib/rider-selfie-auto-verify.js"
           );
-          await maybeAutoVerifyRiderSelfie(riderIdInt);
+          // Prefer forced auto-verify after selfie upload; fall back to identity-gated path.
+          const ok = await autoVerifyUploadedRiderSelfie(riderIdInt);
+          if (!ok) await maybeAutoVerifyRiderSelfie(riderIdInt);
         } catch (selfieErr) {
           console.warn(
             "[save-step pan_selfie] selfie auto-verify failed:",
@@ -1658,6 +1739,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
       const subject = {
         subjectType: "rider" as const,
         subjectId: riderIdInt,
+        // Rider app: verify for UX only — project to rider_documents on Continue/save-step.
+        deferProjection: true,
         // DL/RC policies may historically use has_own_vehicle filter; this step
         // only runs for own-vehicle bike onboarding, so always pass true.
         subjectFacts:
@@ -1780,7 +1863,6 @@ export async function onboardingRoutes(app: FastifyInstance) {
             if (b.docKind === "pan" || b.docKind === "driving_licence") {
               const {
                 crossCheckRiderDocument,
-                markRiderDocumentAadhaarMismatch,
               } = await import("../../lib/rider-aadhaar-cross-check.js");
               const cross = await crossCheckRiderDocument({
                 riderId: riderIdInt,
@@ -1788,19 +1870,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
                 verifiedData,
               });
               if (!cross.ok) {
-                try {
-                  await markRiderDocumentAadhaarMismatch({
-                    riderId: riderIdInt,
-                    docKind: b.docKind,
-                    cross,
-                    verifiedData,
-                  });
-                } catch (markErr) {
-                  req.log?.error?.(
-                    { err: markErr, docKind: b.docKind },
-                    "rider_cross_check_mark_failed",
-                  );
-                }
+                // Do not write mismatch stubs to rider_documents until the rider
+                // confirms the step with Continue (deferProjection path).
                 return reply.send({
                   success: true,
                   outcome: "mismatch",

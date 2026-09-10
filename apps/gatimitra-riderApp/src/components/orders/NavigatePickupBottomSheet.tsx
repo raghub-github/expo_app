@@ -6,6 +6,7 @@ import {
   Pressable,
   Platform,
   ActivityIndicator,
+  ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
@@ -14,6 +15,8 @@ import { SlideToReachPickup } from "@/src/components/orders/SlideToReachPickup";
 import { NavBottomSheetChevron } from "@/src/components/orders/NavBottomSheetChevron";
 import { formatActiveOrderEarning } from "@/src/lib/active-order-display";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 /** Fixed sheet height for map padding — tuned for premium layout on common phones. */
 export const NAVIGATE_PICKUP_SHEET_HEIGHT = 418;
@@ -171,6 +174,8 @@ export function NavigatePickupBottomSheet({
   onToggleSheetExpanded,
 }: Props) {
   const { t } = useTranslation();
+  const { isShortHeight, height } = useResponsiveLayout();
+  const detailsMaxH = Math.round(height * (isShortHeight ? 0.34 : 0.44));
   const earning = formatActiveOrderEarning(order);
 
   const metersLabel =
@@ -210,16 +215,25 @@ export function NavigatePickupBottomSheet({
       </View>
 
       {sheetExpanded ? (
-        <>
-      <View style={styles.sheetTop}>
-        <View style={styles.tripRow}>
+        <ScrollView
+          style={{ maxHeight: detailsMaxH }}
+          showsVerticalScrollIndicator={false}
+          bounces={false}
+          nestedScrollEnabled
+        >
+      <View style={[rowLayout.row, styles.sheetTop]}>
+        <View style={[rowLayout.row, styles.tripRow, rowLayout.grow]}>
           <TripIdPill label={t("orders.activeRide.tripIdLabel", "Trip ID")} />
           <TripIdPill label={tripId} accent />
         </View>
         <Pressable
           onPress={onCancel}
           disabled={cancelLoading}
-          style={({ pressed }) => [styles.cancelTopBtn, pressed && styles.cancelTopBtnPressed]}
+          style={({ pressed }) => [
+            styles.cancelTopBtn,
+            rowLayout.noShrink,
+            pressed && styles.cancelTopBtnPressed,
+          ]}
           hitSlop={6}
           accessibilityRole="button"
           accessibilityLabel={t("orders.activeRide.cancelRide", "Cancel ride")}
@@ -227,7 +241,7 @@ export function NavigatePickupBottomSheet({
           {cancelLoading ? (
             <ActivityIndicator size="small" color={colors.error[600]} />
           ) : (
-            <View style={styles.cancelTopInner}>
+            <View style={[rowLayout.row, styles.cancelTopInner]}>
               <Ionicons name="warning-outline" size={15} color={colors.error[600]} />
               <Text style={styles.cancelTopText} numberOfLines={1}>
                 {t("orders.activeRide.cancelShort", "Cancel")}
@@ -237,17 +251,19 @@ export function NavigatePickupBottomSheet({
         </Pressable>
       </View>
 
-      <Text style={styles.title}>{title}</Text>
+      <Text style={[styles.title, flexShrinkText]} numberOfLines={2}>
+        {title}
+      </Text>
 
       {routeMeta.error ? (
-        <Pressable onPress={routeMeta.onRetryRoute} style={styles.routeError}>
+        <Pressable onPress={routeMeta.onRetryRoute} style={[rowLayout.row, styles.routeError]}>
           <Ionicons name="refresh-outline" size={14} color={colors.error[600]} />
-          <Text style={styles.routeErrorText}>
+          <Text style={[styles.routeErrorText, flexShrinkText]} numberOfLines={2}>
             {t("orders.activeRide.routeFailed", "Route unavailable — retry")}
           </Text>
         </Pressable>
       ) : (
-        <View style={styles.statsRow}>
+        <View style={[rowLayout.row, styles.statsRow]}>
           <StatCard
             icon="time-outline"
             value={
@@ -280,20 +296,20 @@ export function NavigatePickupBottomSheet({
         </View>
       )}
 
-      <View style={styles.locationActionsRow}>
-        <View style={styles.locationCard}>
-          <View style={styles.locationCol}>
-            <View style={styles.colHeader}>
+      <View style={[rowLayout.row, styles.locationActionsRow]}>
+        <View style={[rowLayout.row, styles.locationCard]}>
+          <View style={[styles.locationCol, rowLayout.grow]}>
+            <View style={[rowLayout.row, styles.colHeader]}>
               <Ionicons name="location" size={15} color={colors.success[600]} />
-              <Text style={styles.colTitle}>
+              <Text style={[styles.colTitle, flexShrinkText]} numberOfLines={1}>
                 {t("orders.activeRide.pickupLocation", "Pickup location")}
               </Text>
             </View>
-            <Text style={styles.colMain} numberOfLines={2}>
+            <Text style={[styles.colMain, flexShrinkText]} numberOfLines={2}>
               {pickupAddress}
             </Text>
             {pickupLandmark ? (
-              <Text style={styles.colSub} numberOfLines={1}>
+              <Text style={[styles.colSub, flexShrinkText]} numberOfLines={1}>
                 {pickupLandmark}
               </Text>
             ) : null}
@@ -301,21 +317,23 @@ export function NavigatePickupBottomSheet({
 
           <View style={styles.divider} />
 
-          <View style={styles.locationCol}>
-            <View style={styles.colHeader}>
+          <View style={[styles.locationCol, rowLayout.grow]}>
+            <View style={[rowLayout.row, styles.colHeader]}>
               <Ionicons name="person" size={15} color={colors.gray[500]} />
-              <Text style={styles.colTitle}>{t("orders.activeRide.customer", "Customer")}</Text>
+              <Text style={[styles.colTitle, flexShrinkText]} numberOfLines={1}>
+                {t("orders.activeRide.customer", "Customer")}
+              </Text>
             </View>
-            <Text style={styles.colMain} numberOfLines={1}>
+            <Text style={[styles.colMain, flexShrinkText]} numberOfLines={1}>
               {displayCustomer}
             </Text>
             {displayPhone ? (
-              <Text style={styles.colSub} numberOfLines={1}>
+              <Text style={[styles.colSub, flexShrinkText]} numberOfLines={1}>
                 {displayPhone}
               </Text>
             ) : null}
             {customerRating != null && Number.isFinite(customerRating) ? (
-              <View style={styles.ratingRow}>
+              <View style={[rowLayout.row, styles.ratingRow]}>
                 <Ionicons name="star" size={12} color="#F59E0B" />
                 <Text style={styles.ratingText}>{customerRating.toFixed(1)}</Text>
               </View>
@@ -323,7 +341,7 @@ export function NavigatePickupBottomSheet({
           </View>
         </View>
 
-        <View style={styles.quickCol}>
+        <View style={[styles.quickCol, rowLayout.noShrink]}>
           <QuickAction
             icon="call"
             label={t("orders.activeRide.callCustomer", "Call customer")}
@@ -346,9 +364,9 @@ export function NavigatePickupBottomSheet({
           />
         </View>
       </View>
-        </>
+        </ScrollView>
       ) : (
-        <Text style={styles.collapsedTitle} numberOfLines={1}>
+        <Text style={[styles.collapsedTitle, flexShrinkText]} numberOfLines={1}>
           {title}
         </Text>
       )}
@@ -473,6 +491,7 @@ const styles = StyleSheet.create({
   },
   statCard: {
     flex: 1,
+    minWidth: 0,
     alignItems: "center",
     justifyContent: "center",
     gap: 2,
@@ -493,6 +512,9 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: colors.gray[900],
     textAlign: "center",
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: "100%",
   },
   statValueHighlight: {
     color: colors.primary[900],
@@ -502,6 +524,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: colors.gray[500],
     textAlign: "center",
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: "100%",
   },
   statLabelHighlight: {
     color: colors.primary[700],

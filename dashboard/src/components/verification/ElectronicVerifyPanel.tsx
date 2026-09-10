@@ -17,7 +17,8 @@
  * verified) without the agent re-typing anything.
  */
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { Zap, Loader2, ShieldCheck, XCircle, ChevronDown, Copy } from "lucide-react";
+import { Zap, Loader2, ShieldCheck, XCircle, ChevronDown } from "lucide-react";
+import { CopyTextButton } from "@/components/ui/CopyTextButton";
 
 export type EvDocKind =
   | "pan"
@@ -413,14 +414,10 @@ export function ElectronicVerifyPanel(props: {
                   value={outcome.url}
                   className="min-w-0 flex-1 rounded-lg border border-indigo-200 bg-indigo-50/60 px-2 py-1.5 font-mono text-[10px] text-indigo-900"
                 />
-                <button
-                  type="button"
-                  onClick={() => void navigator.clipboard.writeText(outcome.url)}
+                <CopyTextButton
+                  value={outcome.url}
                   className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-indigo-200 bg-white px-2 py-1.5 text-[11px] font-semibold text-indigo-800 hover:bg-indigo-50"
-                >
-                  <Copy className="h-3.5 w-3.5" />
-                  Copy
-                </button>
+                />
               </div>
               <a
                 href={outcome.url}

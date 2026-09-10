@@ -78,10 +78,18 @@ const CUSTOMER_PUSH_CHANNELS = [
     lightColor: "#14b8a6",
     sound: CX_SOUND,
   },
-  { channelId: "customer_default", name: "Orders & updates", lightColor: "#14b8a6" },
-  { channelId: "customer_live_order", name: "Live trip progress", lightColor: "#14b8a6" },
-  { channelId: "customer_cx", name: "Orders & updates", lightColor: "#14b8a6" },
-  { channelId: "default", name: "Orders & updates", lightColor: "#14b8a6" },
+  // New channel id so Android picks up CX sound (channels are immutable once created).
+  {
+    channelId: "customer_order_cx",
+    name: "Order updates",
+    lightColor: "#14b8a6",
+    sound: CX_SOUND,
+  },
+  { channelId: "customer_default", name: "Orders & updates", lightColor: "#14b8a6", sound: CX_SOUND },
+  // Legacy silent channel kept so old tokens still resolve; new pushes use customer_order_cx.
+  { channelId: "customer_live_order", name: "Live trip progress", lightColor: "#14b8a6", sound: undefined },
+  { channelId: "customer_cx", name: "Orders & updates", lightColor: "#14b8a6", sound: CX_SOUND },
+  { channelId: "default", name: "Orders & updates", lightColor: "#14b8a6", sound: CX_SOUND },
 ] as const;
 
 /** Campaign inbox has no realtime channel — poll while foregrounded. */
@@ -232,7 +240,11 @@ function PushNotificationBootstrapInner() {
 
   const handleForeground = useCallback(
     (payload: PushNotificationOpenPayload) => {
-      if (isRideServicePush(payload.data)) {
+      // CX chime for order/ride/parcel lifecycle — never merchant/rider Incoming Order wav.
+      if (
+        isRideServicePush(payload.data) ||
+        isCustomerOrderLifecyclePushData(payload.data)
+      ) {
         void playCustomerNotificationSound();
       }
       handlePrepDelayPush(payload.data);
@@ -261,6 +273,13 @@ function PushNotificationBootstrapInner() {
   authRef.current = { session, hydrated };
   const foregroundSyncAtRef = useRef(0);
   const expoGo = Constants.appOwnership === "expo";
+
+  useEffect(() => {
+    if (!expoGo) return;
+    console.warn(
+      "[push:customer] Expo Go cannot deliver background/killed push. Use a dev-client or Play build: npm run start:dev-client"
+    );
+  }, [expoGo]);
 
   const evaluatePushPrompt = useCallback(
     async (snap: {
@@ -378,15 +397,17 @@ function PushNotificationBootstrapInner() {
         Notifications.setNotificationHandler({
           handleNotification: async (notification) => {
             const data = (notification.request.content.data ?? {}) as Record<string, unknown>;
-            if (liveProgressHandlerResult(data).suppress) {
+            const result = liveProgressHandlerResult(data);
+            // Keep sticky live bar in sync whenever a lifecycle push arrives.
+            if (result.updateSticky || result.suppress) {
               await applyLiveProgressFromPush(data);
             }
-            const result = liveProgressHandlerResult(data);
             return {
               shouldShowAlert: result.shouldShowAlert,
-              shouldPlaySound: false,
+              shouldPlaySound: result.shouldPlaySound,
               shouldSetBadge: result.shouldSetBadge,
               shouldShowBanner: result.shouldShowBanner,
+              // Open: false for lifecycle (sticky owns tray). Bg/killed: true via FCM/OS.
               shouldShowList: result.shouldShowList,
             };
           },

@@ -3,7 +3,7 @@
   "main": "index.js",
   "version": "1.0.0",
   "scripts": {
-    "test": "node --import tsx --test src/services/auth/sessionConflict.test.ts src/lib/incomingDispatchOffers.test.ts src/lib/riderDispatchLifecycle.test.ts src/lib/singleWinnerDispatch.test.ts src/lib/rider-action-kind.test.ts src/lib/rider-earning-display.test.ts src/lib/ride-pickup-wait.test.ts src/services/maps/directions.service.test.ts src/lib/readLatestRiderGps.test.ts src/lib/sanitizeRiderAuthError.test.ts src/lib/onboarding-routes.test.ts src/lib/onboardingLegacyMigration.test.ts",
+    "test": "node --import tsx --test src/services/auth/sessionConflict.test.ts src/lib/incomingDispatchOffers.test.ts src/lib/riderDispatchLifecycle.test.ts src/lib/singleWinnerDispatch.test.ts src/lib/rider-action-kind.test.ts src/lib/rider-earning-display.test.ts src/lib/ride-pickup-wait.test.ts src/services/maps/directions.service.test.ts src/lib/readLatestRiderGps.test.ts src/lib/sanitizeRiderAuthError.test.ts src/lib/onboarding-routes.test.ts src/lib/onboardingLegacyMigration.test.ts src/theme/responsive.test.ts src/theme/responsive-stress.test.ts src/lib/rider-bottom-dock.test.ts",
     "start": "node scripts/expo-start.js",
     "start:clear": "node scripts/expo-start.js --clear",
     "start:clean": "node scripts/clear-metro-cache.js && node scripts/expo-start.js --clear",

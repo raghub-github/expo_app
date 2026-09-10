@@ -562,8 +562,20 @@ export function computeRiderVehicleMissingFields(
     missing.push("ownership_type");
   }
 
+  // Cashfree RC already sets is_commercial (or category fallback). Only ask when unknown.
   if (electronic) {
-    missing.push("is_commercial");
+    const flags =
+      row.limitationFlags && typeof row.limitationFlags === "object"
+        ? (row.limitationFlags as Record<string, unknown>)
+        : {};
+    const commercialKnown =
+      flags.commercialKnown === true ||
+      flags.commercialFromCashfree === true ||
+      flags.commercialFromCashfree === false ||
+      typeof row.isCommercial === "boolean";
+    if (!commercialKnown) {
+      missing.push("is_commercial");
+    }
   }
 
   return missing;

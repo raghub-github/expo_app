@@ -19,6 +19,7 @@ type PushPayload = {
   tag?: string;
   playSound?: boolean;
   skipExpo?: boolean;
+  sticky?: boolean;
 };
 
 export async function getMerchantStorePushTokens(sql: Sql, storeId: number): Promise<string[]> {
@@ -122,8 +123,11 @@ async function sendMerchantNativeFcm(tokens: string[], payload: PushPayload): Pr
         channelId: payload.channelId ?? "merchant_default",
         sound: isNewOrderAlert ? "notification" : playSound ? "default" : null,
         playSound,
+        // Killed / background: always include Android notification block.
+        silent: false,
+        sticky: payload.sticky === true,
         appRole: "merchant",
-        priority: "high",
+        priority: isNewOrderAlert ? "critical" : "high",
         collapseKey: payload.collapseKey ?? null,
         tag: payload.tag ?? null,
         data,
@@ -147,8 +151,9 @@ async function sendMerchantExpoPush(tokens: string[], payload: PushPayload): Pro
       ...(payload.data ?? {}),
       skip_in_app_banner: true,
       appRole: "merchant",
+      sticky: payload.sticky === true ? "true" : "false",
     },
-    priority: "high",
+    priority: "high" as const,
     channelId: payload.channelId ?? "merchant_default",
     collapseId: payload.collapseKey ?? undefined,
   }));
@@ -363,7 +368,8 @@ async function getMerchantStoreScopedNativeFcmTokens(
 }
 
 const STORE_STATUS_FCM_TAG = "merchant-store-status";
-const STORE_STATUS_CHANNEL_ID = "merchant_store_status";
+/** Must match apps/merchant_app STORE_STATUS_CHANNEL_ID (v2 — shade-visible). */
+const STORE_STATUS_CHANNEL_ID = "merchant_store_status_v2";
 
 type StoreStatusPushState = "ONLINE" | "OUT_OF_TIMINGS" | "RECONNECT";
 
@@ -423,29 +429,71 @@ function storeStatusCopy(
   };
 }
 
+function formatMerchantKitchenTrayBody(breakdown: {
+  pending_accept: number;
+  preparing: number;
+  ready: number;
+  out_for_delivery: number;
+}): string {
+  // Zomato-style: only non-zero stages (auto-hide at 0). Killed apps get this
+  // via FCM sticky tag so Prep/Ready/Out update without opening the app.
+  const parts: string[] = [];
+  if (breakdown.preparing > 0) parts.push(`🍳 ${breakdown.preparing} preparing`);
+  if (breakdown.ready > 0) parts.push(`✅ ${breakdown.ready} ready`);
+  if (breakdown.out_for_delivery > 0) {
+    parts.push(`🛵 ${breakdown.out_for_delivery} out for delivery`);
+  }
+  if (breakdown.pending_accept > 0) {
+    parts.push(`🔔 ${breakdown.pending_accept} new`);
+  }
+  return parts.length > 0 ? parts.join("\n") : "Waiting for orders";
+}
+
 /**
  * Persistent store-status tray (ONLINE / OUT_OF_TIMINGS / RECONNECT).
  * Native FCM with a stable tag updates in place. Not a NEW_ORDER alert.
+ * ONLINE body reflects kitchen breakdown so killed apps never stay on
+ * "Waiting for orders" while live orders exist.
  */
 export async function notifyMerchantStoreStatus(
   sql: Sql,
   storeId: number,
   state: StoreStatusPushState,
-  opts?: { eventId?: string }
+  opts?: { eventId?: string; kitchenSubtitle?: string | null }
 ): Promise<void> {
   const { storeName, merchantId } = await merchantStoreStatusContext(sql, storeId);
   const copy = storeStatusCopy(state, storeName);
+  let body = copy.body;
+  let url = copy.url;
+  let preparing = 0;
+  let ready = 0;
+  let outForDelivery = 0;
+  let pendingAccept = 0;
+  let activeOrders = 0;
+  if (state === "ONLINE") {
+    const breakdown = await countActiveOrdersBreakdownForStore(sql, storeId);
+    preparing = breakdown.preparing;
+    ready = breakdown.ready;
+    outForDelivery = breakdown.out_for_delivery;
+    pendingAccept = breakdown.pending_accept;
+    activeOrders = breakdown.active_orders;
+    body = formatMerchantKitchenTrayBody(breakdown);
+    // Rider urgency lines stay on their own heads-up — don't pollute Zomato sticky body.
+    if (activeOrders > 0) url = "/(tabs)/orders?tab=active";
+  }
   const eventId = opts?.eventId ?? `STORE_STATUS:${state}:${storeId}:${Date.now()}`;
   const timestamp = new Date().toISOString();
   const nativeTokens = await getMerchantStoreScopedNativeFcmTokens(sql, storeId);
   const expoTokens = nativeTokens.length > 0 ? [] : await getMerchantStorePushTokens(sql, storeId);
   const pushPayload: PushPayload = {
     title: copy.title,
-    body: copy.body,
+    body,
     channelId: STORE_STATUS_CHANNEL_ID,
     collapseKey: `gm_store_status_${storeId}`,
     tag: STORE_STATUS_FCM_TAG,
-    playSound: false,
+    // Offline / reconnect: audible heads-up. ONLINE sticky stays quiet.
+    playSound: state !== "ONLINE",
+    sticky: state === "ONLINE",
     skipExpo: nativeTokens.length > 0,
     data: {
       type: "STORE_STATUS",
@@ -456,12 +504,20 @@ export async function notifyMerchantStoreStatus(
       storeName: storeName ?? "",
       eventId,
       timestamp,
-      url: copy.url,
+      url,
       screen: copy.screen,
+      refreshLiveOrders: true,
+      activeOrdersCount: activeOrders,
+      preparing,
+      ready,
+      outForDelivery,
+      pendingAccept,
+      stickySubtitle: opts?.kitchenSubtitle ?? "",
+      kitchenBody: body,
     },
   };
   console.info(
-    `[STORE_STATUS_NOTIFICATION] merchantId=${merchantId ?? ""} storeId=${storeId} storeName=${storeName ?? "Your store"} state=${state} source=FCM notificationId=${STORE_STATUS_FCM_TAG} action=POSTED eventId=${eventId}`
+    `[STORE_STATUS_NOTIFICATION] merchantId=${merchantId ?? ""} storeId=${storeId} storeName=${storeName ?? "Your store"} state=${state} source=FCM notificationId=${STORE_STATUS_FCM_TAG} action=POSTED eventId=${eventId} body=${body.slice(0, 80)}`
   );
   if (nativeTokens.length > 0) {
     await sendMerchantNativeFcm(nativeTokens, pushPayload);
@@ -483,13 +539,14 @@ async function merchantStoreDisplayName(sql: Sql, storeId: number): Promise<stri
   return storeName;
 }
 
-/** Outside scheduled delivery slot — opens restaurant status screen. */
+/** Outside scheduled delivery slot OR manual offline — Zomato-style tray. */
 export async function notifyMerchantOutsideDeliveryTimings(sql: Sql, storeId: number): Promise<void> {
   const storeName = await merchantStoreDisplayName(sql, storeId);
   const titled = storeName
     ? `🔴 ${withTheStoreName(storeName)} is out of delivery timings`
     : "🔴 Your store is out of delivery timings";
   const body = "Go online now to receive orders";
+  // Inbox once per 12h; tray FCM always updates immediately (same tag, no stack).
   const recent = await sql`
     SELECT 1 FROM merchant_store_notifications
     WHERE store_id = ${storeId}
@@ -506,40 +563,16 @@ export async function notifyMerchantOutsideDeliveryTimings(sql: Sql, storeId: nu
       actionUrl: "/restaurant-status",
     }).catch(() => undefined);
   }
-  await notifyMerchantStoreStatus(sql, storeId, "OUT_OF_TIMINGS");
+  await notifyMerchantStoreStatus(sql, storeId, "OUT_OF_TIMINGS", {
+    eventId: `STORE_STATUS:OUT_OF_TIMINGS:${storeId}:${Date.now()}`,
+  });
 }
 
 /** Delivery slot is active but store is still offline — prompt merchant to go online. */
-/** Delivery slot is active but store is still offline — inbox prompt (not the persistent status tray). */
 export async function notifyMerchantGoOnlinePrompt(sql: Sql, storeId: number): Promise<void> {
-  const storeName = await merchantStoreDisplayName(sql, storeId);
-  const title = storeName
-    ? `🔴 ${withTheStoreName(storeName)} is out of delivery timings`
-    : "🔴 Your store is out of delivery timings";
-  const body = "Go online now to receive orders";
-  const recent = await sql`
-    SELECT 1 FROM merchant_store_notifications
-    WHERE store_id = ${storeId}
-      AND title = ${title}
-      AND created_at > now() - interval '6 hours'
-    LIMIT 1
-  `;
-  if (recent.length > 0) return;
-  await notifyMerchantStore(sql, {
-    storeId,
-    type: "store",
-    title,
-    body,
-    actionUrl: "/restaurant-status",
-    pushData: {
-      type: "merchant_go_online",
-      screen: "restaurant_status",
-      url: "/restaurant-status",
-      template_code: "MERCHANT_GO_ONLINE_PROMPT",
-    },
-    channelId: STORE_STATUS_CHANNEL_ID,
-    playSound: false,
-  });
+  // Always refresh the OUT_OF_TIMINGS tray (killed/bg/open). Inbox dedupe stays inside
+  // notifyMerchantOutsideDeliveryTimings — never skip the OS push.
+  await notifyMerchantOutsideDeliveryTimings(sql, storeId);
 }
 
 export async function notifyMerchantNewRating(
@@ -573,6 +606,7 @@ export async function notifyMerchantNewRating(
     orderId: args.foodOrderId,
     actionUrl,
     channelId: "merchant_order_lifecycle",
+    playSound: true,
     pushData: {
       type: "merchant_rating",
       orderId: args.displayOrderId,
@@ -608,11 +642,68 @@ export async function notifyMerchantNewComplaint(
     body,
     skipInbox: true,
     channelId: "merchant_complaints",
+    playSound: true,
     actionUrl: "/(tabs)/complaints",
     pushData: {
       type: "merchant_complaint",
       url: "/(tabs)/complaints",
       screen: "complaints",
+    },
+  });
+}
+
+/**
+ * New-order tray alert via store Expo + native FCM (background/killed safe).
+ * Used by notifyMerchantStoreNewOrder — pairs with v2 in_app audit row.
+ */
+export async function notifyMerchantStoreNewOrderPush(
+  sql: Sql,
+  args: {
+    storeId: number;
+    title: string;
+    body: string;
+    foodOrderId: number | null;
+    orderIdText: string;
+    displayId: string;
+    href: string;
+    itemCount: number;
+    amount: number;
+    customerName: string;
+  }
+): Promise<void> {
+  if (!Number.isInteger(args.storeId) || args.storeId < 1) return;
+  await notifyMerchantStore(sql, {
+    storeId: args.storeId,
+    type: "order",
+    title: args.title,
+    body: args.body,
+    orderId: args.foodOrderId,
+    actionUrl: args.href,
+    channelId: "merchant_new_orders_alert",
+    skipInbox: true,
+    playSound: true,
+    // Unique per order so multiple pending new-orders never replace each other.
+    collapseKey: `gm_new_order_${args.foodOrderId ?? args.orderIdText}`,
+    tag: `merchant-new-order-${args.foodOrderId ?? args.orderIdText}`,
+    pushData: {
+      type: "merchant_new_order",
+      event: "NEW_ORDER",
+      template_code: "MERCHANT_NEW_ORDER",
+      gmType: "MERCHANT_NEW_ORDER",
+      orderId: args.orderIdText,
+      foodOrderId: args.foodOrderId,
+      orderShortId: args.displayId,
+      itemCount: args.itemCount,
+      amount: args.amount,
+      customerName: args.customerName,
+      storeId: args.storeId,
+      url: args.href,
+      screen: "new_order",
+      skip_in_app_banner: true,
+      refreshLiveOrders: true,
+      stickySubtitle: `New order · #${args.displayId}`,
+      alertStartedAt: String(Date.now()),
+      alertSessionId: `MERCHANT_NEW_ORDER:${args.foodOrderId ?? args.orderIdText}:${args.storeId}`,
     },
   });
 }
@@ -649,11 +740,16 @@ export async function notifyMerchantRiderAssigned(
       type: "merchant_rider_assigned",
       stage: "RIDER_ASSIGNED",
       refreshLiveOrders: true,
+      stickySubtitle: `Rider assigned · Order ${id}`,
       orderId: args.displayOrderId,
       foodOrderId: args.foodOrderId,
       url: actionUrl,
     },
   });
+  await notifyMerchantStoreStatus(sql, args.storeId, "ONLINE", {
+    kitchenSubtitle: `Rider assigned · Order ${id}`,
+    eventId: `STORE_STATUS:RIDER_ASSIGNED:${args.storeId}:${Date.now()}`,
+  }).catch(() => undefined);
 }
 
 export async function notifyMerchantRiderReachedPickup(
@@ -667,18 +763,14 @@ export async function notifyMerchantRiderReachedPickup(
     freeWaitSeconds?: number | null;
   }
 ): Promise<void> {
-  const { FOOD_RIDER_FREE_WAIT_SECONDS } = await import("./food-rider-free-wait.js");
   const breakdown = await countActiveOrdersBreakdownForStore(sql, args.storeId);
   const rider = args.riderName.trim() || "Rider";
-  const freeWait =
-    args.freeWaitSeconds != null && Number.isFinite(args.freeWaitSeconds)
-      ? Math.max(0, Math.floor(args.freeWaitSeconds))
-      : FOOD_RIDER_FREE_WAIT_SECONDS;
   const otp = (args.pickupOtp ?? "").trim();
-  const title = `Order ID: ${args.displayOrderId}, hand over asap!`;
-  const body = otp
-    ? `${rider} has reached for pickup. OTP ${otp}. Free wait ${Math.round(freeWait / 60)} min.`
-    : `${rider} has reached nearby for pickup. Click to view details.`;
+  const titledRider = /^the\s/i.test(rider) ? rider : `The ${rider}`;
+  // Heads-up (not sticky): "The {rider} is waiting for pickup. Please hand over…"
+  const title = `${titledRider} is waiting for pickup`;
+  const asap = "Please hand over the order ASAP to avoid delays.";
+  const body = otp ? `${asap} OTP ${otp}.` : asap;
   const actionUrl = args.foodOrderId != null ? `/order/${args.foodOrderId}` : "/(tabs)/orders";
   await notifyMerchantStore(sql, {
     storeId: args.storeId,
@@ -696,14 +788,16 @@ export async function notifyMerchantRiderReachedPickup(
       ready: breakdown.ready,
       outForDelivery: breakdown.out_for_delivery,
       pendingAccept: breakdown.pending_accept,
-      stickySubtitle: `${rider} at store — hand over asap`,
-      freeWaitSeconds: freeWait,
       pickupOtp: otp || undefined,
       orderId: args.displayOrderId,
       foodOrderId: args.foodOrderId,
       url: actionUrl,
     },
   });
+  // Refresh Zomato-style Prep/Ready/Out sticky (no rider text in sticky body).
+  await notifyMerchantStoreStatus(sql, args.storeId, "ONLINE", {
+    eventId: `STORE_STATUS:RIDER_PICKUP:${args.storeId}:${Date.now()}`,
+  }).catch(() => undefined);
 }
 
 /**
@@ -925,32 +1019,57 @@ export async function notifyMerchantOrderLifecycle(
       ? merchantAppOrderHref(args.foodOrderId)
       : merchantAppOrdersTabHref(stage);
 
-  await notifyMerchantStore(sql, {
-    storeId: args.storeId,
-    type: "order",
-    title: copy.title,
-    body: copy.body,
-    orderId: args.foodOrderId,
-    actionUrl,
-    channelId: "merchant_order_lifecycle",
-    // Cancel/delivered keep an inbox row; prep/ready/OFD are push + sticky only.
-    skipInbox:
-      stage !== "CANCELLED" && stage !== "DELIVERED",
-    // CANCELLED already fans out native FCM via MERCHANT_ORDER_CANCELLED.
-    skipNative: stage === "CANCELLED",
-    pushData: {
-      type: "merchant_order_lifecycle",
-      stage,
-      refreshLiveOrders: true,
-      activeOrdersCount,
-      preparing: breakdown.preparing,
-      ready: breakdown.ready,
-      outForDelivery: breakdown.out_for_delivery,
-      pendingAccept: breakdown.pending_accept,
-      stickySubtitle: copy.subtitle,
-      orderId: args.displayOrderId,
-      foodOrderId: args.foodOrderId,
-      url: actionUrl,
-    },
-  });
+  // Kitchen stage changes update the Zomato-style sticky only
+  // (🍳 preparing / ✅ ready / 🛵 out) — no separate "Order #X is ready" heads-up.
+  const kitchenStickyOnly = new Set([
+    "PREPARING",
+    "ACCEPTED",
+    "READY",
+    "READY_FOR_PICKUP",
+    "OUT_FOR_DELIVERY",
+    "PICKED_UP",
+    "HANDED_OVER",
+    "IN_TRANSIT",
+    "DISPATCHED",
+  ]);
+
+  if (!kitchenStickyOnly.has(stage)) {
+    await notifyMerchantStore(sql, {
+      storeId: args.storeId,
+      type: "order",
+      title: copy.title,
+      body: copy.body,
+      orderId: args.foodOrderId,
+      actionUrl,
+      channelId: "merchant_order_lifecycle",
+      skipInbox: stage !== "CANCELLED" && stage !== "DELIVERED",
+      skipNative: stage === "CANCELLED",
+      pushData: {
+        type: "merchant_order_lifecycle",
+        stage,
+        refreshLiveOrders: true,
+        activeOrdersCount,
+        preparing: breakdown.preparing,
+        ready: breakdown.ready,
+        outForDelivery: breakdown.out_for_delivery,
+        pendingAccept: breakdown.pending_accept,
+        stickySubtitle: copy.subtitle,
+        orderId: args.displayOrderId,
+        foodOrderId: args.foodOrderId,
+        url: actionUrl,
+      },
+    });
+  }
+
+  // Keep the persistent ONLINE sticky in sync (Prep / Ready / Out counts).
+  // Includes CANCELLED/DELIVERED so zeroed stages auto-hide and idle returns
+  // to "Waiting for orders" even when the merchant app is killed (FCM tag).
+  await notifyMerchantStoreStatus(sql, args.storeId, "ONLINE", {
+    eventId: `STORE_STATUS:KITCHEN:${args.storeId}:${stage}:${Date.now()}`,
+  }).catch((e) =>
+    console.warn(
+      "[merchant-lifecycle] store-status sticky update failed",
+      (e as Error)?.message ?? e
+    )
+  );
 }

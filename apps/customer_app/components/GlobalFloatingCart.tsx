@@ -6,17 +6,18 @@
  * Parcel tracking must never appear on food home (and vice versa).
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, TouchableOpacity, StyleSheet, Platform, ScrollView, Modal, Pressable, Alert, useWindowDimensions, type NativeSyntheticEvent, type NativeScrollEvent } from "react-native";
 import { Image } from "expo-image";
 import { useRouter, useSegments, usePathname } from "expo-router";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
-  SlideInUp,
+  SlideInLeft,
+  SlideOutLeft,
+  FadeIn,
   Easing,
 } from "react-native-reanimated";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -34,9 +35,10 @@ import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
 import { closedStoreCtaCopy, getOpenSoonState } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { FloatingOrderTrackingPill } from "@/components/orders/FloatingOrderTrackingPill";
+import { EdgePeekTab } from "@/components/EdgePeekTab";
+import { FLOATING_EDGE_TAB_GAP } from "@/components/FloatingEdgeChrome";
 import { StoreText } from "@/components/store/StoreText";
-import { customerTabBarOffset } from "@/components/CustomerTabBar";
-import { resolveFloatingCartBottomOffset, FLOATING_CART_UI_LIFT, PARCEL_TRACK_ABOVE_LEGAL_LIFT } from "@/constants/layout";
+import { resolveFloatingCartBottomOffset, FLOATING_CART_UI_LIFT, PARCEL_TRACK_ABOVE_LEGAL_LIFT, FLOATING_CART_BAR_HEIGHT } from "@/constants/layout";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import { prefetchSubscriptionPlans } from "@/lib/subscriptionCache";
 import { useAuthStore } from "@/store/authStore";
@@ -80,7 +82,7 @@ function computeIsGroceryServicePage(pathname: string | null, segments: string[]
   return p === "/home/grocery" || p.startsWith("/home/grocery?");
 }
 
-/** Show on: /home, /home/merchant/*, /home/category/*. Not meals-under-price or /search. */
+/** Show on: Food tab, /home food listing, merchant/category. Not meals-under-price or /search. */
 function computeIsFoodServicePage(pathname: string | null, segments: string[]): boolean {
   if (typeof pathname !== "string") return false;
   const p = pathname as string;
@@ -91,6 +93,14 @@ function computeIsFoodServicePage(pathname: string | null, segments: string[]): 
   if (segments[0] === "home" && segments[1] === "meals-under-price") return false;
   // Search owns full-screen discovery — no floating cart dock.
   if (p === "/search" || p.startsWith("/search")) return false;
+
+  // Main Food tab (expo-router group omitted from pathname → `/food`).
+  if (segments[0] === "(tabs)") {
+    const tab = String(segments[1] ?? "index");
+    return tab === "food";
+  }
+  if (p === "/food" || p.startsWith("/food?")) return true;
+
   if (
     p === "/home" ||
     p.startsWith("/home/merchant") ||
@@ -101,7 +111,7 @@ function computeIsFoodServicePage(pathname: string | null, segments: string[]): 
     return true;
   }
   if (p.startsWith("/home/service") || p.startsWith("/home/shop")) return false;
-  if (p === "/" || p.startsWith("/(tabs)")) return false;
+  if (p === "/") return false;
   return false;
 }
 
@@ -232,7 +242,6 @@ function FloatingOrderTrackingPillWithUnread({
 
 export function GlobalFloatingCart() {
   const insets = useAppSafeAreaInsets();
-  const { bottom: rawBottom } = useSafeAreaInsets();
   const router = useRouter();
   const pathname = usePathname();
   const queryClient = useQueryClient();
@@ -425,8 +434,10 @@ export function GlobalFloatingCart() {
     ? "secondary"
     : "primary";
   const { width: windowWidth } = useWindowDimensions();
-  const dockSideInset = 16;
-  const dockPageWidth = Math.max(280, windowWidth - dockSideInset);
+  /** Footing width beside HOME edge (edge ~44 + gap 8 + right inset 16). */
+  const dockSideInset = 16 + FLOATING_EDGE_TAB_GAP;
+  const dockContentWidth = Math.max(280, windowWidth - dockSideInset);
+  const dockPageWidth = dockContentWidth;
   const dockPageCount = trackingOrders.length + (showFloatingFoodCart ? 1 : 0);
   const [dockPageIndex, setDockPageIndex] = useState(0);
   const dockScrollRef = useRef<ScrollView>(null);
@@ -518,9 +529,35 @@ export function GlobalFloatingCart() {
     (showActiveOrderTracking &&
       (isFoodServicePage || isParcelServiceHome || isOnOrdersArea));
 
+  /** Prefer CART label when cart is showing; TRACK when only live orders. */
+  const dockKind = showFloatingFoodCart ? "cart" : showActiveOrderTracking ? "track" : null;
+
+  const footingOwner = useFloatingDockUiStore((s) => s.footingOwner);
+  const expandNav = useFloatingDockUiStore((s) => s.expandNav);
+
+  const inTabs = segments[0] === "(tabs)";
+  // Shared bottom with FloatingEdgeChrome so HOME/CART/TRACK sit on the same row.
+  const bottomOffset =
+    resolveFloatingCartBottomOffset(insets.bottom, {
+      aboveTabBar: false,
+    }) +
+    (inTabs || isFoodServicePage || isGroceryServicePage ? FLOATING_CART_UI_LIFT : 0) +
+    // Courier: sit above prohibited-items + T&Cs footer, not on top of it.
+    (isParcelServiceHome && showActiveOrderTracking ? PARCEL_TRACK_ABOVE_LEGAL_LIFT : 0);
+
+  // Publish dock visibility BEFORE paint. Also force footingOwner to dock whenever
+  // the cart is live and the user has not explicitly expanded nav — avoids a frame
+  // where footingOwner stays "nav" and only a ghost edge paints in the wrong place.
   useLayoutEffect(() => {
-    useFloatingDockUiStore.getState().setDockVisible(visible);
-  }, [visible]);
+    const store = useFloatingDockUiStore.getState();
+    store.setDockVisible(visible, dockKind);
+    if (visible) {
+      store.setDockBottom(bottomOffset);
+      if (!store.navExpandedByUser && store.footingOwner !== "dock") {
+        store.expandDock();
+      }
+    }
+  }, [visible, dockKind, bottomOffset]);
 
   useEffect(() => {
     return () => {
@@ -528,21 +565,56 @@ export function GlobalFloatingCart() {
     };
   }, []);
 
-  if (!visible) return null;
+  // Nav owns footing → CustomerTabBar shows CART/TRACK peek (no full bar).
+  if (!visible || footingOwner !== "dock") return null;
 
-  const inTabs = segments[0] === "(tabs)";
-  const bottomOffset =
-    resolveFloatingCartBottomOffset(rawBottom, {
-      aboveTabBar: inTabs,
-      tabBarOffset: inTabs ? customerTabBarOffset(rawBottom) : undefined,
-    }) +
-    (isFoodServicePage || isGroceryServicePage ? FLOATING_CART_UI_LIFT : 0) +
-    // Courier: sit above prohibited-items + T&Cs footer, not on top of it.
-    (isParcelServiceHome && showActiveOrderTracking ? PARCEL_TRACK_ABOVE_LEGAL_LIFT : 0);
+  const floatDockStyle = {
+    bottom: bottomOffset,
+  } as const;
 
-  const slideUpEntering = SlideInUp.duration(250).easing(Easing.out(Easing.ease));
+  // Soft fade on the cart — edge owns the L/R slide (no double SlideIn jerk).
+  const cartFadeIn = FadeIn.duration(220).easing(Easing.out(Easing.cubic));
+  const edgeSlideIn = SlideInLeft.duration(280).easing(Easing.out(Easing.cubic));
+  const edgeSlideOut = SlideOutLeft.duration(220).easing(Easing.in(Easing.cubic));
   const compact = isCartCompact;
   const itemLabel = totalCount === 1 ? "1 item" : `${totalCount} items`;
+
+  /** HOME edge — same height as cart bar; hidden while Remove is expanded. */
+  const withHomeEdge = (main: ReactNode) => (
+    <View
+      style={[
+        styles.footRow,
+        floatDockStyle,
+        cartRemoveExpanded && styles.footRowNoEdge,
+      ]}
+      pointerEvents="box-none"
+      collapsable={false}
+    >
+      {!cartRemoveExpanded ? (
+        <Animated.View
+          key="home-edge"
+          entering={edgeSlideIn}
+          exiting={edgeSlideOut}
+          collapsable={false}
+        >
+          <EdgePeekTab
+            side="left"
+            label="HOME"
+            height={compact ? 56 : FLOATING_CART_BAR_HEIGHT}
+            onPress={expandNav}
+          />
+        </Animated.View>
+      ) : null}
+      <Animated.View
+        entering={cartFadeIn}
+        style={styles.footMain}
+        pointerEvents="box-none"
+        collapsable={false}
+      >
+        {main}
+      </Animated.View>
+    </View>
+  );
 
   const cartBarNode = (
     <View
@@ -684,12 +756,8 @@ export function GlobalFloatingCart() {
 
   if (showScrollDock) {
     return (
-      <>
-        <Animated.View
-          entering={slideUpEntering}
-          style={[styles.wrap, styles.dockWrap, { bottom: bottomOffset }]}
-          pointerEvents="box-none"
-        >
+      <View pointerEvents="box-none" style={styles.overlayHost} collapsable={false}>
+        {withHomeEdge(
           <View style={styles.dockContainer}>
             <ScrollView
               ref={dockScrollRef}
@@ -732,7 +800,7 @@ export function GlobalFloatingCart() {
               </View>
             ) : null}
           </View>
-        </Animated.View>
+        )}
         {showFloatingFoodCart ? (
           <AllCartsSheetModal
             visible={allCartsSheetVisible}
@@ -759,38 +827,30 @@ export function GlobalFloatingCart() {
             }}
           />
         ) : null}
-      </>
+      </View>
     );
   }
 
   if (showActiveOrderTracking && activeOrder && !showFloatingFoodCart) {
     return (
-      <Animated.View
-        entering={slideUpEntering}
-        style={[styles.wrap, styles.trackingWrap, { bottom: bottomOffset }]}
-        pointerEvents="box-none"
-      >
-        <FloatingOrderTrackingPillWithUnread
-          order={activeOrder}
-          emphasis="primary"
-          dark={dockDark}
-          onPress={() => openOrderTracking(activeOrder)}
-        />
-      </Animated.View>
+      <View pointerEvents="box-none" style={styles.overlayHost} collapsable={false}>
+        {withHomeEdge(
+          <FloatingOrderTrackingPillWithUnread
+            order={activeOrder}
+            emphasis="primary"
+            dark={dockDark}
+            onPress={() => openOrderTracking(activeOrder)}
+          />
+        )}
+      </View>
     );
   }
 
   if (!showFloatingFoodCart) return null;
 
   return (
-    <>
-      <Animated.View
-        entering={slideUpEntering}
-        style={[styles.wrap, { bottom: bottomOffset }]}
-        pointerEvents="box-none"
-      >
-        {cartContentNode}
-      </Animated.View>
+    <View pointerEvents="box-none" style={styles.overlayHost} collapsable={false}>
+      {withHomeEdge(cartContentNode)}
 
       <AllCartsSheetModal
         visible={allCartsSheetVisible}
@@ -816,7 +876,7 @@ export function GlobalFloatingCart() {
           clearCart();
         }}
       />
-    </>
+    </View>
   );
 }
 
@@ -986,18 +1046,53 @@ function AllCartsSheetModal({
 }
 
 const styles = StyleSheet.create({
+  overlayHost: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 80,
+    elevation: 80,
+  },
+  /** Dining-style: edge peeks half off-screen; cart keeps its own UI unchanged. */
+  footRow: {
+    position: "absolute",
+    left: 0,
+    right: 16,
+    zIndex: 80,
+    elevation: 80,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    overflow: "visible",
+  },
+  /** Remove expanded — give the cart full width so text does not wrap under the edge. */
+  footRowNoEdge: {
+    left: 16,
+  },
+  footMain: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: "stretch",
+    justifyContent: "flex-end",
+  },
   wrap: {
     position: "absolute",
     left: 16,
     right: 16,
-    zIndex: 999,
-    elevation: 24,
+    zIndex: 80,
+    elevation: 80,
     alignItems: "center",
     justifyContent: "flex-end",
   },
+  /** @deprecated Prefer footRow — kept for any leftover call sites. */
+  wrapWithHomeEdge: {
+    left: FLOATING_EDGE_TAB_GAP,
+    right: 16,
+  },
+  wrapWithCartEdge: {
+    right: FLOATING_EDGE_TAB_GAP,
+  },
   trackingWrap: {
-    left: 12,
-    right: 12,
+    left: FLOATING_EDGE_TAB_GAP,
+    right: 16,
   },
   dockPillHeight: {
     minHeight: 60,

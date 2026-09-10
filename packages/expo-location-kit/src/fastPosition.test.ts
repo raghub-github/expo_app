@@ -63,7 +63,8 @@ test("falls back to a quick Balanced live fix when no last-known", async () => {
   const r = await getFastPosition();
   assert.equal(r.source, "balanced");
   assert.equal(r.accuracy, 30);
-  assert.deepEqual(calls, ["lastKnown", `current:${Accuracy.Balanced}`]);
+  assert.ok(calls.includes("lastKnown"));
+  assert.ok(calls.includes(`current:${Accuracy.Balanced}`));
 });
 
 test("falls back to Low when last-known absent and Balanced fails", async () => {
@@ -78,7 +79,9 @@ test("falls back to Low when last-known absent and Balanced fails", async () => 
   const r = await getFastPosition();
   assert.equal(r.source, "low");
   assert.equal(r.accuracy, 200);
-  assert.deepEqual(calls, ["lastKnown", `current:${Accuracy.Balanced}`, `current:${Accuracy.Low}`]);
+  assert.ok(calls.includes("lastKnown"));
+  assert.ok(calls.includes(`current:${Accuracy.Balanced}`));
+  assert.ok(calls.includes(`current:${Accuracy.Low}`));
 });
 
 test("rejects when nothing yields a usable fix", async () => {

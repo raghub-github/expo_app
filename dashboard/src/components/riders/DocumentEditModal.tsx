@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { X, Upload, FileText, Trash2 } from "lucide-react";
 import { LoadingButton } from "@/components/ui/LoadingButton";
+import { ModalPortal } from "@/components/ui/ModalPortal";
 
 interface DocumentEditModalProps {
   isOpen: boolean;
@@ -160,8 +161,9 @@ export function DocumentEditModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-gray-800/60 backdrop-blur-sm">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90dvh] flex flex-col overflow-hidden">
+    <ModalPortal>
+      <div className="fixed inset-0 z-[160] flex items-center justify-center p-3 sm:p-4 bg-slate-900/40 backdrop-blur-md">
+      <div className="relative z-[161] bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90dvh] flex flex-col overflow-hidden">
         <div className="flex items-center justify-between p-4 sm:p-6 border-b border-gray-200 shrink-0">
           <h2 className="text-lg sm:text-xl font-semibold text-gray-900 truncate pr-2">
             Edit {getDocTypeLabel(docType)}
@@ -288,6 +290,7 @@ export function DocumentEditModal({
           </div>
         </div>
       </div>
-    </div>
+      </div>
+    </ModalPortal>
   );
 }

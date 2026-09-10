@@ -26,6 +26,8 @@ type Props = {
   hotZones?: HotZoneCell[];
   nearbyStores?: NearbyStore[];
   isOnDuty?: boolean;
+  /** Show "You" bike pin even when off-duty (hide while live order assigned). */
+  showYouMarker?: boolean;
 };
 
 /**
@@ -33,7 +35,7 @@ type Props = {
  */
 export const HomeDutyMap = memo(
   forwardRef<RiderMapViewHandle, Props>(function HomeDutyMap(
-    { orders, style, paused, showRadar, demandZones, hotZones, nearbyStores, isOnDuty },
+    { orders, style, paused, showRadar, demandZones, hotZones, nearbyStores, isOnDuty, showYouMarker = true },
     ref
   ) {
     const fix = useHomeMapLocationStore((s) => s.fix);
@@ -59,6 +61,7 @@ export const HomeDutyMap = memo(
         hotZones={hotZones}
         nearbyStores={nearbyStores}
         isOnDuty={isOnDuty}
+        showYouMarker={showYouMarker}
       />
     );
   })

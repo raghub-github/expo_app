@@ -16,10 +16,12 @@ let lastListingInvalidateAt = 0;
 const LISTING_DEBOUNCE_MS = 1_500;
 /** Avoid hammering listing APIs when GPS ticks or tabs refocus in quick succession. */
 const LISTING_MIN_INTERVAL_MS = 60_000;
+/** Short coalesce for a confirmed significant GPS move (not the 60s gate). */
+const MOVE_INVALIDATE_DEBOUNCE_MS = 400;
 
 /**
- * Debounced + rate-limited listing refresh for background GPS / foreground resume.
- * User-initiated address changes should call `invalidateFoodHomeLocationQueries` instead.
+ * Debounced + rate-limited listing refresh for background GPS jitter / tab refocus.
+ * Significant physical moves must use `invalidateFoodHomeListingQueriesAfterMove`.
  */
 export function debouncedInvalidateFoodHomeListingQueries(queryClient: QueryClient) {
   const schedule = () => {
@@ -33,6 +35,19 @@ export function debouncedInvalidateFoodHomeListingQueries(queryClient: QueryClie
     }, LISTING_DEBOUNCE_MS);
   };
   schedule();
+}
+
+/**
+ * User physically moved (≥ customer GPS move gate). Bypass the 60s rate limit
+ * so nearby stores follow Location B promptly. Still briefly debounced for burst GPS.
+ */
+export function invalidateFoodHomeListingQueriesAfterMove(queryClient: QueryClient) {
+  if (listingDebounceTimer) clearTimeout(listingDebounceTimer);
+  listingDebounceTimer = setTimeout(() => {
+    listingDebounceTimer = null;
+    lastListingInvalidateAt = Date.now();
+    void invalidateFoodHomeListingQueries(queryClient);
+  }, MOVE_INVALIDATE_DEBOUNCE_MS);
 }
 
 /** Full refresh when the user explicitly changes delivery location or saved address. */

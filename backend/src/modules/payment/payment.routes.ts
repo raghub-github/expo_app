@@ -1012,6 +1012,8 @@ export async function paymentRoutes(app: FastifyInstance) {
           200: z.object({
             success: z.boolean(),
             paymentId: z.string(),
+            /** True when identity + vehicle docs already satisfied activation. */
+            activated: z.boolean().optional(),
           }),
         },
       },
@@ -1060,10 +1062,25 @@ export async function paymentRoutes(app: FastifyInstance) {
       const payment = paymentRows[0]!;
       const metadata = (payment.metadata ?? {}) as Record<string, unknown>;
 
+      const readActivated = async (): Promise<boolean> => {
+        const [row] = await db
+          .select({ status: riders.status, onboardingStage: riders.onboardingStage })
+          .from(riders)
+          .where(eq(riders.id, riderIdInt))
+          .limit(1);
+        return (
+          row?.status === "ACTIVE" ||
+          String(row?.onboardingStage || "").toUpperCase() === "ACTIVE"
+        );
+      };
+
       if (payment.status === "completed") {
+        const { tryActivateRiderIfEligible } = await import("../../lib/rider-onboarding-activation.js");
+        await tryActivateRiderIfEligible(riderIdInt);
         return {
           success: true,
           paymentId: String(payment.id),
+          activated: await readActivated(),
         };
       }
 
@@ -1105,6 +1122,7 @@ export async function paymentRoutes(app: FastifyInstance) {
         .where(eq(onboardingPayments.id, payment.id));
 
       // If payment successful, move rider to approval queue and activate when docs are already verified
+      let activated = false;
       if (paymentStatus === "captured") {
         await db
           .update(riders)
@@ -1115,7 +1133,7 @@ export async function paymentRoutes(app: FastifyInstance) {
           .where(eq(riders.id, riderIdInt));
 
         const { tryActivateRiderIfEligible } = await import("../../lib/rider-onboarding-activation.js");
-        await tryActivateRiderIfEligible(riderIdInt);
+        activated = await tryActivateRiderIfEligible(riderIdInt);
       }
 
       await logPaymentEvent(db, {
@@ -1132,6 +1150,7 @@ export async function paymentRoutes(app: FastifyInstance) {
       return {
         success: paymentStatus === "captured",
         paymentId: String(payment.id),
+        activated,
       };
     },
   );

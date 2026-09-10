@@ -2,6 +2,7 @@
 
 import { useEffect, type ReactNode } from "react";
 import { X } from "lucide-react";
+import { ModalPortal } from "@/components/ui/ModalPortal";
 
 export type ConfirmModalProps = {
   open: boolean;
@@ -35,7 +36,7 @@ export function ConfirmModal({
   closeOnBackdrop = true,
   onClose,
   onConfirm,
-  zIndexClass = "z-[110]",
+  zIndexClass = "z-[160]",
 }: ConfirmModalProps) {
   useEffect(() => {
     if (!open) return;
@@ -63,13 +64,14 @@ export function ConfirmModal({
       : "bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500 disabled:bg-blue-400";
 
   return (
-    <div
-      className={`fixed inset-0 ${zIndexClass} flex items-center justify-center p-4 sm:p-6`}
-      role="presentation"
-    >
+    <ModalPortal>
+      <div
+        className={`fixed inset-0 ${zIndexClass} flex items-center justify-center p-4 sm:p-6`}
+        role="presentation"
+      >
       <button
         type="button"
-        className="absolute inset-0 bg-black/45 backdrop-blur-[1px]"
+        className="absolute inset-0 bg-slate-900/35 backdrop-blur-md"
         aria-label={closeOnBackdrop ? "Close dialog" : undefined}
         tabIndex={closeOnBackdrop ? 0 : -1}
         disabled={confirmBusy || !closeOnBackdrop}
@@ -120,6 +122,7 @@ export function ConfirmModal({
           </button>
         </div>
       </div>
-    </div>
+      </div>
+    </ModalPortal>
   );
 }
