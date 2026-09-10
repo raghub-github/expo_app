@@ -1,22 +1,23 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
 import { isRawCoordinateText, filterCoordinateAddressParts } from "./isRawCoordinateText";
 
-describe("isRawCoordinateText", () => {
-  it("detects lat,lng strings", () => {
-    expect(isRawCoordinateText("29.3701168, 76.9637708")).toBe(true);
-    expect(isRawCoordinateText("29.3701,76.9638")).toBe(true);
-    expect(isRawCoordinateText("  -28.5, 77.1  ")).toBe(true);
-  });
+test("detects lat,lng strings", () => {
+  assert.equal(isRawCoordinateText("29.3701168, 76.9637708"), true);
+  assert.equal(isRawCoordinateText("29.3701,76.9638"), true);
+  assert.equal(isRawCoordinateText("  -28.5, 77.1  "), true);
+});
 
-  it("rejects human place names", () => {
-    expect(isRawCoordinateText("Gali Number 2, Panipat")).toBe(false);
-    expect(isRawCoordinateText("Current location")).toBe(false);
-    expect(isRawCoordinateText("")).toBe(false);
-    expect(isRawCoordinateText(null)).toBe(false);
-  });
+test("rejects human place names", () => {
+  assert.equal(isRawCoordinateText("Gali Number 2, Panipat"), false);
+  assert.equal(isRawCoordinateText("Current location"), false);
+  assert.equal(isRawCoordinateText(""), false);
+  assert.equal(isRawCoordinateText(null), false);
+});
 
-  it("filters coordinate parts from address lists", () => {
-    expect(
-      filterCoordinateAddressParts(["29.37, 76.96", "Panipat", "Haryana"])
-    ).toEqual(["Panipat", "Haryana"]);
-  });
+test("filters coordinate parts from address lists", () => {
+  assert.deepEqual(
+    filterCoordinateAddressParts(["29.37, 76.96", "Panipat", "Haryana"]),
+    ["Panipat", "Haryana"]
+  );
 });

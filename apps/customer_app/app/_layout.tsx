@@ -938,7 +938,9 @@ function RootStack({
   splashActive: boolean;
 }) {
   const insets = useSafeAreaInsets();
-  const segments = useSegments();
+  // Typed-routes infers a narrow tuple (e.g. [string]) for the current route, so indexing
+  // segments[1] tripped TS2493; treat as a plain string[] for the depth checks below.
+  const segments = useSegments() as string[];
   const discoveryLayout = useDiscoveryLayout();
   const inAuthStack = segments[0] === "(auth)";
   const inProfileStack = segments[0] === "profile";

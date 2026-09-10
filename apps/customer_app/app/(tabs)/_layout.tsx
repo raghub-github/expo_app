@@ -23,6 +23,7 @@ export default function TabsLayout() {
       <AndroidBackHandler />
       <Tabs
         tabBar={(props) => <CustomerTabBar {...props} />}
+        safeAreaInsets={{ bottom: 0 }}
         screenOptions={{
           headerShown: true,
           headerStyle: { backgroundColor: GatiMitraColors.softBackground },
@@ -40,7 +41,6 @@ export default function TabsLayout() {
             shadowOpacity: 0,
           },
           tabBarBackground: () => null,
-          tabBarSafeAreaInsets: { bottom: 0 },
           freezeOnBlur: true,
           // Full-width shift only — single transition owner (no custom Reanimated page slide).
           animation: "shift",

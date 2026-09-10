@@ -1,5 +1,12 @@
 import { Dimensions } from "react-native";
-import type { BottomTabSceneInterpolationProps } from "@react-navigation/bottom-tabs";
+import type { BottomTabNavigationOptions } from "@react-navigation/bottom-tabs";
+
+// @react-navigation/bottom-tabs v7.18 no longer re-exports BottomTabSceneInterpolationProps /
+// BottomTabSceneStyleInterpolator from the package root, so derive the interpolator's argument
+// type from the (exported) options type instead of importing the removed name.
+type BottomTabSceneInterpolationProps = Parameters<
+  NonNullable<BottomTabNavigationOptions["sceneStyleInterpolator"]>
+>[0];
 
 const SCREEN_W = Dimensions.get("window").width;
 
