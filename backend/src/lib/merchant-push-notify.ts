@@ -294,6 +294,41 @@ export async function insertMerchantStoreNotification(
   }
 }
 
+/**
+ * Decide which tokens actually receive a merchant push.
+ *
+ * A dual-token Android device registers BOTH an Expo push token and a native FCM token (the push
+ * controller registers them together), and each delivers via FCM to the SAME device — so sending to
+ * both shows the notification TWICE. While the app is open a JS dedup hides one, but when the app is
+ * killed both OS notifications land, which is the "duplicate notifications after reopen" the merchant
+ * sees. Prefer native FCM and drop Expo whenever native tokens exist — the same rule
+ * notifyMerchantStoreStatus and targetResolver.preferNativeAndroidFcm already apply, so no path
+ * double-notifies. Pure + exported for unit testing.
+ */
+export function selectMerchantPushDelivery(args: {
+  /** Tokens from getMerchantStorePushTokens (Expo store + parent, occasionally a stray non-Expo). */
+  expoCandidateTokens: string[];
+  /** Tokens from getMerchantStoreNativeFcmTokens (already non-Expo FCM). */
+  nativeFcmTokens: string[];
+  skipExpo?: boolean;
+  skipNative?: boolean;
+}): { expoTokens: string[]; nativeTokens: string[] } {
+  const nativeTokens = args.skipNative
+    ? []
+    : [
+        ...new Set(
+          [...args.expoCandidateTokens, ...args.nativeFcmTokens].filter(
+            (t) => typeof t === "string" && t.length > 0 && !isExpoPushTokenString(t)
+          )
+        ),
+      ];
+  const skipExpo = args.skipExpo === true || nativeTokens.length > 0;
+  const expoTokens = skipExpo
+    ? []
+    : [...new Set(args.expoCandidateTokens.filter((t) => isExpoPushTokenString(t)))];
+  return { expoTokens, nativeTokens };
+}
+
 async function notifyMerchantStore(
   sql: Sql,
   args: {
@@ -318,7 +353,16 @@ async function notifyMerchantStore(
   if (!args.skipInbox) {
     await insertMerchantStoreNotification(sql, args);
   }
-  const tokens = await getMerchantStorePushTokens(sql, args.storeId);
+  const expoCandidateTokens = await getMerchantStorePushTokens(sql, args.storeId);
+  const nativeFcmTokens = args.skipNative
+    ? []
+    : await getMerchantStoreNativeFcmTokens(sql, args.storeId);
+  const { expoTokens, nativeTokens } = selectMerchantPushDelivery({
+    expoCandidateTokens,
+    nativeFcmTokens,
+    skipExpo: args.skipExpo,
+    skipNative: args.skipNative,
+  });
   const pushPayload: PushPayload = {
     title: args.title,
     body: args.body,
@@ -327,17 +371,10 @@ async function notifyMerchantStore(
     collapseKey: args.collapseKey,
     tag: args.tag,
     playSound: args.playSound,
-    skipExpo: args.skipExpo,
   };
-  await sendMerchantExpoPush(tokens, pushPayload);
-  if (args.skipNative) return;
-  const nativeTokens = [
-    ...new Set([
-      ...tokens.filter((t) => !isExpoPushTokenString(t)),
-      ...(await getMerchantStoreNativeFcmTokens(sql, args.storeId)),
-    ]),
-  ];
-  await sendMerchantNativeFcm(nativeTokens, pushPayload);
+  // Dual-token devices get native FCM only (see selectMerchantPushDelivery) — no double-notify.
+  if (expoTokens.length > 0) await sendMerchantExpoPush(expoTokens, pushPayload);
+  if (nativeTokens.length > 0) await sendMerchantNativeFcm(nativeTokens, pushPayload);
 }
 
 async function getMerchantStoreScopedNativeFcmTokens(
