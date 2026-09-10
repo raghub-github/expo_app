@@ -67,6 +67,7 @@ import { requestLogger } from "./plugins/requestLogger.js";
 import { getDb } from "./db/client.js";
 import { reconcilePendingPayments } from "./modules/orders/order.placement.service.js";
 import { runCompetitorSnapshotsTick } from "./services/merchant-competitor-snapshots-tick.js";
+import { runMerchantRankingMetricsRefresh } from "./modules/store-ranking/metrics-refresh.js";
 
 loadEnv();
 // Prefer IPv4 — corporate/VPN DNS64 (64:ff9b::*) often yields ENOTFOUND/unreachable for Supabase/Redis.
@@ -1135,6 +1136,7 @@ let subscriptionRenewalInterval: ReturnType<typeof setInterval> | null = null;
 let merchantSubscriptionRenewalInterval: ReturnType<typeof setInterval> | null = null;
 let riderLocationMaintenanceInterval: ReturnType<typeof setInterval> | null = null;
 let riderTrackingWatchdogInterval: ReturnType<typeof setInterval> | null = null;
+let rankingMetricsInterval: ReturnType<typeof setInterval> | null = null;
 let shuttingDown = false;
 let inFlightRequests = 0;
 
@@ -1182,6 +1184,7 @@ const gracefulShutdown = async (signal: string) => {
   if (merchantSubscriptionRenewalInterval) { clearInterval(merchantSubscriptionRenewalInterval); merchantSubscriptionRenewalInterval = null; }
   if (riderLocationMaintenanceInterval) { clearInterval(riderLocationMaintenanceInterval); riderLocationMaintenanceInterval = null; }
   if (riderTrackingWatchdogInterval) { clearInterval(riderTrackingWatchdogInterval); riderTrackingWatchdogInterval = null; }
+  if (rankingMetricsInterval) { clearInterval(rankingMetricsInterval); rankingMetricsInterval = null; }
 
   const drainStart = Date.now();
   while (inFlightRequests > 0 && Date.now() - drainStart < SHUTDOWN_DRAIN_TIMEOUT_MS) {
@@ -1306,6 +1309,26 @@ try {
     }
   }, verificationTickMs);
   app.log.info({ intervalMs: verificationTickMs }, "verification workers started");
+
+  // Store-ranking metrics refresh — recomputes merchant_ranking_metrics from orders/ratings in
+  // one aggregation pass (Phase A). Windowed aggregates don't need to be real-time, so every
+  // 15 min is plenty; Redis-locked so only one replica runs. Feeds the (dark) ranking engine.
+  const rankingMetricsIntervalMs = 15 * 60_000;
+  const runRankingMetricsLocked = () =>
+    withLock("tick:ranking-metrics", 5 * 60_000, () => runMerchantRankingMetricsRefresh())
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "ranking_metrics", outcome: result === null ? "skipped" : "ran" },
+        );
+        if (result) app.log.info({ storesUpserted: result.storesUpserted }, "ranking_metrics_refresh");
+      })
+      .catch((err) => app.log.error({ err }, "ranking_metrics_refresh_tick"));
+  void runRankingMetricsLocked();
+  rankingMetricsInterval = setInterval(() => { void runRankingMetricsLocked(); }, rankingMetricsIntervalMs);
+  app.log.info({ intervalMinutes: 15 }, "store-ranking metrics refresh started");
 
   const orderAcceptanceIntervalMs = 10_000;
   const runAcceptanceTickLocked = () =>

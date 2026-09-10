@@ -4128,6 +4128,30 @@ export const merchantStoreRatings = pgTable(
   })
 );
 
+/**
+ * Pre-aggregated per-store food ranking signals (see migration 0611). Refreshed by the
+ * store-ranking metrics worker; read on the request path with one ANY(store_id) lookup.
+ * Never aggregated per request.
+ */
+export const merchantRankingMetrics = pgTable("merchant_ranking_metrics", {
+  storeId: bigint("store_id", { mode: "number" }).primaryKey(),
+  orders7d: integer("orders_7d").notNull().default(0),
+  orders30d: integer("orders_30d").notNull().default(0),
+  totalOrders30d: integer("total_orders_30d").notNull().default(0),
+  merchantCancel30d: integer("merchant_cancel_30d").notNull().default(0),
+  cancellationRate: numeric("cancellation_rate", { precision: 6, scale: 4 }).notNull().default("0"),
+  refund30d: integer("refund_30d").notNull().default(0),
+  refundRate: numeric("refund_rate", { precision: 6, scale: 4 }).notNull().default("0"),
+  complaint30d: integer("complaint_30d").notNull().default(0),
+  complaintRate: numeric("complaint_rate", { precision: 6, scale: 4 }).notNull().default("0"),
+  avgRating: numeric("avg_rating", { precision: 3, scale: 2 }).notNull().default("0"),
+  ratingCount: integer("rating_count").notNull().default(0),
+  kptExpectedMin: numeric("kpt_expected_min", { precision: 6, scale: 2 }),
+  kptActualMin: numeric("kpt_actual_min", { precision: 6, scale: 2 }),
+  etaActualMin: numeric("eta_actual_min", { precision: 6, scale: 2 }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const customerRatingsGiven = pgTable(
   "customer_ratings_given",
   {
