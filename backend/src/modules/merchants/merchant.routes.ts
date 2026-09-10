@@ -20,6 +20,7 @@ import {
 import { suggestCatalogSearch } from "./searchSuggest.js";
 import { listGroceryHomeMenuCategories } from "./groceryHomeMenuCategories.service.js";
 import { matchesCustomerMerchantListStoreType } from "./merchantStoreTypeFilters.js";
+import { rankHomeFoodPool } from "../store-ranking/home-food-integration.js";
 import { listUserAppCategories } from "./userAppCategory.service.js";
 import { listFoodItemsUnderPrice, listFoodItemsUnderPriceGrouped } from "./foodHomeItemsUnderPrice.service.js";
 import type { NearbyStoreRow } from "./merchant.types.js";
@@ -432,7 +433,7 @@ export async function merchantRoutes(app: FastifyInstance) {
 
       const GLOBAL_LIST_RADIUS_KM = 15;
 
-      const items = (
+      const eligiblePool =
         requestedStoreType === "ALL"
           ? rawItems
           : rawItems.filter((s) => {
@@ -466,8 +467,31 @@ export async function merchantRoutes(app: FastifyInstance) {
                     })()
                   : null;
               return distanceKm <= effectiveServiceRadiusKm(GLOBAL_LIST_RADIUS_KM, storeRadius);
-            })
-      ).slice(0, pageLimit);
+            });
+
+      // Phase B-wire: rank the ELIGIBLE FOOD pool (quality + proximity), THEN paginate (§29).
+      // Dark by default (STORE_RANKING_HOME_FOOD_ENABLED) and fail-open — on disabled/failure the
+      // pool keeps its existing distance order, so discovery never breaks. Eligibility/serviceability
+      // and open/close gating already happened above; this only reorders already-eligible candidates.
+      let rankedPool: typeof eligiblePool = eligiblePool;
+      if (requestedStoreType === "FOOD" && eligiblePool.length > 1) {
+        const ranking = await rankHomeFoodPool(
+          eligiblePool as Array<{ id: number; distance_km?: number | null }>
+        );
+        rankedPool = ranking.rows as typeof eligiblePool;
+        if (ranking.ranked) {
+          request.log.info(
+            {
+              version: ranking.version,
+              candidates: ranking.candidateCount,
+              returned: Math.min(pageLimit, rankedPool.length),
+            },
+            "store-ranking: home-food pool ranked"
+          );
+        }
+      }
+
+      const items = rankedPool.slice(0, pageLimit);
       const filteredInternalIds = items
         .map((s) => Number((s as { id?: number }).id))
         .filter((id) => Number.isFinite(id) && id > 0);
