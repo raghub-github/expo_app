@@ -6,6 +6,8 @@ import { getSql } from "../db/client.js";
 export const WAITING_FOR_ORDER_TITLE = "🟢 Your restaurant is online";
 export const WAITING_FOR_ORDER_BODY = "Waiting for orders";
 export const PARTNER_NOTIFICATIONS_CLEARED_AT_KEY = "partner_notifications_cleared_at";
+/** Marks that the "go online now" prompt has already fired for the CURRENT closed session. */
+export const GO_ONLINE_PROMPT_ACTIVE_KEY = "go_online_prompt_active";
 
 function readMetaObject(raw: unknown): Record<string, unknown> {
   return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
@@ -55,6 +57,50 @@ export async function markPartnerNotificationsCleared(storeId: number): Promise<
     `;
   }
   return now;
+}
+
+/**
+ * Transition guard for the "go online now" prompt (§12/§40): the schedule tick runs every ~30s, so
+ * while a store sits in "within hours + auto-open disabled + closed" the prompt must fire ONCE, not
+ * every cycle. We persist a per-store flag that is set when the prompt fires and cleared when the
+ * store next comes online (a new closed session may then prompt again).
+ */
+export async function isGoOnlinePromptActive(storeId: number): Promise<boolean> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT settings_metadata
+    FROM merchant_store_settings
+    WHERE store_id = ${storeId}
+    LIMIT 1
+  `;
+  const meta = readMetaObject((rows[0] as { settings_metadata?: unknown } | undefined)?.settings_metadata);
+  return meta[GO_ONLINE_PROMPT_ACTIVE_KEY] === true;
+}
+
+export async function setGoOnlinePromptActive(storeId: number, active: boolean): Promise<void> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT settings_metadata
+    FROM merchant_store_settings
+    WHERE store_id = ${storeId}
+    LIMIT 1
+  `;
+  const prevMeta = readMetaObject((rows[0] as { settings_metadata?: unknown } | undefined)?.settings_metadata);
+  if ((prevMeta[GO_ONLINE_PROMPT_ACTIVE_KEY] === true) === active) return; // no-op if unchanged
+  const nextMeta = { ...prevMeta, [GO_ONLINE_PROMPT_ACTIVE_KEY]: active };
+  const metaJson = JSON.stringify(nextMeta);
+  if (rows[0]) {
+    await sql`
+      UPDATE merchant_store_settings
+      SET settings_metadata = ${metaJson}::text::jsonb, updated_at = NOW()
+      WHERE store_id = ${storeId}
+    `;
+  } else {
+    await sql`
+      INSERT INTO merchant_store_settings (store_id, settings_metadata)
+      VALUES (${storeId}, ${metaJson}::text::jsonb)
+    `;
+  }
 }
 
 export async function revokeMerchantInAppNotifications(parentMerchantId: string): Promise<void> {

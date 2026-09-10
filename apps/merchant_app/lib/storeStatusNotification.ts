@@ -351,9 +351,10 @@ export async function postStoreStatusNotification(args: StoreStatusNotifArgs): P
       return;
     }
 
-    // Same copy but tray was dismissed → must re-post (signature match alone is not enough).
-    const stillVisible = await isStoreStatusPresented(Notifications);
-    const force = args.force === true || !stillVisible;
+    // Clearing the tray must NOT auto-repost the SAME notification (§4/§23) — a dismissed tray is a
+    // user action, not a new event. So `!stillVisible` no longer forces a re-post; only an explicit
+    // caller `force` (a genuine new transition/session or a real kitchen-body change) does.
+    const force = args.force === true;
     if (eventKey && eventKey === lastEventKey && !force) {
       return;
     }

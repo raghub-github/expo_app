@@ -528,8 +528,12 @@ export async function notifyMerchantStoreStatus(
 
 /** Idle / online reminder when store starts accepting orders — same copy as waiting-for-order inbox. */
 export async function notifyMerchantStoreOnline(sql: Sql, storeId: number): Promise<void> {
-  const { ensureWaitingForOrderInbox } = await import("./merchant-waiting-for-order.js");
+  const { ensureWaitingForOrderInbox, setGoOnlinePromptActive } = await import(
+    "./merchant-waiting-for-order.js"
+  );
   await ensureWaitingForOrderInbox(storeId);
+  // Store is online again → end the closed session so a future close may prompt once more (§40).
+  await setGoOnlinePromptActive(storeId, false).catch(() => undefined);
   // Tray FCM is independent of inbox idempotency — always update the same tag.
   await notifyMerchantStoreStatus(sql, storeId, "ONLINE");
 }
@@ -570,9 +574,15 @@ export async function notifyMerchantOutsideDeliveryTimings(sql: Sql, storeId: nu
 
 /** Delivery slot is active but store is still offline — prompt merchant to go online. */
 export async function notifyMerchantGoOnlinePrompt(sql: Sql, storeId: number): Promise<void> {
-  // Always refresh the OUT_OF_TIMINGS tray (killed/bg/open). Inbox dedupe stays inside
-  // notifyMerchantOutsideDeliveryTimings — never skip the OS push.
+  // §12/§40: the schedule tick runs every ~30s. "within hours + auto-open off + closed" is a STABLE
+  // state, not a repeating event — the prompt must fire ONCE per closed session, never every cycle.
+  // Transition guard (persisted flag), cleared when the store next comes online.
+  const { isGoOnlinePromptActive, setGoOnlinePromptActive } = await import(
+    "./merchant-waiting-for-order.js"
+  );
+  if (await isGoOnlinePromptActive(storeId)) return;
   await notifyMerchantOutsideDeliveryTimings(sql, storeId);
+  await setGoOnlinePromptActive(storeId, true).catch(() => undefined);
 }
 
 export async function notifyMerchantNewRating(
