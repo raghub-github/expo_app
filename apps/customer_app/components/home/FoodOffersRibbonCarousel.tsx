@@ -422,7 +422,7 @@ export function FoodOffersRibbonCarousel({
         navigateToMerchant(router, queryClient, slide.storeId);
         return;
       }
-      router.push("/home" as never);
+      router.navigate("/(tabs)/food" as never);
     },
     [router, queryClient]
   );

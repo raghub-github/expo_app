@@ -54,8 +54,11 @@ const LIMITED_TIME_MAX_DAYS = 5;
  * never swipe past the first few, so cap the set.
  */
 const MAX_SLIDES = 8;
-/** Only decode the image for slides within this distance of the active one. */
-const IMAGE_WINDOW = 1;
+/**
+ * Decode active + neighbors so the first swipe paints from disk cache.
+ * Cap stays tight — we still never mount decode for the whole MAX_SLIDES set.
+ */
+const IMAGE_WINDOW = 2;
 
 function daysUntilOfferExpiry(validTill: string | null | undefined): number | null {
   if (!validTill?.trim()) return null;
@@ -300,6 +303,8 @@ function PromoSlideCard({ slide, index, cardHeight, mode, decodeImage, onPress }
             transition={0}
             priority="high"
             recyclingKey={slide.id}
+            placeholder={typeof bgSource === "object" && "uri" in bgSource && bgSource.uri ? { uri: bgSource.uri } : undefined}
+            placeholderContentFit="cover"
             onError={() => setImageFailed(true)}
           />
         ) : null}
@@ -344,6 +349,22 @@ export function HomePromoCarousel({
     scrollRef.current?.scrollTo({ x: 0, animated: false });
   }, [slides.length]);
 
+  // Warm CMS fallback art + visible merchant banners into expo-image disk cache ASAP.
+  useEffect(() => {
+    const uris: string[] = [];
+    const artKeys = mode === "ride" ? RIDE_OFFER_ASSET_KEYS : FOOD_OFFER_ASSET_KEYS;
+    for (const key of artKeys) {
+      const uri = getAppAssetUrl(key);
+      if (uri) uris.push(uri);
+    }
+    for (const slide of slides.slice(0, IMAGE_WINDOW + 1)) {
+      if (slide.imageUrl) uris.push(slide.imageUrl);
+    }
+    for (const uri of uris) {
+      void Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => {});
+    }
+  }, [slides, mode]);
+
   useEffect(() => {
     if (!isScreenFocused) return;
     if (slides.length < 2) return;
@@ -379,7 +400,7 @@ export function HomePromoCarousel({
         navigateToMerchant(router, queryClient, slide.storeId);
         return;
       }
-      router.push("/home" as never);
+      router.navigate("/(tabs)/food" as never);
     },
     [router, queryClient, mode]
   );

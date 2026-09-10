@@ -1,15 +1,20 @@
 import React, { useEffect } from "react";
 import { View, Text, StyleSheet } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRiderToastStore } from "@/src/stores/riderToastStore";
 import { colors } from "@/src/theme";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { useMeasuredTabBarHeight } from "@/src/hooks/useRiderBottomDock";
+import { flexShrinkText } from "@/src/theme/responsiveText";
 
 const TOAST_MS = 5000;
 
 export function RiderToastHost() {
-  const insets = useSafeAreaInsets();
+  const { rs, insets, width } = useResponsiveLayout();
+  const tabBarHeight = useMeasuredTabBarHeight();
   const message = useRiderToastStore((s) => s.message);
   const clearToast = useRiderToastStore((s) => s.clearToast);
+  const sidePad = rs(16);
+  const toastMaxWidth = Math.min(width - sidePad * 2, 420);
 
   useEffect(() => {
     if (!message) return;
@@ -20,9 +25,21 @@ export function RiderToastHost() {
   if (!message) return null;
 
   return (
-    <View pointerEvents="none" style={[styles.wrap, { bottom: insets.bottom + 88 }]}>
-      <View style={styles.toast}>
-        <Text style={styles.text}>{message}</Text>
+    <View
+      pointerEvents="none"
+      style={[
+        styles.wrap,
+        {
+          bottom: Math.max(insets.bottom, 0) + tabBarHeight + rs(8),
+          left: sidePad,
+          right: sidePad,
+        },
+      ]}
+    >
+      <View style={[styles.toast, { maxWidth: toastMaxWidth, paddingHorizontal: rs(16) }]}>
+        <Text style={[styles.text, flexShrinkText]} numberOfLines={4} ellipsizeMode="tail">
+          {message}
+        </Text>
       </View>
     </View>
   );
@@ -31,16 +48,13 @@ export function RiderToastHost() {
 const styles = StyleSheet.create({
   wrap: {
     position: "absolute",
-    left: 16,
-    right: 16,
     zIndex: 9999,
     alignItems: "center",
   },
   toast: {
-    maxWidth: 420,
+    width: "100%",
     backgroundColor: "#111827",
     borderRadius: 12,
-    paddingHorizontal: 16,
     paddingVertical: 12,
     shadowColor: "#000",
     shadowOpacity: 0.2,

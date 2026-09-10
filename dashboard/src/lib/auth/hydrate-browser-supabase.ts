@@ -12,9 +12,48 @@ let inFlight: Promise<boolean> | null = null;
 
 const HYDRATE_LOCK_KEY = "gm_supabase_hydrate_lock_v1";
 const HYDRATE_LOCK_MS = 8_000;
+/** After NO_SESSION / failed bridge, skip repeat fetches (stops 401 spam across hooks). */
+const NO_SESSION_COOLDOWN_MS = 60_000;
+const NO_SESSION_COOLDOWN_KEY = "gm_supabase_hydrate_no_session_until_v1";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isBrowserOffline(): boolean {
+  return typeof navigator !== "undefined" && navigator.onLine === false;
+}
+
+function readNoSessionCooldownUntil(): number {
+  if (typeof window === "undefined") return 0;
+  try {
+    const raw = window.sessionStorage.getItem(NO_SESSION_COOLDOWN_KEY);
+    const n = raw ? Number(raw) : 0;
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function markNoSessionCooldown(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(
+      NO_SESSION_COOLDOWN_KEY,
+      String(Date.now() + NO_SESSION_COOLDOWN_MS)
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearNoSessionCooldown(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(NO_SESSION_COOLDOWN_KEY);
+  } catch {
+    /* ignore */
+  }
 }
 
 async function applyServerTokensToClient(
@@ -65,19 +104,35 @@ export function hydrateBrowserSupabaseFromCookies(): Promise<boolean> {
 
   inFlight = (async () => {
     try {
+      if (isBrowserOffline()) return false;
+
       let session = readUsableClientSessionFromStorage();
-      if (session?.access_token) return true;
+      if (session?.access_token) {
+        clearNoSessionCooldown();
+        return true;
+      }
+
+      if (Date.now() < readNoSessionCooldownUntil()) {
+        return false;
+      }
 
       await sleep(80);
       session = readUsableClientSessionFromStorage();
-      if (session?.access_token) return true;
+      if (session?.access_token) {
+        clearNoSessionCooldown();
+        return true;
+      }
 
       const lockRaw = window.localStorage.getItem(HYDRATE_LOCK_KEY);
       const lockTs = lockRaw ? Number(lockRaw) : NaN;
       if (Number.isFinite(lockTs) && Date.now() - lockTs < HYDRATE_LOCK_MS) {
         await sleep(250);
         session = readUsableClientSessionFromStorage();
-        if (session?.access_token) return true;
+        if (session?.access_token) {
+          clearNoSessionCooldown();
+          return true;
+        }
+        if (Date.now() < readNoSessionCooldownUntil()) return false;
       }
 
       window.localStorage.setItem(HYDRATE_LOCK_KEY, String(Date.now()));
@@ -86,24 +141,49 @@ export function hydrateBrowserSupabaseFromCookies(): Promise<boolean> {
           credentials: "include",
           cache: "no-store",
         });
-        if (!res.ok) {
-          if (res.status === 401) {
-            clearStaleClientAuthStorage();
-          }
+
+        let body: {
+          success?: boolean;
+          code?: string;
+          access_token?: string;
+          refresh_token?: string;
+        } = {};
+        try {
+          body = (await res.json()) as typeof body;
+        } catch {
+          markNoSessionCooldown();
           return false;
         }
 
-        const body = (await res.json()) as {
-          success?: boolean;
-          access_token?: string;
-          refresh_token?: string;
-        };
-        if (!body.success || !body.access_token || !body.refresh_token) return false;
+        // Expected: no cookie session for Realtime bridge (login cookies may still auth APIs).
+        if (res.status === 401 || body.code === "NO_SESSION" || body.success === false) {
+          if (res.status === 401 || body.code === "NO_SESSION") {
+            clearStaleClientAuthStorage();
+          }
+          markNoSessionCooldown();
+          return false;
+        }
+
+        if (!res.ok) {
+          markNoSessionCooldown();
+          return false;
+        }
+
+        if (!body.access_token || !body.refresh_token) {
+          markNoSessionCooldown();
+          return false;
+        }
 
         session = readUsableClientSessionFromStorage();
-        if (session?.access_token) return true;
+        if (session?.access_token) {
+          clearNoSessionCooldown();
+          return true;
+        }
 
-        return applyServerTokensToClient(body.access_token, body.refresh_token);
+        const applied = await applyServerTokensToClient(body.access_token, body.refresh_token);
+        if (applied) clearNoSessionCooldown();
+        else markNoSessionCooldown();
+        return applied;
       } finally {
         try {
           window.localStorage.removeItem(HYDRATE_LOCK_KEY);
@@ -112,6 +192,8 @@ export function hydrateBrowserSupabaseFromCookies(): Promise<boolean> {
         }
       }
     } catch {
+      // Offline / aborted — cooldown lightly so visibility storms do not hammer the API.
+      markNoSessionCooldown();
       return false;
     } finally {
       inFlight = null;
@@ -124,21 +206,34 @@ export function hydrateBrowserSupabaseFromCookies(): Promise<boolean> {
 /** After login set-cookie, align localStorage with the server session (best-effort). */
 export async function syncClientStorageFromServerSession(): Promise<boolean> {
   if (typeof window === "undefined") return false;
+  clearNoSessionCooldown();
   if (readUsableClientSessionFromStorage()) return true;
+  if (isBrowserOffline()) return false;
 
   try {
     const res = await fetch("/api/auth/supabase-browser-session", {
       credentials: "include",
       cache: "no-store",
     });
-    if (!res.ok) return false;
-    const body = (await res.json()) as {
+    let body: {
       success?: boolean;
+      code?: string;
       access_token?: string;
       refresh_token?: string;
-    };
-    if (!body.success || !body.access_token || !body.refresh_token) return false;
-    return applyServerTokensToClient(body.access_token, body.refresh_token);
+    } = {};
+    try {
+      body = (await res.json()) as typeof body;
+    } catch {
+      return false;
+    }
+    if (res.status === 401 || body.code === "NO_SESSION" || !body.success) {
+      markNoSessionCooldown();
+      return false;
+    }
+    if (!res.ok || !body.access_token || !body.refresh_token) return false;
+    const applied = await applyServerTokensToClient(body.access_token, body.refresh_token);
+    if (applied) clearNoSessionCooldown();
+    return applied;
   } catch {
     return false;
   }
@@ -151,4 +246,34 @@ export function clearExpiredClientStorageIfNeeded(): void {
   if (!session.access_token || !session.refresh_token) {
     clearStaleClientAuthStorage();
   }
+}
+
+/**
+ * After BFCache restore, Realtime sockets are dead. Soft-reconnect once without
+ * spamming the session bridge when we already know there is no client JWT.
+ */
+export function reconnectRealtimeAfterBfCache(): void {
+  if (typeof window === "undefined") return;
+  try {
+    // Disconnect closed sockets from BFCache; channels re-subscribe on next hook effect.
+    supabase.realtime.disconnect();
+  } catch {
+    /* ignore */
+  }
+  if (readUsableClientSessionFromStorage()?.access_token) {
+    try {
+      supabase.realtime.connect();
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  void hydrateBrowserSupabaseFromCookies().then((ok) => {
+    if (!ok) return;
+    try {
+      supabase.realtime.connect();
+    } catch {
+      /* ignore */
+    }
+  });
 }

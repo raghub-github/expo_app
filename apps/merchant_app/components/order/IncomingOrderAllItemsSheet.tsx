@@ -133,14 +133,16 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textSecondary,
   },
   qtyHeader: {
-    width: 46,
+    width: 48,
+    minWidth: 48,
     textAlign: "center",
     fontSize: 10,
     fontWeight: "700",
     color: GatiMitraMerchant.textSecondary,
   },
   amountHeader: {
-    width: 73,
+    width: 72,
+    minWidth: 72,
     textAlign: "right",
     fontSize: 10,
     fontWeight: "700",

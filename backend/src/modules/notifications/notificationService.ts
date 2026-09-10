@@ -167,17 +167,35 @@ function mustShowWhenKilled(row: {
   if (
     code === "MERCHANT_NEW_ORDER" ||
     code === "RIDER_DISPATCH_OFFER" ||
+    code === "RIDER_FOOD_READY" ||
     code === "CUSTOMER_ANNOUNCEMENT" ||
     code === "MERCHANT_ANNOUNCEMENT" ||
-    code === "RIDER_ANNOUNCEMENT"
+    code === "RIDER_ANNOUNCEMENT" ||
+    code.startsWith("ORDER_") ||
+    code.startsWith("RIDE_") ||
+    code.startsWith("PARCEL_") ||
+    code.startsWith("RIDER_ORDER_") ||
+    code.startsWith("MERCHANT_ORDER_") ||
+    code.startsWith("RIDER_FOOD_")
   ) {
     return true;
   }
   const metaType = String(row.metadata?.type ?? "").toLowerCase();
+  const gmType = String(row.metadata?.gmType ?? "").toUpperCase();
   return (
     metaType === "merchant_new_order" ||
     metaType === "rider_dispatch_offer" ||
-    metaType === "dispatch_offer"
+    metaType === "dispatch_offer" ||
+    metaType === "rider_food_ready" ||
+    metaType === "merchant_rating" ||
+    metaType === "merchant_complaint" ||
+    metaType === "merchant_rider_pickup" ||
+    metaType === "merchant_rider_assigned" ||
+    gmType.startsWith("ORDER_") ||
+    gmType.startsWith("RIDE_") ||
+    gmType.startsWith("PARCEL_") ||
+    gmType === "RIDER_FOOD_READY" ||
+    gmType === "DISPATCH_OFFER"
   );
 }
 
@@ -204,6 +222,9 @@ function buildFcmV1InputForRow(
   // Force-killed apps only show a tray item when the carrier includes a
   // notification block. Never strip it for critical / announcement templates.
   const silent = mustShowWhenKilled(row) ? false : live.silent;
+  const sound = silent ? null : soundForRecipient(row.recipient, row);
+  // Customer: CX chime for order/ride/parcel (never merchant/rider Incoming Order wav).
+  const playSound = !silent && sound != null && String(sound).trim() !== "";
   return {
     notificationId: row.notificationId,
     ...(args.token ? { token: args.token } : {}),
@@ -214,7 +235,8 @@ function buildFcmV1InputForRow(
     deepLink: args.deepLink ?? resolvedDeepLinkForRow(row),
     webLink: args.webLink,
     channelId: channelIdForRecipient(row.recipient, row.priority, row),
-    sound: silent ? null : soundForRecipient(row.recipient, row),
+    sound: playSound ? sound : null,
+    playSound,
     appRole: row.recipient.role,
     data: args.data ?? fcmDataForRow(row),
     priority: row.priority as never,
@@ -251,19 +273,42 @@ function channelIdForRecipient(
     ) {
       return "rider_dispatch_offers_alert";
     }
+    // Food ready / order lifecycle — high-importance default (not silent).
+    if (
+      code === "RIDER_FOOD_READY" ||
+      code.startsWith("RIDER_ORDER_") ||
+      metaType === "rider_food_ready"
+    ) {
+      return "rider_default";
+    }
     return "rider_default";
   }
-  if (row && isCustomerLiveOrderProgressRow(row)) return "customer_live_order";
+  // Food/parcel live + order lifecycle → CX channel (new id; old customer_live_order was silent).
+  if (row && isCustomerLiveOrderProgressRow(row)) return "customer_order_cx";
   // Ride lifecycle → CX custom chime channel (immutable after first Android create).
   if (row && isRideCustomerPush(row)) return "customer_ride_cx";
+  if (recipient.role === "customer") {
+    const code = String(row?.templateCode ?? "").toUpperCase();
+    if (
+      code.startsWith("ORDER_") ||
+      code.startsWith("PARCEL_") ||
+      code === "CUSTOMER_DELIVERY_OTP_NEARBY" ||
+      code === "CUSTOMER_PICKUP_OTP_ARRIVED"
+    ) {
+      return "customer_order_cx";
+    }
+  }
   return "customer_default";
 }
 
 function soundForRecipient(
   recipient: Recipient,
   row?: { templateCode: string; metadata?: Record<string, unknown> | null },
-): string {
-  if (recipient.role === "customer" && row && isRideCustomerPush(row)) {
+): string | null {
+  // Customer: never use merchant/rider Incoming Order (`notification`) wav.
+  // Order/ride/parcel → cx_notification.mp3 (same asset as in-app checkout success).
+  if (recipient.role === "customer") {
+    // Same asset as checkout success / in-app CX chime.
     return "cx_notification.mp3";
   }
   if (recipient.role === "merchant") {
@@ -564,6 +609,7 @@ async function dispatchExpoRow(
   console.info(
     `[notifications] expo_dispatch start nid=${row.notificationId} role=${row.recipient.role} platform=${row.recipient.platform} forceInline=${Boolean(opts?.forceInline)} liveDataOnly=${liveDelivery.dataOnly} visible=${forceVisible}`,
   );
+  const expoSound = forceVisible ? soundForRecipient(row.recipient, row) : null;
   const result = await deliverExpoPush({
     to: row.recipient.deviceToken,
     // Always attach title/body for killed-app OS tray (unless truly data-only).
@@ -573,7 +619,8 @@ async function dispatchExpoRow(
     screen: resolvedDeepLinkForRow(row) ?? undefined,
     imageUrl: row.imageUrl ?? undefined,
     channelId: channelIdForRecipient(row.recipient, row.priority, row),
-    sound: forceVisible ? soundForRecipient(row.recipient, row) : null,
+    // null = quiet tray (customer food live progress — no Incoming Order chime).
+    sound: expoSound,
     dispatchLogId: row.notificationId,
     templateCode: row.templateCode,
     attempt: opts?.attempt ?? 0,
@@ -935,11 +982,16 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     }
   }
 
-  // 3b. Quiet-hours + rate-limit enforcement (skips critical priority).
+  // 3b. Quiet-hours + rate-limit enforcement (skips critical / kill-visible).
   // Marketing + announcement categories only deliver inside the allowed
   // window when quiet_hours settings apply. Admin Send now / Resend bypasses.
+  // Transactional order/ride/parcel/rider/merchant alerts never wait on quiet hours.
   const effectivePriority = intent.priority ?? template.priority;
-  if (effectivePriority !== "critical" && !intent.bypassQuietHours) {
+  const killVisible = mustShowWhenKilled({
+    templateCode: template.code,
+    metadata: intent.metadata ?? null,
+  });
+  if (effectivePriority !== "critical" && !intent.bypassQuietHours && !killVisible) {
     const quiet = await readSetting<{
       start: string;
       end: string;
@@ -1130,6 +1182,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           `[notifications] fcm_topic nid=${row.notificationId} topic=${topic} role=${row.recipient.role}`,
         );
         const topicSilent = mustShowWhenKilled(row) ? false : Boolean(template.silent);
+        const topicSound = topicSilent ? null : soundForRecipient(row.recipient, row);
         const res = await sendFcmV1({
           notificationId: row.notificationId,
           topic,
@@ -1140,7 +1193,8 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           deepLink: row.deepLink ?? null,
           webLink,
           channelId: channelIdForRecipient(row.recipient, row.priority, row),
-          sound: topicSilent ? null : soundForRecipient(row.recipient, row),
+          sound: topicSound,
+          playSound: Boolean(topicSound),
           appRole: row.recipient.role,
           data: {
             template_code: row.templateCode,

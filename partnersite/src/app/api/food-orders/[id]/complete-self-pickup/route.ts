@@ -70,7 +70,16 @@ async function applyFoodStatus(
 
   await db
     .from('orders_core')
-    .update({ current_status: toStatus, updated_at: now })
+    .update(
+      toStatus === 'DELIVERED'
+        ? {
+            current_status: toStatus,
+            status: 'delivered',
+            actual_delivery_time: now,
+            updated_at: now,
+          }
+        : { current_status: toStatus, updated_at: now }
+    )
     .eq('id', orderCoreId);
 
   if (toStatus === 'OUT_FOR_DELIVERY') {

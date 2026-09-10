@@ -7,6 +7,7 @@
  * lifecycle state. Replaces the insufficient "rider verified ✓" with the exact picture.
  */
 import React, { useEffect, useState } from "react";
+import { ModalPortal } from "@/components/ui/ModalPortal";
 
 type Decision = {
   eligible: boolean;
@@ -181,7 +182,7 @@ type OverrideRow = {
 function OverridesSection({ riderId }: { riderId: number }) {
   const [rows, setRows] = useState<OverrideRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [open, setOpen] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
   const [service, setService] = useState("food");
   const [reason, setReason] = useState("");
   const [effectiveTo, setEffectiveTo] = useState("");
@@ -226,7 +227,7 @@ function OverridesSection({ riderId }: { riderId: number }) {
       if (!res.ok) {
         setMsg(json?.error ?? "Failed to grant override");
       } else {
-        setOpen(false);
+        setModalOpen(false);
         setReason("");
         setEffectiveTo("");
         await load();
@@ -257,6 +258,7 @@ function OverridesSection({ riderId }: { riderId: number }) {
   }
 
   const active = rows.filter((r) => r.isActive);
+  const serviceLabel = SERVICE_LABEL[service] ?? service;
 
   return (
     <div className="border-t border-indigo-100 px-5 py-3">
@@ -264,62 +266,22 @@ function OverridesSection({ riderId }: { riderId: number }) {
         <p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700">
           Eligibility overrides
           <span className="ml-1 font-normal normal-case text-slate-400">
-            (admin exception — never marks a document verified)
+            (lets Food / Parcel / Ride receive orders without marking docs verified)
           </span>
         </p>
         <button
           type="button"
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => {
+            setMsg(null);
+            setModalOpen(true);
+          }}
           className="rounded-md border border-indigo-200 bg-white px-2.5 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
         >
-          {open ? "Cancel" : "Grant override"}
+          Grant override
         </button>
       </div>
 
-      {open ? (
-        <div className="mt-2 flex flex-wrap items-end gap-2 rounded-lg border border-indigo-100 bg-indigo-50/40 p-3">
-          <label className="text-xs font-semibold text-slate-600">
-            Service
-            <select
-              className="mt-1 block rounded-md border border-slate-200 bg-white px-2 py-1 text-sm"
-              value={service}
-              onChange={(e) => setService(e.target.value)}
-            >
-              <option value="food">Food</option>
-              <option value="parcel">Parcel</option>
-              <option value="person_ride">Person Ride</option>
-            </select>
-          </label>
-          <label className="flex-1 text-xs font-semibold text-slate-600">
-            Reason
-            <input
-              className="mt-1 block w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-sm"
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="e.g. verified offline; pilot rider"
-            />
-          </label>
-          <label className="text-xs font-semibold text-slate-600">
-            Expires (optional)
-            <input
-              type="date"
-              className="mt-1 block rounded-md border border-slate-200 bg-white px-2 py-1 text-sm"
-              value={effectiveTo}
-              onChange={(e) => setEffectiveTo(e.target.value)}
-            />
-          </label>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={grant}
-            className="rounded-md border border-indigo-300 bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {busy ? "Granting…" : "Grant"}
-          </button>
-        </div>
-      ) : null}
-
-      {msg ? <p className="mt-2 text-xs font-semibold text-amber-700">{msg}</p> : null}
+      {msg && !modalOpen ? <p className="mt-2 text-xs font-semibold text-amber-700">{msg}</p> : null}
 
       {loading ? (
         <p className="mt-2 text-xs text-slate-400">Loading…</p>
@@ -331,9 +293,20 @@ function OverridesSection({ riderId }: { riderId: number }) {
             <li key={r.id} className="flex items-center justify-between gap-2 text-xs">
               <span>
                 <b>{SERVICE_LABEL[r.serviceType] ?? r.serviceType}</b> — {r.reason}
-                {r.createdByLabel ? <span className="text-slate-400"> · by {r.createdByLabel}</span> : null}
+                {r.createdByLabel ? (
+                  <span className="text-slate-500"> · approved by {r.createdByLabel}</span>
+                ) : null}
                 {r.effectiveTo ? (
-                  <span className="text-slate-400"> · until {new Date(r.effectiveTo).toLocaleDateString()}</span>
+                  <span className="text-slate-400">
+                    {" "}
+                    · until {new Date(r.effectiveTo).toLocaleDateString()}
+                  </span>
+                ) : null}
+                {r.createdAt ? (
+                  <span className="text-slate-400">
+                    {" "}
+                    · {new Date(r.createdAt).toLocaleString()}
+                  </span>
                 ) : null}
               </span>
               <button
@@ -347,6 +320,96 @@ function OverridesSection({ riderId }: { riderId: number }) {
           ))}
         </ul>
       )}
+
+      {modalOpen ? (
+        <ModalPortal>
+          <div className="fixed inset-0 z-[160] flex items-center justify-center p-4">
+            <button
+              type="button"
+              className="absolute inset-0 bg-slate-900/35 backdrop-blur-md"
+              aria-label="Close"
+              disabled={busy}
+              onClick={() => !busy && setModalOpen(false)}
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              className="relative z-[161] w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl"
+            >
+            <div className="border-b border-amber-100 bg-amber-50 px-5 py-4">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-800">
+                Warning — service eligibility exception
+              </p>
+              <h3 className="mt-1 text-lg font-semibold text-[#0A2342]">Grant eligibility override?</h3>
+            </div>
+            <div className="space-y-3 px-5 py-4 text-sm text-slate-700">
+              <p>
+                This does <b>not</b> mark Driving License / RC as verified. It only lets{" "}
+                <b>{serviceLabel}</b> receive orders while required docs are still missing.
+              </p>
+              <ul className="list-disc space-y-1 pl-5 text-xs text-slate-600">
+                <li>Engine still shows Incomplete for missing documents.</li>
+                <li>Override is audited under your admin account (name + email).</li>
+                <li>You can revoke anytime — service then follows normal eligibility again.</li>
+              </ul>
+
+              <label className="block text-xs font-semibold text-slate-600">
+                Service
+                <select
+                  className="mt-1 block w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm"
+                  value={service}
+                  onChange={(e) => setService(e.target.value)}
+                  disabled={busy}
+                >
+                  <option value="food">Food</option>
+                  <option value="parcel">Parcel</option>
+                  <option value="person_ride">Person Ride</option>
+                </select>
+              </label>
+              <label className="block text-xs font-semibold text-slate-600">
+                Reason (required)
+                <input
+                  className="mt-1 block w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="e.g. offline verified; pilot rider"
+                  disabled={busy}
+                />
+              </label>
+              <label className="block text-xs font-semibold text-slate-600">
+                Expires (optional)
+                <input
+                  type="date"
+                  className="mt-1 block w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm"
+                  value={effectiveTo}
+                  onChange={(e) => setEffectiveTo(e.target.value)}
+                  disabled={busy}
+                />
+              </label>
+              {msg ? <p className="text-xs font-semibold text-amber-700">{msg}</p> : null}
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-slate-100 bg-slate-50 px-5 py-3">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setModalOpen(false)}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void grant()}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {busy ? "Granting…" : "Confirm grant"}
+              </button>
+            </div>
+          </div>
+          </div>
+        </ModalPortal>
+      ) : null}
     </div>
   );
 }

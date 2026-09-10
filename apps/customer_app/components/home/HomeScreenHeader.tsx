@@ -1,12 +1,11 @@
 import { View, TouchableOpacity, StyleSheet, Dimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { resolveTopSafeInset, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { HOME_HEADER_BELOW_STATUS_GAP, resolveTopSafeInset } from "@/constants/layout";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { CustomerWeatherContext } from "@/services/weather.service";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 import { AppText } from "@/components/AppText";
-import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -125,15 +124,9 @@ export function HomeLocationHeader({
   | "onNotificationPress"
 >) {
   const insets = useSafeAreaInsets();
-  const hideStatusBarSpacer = useScreenChromeStore((s) => s.hideStatusBarSpacer);
-  const bootstrapActive = useScreenChromeStore((s) => s.bootstrapActive);
-  // Root spacer owns safe-top in normal tabs. During splash / immersive chrome the
-  // spacer is 0 — pad here so the header never sits under the status bar on first paint.
-  const safeTop = resolveTopSafeInset(insets.top);
-  const topPad =
-    hideStatusBarSpacer || bootstrapActive
-      ? safeTop + STATUS_BAR_TO_HEADER_GAP
-      : STATUS_BAR_TO_HEADER_GAP;
+  // Exactly the status-bar inset — no extra chrome band. Row aligns to the top
+  // so location text sits flush under the clock (icon buttons no longer center-pad it down).
+  const topPad = resolveTopSafeInset(insets.top) + HOME_HEADER_BELOW_STATUS_GAP;
   const showBadge = notificationBadgeCount != null && notificationBadgeCount > 0;
 
   return (
@@ -277,7 +270,7 @@ const styles = StyleSheet.create({
     width: "100%",
     backgroundColor: PAGE_BG,
     paddingHorizontal: PAD,
-    paddingBottom: 4,
+    paddingBottom: 2,
     zIndex: 10,
   },
   weatherShell: {
@@ -294,7 +287,7 @@ const styles = StyleSheet.create({
   },
   topRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
   },
   locationBlock: {
@@ -303,10 +296,10 @@ const styles = StyleSheet.create({
     flex: 1,
     marginRight: 10,
     minWidth: 0,
+    minHeight: 40,
   },
   locationPin: {
     flexShrink: 0,
-    marginTop: 1,
   },
   locationTextBlock: {
     marginLeft: 8,
@@ -369,6 +362,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0,
     shadowRadius: 0,
     elevation: 0,
+    marginTop: 0,
   },
   badge: {
     position: "absolute",

@@ -33,7 +33,7 @@ type Props = {
   onMoreSettings: () => void;
 };
 
-const CARD_W = 252;
+const CARD_W = 220;
 const VEG_GREEN = "#22C55E";
 const ARROW = 8;
 const GAP_BELOW_TOGGLE = 6;

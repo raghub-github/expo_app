@@ -70,14 +70,23 @@ export function OrderCardItemRow({
         ) : null}
         <View style={styles.titleRow}>
           <Pressable onPress={onItemNamePress} hitSlop={4} style={styles.itemNamePress}>
-            <Text style={[styles.itemLabel, dense && styles.itemLabelDense]}>
+            <Text
+              style={[styles.itemLabel, dense && styles.itemLabelDense]}
+              numberOfLines={2}
+              ellipsizeMode="tail"
+              maxFontSizeMultiplier={1.3}
+            >
               {showQuantityColumn ? null : `${item.qty} x `}
-              <Text style={styles.itemName}>{item.name}</Text>
+              <Text style={styles.itemName} maxFontSizeMultiplier={1.3}>
+                {item.name}
+              </Text>
             </Text>
           </Pressable>
           {hasCust ? (
             <View style={styles.custPill}>
-              <Text style={styles.custPillText}>Customization added</Text>
+              <Text style={styles.custPillText} maxFontSizeMultiplier={1.2}>
+                Customization added
+              </Text>
             </View>
           ) : null}
         </View>
@@ -129,10 +138,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    flexWrap: "nowrap",
+    flexWrap: "wrap",
+    width: "100%",
+    minWidth: 0,
   },
   itemLabel: {
-    flexShrink: 1,
     fontSize: 13,
     fontWeight: "500",
     color: "#1A1A1A",
@@ -146,8 +156,11 @@ const styles = StyleSheet.create({
     paddingBottom: 0,
   },
   itemNamePress: {
+    flexGrow: 1,
     flexShrink: 1,
+    flexBasis: "40%",
     minWidth: 0,
+    maxWidth: "100%",
   },
   itemName: {
     fontWeight: "700",
@@ -205,8 +218,10 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     flexShrink: 0,
   },
+  /** Keep in sync with IncomingOrderModal / AllItemsSheet headers. */
   qtyCol: {
-    width: 38,
+    width: 48,
+    minWidth: 48,
     flexShrink: 0,
     alignItems: "center",
   },
@@ -236,7 +251,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   amountCol: {
-    width: 65,
+    width: 72,
+    minWidth: 72,
+    flexShrink: 0,
   },
   priceStrike: {
     fontSize: 11,

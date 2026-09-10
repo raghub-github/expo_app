@@ -8,6 +8,7 @@ import { RiderServiceTypeDropdown } from "@/src/components/header/RiderServiceTy
 import { HeaderTrailingActions } from "@/src/components/header/HeaderTrailingActions";
 import { LanguageSelectionSheet } from "@/src/components/language/LanguageSelectionSheet";
 import { useNotificationInboxStore } from "@/src/stores/notificationInboxStore";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
 export const ORDERS_HEADER_BG = "#F5F7FA";
 
@@ -17,20 +18,47 @@ export function HomeMapHeaderInner() {
   const unreadNotifications = useNotificationInboxStore((s) =>
     s.items.filter((n) => !n.read).length,
   );
+  const { rs, width, layoutFontScale, isCompactWidth } = useResponsiveLayout();
+  /** High display zoom / narrow width — header chips must shrink and not collide. */
+  const tightHeader = isCompactWidth || width < 380 || layoutFontScale > 1.12;
 
   return (
     <>
       <SafeAreaView edges={["top"]} style={styles.safe} collapsable={false}>
-        <View ref={headerRef} style={styles.shell} collapsable={false}>
-          <View style={styles.leftGroup}>
-            <DutyToggle variant="pill" />
-            <RiderServiceTypeDropdown headerAnchorRef={headerRef} />
+        <View
+          ref={headerRef}
+          style={[
+            styles.shell,
+            {
+              paddingHorizontal: rs(tightHeader ? 8 : 12),
+              paddingTop: rs(6),
+              paddingBottom: rs(8),
+              gap: tightHeader ? 4 : 8,
+              minHeight: 52,
+            },
+          ]}
+          collapsable={false}
+        >
+          <View
+            style={[
+              styles.leftGroup,
+              { gap: tightHeader ? 4 : 8, paddingRight: rs(4) },
+            ]}
+          >
+            <DutyToggle variant="pill" compactLabels={tightHeader} />
+            <View style={styles.servicesSlot}>
+              <RiderServiceTypeDropdown
+                headerAnchorRef={headerRef}
+                compact={tightHeader}
+              />
+            </View>
           </View>
 
           <HeaderTrailingActions
             onLanguagePress={() => setShowLangSheet(true)}
             onNotificationPress={() => router.push("/notifications")}
             notificationBadgeCount={unreadNotifications}
+            compact={tightHeader}
           />
         </View>
       </SafeAreaView>
@@ -56,19 +84,21 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     backgroundColor: ORDERS_HEADER_BG,
-    paddingHorizontal: 12,
-    paddingTop: 6,
-    paddingBottom: 8,
-    minHeight: 52,
     width: "100%",
+    overflow: "hidden",
   },
   leftGroup: {
     flexDirection: "row",
     alignItems: "center",
+    flex: 1,
     flexShrink: 1,
-    flexGrow: 1,
-    gap: 8,
     minWidth: 0,
-    paddingRight: 8,
+    overflow: "hidden",
+  },
+  servicesSlot: {
+    flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    maxWidth: "100%",
   },
 });

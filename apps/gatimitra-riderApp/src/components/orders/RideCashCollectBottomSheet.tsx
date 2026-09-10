@@ -9,6 +9,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { AppText } from "@/components/AppText";
 import { DismissibleBottomSheetShell } from "@/src/components/language/DismissibleBottomSheetShell";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 import { LORA_BOLD, LORA_REGULAR, POPPINS_BOLD } from "@/src/theme/headerFonts";
 
 /** Matches customer app Place Order CTA. */
@@ -31,21 +34,65 @@ export function RideCashCollectBottomSheet({
   onConfirm,
 }: Props) {
   const { t } = useTranslation();
+  const { height, isShortHeight, rs } = useResponsiveLayout();
+  const bodyMaxH = Math.round(height * (isShortHeight ? 0.52 : 0.42));
 
   return (
     <DismissibleBottomSheetShell
       visible={visible}
       onDismiss={onDismiss}
-      maxHeightRatio={0.46}
+      maxHeightRatio={isShortHeight ? 0.58 : 0.46}
       showOuterHandle={false}
       showFloatingClose
     >
-      <View style={styles.headerRow}>
+      <ResponsiveSheetBody
+        maxHeight={bodyMaxH}
+        contentContainerStyle={styles.bodyContent}
+        footerStyle={styles.footerSlot}
+        footer={
+          <View style={[rowLayout.row, styles.ctaRow]}>
+            <TouchableOpacity
+              style={[styles.cancelBtn, loading && styles.btnDisabled]}
+              onPress={onDismiss}
+              disabled={loading}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+            >
+              <AppText style={styles.cancelLabel} bold numberOfLines={1}>
+                {t("common.cancel", "Cancel")}
+              </AppText>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.confirmBtn, loading && styles.btnDisabled]}
+              onPress={onConfirm}
+              disabled={loading}
+              activeOpacity={0.88}
+              hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+              accessibilityRole="button"
+              accessibilityLabel={t("orders.ridePaymentWait.cashSheetCompleted", "Completed")}
+            >
+              {loading ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle" size={18} color="#fff" style={rowLayout.noShrink} />
+                  <AppText style={[styles.confirmLabel, flexShrinkText]} bold numberOfLines={1}>
+                    {t("orders.ridePaymentWait.cashSheetCompleted", "Completed")}
+                  </AppText>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        }
+      >
         <View style={styles.headerTextCol}>
-          <AppText style={styles.title} bold>
+          <AppText style={[styles.title, flexShrinkText]} bold numberOfLines={2}>
             {t("orders.ridePaymentWait.cashSheetTitle", "Collect cash payment")}
           </AppText>
-          <AppText style={styles.subtitle}>
+          <AppText
+            style={[styles.subtitle, flexShrinkText]}
+            numberOfLines={isShortHeight ? 3 : 4}
+          >
             {t(
               "orders.ridePaymentWait.cashSheetSub",
               "Please collect {{amount}} from the customer before marking completed.",
@@ -53,71 +100,40 @@ export function RideCashCollectBottomSheet({
             )}
           </AppText>
         </View>
-      </View>
 
-      <View style={styles.body}>
-        <View style={styles.infoCard}>
-          <View style={styles.infoIconWrap}>
+        <View style={[rowLayout.rowStart, styles.infoCard, { marginTop: rs(12) }]}>
+          <View style={[styles.infoIconWrap, rowLayout.noShrink]}>
             <Ionicons name="cash-outline" size={24} color={BRAND_BTN_DARK} />
           </View>
-          <AppText style={styles.infoText}>
+          <AppText
+            style={[styles.infoText, flexShrinkText]}
+            numberOfLines={isShortHeight ? 4 : 6}
+          >
             {t(
               "orders.ridePaymentWait.cashSheetHint",
               "Only tap Completed after you have received the full fare in cash from the passenger."
             )}
           </AppText>
         </View>
-
-        <View style={styles.ctaRow}>
-          <TouchableOpacity
-            style={[styles.cancelBtn, loading && styles.btnDisabled]}
-            onPress={onDismiss}
-            disabled={loading}
-            activeOpacity={0.85}
-            accessibilityRole="button"
-          >
-            <AppText style={styles.cancelLabel} bold>
-              {t("common.cancel", "Cancel")}
-            </AppText>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.confirmBtn, loading && styles.btnDisabled]}
-            onPress={onConfirm}
-            disabled={loading}
-            activeOpacity={0.88}
-            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
-            accessibilityRole="button"
-            accessibilityLabel={t("orders.ridePaymentWait.cashSheetCompleted", "Completed")}
-          >
-            {loading ? (
-              <ActivityIndicator color="#fff" size="small" />
-            ) : (
-              <>
-                <Ionicons name="checkmark-circle" size={18} color="#fff" />
-                <AppText style={styles.confirmLabel} bold>
-                  {t("orders.ridePaymentWait.cashSheetCompleted", "Completed")}
-                </AppText>
-              </>
-            )}
-          </TouchableOpacity>
-        </View>
-      </View>
+      </ResponsiveSheetBody>
     </DismissibleBottomSheetShell>
   );
 }
 
 const styles = StyleSheet.create({
-  headerRow: {
-    paddingHorizontal: 20,
+  bodyContent: {
     paddingTop: 18,
-    paddingBottom: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#E8EAED",
+    paddingBottom: 4,
+  },
+  footerSlot: {
+    borderTopWidth: 0,
+    backgroundColor: "transparent",
+    paddingBottom: 12,
   },
   headerTextCol: {
     flex: 1,
     gap: 6,
-    paddingRight: 8,
+    maxWidth: "100%",
   },
   title: {
     fontSize: 17,
@@ -130,20 +146,14 @@ const styles = StyleSheet.create({
     color: "#5F6368",
     lineHeight: 20,
   },
-  body: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 12,
-    gap: 20,
-  },
   infoCard: {
-    flexDirection: "row",
     gap: 12,
     backgroundColor: "#F0FDF4",
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#BBF7D0",
     padding: 14,
+    maxWidth: "100%",
   },
   infoIconWrap: {
     width: 40,
@@ -161,14 +171,16 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   ctaRow: {
-    flexDirection: "row",
     gap: 10,
+    width: "100%",
   },
   cancelBtn: {
     flex: 1,
+    minWidth: 0,
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 14,
+    paddingHorizontal: 8,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#D1D5DB",
@@ -181,11 +193,13 @@ const styles = StyleSheet.create({
   },
   confirmBtn: {
     flex: 1.4,
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
     paddingVertical: 14,
+    paddingHorizontal: 8,
     borderRadius: 12,
     backgroundColor: BRAND_BTN,
   },

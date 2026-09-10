@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ScrollView, StyleSheet, TouchableOpacity, View, useWindowDimensions } from "react-native";
+import { ScrollView, StyleSheet, View, useWindowDimensions } from "react-native";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -16,6 +16,7 @@ import { getLocalCategoryImageUri } from "@/lib/categoryImageFileCache";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { FoodHomeCategoryItem } from "@/components/home/FoodHomeCategoryVariants";
 import { AppText } from "@/components/AppText";
+import { InstantPressable } from "@/components/InstantPressable";
 import { useCardAnimationsEnabled } from "@/hooks/useCardAnimationsEnabled";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
@@ -224,9 +225,9 @@ function MealsUnderExploreCard({
 
   if (hasImage) {
     return (
-      <TouchableOpacity
+      <InstantPressable
         style={[styles.tab, styles.tabTransparent, { width, minHeight: height + 9 }]}
-        activeOpacity={0.85}
+        pressedScale={0.94}
         onPress={onPress}
       >
         <View
@@ -251,14 +252,14 @@ function MealsUnderExploreCard({
           <AnimatedExploreBar height={exploreBarH} />
         </View>
         <View style={styles.tabUnderlineSpacer} />
-      </TouchableOpacity>
+      </InstantPressable>
     );
   }
 
   return (
-    <TouchableOpacity
+    <InstantPressable
       style={[styles.tab, { width, minHeight: height + 9 }]}
-      activeOpacity={0.85}
+      pressedScale={0.94}
       onPress={onPress}
     >
       <View
@@ -284,7 +285,7 @@ function MealsUnderExploreCard({
         <AnimatedExploreBar height={exploreBarH} />
       </View>
       <View style={styles.tabUnderlineSpacer} />
-    </TouchableOpacity>
+    </InstantPressable>
   );
 }
 
@@ -352,10 +353,10 @@ export function FoodHomeCategoryTabs({
     if (entry.kind === "all") {
       const active = activeId === "all";
       return (
-        <TouchableOpacity
+        <InstantPressable
           key={key}
           style={[styles.tab, { width: itemW, minHeight: tabMinHeight }]}
-          activeOpacity={0.85}
+          pressedScale={0.94}
           onPress={() => setActiveId("all")}
         >
           <CategoryPhoto
@@ -381,17 +382,17 @@ export function FoodHomeCategoryTabs({
           ) : (
             <View style={styles.tabUnderlineSpacer} />
           )}
-        </TouchableOpacity>
+        </InstantPressable>
       );
     }
 
     const cat = entry.item;
     const active = activeId === cat.id;
     return (
-      <TouchableOpacity
+      <InstantPressable
         key={key}
         style={[styles.tab, { width: itemW, minHeight: tabMinHeight }]}
-        activeOpacity={0.85}
+        pressedScale={0.94}
         onPress={() => {
           setActiveId(cat.id);
           onSelect(cat.id, cat.slug);
@@ -419,7 +420,7 @@ export function FoodHomeCategoryTabs({
         ) : (
           <View style={styles.tabUnderlineSpacer} />
         )}
-      </TouchableOpacity>
+      </InstantPressable>
     );
   };
 

@@ -219,17 +219,13 @@ function ContinueButton({
       style={[styles.continueBtn, inactive && styles.continueBtnDisabled]}
     >
       {loading ? (
-        <ActivityIndicator color={ACCENT_DARK} />
+        <ActivityIndicator color="#ffffff" />
       ) : (
         <>
           <Text style={[styles.continueBtnText, inactive && styles.continueBtnTextDisabled]}>
             {label}
           </Text>
-          <Ionicons
-            name="arrow-forward"
-            size={18}
-            color={inactive ? "#7cb889" : "#ffffff"}
-          />
+          <Ionicons name="arrow-forward" size={18} color="#ffffff" />
         </>
       )}
     </TouchableOpacity>
@@ -1095,16 +1091,6 @@ export default function AadhaarScreen() {
               end={{ x: 0.5, y: 1 }}
               style={styles.header}
             >
-              <Pressable
-                onPress={handleBack}
-                style={styles.backBtn}
-                hitSlop={12}
-                accessibilityRole="button"
-                accessibilityLabel={t("common.back", { defaultValue: "Back" })}
-              >
-                <Ionicons name="chevron-back" size={22} color={colors.gray[800]} />
-              </Pressable>
-
               <View style={styles.stepPill}>
                 <Ionicons name="card-outline" size={14} color={ACCENT_DARK} />
                 <Text style={styles.stepPillText}>{tx("stepLabel")}</Text>
@@ -1349,6 +1335,7 @@ export default function AadhaarScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
+    alignSelf: "stretch",
     backgroundColor: BG,
   },
   safeArea: {
@@ -1364,9 +1351,10 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 4,
+    paddingTop: 64,
     paddingBottom: 20,
     alignItems: "center",
+    alignSelf: "stretch",
   },
   backBtn: {
     alignSelf: "flex-start",
@@ -1410,9 +1398,12 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     color: colors.gray[600],
     textAlign: "center",
-    maxWidth: 320,
+    alignSelf: "stretch",
+    maxWidth: "100%",
+    paddingHorizontal: 4,
   },
   formCard: {
+    alignSelf: "stretch",
     marginHorizontal: 16,
     backgroundColor: "#ffffff",
     borderRadius: 20,
@@ -1716,9 +1707,9 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   continueBtnDisabled: {
-    backgroundColor: "#edf8f0",
-    borderWidth: 1.5,
-    borderColor: "rgba(57, 211, 83, 0.25)",
+    backgroundColor: "#16a34a",
+    borderWidth: 0,
+    opacity: 0.45,
   },
   continueBtnText: {
     fontSize: 16,
@@ -1726,6 +1717,6 @@ const styles = StyleSheet.create({
     color: "#ffffff",
   },
   continueBtnTextDisabled: {
-    color: "#7cb889",
+    color: "#ffffff",
   },
 });

@@ -1,13 +1,22 @@
-import { RIDER_TAB_BAR_CONTENT_HEIGHT } from "@/src/lib/active-order-display";
+import { TAB_BAR_CONTENT_HEIGHT_FALLBACK } from "@/src/lib/rider-bottom-dock";
 import {
-  resolveNavScreenBottomInset,
   resolveRiderTabBarBottomInset,
+  resolveNavScreenBottomInset,
 } from "@/src/hooks/useRiderBottomInset";
 
-/** Total height of the bottom tab bar including system navigation inset. */
-export function getRiderTabBarTotalHeight(safeBottomInset: number): number {
+/**
+ * Total height of the bottom tab bar.
+ * Prefers measured onLayout height from RiderTabBar; falls back until first layout.
+ */
+export function getRiderTabBarTotalHeight(
+  safeBottomInset: number,
+  measuredTotalHeight?: number | null
+): number {
+  if (measuredTotalHeight != null && measuredTotalHeight > 0) {
+    return measuredTotalHeight;
+  }
   const bottomPad = resolveRiderTabBarBottomInset(safeBottomInset);
-  return RIDER_TAB_BAR_CONTENT_HEIGHT + bottomPad;
+  return TAB_BAR_CONTENT_HEIGHT_FALLBACK + bottomPad;
 }
 
 /** Padding for inline sheets docked directly above the tab bar (no extra gap). */

@@ -1,12 +1,13 @@
 /**
  * Display label for the active delivery pin — always from live reverse-geocode
- * or a saved address row, never a hardcoded city/area.
+ * or a saved address row, never a hardcoded city/area or raw GPS coordinates.
  */
 
 import { matchSavedAddressIdNearCoords } from "@/lib/deliveryDropResolution";
 import type { Address } from "@/services/address.service";
 import type { ReverseGeocodeResult } from "@/services/location.service";
 import type { LocationSource } from "@/store/locationStore";
+import { isRawCoordinateText } from "@/lib/isRawCoordinateText";
 
 function isBarePincode(value: string): boolean {
   return /^\d{6}$/.test(value.trim());
@@ -17,6 +18,7 @@ function cleanAddressPart(part: string): string {
   const trimmed = part.trim();
   if (!trimmed) return "";
   if (isBarePincode(trimmed)) return "";
+  if (isRawCoordinateText(trimmed)) return "";
   return trimmed.replace(/^\d{6}\s+/, "").trim();
 }
 
@@ -27,7 +29,7 @@ function formatReverseGeocodeLabel(address: ReverseGeocodeResult): string | null
   const secondary = address.secondary?.trim() || null;
   const full = address.fullAddress?.trim() || null;
 
-  if (full && full.toLowerCase() !== "current location") {
+  if (full && full.toLowerCase() !== "current location" && !isRawCoordinateText(full)) {
     const parts = full
       .split(",")
       .map(cleanAddressPart)
@@ -50,11 +52,13 @@ function formatReverseGeocodeLabel(address: ReverseGeocodeResult): string | null
   }
 
   if (city && state) return `${city} (${state})`;
-  if (primary && secondary) {
+  if (primary && secondary && !isRawCoordinateText(secondary)) {
     const sec = cleanAddressPart(secondary.split(",")[0] ?? secondary);
     return sec ? `${primary}, ${sec}` : primary;
   }
-  if (primary && primary.toLowerCase() !== "current location") return primary;
+  if (primary && primary.toLowerCase() !== "current location" && !isRawCoordinateText(primary)) {
+    return primary;
+  }
   if (city) return city;
   if (state) return state;
   return null;
@@ -78,19 +82,21 @@ export function resolveDeliveryLocationLabel(options: {
     if (nearId != null) {
       const saved = addresses.find((a) => a.id === nearId);
       const savedFull = saved?.fullAddress?.trim();
-      if (savedFull) return savedFull;
+      if (savedFull && !isRawCoordinateText(savedFull)) return savedFull;
       const label = saved?.label?.trim();
-      if (label) return label;
+      if (label && !isRawCoordinateText(label)) return label;
     }
   }
 
   if (locationSource === "selected" && address) {
     const full = address.fullAddress?.trim();
-    if (full && full.toLowerCase() !== "current location") return full;
+    if (full && full.toLowerCase() !== "current location" && !isRawCoordinateText(full)) {
+      return full;
+    }
     const secondary = address.secondary?.trim();
-    if (secondary) return secondary;
+    if (secondary && !isRawCoordinateText(secondary)) return secondary;
     const primary = address.primary?.trim();
-    if (primary) return primary;
+    if (primary && !isRawCoordinateText(primary)) return primary;
   }
 
   if (address) {

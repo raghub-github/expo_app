@@ -18,6 +18,8 @@ import {
   useBottomSheetViewport,
 } from "@/src/components/language/DismissibleBottomSheetShell";
 import { riderApi, type RiderEmergencyContact } from "@/src/services/api/riderApi";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 const MAX_CONTACTS = 2;
 const SHEET_MAX_RATIO = 0.88;
@@ -105,11 +107,15 @@ export function RiderEmergencySosBottomSheet({
 }: Props) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { scrollMaxH, bottomPad } = useBottomSheetViewport(SHEET_MAX_RATIO, {
-    compactBottomInset: true,
-    includeHandle: false,
-    sheetBottomPadding: 0,
-  });
+  const { isShortHeight } = useResponsiveLayout();
+  const { scrollMaxH, bottomPad } = useBottomSheetViewport(
+    isShortHeight ? 0.92 : SHEET_MAX_RATIO,
+    {
+      compactBottomInset: true,
+      includeHandle: false,
+      sheetBottomPadding: 0,
+    }
+  );
   const [adding, setAdding] = useState(false);
   const [draftLabel, setDraftLabel] = useState("");
   const [draftPhone, setDraftPhone] = useState("");
@@ -206,30 +212,34 @@ export function RiderEmergencySosBottomSheet({
       >
         <View style={styles.dragHandle} />
 
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <View style={styles.sirenIconWrap}>
+        <View style={[rowLayout.rowStart, styles.header]}>
+          <View style={[rowLayout.row, styles.headerLeft, rowLayout.grow]}>
+            <View style={[styles.sirenIconWrap, rowLayout.noShrink]}>
               <MaterialCommunityIcons name="alarm-light" size={22} color={C.red} />
             </View>
-            <View style={styles.headerTextCol}>
-              <Text style={styles.headerTitle}>
+            <View style={[styles.headerTextCol, rowLayout.grow]}>
+              <Text style={[styles.headerTitle, flexShrinkText]} numberOfLines={2}>
                 {t("orders.sos.sheetTitle", "Emergency SOS")}
               </Text>
-              <Text style={styles.headerSubtitle}>
+              <Text style={[styles.headerSubtitle, flexShrinkText]} numberOfLines={2}>
                 {t("orders.sos.sheetSubtitle", "Tap any number to call")}
               </Text>
             </View>
           </View>
-          <Pressable onPress={onDismiss} hitSlop={10} style={styles.closeBtn}>
+          <Pressable
+            onPress={onDismiss}
+            hitSlop={10}
+            style={[styles.closeBtn, rowLayout.noShrink]}
+          >
             <Ionicons name="close" size={20} color="#374151" />
           </Pressable>
         </View>
 
-        <View style={styles.locationBanner}>
-          <View style={styles.locationBannerIconWrap}>
+        <View style={[rowLayout.rowStart, styles.locationBanner]}>
+          <View style={[styles.locationBannerIconWrap, rowLayout.noShrink]}>
             <MaterialCommunityIcons name="shield-check" size={18} color={C.blue} />
           </View>
-          <Text style={styles.locationBannerText}>
+          <Text style={[styles.locationBannerText, flexShrinkText]} numberOfLines={4}>
             {t("orders.sos.locationBannerPrefix", "Your live location is being shared with ")}{" "}
             <Text style={styles.locationBannerBold}>
               {t("orders.sos.locationBannerBold", "GatiMitra support team.")}
@@ -345,23 +355,31 @@ export function RiderEmergencySosBottomSheet({
                   keyboardType="phone-pad"
                   maxLength={10}
                 />
-                <View style={styles.formActions}>
+                <View style={[rowLayout.row, styles.formActions]}>
                   <Pressable
-                    style={styles.cancelBtn}
+                    style={[styles.cancelBtn, rowLayout.grow]}
                     onPress={() => {
                       setAdding(false);
                       setDraftLabel("");
                       setDraftPhone("");
                     }}
                   >
-                    <Text style={styles.cancelBtnText}>{t("common.cancel", "Cancel")}</Text>
+                    <Text style={[styles.cancelBtnText, flexShrinkText]} numberOfLines={1}>
+                      {t("common.cancel", "Cancel")}
+                    </Text>
                   </Pressable>
                   <Pressable
-                    style={[styles.saveBtn, saveMutation.isPending && styles.saveBtnDisabled]}
+                    style={[
+                      styles.saveBtn,
+                      rowLayout.grow,
+                      saveMutation.isPending && styles.saveBtnDisabled,
+                    ]}
                     onPress={handleSaveNew}
                     disabled={saveMutation.isPending}
                   >
-                    <Text style={styles.saveBtnText}>{t("common.save", "Save")}</Text>
+                    <Text style={[styles.saveBtnText, flexShrinkText]} numberOfLines={1}>
+                      {t("common.save", "Save")}
+                    </Text>
                   </Pressable>
                 </View>
               </View>
@@ -369,11 +387,11 @@ export function RiderEmergencySosBottomSheet({
           </View>
         </View>
 
-        <View style={styles.footerBanner}>
-          <View style={styles.footerBannerIconWrap}>
+        <View style={[rowLayout.rowStart, styles.footerBanner]}>
+          <View style={[styles.footerBannerIconWrap, rowLayout.noShrink]}>
             <MaterialCommunityIcons name="shield-account" size={18} color={C.yellowIcon} />
           </View>
-          <Text style={styles.footerBannerText}>
+          <Text style={[styles.footerBannerText, flexShrinkText]} numberOfLines={4}>
             {t(
               "orders.sos.footerNote",
               "Your location will be shared with the emergency team and your safety is our priority."
@@ -419,19 +437,21 @@ function SosContactRow({
       accessibilityRole="button"
       accessibilityLabel={`Call ${label}`}
     >
-      <View style={styles.contactRowInner}>
-        <View style={[styles.contactIconWrap, { backgroundColor: iconBg }]}>{icon}</View>
+      <View style={[rowLayout.row, styles.contactRowInner]}>
+        <View style={[styles.contactIconWrap, rowLayout.noShrink, { backgroundColor: iconBg }]}>
+          {icon}
+        </View>
 
-        <View style={styles.contactTextCol}>
-          <Text style={styles.contactLabel} numberOfLines={1} ellipsizeMode="tail">
+        <View style={[styles.contactTextCol, rowLayout.grow]}>
+          <Text style={[styles.contactLabel, flexShrinkText]} numberOfLines={1} ellipsizeMode="tail">
             {label}
           </Text>
-          <Text style={styles.contactNumber} numberOfLines={1} ellipsizeMode="tail">
+          <Text style={[styles.contactNumber, flexShrinkText]} numberOfLines={1} ellipsizeMode="tail">
             {number}
           </Text>
         </View>
 
-        <View style={[styles.callBtn, { backgroundColor: callBg }]}>
+        <View style={[styles.callBtn, rowLayout.noShrink, { backgroundColor: callBg }]}>
           <Ionicons name="call" size={16} color={callIconColor} />
         </View>
       </View>
@@ -673,16 +693,17 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   formActions: {
-    flexDirection: "row",
     justifyContent: "flex-end",
     marginTop: 4,
+    gap: 8,
+    maxWidth: "100%",
   },
   cancelBtn: {
     minHeight: 40,
+    minWidth: 0,
     paddingHorizontal: 14,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 8,
   },
   cancelBtnText: {
     fontSize: 14,
@@ -691,6 +712,7 @@ const styles = StyleSheet.create({
   },
   saveBtn: {
     minHeight: 40,
+    minWidth: 0,
     paddingHorizontal: 18,
     borderRadius: 10,
     backgroundColor: C.green,

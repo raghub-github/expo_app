@@ -8,6 +8,9 @@
 
 const NAME_MATCH_THRESHOLD = 0.55;
 
+/** Stricter threshold for PAN ↔ Aadhaar — substring / loose overlap must not pass. */
+const PAN_AADHAAR_NAME_MATCH_THRESHOLD = 0.92;
+
 export type AadhaarIdentityRef = {
   name: string;
   dob: string | null; // YYYY-MM-DD when available
@@ -67,6 +70,33 @@ export function namesMatch(
   if (na === nb) return true;
   if (na.includes(nb) || nb.includes(na)) return true;
   return nameOverlapScore(na, nb) >= threshold;
+}
+
+/**
+ * PAN ↔ Aadhaar name policy (mandatory KYC).
+ * Exact normalized equality or near-equal token sets — extra/missing surname tokens fail.
+ */
+export function panAadhaarNamesMatch(
+  panName: string | null | undefined,
+  aadhaarName: string | null | undefined,
+): boolean {
+  const na = normalizePersonName(panName);
+  const nb = normalizePersonName(aadhaarName);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+
+  const ta = tokenize(na);
+  const tb = tokenize(nb);
+  if (ta.length === 0 || tb.length === 0) return false;
+  if (ta.length !== tb.length) return false;
+
+  const setA = new Set(ta);
+  const setB = new Set(tb);
+  if (setA.size !== setB.size) return false;
+  for (const t of setA) {
+    if (!setB.has(t)) return false;
+  }
+  return nameOverlapScore(na, nb) >= PAN_AADHAAR_NAME_MATCH_THRESHOLD;
 }
 
 /** Normalize many DOB shapes to YYYY-MM-DD or null. */
@@ -182,7 +212,11 @@ export function crossCheckAgainstAadhaar(args: {
   const needDob = args.docKind === "pan" || args.docKind === "driving_licence";
 
   if (needName) {
-    if (!extractedName || !namesMatch(aadhaarName, extractedName)) {
+    const nameOk =
+      args.docKind === "pan"
+        ? panAadhaarNamesMatch(aadhaarName, extractedName)
+        : namesMatch(aadhaarName, extractedName);
+    if (!extractedName || !nameOk) {
       reasons.push("name_mismatch");
     }
   }

@@ -21,6 +21,7 @@ const BOOTSTRAP_MAX_AGE_MS = 10 * 60 * 1000;
 const BOOTSTRAP_REVALIDATE_MIN_AGE_MS = 5 * 60 * 1000;
 
 function scheduleBootstrapRevalidate(queryClient: QueryClient): void {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
   if (bootstrapInFlight) return;
   bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
     .catch(() => false)
@@ -196,6 +197,7 @@ export function useBootstrapGate(queryClient: QueryClient): boolean {
     if (!authReady || isStandaloneOrderRoute) return;
     const onFocus = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return;
       const now = Date.now();
       if (now - lastFocusRevalidateAt < FOCUS_REVALIDATE_MIN_MS) return;
       lastFocusRevalidateAt = now;

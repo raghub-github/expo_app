@@ -283,6 +283,10 @@ export async function PATCH(
         corePatch.cancelled_at = now;
         corePatch.cancelled_by = 'SYSTEM';
       }
+      if (newStatus === 'DELIVERED') {
+        corePatch.status = 'delivered';
+        corePatch.actual_delivery_time = now;
+      }
       if (newStatus === 'ACCEPTED' && acceptPrepReadyByAt && acceptPrepMinutes != null) {
         corePatch.prep_ready_by_at = acceptPrepReadyByAt;
         corePatch.prep_time_minutes = acceptPrepMinutes;

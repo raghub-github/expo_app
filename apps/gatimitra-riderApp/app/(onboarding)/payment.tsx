@@ -12,6 +12,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Pressable,
+  BackHandler,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
@@ -26,6 +27,7 @@ import {
 import { openHostedRazorpayCheckout } from "@/src/components/payment/RazorpayCheckoutModal";
 import { PaymentFailedBottomSheet } from "@/src/components/payment/PaymentFailedBottomSheet";
 import Constants from "expo-constants";
+import { useQueryClient } from "@tanstack/react-query";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { colors } from "@/src/theme";
@@ -47,6 +49,7 @@ import {
   type ServerOnboardingStep,
 } from "@/src/lib/onboarding-routes";
 import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
+import { setOnboardingBackOverride } from "@/src/lib/onboarding-back-override";
 import {
   formatRupeeFromPaise,
   useOnboardingFeeConfig,
@@ -127,6 +130,7 @@ function PriceRow({
 }
 
 export default function PaymentScreen() {
+  const queryClient = useQueryClient();
   const session = useSessionStore((s) => s.session);
   const { data, hydrate } = useOnboardingStore();
   const createOrder = useCreatePaymentOrder();
@@ -312,11 +316,19 @@ export default function PaymentScreen() {
     setFailureSheet({ visible: false, message: "" });
   }, []);
 
-  const handlePaymentSuccess = useCallback(() => {
+  const handlePaymentSuccess = useCallback((activated?: boolean) => {
+    if (activated) {
+      Alert.alert(
+        "Payment Successful",
+        "You're all set. Complete a few remaining details on the home screen to go online.",
+        [{ text: "Continue", onPress: () => router.replace("/(tabs)/orders") }],
+      );
+      return;
+    }
     Alert.alert(
       "Payment Successful",
-      "Your onboarding fee has been paid. Waiting for admin approval.",
-      [{ text: "OK", onPress: () => router.replace("/(onboarding)/pending") }]
+      "Payment confirmed. Your account will activate once remaining verification is complete.",
+      [{ text: "OK", onPress: () => router.replace("/(onboarding)/pending") }],
     );
   }, []);
 
@@ -339,7 +351,14 @@ export default function PaymentScreen() {
       });
 
       if (result.success) {
-        handlePaymentSuccess();
+        // Refresh gate caches so tabs open without bouncing back to pending.
+        try {
+          await queryClient.invalidateQueries({ queryKey: ["rider", data.riderId] });
+          await queryClient.invalidateQueries({ queryKey: ["rider", "eligibility"] });
+        } catch {
+          /* best-effort */
+        }
+        handlePaymentSuccess(result.activated === true);
       } else {
         showPaymentFailedSheet("Payment verification failed. Please try again.");
       }
@@ -542,6 +561,23 @@ export default function PaymentScreen() {
     goBackOrReplace("/(onboarding)/bank-account");
   }, [isPaying]);
 
+  useEffect(() => {
+    setOnboardingBackOverride(() => {
+      if (isPaying) return true;
+      handleBack();
+      return true;
+    });
+    return () => setOnboardingBackOverride(null);
+  }, [handleBack, isPaying]);
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      handleBack();
+      return true;
+    });
+    return () => sub.remove();
+  }, [handleBack]);
+
   return (
     <View style={form.root}>
       <SafeAreaView style={form.safeArea} edges={["top", "bottom"]}>
@@ -563,18 +599,6 @@ export default function PaymentScreen() {
               end={{ x: 0.5, y: 1 }}
               style={[form.header, styles.headerExtra]}
             >
-              <View style={form.headerTopRow}>
-                <Pressable
-                  onPress={handleBack}
-                  style={form.headerBackBtn}
-                  accessibilityRole="button"
-                  accessibilityLabel="Go back"
-                >
-                  <Ionicons name="arrow-back" size={20} color={colors.gray[700]} />
-                </Pressable>
-                <View style={form.headerSkipSpacer} />
-              </View>
-
               <StepProgress steps={ONBOARDING_STEPS} currentIndex={macroStepIndex} />
 
               <View style={[form.stepPill, styles.stepPillSpaced]}>

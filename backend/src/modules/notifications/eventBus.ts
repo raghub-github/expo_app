@@ -353,8 +353,8 @@ const STATUS_TO_TEMPLATE: Record<string, { customer?: string; merchant?: string;
   CREATED:           { customer: "ORDER_CREATED", merchant: "MERCHANT_NEW_ORDER" },
   ACCEPTED:          { customer: "ORDER_ACCEPTED" },
   PREPARING:         { customer: "ORDER_PREPARING" },
-  READY:             { customer: "ORDER_FOOD_READY" },
-  READY_FOR_PICKUP:  { customer: "ORDER_FOOD_READY" },
+  READY:             { customer: "ORDER_FOOD_READY", rider: "RIDER_FOOD_READY" },
+  READY_FOR_PICKUP:  { customer: "ORDER_FOOD_READY", rider: "RIDER_FOOD_READY" },
   OUT_FOR_DELIVERY:  { customer: "ORDER_OUT_FOR_DELIVERY" },
   REACHED_CUSTOMER:  { customer: "ORDER_RIDER_ARRIVING" },
   DELIVERED:         { customer: "ORDER_DELIVERED" },
@@ -527,6 +527,8 @@ export function registerDomainEventHandlers(): void {
         templateCode: customerTemplate,
         variables: vars,
         target: { user_id: e.customerId },
+        deliverNow: true,
+        bypassQuietHours: true,
         idempotencyKey: `${customerTemplate}:${e.orderId}`,
         metadata: foodLiveMetadata(customerTemplate, e.orderId, {
           merchantName: e.merchantName,
@@ -535,9 +537,11 @@ export function registerDomainEventHandlers(): void {
       });
     }
     if (map.merchant && e.merchantUserId) {
-      // Store-token lifecycle push already covers cancel (avoids twin shade alerts).
+      // Store-token path already covers cancel + new-order (avoids twin shade alerts).
+      // NEW_ORDER: placement → notifyMerchantStoreNewOrder (direct FCM + in_app idempotency).
       const skipMerchantTemplate =
-        map.merchant === "MERCHANT_ORDER_CANCELLED" &&
+        (map.merchant === "MERCHANT_ORDER_CANCELLED" ||
+          map.merchant === "MERCHANT_NEW_ORDER") &&
         e.merchantStoreId != null &&
         e.merchantStoreId > 0;
       if (!skipMerchantTemplate) {
@@ -573,6 +577,8 @@ export function registerDomainEventHandlers(): void {
             e.merchantStoreId != null && e.merchantStoreId > 0
               ? { store_id: e.merchantStoreId }
               : { user_id: e.merchantUserId },
+          deliverNow: true,
+          bypassQuietHours: true,
           // Align with notifyMerchantStoreNewOrder so placement + status_changed
           // retries cannot twin-push the same CREATED order.
           idempotencyKey:
@@ -604,14 +610,68 @@ export function registerDomainEventHandlers(): void {
         });
       }
     }
-    if (map.rider && e.riderUserId) {
-      await sendNotification({
+    let riderUserId = e.riderUserId?.trim() || null;
+    if (map.rider && !riderUserId) {
+      try {
+        const riderRows = (await getSql()`
+          SELECT oc.rider_id
+          FROM public.orders_core oc
+          WHERE oc.order_id = ${e.orderId}
+             OR oc.formatted_order_id = ${e.orderId}
+          LIMIT 1
+        `) as unknown as Array<{ rider_id: number | null }>;
+        const rid = Number(riderRows[0]?.rider_id ?? 0);
+        if (Number.isInteger(rid) && rid > 0) riderUserId = `usr_${rid}`;
+      } catch {
+        /* best-effort */
+      }
+    }
+    if (map.rider && riderUserId) {
+      const riderResult = await sendNotification({
         templateCode: map.rider,
         variables: vars,
-        target: { user_id: e.riderUserId },
+        target: { user_id: riderUserId },
+        deliverNow: true,
+        bypassQuietHours: true,
         idempotencyKey: `${map.rider}:${e.orderId}:${e.toStatus}`,
-        metadata: { orderId: e.orderId, gmType: map.rider },
+        overrides:
+          map.rider === "RIDER_FOOD_READY"
+            ? {
+                title: "Order ready for pickup",
+                body: `${vars.merchantName} marked order #${vars.orderShortId} ready. Collect ASAP.`,
+              }
+            : undefined,
+        metadata: {
+          orderId: e.orderId,
+          gmType: map.rider,
+          type: map.rider === "RIDER_FOOD_READY" ? "rider_food_ready" : "rider_order",
+          url: "/(tabs)/orders",
+        },
       });
+      // Template may not be migrated yet — fall back so riders still get the heads-up.
+      if (
+        map.rider === "RIDER_FOOD_READY" &&
+        riderResult.skipReason === "template_missing"
+      ) {
+        await sendNotification({
+          templateCode: "RIDER_ORDER_CANCELLED",
+          variables: vars,
+          target: { user_id: riderUserId },
+          deliverNow: true,
+          bypassQuietHours: true,
+          idempotencyKey: `RIDER_FOOD_READY:${e.orderId}:${e.toStatus}`,
+          overrides: {
+            title: "Order ready for pickup",
+            body: `${vars.merchantName} marked order #${vars.orderShortId} ready. Collect ASAP.`,
+          },
+          metadata: {
+            orderId: e.orderId,
+            gmType: "RIDER_FOOD_READY",
+            type: "rider_food_ready",
+            url: "/(tabs)/orders",
+          },
+        });
+      }
     }
   });
 
@@ -628,6 +688,8 @@ export function registerDomainEventHandlers(): void {
         etaMinutes: e.etaMinutes ?? 25,
       },
       target: { user_id: e.customerId },
+      deliverNow: true,
+      bypassQuietHours: true,
       idempotencyKey: `ORDER_RIDER_ASSIGNED:${e.orderId}`,
       metadata: {
         orderId: e.orderId,
@@ -655,6 +717,8 @@ export function registerDomainEventHandlers(): void {
         merchantName: e.merchantName ?? "Store",
       },
       target: { user_id: e.customerId },
+      deliverNow: true,
+      bypassQuietHours: true,
       idempotencyKey: `ORDER_RIDER_AT_STORE:${e.orderId}`,
       metadata: foodLiveMetadata("ORDER_RIDER_AT_STORE", e.orderId, {
         riderName: e.riderName,
@@ -674,6 +738,8 @@ export function registerDomainEventHandlers(): void {
         etaMinutes: e.etaMinutes ?? 5,
       },
       target: { user_id: e.customerId },
+      deliverNow: true,
+      bypassQuietHours: true,
       idempotencyKey: `ORDER_RIDER_ARRIVING:${e.orderId}`,
       metadata: foodLiveMetadata("ORDER_RIDER_ARRIVING", e.orderId, {
         riderName: e.riderName,

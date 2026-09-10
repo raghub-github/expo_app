@@ -1,29 +1,26 @@
 /**
- * Shared top bar for every onboarding step.
+ * Shared top bar for every onboarding / verification step.
  *
- * Left  : Back chevron — navigates to the previous step (hidden on the first step). Onboarding
- *         steps use router.replace (no back stack), so Back navigates explicitly via
- *         previousOnboardingRoute().
- * Right : ⋮ menu — Logout (opens the existing rider logout sheet) and "Need help / Raise a
- *         ticket" (→ /onboarding-help pre-filled with the current step). Riders previously had
- *         no way to log out or get help until onboarding was fully complete.
- *
- * Rendered as the expo-router Stack `header` for the (onboarding) group, so it appears on all
- * steps without editing each screen.
+ * Left  : Back — one step previous (sub-wizards can override via setOnboardingBackOverride).
+ * Right : Help + Language (same compact pattern across all KYC steps).
  */
-import { useState } from "react";
-import { View, Text, Pressable, StyleSheet, Modal } from "react-native";
+import { useEffect, useState } from "react";
+import { View, Text, Pressable, StyleSheet, Platform, StatusBar as RnStatusBar } from "react-native";
+import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { colors } from "@/src/theme";
-import { useLogoutSheetStore } from "@/src/stores/logoutSheetStore";
+import { HeaderLanguageIcon } from "@/src/components/header/HeaderActionIcons";
+import { LanguageSelectionSheet } from "@/src/components/language/LanguageSelectionSheet";
+import { runOnboardingBackOverride } from "@/src/lib/onboarding-back-override";
 import {
   canGoBackFromOnboardingRoute,
   previousOnboardingRoute,
 } from "@/src/lib/onboarding-routes";
+import { RIDER_AUTH_BG } from "@/src/theme/riderAuthTheme";
 
-const BRAND = colors.primary[600];
+/** Must match onboarding page / Stack contentStyle background. */
+export const ONBOARDING_PAGE_BG = "#f4fbf6";
 
 type StackHeaderRoute = { name?: string } | undefined;
 
@@ -31,110 +28,118 @@ export function OnboardingTopBar({
   route,
   routeName: routeNameProp,
 }: {
-  /** Provided when used as an expo-router Stack `header`. */
   route?: StackHeaderRoute;
-  /** Explicit override when rendered directly by a screen. */
   routeName?: string;
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [languageOpen, setLanguageOpen] = useState(false);
 
   const routeName = routeNameProp ?? route?.name ?? "";
   const showBack = canGoBackFromOnboardingRoute(routeName);
+  const pageBg = routeName === "language" ? RIDER_AUTH_BG : ONBOARDING_PAGE_BG;
+
+  useEffect(() => {
+    if (Platform.OS === "android") {
+      RnStatusBar.setBackgroundColor?.(pageBg);
+      RnStatusBar.setTranslucent?.(true);
+    }
+  }, [pageBg]);
 
   const goBack = () => {
+    if (runOnboardingBackOverride()) return;
     const prev = previousOnboardingRoute(routeName);
     if (prev) router.replace(prev);
     else if (router.canGoBack()) router.back();
   };
 
-  const openLogout = () => {
-    setMenuOpen(false);
-    // Small delay so the popover dismiss animation doesn't fight the logout sheet mount.
-    setTimeout(() => useLogoutSheetStore.getState().open(), 60);
-  };
-
   const openHelp = () => {
-    setMenuOpen(false);
     router.push({ pathname: "/onboarding-help", params: { step: routeName } });
   };
 
   return (
-    <View style={[styles.bar, { paddingTop: insets.top + 6 }]} pointerEvents="box-none">
-      {showBack ? (
-        <Pressable
-          onPress={goBack}
-          hitSlop={12}
-          style={styles.iconChip}
-          accessibilityRole="button"
-          accessibilityLabel="Go back one step"
-        >
-          <Ionicons name="arrow-back" size={22} color="#0F172A" />
-        </Pressable>
-      ) : (
-        <View style={styles.spacer} />
-      )}
-
-      <View style={{ flex: 1 }} pointerEvents="none" />
-
-      <Pressable
-        onPress={() => setMenuOpen(true)}
-        hitSlop={12}
-        style={styles.iconChip}
-        accessibilityRole="button"
-        accessibilityLabel="More options"
+    <>
+      <StatusBar style="dark" backgroundColor={pageBg} />
+      <View
+        style={[styles.bar, { paddingTop: insets.top + 10, backgroundColor: pageBg }]}
+        pointerEvents="box-none"
       >
-        <Ionicons name="ellipsis-vertical" size={20} color="#0F172A" />
-      </Pressable>
+        {showBack ? (
+          <Pressable
+            onPress={goBack}
+            hitSlop={12}
+            style={styles.iconChip}
+            accessibilityRole="button"
+            accessibilityLabel="Go back one step"
+          >
+            <Ionicons name="arrow-back" size={22} color="#0F172A" />
+          </Pressable>
+        ) : (
+          <View style={styles.spacer} />
+        )}
 
-      <Modal
-        visible={menuOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setMenuOpen(false)}
-      >
-        <Pressable style={styles.menuBackdrop} onPress={() => setMenuOpen(false)}>
-          <View style={[styles.menu, { top: insets.top + 44 }]}>
-            <Pressable
-              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}
-              onPress={openHelp}
-              accessibilityRole="button"
-              accessibilityLabel="Need help or raise a ticket"
+        <View style={{ flex: 1 }} pointerEvents="none" />
+
+        <View style={styles.rightRow}>
+          <Pressable
+            onPress={openHelp}
+            hitSlop={8}
+            style={styles.helpChip}
+            accessibilityRole="button"
+            accessibilityLabel="Help"
+          >
+            <Ionicons name="headset-outline" size={16} color="#0F172A" />
+            <Text
+              style={styles.helpLabel}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.8}
             >
-              <Ionicons name="help-buoy-outline" size={18} color={BRAND} />
-              <Text style={styles.menuText}>Need help / Raise a ticket</Text>
-            </Pressable>
-            <View style={styles.menuDivider} />
-            <Pressable
-              style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed]}
-              onPress={openLogout}
-              accessibilityRole="button"
-              accessibilityLabel="Log out"
-            >
-              <Ionicons name="log-out-outline" size={18} color="#DC2626" />
-              <Text style={[styles.menuText, { color: "#DC2626" }]}>Log out</Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Modal>
-    </View>
+              Help
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => setLanguageOpen(true)}
+            hitSlop={12}
+            style={styles.iconChip}
+            accessibilityRole="button"
+            accessibilityLabel="Change language"
+          >
+            <HeaderLanguageIcon size={18} color="#0F172A" />
+          </Pressable>
+        </View>
+      </View>
+
+      <LanguageSelectionSheet
+        visible={languageOpen}
+        onClose={() => setLanguageOpen(false)}
+      />
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  // Transparent, floating bar (headerTransparent) — overlays each step's own top area without
-  // shifting its layout. Chip backgrounds keep the icons legible on light or dark step backdrops.
   bar: {
     flexDirection: "row",
     alignItems: "center",
+    alignSelf: "stretch",
+    width: "100%",
     paddingHorizontal: 10,
-    paddingBottom: 4,
-    backgroundColor: "transparent",
+    paddingBottom: 10,
+    // Default; overridden per-route so status-bar strip matches page bg.
+    backgroundColor: ONBOARDING_PAGE_BG,
+  },
+  rightRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexShrink: 1,
+    gap: 8,
   },
   iconChip: {
     width: 38,
     height: 38,
+    flexShrink: 0,
     borderRadius: 19,
     alignItems: "center",
     justifyContent: "center",
@@ -145,29 +150,27 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 3,
   },
-  spacer: { width: 38, height: 38 },
-  menuBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.18)" },
-  menu: {
-    position: "absolute",
-    right: 10,
-    minWidth: 232,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
-    paddingVertical: 6,
-    shadowColor: "#000",
-    shadowOpacity: 0.18,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 12,
-  },
-  menuItem: {
+  helpChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingVertical: 13,
-    paddingHorizontal: 16,
+    flexShrink: 1,
+    gap: 6,
+    height: 38,
+    maxWidth: 120,
+    paddingHorizontal: 12,
+    borderRadius: 19,
+    backgroundColor: "rgba(255,255,255,0.92)",
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
   },
-  menuItemPressed: { backgroundColor: "#F1F5F9" },
-  menuText: { fontSize: 14, fontWeight: "600", color: "#0F172A" },
-  menuDivider: { height: StyleSheet.hairlineWidth, backgroundColor: "#E2E8F0", marginHorizontal: 12 },
+  helpLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#0F172A",
+    flexShrink: 1,
+  },
+  spacer: { width: 38, height: 38, flexShrink: 0 },
 });

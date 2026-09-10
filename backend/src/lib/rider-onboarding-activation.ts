@@ -166,23 +166,19 @@ export async function tryActivateRiderIfEligible(riderId: number): Promise<boole
   // for AT LEAST ONE service (which implies they hold that service's required docs) or the
   // zero-eligibility policy allows it — optional documents (e.g. DL for food) never block.
   //
-  // This loosening is deliberately coupled to eligibility ENFORCEMENT (RIDER_ELIGIBILITY_MODE
-  // = enforce): only then are ineligible services actually blocked at online/dispatch/accept,
-  // so an under-documented rider onboarded here can never receive a service they aren't
-  // eligible for. While enforcement is shadow/off we keep the LEGACY hard doc gate, so deploy
-  // is a behavioural no-op and the whole system flips on one switch. Infra errors also fall
-  // back to the legacy gate (never activate more permissively than before during an outage).
+  // In enforce mode this is the only gate. In shadow/off we still prefer the legacy DL+RC
+  // check, then fall back to the same eligibility count so Cashfree auto-verify riders are
+  // not stuck on "wait for admin" when they already qualify for a service. Infra errors fall
+  // back to the legacy gate only.
   let onboardingGateMet: boolean;
   try {
     const { eligibilityEnforcementMode, resolveRiderAllServiceEligibilityAtLocation } = await import(
       "../modules/rider-eligibility/riderEligibility.service.js"
     );
-    if (eligibilityEnforcementMode() !== "enforce") {
-      onboardingGateMet = checkVehicleDocsVerified(allDocs, vehicle?.vehicleType, filesByDocId);
-    } else {
-      const { allowOnboardingWithZeroEligibility } = await import(
-        "../modules/rider-eligibility/onboardingEligibility.service.js"
-      );
+    const { allowOnboardingWithZeroEligibility } = await import(
+      "../modules/rider-eligibility/onboardingEligibility.service.js"
+    );
+    const resolveEligibilityGate = async (): Promise<boolean> => {
       const [loc] = await db
         .select({ state: riders.state, pincode: riders.pincode, lat: riders.lat, lon: riders.lon })
         .from(riders)
@@ -196,7 +192,18 @@ export async function tryActivateRiderIfEligible(riderId: number): Promise<boole
         state: loc?.state ?? null,
       });
       const eligibleCount = Object.values(services).filter((s) => s.eligible).length;
-      onboardingGateMet = eligibleCount > 0 || allowOnboardingWithZeroEligibility();
+      return eligibleCount > 0 || allowOnboardingWithZeroEligibility();
+    };
+
+    if (eligibilityEnforcementMode() === "enforce") {
+      onboardingGateMet = await resolveEligibilityGate();
+    } else {
+      // Shadow/off: keep legacy DL+RC gate, but if Cashfree auto-verify already makes the
+      // rider eligible for ≥1 service, activate instead of parking them on "wait for admin".
+      onboardingGateMet = checkVehicleDocsVerified(allDocs, vehicle?.vehicleType, filesByDocId);
+      if (!onboardingGateMet) {
+        onboardingGateMet = await resolveEligibilityGate();
+      }
     }
   } catch {
     onboardingGateMet = checkVehicleDocsVerified(allDocs, vehicle?.vehicleType, filesByDocId);

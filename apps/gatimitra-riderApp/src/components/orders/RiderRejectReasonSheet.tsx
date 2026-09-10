@@ -5,7 +5,6 @@ import {
   Modal,
   Pressable,
   StyleSheet,
-  ScrollView,
   ActivityIndicator,
   TouchableOpacity,
   Platform,
@@ -14,6 +13,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme";
 import { useRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 import { RIDER_ORDER_REJECT_REASON_OPTIONS } from "@/src/lib/rider-order-reject-reasons";
 
 type Props = {
@@ -31,6 +33,8 @@ export function RiderRejectReasonSheet({
 }: Props) {
   const { t } = useTranslation();
   const bottomInset = useRiderBottomInset();
+  const { height, isShortHeight, rs } = useResponsiveLayout();
+  const sheetMaxH = Math.round(height * (isShortHeight ? 0.72 : 0.78));
 
   const reasonRows = RIDER_ORDER_REJECT_REASON_OPTIONS.map((opt) => {
     const label = t(opt.labelKey, opt.defaultLabel);
@@ -42,8 +46,8 @@ export function RiderRejectReasonSheet({
         onPress={() => onSelect(opt.code, label)}
         style={[styles.row, loading ? styles.rowDisabled : null]}
       >
-        <View style={styles.rowInner}>
-          <Text style={styles.rowText} numberOfLines={2}>
+        <View style={[rowLayout.row, styles.rowInner]}>
+          <Text style={[styles.rowText, flexShrinkText]} numberOfLines={2}>
             {label}
           </Text>
           <View style={styles.rowChevronWrap}>
@@ -70,39 +74,35 @@ export function RiderRejectReasonSheet({
           accessibilityRole="button"
           accessibilityLabel={t("common.close", "Close")}
         />
-        <View style={styles.sheet}>
-          <View style={styles.sheetBody}>
-            <View style={styles.handle} />
-            <Text style={styles.title}>
+        <View style={[styles.sheet, { maxHeight: sheetMaxH }]}>
+          <View style={styles.handle} />
+          <ResponsiveSheetBody
+            maxHeight={Math.max(200, sheetMaxH - bottomInset - rs(24))}
+            contentContainerStyle={styles.scrollContent}
+            footerStyle={styles.footerSlot}
+            footer={
+              loading ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator color={colors.primary[600]} />
+                </View>
+              ) : (
+                <Pressable onPress={onClose} style={styles.dismissBtn} disabled={loading}>
+                  <Text style={styles.dismissText}>{t("common.back", "Back")}</Text>
+                </Pressable>
+              )
+            }
+          >
+            <Text style={styles.title} numberOfLines={isShortHeight ? 2 : 3}>
               {t("orders.reject.title", "Why are you rejecting this order?")}
             </Text>
-            <Text style={styles.subtitle}>
+            <Text style={[styles.subtitle, flexShrinkText]} numberOfLines={isShortHeight ? 2 : 4}>
               {t(
                 "orders.reject.subtitle",
                 "You will not receive this order again. Your reason is recorded."
               )}
             </Text>
-
-            <ScrollView
-              style={styles.list}
-              contentContainerStyle={styles.listContent}
-              showsVerticalScrollIndicator={false}
-              bounces={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              {reasonRows}
-            </ScrollView>
-
-            {loading ? (
-              <View style={styles.loadingRow}>
-                <ActivityIndicator color={colors.primary[600]} />
-              </View>
-            ) : (
-              <Pressable onPress={onClose} style={styles.dismissBtn} disabled={loading}>
-                <Text style={styles.dismissText}>{t("common.back", "Back")}</Text>
-              </Pressable>
-            )}
-          </View>
+            {reasonRows}
+          </ResponsiveSheetBody>
           <View style={[styles.bottomSafeFill, { height: bottomInset }]} />
         </View>
       </View>
@@ -125,17 +125,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: "78%",
     overflow: "hidden",
+    flexShrink: 1,
+    minHeight: 0,
     ...Platform.select({
       android: { elevation: 12 },
     }),
-  },
-  sheetBody: {
-    width: "100%",
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    paddingBottom: 8,
   },
   bottomSafeFill: {
     width: "100%",
@@ -148,7 +143,14 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: colors.gray[300],
     marginTop: 8,
-    marginBottom: 12,
+    marginBottom: 4,
+  },
+  scrollContent: {
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  footerSlot: {
+    borderTopWidth: 0,
   },
   title: {
     fontSize: 18,
@@ -163,15 +165,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     lineHeight: 18,
   },
-  list: {
-    width: "100%",
-    flexGrow: 0,
-    flexShrink: 1,
-  },
-  listContent: {
-    width: "100%",
-    paddingBottom: 4,
-  },
   row: {
     width: "100%",
     alignSelf: "stretch",
@@ -182,8 +175,6 @@ const styles = StyleSheet.create({
   },
   rowInner: {
     width: "100%",
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
   },
   rowDisabled: {
@@ -191,8 +182,6 @@ const styles = StyleSheet.create({
   },
   rowText: {
     flex: 1,
-    flexShrink: 1,
-    minWidth: 0,
     fontSize: 15,
     fontWeight: "600",
     color: colors.gray[800],
@@ -213,7 +202,6 @@ const styles = StyleSheet.create({
   dismissBtn: {
     alignItems: "center",
     paddingVertical: 14,
-    marginTop: 4,
   },
   dismissText: {
     fontSize: 15,

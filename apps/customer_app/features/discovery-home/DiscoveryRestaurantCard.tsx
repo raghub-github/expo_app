@@ -133,6 +133,9 @@ function DiscoveryRestaurantCardInner({ merchant, weatherDelayMinutes = 0 }: Pro
             style={styles.image}
             contentFit="cover"
             cachePolicy="memory-disk"
+            priority="high"
+            transition={0}
+            recyclingKey={bannerUri!}
             onError={() => setImageFailed(true)}
           />
         ) : (

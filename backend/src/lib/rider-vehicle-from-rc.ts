@@ -5,7 +5,7 @@
  */
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { getDb, getSql } from "../db/client.js";
-import { riderVehicles } from "../db/schema.js";
+import { riderDocuments, riderVehicles } from "../db/schema.js";
 import {
   mapVehicleTypeToDb,
   resolveFuelTypeDbLabel,
@@ -206,7 +206,15 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
     const commercialFromRc = parseIsCommercial(data.is_commercial);
     const isCommercial =
       commercialFromRc ?? suggestedCommercial ?? false;
-    const ownershipType = selection.vehicleChoice ? "ownership" : null;
+    // Prefer onboarding ownership intent; Cashfree RC has no own/rental field.
+    const ownershipType =
+      selection.hasOwnVehicle === false
+        ? "rental"
+        : selection.hasOwnVehicle === true || selection.vehicleChoice
+          ? "ownership"
+          : null;
+    const commercialKnown =
+      commercialFromRc != null || suggestedCommercial != null;
 
     const [fuelLabels, categoryLabels] = await Promise.all([
       loadFuelTypeEnumLabels(),
@@ -224,6 +232,8 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
       source: "cashfree_vehicle_rc",
       vehicleVerificationOnly: true,
       projectedAt: new Date().toISOString(),
+      commercialFromCashfree: commercialFromRc,
+      commercialKnown,
     };
     const owner = str(data.owner) || str(data.owner_name);
     if (owner) rcMeta.rcOwnerName = owner;
@@ -454,6 +464,124 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[upsertRiderVehicleFromRcVerifiedData]", riderId, msg);
+    return { ok: false, error: msg };
+  }
+}
+
+function isUsableRcDocumentUrl(raw: string | null | undefined): string | null {
+  const url = String(raw || "").trim();
+  if (!url) return null;
+  const lower = url.toLowerCase();
+  if (
+    lower === "electronic_verified" ||
+    lower === "n/a" ||
+    lower === "pending" ||
+    lower.includes("cashfree_rc_verified") ||
+    lower.includes("cashfree_dl_verified")
+  ) {
+    return null;
+  }
+  return url;
+}
+
+function readRcVerifiedPayloadFromDoc(doc: {
+  fileUrl?: string | null;
+  metadata?: unknown;
+  extractedDataSummary?: unknown;
+}): { verifiedData: Record<string, unknown> | null; rcDocumentUrl: string | null } {
+  let verifiedData: Record<string, unknown> | null = null;
+  if (doc.metadata && typeof doc.metadata === "object" && !Array.isArray(doc.metadata)) {
+    const meta = doc.metadata as Record<string, unknown>;
+    const raw =
+      meta.cashfreeVerifiedData ?? meta.verifiedDetails ?? meta.verifiedData ?? meta.verified_data;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      verifiedData = raw as Record<string, unknown>;
+    }
+  }
+  if (!verifiedData && doc.extractedDataSummary && typeof doc.extractedDataSummary === "object") {
+    const raw = (doc.extractedDataSummary as Record<string, unknown>).verifiedData;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      verifiedData = raw as Record<string, unknown>;
+    }
+  }
+  return {
+    verifiedData,
+    rcDocumentUrl: isUsableRcDocumentUrl(doc.fileUrl),
+  };
+}
+
+/**
+ * Onboarding Continuue / payment screen: Cashfree RC may already be on rider_documents
+ * while rider_vehicles was never projected (deferProjection on verify-document).
+ * Creates/updates the vehicle row from stored RC payload when missing.
+ */
+export async function ensureRiderVehicleFromStoredRc(
+  riderId: number,
+  opts?: { verifiedData?: Record<string, unknown> | null; rcDocumentUrl?: string | null },
+): Promise<{ ok: true; projected: boolean } | { ok: false; error: string }> {
+  try {
+    const db = getDb();
+    const { vehicleClassFromCategory } = await import(
+      "../modules/rider-eligibility/riderEligibilityInputs.js"
+    );
+
+    const [existing] = await db
+      .select({
+        id: riderVehicles.id,
+        vehicleCategory: riderVehicles.vehicleCategory,
+        vehicleType: riderVehicles.vehicleType,
+      })
+      .from(riderVehicles)
+      .where(
+        and(eq(riderVehicles.riderId, riderId), isNull(riderVehicles.deletedAt)),
+      )
+      .orderBy(desc(riderVehicles.isActive), desc(riderVehicles.updatedAt))
+      .limit(1);
+
+    if (
+      existing &&
+      vehicleClassFromCategory(existing.vehicleCategory ?? null, existing.vehicleType ?? null)
+    ) {
+      return { ok: true, projected: false };
+    }
+
+    let verifiedData = opts?.verifiedData ?? null;
+    let rcDocumentUrl = isUsableRcDocumentUrl(opts?.rcDocumentUrl) ?? null;
+
+    if (!verifiedData) {
+      const [rcDoc] = await db
+        .select({
+          fileUrl: riderDocuments.fileUrl,
+          metadata: riderDocuments.metadata,
+          extractedDataSummary: riderDocuments.extractedDataSummary,
+        })
+        .from(riderDocuments)
+        .where(
+          and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, "rc")),
+        )
+        .limit(1);
+      if (!rcDoc) {
+        return { ok: false, error: "rc_document_missing" };
+      }
+      const parsed = readRcVerifiedPayloadFromDoc(rcDoc);
+      verifiedData = parsed.verifiedData;
+      rcDocumentUrl = rcDocumentUrl ?? parsed.rcDocumentUrl;
+    }
+
+    if (!verifiedData || Object.keys(verifiedData).length === 0) {
+      return { ok: false, error: "rc_verified_data_missing" };
+    }
+
+    const result = await upsertRiderVehicleFromRcVerifiedData({
+      riderId,
+      verifiedData,
+      rcDocumentUrl,
+    });
+    if (!result.ok) return result;
+    return { ok: true, projected: true };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[ensureRiderVehicleFromStoredRc]", riderId, msg);
     return { ok: false, error: msg };
   }
 }

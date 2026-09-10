@@ -495,6 +495,20 @@ const ONBOARDING_ROUTE_LABEL: Record<string, string> = {
   pending: "Under review",
 };
 
+/**
+ * Verification step numbers shown on screen pills (Step 1 Aadhaar … Step 6 Pending).
+ * Pre-KYC routes (language / location / welcome / referral) have no number.
+ * `rental-ev` shares Step 3 with `dl-rc`.
+ */
+export const ONBOARDING_HELP_STEP_SEQUENCE = [
+  "aadhaar",
+  "pan-selfie",
+  "dl-rc",
+  "bank-account",
+  "payment",
+  "pending",
+] as const;
+
 /** Normalise a raw route (with or without the group prefix / leading slash) to its segment. */
 function onboardingRouteSegment(routeName: string): string {
   return String(routeName ?? "")
@@ -508,6 +522,10 @@ export function previousOnboardingRoute(
   currentRouteName: string
 ): `/(onboarding)/${string}` | null {
   const seg = onboardingRouteSegment(currentRouteName);
+  // rental-ev is an alternate vehicle path, not the linear predecessor of bank.
+  // Sending bank → rental-ev causes the rental gate to bounce riders to payment.
+  if (seg === "bank-account") return "/(onboarding)/dl-rc";
+  if (seg === "rental-ev") return "/(onboarding)/dl-rc";
   const idx = ONBOARDING_FLOW_ROUTE_SEQUENCE.indexOf(seg as OnboardingRouteName);
   if (idx <= 0) return null;
   return `/(onboarding)/${ONBOARDING_FLOW_ROUTE_SEQUENCE[idx - 1]}`;
@@ -515,24 +533,28 @@ export function previousOnboardingRoute(
 
 /** True when the current onboarding route has a previous step to go back to. */
 export function canGoBackFromOnboardingRoute(currentRouteName: string): boolean {
+  const seg = onboardingRouteSegment(currentRouteName);
+  // Aadhaar is the first KYC step — no in-header back (avoids leaving verification mid-flow).
+  if (seg === "aadhaar") return false;
   return previousOnboardingRoute(currentRouteName) != null;
 }
 
 export type OnboardingStepMeta = {
-  /** 1-based position in the linear flow, or null for routes outside it (kyc/profile/pending). */
+  /** 1-based KYC step (matches on-screen "Step N"), or null for pre-KYC / unknown. */
   number: number | null;
   total: number;
   label: string;
   routeName: string;
 };
 
-/** Step number / label for a route — used in the onboarding help ticket details. */
+/** Step number / label for a route — used in the onboarding help screen + ticket details. */
 export function onboardingStepMetaForRoute(currentRouteName: string): OnboardingStepMeta {
   const seg = onboardingRouteSegment(currentRouteName);
-  const idx = ONBOARDING_FLOW_ROUTE_SEQUENCE.indexOf(seg as OnboardingRouteName);
+  const helpSeg = seg === "rental-ev" ? "dl-rc" : seg;
+  const idx = (ONBOARDING_HELP_STEP_SEQUENCE as readonly string[]).indexOf(helpSeg);
   return {
     number: idx >= 0 ? idx + 1 : null,
-    total: ONBOARDING_FLOW_ROUTE_SEQUENCE.length,
+    total: ONBOARDING_HELP_STEP_SEQUENCE.length,
     label: ONBOARDING_ROUTE_LABEL[seg] ?? seg ?? "Onboarding",
     routeName: seg,
   };

@@ -7,6 +7,9 @@ import { LORA_BOLD, LORA_SEMIBOLD } from "@/src/theme/headerFonts";
 import { PermissionBottomSheetShell } from "@/src/components/permissions/PermissionBottomSheetShell";
 import { PremiumAllowButton } from "@/src/components/permissions/PremiumAllowButton";
 import { readCameraPermission, requestCameraPermission } from "@/src/lib/cameraPermission";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 type Props = {
   visible: boolean;
@@ -20,6 +23,8 @@ type Props = {
 export function PickupCameraPermissionSheet({ visible, onGranted, onDismiss }: Props) {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
+  const { height, isShortHeight } = useResponsiveLayout();
+  const bodyMaxH = Math.round(height * (isShortHeight ? 0.72 : 0.62));
 
   const handleAllow = async () => {
     setLoading(true);
@@ -40,8 +45,30 @@ export function PickupCameraPermissionSheet({ visible, onGranted, onDismiss }: P
   };
 
   return (
-    <PermissionBottomSheetShell visible={visible} maxHeightRatio={0.82}>
-      <View style={styles.content}>
+    <PermissionBottomSheetShell
+      visible={visible}
+      maxHeightRatio={isShortHeight ? 0.9 : 0.82}
+    >
+      <ResponsiveSheetBody
+        maxHeight={bodyMaxH}
+        contentContainerStyle={styles.content}
+        footerStyle={styles.footerSlot}
+        footer={
+          <View style={styles.buttonWrap}>
+            <PremiumAllowButton
+              onPress={handleAllow}
+              loading={loading}
+              disabled={loading}
+              label={t("orders.activeFood.allowAccess", "Allow Access")}
+            />
+            <Pressable onPress={onDismiss} style={styles.skipBtn} hitSlop={8}>
+              <Text style={styles.skipText} numberOfLines={1}>
+                {t("orders.activeFood.notNow", "Not Now")}
+              </Text>
+            </Pressable>
+          </View>
+        }
+      >
         <Text style={styles.stepLabel}>
           {t("orders.activeFood.cameraPermissionStep", "Pickup verification")}
         </Text>
@@ -50,10 +77,13 @@ export function PickupCameraPermissionSheet({ visible, onGranted, onDismiss }: P
           <Ionicons name="camera" size={32} color={colors.primary[700]} />
         </View>
 
-        <Text style={styles.title}>
+        <Text style={[styles.title, flexShrinkText]} numberOfLines={2}>
           {t("orders.activeFood.cameraPermissionTitle", "Camera Permission")}
         </Text>
-        <Text style={styles.message}>
+        <Text
+          style={[styles.message, flexShrinkText]}
+          numberOfLines={isShortHeight ? 5 : 7}
+        >
           {t(
             "orders.activeFood.cameraPermissionDesc",
             "Allow camera access to securely scan the restaurant's Pickup QR Code or Barcode for quick order verification. We respect your privacy and only use the camera while scanning."
@@ -69,38 +99,31 @@ export function PickupCameraPermissionSheet({ visible, onGranted, onDismiss }: P
             t("orders.activeFood.cameraPermissionStep2", "Allow camera when prompted"),
             t("orders.activeFood.cameraPermissionStep3", "Align the QR or barcode inside the frame"),
           ].map((line, index) => (
-            <View key={line} style={styles.instructionRow}>
-              <View style={styles.stepBadge}>
+            <View key={line} style={[rowLayout.row, styles.instructionRow]}>
+              <View style={[styles.stepBadge, rowLayout.noShrink]}>
                 <Text style={styles.stepBadgeText}>{index + 1}</Text>
               </View>
-              <Text style={styles.instructionText}>{line}</Text>
+              <Text style={[styles.instructionText, flexShrinkText]} numberOfLines={3}>
+                {line}
+              </Text>
             </View>
           ))}
         </View>
-
-        <View style={styles.buttonWrap}>
-          <PremiumAllowButton
-            onPress={handleAllow}
-            loading={loading}
-            disabled={loading}
-            label={t("orders.activeFood.allowAccess", "Allow Access")}
-          />
-          <Pressable onPress={onDismiss} style={styles.skipBtn} hitSlop={8}>
-            <Text style={styles.skipText}>
-              {t("orders.activeFood.notNow", "Not Now")}
-            </Text>
-          </Pressable>
-        </View>
-      </View>
+      </ResponsiveSheetBody>
     </PermissionBottomSheetShell>
   );
 }
 
 const styles = StyleSheet.create({
   content: {
-    paddingHorizontal: 24,
+    paddingHorizontal: 8,
     paddingTop: 8,
     paddingBottom: 8,
+  },
+  footerSlot: {
+    borderTopWidth: 0,
+    backgroundColor: "transparent",
+    paddingHorizontal: 8,
   },
   stepLabel: {
     fontFamily: LORA_SEMIBOLD,
@@ -129,6 +152,7 @@ const styles = StyleSheet.create({
     color: "#111827",
     textAlign: "center",
     marginBottom: 10,
+    maxWidth: "100%",
   },
   message: {
     fontFamily: LORA_SEMIBOLD,
@@ -138,14 +162,16 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     marginBottom: 20,
     paddingHorizontal: 4,
+    maxWidth: "100%",
   },
   instructionsBox: {
     backgroundColor: colors.primary[50],
     borderRadius: 16,
     padding: 16,
-    marginBottom: 22,
+    marginBottom: 8,
     borderWidth: 1,
     borderColor: colors.primary[100],
+    maxWidth: "100%",
   },
   instructionsTitle: {
     fontFamily: LORA_BOLD,
@@ -156,10 +182,10 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   instructionRow: {
-    flexDirection: "row",
     alignItems: "center",
     marginBottom: 10,
     gap: 12,
+    maxWidth: "100%",
   },
   stepBadge: {
     width: 24,
@@ -176,6 +202,7 @@ const styles = StyleSheet.create({
   },
   instructionText: {
     flex: 1,
+    minWidth: 0,
     fontSize: 14,
     color: colors.gray[700],
     lineHeight: 20,

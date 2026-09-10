@@ -1,53 +1,38 @@
-import { type QueryClient, useQuery } from "@tanstack/react-query";
-import { offersService } from "@/services/offers.service";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 import {
-  normalizeOfferLocationParams,
-  type OfferLocationParams,
-} from "@/lib/featuredOfferGeo";
+  featuredOffersHomeQueryKey,
+  featuredOffersHomeQueryOptions,
+  prefetchFeaturedOffersHomeCached,
+  readSyncFeaturedOffersHome,
+  getFeaturedOffersHomeCachedAt,
+  type FeaturedOffersHomeParams,
+} from "@/lib/featuredOffersHomeCache";
 
-export type FeaturedOffersHomeParams = OfferLocationParams;
-
-export function featuredOffersHomeQueryKey(params: FeaturedOffersHomeParams) {
-  const p = normalizeOfferLocationParams(params);
-  return ["featured-offers-home", p.lat, p.lng, p.pincode, p.state, p.city] as const;
-}
-
-export function featuredOffersHomeQueryOptions(params: FeaturedOffersHomeParams) {
-  const p = normalizeOfferLocationParams(params);
-  return {
-    queryKey: featuredOffersHomeQueryKey(p),
-    queryFn: () =>
-      offersService.getFeaturedOffers({
-        pincode: p.pincode,
-        state: p.state,
-        city: p.city,
-        lat: p.lat,
-        lng: p.lng,
-        serviceType: "FOOD" as const,
-        limit: 6,
-      }),
-    staleTime: 5 * 60 * 1000,
-    gcTime: 30 * 60 * 1000,
-    retry: 1,
-    refetchOnMount: false,
-    refetchOnWindowFocus: false,
-  } as const;
-}
+export type { FeaturedOffersHomeParams };
+export {
+  featuredOffersHomeQueryKey,
+  featuredOffersHomeQueryOptions,
+  readSyncFeaturedOffersHome,
+  getFeaturedOffersHomeCachedAt,
+};
 
 export function prefetchFeaturedOffersHome(
   queryClient: QueryClient,
   params: FeaturedOffersHomeParams
 ) {
-  return queryClient.prefetchQuery(featuredOffersHomeQueryOptions(params));
+  return prefetchFeaturedOffersHomeCached(queryClient, params);
 }
 
 export function useFeaturedOffersHome(
   params: FeaturedOffersHomeParams,
   enabled: boolean
 ) {
+  const initial = enabled ? readSyncFeaturedOffersHome(params) : undefined;
   return useQuery({
     ...featuredOffersHomeQueryOptions(params),
     enabled,
+    initialData: initial,
+    initialDataUpdatedAt: initial ? getFeaturedOffersHomeCachedAt(params) ?? Date.now() : undefined,
     placeholderData: (prev) => prev,
   });
 }

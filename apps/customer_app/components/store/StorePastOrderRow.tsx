@@ -12,6 +12,10 @@ import { getBasePrice, getItemDiet, getSellingPrice } from "./storeMenuUtils";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { formatOfferRupee, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
+import {
+  MerchantDarkPalette,
+  useMerchantUiDark,
+} from "@/features/merchant-detail/merchantUiTheme";
 
 export type PastOrderItem = {
   menuItem: MenuItem;
@@ -59,6 +63,7 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
   itemOffer = null,
   showDivider = true,
 }: StorePastOrderRowProps) {
+  const dark = useMerchantUiDark();
   const cartQty = useMenuItemCartQty(menuItem.id, menuItem.menuItemId, merchantId);
   const [imageFailed, setImageFailed] = useState(false);
   const isCustomisable = !!(
@@ -112,10 +117,13 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
         accessibilityRole="button"
         accessibilityLabel={`View ${menuItem.name} details`}
         onPress={() => onItemPress?.(menuItem)}
-        style={({ pressed }) => [styles.pressable, pressed && styles.rowPressed]}
+        style={({ pressed }) => [
+          styles.pressable,
+          pressed && (dark ? styles.rowPressedDark : styles.rowPressed),
+        ]}
       >
         <View style={styles.row}>
-          <View style={styles.thumbSlot} pointerEvents="none">
+          <View style={[styles.thumbSlot, dark && styles.thumbSlotDark]} pointerEvents="none">
             {imageUri && !imageFailed ? (
               <Image
                 source={{ uri: imageUri }}
@@ -130,13 +138,17 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
                 <MenuItemImagePlaceholder size="xs" />
               </View>
             )}
-            <View style={styles.dietBadge}>
+            <View style={[styles.dietBadge, dark && styles.dietBadgeDark]}>
               <DietIndicator type={diet} />
             </View>
           </View>
 
           <View style={styles.bodyCol} pointerEvents="none">
-            <AppText style={styles.name} numberOfLines={2} ellipsizeMode="tail">
+            <AppText
+              style={[styles.name, dark && styles.nameDark]}
+              numberOfLines={2}
+              ellipsizeMode="tail"
+            >
               {menuItem.name}
             </AppText>
 
@@ -144,40 +156,56 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
               <>
                 <View style={styles.offerPriceRow}>
                   {itemOffer ? (
-                    <View style={styles.offerBadge}>
-                      <AppText style={styles.offerBadgeText} numberOfLines={1}>
+                    <View style={[styles.offerBadge, dark && styles.offerBadgeDark]}>
+                      <AppText
+                        style={[styles.offerBadgeText, dark && styles.offerBadgeTextDark]}
+                        numberOfLines={1}
+                      >
                         {itemOffer.label}
                       </AppText>
                     </View>
                   ) : null}
-                  <AppText style={styles.basePriceStrike} numberOfLines={1}>
+                  <AppText
+                    style={[styles.basePriceStrike, dark && styles.metaDark]}
+                    numberOfLines={1}
+                  >
                     {formatOfferRupee(strikeAmount ?? payableAmount)}
                   </AppText>
                 </View>
-                <AppText style={styles.discountPrice} numberOfLines={1}>
+                <AppText
+                  style={[styles.discountPrice, dark && styles.discountPriceDark]}
+                  numberOfLines={1}
+                >
                   Get for {formatOfferRupee(payableAmount)}
                 </AppText>
               </>
             ) : (
               <>
                 {itemOffer ? (
-                  <View style={styles.offerBadge}>
-                    <AppText style={styles.offerBadgeText} numberOfLines={1}>
+                  <View style={[styles.offerBadge, dark && styles.offerBadgeDark]}>
+                    <AppText
+                      style={[styles.offerBadgeText, dark && styles.offerBadgeTextDark]}
+                      numberOfLines={1}
+                    >
                       {itemOffer.label}
                     </AppText>
                   </View>
                 ) : null}
-                <AppText style={styles.price} numberOfLines={1}>
+                <AppText style={[styles.price, dark && styles.nameDark]} numberOfLines={1}>
                   {formatOfferRupee(sellingPrice)}
                 </AppText>
               </>
             )}
 
-            <AppText style={styles.meta} numberOfLines={1} ellipsizeMode="tail">
+            <AppText
+              style={[styles.meta, dark && styles.metaDark]}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+            >
               {formatOrderedAgo(orderedAt)}
             </AppText>
             {userRating != null && userRating > 0 ? (
-              <AppText style={styles.meta} numberOfLines={1}>
+              <AppText style={[styles.meta, dark && styles.metaDark]} numberOfLines={1}>
                 You rated {Math.round(userRating)} ★
               </AppText>
             ) : null}
@@ -191,20 +219,26 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
               disabled={controlsDisabled}
               allowOptimisticAdd={!isCustomisable}
               accent="zomato"
+              darkSurface={dark}
               onAdd={handleAdd}
               onIncrement={handleIncrement}
               onDecrement={handleDecrement}
               accessibilityLabel={`${menuItem.name} quantity`}
             />
             {isCustomisable ? (
-              <AppText style={styles.customisable} numberOfLines={1}>
+              <AppText
+                style={[styles.customisable, dark && styles.metaDark]}
+                numberOfLines={1}
+              >
                 customisable
               </AppText>
             ) : null}
           </View>
         </View>
       </Pressable>
-      {showDivider ? <View style={styles.divider} /> : null}
+      {showDivider ? (
+        <View style={[styles.divider, dark && styles.dividerDark]} />
+      ) : null}
     </View>
   );
 });
@@ -227,10 +261,16 @@ const styles = StyleSheet.create({
   rowPressed: {
     backgroundColor: "rgba(34, 197, 94, 0.05)",
   },
+  rowPressedDark: {
+    backgroundColor: "rgba(45, 212, 191, 0.08)",
+  },
   divider: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: StoreTheme.border,
     marginLeft: THUMB + 12,
+  },
+  dividerDark: {
+    backgroundColor: MerchantDarkPalette.border,
   },
   thumbSlot: {
     width: THUMB,
@@ -239,6 +279,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: "#F3F4F6",
     flexShrink: 0,
+  },
+  thumbSlotDark: {
+    backgroundColor: MerchantDarkPalette.elevated,
   },
   thumbImage: {
     width: THUMB,
@@ -259,6 +302,9 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     padding: 1,
   },
+  dietBadgeDark: {
+    backgroundColor: MerchantDarkPalette.card,
+  },
   bodyCol: {
     flex: 1,
     minWidth: 0,
@@ -273,6 +319,9 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     letterSpacing: -0.15,
   },
+  nameDark: {
+    color: MerchantDarkPalette.text,
+  },
   offerBadge: {
     alignSelf: "flex-start",
     paddingHorizontal: 5,
@@ -284,10 +333,17 @@ const styles = StyleSheet.create({
     marginTop: 2,
     maxWidth: "100%",
   },
+  offerBadgeDark: {
+    borderColor: MerchantDarkPalette.offer,
+    backgroundColor: "rgba(14, 165, 233, 0.16)",
+  },
   offerBadgeText: {
     fontSize: 10,
     fontWeight: "700",
     color: StoreTheme.linkBlue,
+  },
+  offerBadgeTextDark: {
+    color: MerchantDarkPalette.offer,
   },
   price: {
     fontFamily: StoreFonts.poppinsBold,
@@ -315,11 +371,17 @@ const styles = StyleSheet.create({
     color: StoreTheme.linkBlue,
     marginTop: 1,
   },
+  discountPriceDark: {
+    color: MerchantDarkPalette.offer,
+  },
   meta: {
     fontSize: 11,
     color: StoreTheme.textSecondary,
     lineHeight: 14,
     marginTop: 2,
+  },
+  metaDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   actionCol: {
     width: ACTION_W,

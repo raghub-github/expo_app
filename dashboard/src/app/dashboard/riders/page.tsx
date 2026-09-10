@@ -1078,6 +1078,10 @@ export default function RidersPage() {
                   <InfoInline label="City" value={rider.city || "—"} />
                   <InfoInline label="Status" value={(riderSummary?.rider?.status ?? rider.status) === "BLOCKED" ? <span className="font-medium text-red-600">BLOCKED</span> : (riderSummary?.rider?.status ?? rider.status)} />
                   <InfoInline
+                    label="KYC"
+                    value={rider.kyc_status || riderSummary?.rider?.kycStatus || "—"}
+                  />
+                  <InfoInline
                     label="Onboarding"
                     value={
                       riderSummary?.approvalQueueEligible

@@ -6,6 +6,7 @@ import { resolveMapboxPublicToken } from "@/src/lib/mapbox-env";
 import { MapboxUnavailablePanel } from "@/src/components/maps/MapboxUnavailablePanel";
 import Constants from "expo-constants";
 import { YouRiderMarker } from "@/src/components/home/YouRiderMarker";
+import { StoreMapPin } from "@/src/components/home/StoreMapPin";
 import { RiderRadarPulse } from "@/src/components/home/RiderRadarPulse";
 import { isOrderPinAwayFromRider } from "@/src/lib/geo-distance";
 import { colors } from "@/src/theme";
@@ -21,7 +22,11 @@ import {
   readLastMapCameraCenter,
   rememberMapCameraCenter,
 } from "@/src/lib/readLatestRiderGps";
-import { nearbyStoresToGeoJson, type NearbyStore } from "@/src/lib/nearby-stores";
+import {
+  nearbyStoresToGeoJson,
+  NEARBY_STORE_PIN_LIMIT,
+  type NearbyStore,
+} from "@/src/lib/nearby-stores";
 
 const BRAND = colors.primary[500];
 /** Service → light translucent fill colour (Food green / Parcel blue / Ride violet). */
@@ -70,6 +75,8 @@ interface RiderMapViewProps {
   /** Nearby-stores discovery layer (independent of hot zones; clustered store markers). */
   nearbyStores?: NearbyStore[];
   isOnDuty?: boolean;
+  /** Home "You" pin — show online/offline until a live order is assigned. */
+  showYouMarker?: boolean;
 }
 
 export type RiderMapViewHandle = {
@@ -81,6 +88,7 @@ const formatCoordinate = (coord: number): number => parseFloat(coord.toFixed(7))
 function riderMapPropsAreEqual(prev: RiderMapViewProps, next: RiderMapViewProps): boolean {
   if (prev.paused !== next.paused) return false;
   if (prev.showRadar !== next.showRadar || prev.isOnDuty !== next.isOnDuty) return false;
+  if (prev.showYouMarker !== next.showYouMarker) return false;
   if (prev.style !== next.style || prev.onOrderPress !== next.onOrderPress) return false;
   const a = prev.riderLocation;
   const b = next.riderLocation;
@@ -120,7 +128,11 @@ function riderMapPropsAreEqual(prev: RiderMapViewProps, next: RiderMapViewProps)
   const nextStores = next.nearbyStores ?? [];
   if (prevStores.length !== nextStores.length) return false;
   for (let i = 0; i < prevStores.length; i++) {
-    if (prevStores[i].id !== nextStores[i].id || prevStores[i].isOpen !== nextStores[i].isOpen) {
+    if (
+      prevStores[i].id !== nextStores[i].id ||
+      prevStores[i].isOpen !== nextStores[i].isOpen ||
+      prevStores[i].bannerUrl !== nextStores[i].bannerUrl
+    ) {
       return false;
     }
   }
@@ -148,11 +160,13 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
     hotZones = [],
     nearbyStores = [],
     isOnDuty = false,
+    showYouMarker = true,
   }: RiderMapViewProps,
   ref: React.Ref<RiderMapViewHandle>
 ) {
   const cameraRef = useRef<{ setCamera: (opts: object) => void } | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [mapZoom, setMapZoom] = useState(HOME_MAP_ZOOM);
 
   const Mapbox = useMemo(() => {
     if (Platform.OS === "web") return null;
@@ -200,6 +214,18 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
   const storesGeoJson = useMemo(
     () => (nearbyStores.length > 0 ? nearbyStoresToGeoJson(nearbyStores) : null),
     [nearbyStores]
+  );
+
+  /** Banner pins only when zoomed in — keep clusters light when zoomed out. */
+  const showStoreBannerPins = mapZoom >= 12.5 && nearbyStores.length > 0;
+  const storePinRows = useMemo(
+    () =>
+      showStoreBannerPins
+        ? nearbyStores
+            .filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lng))
+            .slice(0, NEARBY_STORE_PIN_LIMIT)
+        : [],
+    [nearbyStores, showStoreBannerPins]
   );
 
   const recenter = useCallback(() => {
@@ -311,6 +337,12 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
         pitchEnabled={false}
         rotateEnabled
         preferredFramesPerSecond={12}
+        onCameraChanged={(e: { properties?: { zoom?: number } }) => {
+          const z = e?.properties?.zoom;
+          if (typeof z === "number" && Number.isFinite(z)) {
+            setMapZoom((prev) => (Math.abs(prev - z) < 0.15 ? prev : z));
+          }
+        }}
         onDidFinishLoadingMap={() => {
           setMapReady(true);
           mapLog("MAP", { screen: "HOME", mapReady: true, hasFix: hasLiveFix, touchLayerDetected: false });
@@ -445,26 +477,39 @@ const RiderMapViewInner = forwardRef(function RiderMapViewInner(
                 textAllowOverlap: true,
               }}
             />
-            {/* Individual store markers (zoomed in) — colour by open/closed */}
+            {/* Individual dots only while zoomed out — banner pins replace them when close. */}
             <Mapbox.CircleLayer
               id="store-points"
               filter={["!", ["has", "point_count"]]}
               style={{
                 circleColor: ["case", ["get", "isOpen"], STORE_COLOR, STORE_CLOSED_COLOR],
-                circleOpacity: 0.95,
+                circleOpacity: showStoreBannerPins ? 0 : 0.95,
                 circleRadius: 7,
-                circleStrokeWidth: 2,
+                circleStrokeWidth: showStoreBannerPins ? 0 : 2,
                 circleStrokeColor: "#ffffff",
               }}
             />
           </Mapbox.ShapeSource>
         ) : null}
 
+        {storePinRows.map((store) =>
+          renderMarker(
+            `store-pin-${store.id}`,
+            [formatCoordinate(store.lng), formatCoordinate(store.lat)],
+            { x: 0.5, y: 1 },
+            <StoreMapPin
+              bannerUrl={store.bannerUrl}
+              isOpen={store.isOpen}
+              name={store.name}
+            />
+          )
+        )}
+
         {riderLocation && showRadar
           ? renderMarker("rider-radar", [lng, lat], { x: 0.5, y: 0.5 }, <RiderRadarPulse />)
           : null}
 
-        {riderLocation
+        {riderLocation && showYouMarker
           ? renderMarker("rider-location", [lng, lat], { x: 0.5, y: 1 }, <YouRiderMarker />)
           : null}
 

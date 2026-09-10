@@ -2,6 +2,11 @@
  * Must load before Expo Router so killed/background FCM can present a tray item
  * and the notification task is registered with the native runtime.
  *
+ * App states (all must show push in shade):
+ *   OPEN       — list visible; dispatch OS sound muted (IncomingRideOrderHost chime)
+ *   BACKGROUND — list + OS sound (handler may still run)
+ *   KILLED     — handler does not run; FCM notification block + channel sound
+ *
  * Expo Go (SDK 53+) errors if expo-notifications is imported — skip there.
  * Production / dev-client builds still register the handler + background task.
  */
@@ -41,10 +46,8 @@ if (!isExpoGo()) {
         const isDispatchOffer = isRiderDispatchOfferData(data);
         const AppState = require("react-native").AppState;
         const appActive = AppState.currentState === "active";
-        // Killed: this handler never runs; OS uses rider_dispatch_offers_alert
-        // from the FCM notification block (must stay audible).
-        // Background/cached: this handler MAY run — still allow OS sound.
-        // Active: mute OS; IncomingRideOrderHost plays the bundled chime.
+        // Never hide from shade in any state. Only mute OS for dispatch while
+        // the rider is actively in the app (in-app offer host plays the chime).
         return {
           shouldShowAlert: true,
           shouldPlaySound: !(isDispatchOffer && appActive),

@@ -19,6 +19,7 @@ import {
   type RiderRecentOrder,
 } from "@/src/services/riderSupport.service";
 import { RIDER_AUTH_BG } from "@/src/theme/riderAuthTheme";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
 type FlowStep = "pick_order" | "topics";
 type OrderScope = "active" | "completed" | "all";
@@ -43,6 +44,8 @@ function openSupportChat(section: RiderHelpSection, order: RiderRecentOrder | nu
  */
 export function RaiseTicketFlowScreen() {
   const { t } = useTranslation();
+  const { rs } = useResponsiveLayout();
+  const padX = rs(16);
   const params = useLocalSearchParams<{
     group_code?: string;
     group_name?: string;
@@ -271,7 +274,13 @@ export function RaiseTicketFlowScreen() {
         variant="premium"
         onBack={step === "pick_order" ? goBackFromOrderPicker : undefined}
       />
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={[
+          styles.scroll,
+          { paddingHorizontal: padX, paddingTop: rs(12), paddingBottom: rs(32) },
+        ]}
+        keyboardShouldPersistTaps="handled"
+      >
         {renderBody()}
       </ScrollView>
     </SafeAreaView>
@@ -280,5 +289,5 @@ export function RaiseTicketFlowScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: RIDER_AUTH_BG },
-  scroll: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 32 },
+  scroll: { flexGrow: 1 },
 });

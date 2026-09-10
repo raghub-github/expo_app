@@ -11,6 +11,7 @@ import {
   ledgerTransactionTitle,
 } from "@/src/components/ledger/ledgerDisplay";
 import { LEDGER_CARD_RADIUS, ledgerSoftShadow } from "@/src/components/ledger/ledgerUiTokens";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 type Props = {
   entry: RiderLedgerEntry;
@@ -24,35 +25,46 @@ export function LedgerTransactionCard({ entry }: Props) {
 
   return (
     <View style={[styles.card, ledgerSoftShadow]}>
-      <View style={styles.topRow}>
-        <View style={[styles.iconWrap, isCredit ? styles.iconCredit : styles.iconDebit]}>
+      <View style={[rowLayout.rowStart, styles.topRow]}>
+        <View style={[styles.iconWrap, rowLayout.noShrink, isCredit ? styles.iconCredit : styles.iconDebit]}>
           <Ionicons
             name={isCredit ? "arrow-down-circle" : "arrow-up-circle"}
             size={22}
             color={isCredit ? colors.success[600] : colors.error[600]}
           />
         </View>
-        <View style={styles.main}>
-          <Text style={styles.title} numberOfLines={2}>
+        <View style={[styles.main, rowLayout.grow]}>
+          <Text style={[styles.title, flexShrinkText]} numberOfLines={2} ellipsizeMode="tail">
             {title}
           </Text>
           {subtitle ? (
-            <Text style={styles.subtitle} numberOfLines={1}>
+            <Text style={[styles.subtitle, flexShrinkText]} numberOfLines={1} ellipsizeMode="tail">
               {subtitle}
             </Text>
           ) : null}
         </View>
-        <Text style={[styles.amount, isCredit ? styles.amountCredit : styles.amountDebit]}>
+        <Text
+          style={[
+            styles.amount,
+            rowLayout.noShrink,
+            isCredit ? styles.amountCredit : styles.amountDebit,
+          ]}
+          numberOfLines={1}
+        >
           {isCredit ? "+" : "−"} ₹{formatLedgerAmount(entry.amount)}
         </Text>
       </View>
 
-      <View style={styles.footer}>
-        <View style={styles.statusPill}>
+      <View style={[rowLayout.row, styles.footer]}>
+        <View style={[rowLayout.row, styles.statusPill, rowLayout.noShrink]}>
           <View style={styles.statusDot} />
-          <Text style={styles.statusText}>{t("ledger.created", "Created")}</Text>
+          <Text style={styles.statusText} numberOfLines={1}>
+            {t("ledger.created", "Created")}
+          </Text>
         </View>
-        <Text style={styles.date}>{formatLedgerDateTime(entry.createdAt)}</Text>
+        <Text style={[styles.date, flexShrinkText]} numberOfLines={1} ellipsizeMode="tail">
+          {formatLedgerDateTime(entry.createdAt)}
+        </Text>
       </View>
     </View>
   );
@@ -66,10 +78,9 @@ const styles = StyleSheet.create({
     borderColor: "#E2E8F0",
     padding: 16,
     marginBottom: 12,
+    maxWidth: "100%",
   },
   topRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
     gap: 12,
   },
   iconWrap: {
@@ -86,8 +97,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#FEF2F2",
   },
   main: {
-    flex: 1,
-    minWidth: 0,
     paddingTop: 2,
   },
   title: {
@@ -103,7 +112,6 @@ const styles = StyleSheet.create({
   amount: {
     fontSize: 17,
     fontWeight: "800",
-    flexShrink: 0,
     paddingTop: 2,
   },
   amountCredit: {
@@ -113,17 +121,14 @@ const styles = StyleSheet.create({
     color: colors.error[600],
   },
   footer: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
     marginTop: 14,
     paddingTop: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E2E8F0",
+    gap: 8,
   },
   statusPill: {
-    flexDirection: "row",
-    alignItems: "center",
     gap: 6,
     backgroundColor: "#F0FDF4",
     paddingHorizontal: 10,
@@ -145,5 +150,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "500",
     color: "#94A3B8",
+    textAlign: "right",
   },
 });

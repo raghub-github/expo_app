@@ -1,16 +1,17 @@
 /**
  * Foreground presentation for Partner: every remote event goes to the OS
- * shade. Only the local kitchen sticky is suppressed so it does not
- * double-chime as a heads-up.
+ * shade. Only the legacy `live_orders` id is suppressed (migrated to STORE_STATUS).
  *
- * NEW_ORDER sound ownership:
- *   • App ACTIVE  — mute OS channel sound; NewOrderAlertManager plays
- *     the merchant-configured repeating chime.
- *   • App NOT active (background / cached / headless) — NEVER mute OS
- *     sound. Native FCM + merchant_new_orders_alert is the audible owner
- *     so a killed/cached process cannot swallow the alert.
- *   • Process dead — this handler does not run; Android shows the FCM
- *     notification block with the channel sound.
+ * NEW_ORDER sound ownership (production):
+ *   • App OPEN (active) — mute OS channel; Incoming Order modal / JS chime only.
+ *   • App BACKGROUND (process alive) — OS `merchant_new_orders_alert` plays;
+ *     JS does not start until the merchant opens the app or taps the tray.
+ *   • App KILLED — this handler does not run; FCM notification block + channel sound.
+ *
+ * STORE_STATUS sticky (Waiting / Prep·Ready·Out):
+ *   Must ALWAYS remain in the shade list — even while the app is open —
+ *   otherwise kitchen progress updates are silently dropped and the tray
+ *   stays stuck on "Waiting for orders".
  */
 import { AppState } from "react-native";
 import { isMerchantIdleStatusNotification } from "@/lib/merchantStatusNotification";
@@ -24,6 +25,7 @@ export async function installMerchantForegroundNotificationHandler(): Promise<vo
       handleNotification: async (notification) => {
         const data = (notification?.request?.content?.data ?? {}) as Record<string, unknown>;
         const t = String(data.type ?? data.notificationType ?? "").toLowerCase();
+        // Legacy kitchen id only — STORE_STATUS is the live sticky now.
         if (isMerchantIdleStatusNotification(data) || t === "live_orders") {
           return {
             shouldShowAlert: false,
@@ -37,20 +39,24 @@ export async function installMerchantForegroundNotificationHandler(): Promise<vo
         const isOffline = t === "offline_network";
         const isNewOrder = isMerchantNewOrderPushData(data);
         const appActive = AppState.currentState === "active";
-        // Status tray is quiet. While JS is active it owns the sticky so the
-        // FCM copy is not shown as a second row. When JS is not active, native
-        // FCM must still render (this handler may not even run).
         if (isStoreStatus) {
+          const state = String(data.state ?? data.storeState ?? "").toUpperCase();
+          const headsUp =
+            state === "OUT_OF_TIMINGS" ||
+            state === "OUT_OF_DELIVERY_TIMINGS" ||
+            state === "RECONNECT" ||
+            state === "RECONNECT_REQUIRED";
           return {
-            shouldShowAlert: !appActive,
-            shouldPlaySound: false,
+            shouldShowAlert: true,
+            shouldPlaySound: headsUp,
             shouldSetBadge: false,
-            shouldShowBanner: !appActive,
-            shouldShowList: !appActive,
+            // Offline heads-up; ONLINE sticky must still land in the shade while open.
+            shouldShowBanner: headsUp || !appActive,
+            shouldShowList: true,
           };
         }
-        // Only the in-app alert owns the chime while the merchant is looking
-        // at the app. Any other state must keep the native NEW_ORDER sound.
+        // New order: shade always. Mute OS only while app is open (JS/modal owns sound).
+        // Background → OS channel sound. Killed → handler never runs (FCM owns sound).
         const suppressOsSound = isOffline || (isNewOrder && appActive);
         return {
           shouldShowAlert: true,

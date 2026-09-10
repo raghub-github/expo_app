@@ -105,6 +105,8 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingHorizontal: 20,
     overflow: "hidden",
+    flexShrink: 1,
+    minHeight: 0,
     ...Platform.select({
       ios: {
         shadowColor: "#000",
@@ -122,9 +124,12 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: "#E2E8F0",
     marginBottom: 10,
+    flexShrink: 0,
   },
   body: {
     width: "100%",
+    maxWidth: "100%",
     flexShrink: 1,
+    minHeight: 0,
   },
 });

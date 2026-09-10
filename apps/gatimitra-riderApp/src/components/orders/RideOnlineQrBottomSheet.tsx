@@ -6,11 +6,13 @@ import {
   StyleSheet,
   ActivityIndicator,
   Image,
-  useWindowDimensions,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { DismissibleBottomSheetShell } from "@/src/components/language/DismissibleBottomSheetShell";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText } from "@/src/theme/responsiveText";
 import { colors } from "@/src/theme";
 
 const MINT_DARK = colors.primary[700];
@@ -35,30 +37,47 @@ export function RideOnlineQrBottomSheet({
   onRetry,
 }: Props) {
   const { t } = useTranslation();
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height, isShortHeight } = useResponsiveLayout();
 
   /** Large square QR — nearly full sheet width so passengers can scan easily. */
   const qrSize = useMemo(() => {
     const horizontalPad = 56;
     const target = Math.floor(windowWidth - horizontalPad);
-    return Math.max(280, Math.min(target, 360));
-  }, [windowWidth]);
+    const capped = Math.max(220, Math.min(target, isShortHeight ? 280 : 360));
+    return capped;
+  }, [windowWidth, isShortHeight]);
+
+  const bodyMaxH = Math.round(height * (isShortHeight ? 0.78 : 0.72));
 
   return (
     <DismissibleBottomSheetShell
       visible={visible}
       onDismiss={onDismiss}
-      maxHeightRatio={0.88}
-      minHeightRatio={0.62}
+      maxHeightRatio={isShortHeight ? 0.92 : 0.88}
+      minHeightRatio={isShortHeight ? 0.5 : 0.62}
       showOuterHandle={false}
       showFloatingClose
     >
-      <View style={styles.headerRow}>
+      <ResponsiveSheetBody
+        maxHeight={bodyMaxH}
+        contentContainerStyle={styles.bodyContent}
+        footerStyle={styles.footerSlot}
+        footer={
+          <Pressable style={styles.cancelBtn} onPress={onDismiss}>
+            <Text style={styles.cancelLabel} numberOfLines={1}>
+              {t("common.cancel", "Cancel")}
+            </Text>
+          </Pressable>
+        }
+      >
         <View style={styles.headerTextCol}>
-          <Text style={styles.title}>
+          <Text style={[styles.title, flexShrinkText]} numberOfLines={2}>
             {t("orders.ridePaymentWait.onlineSheetTitle", "Scan & pay online")}
           </Text>
-          <Text style={styles.subtitle}>
+          <Text
+            style={[styles.subtitle, flexShrinkText]}
+            numberOfLines={isShortHeight ? 3 : 4}
+          >
             {t(
               "orders.ridePaymentWait.onlineSheetSub",
               "Ask the passenger to scan this QR and pay {{amount}}.",
@@ -66,69 +85,68 @@ export function RideOnlineQrBottomSheet({
             )}
           </Text>
         </View>
-      </View>
 
-      <View style={styles.body}>
-        {loading && !qrImageUrl ? (
-          <View style={[styles.centerWrap, { minHeight: qrSize + 40 }]}>
-            <ActivityIndicator color={MINT_DARK} size="large" />
-            <Text style={styles.loadingText}>
-              {t("orders.ridePaymentWait.qrLoading", "Generating QR…")}
-            </Text>
-          </View>
-        ) : errorMessage ? (
-          <View style={styles.centerWrap}>
-            <Ionicons name="alert-circle-outline" size={36} color="#DC2626" />
-            <Text style={styles.errorText}>{errorMessage}</Text>
-            {onRetry ? (
-              <Pressable style={styles.retryBtn} onPress={onRetry}>
-                <Text style={styles.retryLabel}>
-                  {t("common.retry", "Retry")}
-                </Text>
-              </Pressable>
-            ) : null}
-          </View>
-        ) : qrImageUrl ? (
-          <>
-            <View style={[styles.qrWrap, { width: qrSize + 24, height: qrSize + 24 }]}>
-              <Image
-                source={{ uri: qrImageUrl }}
-                style={[styles.qrImage, { width: qrSize, height: qrSize }]}
-                resizeMode="contain"
-                accessibilityLabel="Payment QR code"
-              />
+        <View style={styles.body}>
+          {loading && !qrImageUrl ? (
+            <View style={[styles.centerWrap, { minHeight: Math.min(qrSize, 200) }]}>
+              <ActivityIndicator color={MINT_DARK} size="large" />
+              <Text style={styles.loadingText}>
+                {t("orders.ridePaymentWait.qrLoading", "Generating QR…")}
+              </Text>
             </View>
-            <Text style={styles.waitText}>
-              {t(
-                "orders.ridePaymentWait.qrSub",
-                "This confirms automatically once they pay."
-              )}
-            </Text>
-          </>
-        ) : null}
-
-        <Pressable style={styles.cancelBtn} onPress={onDismiss}>
-          <Text style={styles.cancelLabel}>
-            {t("common.cancel", "Cancel")}
-          </Text>
-        </Pressable>
-      </View>
+          ) : errorMessage ? (
+            <View style={styles.centerWrap}>
+              <Ionicons name="alert-circle-outline" size={36} color="#DC2626" />
+              <Text style={[styles.errorText, flexShrinkText]} numberOfLines={4}>
+                {errorMessage}
+              </Text>
+              {onRetry ? (
+                <Pressable style={styles.retryBtn} onPress={onRetry}>
+                  <Text style={styles.retryLabel} numberOfLines={1}>
+                    {t("common.retry", "Retry")}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : qrImageUrl ? (
+            <>
+              <View style={[styles.qrWrap, { width: qrSize + 24, height: qrSize + 24 }]}>
+                <Image
+                  source={{ uri: qrImageUrl }}
+                  style={[styles.qrImage, { width: qrSize, height: qrSize }]}
+                  resizeMode="contain"
+                  accessibilityLabel="Payment QR code"
+                />
+              </View>
+              <Text style={[styles.waitText, flexShrinkText]} numberOfLines={3}>
+                {t(
+                  "orders.ridePaymentWait.qrSub",
+                  "This confirms automatically once they pay."
+                )}
+              </Text>
+            </>
+          ) : null}
+        </View>
+      </ResponsiveSheetBody>
     </DismissibleBottomSheetShell>
   );
 }
 
 const styles = StyleSheet.create({
-  headerRow: {
-    paddingHorizontal: 20,
+  bodyContent: {
     paddingTop: 18,
-    paddingBottom: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#E8EAED",
+    alignItems: "stretch",
+  },
+  footerSlot: {
+    borderTopWidth: 0,
+    backgroundColor: "transparent",
+    paddingBottom: 12,
   },
   headerTextCol: {
     flex: 1,
     gap: 6,
-    paddingRight: 8,
+    maxWidth: "100%",
+    marginBottom: 8,
   },
   title: {
     fontSize: 17,
@@ -142,12 +160,10 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
   body: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 20,
     gap: 16,
     alignItems: "center",
     width: "100%",
+    maxWidth: "100%",
   },
   centerWrap: {
     alignItems: "center",
@@ -168,6 +184,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: "600",
     paddingHorizontal: 8,
+    maxWidth: "100%",
   },
   retryBtn: {
     marginTop: 4,
@@ -189,6 +206,7 @@ const styles = StyleSheet.create({
     padding: 12,
     alignItems: "center",
     justifyContent: "center",
+    maxWidth: "100%",
   },
   qrImage: {
     aspectRatio: 1,
@@ -199,6 +217,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 18,
     fontWeight: "600",
+    maxWidth: "100%",
   },
   cancelBtn: {
     width: "100%",
@@ -209,7 +228,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#D1D5DB",
     backgroundColor: "#fff",
-    marginTop: 4,
   },
   cancelLabel: {
     fontSize: 14,

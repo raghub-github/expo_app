@@ -120,12 +120,18 @@ export function InboxScreen({
         <View style={styles.dotColumn}>
           {unread ? <View style={[styles.dot, { backgroundColor: accentColor }]} /> : null}
         </View>
-        <View style={{ flex: 1 }}>
-          <View style={styles.rowBetween}>
-            <Text style={styles.title} numberOfLines={1}>{item.title ?? "(untitled)"}</Text>
-            <Text style={styles.time}>{relativeTime(item.queued_at)}</Text>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={[styles.rowBetween, { maxWidth: "100%" }]}>
+            <Text style={[styles.title, { flex: 1, minWidth: 0, marginRight: 8 }]} numberOfLines={1}>
+              {item.title ?? "(untitled)"}
+            </Text>
+            <Text style={[styles.time, { flexShrink: 0 }]} numberOfLines={1}>
+              {relativeTime(item.queued_at)}
+            </Text>
           </View>
-          <Text style={styles.body} numberOfLines={3}>{item.body ?? ""}</Text>
+          <Text style={[styles.body, { flexShrink: 1 }]} numberOfLines={3}>
+            {item.body ?? ""}
+          </Text>
         </View>
       </TouchableOpacity>
     );
@@ -174,22 +180,30 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#e2e8f0",
+    gap: 12,
+    maxWidth: "100%",
   },
-  heading: { fontSize: 18, fontWeight: "700", color: "#0f172a" },
+  heading: { fontSize: 18, fontWeight: "700", color: "#0f172a", flexShrink: 1 },
   subheading: { fontSize: 12, color: "#64748b", marginTop: 2 },
-  actionText: { fontSize: 13, fontWeight: "600" },
+  actionText: { fontSize: 13, fontWeight: "600", flexShrink: 0 },
   card: {
     flexDirection: "row",
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#eef2f7",
+    maxWidth: "100%",
   },
-  dotColumn: { width: 12, alignItems: "center", paddingTop: 6 },
+  dotColumn: { width: 12, alignItems: "center", paddingTop: 6, flexShrink: 0 },
   dot: { width: 8, height: 8, borderRadius: 4 },
-  rowBetween: { flexDirection: "row", justifyContent: "space-between" },
-  title: { fontSize: 14, fontWeight: "600", color: "#0f172a", flex: 1, marginRight: 8 },
-  time: { fontSize: 11, color: "#64748b" },
+  rowBetween: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    maxWidth: "100%",
+  },
+  title: { fontSize: 14, fontWeight: "600", color: "#0f172a", flex: 1, marginRight: 8, minWidth: 0 },
+  time: { fontSize: 11, color: "#64748b", flexShrink: 0 },
   body: { fontSize: 13, color: "#475569", marginTop: 2 },
   empty: { textAlign: "center", color: "#94a3b8", fontSize: 14 },
   error: { textAlign: "center", color: "#dc2626", fontSize: 12, padding: 8 },

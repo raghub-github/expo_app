@@ -84,10 +84,17 @@ function routeAllowsImmersiveStatusBar(
     return true;
   }
 
-  // Tabs Home pads its own header under a visible status bar. Never add the root
-  // spacer here — that stacked with header insets.top into a large white gap.
+  // Tabs Home always pads its own header — never add the root spacer (that
+  // stacked with header insets into a large white gap). Keep spacer off here.
   if (root === "(tabs)" && (leaf === "" || leaf === "index")) {
-    return hideStatusBarSpacer;
+    return true;
+  }
+
+  // Food tab self-pads (discovery dark / classic) — same immersive top as Home.
+  // Without this, the guard reset hideStatusBarSpacer and painted a light bar
+  // over dark discovery, making status-bar icons look invisible.
+  if (root === "(tabs)" && leaf === "food") {
+    return true;
   }
 
   return false;

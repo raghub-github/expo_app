@@ -6,6 +6,8 @@ import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
 import { LORA_BOLD } from "@/src/theme/headerFonts";
 import type { RiderIncentiveProgram, IncentiveTier } from "@/src/hooks/useRiderIncentives";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
 type Props = {
   program: RiderIncentiveProgram;
@@ -130,18 +132,23 @@ function MilestoneProgressLine({
 
 export function DailyIncentiveCard({ program }: Props) {
   const { t } = useTranslation();
+  const { rs } = useResponsiveLayout();
 
   return (
-    <View style={styles.card}>
-      <View style={styles.headerRow}>
-        <View style={styles.titleRow}>
-          <Ionicons name="gift-outline" size={16} color="#111827" />
-          <View style={styles.titleBlock}>
-            <Text style={styles.title}>{program.name}</Text>
-            <View style={styles.metaRow}>
-              <Text style={styles.subtitle}>{program.cycleLabel}</Text>
-              <Text style={styles.metaSep}>·</Text>
+    <View style={[styles.card, { marginHorizontal: rs(16), paddingHorizontal: rs(16) }]}>
+      <View style={[rowLayout.row, styles.headerRow]}>
+        <View style={[rowLayout.row, styles.titleRow, rowLayout.grow]}>
+          <Ionicons name="gift-outline" size={16} color="#111827" style={rowLayout.noShrink} />
+          <View style={[styles.titleBlock, rowLayout.grow]}>
+            <Text style={[styles.title, flexShrinkText]} numberOfLines={2} ellipsizeMode="tail">
+              {program.name}
+            </Text>
+            <View style={[rowLayout.row, styles.metaRow]}>
               <Text style={styles.subtitle} numberOfLines={1}>
+                {program.cycleLabel}
+              </Text>
+              <Text style={styles.metaSep}>·</Text>
+              <Text style={[styles.subtitle, flexShrinkText]} numberOfLines={1}>
                 {t("offers.activeFor", "Active For")}:{" "}
                 <Text style={styles.serviceText}>{formatIncentiveServiceLabel(program.service)}</Text>
               </Text>
@@ -149,14 +156,14 @@ export function DailyIncentiveCard({ program }: Props) {
           </View>
         </View>
         {program.isLive ? (
-          <View style={styles.liveBadge}>
+          <View style={[rowLayout.row, styles.liveBadge, rowLayout.noShrink]}>
             <View style={styles.liveDot} />
             <Text style={styles.liveText}>{t("offers.live", "LIVE")}</Text>
           </View>
         ) : null}
       </View>
 
-      <Text style={styles.earnHeadline}>
+      <Text style={[styles.earnHeadline, flexShrinkText]} numberOfLines={2}>
         {t("offers.earnUpto", "Earn upto {{amount}} extra", {
           amount: formatRupee(program.maxReward),
         })}
@@ -172,12 +179,12 @@ export function DailyIncentiveCard({ program }: Props) {
 
           {program.mandatoryLoginSlots > 0 ? (
             <>
-              <Text style={styles.conditionLine}>
+              <Text style={[styles.conditionLine, flexShrinkText]} numberOfLines={2}>
                 {t("offers.mandatoryLogin", "Mandatory Login: Complete all {{count}} slots", {
                   count: program.mandatoryLoginSlots,
                 })}
               </Text>
-              <View style={styles.slotsRow}>
+              <View style={[rowLayout.row, styles.slotsRow]}>
                 {program.timeWindows.map((slot) => (
                   <View key={slot.id} style={styles.slotCard}>
                     <View style={[styles.slotCheck, slot.completed && styles.slotCheckDone]}>
@@ -185,11 +192,15 @@ export function DailyIncentiveCard({ program }: Props) {
                         <Ionicons name="checkmark" size={12} color="#FFFFFF" />
                       ) : null}
                     </View>
-                    <Text style={styles.slotLabel}>{slot.label}</Text>
-                    <Text style={styles.slotTime}>
+                    <Text style={styles.slotLabel} numberOfLines={1}>
+                      {slot.label}
+                    </Text>
+                    <Text style={[styles.slotTime, flexShrinkText]} numberOfLines={1}>
                       {slot.startTime} - {slot.endTime}
                     </Text>
-                    <Text style={styles.slotDuration}>{slot.durationLabel}</Text>
+                    <Text style={styles.slotDuration} numberOfLines={1}>
+                      {slot.durationLabel}
+                    </Text>
                   </View>
                 ))}
               </View>
@@ -206,13 +217,13 @@ export function DailyIncentiveCard({ program }: Props) {
 
       {program.lockedReason === "GMITRA_MAX_REQUIRED" ? (
         <Pressable
-          style={styles.lockedBanner}
+          style={[rowLayout.row, styles.lockedBanner]}
           onPress={() => router.push("/your-subscription" as never)}
           accessibilityRole="button"
           accessibilityLabel={t("offers.gmitraMaxRequired", "Subscribe to GMitra Max to unlock this incentive")}
         >
-          <Ionicons name="lock-closed" size={14} color="#7C3AED" />
-          <Text style={styles.lockedText}>
+          <Ionicons name="lock-closed" size={14} color="#7C3AED" style={rowLayout.noShrink} />
+          <Text style={[styles.lockedText, flexShrinkText]} numberOfLines={2}>
             {t("offers.gmitraMaxRequired", "Subscribe to GMitra Max to unlock this incentive")}
           </Text>
         </Pressable>
@@ -225,10 +236,8 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: "#FFFFFF",
     borderRadius: 14,
-    paddingHorizontal: 16,
     paddingTop: 16,
     paddingBottom: 14,
-    marginHorizontal: 16,
     marginBottom: 4,
     borderWidth: 1,
     borderColor: "#E5E7EB",
@@ -237,9 +246,10 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 1 },
     elevation: 2,
+    maxWidth: "100%",
   },
-  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  titleRow: { flexDirection: "row", gap: 8, flex: 1, alignItems: "center" },
+  headerRow: { justifyContent: "space-between", gap: 8, maxWidth: "100%" },
+  titleRow: { gap: 8, flex: 1, minWidth: 0 },
   titleBlock: { flex: 1, minWidth: 0 },
   title: {
     fontFamily: LORA_BOLD,
@@ -247,13 +257,11 @@ const styles = StyleSheet.create({
     color: "#111827",
     includeFontPadding: false,
   },
-  metaRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", marginTop: 2, gap: 4 },
+  metaRow: { flexWrap: "wrap", marginTop: 2, gap: 4, maxWidth: "100%" },
   metaSep: { fontSize: 11, color: "#D1D5DB", fontWeight: "700" },
   subtitle: { fontSize: 11, color: "#6B7280" },
   serviceText: { fontWeight: "700", color: "#374151" },
   liveBadge: {
-    flexDirection: "row",
-    alignItems: "center",
     gap: 4,
     backgroundColor: "#FEF2F2",
     paddingHorizontal: 7,
@@ -279,9 +287,10 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   conditionLine: { fontSize: 12, fontWeight: "700", color: "#111827", marginBottom: 8 },
-  slotsRow: { flexDirection: "row", gap: 10, marginBottom: 8 },
+  slotsRow: { gap: 10, marginBottom: 8, maxWidth: "100%" },
   slotCard: {
     flex: 1,
+    minWidth: 0,
     backgroundColor: "#F9FAFB",
     borderRadius: 10,
     paddingHorizontal: 10,
@@ -309,15 +318,14 @@ const styles = StyleSheet.create({
   descriptionText: { fontSize: 11, color: "#6B7280", lineHeight: 16, marginTop: 4 },
   lockedBanner: {
     marginTop: 10,
-    flexDirection: "row",
-    alignItems: "center",
     gap: 8,
     backgroundColor: "#F5F3FF",
     paddingHorizontal: 10,
     paddingVertical: 10,
     borderRadius: 8,
+    maxWidth: "100%",
   },
-  lockedText: { fontSize: 11, fontWeight: "600", color: "#5B21B6", flex: 1 },
+  lockedText: { fontSize: 11, fontWeight: "600", color: "#5B21B6", flex: 1, minWidth: 0 },
 });
 
 const progress = StyleSheet.create({

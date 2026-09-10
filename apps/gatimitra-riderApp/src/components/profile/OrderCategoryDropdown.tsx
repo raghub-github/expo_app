@@ -5,7 +5,7 @@ import {
   Pressable,
   StyleSheet,
   Modal,
-  Dimensions,
+  useWindowDimensions,
   Platform,
   StatusBar,
 } from "react-native";
@@ -46,6 +46,7 @@ type Props = {
 
 export function OrderCategoryDropdown({ value, onChange }: Props) {
   const { t } = useTranslation();
+  const { width: screenW } = useWindowDimensions();
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
   const triggerRef = useRef<View>(null);
@@ -62,7 +63,6 @@ export function OrderCategoryDropdown({ value, onChange }: Props) {
 
   const openMenu = () => {
     triggerRef.current?.measureInWindow((x, y, width, height) => {
-      const screenW = Dimensions.get("window").width;
       const statusBarOffset =
         Platform.OS === "android" ? (StatusBar.currentHeight ?? 0) : 0;
       const left = Math.min(

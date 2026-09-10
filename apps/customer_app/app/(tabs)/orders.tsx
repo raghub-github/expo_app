@@ -38,7 +38,7 @@ import { useAddresses, useActiveLocation } from "@/hooks/useAddresses";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { STATUS_BAR_TO_HEADER_GAP, resolveCustomerBottomNavHeight } from "@/constants/layout";
 import {
   tryPopulateCartFromOrder,
   orderItemsMissingMenuIds,
@@ -618,17 +618,15 @@ export default function OrdersScreen() {
 
   const visibleOrders = orders.filter((o) => !hiddenOrderIds.has(o.orderId));
 
-  const resetStatusBarBackground = useScreenChromeStore((s) => s.resetStatusBarBackground);
-
   useFocusEffect(
     useCallback(() => {
       useScreenChromeStore.setState({
         statusBarBackground: PAGE_BG,
         statusBarStyle: "dark",
-        hideStatusBarSpacer: false,
+        // Stay immersive like Home/Food — root spacer must not toggle on tab switch.
+        hideStatusBarSpacer: true,
       });
-      return () => resetStatusBarBackground();
-    }, [resetStatusBarBackground])
+    }, [])
   );
 
   const activeOrders = useMemo(
@@ -902,7 +900,7 @@ export default function OrdersScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: STATUS_BAR_TO_HEADER_GAP }]}>
+      <View style={[styles.header, { paddingTop: insets.top + STATUS_BAR_TO_HEADER_GAP }]}>
         <AppText style={styles.pageTitle}>My Orders</AppText>
       </View>
 
@@ -973,7 +971,7 @@ export default function OrdersScreen() {
                   </AppText>
                   {!search.trim() ? (
                     <TouchableOpacity
-                      onPress={() => router.push("/home")}
+                      onPress={() => router.navigate("/(tabs)/food")}
                       style={styles.exploreBtn}
                       activeOpacity={0.9}
                     >
@@ -985,7 +983,10 @@ export default function OrdersScreen() {
               ) : (
                 <GHScrollView
                   style={styles.scroll}
-                  contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
+                  contentContainerStyle={[
+                    styles.scrollContent,
+                    { paddingBottom: resolveCustomerBottomNavHeight(insets.bottom) + 8 },
+                  ]}
                   showsVerticalScrollIndicator={false}
                   keyboardShouldPersistTaps="handled"
                   onScrollBeginDrag={() => setOpenMenuOrderId(null)}
@@ -1025,7 +1026,10 @@ export default function OrdersScreen() {
             ) : (
               <GHScrollView
                 style={styles.scroll}
-                contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
+                contentContainerStyle={[
+                  styles.scrollContent,
+                  { paddingBottom: resolveCustomerBottomNavHeight(insets.bottom) + 8 },
+                ]}
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
                 onScrollBeginDrag={() => setOpenMenuOrderId(null)}

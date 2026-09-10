@@ -9,9 +9,10 @@ import { headerControlText } from "@/src/theme/headerFonts";
 
 type Props = {
   onPress?: () => void;
+  compact?: boolean;
 };
 
-export function HeaderMaxSubscriptionBadge({ onPress }: Props) {
+export function HeaderMaxSubscriptionBadge({ onPress, compact = false }: Props) {
   const { t } = useTranslation();
 
   const handlePress = () => {
@@ -31,9 +32,9 @@ export function HeaderMaxSubscriptionBadge({ onPress }: Props) {
       accessibilityRole="button"
       accessibilityLabel={t("subscription.maxBadgeA11y", "Gatimitra Max subscription active")}
     >
-      <View style={styles.badge}>
-        <Ionicons name="star" size={12} color="#FBBF24" />
-        <Text style={styles.label} numberOfLines={1}>
+      <View style={[styles.badge, compact && styles.badgeCompact]}>
+        <Ionicons name="star" size={compact ? 11 : 12} color="#FBBF24" />
+        <Text style={[styles.label, compact && styles.labelCompact]} numberOfLines={1} allowFontScaling={false}>
           {t("subscription.maxBadge", "MAX")}
         </Text>
       </View>
@@ -60,11 +61,19 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: "#FBBF24",
   },
+  badgeCompact: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
   label: {
     marginLeft: 3,
     ...headerControlText,
     fontSize: 12,
     color: "#FBBF24",
     flexShrink: 0,
+  },
+  labelCompact: {
+    fontSize: 11,
+    marginLeft: 2,
   },
 });

@@ -107,17 +107,21 @@ async function pollOnce(): Promise<void> {
     const a = await remindMerchantSubscriptions();
     const b = await remindInactiveCustomers(inactiveDays);
     const c = await remindLowWallet();
-    if (a + b + c > 0) {
-      console.info(`[notifications] reminders queued sub=${a} inactive=${b} wallet=${c}`);
+    const { pollAbandonedCartReminders } = await import("./abandonedCartReminder.js");
+    const d = await pollAbandonedCartReminders();
+    if (a + b + c + d > 0) {
+      console.info(
+        `[notifications] reminders queued sub=${a} inactive=${b} wallet=${c} abandonedCart=${d}`,
+      );
     }
   });
 }
 
 export async function startReminderPoller(): Promise<void> {
   if (timer) return;
-  // Run hourly — reminders are low urgency.
-  const ms = 60 * 60 * 1000;
-  console.info("[notifications] reminder poller started (hourly)");
+  // Abandoned-cart needs sub-hour cadence; other reminders are cheap no-ops most ticks.
+  const ms = 60 * 1000;
+  console.info("[notifications] reminder poller started (1m)");
   void pollOnce().catch((e) => console.error("[notifications] reminder poll error", (e as Error).message));
   timer = setInterval(() => {
     void pollOnce().catch((e) => console.error("[notifications] reminder poll error", (e as Error).message));

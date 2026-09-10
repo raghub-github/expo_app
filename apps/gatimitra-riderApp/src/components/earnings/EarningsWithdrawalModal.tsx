@@ -7,12 +7,17 @@ import {
   StyleSheet,
   Alert,
   Pressable,
+  View,
 } from "react-native";
 import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme";
 import type { RiderBankPaymentMethod } from "@/src/services/api/riderApi";
 import { riderApi } from "@/src/services/api/riderApi";
 import { WithdrawProgressButton } from "@/src/components/earnings/WithdrawProgressButton";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { flexShrinkText } from "@/src/theme/responsiveText";
 
 const FALLBACK_MIN = 100;
 const FALLBACK_MAX = 100_000;
@@ -50,8 +55,11 @@ export function EarningsWithdrawalModal({
   onSuccess,
 }: Props) {
   const { t } = useTranslation();
+  const { height, isShortHeight, insets } = useResponsiveLayout();
   const [amount, setAmount] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const bottomPad = resolveRiderBottomInset(insets.bottom) + 12;
+  const sheetMaxH = Math.round(height * (isShortHeight ? 0.78 : 0.86));
 
   const minAmount =
     Number.isFinite(minWithdrawal) && (minWithdrawal as number) > 0
@@ -137,58 +145,74 @@ export function EarningsWithdrawalModal({
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <Text style={styles.title}>
-            {t("earnings.requestWithdrawal", "Request Withdrawal")}
-          </Text>
-
-          <Text style={styles.availableLabel}>
-            {t("earnings.withdrawable", "Withdrawable")}
-          </Text>
-          <Text style={styles.availableAmount}>{formatCurrency(withdrawable)}</Text>
-
-          {bankAccount ? (
-            <Text style={styles.bankHint}>
-              {[bankAccount.bankName, bankAccount.accountNumberMasked]
-                .filter(Boolean)
-                .join(" · ")}
+        <Pressable
+          style={[styles.sheet, { maxHeight: sheetMaxH }]}
+          onPress={(e) => e.stopPropagation()}
+        >
+          <ResponsiveSheetBody
+            maxHeight={Math.max(240, sheetMaxH - bottomPad - 8)}
+            contentContainerStyle={styles.bodyContent}
+            footerStyle={styles.footerSlot}
+            footerBottomInset={bottomPad}
+            footer={
+              <View>
+                <WithdrawProgressButton
+                  current={parsedAmount}
+                  minAmount={minAmount}
+                  onPress={() => void handleSubmit()}
+                  loading={submitting}
+                  disabled={!canEdit || amountOverMax}
+                  labelReady={t("earnings.submitWithdrawal", "Submit withdrawal")}
+                  style={styles.submitProgress}
+                />
+                <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
+                  <Text style={styles.cancelText} numberOfLines={1}>
+                    {t("common.cancel", "Cancel")}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            }
+          >
+            <Text style={styles.title} numberOfLines={2}>
+              {t("earnings.requestWithdrawal", "Request Withdrawal")}
             </Text>
-          ) : null}
 
-          <Text style={styles.inputLabel}>
-            {t("earnings.withdrawAmount", "Amount (₹)")}
-          </Text>
-          <TextInput
-            value={amount}
-            onChangeText={handleAmountChange}
-            keyboardType="decimal-pad"
-            editable={canEdit}
-            style={styles.input}
-            placeholder={`Min ₹${minAmount}`}
-            placeholderTextColor="#9CA3AF"
-          />
+            <Text style={styles.availableLabel} numberOfLines={1}>
+              {t("earnings.withdrawable", "Withdrawable")}
+            </Text>
+            <Text style={[styles.availableAmount, flexShrinkText]} numberOfLines={1}>
+              {formatCurrency(withdrawable)}
+            </Text>
 
-          <Text style={styles.hint}>
-            {t(
-              "earnings.withdrawLimits",
-              "Min ₹{{min}} · Max ₹{{max}} per request",
-              { min: minAmount, max: maxLimit.toLocaleString("en-IN") },
-            )}
-          </Text>
+            {bankAccount ? (
+              <Text style={[styles.bankHint, flexShrinkText]} numberOfLines={2}>
+                {[bankAccount.bankName, bankAccount.accountNumberMasked]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </Text>
+            ) : null}
 
-          <WithdrawProgressButton
-            current={parsedAmount}
-            minAmount={minAmount}
-            onPress={() => void handleSubmit()}
-            loading={submitting}
-            disabled={!canEdit || amountOverMax}
-            labelReady={t("earnings.submitWithdrawal", "Submit withdrawal")}
-            style={styles.submitProgress}
-          />
+            <Text style={styles.inputLabel} numberOfLines={1}>
+              {t("earnings.withdrawAmount", "Amount (₹)")}
+            </Text>
+            <TextInput
+              value={amount}
+              onChangeText={handleAmountChange}
+              keyboardType="decimal-pad"
+              editable={canEdit}
+              style={styles.input}
+              placeholder={`Min ₹${minAmount}`}
+              placeholderTextColor="#9CA3AF"
+            />
 
-          <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
-            <Text style={styles.cancelText}>{t("common.cancel", "Cancel")}</Text>
-          </TouchableOpacity>
+            <Text style={[styles.hint, flexShrinkText]} numberOfLines={2}>
+              {t(
+                "earnings.withdrawLimits",
+                "Min ₹{{min}} · Max ₹{{max}} per request",
+                { min: minAmount, max: maxLimit.toLocaleString("en-IN") },
+              )}
+            </Text>
+          </ResponsiveSheetBody>
         </Pressable>
       </Pressable>
     </Modal>
@@ -205,9 +229,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
+    paddingTop: 8,
+    overflow: "hidden",
+    flexShrink: 1,
+    minHeight: 0,
+  },
+  bodyContent: {
+    paddingTop: 12,
     paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 28,
+  },
+  footerSlot: {
+    paddingHorizontal: 20,
   },
   title: {
     fontSize: 18,
@@ -259,7 +291,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   submitProgress: {
-    marginTop: 20,
+    marginTop: 4,
   },
   cancelBtn: {
     marginTop: 12,

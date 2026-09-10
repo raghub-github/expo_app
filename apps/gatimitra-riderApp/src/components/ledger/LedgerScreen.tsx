@@ -30,6 +30,8 @@ import {
   resolveLedgerGraphRange,
 } from "@/src/components/ledger/ledgerGraphRange";
 import { LEDGER_PAGE_BG, LEDGER_TEAL } from "@/src/components/ledger/ledgerUiTokens";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 const PERIOD_CYCLE: RiderLedgerPeriod[] = ["this_month", "last_month", "all"];
 
@@ -42,6 +44,8 @@ const DEFAULT_SUMMARY = {
 
 export function LedgerScreen() {
   const { t } = useTranslation();
+  const { rs, isCompactWidth } = useResponsiveLayout();
+  const padX = rs(20);
   const [selectedSegment, setSelectedSegment] = useState<RiderLedgerSegment>("all");
   const [period, setPeriod] = useState<RiderLedgerPeriod>("this_month");
   const [viewMode, setViewMode] = useState<"list" | "graph">("list");
@@ -126,13 +130,22 @@ export function LedgerScreen() {
   );
 
   const toggleWithPeriodControl = (
-    <View style={styles.firstHeaderControls}>
-      <View style={styles.viewToggle}>
+    <View
+      style={[
+        rowLayout.row,
+        styles.firstHeaderControls,
+        isCompactWidth && styles.firstHeaderControlsCompact,
+      ]}
+    >
+      <View style={[rowLayout.row, styles.viewToggle, rowLayout.noShrink]}>
         <Pressable
           style={[styles.toggleBtn, viewMode === "list" && styles.toggleBtnActive]}
           onPress={() => setViewMode("list")}
         >
-          <Text style={[styles.toggleText, viewMode === "list" && styles.toggleTextActive]}>
+          <Text
+            style={[styles.toggleText, viewMode === "list" && styles.toggleTextActive]}
+            numberOfLines={1}
+          >
             {t("ledger.viewList", "List")}
           </Text>
         </Pressable>
@@ -140,12 +153,17 @@ export function LedgerScreen() {
           style={[styles.toggleBtn, viewMode === "graph" && styles.toggleBtnActive]}
           onPress={() => setViewMode("graph")}
         >
-          <Text style={[styles.toggleText, viewMode === "graph" && styles.toggleTextActive]}>
+          <Text
+            style={[styles.toggleText, viewMode === "graph" && styles.toggleTextActive]}
+            numberOfLines={1}
+          >
             {t("ledger.viewGraph", "Graph")}
           </Text>
         </Pressable>
       </View>
-      <LedgerPeriodDropdown value={period} onChange={setPeriod} />
+      <View style={rowLayout.noShrink}>
+        <LedgerPeriodDropdown value={period} onChange={setPeriod} />
+      </View>
     </View>
   );
 
@@ -153,7 +171,10 @@ export function LedgerScreen() {
     <SafeAreaView style={styles.root} edges={[]}>
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingHorizontal: padX, paddingTop: rs(4), paddingBottom: rs(16) },
+        ]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -194,8 +215,10 @@ export function LedgerScreen() {
           </View>
         ) : showEmpty ? (
           <>
-            <View style={styles.periodHeaderRow}>
-              <Text style={styles.headerLabel}>{t("ledger.today", "Today")}</Text>
+            <View style={[rowLayout.row, styles.periodHeaderRow]}>
+              <Text style={[styles.headerLabel, flexShrinkText]} numberOfLines={1}>
+                {t("ledger.today", "Today")}
+              </Text>
               {toggleWithPeriodControl}
             </View>
             <LedgerEmptyState
@@ -228,12 +251,22 @@ export function LedgerScreen() {
               </>
             ) : (
               <>
-                <View style={styles.periodHeaderRow}>
+                <View style={[rowLayout.row, styles.periodHeaderRow]}>
                   <Pressable
                     onPress={() => setRangeSheetVisible(true)}
-                    style={({ pressed }) => [styles.rangeEditableBtn, pressed && styles.rangeEditablePressed]}
+                    style={({ pressed }) => [
+                      styles.rangeEditableBtn,
+                      rowLayout.grow,
+                      pressed && styles.rangeEditablePressed,
+                    ]}
                   >
-                    <Text style={styles.headerLabelEditable}>{graphHeaderRangeLabel}</Text>
+                    <Text
+                      style={[styles.headerLabelEditable, flexShrinkText]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {graphHeaderRangeLabel}
+                    </Text>
                   </Pressable>
                   {toggleWithPeriodControl}
                 </View>
@@ -269,13 +302,12 @@ const styles = StyleSheet.create({
     backgroundColor: LEDGER_PAGE_BG,
   },
   scrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 4,
-    paddingBottom: 16,
     flexGrow: 1,
   },
   filtersBlock: {
     marginBottom: 14,
+    maxWidth: "100%",
+    overflow: "hidden",
   },
   centerBlock: {
     alignItems: "center",
@@ -295,20 +327,22 @@ const styles = StyleSheet.create({
   },
   list: {
     marginTop: 2,
+    maxWidth: "100%",
   },
   periodHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 8,
     paddingHorizontal: 2,
     zIndex: 30,
+    gap: 8,
+    flexWrap: "wrap",
   },
   headerLabel: {
     fontSize: 14,
     fontWeight: "800",
     color: "#111827",
     flex: 1,
+    minWidth: 0,
     marginRight: 10,
   },
   headerLabelEditable: {
@@ -318,23 +352,26 @@ const styles = StyleSheet.create({
     textDecorationLine: "underline",
   },
   rangeEditableBtn: {
-    flex: 1,
     marginRight: 10,
+    minWidth: 0,
   },
   rangeEditablePressed: {
     opacity: 0.75,
   },
   viewToggle: {
-    flexDirection: "row",
-    alignItems: "center",
     backgroundColor: "#E5E7EB",
     borderRadius: 999,
     padding: 2,
     marginRight: 10,
   },
   firstHeaderControls: {
-    flexDirection: "row",
-    alignItems: "center",
+    flexShrink: 1,
+    minWidth: 0,
+    justifyContent: "flex-end",
+  },
+  firstHeaderControlsCompact: {
+    flexWrap: "wrap",
+    gap: 6,
   },
   toggleBtn: {
     paddingVertical: 5,

@@ -11,11 +11,16 @@ import {
 const HEADER_H = 56;
 const PROMO_DOTS_H = 14;
 const VERTICAL_GAPS = 14;
-const GRID_ROW_GAP = 8;
+/** Keep in sync with HomeServicesRow GAP. */
+const GRID_ROW_GAP = 12;
 const GRID_TOP_MARGIN = 10;
 const BRAND_TOP_GAP = 16;
 
-/** Sizes promo + service grid + brand banner to fill one screen without scroll. */
+/**
+ * Promo + service + brand sizes for Home.
+ * On short phones we keep readable mins so content can exceed the viewport —
+ * the Home ScrollView then scrolls instead of crushing cards / clipping the brand.
+ */
 export function useHomeScreenLayout(_showWeather: boolean) {
   const { height: screenH } = useWindowDimensions();
   const insets = useAppSafeAreaInsets();
@@ -40,7 +45,8 @@ export function useHomeScreenLayout(_showWeather: boolean) {
     const bottomNavH = resolveCustomerBottomNavHeight(bottomInset);
     const availableH = screenH - topInset - bottomNavH;
 
-    const brandH = Math.min(116, Math.max(102, Math.round(screenH * 0.122)));
+    // Comfortable floors — do not shrink below these on short screens (allow scroll).
+    const brandH = Math.min(116, Math.max(104, Math.round(screenH * 0.122)));
     const promoCardH = Math.min(140, Math.max(128, Math.round(screenH * 0.155)));
     const promoBlock = promoCardH + PROMO_DOTS_H + 8;
 
@@ -55,7 +61,10 @@ export function useHomeScreenLayout(_showWeather: boolean) {
       GRID_ROW_GAP * 2;
 
     const gridH = availableH - usedWithoutGrid;
-    const serviceCardH = Math.min(120, Math.max(100, Math.floor(gridH / 3) - 4));
+    // Prefer ~112–118px cards. Floor at 110 so 3 rows stay tappable on small phones
+    // even if that means the page scrolls.
+    const fitted = Math.floor(gridH / 3) - 4;
+    const serviceCardH = Math.min(118, Math.max(110, fitted > 0 ? fitted : 110));
 
     const sizes = {
       screenH,

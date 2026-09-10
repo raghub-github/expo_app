@@ -38,6 +38,8 @@ type FcmSendInput = {
   tag?: string | null;
   /** When false, omit channel/default sound (status notifications). */
   playSound?: boolean;
+  /** Android sticky notification (ongoing tray). */
+  sticky?: boolean;
   /** Customer / merchant / rider — stamps Expo experienceId so killed-app FCM still renders. */
   appRole?: string | null;
 };
@@ -143,6 +145,7 @@ export async function sendFcmV1(input: FcmSendInput): Promise<ProviderSendResult
                 : undefined,
             channelId: input.channelId?.trim() || "default",
             tag: input.tag?.trim() || undefined,
+            ...(input.sticky === true ? { sticky: true } : {}),
             // Channel sound is authoritative on Android O+; still set for pre-O / FCM fallback.
             ...(soundName
               ? { sound: soundName, defaultSound: false }

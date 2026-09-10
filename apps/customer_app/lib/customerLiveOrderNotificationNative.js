@@ -151,6 +151,27 @@ async function postOrUpdateLiveNotification(args) {
       },
       trigger: null,
     });
+    // Drop FCM shade twins for this order — sticky is the single open-app row.
+    try {
+      const presented = await Notifications.getPresentedNotificationsAsync();
+      const orderKey = String(args.orderId).trim().toUpperCase();
+      for (const item of presented) {
+        const identifier = item?.request?.identifier ?? "";
+        if (identifier === id || String(identifier).startsWith("customer-live-order-")) continue;
+        const keys = orderIdsFromPresentedItem(item);
+        if (!keys.some((k) => k === orderKey)) continue;
+        const data = item?.request?.content?.data ?? {};
+        if (
+          isGmLiveProgressPush(data) ||
+          isOrderLifecyclePush(data) ||
+          data.type === "live_order_progress"
+        ) {
+          await Notifications.dismissNotificationAsync(identifier).catch(() => undefined);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
   } finally {
     postInFlight = false;
     const next = queuedPost;
@@ -273,27 +294,48 @@ async function dismissStaleLiveOrderTrayNotifications(activeOrderIds, opts) {
 }
 
 function liveProgressHandlerResult(data) {
-  // Foreground / resume must not paint OS alerts for order-status pushes.
-  // Killed/background delivery still uses the FCM notification block (this
-  // handler is not running then). On resume Expo may re-invoke the handler
-  // for tray items — suppressing prevents Confirmed+Assigned replay.
+  // Customer has NO Incoming Order / repeating offer chime (merchant + rider only).
+  // Order/ride/parcel lifecycle uses cx_notification (JS while open; OS channel bg/kill).
+  //
+  //   OPEN       — sticky only (no FCM twin in shade); CX played in-app
+  //   BACKGROUND — shade list + CX channel sound; sticky if process alive
+  //   KILLED     — handler does not run; FCM notification + CX channel sound
+  let appActive = false;
+  try {
+    appActive = require("react-native").AppState.currentState === "active";
+  } catch {
+    appActive = false;
+  }
   if (isGmLiveProgressPush(data) || isOrderLifecyclePush(data)) {
+    if (appActive) {
+      return {
+        suppress: true,
+        shouldShowAlert: false,
+        shouldPlaySound: false,
+        shouldSetBadge: true,
+        shouldShowBanner: false,
+        shouldShowList: false,
+        updateSticky: true,
+      };
+    }
     return {
-      suppress: true,
-      shouldShowAlert: false,
-      shouldPlaySound: false,
-      shouldSetBadge: false,
-      shouldShowBanner: false,
-      shouldShowList: false,
+      suppress: false,
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+      updateSticky: true,
     };
   }
   return {
     suppress: false,
     shouldShowAlert: true,
-    shouldPlaySound: true,
+    shouldPlaySound: !appActive,
     shouldSetBadge: true,
     shouldShowBanner: true,
     shouldShowList: true,
+    updateSticky: false,
   };
 }
 

@@ -35,6 +35,7 @@ import {
 } from "@/src/theme/slideAction";
 import { SLIDE_COMPLETE_RATIO } from "@/src/lib/slideCompleteThreshold";
 import { beginSlideAction, markSlideAction } from "@/src/lib/slideActionLatency";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
 const TRACK_H = SLIDE_TRACK_H;
 const THUMB_W = SLIDE_THUMB_W;
@@ -89,6 +90,11 @@ export const RiderActionSlider = memo(function RiderActionSlider({
   sideInset = SLIDE_SIDE_INSET,
   hapticOnComplete = true,
 }: RiderActionSliderProps) {
+  const { rf, isCompactWidth, layoutFontScale } = useResponsiveLayout();
+  const labelFontSize = rf(isCompactWidth || layoutFontScale > 1.15 ? 15 : 17, {
+    min: 13,
+    max: 18,
+  });
   const parentBusy = loading || locked;
   const ignoreGestures = disabled || parentBusy || geoLocked || completed;
   const showHintSlot = geoLocked && Boolean(geoHint);
@@ -300,12 +306,15 @@ export const RiderActionSlider = memo(function RiderActionSlider({
         <Text
           style={[
             styles.label,
-            { color: labelColor },
+            { color: labelColor, fontSize: labelFontSize },
             flushBottom && safeAreaBottom > 0 ? { marginBottom: safeAreaBottom } : null,
             geoLocked ? styles.labelLocked : null,
           ]}
           pointerEvents="none"
           numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.72}
+          allowFontScaling={false}
         >
           {parentBusy && busyLabel ? busyLabel : label}
         </Text>
@@ -409,11 +418,13 @@ const styles = StyleSheet.create({
   label: {
     width: "100%",
     textAlign: "center",
-    fontSize: 18,
     fontWeight: "900",
-    letterSpacing: 0.3,
-    paddingHorizontal: THUMB_W + 18,
+    letterSpacing: 0.2,
+    // Leave room for the thumb on the left; keep right padding light so long labels fit when zoomed.
+    paddingLeft: THUMB_W + 14,
+    paddingRight: 14,
     zIndex: 1,
+    includeFontPadding: false,
   },
   labelLocked: {
     color: colors.gray[700],

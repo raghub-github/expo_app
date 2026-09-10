@@ -206,12 +206,12 @@ export function OffDutyBanner({ visible, onTurnOn, loading, dutyLocked = false }
         <Ionicons name="warning" size={16} color="#ffffff" />
       </View>
       <View style={styles.bannerTextCol}>
-        <Text style={styles.offDutyTitle}>
+        <Text style={styles.offDutyTitle} numberOfLines={2} ellipsizeMode="tail">
           {dutyLocked
             ? t("home.subscriptionDutyStopTitle", "Duty stopped — subscription penalty")
             : t("home.notReceivingOrders", "Not receiving new orders!")}
         </Text>
-        <Text style={styles.offDutySub}>
+        <Text style={styles.offDutySub} numberOfLines={2} ellipsizeMode="tail">
           {dutyLocked
             ? t(
                 "home.subscriptionDutyStopSub",
@@ -228,7 +228,7 @@ export function OffDutyBanner({ visible, onTurnOn, loading, dutyLocked = false }
         delayPressIn={0}
         accessibilityRole="button"
       >
-        <Text style={[styles.turnOnBtnText, dutyLocked && styles.turnOnBtnTextLocked]}>
+        <Text style={[styles.turnOnBtnText, dutyLocked && styles.turnOnBtnTextLocked]} numberOfLines={1}>
           {dutyLocked
             ? t("home.whyDutyBlocked", "Why?")
             : t("home.turnOn", "Turn On")}

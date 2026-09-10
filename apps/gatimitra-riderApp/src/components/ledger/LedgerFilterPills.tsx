@@ -26,7 +26,9 @@ export function LedgerFilterPills({ segments, selected, onSelect }: Props) {
             onPress={() => onSelect(seg.id)}
             style={[styles.chip, active && styles.chipActive]}
           >
-            <Text style={[styles.chipText, active && styles.chipTextActive]}>{seg.label}</Text>
+            <Text style={[styles.chipText, active && styles.chipTextActive]} numberOfLines={1}>
+              {seg.label}
+            </Text>
           </Pressable>
         );
       })}

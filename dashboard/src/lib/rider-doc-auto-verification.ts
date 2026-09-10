@@ -14,7 +14,8 @@ function asRecord(v: unknown): Record<string, unknown> {
 const DETAIL_LABELS: Record<string, string> = {
   pan: "PAN",
   pan_status: "PAN status",
-  type: "Type",
+  pan_valid: "PAN valid",
+  pan_matched_aadhaar: "PAN matched with Aadhaar",
   category: "Category",
   name_provided: "Name provided (rider)",
   registered_name: "Registered name",
@@ -84,13 +85,10 @@ const KIND_ORDER: Record<string, string[]> = {
   pan: [
     "pan",
     "registered_name",
+    "pan_matched_aadhaar",
+    "pan_valid",
     "name_provided",
     "father_name",
-    "pan_status",
-    "type",
-    "name_match_result",
-    "name_match_score",
-    "panNumber",
   ],
   aadhaar: [
     "name",
@@ -301,10 +299,20 @@ function pushRows(
   const seen = new Set<string>();
 
   const push = (key: string) => {
+    // Hide provider noise (e.g. type: "validation_error") from admin UI.
+    if (key === "type") return;
     const label = DETAIL_LABELS[key];
     if (!label || seen.has(label)) return;
     const display = stringifyValue(key, details[key]);
     if (!display) return;
+    const normalized = display.trim().toLowerCase();
+    if (
+      normalized === "validation_error" ||
+      normalized === "error" ||
+      normalized.endsWith("_error")
+    ) {
+      return;
+    }
     rows.push({ label, value: display });
     seen.add(label);
   };
@@ -331,6 +339,100 @@ export type RiderDocAutoVerificationSource = {
   metadata?: unknown;
 };
 
+function formatYesNo(value: unknown): "Yes" | "No" | null {
+  if (value === true || value === "Yes" || value === "yes" || value === "YES") return "Yes";
+  if (value === false || value === "No" || value === "no" || value === "NO") return "No";
+  return null;
+}
+
+function resolvePanValid(verifiedData: Record<string, unknown>, docVerified?: boolean | null): "Yes" | "No" {
+  const explicit = formatYesNo(verifiedData.pan_valid);
+  if (explicit) return explicit;
+  if (verifiedData.valid === true) return "Yes";
+  if (verifiedData.valid === false) return "No";
+  const status = String(verifiedData.pan_status ?? verifiedData.status ?? "")
+    .trim()
+    .toUpperCase();
+  if (status === "VALID" || status === "E" || status === "ACTIVE") return "Yes";
+  if (
+    status === "INVALID" ||
+    status === "NOT_FOUND" ||
+    status === "N" ||
+    status === "REJECTED"
+  ) {
+    return "No";
+  }
+  // Electronically verified PAN without an explicit status still counts as valid.
+  if (docVerified) return "Yes";
+  return "No";
+}
+
+function resolvePanMatchedWithAadhaar(
+  verifiedData: Record<string, unknown>,
+  meta: Record<string, unknown>,
+  docVerified?: boolean | null,
+): "Yes" | "No" {
+  if (meta.crossCheckFailed === true) return "No";
+  if (meta.crossCheckFailed === false) return "Yes";
+
+  const match = String(verifiedData.name_match_result ?? "")
+    .trim()
+    .toUpperCase();
+  if (
+    match === "DIRECT" ||
+    match === "GOOD" ||
+    match === "MATCH" ||
+    match === "YES" ||
+    match === "Y" ||
+    match === "PASS" ||
+    match === "PASSED"
+  ) {
+    return "Yes";
+  }
+  if (
+    match === "NO_MATCH" ||
+    match === "BAD" ||
+    match === "NO" ||
+    match === "N" ||
+    match === "FAIL" ||
+    match === "FAILED" ||
+    match === "MISMATCH"
+  ) {
+    return "No";
+  }
+
+  const scoreRaw = verifiedData.name_match_score;
+  const scoreNum =
+    typeof scoreRaw === "number"
+      ? scoreRaw
+      : typeof scoreRaw === "string" && scoreRaw.trim() !== ""
+        ? Number(scoreRaw)
+        : NaN;
+  if (Number.isFinite(scoreNum)) {
+    const normalized = scoreNum > 1 ? scoreNum / 100 : scoreNum;
+    return normalized >= 0.7 ? "Yes" : "No";
+  }
+
+  // Fallback: compare Cashfree registered name vs name sent (usually Aadhaar name).
+  const panName = String(
+    verifiedData.registered_name ?? verifiedData.name ?? "",
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  const aadhaarName = String(verifiedData.name_provided ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  if (panName && aadhaarName) {
+    return panName === aadhaarName ? "Yes" : "No";
+  }
+
+  // Verified PAN with no mismatch metadata → treat as matched.
+  if (docVerified) return "Yes";
+  return "No";
+}
+
 /**
  * Build admin-facing auto-verification details for a rider document card.
  */
@@ -346,6 +448,13 @@ export function getRiderDocAutoVerificationDisplay(
     ...asRecord(summary.verifiedData ?? summary.verified_data),
   };
   const meta = asRecord(doc.metadata);
+  // Electronic Continue may store Cashfree payload in metadata before summary is filled.
+  if (Object.keys(verifiedData).length === 0) {
+    Object.assign(
+      verifiedData,
+      asRecord(meta.verifiedDetails ?? meta.cashfreeVerifiedData),
+    );
+  }
 
   // Rider-entered / onboarding capture fields
   for (const key of [
@@ -385,6 +494,25 @@ export function getRiderDocAutoVerificationDisplay(
     if (dob && !String(verifiedData.dob ?? verifiedData.date_of_birth ?? "").trim()) {
       verifiedData.dob = dob;
     }
+  }
+
+  if (kind === "pan") {
+    const pan = String(verifiedData.pan ?? "").trim().toUpperCase();
+    const entered = String(verifiedData.panNumber ?? "").trim().toUpperCase();
+    // Never show duplicate PAN rows (provider PAN vs entered PAN).
+    if (!entered || (pan && pan === entered)) {
+      delete verifiedData.panNumber;
+    }
+    verifiedData.pan_valid = resolvePanValid(verifiedData, doc.verified);
+    verifiedData.pan_matched_aadhaar = resolvePanMatchedWithAadhaar(
+      verifiedData,
+      meta,
+      doc.verified,
+    );
+    // Prefer friendly Yes/No cards over raw provider noise.
+    delete verifiedData.pan_status;
+    delete verifiedData.name_match_result;
+    delete verifiedData.name_match_score;
   }
 
   const provider =

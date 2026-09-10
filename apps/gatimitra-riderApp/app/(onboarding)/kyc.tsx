@@ -1,28 +1,32 @@
 import React from "react";
-import { View, Text, ScrollView } from "react-native";
+import { View, Text, ScrollView, StyleSheet } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
 import { Button } from "@/src/components/ui/Button";
+import { colors } from "@/src/theme";
+import { RIDER_AUTH_BG } from "@/src/theme/riderAuthTheme";
 
 export default function KycScreen() {
   const { t } = useTranslation();
 
   return (
-    <SafeAreaView className="flex-1 bg-white">
-      <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
-        <View className="flex-1 px-6 pt-8 pb-8">
-          <View className="mb-8">
-            <Text className="text-3xl font-bold text-gray-900 mb-2">{t("onboarding.kyc.title")}</Text>
-            <Text className="text-base text-gray-600">{t("onboarding.kyc.subtitle")}</Text>
+    <SafeAreaView style={styles.root}>
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        showsVerticalScrollIndicator={false}
+        style={styles.flex}
+      >
+        <View style={styles.body}>
+          <View style={styles.headerBlock}>
+            <Text style={styles.title}>{t("onboarding.kyc.title")}</Text>
+            <Text style={styles.subtitle}>{t("onboarding.kyc.subtitle")}</Text>
           </View>
 
-          <View className="flex-1">
-            <View className="bg-warning-50 border border-warning-200 rounded-xl p-4 mb-6">
-              <Text className="text-sm font-medium text-warning-800 mb-1">
-                {t("onboarding.kyc.documentsRequired")}
-              </Text>
-              <Text className="text-sm text-warning-700">
+          <View style={styles.flex}>
+            <View style={styles.warnBox}>
+              <Text style={styles.warnTitle}>{t("onboarding.kyc.documentsRequired")}</Text>
+              <Text style={styles.warnBody}>
                 • {t("onboarding.kyc.aadhaar")} - {t("onboarding.kyc.optional")} but recommended{"\n"}
                 • {t("onboarding.kyc.pan")} - {t("onboarding.kyc.required")}{"\n"}
                 • {t("onboarding.kyc.drivingLicense")} - {t("onboarding.kyc.required")}{"\n"}
@@ -31,7 +35,7 @@ export default function KycScreen() {
               </Text>
             </View>
 
-            <View className="space-y-4 mb-6">
+            <View style={styles.list}>
               <KycItem title={t("onboarding.kyc.aadhaar")} status="optional" />
               <KycItem title={t("onboarding.kyc.pan")} status="required" />
               <KycItem title={t("onboarding.kyc.drivingLicense")} status="required" />
@@ -39,7 +43,7 @@ export default function KycScreen() {
               <KycItem title={t("onboarding.kyc.bankAccount")} status="required" />
             </View>
 
-            <Text className="text-xs text-gray-500 mb-6">{t("onboarding.kyc.note")}</Text>
+            <Text style={styles.note}>{t("onboarding.kyc.note")}</Text>
           </View>
 
           <View>
@@ -52,7 +56,7 @@ export default function KycScreen() {
                 // TODO: Open KYC upload flow
               }}
               size="lg"
-              className="mt-3"
+              style={styles.uploadBtn}
             >
               {t("onboarding.kyc.uploadNow")}
             </Button>
@@ -66,14 +70,70 @@ export default function KycScreen() {
 function KycItem({ title, status }: { title: string; status: "required" | "optional" }) {
   const { t } = useTranslation();
   return (
-    <View className="flex-row items-center justify-between p-4 bg-gray-50 rounded-xl">
-      <View className="flex-1">
-        <Text className="text-base font-medium text-gray-900">{title}</Text>
-        <Text className="text-xs text-gray-500 mt-1">
+    <View style={styles.itemRow}>
+      <View style={styles.itemCopy}>
+        <Text style={styles.itemTitle}>{title}</Text>
+        <Text style={styles.itemStatus}>
           {status === "required" ? t("onboarding.kyc.required") : t("onboarding.kyc.optional")}
         </Text>
       </View>
-      <View className="w-6 h-6 rounded-full border-2 border-gray-300" />
+      <View style={styles.itemDot} />
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1, alignSelf: "stretch", backgroundColor: RIDER_AUTH_BG },
+  flex: { flex: 1, alignSelf: "stretch" },
+  scroll: { flexGrow: 1 },
+  body: {
+    flexGrow: 1,
+    paddingHorizontal: 24,
+    paddingTop: 32,
+    paddingBottom: 32,
+  },
+  headerBlock: { marginBottom: 32 },
+  title: {
+    fontSize: 28,
+    fontWeight: "800",
+    color: colors.gray[900],
+    marginBottom: 8,
+  },
+  subtitle: { fontSize: 16, color: colors.gray[600] },
+  warnBox: {
+    backgroundColor: "#fffbeb",
+    borderWidth: 1,
+    borderColor: "#fde68a",
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 24,
+  },
+  warnTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#92400e",
+    marginBottom: 4,
+  },
+  warnBody: { fontSize: 14, color: "#b45309", lineHeight: 20 },
+  list: { gap: 12, marginBottom: 24 },
+  itemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 16,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+  },
+  itemCopy: { flex: 1, minWidth: 0, marginRight: 12 },
+  itemTitle: { fontSize: 16, fontWeight: "500", color: colors.gray[900] },
+  itemStatus: { fontSize: 12, color: colors.gray[500], marginTop: 4 },
+  itemDot: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: colors.gray[300],
+  },
+  note: { fontSize: 12, color: colors.gray[500], marginBottom: 24 },
+  uploadBtn: { marginTop: 12 },
+});

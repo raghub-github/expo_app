@@ -1,7 +1,8 @@
-import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { ScrollView, StyleSheet, View } from "react-native";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AppText } from "@/components/AppText";
+import { InstantPressable } from "@/components/InstantPressable";
 
 export type FoodHomeCategoryItem = {
   id: string;
@@ -24,10 +25,10 @@ export function FoodHomeCategoryGrid({ items, columns = 4, maxItems = 8, onSelec
   return (
     <View style={styles.grid}>
       {visible.map((cat) => (
-        <TouchableOpacity
+        <InstantPressable
           key={cat.id}
           style={[styles.cell, { width: itemWidthPercent }]}
-          activeOpacity={0.9}
+          pressedScale={0.94}
           onPress={() => onSelect(cat.id, cat.slug)}
         >
           <View style={styles.circle}>
@@ -40,7 +41,7 @@ export function FoodHomeCategoryGrid({ items, columns = 4, maxItems = 8, onSelec
           <AppText style={styles.label} numberOfLines={2}>
             {cat.name}
           </AppText>
-        </TouchableOpacity>
+        </InstantPressable>
       ))}
     </View>
   );
@@ -62,16 +63,16 @@ export function FoodHomeCategoryChips({ items, onSelect }: ChipsProps) {
       contentContainerStyle={styles.chipsContent}
     >
       {items.map((cat) => (
-        <TouchableOpacity
+        <InstantPressable
           key={cat.id}
           style={styles.chip}
-          activeOpacity={0.85}
+          pressedScale={0.96}
           onPress={() => onSelect(cat.id, cat.slug)}
         >
           <AppText style={styles.chipText} numberOfLines={1}>
             {cat.name}
           </AppText>
-        </TouchableOpacity>
+        </InstantPressable>
       ))}
     </ScrollView>
   );

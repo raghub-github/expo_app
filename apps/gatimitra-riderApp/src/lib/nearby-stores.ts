@@ -15,6 +15,8 @@ export type NearbyStore = {
   lng: number;
   isOpen: boolean;
   distanceKm: number;
+  /** Absolute store banner URL — optional; map pin falls back to icon. */
+  bannerUrl?: string | null;
 };
 
 export type NearbyStoreFeatureCollection = {
@@ -22,10 +24,13 @@ export type NearbyStoreFeatureCollection = {
   features: Array<{
     type: "Feature";
     id: string;
-    properties: { id: string; name: string; isOpen: boolean };
+    properties: { id: string; name: string; isOpen: boolean; hasBanner: boolean };
     geometry: { type: "Point"; coordinates: [number, number] };
   }>;
 };
+
+/** Cap React MarkerViews so banner pins stay instant and light. */
+export const NEARBY_STORE_PIN_LIMIT = 40;
 
 /** Point FeatureCollection for a `cluster: true` Mapbox ShapeSource (coords are [lng,lat]). */
 export function nearbyStoresToGeoJson(stores: NearbyStore[]): NearbyStoreFeatureCollection {
@@ -36,7 +41,12 @@ export function nearbyStoresToGeoJson(stores: NearbyStore[]): NearbyStoreFeature
       .map((s) => ({
         type: "Feature" as const,
         id: s.id,
-        properties: { id: s.id, name: s.name, isOpen: s.isOpen },
+        properties: {
+          id: s.id,
+          name: s.name,
+          isOpen: s.isOpen,
+          hasBanner: Boolean(s.bannerUrl?.trim()),
+        },
         geometry: { type: "Point" as const, coordinates: [s.lng, s.lat] as [number, number] },
       })),
   };

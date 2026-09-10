@@ -25,6 +25,8 @@ import Animated, {
 import { AppText } from "@/components/AppText";
 import { LORA_BOLD, LORA_REGULAR, POPPINS_BOLD } from "@/src/theme/headerFonts";
 import { RiderDeliveryWalletCoinRain, riderWalletPocketStyles } from "@/src/components/orders/RiderDeliveryWalletCoinRain";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 export type SuccessBreakdownRow = {
   key: string;
@@ -167,14 +169,18 @@ function ZigZagSuccessBadge() {
 
 function BreakdownLine({ row }: { row: SuccessBreakdownRow }) {
   return (
-    <View style={styles.breakdownLine}>
-      <View style={styles.breakdownIconWrap}>
+    <View style={[rowLayout.row, styles.breakdownLine]}>
+      <View style={[styles.breakdownIconWrap, rowLayout.noShrink]}>
         <Ionicons name={row.icon} size={16} color={BRAND} />
       </View>
-      <AppText style={styles.breakdownLineLabel} numberOfLines={2}>
+      <AppText style={[styles.breakdownLineLabel, flexShrinkText]} numberOfLines={2}>
         {row.label}
       </AppText>
-      <AppText style={styles.breakdownLineValue} bold numberOfLines={1}>
+      <AppText
+        style={[styles.breakdownLineValue, rowLayout.noShrink]}
+        bold
+        numberOfLines={1}
+      >
         {row.value}
       </AppText>
     </View>
@@ -238,6 +244,7 @@ export function RiderDeliverySuccessLayout({
   walletPocketLabel = "Pocket",
   ctaAccessibilityLabel,
 }: RiderDeliverySuccessLayoutProps) {
+  const { isShortHeight, rs } = useResponsiveLayout();
   const amountAnchorRef = useRef<View>(null);
   const pocketAnchorRef = useRef<View>(null);
   const pocketPulse = useSharedValue(1);
@@ -333,10 +340,19 @@ export function RiderDeliverySuccessLayout({
             <SafeAreaView edges={["top"]} style={styles.headerSafe}>
               <Animated.View style={[styles.headerCenter, heroAnimStyle]}>
                 <ZigZagSuccessBadge />
-                <AppText style={styles.headerTitle} bold>
+                <AppText
+                  style={[styles.headerTitle, flexShrinkText]}
+                  bold
+                  numberOfLines={2}
+                >
                   {title}
                 </AppText>
-                <AppText style={styles.headerSubtitle}>{subtitle}</AppText>
+                <AppText
+                  style={[styles.headerSubtitle, flexShrinkText]}
+                  numberOfLines={isShortHeight ? 2 : 3}
+                >
+                  {subtitle}
+                </AppText>
               </Animated.View>
             </SafeAreaView>
           </LinearGradient>
@@ -357,13 +373,17 @@ export function RiderDeliverySuccessLayout({
                 locations={[0, 0.5, 0.5, 1]}
                 style={styles.earningsInner}
               >
-                <View style={styles.earningsTopMeta}>
-                  <View style={styles.earningsCoinWrap}>
+                <View style={[rowLayout.row, styles.earningsTopMeta]}>
+                  <View style={[styles.earningsCoinWrap, rowLayout.noShrink]}>
                     <MaterialCommunityIcons name="wallet-outline" size={20} color={BRAND} />
                   </View>
-                  <View style={styles.creditedBadge}>
+                  <View style={[rowLayout.row, styles.creditedBadge, rowLayout.noShrink]}>
                     <MaterialCommunityIcons name="shield-check" size={13} color={BRAND} />
-                    <AppText style={styles.creditedBadgeText} bold>
+                    <AppText
+                      style={[styles.creditedBadgeText, flexShrinkText]}
+                      bold
+                      numberOfLines={1}
+                    >
                       {paymentBadgeLabel}
                     </AppText>
                   </View>
@@ -383,9 +403,9 @@ export function RiderDeliverySuccessLayout({
             </Animated.View>
 
             <Animated.View style={[styles.sectionCard, cardAnimStyle]}>
-              <View style={styles.sectionHeaderLeft}>
-                <Ionicons name="receipt-outline" size={18} color={BRAND} />
-                <AppText style={styles.sectionTitle} bold>
+              <View style={[rowLayout.row, styles.sectionHeaderLeft]}>
+                <Ionicons name="receipt-outline" size={18} color={BRAND} style={rowLayout.noShrink} />
+                <AppText style={[styles.sectionTitle, flexShrinkText]} bold numberOfLines={1}>
                   {breakdownTitle}
                 </AppText>
               </View>
@@ -396,30 +416,37 @@ export function RiderDeliverySuccessLayout({
 
               <View style={styles.dashedDivider} />
 
-              <View style={styles.totalRow}>
-                <AppText style={styles.totalLabel} bold>
+              <View style={[rowLayout.row, styles.totalRow]}>
+                <AppText style={[styles.totalLabel, flexShrinkText]} bold numberOfLines={1}>
                   {totalEarningsLabel}
                 </AppText>
-                <AppText style={styles.totalValue} bold>
+                <AppText style={[styles.totalValue, rowLayout.noShrink]} bold numberOfLines={1}>
                   {formattedTotal}
                 </AppText>
               </View>
             </Animated.View>
 
             <Animated.View style={[styles.sectionCard, cardAnimStyle]}>
-              <View style={styles.sectionHeaderLeft}>
-                <MaterialCommunityIcons name="map-marker-path" size={18} color={BRAND} />
-                <AppText style={styles.sectionTitle} bold>
+              <View style={[rowLayout.row, styles.sectionHeaderLeft]}>
+                <MaterialCommunityIcons
+                  name="map-marker-path"
+                  size={18}
+                  color={BRAND}
+                  style={rowLayout.noShrink}
+                />
+                <AppText style={[styles.sectionTitle, flexShrinkText]} bold numberOfLines={1}>
                   {tripDetailsTitle}
                 </AppText>
               </View>
 
-              <View style={styles.tripGrid}>
+              <View style={[rowLayout.row, styles.tripGrid]}>
                 {tripStats.map((stat) => (
-                  <View key={stat.key} style={styles.tripGridCell}>
+                  <View key={stat.key} style={[styles.tripGridCell, rowLayout.grow]}>
                     <Ionicons name={stat.icon} size={18} color={BRAND} />
-                    <AppText style={styles.tripGridLabel}>{stat.label}</AppText>
-                    <AppText style={styles.tripGridValue} bold>
+                    <AppText style={[styles.tripGridLabel, flexShrinkText]} numberOfLines={1}>
+                      {stat.label}
+                    </AppText>
+                    <AppText style={[styles.tripGridValue, flexShrinkText]} bold numberOfLines={1}>
                       {stat.value}
                     </AppText>
                   </View>
@@ -428,20 +455,25 @@ export function RiderDeliverySuccessLayout({
             </Animated.View>
 
             <Animated.View style={[styles.championBanner, cardAnimStyle]}>
-              <View style={styles.championIconWrap}>
+              <View style={[styles.championIconWrap, rowLayout.noShrink]}>
                 <MaterialCommunityIcons name="medal-outline" size={22} color={BRAND} />
               </View>
-              <View style={styles.championTextCol}>
-                <AppText style={styles.championTitle} bold>
+              <View style={[styles.championTextCol, rowLayout.grow]}>
+                <AppText style={[styles.championTitle, flexShrinkText]} bold numberOfLines={2}>
                   {championTitle}
                 </AppText>
-                <AppText style={styles.championSub}>{championSubtitle}</AppText>
+                <AppText
+                  style={[styles.championSub, flexShrinkText]}
+                  numberOfLines={isShortHeight ? 2 : 3}
+                >
+                  {championSubtitle}
+                </AppText>
               </View>
             </Animated.View>
           </View>
         </ScrollView>
 
-        <View style={styles.ctaDock}>
+        <View style={[styles.ctaDock, { paddingHorizontal: rs(16) }]}>
           {pocketVisible ? (
             <Animated.View style={[riderWalletPocketStyles.pocketDock, pocketAnimStyle]}>
               <View
@@ -646,10 +678,10 @@ const styles = StyleSheet.create({
     color: TEXT,
   },
   breakdownLine: {
-    flexDirection: "row",
     alignItems: "center",
     gap: 8,
     paddingVertical: 2,
+    maxWidth: "100%",
   },
   breakdownIconWrap: {
     width: 28,
@@ -679,27 +711,31 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   totalRow: {
-    flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingTop: 2,
+    maxWidth: "100%",
+    gap: 8,
   },
   totalLabel: {
     fontSize: 15,
     fontFamily: LORA_BOLD,
     color: BRAND,
+    flex: 1,
+    minWidth: 0,
   },
   totalValue: {
     fontSize: 16,
     fontFamily: POPPINS_BOLD,
     color: BRAND,
+    flexShrink: 0,
   },
   tripGrid: {
-    flexDirection: "row",
     gap: 8,
+    maxWidth: "100%",
   },
   tripGridCell: {
-    flex: 1,
+    minWidth: 0,
     borderWidth: 1,
     borderColor: BORDER,
     borderRadius: 12,
@@ -714,15 +750,16 @@ const styles = StyleSheet.create({
     fontFamily: LORA_REGULAR,
     color: MUTED,
     textAlign: "center",
+    maxWidth: "100%",
   },
   tripGridValue: {
     fontSize: 14,
     fontFamily: POPPINS_BOLD,
     color: TEXT,
     textAlign: "center",
+    maxWidth: "100%",
   },
   championBanner: {
-    flexDirection: "row",
     alignItems: "center",
     gap: 10,
     backgroundColor: BRAND_LIGHT,
@@ -731,6 +768,8 @@ const styles = StyleSheet.create({
     borderColor: BRAND_BORDER,
     paddingHorizontal: 14,
     paddingVertical: 12,
+    maxWidth: "100%",
+    flexDirection: "row",
   },
   championIconWrap: {
     width: 36,
@@ -761,6 +800,9 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     backgroundColor: PAGE_BG,
     gap: 8,
+    flexShrink: 0,
+    width: "100%",
+    maxWidth: "100%",
   },
   ctaBtn: {
     minHeight: 52,
@@ -785,6 +827,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: POPPINS_BOLD,
     color: "#fff",
+    flexShrink: 1,
+    minWidth: 0,
   },
   pressed: {
     opacity: 0.9,

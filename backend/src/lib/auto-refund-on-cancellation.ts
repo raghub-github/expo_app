@@ -5,6 +5,10 @@
  * merchant never accepted in time (auto-cancel), merchant denied, or an admin
  * cancelled manually — the customer must get their money back automatically.
  *
+ * Exception: admin "Cancel without refund" stamps skipAutoRefund / refund_status
+ * `no_refund` and must never auto-refund. Ops can still refund later via a
+ * manual refund_without_cancellation action.
+ *
  * Existing cancellation code only RECORDS refund intent (order_cancellation
  * refund_status/amount from the rule engine); it never moves money. This helper
  * closes that gap: it creates a `full` order_refunds row for the amount the
@@ -57,7 +61,8 @@ export interface AutoRefundOutcome {
     | "nothing_paid"
     | "order_not_found"
     | "below_gateway_minimum"
-    | "customer_cancellation";
+    | "customer_cancellation"
+    | "cancel_without_refund";
   refundId?: number;
   result?: RefundExecutionResult;
 }
@@ -108,9 +113,100 @@ export function isCustomerCancellationActor(actorRole?: string | null): boolean 
   return role === "customer" || role === "cx";
 }
 
-/** Merchant / system / rider / admin cancels — customer gets money back. */
+/** Merchant / system / rider / admin cancels — customer gets money back by default. */
 export function shouldAutoRefundForCancellationActor(actorRole?: string | null): boolean {
   return !isCustomerCancellationActor(actorRole);
+}
+
+/**
+ * Admin "Cancel without refund" stamps refund_status / metadata so auto-refund
+ * must not run. Manual refund_without_cancellation later is a separate action.
+ */
+export function isIntentionalNoRefundCancel(input: {
+  refundStatus?: string | null;
+  reasonCode?: string | null;
+  metadata?: Record<string, unknown> | null;
+}): boolean {
+  const status = String(input.refundStatus ?? "").trim().toLowerCase();
+  if (status === "no_refund" || status === "none" || status === "skipped") {
+    return true;
+  }
+
+  const code = String(input.reasonCode ?? "").trim().toLowerCase();
+  if (
+    code === "cancelled_without_refund" ||
+    code === "cancel_without_refund"
+  ) {
+    return true;
+  }
+
+  const meta = input.metadata;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
+    return false;
+  }
+
+  if (
+    meta.skipAutoRefund === true ||
+    String(meta.skipAutoRefund ?? "").trim().toLowerCase() === "true"
+  ) {
+    return true;
+  }
+
+  const refundType = String(meta.refundType ?? meta.refundTypeUI ?? "")
+    .trim()
+    .toLowerCase();
+  return refundType === "cancel_without_refund";
+}
+
+async function loadCancellationSkipAutoRefund(
+  sql: Sql,
+  orderCoreId: number
+): Promise<boolean> {
+  try {
+    const rows = await sql<
+      Array<{
+        refund_status: string | null;
+        reason_code: string | null;
+        metadata: Record<string, unknown> | null;
+      }>
+    >`
+      SELECT refund_status, reason_code, metadata
+      FROM order_cancellation_reasons
+      WHERE order_id = ${orderCoreId}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+    const row = rows[0];
+    if (
+      row &&
+      isIntentionalNoRefundCancel({
+        refundStatus: row.refund_status,
+        reasonCode: row.reason_code,
+        metadata:
+          row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+            ? row.metadata
+            : null,
+      })
+    ) {
+      return true;
+    }
+
+    const routed = await sql<Array<{ ok: number }>>`
+      SELECT 1 AS ok
+      FROM order_routed_to_history
+      WHERE order_id = ${orderCoreId}
+        AND (
+          COALESCE(metadata->>'refundType', '') = 'cancel_without_refund'
+          OR COALESCE(metadata->>'skipAutoRefund', '') = 'true'
+        )
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+    return routed.length > 0;
+  } catch {
+    // Table may be missing in older envs — fail open to prior auto-refund behavior.
+    return false;
+  }
 }
 
 /** Map cancel actor → order_refunds.refund_initiated_by enum text. */
@@ -448,6 +544,10 @@ export async function autoRefundOnCancellation(
   const orderCoreId = Number(args.orderCoreId);
   if (!Number.isFinite(orderCoreId) || orderCoreId <= 0) {
     return { triggered: false, skippedReason: "order_not_found" };
+  }
+
+  if (await loadCancellationSkipAutoRefund(sql, orderCoreId)) {
+    return { triggered: false, skippedReason: "cancel_without_refund" };
   }
 
   const paidAmount = await resolvePaidAmount(sql, orderCoreId);

@@ -549,7 +549,10 @@ export async function POST(
         ? body.penaltyRiderId
         : Number(body?.penaltyRiderId);
 
-    // "cancel_without_refund" does not create a refund row; only update orders_core with cancellation (refundAmount not required)
+    // "cancel_without_refund": cancel only — never create a refund row, never run
+    // the cancellation financial engine (it can CREDIT the customer), and stamp
+    // skipAutoRefund so ensure-auto / backend auto-refund cannot "repair" it.
+    // Admin may still issue a later refund via refund_without_cancellation.
     if (refundType === "cancel_without_refund") {
       const systemUser = await getSystemUserByEmail(user.email ?? "");
       const cancelledBy = systemUser?.primaryRole ?? "admin";
@@ -557,23 +560,13 @@ export async function POST(
       const reasonCode = catalogRow.reasonCode.slice(0, 200);
       const reasonText = (refundDescription ?? catalogRow.label).trim().slice(0, 2000) || null;
 
-      const orderCtx = await lookupOrderContext(orderId);
-      const { orderMilestone } = resolvePaymentCancellationMilestone({
-        previousStatus: orderCtx.orderStatus,
-        cancelledByType: "admin",
-      });
-      const engineResult = await executeOrderCancellationFinancials({
-        orderCoreId: orderId,
-        ordersFoodId: orderCtx.ordersFoodId ?? orderId,
-        coreOrderId: orderCtx.coreOrderId,
-        merchantStoreId: orderCtx.merchantStoreId,
-        previousStatus: orderCtx.orderStatus,
-        cancelledByType: cancelledBy,
-        orderGross: orderCtx.grandTotal,
-        serviceType: orderCtx.serviceType,
-        cancellationReasonId: catalogRow.id,
-        actorSystemUserId: cancelledById,
-      });
+      const noRefundMeta = {
+        ...cancellationMetadata,
+        refundType: "cancel_without_refund",
+        refundTypeUI: "cancel_without_refund",
+        skipAutoRefund: true,
+        engine_applied: false,
+      };
 
       const cancellation = await recordOrderCancellation({
         orderId,
@@ -581,14 +574,9 @@ export async function POST(
         cancelledById,
         reasonCode,
         reasonText,
-        refundStatus: engineResult.applied
-          ? refundFieldsFromEngineResult(engineResult.raw).refundStatus
-          : "no_refund",
-        metadata: {
-          ...cancellationMetadata,
-          financial_rule_engine: engineResult.raw ?? null,
-          engine_applied: engineResult.applied,
-        },
+        refundStatus: "no_refund",
+        refundAmount: null,
+        metadata: noRefundMeta,
         catalogReasonId: catalogRow.id,
         cancelledByType: "admin",
         cancelledByLabel: merchantCancel.cancelledByLabel,
@@ -625,22 +613,25 @@ export async function POST(
         actorName: systemUser?.fullName ?? null,
         actorRole: cancelledBy,
         action: "cancel",
-        actionLabel: "Cancelled order",
+        actionLabel: "Cancelled without refund",
         actionRefTable: "order_cancellation_reasons",
         actionRefId: cancellation.cancellationReasonId ?? null,
-        metadata: { refundType: "cancel_without_refund" },
+        metadata: {
+          refundType: "cancel_without_refund",
+          skipAutoRefund: true,
+        },
       });
       return NextResponse.json({
         success: true,
         data: {
           action: "cancel_without_refund",
           refundId: null,
-          engine: engineResult.raw ?? null,
-          engine_applied: engineResult.applied,
+          engine: null,
+          engine_applied: false,
           riderPenalty,
           merchantWalletDebit,
         },
-        message: "Order cancelled via Financial Rule Engine (no refund row).",
+        message: "Order cancelled without refund.",
         routedToEmail: user.email ?? null,
         routedToName: systemUser?.fullName?.trim() || user.email || null,
       });

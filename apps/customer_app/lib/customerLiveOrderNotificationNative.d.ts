@@ -11,6 +11,7 @@ export function liveProgressHandlerResult(data: Record<string, unknown>): {
   shouldSetBadge: boolean;
   shouldShowBanner: boolean;
   shouldShowList: boolean;
+  updateSticky?: boolean;
 };
 export function postOrUpdateLiveNotification(args: {
   orderId: string;

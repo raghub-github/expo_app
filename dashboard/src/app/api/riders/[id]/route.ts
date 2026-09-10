@@ -362,10 +362,15 @@ export async function GET(
     });
   } catch (error) {
     console.error("[GET /api/riders/[id]] Error:", error);
+    const raw = error instanceof Error ? error.message : "Unknown error";
+    const isSchemaDrift =
+      /column .* does not exist/i.test(raw) || /Failed query:/i.test(raw);
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: isSchemaDrift
+          ? "Rider data is temporarily unavailable. A required database update may still be applying — please retry shortly."
+          : "Unable to load this rider right now. Please try again.",
       },
       { status: 500 }
     );

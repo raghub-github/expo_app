@@ -13,6 +13,9 @@ import { useTranslation } from "react-i18next";
 import { colors } from "@/src/theme";
 import { useRiderCancellationPenaltyPreview } from "@/src/hooks/useRiderCancellationReasons";
 import { useRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 type Props = {
   visible: boolean;
@@ -43,6 +46,8 @@ export function RiderCancelPenaltyConfirmSheet({
 }: Props) {
   const { t } = useTranslation();
   const bottomInset = useRiderBottomInset();
+  const { height, isShortHeight, rs } = useResponsiveLayout();
+  const sheetMaxH = Math.round(height * (isShortHeight ? 0.78 : 0.86));
   const isFood = variant === "food";
 
   const { data: preview, isPending, isError: previewError } =
@@ -90,30 +95,71 @@ export function RiderCancelPenaltyConfirmSheet({
           accessibilityRole="button"
           accessibilityLabel={t("common.close", "Close")}
         />
-        <View style={styles.sheet}>
-          <View style={styles.sheetBody}>
-            <View style={styles.handle} />
-            <Text style={styles.title}>{title}</Text>
+        <View style={[styles.sheet, { maxHeight: sheetMaxH }]}>
+          <View style={styles.handle} />
+          <ResponsiveSheetBody
+            maxHeight={Math.max(200, sheetMaxH - bottomInset - rs(24))}
+            contentContainerStyle={styles.scrollContent}
+            footer={
+              <View style={[rowLayout.row, styles.actions]}>
+                <Pressable
+                  onPress={onClose}
+                  disabled={busy}
+                  style={[styles.btn, styles.btnSecondary, busy ? styles.btnDisabled : null]}
+                >
+                  <Text style={styles.btnSecondaryText} numberOfLines={1}>
+                    {t("common.back", "Back")}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={onProceed}
+                  disabled={busy || previewLoading}
+                  style={[
+                    styles.btn,
+                    styles.btnDanger,
+                    busy || previewLoading ? styles.btnDisabled : null,
+                  ]}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.btnDangerText} numberOfLines={1}>
+                      {appliesPenalty || amountUnresolved
+                        ? t("orders.cancel.proceedWithPenalty", "Proceed")
+                        : isFood
+                          ? t("orders.activeFood.confirmCancel", "Cancel delivery")
+                          : t("orders.activeRide.confirmCancel", "Cancel ride")}
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
+            }
+          >
+            <Text style={styles.title} numberOfLines={2}>
+              {title}
+            </Text>
 
             <View style={styles.reasonBox}>
-              <Text style={styles.reasonLabel}>
+              <Text style={styles.reasonLabel} numberOfLines={1}>
                 {t("orders.cancel.selectedReason", "Selected reason")}
               </Text>
-              <Text style={styles.reasonText}>{reasonLabel}</Text>
+              <Text style={[styles.reasonText, flexShrinkText]} numberOfLines={3}>
+                {reasonLabel}
+              </Text>
             </View>
 
             {previewLoading ? (
               <View style={styles.loadingRow}>
                 <ActivityIndicator color={colors.primary[600]} />
-                <Text style={styles.loadingText}>
+                <Text style={styles.loadingText} numberOfLines={1}>
                   {t("orders.cancel.checkingPenalty", "Checking penalty…")}
                 </Text>
               </View>
             ) : appliesPenalty || amountUnresolved ? (
-              <View style={styles.penaltyBox}>
+              <View style={[rowLayout.rowStart, styles.penaltyBox]}>
                 <Ionicons name="wallet-outline" size={22} color={colors.error[700]} />
-                <View style={styles.penaltyInner}>
-                  <Text style={styles.penaltyTitle}>
+                <View style={[rowLayout.grow, styles.penaltyInner]}>
+                  <Text style={[styles.penaltyTitle, flexShrinkText]} numberOfLines={2}>
                     {afterPickup
                       ? t(
                           "orders.cancel.penaltyAfterPickup",
@@ -121,8 +167,10 @@ export function RiderCancelPenaltyConfirmSheet({
                         )
                       : t("orders.cancel.penaltyApplies", "Penalty will be applied")}
                   </Text>
-                  <Text style={styles.penaltyAmount}>{penaltyAmountLabel}</Text>
-                  <Text style={styles.penaltyHint}>
+                  <Text style={[styles.penaltyAmount, flexShrinkText]} numberOfLines={2}>
+                    {penaltyAmountLabel}
+                  </Text>
+                  <Text style={[styles.penaltyHint, flexShrinkText]} numberOfLines={4}>
                     {preview?.ledgerDescription ||
                       preview?.ledgerTitle ||
                       t(
@@ -132,10 +180,12 @@ export function RiderCancelPenaltyConfirmSheet({
                   </Text>
                 </View>
               </View>
-            ) : previewError || preview?.skipped === "order_not_found" || preview?.skipped === "preview_failed" ? (
-              <View style={styles.noPenaltyBox}>
+            ) : previewError ||
+              preview?.skipped === "order_not_found" ||
+              preview?.skipped === "preview_failed" ? (
+              <View style={[rowLayout.row, styles.noPenaltyBox]}>
                 <Ionicons name="information-circle-outline" size={20} color="#B45309" />
-                <Text style={styles.noPenaltyText}>
+                <Text style={[styles.noPenaltyText, flexShrinkText]} numberOfLines={4}>
                   {t(
                     "orders.cancel.penaltyPreviewFailed",
                     "Could not load penalty details. You can still cancel — check your ledger after."
@@ -144,9 +194,9 @@ export function RiderCancelPenaltyConfirmSheet({
               </View>
             ) : preview?.skipped === "panel_disabled" ||
               preview?.skipped === "penalty_engine_not_migrated" ? (
-              <View style={styles.noPenaltyBox}>
+              <View style={[rowLayout.row, styles.noPenaltyBox]}>
                 <Ionicons name="information-circle-outline" size={20} color="#B45309" />
-                <Text style={styles.noPenaltyText}>
+                <Text style={[styles.noPenaltyText, flexShrinkText]} numberOfLines={4}>
                   {t(
                     "orders.cancel.penaltyEngineUnavailable",
                     "Penalty rules are not active yet. Contact support if you expect a charge."
@@ -154,15 +204,15 @@ export function RiderCancelPenaltyConfirmSheet({
                 </Text>
               </View>
             ) : (
-              <View style={styles.noPenaltyBox}>
+              <View style={[rowLayout.row, styles.noPenaltyBox]}>
                 <Ionicons name="checkmark-circle-outline" size={20} color="#059669" />
-                <Text style={styles.noPenaltyText}>
+                <Text style={[styles.noPenaltyText, flexShrinkText]} numberOfLines={2}>
                   {t("orders.cancel.noPenalty", "No penalty for this reason.")}
                 </Text>
               </View>
             )}
 
-            <Text style={styles.note}>
+            <Text style={[styles.note, flexShrinkText]} numberOfLines={isShortHeight ? 3 : 5}>
               {isFood
                 ? t(
                     "orders.activeFood.cancelConfirmMessage",
@@ -173,34 +223,7 @@ export function RiderCancelPenaltyConfirmSheet({
                     "The order will be offered to other riders. This cannot be undone."
                   )}
             </Text>
-
-            <View style={styles.actions}>
-              <Pressable
-                onPress={onClose}
-                disabled={busy}
-                style={[styles.btn, styles.btnSecondary, busy ? styles.btnDisabled : null]}
-              >
-                <Text style={styles.btnSecondaryText}>{t("common.back", "Back")}</Text>
-              </Pressable>
-              <Pressable
-                onPress={onProceed}
-                disabled={busy || previewLoading}
-                style={[styles.btn, styles.btnDanger, busy || previewLoading ? styles.btnDisabled : null]}
-              >
-                {loading ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={styles.btnDangerText}>
-                    {appliesPenalty || amountUnresolved
-                      ? t("orders.cancel.proceedWithPenalty", "Proceed")
-                      : isFood
-                        ? t("orders.activeFood.confirmCancel", "Cancel delivery")
-                        : t("orders.activeRide.confirmCancel", "Cancel ride")}
-                  </Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
+          </ResponsiveSheetBody>
           <View style={[styles.bottomSafeFill, { height: bottomInset }]} />
         </View>
       </View>
@@ -221,15 +244,11 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     overflow: "hidden",
+    flexShrink: 1,
+    minHeight: 0,
     ...Platform.select({
       android: { elevation: 12 },
     }),
-  },
-  sheetBody: {
-    width: "100%",
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    paddingBottom: 8,
   },
   bottomSafeFill: {
     width: "100%",
@@ -242,7 +261,11 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: colors.gray[300],
     marginTop: 8,
-    marginBottom: 12,
+    marginBottom: 4,
+  },
+  scrollContent: {
+    paddingTop: 8,
+    paddingBottom: 4,
   },
   title: {
     fontSize: 18,
@@ -279,8 +302,6 @@ const styles = StyleSheet.create({
     color: colors.gray[600],
   },
   penaltyBox: {
-    flexDirection: "row",
-    alignItems: "flex-start",
     gap: 10,
     backgroundColor: colors.error[50],
     borderWidth: 1,
@@ -289,7 +310,7 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 12,
   },
-  penaltyInner: { flex: 1 },
+  penaltyInner: {},
   penaltyTitle: {
     fontSize: 13,
     fontWeight: "700",
@@ -309,8 +330,6 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
   noPenaltyBox: {
-    flexDirection: "row",
-    alignItems: "center",
     gap: 8,
     backgroundColor: "#ECFDF5",
     borderRadius: 10,
@@ -327,14 +346,14 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.gray[600],
     lineHeight: 18,
-    marginBottom: 16,
+    marginBottom: 8,
   },
   actions: {
-    flexDirection: "row",
     gap: 10,
   },
   btn: {
     flex: 1,
+    minWidth: 0,
     minHeight: 48,
     borderRadius: 12,
     alignItems: "center",

@@ -1,6 +1,9 @@
 /**
- * Spacing system (consistent with Tailwind)
+ * Spacing system (consistent with Tailwind) + semantic aliases.
+ * Prefer `spacing.xs`…`spacing.xl` or `useResponsiveLayout().sp()` for new UI.
  */
+
+import { spacingScale } from "./responsive";
 
 export const spacing = {
   0: 0,
@@ -16,6 +19,15 @@ export const spacing = {
   16: 64,
   20: 80,
   24: 96,
+  /** Semantic tokens (same values as spacingScale). */
+  xs: spacingScale.xs,
+  sm: spacingScale.sm,
+  md: spacingScale.md,
+  lg: spacingScale.lg,
+  xl: spacingScale.xl,
+  "2xl": spacingScale["2xl"],
+  "3xl": spacingScale["3xl"],
+  "4xl": spacingScale["4xl"],
 } as const;
 
 

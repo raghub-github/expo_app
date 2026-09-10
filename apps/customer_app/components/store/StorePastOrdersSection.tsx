@@ -10,6 +10,10 @@ import type { ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { StorePastOrderRow, type PastOrderItem } from "./StorePastOrderRow";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import {
+  MerchantDarkPalette,
+  useMerchantUiDark,
+} from "@/features/merchant-detail/merchantUiTheme";
 
 export type StorePastOrdersSectionProps = {
   items: PastOrderItem[];
@@ -22,7 +26,13 @@ export type StorePastOrdersSectionProps = {
   itemOfferById?: Map<string, ItemOfferDisplay>;
 };
 
-function StackedThumbnails({ items }: { items: PastOrderItem[] }) {
+function StackedThumbnails({
+  items,
+  dark,
+}: {
+  items: PastOrderItem[];
+  dark: boolean;
+}) {
   const thumbs = items.slice(0, 2);
   return (
     <View style={styles.thumbStack}>
@@ -31,7 +41,14 @@ function StackedThumbnails({ items }: { items: PastOrderItem[] }) {
           ? (toAbsoluteImageUrl(po.menuItem.imageUrl) ?? po.menuItem.imageUrl)
           : null;
         return (
-          <View key={po.menuItem.id} style={[styles.thumbWrap, idx > 0 && styles.thumbOverlap]}>
+          <View
+            key={po.menuItem.id}
+            style={[
+              styles.thumbWrap,
+              dark && styles.thumbWrapDark,
+              idx > 0 && styles.thumbOverlap,
+            ]}
+          >
             {uri ? (
               <Image source={{ uri }} style={styles.thumbImage} contentFit="cover" />
             ) : (
@@ -54,6 +71,7 @@ export function StorePastOrdersSection({
   isStoreClosed,
   itemOfferById,
 }: StorePastOrdersSectionProps) {
+  const dark = useMerchantUiDark();
   const [expanded, setExpanded] = useState(true);
   const [showAll, setShowAll] = useState(false);
 
@@ -71,20 +89,24 @@ export function StorePastOrdersSection({
     null;
 
   return (
-    <View style={styles.section}>
+    <View style={[styles.section, dark && styles.sectionDark]}>
       <TouchableOpacity
         style={styles.header}
         onPress={() => setExpanded((v) => !v)}
         activeOpacity={0.75}
       >
         <View style={styles.headerText}>
-          <AppText style={styles.title}>Your Orders and Collections</AppText>
-          <AppText style={styles.sub}>Past customisations are pre-selected</AppText>
+          <AppText style={[styles.title, dark && styles.titleDark]}>
+            Your Orders and Collections
+          </AppText>
+          <AppText style={[styles.sub, dark && styles.subDark]}>
+            Past customisations are pre-selected
+          </AppText>
         </View>
         <Ionicons
           name={expanded ? "chevron-up" : "chevron-down"}
           size={16}
-          color={StoreTheme.textSecondary}
+          color={dark ? MerchantDarkPalette.textMuted : StoreTheme.textSecondary}
         />
       </TouchableOpacity>
 
@@ -106,15 +128,19 @@ export function StorePastOrdersSection({
           ))}
           {!showAll && hiddenCount > 0 ? (
             <TouchableOpacity
-              style={styles.seeMore}
+              style={[styles.seeMore, dark && styles.seeMoreDark]}
               onPress={() => setShowAll(true)}
               activeOpacity={0.75}
             >
-              <StackedThumbnails items={hiddenItems} />
-              <AppText style={styles.seeMoreText}>
+              <StackedThumbnails items={hiddenItems} dark={dark} />
+              <AppText style={[styles.seeMoreText, dark && styles.seeMoreTextDark]}>
                 See {hiddenCount} more item{hiddenCount > 1 ? "s" : ""}
               </AppText>
-              <Ionicons name="chevron-down" size={14} color={StoreTheme.accentMintDark} />
+              <Ionicons
+                name="chevron-down"
+                size={14}
+                color={dark ? MerchantDarkPalette.accent : StoreTheme.accentMintDark}
+              />
             </TouchableOpacity>
           ) : null}
         </View>
@@ -134,6 +160,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#F0F0F0",
   },
+  sectionDark: {
+    backgroundColor: MerchantDarkPalette.bg,
+    borderBottomColor: MerchantDarkPalette.border,
+  },
   header: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -152,11 +182,17 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
     lineHeight: 22,
   },
+  titleDark: {
+    color: MerchantDarkPalette.text,
+  },
   sub: {
     fontSize: 12,
     color: StoreTheme.textSecondary,
     marginTop: 4,
     lineHeight: 16,
+  },
+  subDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   list: {
     width: "100%",
@@ -172,11 +208,17 @@ const styles = StyleSheet.create({
     borderTopColor: StoreTheme.border,
     marginTop: 2,
   },
+  seeMoreDark: {
+    borderTopColor: MerchantDarkPalette.border,
+  },
   seeMoreText: {
     fontFamily: StoreFonts.poppinsSemiBold,
     fontSize: 13,
     color: StoreTheme.accentMintDark,
     letterSpacing: -0.1,
+  },
+  seeMoreTextDark: {
+    color: MerchantDarkPalette.accent,
   },
   thumbStack: {
     flexDirection: "row",
@@ -190,6 +232,10 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "#fff",
     backgroundColor: "#F3F4F6",
+  },
+  thumbWrapDark: {
+    borderColor: MerchantDarkPalette.bg,
+    backgroundColor: MerchantDarkPalette.elevated,
   },
   thumbOverlap: {
     marginLeft: -8,

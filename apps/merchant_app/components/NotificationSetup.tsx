@@ -298,6 +298,12 @@ export default function NotificationSetup() {
           channelId: STORE_STATUS_CHANNEL_ID,
           name: "Store status",
           lightColor: "#3EB489",
+          importance: 4,
+        },
+        {
+          channelId: "merchant_store_status",
+          name: "Store status (legacy)",
+          lightColor: "#3EB489",
           importance: 3,
         },
         { channelId: "default", name: "Store & Orders", lightColor: "#3EB489", importance: 4 },

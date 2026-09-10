@@ -75,17 +75,34 @@ export function resolveBottomSafeInset(insetsBottom: number): number {
   return Math.max(0, insetsBottom);
 }
 
-/** Bottom inset for tab / ride nav — OS WindowInsets value only. */
-export function resolveTabBarBottomInset(insetsBottom: number): number {
-  return resolveBottomSafeInset(insetsBottom);
-}
+/** Outer paddingTop + capsule — keep in sync with CustomerTabBar (8 + 64). */
+export const CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT = 8 + 64;
 
-/** Bar padding + tab minHeight + bar padding — keep in sync with bottom nav chrome. */
-export const CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT = 8 + 48 + 4;
+/** Shared outer capsule radius — identical on Home / Food / Orders / Profile. */
+export const FLOATING_NAV_RADIUS = 20;
+
+/** Active tab indicator radius — one token for all four tabs (Android needs this on the same style as bg). */
+export const ACTIVE_TAB_RADIUS = 16;
+
+/** Small air under the floating capsule above the system gesture / nav buttons. */
+export const CUSTOMER_TAB_BAR_FLOAT_GAP = 8;
+
+/** Bottom inset for tab / ride nav — never collapse under Android system chrome. */
+export function resolveTabBarBottomInset(insetsBottom: number): number {
+  const inset = resolveBottomSafeInset(insetsBottom);
+  if (Platform.OS === "android") {
+    return Math.max(DEFAULT_ANDROID_NAV_BOTTOM_INSET, inset);
+  }
+  return Math.max(inset, 8);
+}
 
 /** Total bottom nav height including system-nav inset (tab bar + ride service nav). */
 export function resolveCustomerBottomNavHeight(rawBottomInset: number): number {
-  return CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT + resolveTabBarBottomInset(rawBottomInset);
+  return (
+    CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT +
+    resolveTabBarBottomInset(rawBottomInset) +
+    CUSTOMER_TAB_BAR_FLOAT_GAP
+  );
 }
 
 /** Screens that position their own bottom chrome — no stack paddingBottom (avoids double bottom gap). */
@@ -126,7 +143,8 @@ export function resolveFloatingCartBottomOffset(
 ): number {
   const navInset = resolveTabBarBottomInset(rawBottom);
   if (options?.aboveTabBar && options.tabBarOffset != null) {
-    return options.tabBarOffset + (Platform.OS === "android" ? 4 : 10);
+    // Sit clearly above the floating tab capsule (not tucked under it).
+    return options.tabBarOffset + (Platform.OS === "android" ? 10 : 12);
   }
   return Platform.OS === "android" ? navInset : navInset + 10;
 }
@@ -194,8 +212,8 @@ export const HEADER_PADDING_TOP = 0;
 /** Gap below root status-bar strip before screen header content (root already reserves insets.top). */
 export const STATUS_BAR_TO_HEADER_GAP = 8;
 
-/** Tabs Home only — gap under the status bar before header content. */
-export const HOME_HEADER_BELOW_STATUS_GAP = 2;
+/** Tabs Home only — breathing room under status icons (must stay ≥0; never overlap). */
+export const HOME_HEADER_BELOW_STATUS_GAP = 0;
 
 /** Reserved weather-chip block on tabs Home — must match HomeWeatherBanner shell. */
 export const HOME_WEATHER_BANNER_H = 56;

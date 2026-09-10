@@ -8,9 +8,10 @@ import {
   incomingOrderBannerLabel,
 } from "@/src/lib/incoming-order-display";
 import { resolveRiderDisplayedEarning } from "@/src/lib/rider-earning-display";
+import { TAB_BAR_CONTENT_HEIGHT_FALLBACK } from "@/src/stores/riderBottomDockStore";
 
-/** Tab bar content height (icon + label row, excluding safe area). */
-export const RIDER_TAB_BAR_CONTENT_HEIGHT = 58;
+/** @deprecated Prefer useRiderBottomDock().tabBarHeight — fallback until first tab bar layout. */
+export const RIDER_TAB_BAR_CONTENT_HEIGHT = TAB_BAR_CONTENT_HEIGHT_FALLBACK;
 
 export function isActiveRiderOrder(order: RiderOrderSummary): boolean {
   return (

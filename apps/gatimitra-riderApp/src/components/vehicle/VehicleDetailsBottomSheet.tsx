@@ -10,6 +10,8 @@ import type { RiderVehicleDto, RiderVehicleFormMeta, RiderVehicleOnboardingPrefi
 import { isElectronicVehicleForm } from "@/src/lib/rider-vehicle-form-meta";
 import { LORA_BOLD, LORA_REGULAR } from "@/src/theme/headerFonts";
 import { colors } from "@/src/theme";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 const TEAL = colors.primary[600];
 
@@ -38,21 +40,22 @@ export function VehicleDetailsBottomSheet({
   const upsert = useUpsertRiderVehicle();
   const [apiError, setApiError] = useState<string | null>(null);
   const isCompact = isElectronicVehicleForm(formMeta, initial);
+  const { isShortHeight } = useResponsiveLayout();
 
   return (
-    <BlockingBottomSheetShell visible={visible}>
+    <BlockingBottomSheetShell visible={visible} maxHeightRatio={isShortHeight ? 0.96 : 0.92}>
       <View style={styles.container}>
-      <View style={styles.header}>
-        <View style={styles.iconWrap}>
+      <View style={[rowLayout.rowStart, styles.header]}>
+        <View style={[styles.iconWrap, rowLayout.noShrink]}>
           <Ionicons name="bicycle" size={26} color={TEAL} />
         </View>
-        <View style={styles.headerText}>
-          <Text style={styles.title}>
+        <View style={[styles.headerText, rowLayout.grow]}>
+          <Text style={[styles.title, flexShrinkText]} numberOfLines={2}>
             {isCompact
               ? t("vehicle.sheet.titleCompact", "Complete remaining details")
               : t("vehicle.sheet.title", "Complete vehicle details")}
           </Text>
-          <Text style={styles.subtitle}>
+          <Text style={[styles.subtitle, flexShrinkText]} numberOfLines={isShortHeight ? 3 : 4}>
             {isCompact
               ? t(
                   "vehicle.sheet.subtitleCompact",
@@ -109,12 +112,17 @@ export function VehicleDetailsBottomSheet({
 }
 
 const styles = StyleSheet.create({
-  container: {},
+  container: {
+    width: "100%",
+    maxWidth: "100%",
+    minHeight: 0,
+    flexShrink: 1,
+  },
   header: {
-    flexDirection: "row",
     alignItems: "flex-start",
     gap: 12,
     marginBottom: 12,
+    maxWidth: "100%",
   },
   iconWrap: {
     width: 48,
@@ -126,6 +134,7 @@ const styles = StyleSheet.create({
   },
   headerText: {
     flex: 1,
+    minWidth: 0,
   },
   title: {
     fontSize: 18,

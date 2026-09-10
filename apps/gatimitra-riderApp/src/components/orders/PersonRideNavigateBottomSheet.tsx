@@ -7,6 +7,7 @@ import {
   Platform,
   ActivityIndicator,
   TouchableOpacity,
+  ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
@@ -29,6 +30,8 @@ import {
 } from "@/src/components/orders/PersonRideFlowSteps";
 import { NavSheetWaveShell, NAV_SHEET_WAVE_LOW_Y } from "@/src/components/orders/NavSheetWaveHeader";
 import { LORA_BOLD, POPPINS_BOLD } from "@/src/theme/headerFonts";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 export const PERSON_RIDE_NAV_SHEET_HEIGHT = 460 + 24;
 export const PERSON_RIDE_NAV_SHEET_COLLAPSED_HEIGHT = 132 + 20;
@@ -137,6 +140,8 @@ export function PersonRideNavigateBottomSheetInner({
   milestoneGeo,
 }: Props) {
   const { t } = useTranslation();
+  const { isShortHeight, height } = useResponsiveLayout();
+  const detailsMaxH = Math.round(height * (isShortHeight ? 0.3 : 0.4));
   const distanceLabel = routeMeta.loading
     ? "…"
     : formatNavSheetDistance(routeMeta.metersAway);
@@ -323,10 +328,16 @@ export function PersonRideNavigateBottomSheetInner({
 
         {sheetExpanded ? (
           <View style={styles.sheetBody}>
-            <View style={styles.detailsBody}>
-              <View style={styles.customerHeaderRow}>
-                <View style={styles.customerInfoCol}>
-                  <Text style={styles.locationName} numberOfLines={2}>
+            <ScrollView
+              style={{ maxHeight: detailsMaxH }}
+              contentContainerStyle={styles.detailsBody}
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+              nestedScrollEnabled
+            >
+              <View style={[rowLayout.rowStart, styles.customerHeaderRow]}>
+                <View style={[styles.customerInfoCol, rowLayout.grow]}>
+                  <Text style={[styles.locationName, flexShrinkText]} numberOfLines={2}>
                     {locationName}
                   </Text>
                 </View>
@@ -334,8 +345,8 @@ export function PersonRideNavigateBottomSheetInner({
 
               {activeAddress ? (
                 <View style={styles.routeCard}>
-                  <View style={styles.routeRow}>
-                    <View style={styles.routeDotCol}>
+                  <View style={[rowLayout.rowStart, styles.routeRow]}>
+                    <View style={[styles.routeDotCol, rowLayout.noShrink]}>
                       <View
                         style={[
                           styles.routeDot,
@@ -343,20 +354,24 @@ export function PersonRideNavigateBottomSheetInner({
                         ]}
                       />
                     </View>
-                    <View style={styles.routeTextWrap}>
-                      <Text style={styles.routeLabel}>
+                    <View style={[styles.routeTextWrap, rowLayout.grow]}>
+                      <Text style={styles.routeLabel} numberOfLines={1}>
                         {activeIsDrop
                           ? t("orders.activeRide.dropLocationLabel", "DROP")
                           : t("orders.activeRide.pickupLocationLabel", "PICKUP")}
                       </Text>
-                      <Text style={styles.routeAddress}>{activeAddress}</Text>
+                      <Text style={[styles.routeAddress, flexShrinkText]} numberOfLines={3}>
+                        {activeAddress}
+                      </Text>
                     </View>
-                    <Text style={styles.distanceLabel}>{distanceLabel}</Text>
+                    <Text style={[styles.distanceLabel, rowLayout.noShrink]} numberOfLines={1}>
+                      {distanceLabel}
+                    </Text>
                   </View>
                 </View>
               ) : null}
 
-              <View style={styles.tripleActionRow}>
+              <View style={[rowLayout.row, styles.tripleActionRow]}>
                 <RideNavActionButton
                   icon="call"
                   label={t("orders.activeFood.call", "Call")}
@@ -379,15 +394,17 @@ export function PersonRideNavigateBottomSheetInner({
               </View>
 
               <PersonRideFlowSteps activeStep={flowStep} orderDelivered={orderDelivered} />
-            </View>
+            </ScrollView>
           </View>
         ) : (
           <View style={styles.sheetBody}>
-            <View style={styles.collapsedHeader}>
-              <Text style={styles.collapsedTitle} numberOfLines={1}>
+            <View style={[rowLayout.row, styles.collapsedHeader]}>
+              <Text style={[styles.collapsedTitle, flexShrinkText]} numberOfLines={1}>
                 {locationName}
               </Text>
-              <Text style={styles.collapsedDistance}>{distanceLabel}</Text>
+              <Text style={[styles.collapsedDistance, rowLayout.noShrink]} numberOfLines={1}>
+                {distanceLabel}
+              </Text>
             </View>
           </View>
         )}
@@ -634,6 +651,7 @@ const styles = StyleSheet.create({
   },
   actionIconBtn: {
     flex: 1,
+    minWidth: 0,
     minHeight: 52,
     borderRadius: 8,
     alignItems: "center",
@@ -669,6 +687,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: LORA_BOLD,
     fontWeight: "600",
+    flexShrink: 1,
+    minWidth: 0,
+    textAlign: "center",
   },
   actionIconBtnTextOutline: {
     color: NAV_SHEET_CALL_BLUE,
@@ -752,6 +773,7 @@ const styles = StyleSheet.create({
   },
   collapsedTitle: {
     flex: 1,
+    minWidth: 0,
     fontSize: 15,
     fontFamily: LORA_BOLD,
     fontWeight: "700",
@@ -871,7 +893,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: colors.success[50],
   },
-  doneBannerText: { flex: 1, fontSize: 14, fontWeight: "700", color: colors.success[800] },
+  doneBannerText: { flex: 1, minWidth: 0, fontSize: 14, fontWeight: "700", color: colors.success[800] },
   goHomeBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -883,10 +905,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#15803d",
     paddingHorizontal: 20,
     paddingVertical: 12,
+    maxWidth: "100%",
   },
   goHomeBtnPressed: { opacity: 0.92 },
   goHomeBtnText: {
     flex: 1,
+    minWidth: 0,
     fontSize: 16,
     fontWeight: "800",
     color: "#ffffff",
@@ -905,11 +929,14 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.secondary[200],
+    maxWidth: "100%",
   },
   waitTimerText: {
     fontSize: 14,
     fontWeight: "700",
     color: colors.secondary[800],
+    flexShrink: 1,
+    minWidth: 0,
   },
   actionsDock: {
     width: "100%",

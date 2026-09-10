@@ -236,6 +236,7 @@ export function VehicleDocumentCaptureStep({
                 boxTitle="Add front"
                 boxSub="Tap to capture or upload"
                 icon={iconName}
+                viewerTitle={`${doc.label} · Front`}
               />
               {photoUri ? (
                 <Pressable onPress={onPhotoPress} style={form.changePhotoLink}>
@@ -255,6 +256,7 @@ export function VehicleDocumentCaptureStep({
                 boxTitle="Add back"
                 boxSub="Tap to capture or upload"
                 icon={iconName}
+                viewerTitle={`${doc.label} · Back`}
               />
               {backPhotoUri ? (
                 <Pressable onPress={onBackPhotoPress} style={form.changePhotoLink}>
@@ -274,6 +276,7 @@ export function VehicleDocumentCaptureStep({
               boxTitle={`Add ${doc.label}`}
               boxSub="Tap here to capture or upload"
               icon={iconName}
+              viewerTitle={doc.label}
             />
             {photoUri ? (
               <Pressable onPress={onPhotoPress} style={form.changePhotoLink}>

@@ -140,7 +140,7 @@ function RootLayoutNav() {
           <Stack
             screenOptions={{
               headerShown: false,
-              contentStyle: { backgroundColor: "#ffffff" },
+              contentStyle: { flex: 1, width: "100%", backgroundColor: "#ffffff" },
               statusBarStyle: "dark",
               statusBarAnimation: "none",
               statusBarTranslucent: false,
@@ -153,6 +153,10 @@ function RootLayoutNav() {
             <Stack.Screen name="(permissions)" />
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="(onboarding)" />
+            <Stack.Screen
+              name="onboarding-help"
+              options={{ contentStyle: { backgroundColor: "#C4E8D1" } }}
+            />
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="view-profile" />
             <Stack.Screen name="view-documents" />

@@ -11,7 +11,6 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useEffectivePickupTimerStart } from "@/src/hooks/useEffectivePickupTimerStart";
 import { useLiveSecondTicker } from "@/src/hooks/useLiveSecondTicker";
 import {
@@ -30,6 +29,10 @@ import {
 } from "@/src/lib/food-pickup-wait";
 import { colors } from "@/src/theme";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 const PICK_CTA_GREEN = colors.success[500];
 
@@ -75,7 +78,12 @@ export function FoodPickOrderSheet({
   onConfirmPickup,
 }: Props) {
   const { t } = useTranslation();
-  const insets = useSafeAreaInsets();
+  const { height, isShortHeight, layoutFontScale, insets, rs, rf, ri } =
+    useResponsiveLayout();
+  /** Display zoom / short viewport — shrink hero + gaps so CTA + order info stay on screen. */
+  const compactMain =
+    isShortHeight || layoutFontScale > 1.12 || height < 720;
+  const denseMain = compactMain && (layoutFontScale > 1.2 || height < 640);
   const timerMode = useMemo(() => {
     const mode = resolvePickupSheetTimerMode(order, merchantReady);
     if (mode === "none" && merchantReady && order.pickupWaitStartedAt) {
@@ -119,7 +127,16 @@ export function FoodPickOrderSheet({
     customerName?.trim() ||
     t("orders.activeFood.customerFallback", "Customer");
 
-  const bottomPad = Math.max(insets.bottom, Platform.OS === "android" ? 16 : 12);
+  // Edge-to-edge Android often reports a tiny inset — use rider fallback so CTA
+  // never sits under the gesture / 3-button nav on any device.
+  const systemBottom = resolveRiderBottomInset(insets.bottom);
+  const bottomPad = systemBottom + rs(compactMain ? 10 : 12);
+  const bodyMaxH = Math.round(
+    height * (denseMain ? 0.78 : compactMain ? 0.74 : isShortHeight ? 0.72 : 0.68)
+  );
+  const heroSize = denseMain ? 64 : compactMain ? 76 : 104;
+  const bagSize = denseMain ? 28 : compactMain ? 32 : 44;
+  const heroBadge = denseMain ? 22 : compactMain ? 24 : 28;
 
   useEffect(() => {
     if (!visible || !merchantReady) {
@@ -185,7 +202,14 @@ export function FoodPickOrderSheet({
           importantForAccessibility="no-hide-descendants"
         />
 
-        <View style={[styles.sheet, { paddingBottom: bottomPad }]}>
+        <View
+          style={[
+            styles.sheet,
+            {
+              maxHeight: Math.round(height * 0.92),
+            },
+          ]}
+        >
           <View
             style={[
               styles.accentBar,
@@ -199,15 +223,83 @@ export function FoodPickOrderSheet({
             <View style={styles.handle} />
           </View>
 
-          <View style={styles.body}>
-            <View style={styles.headerRow}>
-              <View style={styles.headerTextCol}>
-                <Text style={styles.title}>
+          <ResponsiveSheetBody
+            maxHeight={bodyMaxH}
+            contentContainerStyle={[
+              styles.body,
+              compactMain && styles.bodyCompact,
+            ]}
+            footerBottomInset={bottomPad}
+            footerStyle={styles.footerSlot}
+            footer={
+              <Animated.View style={{ transform: [{ scale: merchantReady ? ctaPulse : 1 }] }}>
+                <TouchableOpacity
+                  activeOpacity={merchantReady ? 0.88 : 1}
+                  onPress={onConfirmPickup}
+                  disabled={!merchantReady}
+                  style={[
+                    styles.primaryBtn,
+                    compactMain && styles.primaryBtnCompact,
+                    merchantReady ? styles.primaryBtnEnabled : styles.primaryBtnDisabled,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: !merchantReady }}
+                >
+                  <Ionicons
+                    name={merchantReady ? "bag-check" : "hourglass-outline"}
+                    size={ri(compactMain ? 18 : 20)}
+                    color={merchantReady ? "#ffffff" : "#80868B"}
+                    style={rowLayout.noShrink}
+                  />
+                  <Text
+                    style={[
+                      styles.primaryBtnText,
+                      { fontSize: rf(compactMain ? 15 : 17, { min: 13, max: 17 }) },
+                      flexShrinkText,
+                      !merchantReady && styles.primaryBtnTextDisabled,
+                    ]}
+                    numberOfLines={2}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.8}
+                  >
+                    {merchantReady
+                      ? t("orders.activeFood.okayPicking", "Okay, I'm picking!")
+                      : t("orders.activeFood.waitingForReady", "Waiting for order ready…")}
+                  </Text>
+                </TouchableOpacity>
+              </Animated.View>
+            }
+          >
+            <View
+              style={[
+                rowLayout.rowStart,
+                styles.headerRow,
+                compactMain && styles.headerRowCompact,
+              ]}
+            >
+              <View
+                style={[
+                  styles.headerTextCol,
+                  compactMain && styles.headerTextColCompact,
+                  rowLayout.grow,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.title,
+                    { fontSize: rf(compactMain ? 18 : 22, { min: 16, max: 22 }) },
+                    flexShrinkText,
+                  ]}
+                  numberOfLines={2}
+                >
                   {t("orders.activeFood.pickOrderTitle", "Pick order now!")}
                 </Text>
-                <View style={[styles.statusChip, statusChip.style]}>
+                <View style={[styles.statusChip, statusChip.style, rowLayout.row]}>
                   <Ionicons name={statusChip.icon} size={13} color={statusChip.textStyle.color} />
-                  <Text style={[styles.statusChipText, statusChip.textStyle]}>
+                  <Text
+                    style={[styles.statusChipText, statusChip.textStyle, flexShrinkText]}
+                    numberOfLines={1}
+                  >
                     {statusChip.label}
                   </Text>
                 </View>
@@ -215,7 +307,11 @@ export function FoodPickOrderSheet({
               <Pressable
                 onPress={onDismiss}
                 hitSlop={12}
-                style={({ pressed }) => [styles.closeBtn, pressed && styles.closeBtnPressed]}
+                style={({ pressed }) => [
+                  styles.closeBtn,
+                  rowLayout.noShrink,
+                  pressed && styles.closeBtnPressed,
+                ]}
                 accessibilityRole="button"
                 accessibilityLabel={t("common.close", "Close")}
               >
@@ -223,10 +319,17 @@ export function FoodPickOrderSheet({
               </Pressable>
             </View>
 
-            <View style={styles.heroWrap}>
+            <View
+              style={[
+                styles.heroWrap,
+                compactMain && styles.heroWrapCompact,
+                denseMain && styles.heroWrapDense,
+              ]}
+            >
               <View
                 style={[
                   styles.heroRing,
+                  compactMain && styles.heroRingCompact,
                   tone === "ready" && styles.heroRingReady,
                   tone === "preparing" && styles.heroRingPreparing,
                   tone === "delayed" && styles.heroRingDelayed,
@@ -235,21 +338,31 @@ export function FoodPickOrderSheet({
                 <View
                   style={[
                     styles.heroCircle,
+                    {
+                      width: heroSize,
+                      height: heroSize,
+                      borderRadius: heroSize / 2,
+                    },
                     tone === "ready" && styles.heroCircleReady,
                     tone === "preparing" && styles.heroCirclePreparing,
                     tone === "delayed" && styles.heroCircleDelayed,
                   ]}
                 >
-                  <Text style={styles.bagEmoji}>🛍️</Text>
+                  <Text style={[styles.bagEmoji, { fontSize: bagSize }]}>🛍️</Text>
                   <View
                     style={[
                       styles.statusBadge,
+                      {
+                        width: heroBadge,
+                        height: heroBadge,
+                        borderRadius: heroBadge / 2,
+                      },
                       merchantReady ? styles.statusBadgeReady : styles.statusBadgePreparing,
                     ]}
                   >
                     <Ionicons
                       name={merchantReady ? "checkmark" : "time-outline"}
-                      size={14}
+                      size={denseMain ? 11 : compactMain ? 12 : 14}
                       color="#ffffff"
                     />
                   </View>
@@ -257,13 +370,14 @@ export function FoodPickOrderSheet({
               </View>
 
               {timerMode === "waiting" ? (
-                <View style={styles.timerCard}>
-                  <Text style={styles.timerLabel}>
+                <View style={[styles.timerCard, compactMain && styles.timerCardCompact]}>
+                  <Text style={[styles.timerLabel, flexShrinkText]} numberOfLines={1}>
                     {t("orders.activeFood.pickupWaitLabel", "Wait time at store")}
                   </Text>
                   <View
                     style={[
                       styles.timerPill,
+                      compactMain && styles.timerPillCompact,
                       prepDelayed ? styles.timerPillDelayed : styles.timerPillActive,
                     ]}
                   >
@@ -276,8 +390,8 @@ export function FoodPickOrderSheet({
               ) : null}
 
               {timerMode === "pickup" ? (
-                <View style={styles.timerCard}>
-                  <Text style={styles.timerLabel}>
+                <View style={[styles.timerCard, compactMain && styles.timerCardCompact]}>
+                  <Text style={[styles.timerLabel, flexShrinkText]} numberOfLines={1}>
                     {pickupTimerOverdue
                       ? t("orders.activeFood.pickupTimerOverdue", "Pickup time exceeded")
                       : t("orders.activeFood.pickupTimerLabel", "Pick up within")}
@@ -285,11 +399,19 @@ export function FoodPickOrderSheet({
                   <View
                     style={[
                       styles.timerPill,
+                      compactMain && styles.timerPillCompact,
                       pickupTimerOverdue ? styles.timerPillDelayed : styles.timerPillPickup,
                     ]}
                   >
                     <Ionicons name="timer-outline" size={14} color="#ffffff" />
-                    <Text style={styles.timerTextPickup}>{pickupCountdownDisplay}</Text>
+                    <Text
+                      style={[
+                        styles.timerTextPickup,
+                        compactMain && styles.timerTextPickupCompact,
+                      ]}
+                    >
+                      {pickupCountdownDisplay}
+                    </Text>
                   </View>
                 </View>
               ) : null}
@@ -298,6 +420,7 @@ export function FoodPickOrderSheet({
             <View
               style={[
                 styles.messageCard,
+                compactMain && styles.messageCardCompact,
                 tone === "ready" && styles.messageCardReady,
                 tone === "preparing" && styles.messageCardPreparing,
                 tone === "delayed" && styles.messageCardDelayed,
@@ -305,25 +428,53 @@ export function FoodPickOrderSheet({
             >
               {merchantReady ? (
                 <>
-                  <Text style={styles.statusHeadline}>
+                  <Text
+                    style={[
+                      styles.statusHeadline,
+                      compactMain && styles.statusHeadlineCompact,
+                      flexShrinkText,
+                    ]}
+                    numberOfLines={2}
+                  >
                     {t(
                       "orders.activeFood.merchantMarkedReady",
                       "Restaurant has marked food ready"
                     )}
                   </Text>
-                  <Text style={styles.statusSub}>
+                  <Text
+                    style={[
+                      styles.statusSub,
+                      compactMain && styles.statusSubCompact,
+                      flexShrinkText,
+                    ]}
+                    numberOfLines={2}
+                  >
                     {t("orders.activeFood.collectNow", "Please collect now!")}
                   </Text>
                 </>
               ) : (
                 <>
-                  <Text style={styles.statusHeadline}>
+                  <Text
+                    style={[
+                      styles.statusHeadline,
+                      compactMain && styles.statusHeadlineCompact,
+                      flexShrinkText,
+                    ]}
+                    numberOfLines={2}
+                  >
                     {t(
                       "orders.activeFood.underPreparation",
                       "Order is under preparation"
                     )}
                   </Text>
-                  <Text style={styles.statusSub}>
+                  <Text
+                    style={[
+                      styles.statusSub,
+                      compactMain && styles.statusSubCompact,
+                      flexShrinkText,
+                    ]}
+                    numberOfLines={denseMain ? 2 : 3}
+                  >
                     {t(
                       "orders.activeFood.waitUntilReady",
                       "Please wait until the restaurant marks the order ready."
@@ -333,58 +484,48 @@ export function FoodPickOrderSheet({
               )}
             </View>
 
-            <View style={styles.infoCard}>
-              <View style={styles.infoBlock}>
+            <View
+              style={[
+                rowLayout.row,
+                styles.infoCard,
+                compactMain && styles.infoCardCompact,
+              ]}
+            >
+              <View style={[styles.infoBlock, rowLayout.grow]}>
                 <Text style={styles.infoLabel}>
                   {t("orders.activeFood.orderIdCaps", "ORDER ID")}
                 </Text>
-                <View style={styles.infoValueRow}>
-                  <Ionicons name="receipt-outline" size={16} color={colors.primary[600]} />
-                  <Text style={styles.infoValueStrong}>{orderIdLabel}</Text>
+                <View style={[rowLayout.row, styles.infoValueRow]}>
+                  <Ionicons
+                    name="receipt-outline"
+                    size={compactMain ? 14 : 16}
+                    color={colors.primary[600]}
+                    style={rowLayout.noShrink}
+                  />
+                  <Text style={[styles.infoValueStrong, flexShrinkText]} numberOfLines={1}>
+                    {orderIdLabel}
+                  </Text>
                 </View>
               </View>
-              <View style={styles.infoDivider} />
-              <View style={styles.infoBlock}>
+              <View style={[styles.infoDivider, compactMain && styles.infoDividerCompact]} />
+              <View style={[styles.infoBlock, rowLayout.grow]}>
                 <Text style={styles.infoLabel}>
                   {t("orders.activeFood.customerLabel", "Customer")}
                 </Text>
-                <View style={styles.infoValueRow}>
-                  <Ionicons name="person-outline" size={16} color="#5F6368" />
-                  <Text style={styles.infoValue}>{displayCustomer}</Text>
+                <View style={[rowLayout.row, styles.infoValueRow]}>
+                  <Ionicons
+                    name="person-outline"
+                    size={compactMain ? 14 : 16}
+                    color="#5F6368"
+                    style={rowLayout.noShrink}
+                  />
+                  <Text style={[styles.infoValue, flexShrinkText]} numberOfLines={1}>
+                    {displayCustomer}
+                  </Text>
                 </View>
               </View>
             </View>
-
-            <Animated.View style={{ transform: [{ scale: merchantReady ? ctaPulse : 1 }] }}>
-              <TouchableOpacity
-                activeOpacity={merchantReady ? 0.88 : 1}
-                onPress={onConfirmPickup}
-                disabled={!merchantReady}
-                style={[
-                  styles.primaryBtn,
-                  merchantReady ? styles.primaryBtnEnabled : styles.primaryBtnDisabled,
-                ]}
-                accessibilityRole="button"
-                accessibilityState={{ disabled: !merchantReady }}
-              >
-                <Ionicons
-                  name={merchantReady ? "bag-check" : "hourglass-outline"}
-                  size={20}
-                  color={merchantReady ? "#ffffff" : "#80868B"}
-                />
-                <Text
-                  style={[
-                    styles.primaryBtnText,
-                    !merchantReady && styles.primaryBtnTextDisabled,
-                  ]}
-                >
-                  {merchantReady
-                    ? t("orders.activeFood.okayPicking", "Okay, I'm picking!")
-                    : t("orders.activeFood.waitingForReady", "Waiting for order ready…")}
-                </Text>
-              </TouchableOpacity>
-            </Animated.View>
-          </View>
+          </ResponsiveSheetBody>
         </View>
       </View>
     </Modal>
@@ -406,6 +547,8 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     overflow: "hidden",
+    flexShrink: 1,
+    minHeight: 0,
     ...(Platform.OS === "android"
       ? { elevation: 24 }
       : {
@@ -440,19 +583,33 @@ const styles = StyleSheet.create({
     backgroundColor: "#DADCE0",
   },
   body: {
-    paddingHorizontal: 20,
     paddingTop: 4,
   },
+  bodyCompact: {
+    paddingTop: 0,
+  },
+  footerSlot: {
+    borderTopWidth: 0,
+    backgroundColor: "#ffffff",
+  },
   headerRow: {
-    flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
     marginBottom: 18,
     gap: 12,
+    maxWidth: "100%",
+  },
+  headerRowCompact: {
+    marginBottom: 10,
+    gap: 8,
   },
   headerTextCol: {
     flex: 1,
     gap: 8,
+    minWidth: 0,
+  },
+  headerTextColCompact: {
+    gap: 4,
   },
   title: {
     fontSize: 22,
@@ -511,10 +668,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 16,
   },
+  heroWrapCompact: {
+    marginBottom: 8,
+  },
+  heroWrapDense: {
+    marginBottom: 4,
+  },
   heroRing: {
     padding: 6,
     borderRadius: 999,
     marginBottom: 4,
+  },
+  heroRingCompact: {
+    padding: 3,
+    marginBottom: 0,
   },
   heroRingReady: {
     backgroundColor: colors.success[100],
@@ -568,6 +735,10 @@ const styles = StyleSheet.create({
     marginTop: 10,
     gap: 6,
   },
+  timerCardCompact: {
+    marginTop: 6,
+    gap: 4,
+  },
   timerLabel: {
     fontSize: 12,
     fontWeight: "600",
@@ -583,6 +754,11 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     minWidth: 120,
     justifyContent: "center",
+  },
+  timerPillCompact: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    minWidth: 100,
   },
   timerPillActive: {
     backgroundColor: colors.secondary[600],
@@ -607,12 +783,21 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
     letterSpacing: 0.3,
   },
+  timerTextPickupCompact: {
+    fontSize: 18,
+  },
   messageCard: {
     borderRadius: 14,
     paddingVertical: 14,
     paddingHorizontal: 16,
     marginBottom: 14,
     borderWidth: 1,
+  },
+  messageCardCompact: {
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 8,
   },
   messageCardReady: {
     backgroundColor: colors.success[50],
@@ -633,6 +818,10 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: 4,
   },
+  statusHeadlineCompact: {
+    fontSize: 14,
+    marginBottom: 2,
+  },
   statusSub: {
     fontSize: 13,
     fontWeight: "500",
@@ -640,24 +829,39 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 19,
   },
+  statusSubCompact: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
   infoCard: {
-    flexDirection: "row",
     backgroundColor: "#F8F9FA",
     borderRadius: 14,
     borderWidth: 1,
     borderColor: "#E8EAED",
     paddingVertical: 12,
     paddingHorizontal: 14,
-    marginBottom: 16,
+    marginBottom: 8,
+    maxWidth: "100%",
+  },
+  infoCardCompact: {
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginBottom: 4,
   },
   infoBlock: {
     flex: 1,
+    minWidth: 0,
     gap: 4,
   },
   infoDivider: {
     width: 1,
     backgroundColor: "#E8EAED",
     marginHorizontal: 12,
+    flexShrink: 0,
+  },
+  infoDividerCompact: {
+    marginHorizontal: 8,
   },
   infoLabel: {
     fontSize: 10,
@@ -666,18 +870,20 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   infoValueRow: {
-    flexDirection: "row",
-    alignItems: "center",
     gap: 6,
+    maxWidth: "100%",
   },
   infoValueStrong: {
     fontSize: 15,
     fontWeight: "800",
     color: "#202124",
     fontVariant: ["tabular-nums"],
+    flexShrink: 1,
+    minWidth: 0,
   },
   infoValue: {
     flex: 1,
+    minWidth: 0,
     fontSize: 14,
     fontWeight: "600",
     color: "#3C4043",
@@ -690,7 +896,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  primaryBtnCompact: {
+    minHeight: 48,
+    paddingVertical: 10,
+    gap: 6,
   },
   primaryBtnEnabled: {
     backgroundColor: PICK_CTA_GREEN,
@@ -712,6 +924,7 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: "800",
     color: "#ffffff",
+    textAlign: "center",
   },
   primaryBtnTextDisabled: {
     color: "#80868B",

@@ -17,6 +17,7 @@ import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
 import { useCartChromeStore } from "@/store/cartChromeStore";
 import { useCartStore } from "@/store/cartStore";
 import { StoreTheme } from "@/constants/storeTheme";
+import { MerchantDarkPalette } from "@/features/merchant-detail/merchantUiTheme";
 
 /**
  * Cart chrome — forest green outline ADD (white pill) + matching stepper.
@@ -71,6 +72,8 @@ type InstantCartControlProps = {
   size?: "default" | "compact";
   /** Green (menu default) vs pink (past-order / reorder rows). */
   accent?: "default" | "zomato";
+  /** Discovery dark store — charcoal ADD shell instead of white. */
+  darkSurface?: boolean;
   /**
    * When false (customisable dishes), skip local optimistic qty — ADD opens a sheet
    * and does not write cart until confirm. Prevents a stuck stepper on sheet cancel.
@@ -102,6 +105,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
   disabled = false,
   size = "default",
   accent = "default",
+  darkSurface = false,
   allowOptimisticAdd = true,
   onAdd,
   onIncrement,
@@ -110,8 +114,16 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
 }: InstantCartControlProps) {
   const compact = size === "compact";
   const zomato = accent === "zomato";
-  const accentColor = zomato ? ADD_REORDER : ADD_GREEN;
-  const qtyFill = zomato ? QTY_FILL_REORDER : QTY_FILL;
+  const accentColor = darkSurface
+    ? MerchantDarkPalette.accent
+    : zomato
+      ? ADD_REORDER
+      : ADD_GREEN;
+  const qtyFill = darkSurface
+    ? MerchantDarkPalette.accentSoft
+    : zomato
+      ? QTY_FILL_REORDER
+      : QTY_FILL;
   const [optimisticQty, setOptimisticQty] = useState<number | null>(null);
   const displayQty = optimisticQty ?? quantity;
   const showingAdd = displayQty === 0;
@@ -669,6 +681,8 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
             compact && styles.addBtnCompact,
             zomato && styles.addBtnZomato,
             zomato && { borderColor: accentColor },
+            darkSurface && styles.addBtnDark,
+            darkSurface && { borderColor: accentColor },
             disabled ? styles.addBtnDisabled : null,
             compact && disabled && styles.addBtnCompactDisabled,
           ]}
@@ -873,6 +887,11 @@ const styles = StyleSheet.create({
   addBtnZomato: {
     borderWidth: 1,
     borderRadius: 8,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  addBtnDark: {
+    backgroundColor: MerchantDarkPalette.card,
     shadowOpacity: 0,
     elevation: 0,
   },

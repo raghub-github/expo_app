@@ -24,11 +24,12 @@ export type KeyboardPinnedSheetMetrics = {
  */
 export function readKeyboardPinnedSheetMetrics(
   event: KeyboardEvent,
-  topInset: number
+  topInset: number,
+  windowHeight?: number
 ): KeyboardPinnedSheetMetrics {
   const keyboardH = Math.round(event.endCoordinates.height);
   const keyboardTop = Math.round(event.endCoordinates.screenY);
-  const windowH = Dimensions.get("window").height;
+  const windowH = windowHeight ?? Dimensions.get("window").height;
 
   // Distance from window bottom to keyboard top — the only positioning rule.
   let bottomOffset = Math.max(0, Math.round(windowH - keyboardTop));
@@ -75,18 +76,17 @@ export function useKeyboardPinnedSheetMetrics(active: boolean): KeyboardPinnedSh
 
     const apply = (event: KeyboardEvent) => {
       lastEventRef.current = event;
-      setMetrics(readKeyboardPinnedSheetMetrics(event, insets.top));
+      setMetrics(readKeyboardPinnedSheetMetrics(event, insets.top, winH));
     };
 
     const onShow = (event: KeyboardEvent) => {
       // Snap flush immediately on Android — refine after adjustResize settles.
       if (Platform.OS === "android") {
         const keyboardH = Math.round(event.endCoordinates.height);
-        const windowH = Dimensions.get("window").height;
         setMetrics({
           keyboardHeight: keyboardH,
           bottomOffset: 0,
-          maxSheetHeight: Math.max(200, Math.round(windowH - insets.top - 2)),
+          maxSheetHeight: Math.max(200, Math.round(winH - insets.top - 2)),
           keyboardOpen: true,
         });
       }

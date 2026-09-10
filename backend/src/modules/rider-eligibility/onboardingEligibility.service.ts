@@ -77,6 +77,21 @@ export async function resolveRiderOnboardingSummary(riderId: number): Promise<Ri
     .limit(1);
   if (!rider) return null;
 
+  // Self-heal: Cashfree RC may be verified on rider_documents while rider_vehicles
+  // was never projected (onboarding verify-document deferProjection). Without a
+  // vehicle row, payment "Service access" shows NO_VEHICLE for every service.
+  try {
+    const { ensureRiderVehicleFromStoredRc } = await import(
+      "../../lib/rider-vehicle-from-rc.js"
+    );
+    await ensureRiderVehicleFromStoredRc(riderId);
+  } catch (e) {
+    console.warn(
+      "[onboarding-summary] ensureRiderVehicleFromStoredRc failed:",
+      (e as Error).message,
+    );
+  }
+
   // Vehicle attributes drive the engine (null vehicleClass = no verified vehicle on file).
   const attributes = await loadRiderEligibilityAttributes(riderId);
   const hasVehicle = attributes.vehicleClass != null;

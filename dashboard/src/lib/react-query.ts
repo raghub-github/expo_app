@@ -27,7 +27,15 @@ const QUERY_CLIENT_OPTIONS = {
       refetchOnMount: false,
       refetchOnReconnect: false,
       placeholderData: (previousData: unknown) => previousData,
-      retry: 1,
+      retry: (failureCount: number, error: unknown) => {
+        if (typeof navigator !== "undefined" && navigator.onLine === false) return false;
+        if (error instanceof DOMException && error.name === "AbortError") return false;
+        const status = (error as { status?: number } | null)?.status;
+        if (status === 401 || status === 403 || status === 404) return false;
+        // One soft retry for gateway timeouts; avoid request storms.
+        if (status === 502 || status === 503 || status === 504) return failureCount < 1;
+        return failureCount < 1;
+      },
       retryDelay: (attemptIndex: number) => Math.min(1000 * 2 ** attemptIndex, 30000),
     },
     mutations: {

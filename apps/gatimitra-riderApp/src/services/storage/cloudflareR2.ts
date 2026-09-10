@@ -30,9 +30,12 @@ export function buildRiderDocumentKey(
   return `${base}/${side}.jpg`;
 }
 
-/** Selfie uses a dedicated folder (matches legacy dashboard layout). */
+/**
+ * Selfie key — versioned so retake uploads a new object and the previous R2
+ * object can be deleted (stable `latest.jpg` made overwrite/delete a no-op).
+ */
 export function buildRiderSelfieKey(riderId: string | number): string {
-  return `riders/${riderId}/documents/selfie/latest.jpg`;
+  return `riders/${riderId}/documents/selfie/${Date.now()}.jpg`;
 }
 
 /** Live delivery proof photo — one folder per order. */

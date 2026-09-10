@@ -1,12 +1,8 @@
 import React from "react";
-import { router } from "expo-router";
 import { LogoutChoiceBottomSheet } from "@/src/components/profile/LogoutChoiceBottomSheet";
 import { LogoutReasonBottomSheet } from "@/src/components/profile/LogoutReasonBottomSheet";
-import { riderApi } from "@/src/services/api/riderApi";
 import { useLogoutSheetStore } from "@/src/stores/logoutSheetStore";
-import { useSessionStore } from "@/src/stores/sessionStore";
-import { useOnboardingStore } from "@/src/stores/onboardingStore";
-import { useDutyStore } from "@/src/stores/dutyStore";
+import { performRiderLogout } from "@/src/lib/performRiderLogout";
 import type { RiderLogoutReasonCode } from "@/src/lib/rider-logout-reasons";
 
 export function RiderLogoutSheetHost() {
@@ -16,36 +12,17 @@ export function RiderLogoutSheetHost() {
   const close = useLogoutSheetStore((s) => s.close);
   const selectScope = useLogoutSheetStore((s) => s.selectScope);
   const backToChoice = useLogoutSheetStore((s) => s.backToChoice);
-  const setSession = useSessionStore((s) => s.setSession);
-  const accessToken = useSessionStore((s) => s.session?.accessToken ?? null);
 
   const onConfirm = async (
     reasonCode: RiderLogoutReasonCode,
     reasonText?: string,
   ) => {
-    const logoutAllDevices = scope === "all_devices";
-    try {
-      const { runRiderPushUnregister } = await import("@/src/lib/riderPushUnregister");
-      await runRiderPushUnregister(accessToken);
-    } catch {
-      /* best-effort */
-    }
-    try {
-      await riderApi.logout({
-        reasonCode,
-        reasonText,
-        logoutAllDevices,
-      });
-    } catch (err) {
-      console.warn("[RiderLogoutSheetHost] logout failed:", err);
-      // Still clear local session so rider is not stuck signed-in on a dead token.
-    }
-    await useDutyStore.getState().setDutyStatus(false);
-    // Wipe in-memory onboarding so the next account cannot inherit RC/DL drafts.
-    await useOnboardingStore.getState().bindOwner(null);
     close();
-    await setSession(null);
-    router.replace("/(auth)/login");
+    await performRiderLogout({
+      reasonCode,
+      reasonText,
+      logoutAllDevices: scope === "all_devices",
+    });
   };
 
   return (

@@ -1,14 +1,24 @@
 import React from "react";
 import { StyleSheet, View } from "react-native";
 import { useRiderVehicle } from "@/src/hooks/useRiderVehicle";
+import { useRiderHomeLocation } from "@/src/hooks/useRiderHomeLocation";
+import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useVehicleGateStore } from "@/src/stores/vehicleGateStore";
 import { VehicleDetailsBottomSheet } from "@/src/components/vehicle/VehicleDetailsBottomSheet";
 
 /**
  * Vehicle-details gate on home/tabs when the profile has no complete active vehicle.
  * Can be skipped for the session; going ON duty re-opens the sheet.
+ *
+ * Waits until the home-location sheet is done so the two Modals never overlap.
  */
 export function RiderVehiclePrompt() {
+  const riderId = useOnboardingStore((s) => s.data.riderId);
+  const {
+    needsHomeLocation,
+    statusLoading: homeLocLoading,
+    locationStatusReady,
+  } = useRiderHomeLocation(riderId);
   const { data, isFetched, refetch } = useRiderVehicle();
   const sheetForced = useVehicleGateStore((s) => s.sheetOpen);
   const skippedThisSession = useVehicleGateStore((s) => s.skippedThisSession);
@@ -16,7 +26,11 @@ export function RiderVehiclePrompt() {
   const skipSheet = useVehicleGateStore((s) => s.skipSheet);
   const clearSkip = useVehicleGateStore((s) => s.clearSkip);
   const needsVehicle = isFetched && !data?.isComplete;
-  const shouldShow = sheetForced || (needsVehicle && !skippedThisSession);
+  // Location first, then vehicle — never mount both Modals at once (incl. while status loads).
+  const locationBlocking =
+    !riderId || homeLocLoading || !locationStatusReady || needsHomeLocation;
+  const shouldShow =
+    !locationBlocking && (sheetForced || (needsVehicle && !skippedThisSession));
 
   if (!shouldShow) return null;
 

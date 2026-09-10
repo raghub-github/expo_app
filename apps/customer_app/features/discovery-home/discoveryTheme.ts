@@ -21,7 +21,7 @@ export const DiscoveryColors = {
   homeDelivery: ["#14B8A6", "#22C55E"] as const,
   pill: "#2C2C2C",
   pillActive: "#353535",
-  floatBar: "#262626",
+  floatBar: "#242424",
   dashed: "#4B4B4B",
   teal: "#2DD4BF",
   orange: "#F97316",

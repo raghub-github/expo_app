@@ -97,7 +97,9 @@ export function useScrollSafePress(onPressAction: () => void, options?: Options)
     onPressAction();
   }, [onPressAction, shouldIgnorePress, resetGesture, cancelArmed]);
 
-  const onPressOut = useCallback(() => {
+  // Accepts the Pressable event (unused) so it matches Pressable's onPressOut signature and can be
+  // wired directly at call sites without an arity mismatch.
+  const onPressOut = useCallback((_e?: GestureResponderEvent) => {
     // Scroll stole the gesture while finger was down.
     if (isFoodHomeListScrollActive()) {
       blockedRef.current = true;

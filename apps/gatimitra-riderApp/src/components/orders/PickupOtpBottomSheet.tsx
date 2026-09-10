@@ -2,6 +2,7 @@ import React from "react";
 import { useTranslation } from "react-i18next";
 import { OtpVerifySheetModal } from "@gatimitra/otp-verify-ui";
 import { riderOtpVerifyTheme } from "@/src/theme/otpVerifyTheme";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
 type Props = {
   visible: boolean;
@@ -32,6 +33,7 @@ function PickupOtpBottomSheetInner({
   onSubmit,
 }: Props) {
   const { t } = useTranslation();
+  const { isShortHeight } = useResponsiveLayout();
   const isFood = otpContext === "merchant";
   const isDropOtp = purpose === "drop";
   const isRidePickup = !isFood && !isDropOtp;
@@ -42,18 +44,31 @@ function PickupOtpBottomSheetInner({
       ? t("orders.activeFood.merchantFallback", "the restaurant")
       : t("orders.activeRide.customerFallback", "Customer"));
 
+  // Short screens / large fonts: keep subtitle brief so OTP digits + keyboard stay reachable.
   const subtitle = isFood
-    ? t(
-        "orders.activeFood.otpSheetSubtitle",
-        "Ask {{name}} for the 4-digit pickup OTP, then enter it below to confirm collection.",
-        { name: displayName }
-      )
-    : isDropOtp
+    ? isShortHeight
       ? t(
-          "orders.activeRide.dropOtpSheetSubtitle",
-          "Ask {{name}} for the 4-digit drop OTP shown in their app to complete the ride.",
+          "orders.activeFood.otpSheetSubtitleShort",
+          "Ask {{name}} for the 4-digit pickup OTP.",
           { name: displayName }
         )
+      : t(
+          "orders.activeFood.otpSheetSubtitle",
+          "Ask {{name}} for the 4-digit pickup OTP, then enter it below to confirm collection.",
+          { name: displayName }
+        )
+    : isDropOtp
+      ? isShortHeight
+        ? t(
+            "orders.activeRide.dropOtpSheetSubtitleShort",
+            "Ask {{name}} for the 4-digit drop OTP.",
+            { name: displayName }
+          )
+        : t(
+            "orders.activeRide.dropOtpSheetSubtitle",
+            "Ask {{name}} for the 4-digit drop OTP shown in their app to complete the ride.",
+            { name: displayName }
+          )
       : isRidePickup
         ? t("orders.activeRide.verifyRideStartSubtitle", "Ask the passenger for the 4-digit OTP")
         : t(

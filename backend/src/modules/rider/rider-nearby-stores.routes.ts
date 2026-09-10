@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getSupabase } from "../../lib/supabase.js";
+import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 
 /**
  * GET /v1/rider/nearby-stores?lat=&lng=&radiusKm=20&all=false
@@ -14,7 +15,7 @@ import { getSupabase } from "../../lib/supabase.js";
  *   measured; bbox prefilter + haversine trim, DB-indexed, no per-row app loop over all stores.
  * - Default returns only currently OPEN/available stores (Phase 8); `all=true` includes listed
  *   but offline stores.
- * - Minimal, non-sensitive fields only (id/name/coords/open) — no customer or internal data.
+ * - Minimal fields: id/name/coords/open + bannerUrl for map pins (absolute media URL).
  * - Rendered by the app with Mapbox native clustering, so a large radius never floods the map.
  */
 
@@ -53,6 +54,7 @@ type StoreRow = {
   is_available: boolean | null;
   is_accepting_orders: boolean | null;
   operational_status: string | null;
+  banner_url: string | null;
 };
 
 export function registerRiderNearbyStoresRoutes(app: FastifyInstance) {
@@ -78,7 +80,7 @@ export function registerRiderNearbyStoresRoutes(app: FastifyInstance) {
       const { data, error } = await supabase
         .from("merchant_stores")
         .select(
-          "id, store_id, store_name, store_display_name, latitude, longitude, is_available, is_accepting_orders, operational_status",
+          "id, store_id, store_name, store_display_name, latitude, longitude, is_available, is_accepting_orders, operational_status, banner_url",
         )
         .eq("status", "ACTIVE")
         .eq("is_active", true)
@@ -109,6 +111,7 @@ export function registerRiderNearbyStoresRoutes(app: FastifyInstance) {
             lng: slng,
             isOpen,
             distanceKm: Math.round(distanceKm * 10) / 10,
+            bannerUrl: toAbsoluteClientMediaUrl(s.banner_url ?? null),
           };
         })
         .filter((x): x is NonNullable<typeof x> => x != null)

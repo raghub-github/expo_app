@@ -112,8 +112,22 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Fetch customers
-    const result = await listCustomers(filters);
+    // Fetch customers (bound so the reverse proxy returns our 503 instead of a bare 504).
+    const LIST_TIMEOUT_MS = 25_000;
+    const result = await new Promise<Awaited<ReturnType<typeof listCustomers>>>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(Object.assign(new Error("listCustomers timed out"), { name: "TimeoutError" }));
+      }, LIST_TIMEOUT_MS);
+      listCustomers(filters)
+        .then((value) => {
+          clearTimeout(timer);
+          resolve(value);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
 
     // Log activity
     const ipAddress = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || undefined;

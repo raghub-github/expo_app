@@ -36,8 +36,12 @@ import { CashfreeError, isRetryableCategory } from "./cashfree/errors.js";
 import {
   createRequest,
   newVerificationId,
+  nextAttemptNumber,
+  cancelStaleInitiatedRequests,
   persistOutcome,
   appendEvent,
+  applyOutcome,
+  resolveVerifiedIdentifierConflict,
   applyAsyncTerminalOutcome,
 } from "./history.js";
 import { resolveEffectivePolicy } from "./policy/engine.js";
@@ -100,8 +104,23 @@ async function runProviderCall(
     return { kind: "manual", reason: "provider_not_configured", policy };
   }
 
-  // 3. Mint verification_id, create request row.
+  // 3. Mint verification_id, create request row (attempt # increments per subject+doc).
   const verificationId = newVerificationId();
+  const attemptNumber = await nextAttemptNumber({
+    subjectType: args.subjectType,
+    subjectId: args.subjectId,
+    documentKind: docKind,
+  });
+  // Drop double-tap leftovers before inserting the new attempt.
+  try {
+    await cancelStaleInitiatedRequests({
+      subjectType: args.subjectType,
+      subjectId: args.subjectId,
+      documentKind: docKind,
+    });
+  } catch {
+    /* best-effort */
+  }
   const requestId = await createRequest({
     verificationId,
     provider: "cashfree",
@@ -112,17 +131,18 @@ async function runProviderCall(
     riderDocumentId: args.riderDocumentId ?? null,
     merchantDocumentId: args.merchantDocumentId ?? null,
     policySnapshotId: policy.policySnapshotId || null,
-    attemptNumber: 1,
+    attemptNumber,
     createdBy: args.createdBy ?? null,
   });
   await appendEvent({
     requestId, eventKind: "submit", toStatus: "initiated", actorType: "system",
-    details: { policyId: policy.policyId, mode: policy.mode },
+    details: { policyId: policy.policyId, mode: policy.mode, attemptNumber },
   });
 
   // 4. Call provider, adapt, persist.
   try {
     const normalized = await provider(verificationId);
+    normalized.attemptNumber = attemptNumber;
 
     // Cashfree may already have debited — never turn a post-provider DB glitch
     // into a 500 that blocks the merchant UI.
@@ -136,6 +156,15 @@ async function runProviderCall(
         persistErr instanceof Error ? persistErr.message : persistErr,
         persistErr instanceof Error ? persistErr.stack : "",
       );
+      // Last resort: never leave the row stuck on `initiated` after Cashfree replied.
+      try {
+        await applyOutcomeFallback(requestId, normalized);
+      } catch (fallbackErr) {
+        console.error(
+          "[verification] applyOutcome fallback failed:",
+          fallbackErr instanceof Error ? fallbackErr.message : fallbackErr,
+        );
+      }
     }
 
     // 5. Auto-approve gating.
@@ -187,7 +216,7 @@ async function runProviderCall(
           details: { category: e.category, code: e.cfCode, message: e.message },
         });
         await persistOutcome(requestId, {
-          verificationId, attemptNumber: 1, provider: "cashfree",
+          verificationId, attemptNumber, provider: "cashfree",
           providerReference: null, subjectType: args.subjectType, subjectId: args.subjectId,
           documentKind: docKind, status,
           statusReason: `${e.category}: ${e.message}`, confidence: null, businessIdentifier: null,
@@ -734,4 +763,49 @@ function common(kind: VerificationDocumentKind, vid: string, args: SubmitCommonA
     subjectId: args.subjectId,
     documentKind: kind,
   };
+}
+
+/** If persistOutcome throws after Cashfree success, still land a non-initiated status. */
+async function applyOutcomeFallback(
+  requestId: number,
+  outcome: NormalizedVerification,
+): Promise<void> {
+  let status = outcome.status;
+  let statusReason = outcome.statusReason ?? "persist_partial_failure";
+  if (status === "verified") {
+    const conflict = await resolveVerifiedIdentifierConflict({
+      requestId,
+      documentKind: outcome.documentKind,
+      businessIdentifier: outcome.businessIdentifier,
+      subjectType: outcome.subjectType,
+      subjectId: outcome.subjectId,
+    });
+    if (conflict === "duplicate") {
+      status = "duplicate";
+      statusReason = "This document number is already verified on another account.";
+    }
+  }
+  try {
+    await applyOutcome(requestId, {
+      status,
+      statusReason,
+      providerReference: outcome.providerReference,
+      businessIdentifier: outcome.businessIdentifier,
+      confidence: outcome.confidence,
+      httpStatus: outcome.httpStatus,
+      durationMs: outcome.durationMs,
+    });
+  } catch {
+    await applyOutcome(requestId, {
+      status: "failed",
+      statusReason: "persist_failed_after_provider_success",
+      providerReference: outcome.providerReference,
+      businessIdentifier: outcome.businessIdentifier,
+      confidence: outcome.confidence,
+      httpStatus: outcome.httpStatus,
+      durationMs: outcome.durationMs,
+    });
+  }
+  outcome.status = status;
+  outcome.statusReason = statusReason;
 }

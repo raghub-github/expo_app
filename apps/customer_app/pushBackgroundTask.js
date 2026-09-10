@@ -27,14 +27,14 @@ if (!isExpoGo()) {
     Notifications.setNotificationHandler({
       handleNotification: async (notification) => {
         const data = notification?.request?.content?.data ?? {};
-        if (liveProgressHandlerResult(data).suppress) {
+        const result = liveProgressHandlerResult(data);
+        if (result.updateSticky || result.suppress) {
           try {
             await applyLiveProgressFromPush(data);
           } catch {
             /* best-effort sticky update */
           }
         }
-        const result = liveProgressHandlerResult(data);
         return {
           shouldShowAlert: result.shouldShowAlert,
           shouldPlaySound: result.shouldPlaySound,

@@ -61,6 +61,11 @@ export type OnboardingData = {
   vehicleModelLabel?: string;
   vehicleCategoryCode?: string;
   vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment";
+  /**
+   * True after the rider taps Continue on the vehicle-select step (enters DL/RC docs).
+   * Prevents remount from dropping them back to vehicle/category and losing selection.
+   */
+  vehicleDocsStarted?: boolean;
 
   // Step 3b: Rental/EV alternative
   rentalProofUri?: string; // local URI before upload

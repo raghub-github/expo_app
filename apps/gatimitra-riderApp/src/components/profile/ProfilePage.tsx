@@ -34,9 +34,10 @@ import { resolveRiderSelfieDisplayUrl, withImageCacheBust } from "@/src/utils/me
 import { fetchRiderReferralConfig } from "@/src/services/referral.service";
 import { ProfileSelfieUpdateSheet } from "@/src/components/profile/ProfileSelfieUpdateSheet";
 import { ProfileAvatarCameraBadge } from "@/src/components/profile/ProfileAvatarCameraBadge";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 const PAGE_BG = "#F4F6F8";
-const PAD = 16;
 const CARD_RADIUS = PROFILE_CARD_RADIUS;
 const SECTION_GAP = 14;
 
@@ -66,6 +67,8 @@ function firstNameFrom(name: string) {
 
 export function ProfilePage() {
   const { t } = useTranslation();
+  const { rs } = useResponsiveLayout();
+  const pad = rs(16);
   const session = useSessionStore((s) => s.session);
   const onboardingData = useOnboardingStore((s) => s.data);
   const riderId = session?.riderId ?? session?.userId;
@@ -153,7 +156,10 @@ export function ProfilePage() {
     <View style={styles.root}>
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingHorizontal: pad, paddingTop: rs(12), paddingBottom: rs(16) },
+        ]}
       >
         {/* Hero */}
         <View style={styles.heroCard}>
@@ -162,14 +168,18 @@ export function ProfilePage() {
             locations={[0, 0.32, 0.68, 1]}
             start={{ x: 0, y: 0.5 }}
             end={{ x: 1, y: 0.5 }}
-            style={styles.heroGradient}
+            style={[styles.heroGradient, { paddingHorizontal: pad, paddingVertical: rs(18) }]}
           >
             {isVerified ? (
-              <View style={styles.ribbon} pointerEvents="none">
+              <View style={[styles.ribbon, { right: pad }]} pointerEvents="none">
                 <View style={styles.ribbonInner}>
                   <Ionicons name="shield-checkmark" size={14} color="#FFF" />
-                  <Text style={styles.ribbonTxt}>{ribbonTop}</Text>
-                  <Text style={styles.ribbonTxt}>{ribbonBottom}</Text>
+                  <Text style={styles.ribbonTxt} numberOfLines={1}>
+                    {ribbonTop}
+                  </Text>
+                  <Text style={styles.ribbonTxt} numberOfLines={1}>
+                    {ribbonBottom}
+                  </Text>
                 </View>
               </View>
             ) : null}
@@ -177,13 +187,17 @@ export function ProfilePage() {
             {ratingDisplay ? (
               <RiderRatingBadge
                 rating={ratingDisplay}
-                style={[styles.ratingBadge, isVerified && styles.ratingBelowRibbon]}
+                style={[
+                  styles.ratingBadge,
+                  { right: pad },
+                  isVerified && styles.ratingBelowRibbon,
+                ]}
                 variant="light"
               />
             ) : null}
 
-            <View style={styles.heroContent}>
-              <View style={styles.avatarBox}>
+            <View style={[rowLayout.row, styles.heroContent]}>
+              <View style={[styles.avatarBox, rowLayout.noShrink]}>
                 <Pressable onPress={openProfile} style={styles.avatarCircle}>
                   {showAvatar && avatarUri ? (
                     <Image
@@ -214,14 +228,14 @@ export function ProfilePage() {
                 />
               </View>
 
-              <View style={styles.heroText}>
-                <Text style={styles.hello} numberOfLines={1}>
+              <View style={[styles.heroText, rowLayout.grow]}>
+                <Text style={[styles.hello, flexShrinkText]} numberOfLines={1} ellipsizeMode="tail">
                   {t("profile.hiGreeting", { name: firstName, defaultValue: `Hi, ${firstName} 👋` })}
                 </Text>
-                <Text style={styles.heroSub}>
+                <Text style={[styles.heroSub, flexShrinkText]} numberOfLines={2} ellipsizeMode="tail">
                   {t("profile.managePartnerProfile", "Manage your partner profile")}
                 </Text>
-                <Text style={styles.riderId}>
+                <Text style={[styles.riderId, flexShrinkText]} numberOfLines={1} ellipsizeMode="tail">
                   {t("profile.riderIdLabel", {
                     id: displayId,
                     defaultValue: `Rider ID: ${displayId}`,
@@ -240,11 +254,11 @@ export function ProfilePage() {
             </View>
 
             {showReferralUi && referralCode ? (
-              <View style={styles.referralCorner} pointerEvents="none">
-                <Text style={styles.referralCornerLabel}>
+              <View style={[styles.referralCorner, { right: pad }]} pointerEvents="none">
+                <Text style={styles.referralCornerLabel} numberOfLines={1}>
                   {t("profile.referralId", "Referral ID")}
                 </Text>
-                <Text style={styles.referralCornerCode} numberOfLines={1}>
+                <Text style={[styles.referralCornerCode, flexShrinkText]} numberOfLines={1}>
                   {referralCode}
                 </Text>
               </View>
@@ -299,13 +313,12 @@ const styles = StyleSheet.create({
     backgroundColor: PAGE_BG,
   },
   scrollContent: {
-    paddingHorizontal: PAD,
-    paddingTop: 12,
-    paddingBottom: 16,
+    flexGrow: 1,
   },
   promoStack: {
     width: "100%",
     alignSelf: "stretch",
+    maxWidth: "100%",
   },
   stackSpacer: {
     height: SECTION_GAP,
@@ -313,21 +326,19 @@ const styles = StyleSheet.create({
   },
   heroCard: {
     width: "100%",
+    maxWidth: "100%",
     borderRadius: CARD_RADIUS,
     overflow: "hidden",
     marginBottom: SECTION_GAP,
     ...profileHeroShadow,
   },
   heroGradient: {
-    paddingHorizontal: PAD,
-    paddingVertical: 18,
     minHeight: 140,
     position: "relative",
   },
   ratingBadge: {
     position: "absolute",
     top: 10,
-    right: PAD,
     zIndex: 2,
   },
   ratingBelowRibbon: {
@@ -336,7 +347,6 @@ const styles = StyleSheet.create({
   ribbon: {
     position: "absolute",
     top: 0,
-    right: PAD,
     zIndex: 3,
   },
   ribbonInner: {
@@ -356,9 +366,8 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   heroContent: {
-    flexDirection: "row",
-    alignItems: "center",
     paddingRight: 56,
+    maxWidth: "100%",
   },
   avatarBox: {
     position: "relative",
@@ -391,6 +400,7 @@ const styles = StyleSheet.create({
   heroText: {
     flex: 1,
     minWidth: 0,
+    flexShrink: 1,
   },
   hello: {
     fontSize: 20,
@@ -416,6 +426,7 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     borderRadius: 999,
     backgroundColor: "rgba(6, 78, 59, 0.72)",
+    maxWidth: "100%",
   },
   viewProfileBtnPressed: {
     backgroundColor: "rgba(6, 78, 59, 0.88)",
@@ -433,7 +444,6 @@ const styles = StyleSheet.create({
   },
   referralCorner: {
     position: "absolute",
-    right: PAD,
     bottom: 12,
     alignItems: "flex-end",
     maxWidth: "42%",

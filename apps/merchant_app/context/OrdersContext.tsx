@@ -452,14 +452,15 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(id);
   }, [pollIntervalMs, refetch]);
 
-  // Read-only freshness sync when app is resumed (skip if a poll just succeeded).
+  // Freshness sync when app is resumed — always refetch pending so Incoming
+  // modal + alert can surface CREATED orders after kill/bg without waiting.
   useEffect(() => {
     if (!token || orderStoreIds.length === 0) return;
     const onAppState = (state: AppStateStatus) => {
       if (state !== "active") return;
       const now = Date.now();
-      if (now - lastFetchAtRef.current < 8_000) return;
-      if (now - lastResumeFetchAtRef.current < 8_000) return;
+      // Soft debounce only — never skip more than ~2s so new orders aren't missed.
+      if (now - lastResumeFetchAtRef.current < 2_000) return;
       lastResumeFetchAtRef.current = now;
       void refetch();
     };

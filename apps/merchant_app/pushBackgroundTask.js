@@ -28,6 +28,18 @@ function isMerchantNewOrderData(data) {
   );
 }
 
+function isStoreStatusData(data) {
+  const typ = String(data?.type ?? data?.notificationType ?? data?.event ?? "").toUpperCase();
+  return (
+    typ === "STORE_STATUS" ||
+    typ === "STORE_ONLINE" ||
+    typ === "STORE_OUT_OF_TIMINGS" ||
+    typ === "STORE_RECONNECT_REQUIRED" ||
+    typ === "MERCHANT_OUTSIDE_DELIVERY" ||
+    typ === "MERCHANT_GO_ONLINE"
+  );
+}
+
 if (!isExpoGo()) {
   try {
     const Notifications = require("expo-notifications");
@@ -35,10 +47,8 @@ if (!isExpoGo()) {
       handleNotification: async (notification) => {
         const data = notification?.request?.content?.data ?? {};
         const t = String(data.type ?? data.notificationType ?? "").toLowerCase();
-        // Only suppress the local kitchen sticky duplicate — server pushes for
-        // store_online / go-online must still appear in the system shade.
-        const isLocalKitchenSticky = t === "live_orders";
-        if (isLocalKitchenSticky) {
+        // Legacy kitchen sticky id only — never suppress STORE_STATUS updates.
+        if (t === "live_orders") {
           return {
             shouldShowAlert: false,
             shouldPlaySound: false,
@@ -47,36 +57,31 @@ if (!isExpoGo()) {
             shouldShowList: false,
           };
         }
-        const isStoreStatus = (() => {
-          const typ = String(data.type ?? data.notificationType ?? data.event ?? "").toUpperCase();
-          return (
-            typ === "STORE_STATUS" ||
-            typ === "STORE_ONLINE" ||
-            typ === "STORE_OUT_OF_TIMINGS" ||
-            typ === "STORE_RECONNECT_REQUIRED" ||
-            typ === "MERCHANT_OUTSIDE_DELIVERY" ||
-            typ === "MERCHANT_GO_ONLINE"
-          );
-        })();
         const isNewOrder = isMerchantNewOrderData(data);
         const AppState = require("react-native").AppState;
         const appActive = AppState.currentState === "active";
-        if (isStoreStatus) {
+        if (isStoreStatusData(data)) {
+          const state = String(data.state ?? data.storeState ?? "").toUpperCase();
+          const headsUp =
+            state === "OUT_OF_TIMINGS" ||
+            state === "OUT_OF_DELIVERY_TIMINGS" ||
+            state === "RECONNECT" ||
+            state === "RECONNECT_REQUIRED";
           return {
-            shouldShowAlert: !appActive,
-            shouldPlaySound: false,
+            shouldShowAlert: true,
+            shouldPlaySound: headsUp,
             shouldSetBadge: false,
-            shouldShowBanner: !appActive,
-            shouldShowList: !appActive,
+            shouldShowBanner: headsUp || !appActive,
+            shouldShowList: true,
           };
         }
-        // Killed: this handler never runs; OS uses merchant_new_orders_alert
-        // from the FCM notification block (must stay audible).
-        // Background/cached: this handler MAY run — still allow OS sound.
-        // Active: mute OS; Incoming Order Modal / NewOrderAlertManager plays.
+        // Killed: this handler never runs; OS uses merchant_new_orders_alert.
+        // Background (process alive): OS channel sound (shouldPlaySound true).
+        // Foreground: mute OS — Incoming Order modal / JS owns the chime.
+        const suppressOsSound = isNewOrder && appActive;
         return {
           shouldShowAlert: true,
-          shouldPlaySound: !(isNewOrder && appActive),
+          shouldPlaySound: !suppressOsSound,
           shouldSetBadge: true,
           shouldShowBanner: true,
           shouldShowList: true,

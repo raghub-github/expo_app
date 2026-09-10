@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Platform,
   Modal,
+  useWindowDimensions,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -19,6 +20,7 @@ import {
   useRiderSubscriptionWallet,
 } from "@/src/hooks/useRiderSubscription";
 import { extractApiErrorMessage } from "@/src/services/http";
+import { responsiveFont, responsiveSpacing } from "@/src/theme/responsive";
 
 type SubscriptionBottomSheetProps = {
   visible: boolean;
@@ -37,66 +39,75 @@ function SubscriptionHeroHeader({
   badgeText,
   featured,
   inclGstLabel,
+  compact,
 }: {
   planName: string;
   headline: string;
   badgeText: string;
   featured: RiderSubscriptionPlan["featuredPrice"];
   inclGstLabel: string;
+  compact?: boolean;
 }) {
+  const { width, fontScale } = useWindowDimensions();
+  const titleSize = responsiveFont(compact ? 18 : 22, width, fontScale, { min: 16, max: 24 });
+  const tagSize = responsiveFont(13, width, fontScale, { min: 11, max: 15 });
+  const priceSize = responsiveFont(12, width, fontScale, { min: 11, max: 14 });
+
   return (
     <LinearGradient
       colors={["#12032E", "#2E1065", "#4C1D95"]}
       start={{ x: 0, y: 0.5 }}
       end={{ x: 1, y: 0.5 }}
-      style={styles.hero}
+      style={[styles.hero, compact && styles.heroCompact]}
     >
       <View style={styles.heroRay} />
       <View style={styles.heroGoldStripe} />
 
       <View style={styles.heroRow}>
-        <View style={styles.emblemWrap}>
+        <View style={[styles.emblemWrap, compact && styles.emblemCompact]}>
           <View style={styles.emblemGlow} />
-          <View style={styles.shieldOuter}>
+          <View style={[styles.shieldOuter, compact && styles.shieldCompact]}>
             <LinearGradient colors={["#1E0A45", "#12032E"]} style={styles.shieldInner}>
-              <MaterialCommunityIcons name="diamond-stone" size={22} color="#E9D5FF" />
+              <MaterialCommunityIcons name="diamond-stone" size={compact ? 18 : 22} color="#E9D5FF" />
             </LinearGradient>
           </View>
           <View style={styles.crownTop}>
-            <MaterialCommunityIcons name="crown" size={26} color="#FBBF24" />
+            <MaterialCommunityIcons name="crown" size={compact ? 22 : 26} color="#FBBF24" />
           </View>
         </View>
 
         <View style={styles.heroCopy}>
-          <Text style={styles.planTitle} numberOfLines={1}>
+          <Text style={[styles.planTitle, { fontSize: titleSize }]} numberOfLines={1}>
             {planName}
           </Text>
-          <Text style={styles.tagline} numberOfLines={2}>
+          <Text style={[styles.tagline, { fontSize: tagSize }]} numberOfLines={2}>
             {headline}
           </Text>
           {featured ? (
             <View style={styles.priceChip}>
-              <Text style={styles.priceChipText}>
+              <Text style={[styles.priceChipText, { fontSize: priceSize }]} numberOfLines={1}>
                 {formatRupee(featured.total)} / {featured.cycleLabel} · {inclGstLabel}
               </Text>
             </View>
           ) : null}
         </View>
 
-        <View style={styles.ribbonWrap}>
-          <LinearGradient
-            colors={["#FEF3C7", "#FBBF24", "#F59E0B"]}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-            style={styles.ribbon}
-          >
-            <MaterialCommunityIcons name="crown" size={15} color="#1F1147" />
-            <Text style={styles.ribbonText}>
-              {badgeText.trim().split(/\s+/).join("\n")}
-            </Text>
-          </LinearGradient>
-          <View style={styles.ribbonNotch} />
-        </View>
+        {!compact ? (
+          <View style={styles.ribbonWrap}>
+            <LinearGradient
+              colors={["#FEF3C7", "#FBBF24", "#F59E0B"]}
+              start={{ x: 0.5, y: 0 }}
+              end={{ x: 0.5, y: 1 }}
+              style={styles.ribbon}
+            >
+              <MaterialCommunityIcons name="crown" size={15} color="#1F1147" />
+              <Text style={styles.ribbonText} numberOfLines={2}>
+                {badgeText.trim().split(/\s+/).join("\n")}
+              </Text>
+            </LinearGradient>
+            <View style={styles.ribbonNotch} />
+          </View>
+        ) : null}
       </View>
     </LinearGradient>
   );
@@ -111,7 +122,7 @@ function SuccessOverlay({ visible, onDismiss }: { visible: boolean; onDismiss: (
           <View style={styles.successIconWrap}>
             <Ionicons name="checkmark" size={42} color="#FFFFFF" />
           </View>
-          <Text style={styles.successTitle}>
+          <Text style={styles.successTitle} numberOfLines={3}>
             {t("subscription.successTitle", "You are a Pro member now !")}
           </Text>
           <Pressable onPress={onDismiss} style={styles.successBtn}>
@@ -131,7 +142,9 @@ export function SubscriptionBottomSheet({
 }: SubscriptionBottomSheetProps) {
   const { t } = useTranslation();
   const { bottom: safeBottom } = useSafeAreaInsets();
-  const sheetBottomPad = Math.max(safeBottom, Platform.OS === "android" ? 12 : 8) + 12;
+  const { height: winH, width: winW, fontScale } = useWindowDimensions();
+  const isShort = winH < 700;
+  const sheetBottomPad = Math.max(safeBottom, Platform.OS === "android" ? 12 : 8) + 8;
   const { subscribeWallet } = useRiderSubscriptionWallet();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -148,6 +161,11 @@ export function SubscriptionBottomSheet({
 
   const accent = plan.badgeColor || "#7C3AED";
   const featured = plan.featuredPrice;
+  const benefitSize = responsiveFont(14, winW, fontScale, { min: 12, max: 16 });
+  const bodyPad = responsiveSpacing(20, winW);
+  const maxHeightRatio = isShort ? 0.92 : 0.78;
+  /** Bound the column so ScrollView + sticky footer layout correctly under maxHeight sheets. */
+  const contentMaxHeight = Math.round(winH * maxHeightRatio) - sheetBottomPad - 24;
 
   const handleSubscribe = async () => {
     if (!plan || loading) return;
@@ -181,33 +199,48 @@ export function SubscriptionBottomSheet({
       <DismissibleBottomSheetShell
         visible={visible}
         onDismiss={onClose}
-        maxHeightRatio={0.78}
+        maxHeightRatio={maxHeightRatio}
         sheetBottomPadding={sheetBottomPad}
         sheetStyle={styles.sheet}
       >
-        <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
+        <View style={[styles.column, { maxHeight: contentMaxHeight }]}>
           <SubscriptionHeroHeader
             planName={plan.planName}
             headline={plan.headline || plan.tagline}
             badgeText={plan.badgeText}
             featured={featured}
             inclGstLabel={t("subscription.inclGst", "incl. GST")}
+            compact={isShort}
           />
 
-          <View style={styles.body}>
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={[styles.scrollContent, { paddingHorizontal: bodyPad }]}
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+            keyboardShouldPersistTaps="handled"
+          >
             <View style={styles.benefitsCard}>
               {plan.benefits.map((benefit, index) => (
                 <View key={`${plan.id}-benefit-${index}`} style={styles.benefitRow}>
                   <LinearGradient colors={["#34D399", "#059669"]} style={styles.checkCircle}>
                     <Ionicons name="checkmark" size={12} color="#ffffff" />
                   </LinearGradient>
-                  <Text style={styles.benefitText}>{benefit}</Text>
+                  <Text
+                    style={[styles.benefitText, { fontSize: benefitSize }]}
+                    numberOfLines={2}
+                    ellipsizeMode="tail"
+                  >
+                    {benefit}
+                  </Text>
                 </View>
               ))}
             </View>
 
             {error ? <Text style={styles.errorTxt}>{error}</Text> : null}
+          </ScrollView>
 
+          <View style={[styles.footer, { paddingHorizontal: bodyPad }]}>
             <Pressable
               onPress={handleSubscribe}
               disabled={loading}
@@ -222,21 +255,21 @@ export function SubscriptionBottomSheet({
                 {loading ? (
                   <ActivityIndicator color="#ffffff" />
                 ) : (
-                  <Text style={styles.ctaText}>
+                  <Text style={styles.ctaText} numberOfLines={1} ellipsizeMode="tail">
                     {plan.ctaLabel}
                     {featured ? ` · ${formatRupee(featured.total)}` : ""}
                   </Text>
                 )}
               </LinearGradient>
             </Pressable>
-            <Text style={styles.walletHint}>
+            <Text style={styles.walletHint} numberOfLines={2}>
               {t(
                 "subscription.walletPayHint",
                 "Amount will be deducted from your rider wallet instantly."
               )}
             </Text>
           </View>
-        </ScrollView>
+        </View>
       </DismissibleBottomSheetShell>
 
       <SuccessOverlay visible={showSuccess} onDismiss={handleSuccessDismiss} />
@@ -253,6 +286,31 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
   },
+  column: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minHeight: 0,
+    maxHeight: "100%",
+  },
+  scroll: {
+    flexGrow: 1,
+    flexShrink: 1,
+    minHeight: 0,
+  },
+  scrollContent: {
+    paddingTop: 14 + G,
+    paddingBottom: 8,
+    flexGrow: 1,
+  },
+  footer: {
+    flexShrink: 0,
+    paddingTop: 4,
+    paddingBottom: 4,
+    gap: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#F3F4F6",
+    backgroundColor: "#FFFFFF",
+  },
   hero: {
     paddingHorizontal: 14 + G,
     paddingTop: 10 + G,
@@ -260,6 +318,11 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     borderBottomLeftRadius: 18,
     borderBottomRightRadius: 18,
+    flexShrink: 0,
+  },
+  heroCompact: {
+    paddingTop: 8,
+    paddingBottom: 10,
   },
   heroRay: {
     position: "absolute",
@@ -290,6 +353,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "flex-end",
     marginTop: 4 + G,
+    flexShrink: 0,
+  },
+  emblemCompact: {
+    width: 52,
+    height: 60,
   },
   emblemGlow: {
     position: "absolute",
@@ -310,6 +378,10 @@ const styles = StyleSheet.create({
     borderColor: "#FBBF24",
     overflow: "hidden",
   },
+  shieldCompact: {
+    width: 40,
+    height: 46,
+  },
   shieldInner: {
     flex: 1,
     alignItems: "center",
@@ -327,16 +399,15 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingTop: 6 + G,
     minWidth: 0,
+    flexShrink: 1,
   },
   planTitle: {
-    fontSize: 22,
     fontWeight: "800",
     color: "#FFFFFF",
     letterSpacing: -0.2,
     marginBottom: 2 + G,
   },
   tagline: {
-    fontSize: 13,
     fontWeight: "600",
     color: "#FBBF24",
     lineHeight: 18 + G,
@@ -344,6 +415,7 @@ const styles = StyleSheet.create({
   },
   priceChip: {
     alignSelf: "flex-start",
+    maxWidth: "100%",
     backgroundColor: "rgba(255,255,255,0.12)",
     paddingHorizontal: 10 + G,
     paddingVertical: 5 + G,
@@ -352,7 +424,6 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.2)",
   },
   priceChipText: {
-    fontSize: 12,
     fontWeight: "700",
     color: "#FFFFFF",
   },
@@ -360,6 +431,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: -2,
     marginRight: -2,
+    flexShrink: 0,
   },
   ribbon: {
     width: 52,
@@ -391,12 +463,6 @@ const styles = StyleSheet.create({
     borderTopColor: "#F59E0B",
     marginTop: -1,
   },
-  body: {
-    paddingHorizontal: 20 + G,
-    paddingTop: 14 + G,
-    paddingBottom: 4,
-    gap: 14,
-  },
   benefitsCard: {
     backgroundColor: "#FAFAFA",
     borderRadius: 14,
@@ -416,15 +482,17 @@ const styles = StyleSheet.create({
     borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
   },
   benefitText: {
     flex: 1,
-    fontSize: 14,
+    minWidth: 0,
     fontWeight: "600",
     color: "#1F2937",
     lineHeight: 19 + G,
   },
   errorTxt: {
+    marginTop: 10,
     fontSize: 13,
     color: "#DC2626",
     fontWeight: "600",
@@ -446,6 +514,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16 + G,
     borderRadius: 14,
     alignItems: "center",
+    minHeight: 48,
+    justifyContent: "center",
   },
   ctaText: {
     color: "#ffffff",
@@ -456,7 +526,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontSize: 12,
     color: "#6B7280",
-    marginBottom: 4,
+    marginBottom: 2,
   },
   successBackdrop: {
     flex: 1,
@@ -493,6 +563,8 @@ const styles = StyleSheet.create({
     alignSelf: "flex-end",
     paddingHorizontal: 8,
     paddingVertical: 6,
+    minHeight: 44,
+    justifyContent: "center",
   },
   successBtnTxt: {
     fontSize: 15,

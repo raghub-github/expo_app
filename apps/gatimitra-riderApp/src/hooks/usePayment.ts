@@ -29,6 +29,8 @@ export interface VerifyPaymentRequest {
 export interface VerifyPaymentResponse {
   success: boolean;
   paymentId: string;
+  /** True when rider was activated (docs already verified). */
+  activated?: boolean;
 }
 
 /**

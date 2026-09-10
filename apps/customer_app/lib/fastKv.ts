@@ -77,13 +77,25 @@ export function fastRemove(key: string): void {
   void AsyncStorage.removeItem(key).catch(() => {});
 }
 
-/** One-shot: pull AsyncStorage into memory when MMKV is unavailable. */
+/** Pull AsyncStorage into MMKV (when key missing) + memory so prod cold starts hit cache. */
 export async function hydrateFastKvFromAsyncStorage(keys: string[]): Promise<void> {
-  if (tryInitMmkv()) return;
+  const store = tryInitMmkv();
   try {
     const pairs = await AsyncStorage.multiGet(keys);
     for (const [k, v] of pairs) {
-      if (k && v != null) memory.set(k, v);
+      if (!k || v == null) continue;
+      if (store) {
+        try {
+          if (store.getString(k) == null) {
+            store.set(k, v);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!memory.has(k)) {
+        memory.set(k, v);
+      }
     }
   } catch {
     /* ignore */

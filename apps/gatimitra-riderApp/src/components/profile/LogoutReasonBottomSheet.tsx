@@ -6,21 +6,21 @@ import {
   TouchableOpacity,
   StyleSheet,
   Modal,
-  ScrollView,
   TextInput,
   ActivityIndicator,
   Platform,
-  useWindowDimensions,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import {
   RIDER_LOGOUT_REASON_OPTIONS,
   type RiderLogoutReasonCode,
 } from "@/src/lib/rider-logout-reasons";
 import { colors } from "@/src/theme";
+import { ResponsiveSheetBody } from "@/src/components/ui/ResponsiveSheetBody";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
-const HPAD = 20;
 const SHEET_RADIUS = 24;
 const FOOTER_ROW_H = 48;
 const FOOTER_GAP = 12;
@@ -37,16 +37,16 @@ export function LogoutReasonBottomSheet({
   onConfirm,
 }: LogoutReasonBottomSheetProps) {
   const { t } = useTranslation();
-  const insets = useSafeAreaInsets();
-  const { width: winW, height: winH } = useWindowDimensions();
+  const { rs, insets, height, width, isShortHeight } = useResponsiveLayout();
+  const hPad = rs(20);
 
   const [selected, setSelected] = useState<RiderLogoutReasonCode | null>(null);
   const [otherText, setOtherText] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const bottomInset = Math.max(insets.bottom, 16);
-  const maxSheetHeight = Math.round(winH * 0.88);
-  const btnWidth = Math.floor((winW - HPAD * 2 - FOOTER_GAP) / 2);
+  const bottomPad = resolveRiderBottomInset(insets.bottom) + rs(12);
+  const maxSheetHeight = Math.round(height * (isShortHeight ? 0.92 : 0.88));
+  const btnWidth = Math.floor((width - hPad * 2 - FOOTER_GAP) / 2);
 
   useEffect(() => {
     if (visible) {
@@ -94,29 +94,57 @@ export function LogoutReasonBottomSheet({
         />
 
         <View style={styles.sheet}>
-          <ScrollView
-            style={{ maxHeight: maxSheetHeight }}
-            bounces={false}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={[
-              styles.scrollContent,
-              { paddingBottom: bottomInset },
-            ]}
-          >
-            <View style={styles.handle} />
+          <View style={styles.handle} />
+          <ResponsiveSheetBody
+            maxHeight={maxSheetHeight - bottomPad - 24}
+            contentContainerStyle={{ paddingHorizontal: 0 }}
+            footerStyle={{ paddingHorizontal: hPad }}
+            footerBottomInset={bottomPad}
+            footer={
+              <View style={[rowLayout.row, styles.footerRow]}>
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={onClose}
+                  disabled={submitting}
+                  style={[styles.cancelBtn, { width: btnWidth }]}
+                >
+                  <Text style={styles.cancelBtnTxt} numberOfLines={1}>
+                    {t("profile.cancelLogout", "Cancel")}
+                  </Text>
+                </TouchableOpacity>
 
-            <Text style={styles.title}>
+                <TouchableOpacity
+                  activeOpacity={canContinue ? 0.85 : 1}
+                  onPress={handleContinue}
+                  disabled={submitting}
+                  style={[
+                    styles.continueBtn,
+                    { width: btnWidth },
+                    !canContinue && styles.continueBtnDisabled,
+                  ]}
+                >
+                  {submitting ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                  ) : (
+                    <Text style={styles.continueBtnTxt} numberOfLines={1}>
+                      {t("profile.logoutReason.continue", "Continue")}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            }
+          >
+            <Text style={[styles.title, { paddingHorizontal: hPad }, flexShrinkText]} numberOfLines={2}>
               {t("profile.logoutReason.title", "Why are you logging out?")}
             </Text>
-            <Text style={styles.subtitle}>
+            <Text style={[styles.subtitle, { paddingHorizontal: hPad }, flexShrinkText]} numberOfLines={2}>
               {t(
                 "profile.logoutReason.subtitle",
                 "Help us improve your experience",
               )}
             </Text>
 
-            <View style={styles.optionsBlock}>
+            <View style={[styles.optionsBlock, { paddingHorizontal: hPad }]}>
               {RIDER_LOGOUT_REASON_OPTIONS.map((option) => {
                 const isSelected = selected === option.code;
                 return (
@@ -126,6 +154,7 @@ export function LogoutReasonBottomSheet({
                     disabled={submitting}
                     onPress={() => setSelected(option.code)}
                     style={[
+                      rowLayout.row,
                       styles.optionRow,
                       isSelected && styles.optionRowSelected,
                     ]}
@@ -133,6 +162,7 @@ export function LogoutReasonBottomSheet({
                     <View
                       style={[
                         styles.radioOuter,
+                        rowLayout.noShrink,
                         isSelected && styles.radioOuterSelected,
                       ]}
                     >
@@ -141,8 +171,10 @@ export function LogoutReasonBottomSheet({
                     <Text
                       style={[
                         styles.optionLabel,
+                        flexShrinkText,
                         isSelected && styles.optionLabelSelected,
                       ]}
+                      numberOfLines={2}
                     >
                       {t(option.labelKey, option.defaultLabel)}
                     </Text>
@@ -166,41 +198,7 @@ export function LogoutReasonBottomSheet({
                 />
               ) : null}
             </View>
-
-            <View style={styles.footer}>
-              <View style={styles.footerRow}>
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  onPress={onClose}
-                  disabled={submitting}
-                  style={[styles.cancelBtn, { width: btnWidth }]}
-                >
-                  <Text style={styles.cancelBtnTxt}>
-                    {t("profile.cancelLogout", "Cancel")}
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  activeOpacity={canContinue ? 0.85 : 1}
-                  onPress={handleContinue}
-                  disabled={submitting}
-                  style={[
-                    styles.continueBtn,
-                    { width: btnWidth },
-                    !canContinue && styles.continueBtnDisabled,
-                  ]}
-                >
-                  {submitting ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
-                  ) : (
-                    <Text style={styles.continueBtnTxt}>
-                      {t("profile.logoutReason.continue", "Continue")}
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            </View>
-          </ScrollView>
+          </ResponsiveSheetBody>
         </View>
       </View>
     </Modal>
@@ -218,9 +216,12 @@ const styles = StyleSheet.create({
   },
   sheet: {
     width: "100%",
+    maxWidth: "100%",
     backgroundColor: "#FFFFFF",
     borderTopLeftRadius: SHEET_RADIUS,
     borderTopRightRadius: SHEET_RADIUS,
+    paddingTop: 10,
+    overflow: "hidden",
     ...(Platform.OS === "android"
       ? { elevation: 24 }
       : {
@@ -230,27 +231,21 @@ const styles = StyleSheet.create({
           shadowRadius: 16,
         }),
   },
-  scrollContent: {
-    flexGrow: 0,
-    paddingTop: 10,
-  },
   handle: {
     alignSelf: "center",
     width: 40,
     height: 4,
     borderRadius: 999,
     backgroundColor: "#D1D5DB",
-    marginBottom: 14,
+    marginBottom: 8,
   },
   title: {
-    paddingHorizontal: HPAD,
     fontSize: 18,
     fontWeight: "700",
     color: "#111827",
     lineHeight: 24,
   },
   subtitle: {
-    paddingHorizontal: HPAD,
     marginTop: 4,
     marginBottom: 12,
     fontSize: 13,
@@ -258,12 +253,11 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   optionsBlock: {
-    paddingHorizontal: HPAD,
+    maxWidth: "100%",
   },
   optionRow: {
-    flexDirection: "row",
-    alignItems: "center",
     paddingVertical: 13,
+    maxWidth: "100%",
   },
   optionRowSelected: {
     backgroundColor: colors.primary[50],
@@ -292,6 +286,7 @@ const styles = StyleSheet.create({
   },
   optionLabel: {
     flex: 1,
+    minWidth: 0,
     fontSize: 15,
     color: "#111827",
     lineHeight: 21,
@@ -312,19 +307,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#111827",
     textAlignVertical: "top",
-  },
-  footer: {
-    paddingHorizontal: HPAD,
-    paddingTop: 14,
-    marginTop: 4,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#E5E7EB",
+    maxWidth: "100%",
   },
   footerRow: {
-    flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
     width: "100%",
+    gap: FOOTER_GAP,
   },
   cancelBtn: {
     height: FOOTER_ROW_H,

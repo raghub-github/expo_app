@@ -1,8 +1,7 @@
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { getRiderTabBarTotalHeight } from "@/src/lib/rider-tab-bar-layout";
+import { useRiderBottomDock } from "@/src/hooks/useRiderBottomDock";
 
-/** Bottom inset for sheet content above tab bar + system navigation (sheet shell is flush to screen bottom). */
+/** Bottom inset for sheet content above tab bar + system navigation. */
 export function useTabBarBottomOffset(): number {
-  const insets = useSafeAreaInsets();
-  return getRiderTabBarTotalHeight(insets.bottom);
+  const { tabBarHeight } = useRiderBottomDock({ tabBarVisible: true });
+  return tabBarHeight;
 }

@@ -90,9 +90,9 @@ function panSelfieComplete(
     verificationStatus?: string | null;
     metadata?: unknown;
   }[],
+  panSkipOverride?: boolean | null,
 ): boolean {
-  // PAN is optional during onboarding — selfie alone completes this step.
-  return panSelfieOnboardingComplete(docs);
+  return panSelfieOnboardingComplete(docs, { panSkipOverride });
 }
 
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
@@ -303,6 +303,8 @@ export async function readRiderOnboardingVehicleSelection(riderId: number): Prom
   registrationNumber: string | null;
   rcDocumentUrl: string | null;
   rcElectronicallyVerified: boolean;
+  hasOwnVehicle: boolean | null;
+  skippedOnboardingDocs: string[];
 }> {
   const db = getDb();
   const docs = await db
@@ -328,12 +330,24 @@ export async function readRiderOnboardingVehicleSelection(riderId: number): Prom
     rcUrl.includes("electronic_verified") ||
     rcUrl.includes("cashfree") ||
     rcUrl.includes("digilocker");
+  const selection = docs.find((d) => d.docType === "onboarding_vehicle_selection");
+  const selMeta =
+    selection?.metadata && typeof selection.metadata === "object"
+      ? (selection.metadata as Record<string, unknown>)
+      : {};
+  const hasOwnVehicle =
+    typeof selMeta.hasOwnVehicle === "boolean" ? selMeta.hasOwnVehicle : null;
+  const skippedOnboardingDocs = Array.isArray(selMeta.skippedOnboardingDocs)
+    ? selMeta.skippedOnboardingDocs.map((c) => String(c || "").trim()).filter(Boolean)
+    : [];
   return {
     vehicleChoice: readVehicleChoice(docs),
     vehicleCategoryCode: readVehicleCategoryCode(docs),
     registrationNumber: readRcNumber(docs),
     rcDocumentUrl: readRcDocumentUrl(docs),
     rcElectronicallyVerified,
+    hasOwnVehicle,
+    skippedOnboardingDocs,
   };
 }
 
@@ -429,6 +443,8 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   panNumber: string | null;
   /** True when PAN row is electronically / manually verified in rider_documents. */
   panVerified: boolean;
+  /** Admin exception allowing this rider to skip PAN verification. */
+  panSkipOverride: boolean;
   /** Cashfree / DigiLocker PAN payload for rider-app rehydrate. */
   panVerifiedData: Record<string, unknown> | null;
   /** Masked Aadhaar (XXXX-XXXX-1234) for rider-app display / match. */
@@ -502,6 +518,7 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
       completedSteps: [],
       panNumber: null,
       panVerified: false,
+      panSkipOverride: false,
       ...emptyDocDraft,
       onboardingProgress: emptyProgress,
       lastCompletedStep: null,
@@ -554,7 +571,7 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     completed.push("aadhaar_name");
   }
 
-  if (panSelfieComplete(docs)) {
+  if (panSelfieComplete(docs, riderRows[0]?.panSkipOverride)) {
     completed.push("pan_selfie");
   }
 
@@ -681,13 +698,15 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     bankAccountOnboardingDone,
   };
 
+  const skipPan = Boolean(rider.panSkipOverride);
+
   const onboardingProgress = buildOnboardingProgressMap({
     docs,
     filesByDocId,
     aadhaarDone: aadhaarComplete(docs, filesByDocId),
-    faceDone: panSelfieComplete(docs),
-    panVerified,
-    hasPanDoc: Boolean(panDoc),
+    faceDone: panSelfieComplete(docs, skipPan),
+    panVerified: panVerified || skipPan,
+    hasPanDoc: Boolean(panDoc) || skipPan,
     vehicleReady: vehicleReadyForPayment,
     vehicleSatisfied: vehicleDocsSatisfied,
     paymentCompleted,
@@ -709,8 +728,11 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
 
   // Heal illegal APPROVAL-without-payment on every progress read.
   await healRiderOnboardingStageIfNeeded(riderId, {
-    identitySubmitted: aadhaarComplete(docs, filesByDocId) && panSelfieComplete(docs),
-    identityVerified: aadhaarComplete(docs, filesByDocId) && panSelfieComplete(docs) && (!panDoc || panVerified),
+    identitySubmitted: aadhaarComplete(docs, filesByDocId) && panSelfieComplete(docs, skipPan),
+    identityVerified:
+      aadhaarComplete(docs, filesByDocId) &&
+      panSelfieComplete(docs, skipPan) &&
+      (skipPan || !panDoc || panVerified),
     vehicleReady: vehicleReadyForPayment,
     vehicleVerified: vehicleDocsSatisfied && vehicleReadyForPayment,
     paymentCompleted,
@@ -726,7 +748,9 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
       nextStep: establishedNext,
       completedSteps: completed,
       panNumber,
+      // Actual Cashfree/manual PAN verification only — admin skip is separate.
       panVerified,
+      panSkipOverride: skipPan,
       ...docDraftFields,
       onboardingProgress,
       lastCompletedStep,
@@ -742,7 +766,7 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
 
   if (!aadhaarComplete(docs, filesByDocId)) {
     nextStep = "aadhaar_name";
-  } else if (!panSelfieComplete(docs)) {
+  } else if (!panSelfieComplete(docs, skipPan)) {
     nextStep = "pan_selfie";
   } else if (!vehicleReadyForPayment) {
     if (vehicleFlow === "rental_ev") {
@@ -759,6 +783,7 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     completedSteps: completed,
     panNumber,
     panVerified,
+    panSkipOverride: skipPan,
     ...docDraftFields,
     onboardingProgress,
     lastCompletedStep,

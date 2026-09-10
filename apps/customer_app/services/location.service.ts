@@ -325,9 +325,9 @@ const REVERSE_GEOCODE_CACHE_MAX = 200;
 const reverseGeocodeCache = new Map<string, { result: ReverseGeocodeResult; at: number }>();
 
 /**
- * Reverse geocode lng,lat through the provider chain (v6 address-first → Search Box → v5).
- * Tags the winning provider and a data-quality distance/approximate signal so callers can
- * surface — never mask — sparsely-mapped areas. Results are memoized per ~11 m cell.
+ * Reverse geocode lng,lat — race Mapbox providers; first usable address wins
+ * (sequential chain was adding multi-second delay when v6 was slow).
+ * Results are memoized per ~11 m cell.
  */
 export async function reverseGeocode(
   longitude: number,
@@ -344,32 +344,30 @@ export async function reverseGeocode(
     return cached.result;
   }
 
-  for (const provider of REVERSE_PROVIDERS) {
-    try {
-      const result = await provider.reverse(longitude, latitude);
-      if (result && result.fullAddress) {
-        const tagged = { ...result, provider: provider.name };
-        if (reverseGeocodeCache.size >= REVERSE_GEOCODE_CACHE_MAX) {
-          const oldest = reverseGeocodeCache.keys().next().value;
-          if (oldest !== undefined) reverseGeocodeCache.delete(oldest);
-        }
-        reverseGeocodeCache.set(cacheKey, { result: tagged, at: Date.now() });
-        return tagged;
-      }
-    } catch {
-      // try next provider
+  const attempts = REVERSE_PROVIDERS.map(async (provider) => {
+    const result = await provider.reverse(longitude, latitude);
+    if (!result?.fullAddress) throw new Error(`${provider.name}: empty`);
+    return { ...result, provider: provider.name };
+  });
+
+  try {
+    const tagged = await Promise.any(attempts);
+    if (reverseGeocodeCache.size >= REVERSE_GEOCODE_CACHE_MAX) {
+      const oldest = reverseGeocodeCache.keys().next().value;
+      if (oldest !== undefined) reverseGeocodeCache.delete(oldest);
     }
+    reverseGeocodeCache.set(cacheKey, { result: tagged, at: Date.now() });
+    return tagged;
+  } catch {
+    // all providers failed / empty
   }
 
   const { mapboxAccessToken } = getConfig();
   return {
     primary: "Current location",
-    secondary: mapboxAccessToken
-      ? `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
-      : "Enable location or add MAPBOX token",
-    fullAddress: mapboxAccessToken
-      ? `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
-      : "Location not available",
+    // Never surface raw GPS as the customer-facing place name.
+    secondary: mapboxAccessToken ? "" : "Enable location or add MAPBOX token",
+    fullAddress: mapboxAccessToken ? "Current location" : "Location not available",
     city: null,
     state: null,
     pincode: null,

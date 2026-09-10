@@ -1058,6 +1058,59 @@ export async function meRoutes(app: FastifyInstance) {
       });
     }
   );
+
+  /**
+   * Abandoned cart push — schedule when app backgrounds with items; cancel on
+   * foreground / cart clear / order placed. Poller delivers CUSTOMER_ABANDONED_CART.
+   */
+  app.post(
+    "/abandoned-cart/schedule",
+    {
+      schema: {
+        body: z.object({
+          store_id: z.string().min(1).max(128),
+          store_name: z.string().min(1).max(200),
+        }),
+        response: {
+          200: z.object({ ok: z.boolean(), send_after: z.string() }),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      if (req.auth!.role !== "customer") {
+        return reply.code(403).send({ error: "customer_only" });
+      }
+      const body = req.body as { store_id: string; store_name: string };
+      const { scheduleAbandonedCartReminder } = await import("../notifications/abandonedCartReminder.js");
+      const result = await scheduleAbandonedCartReminder({
+        userId: req.auth!.sub,
+        storeId: body.store_id,
+        storeName: body.store_name,
+      });
+      return { ok: true, send_after: result.sendAfter };
+    }
+  );
+
+  app.post(
+    "/abandoned-cart/cancel",
+    {
+      schema: {
+        response: {
+          200: z.object({ ok: z.boolean(), cancelled: z.number() }),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      if (req.auth!.role !== "customer") {
+        return reply.code(403).send({ error: "customer_only" });
+      }
+      const { cancelAbandonedCartReminder } = await import("../notifications/abandonedCartReminder.js");
+      const result = await cancelAbandonedCartReminder(req.auth!.sub);
+      return { ok: true, cancelled: result.cancelled };
+    }
+  );
 }
 
 function extractProxyAttachmentKey(stored: string | null | undefined): string | null {

@@ -9,6 +9,7 @@ import {
   collectMerchantBannerUris,
   resolveMerchantBannerUri,
 } from "@/lib/merchantBanner";
+import { resolveMerchantFoodHeroPrimaryUri } from "@/lib/merchantHeroMedia";
 import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
 import { enqueueImagePrefetch } from "@/lib/prefetchQueue";
 import type { MerchantSummary } from "@/services/merchant.service";
@@ -85,18 +86,24 @@ export function prefetchMerchantPrimaryBanners(
   const urls: string[] = [];
   const seen = new Set<string>();
   for (const m of merchants) {
-    if (urls.length >= limit) break;
-    const banner = resolveMerchantBannerUri(m as MerchantSummary);
-    if (!banner || seen.has(banner)) continue;
-    seen.add(banner);
-    urls.push(banner);
+    if (urls.length >= limit * 2) break;
+    const merchant = m as MerchantSummary;
+    // Classic/grid card banner + discovery hero (may differ when logo is filtered).
+    for (const candidate of [
+      resolveMerchantBannerUri(merchant),
+      resolveMerchantFoodHeroPrimaryUri(merchant),
+    ]) {
+      if (!candidate || seen.has(candidate)) continue;
+      seen.add(candidate);
+      urls.push(candidate);
+    }
   }
   if (urls.length === 0) return;
   // Above-the-fold: fire Image.prefetch now so Food list paints from memory-disk.
-  const hot = urls.slice(0, 12);
+  const hot = urls.slice(0, 16);
   void Promise.allSettled(hot.map((uri) => prefetchUriNow(uri)));
-  if (urls.length > 12) {
-    enqueueImagePrefetch(urls.slice(12), limit);
+  if (urls.length > 16) {
+    enqueueImagePrefetch(urls.slice(16), limit);
   }
 }
 

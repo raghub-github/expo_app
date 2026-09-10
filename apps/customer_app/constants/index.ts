@@ -24,6 +24,8 @@ export const STORAGE_KEYS = {
   SUBSCRIPTION_PLANS_CACHE: "gm_customer_subscription_plans_cache_v1",
   /** Per-state food home layout for instant paint (classic / grid_first / discovery) */
   FOOD_HOME_LAYOUT_CACHE: "gm_customer_food_home_layout_cache_v2",
+  /** Featured FOOD home offers ribbon — instant classic/grid/discovery promo paint */
+  FEATURED_OFFERS_HOME_CACHE: "gm_customer_featured_offers_home_cache_v1",
   /** Store menu payloads for instant revisit (SWR) */
   MERCHANT_MENU_CACHE: "gm_customer_merchant_menu_cache_v1",
   /** Nearby merchants list for instant food-home paint (geo-bucketed) */

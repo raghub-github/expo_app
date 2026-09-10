@@ -19,7 +19,7 @@ const WATERMARK_GRAY = "rgba(107, 114, 128, 0.55)";
 
 type BrandingFooterProps = {
   /** Home tab reference: teal sparkles tagline + bold black logo + teal rule */
-  variant?: "default" | "home";
+  variant?: "default" | "home" | "discovery";
   /** Less vertical padding for dense pages (e.g. checkout). */
   compact?: boolean;
 };
@@ -36,24 +36,39 @@ export function BrandingFooter({ variant = "default", compact = false }: Brandin
   }, [opacity]);
 
   const isHome = variant === "home";
+  const isDiscovery = variant === "discovery";
 
   return (
     <Animated.View
-      style={[styles.wrap, isHome && styles.wrapHome, compact && styles.wrapCompact, { opacity }]}
+      style={[
+        styles.wrap,
+        isHome && styles.wrapHome,
+        compact && styles.wrapCompact,
+        { opacity },
+      ]}
       pointerEvents="none"
     >
-      {isHome ? null : <View style={styles.divider} />}
+      {isHome ? null : (
+        <View style={[styles.divider, isDiscovery && styles.dividerDiscovery]} />
+      )}
       {isHome ? (
         <AppText style={styles.taglineHome} bold>
           ✨ {TAGLINE} ✨
         </AppText>
       ) : (
-        <AppText style={styles.tagline} bold>
+        <AppText style={[styles.tagline, isDiscovery && styles.taglineDiscovery]} bold>
           {TAGLINE}
         </AppText>
       )}
       <View style={styles.brandTextWrap}>
-        <AppText style={[styles.brandText, isHome && styles.brandTextHome]} bold>
+        <AppText
+          style={[
+            styles.brandText,
+            isHome && styles.brandTextHome,
+            isDiscovery && styles.brandTextDiscovery,
+          ]}
+          bold
+        >
           {BRAND_LABEL}
         </AppText>
       </View>
@@ -80,12 +95,18 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0, 0, 0, 0.06)",
     marginBottom: 10,
   },
+  dividerDiscovery: {
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+  },
   tagline: {
     fontSize: 14,
     fontWeight: "600",
     color: GatiMitraColors.primaryMint,
     textAlign: "center",
     letterSpacing: 0.3,
+  },
+  taglineDiscovery: {
+    color: "#5EEAD4",
   },
   brandTextWrap: {
     marginTop: 6,
@@ -99,6 +120,9 @@ const styles = StyleSheet.create({
     textAlign: "center",
     letterSpacing: 1.5,
     transform: [{ scaleX: 1.05 }],
+  },
+  brandTextDiscovery: {
+    color: "rgba(255, 255, 255, 0.22)",
   },
   wrapHome: {
     paddingTop: 20,

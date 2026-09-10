@@ -5,6 +5,7 @@ import { prefetchFeaturedOffersHome } from "@/hooks/useFeaturedOffersHome";
 import { prefetchFeaturedOffersRide } from "@/hooks/useFeaturedOffersRide";
 import { prefetchServiceCardOfferPills } from "@/hooks/useServiceCardOfferPills";
 import { normalizeOfferLocationParams } from "@/lib/featuredOfferGeo";
+import { seedFeaturedOffersHomeQueryIfCached } from "@/lib/featuredOffersHomeCache";
 
 /** Wait for lastKnown → reconcile settle so we don't fetch offers for a transient pincode. */
 const LOCATION_SETTLE_MS = 500;
@@ -25,6 +26,8 @@ export function FeaturedOffersPrefetch() {
 
   useEffect(() => {
     if (!locationHydrated) return;
+    // Instant ribbon paint from disk — network refresh after settle.
+    seedFeaturedOffersHomeQueryIfCached(queryClient, params);
     const timer = setTimeout(() => {
       void prefetchFeaturedOffersHome(queryClient, params);
       void prefetchFeaturedOffersRide(queryClient, params);

@@ -568,6 +568,13 @@ const ridersTable = pgTable(
     panNumber: text("pan_number"),
     dob: date("dob"),
     selfieUrl: text("selfie_url"),
+    /** Admin-approved exception: this rider may continue KYC without verified PAN. */
+    panSkipOverride: boolean("pan_skip_override").notNull().default(false),
+    panSkipReason: text("pan_skip_reason"),
+    panSkipEnabledBy: integer("pan_skip_enabled_by"),
+    panSkipEnabledByEmail: text("pan_skip_enabled_by_email"),
+    panSkipEnabledByName: text("pan_skip_enabled_by_name"),
+    panSkipEnabledAt: timestamp("pan_skip_enabled_at", { withTimezone: true }),
     onboardingStage: onboardingStageEnum("onboarding_stage")
       .notNull()
       .default("MOBILE_VERIFIED"),

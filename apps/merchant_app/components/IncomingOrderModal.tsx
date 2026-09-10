@@ -233,7 +233,10 @@ function NewOrderFusePill({
         ) : null}
       </Svg>
       <View style={styles.newOrderBadgePill} pointerEvents="none">
-        <Text style={[styles.newOrderBadgeText, urgent && styles.newOrderBadgeTextUrgent]}>
+        <Text
+          style={[styles.newOrderBadgeText, urgent && styles.newOrderBadgeTextUrgent]}
+          maxFontSizeMultiplier={1.2}
+        >
           New order!
         </Text>
       </View>
@@ -1307,20 +1310,25 @@ export default function IncomingOrderModal() {
             {order ? (
               <>
                 <View style={styles.sheetOverlapHeader} pointerEvents="box-none">
+                  <View style={styles.headerSideSlot} />
                   <NewOrderFusePill borderProgress={fuseProgress} urgent={fuseUrgent} />
-                  <Pressable
-                    onPress={() => setRejectOpen(true)}
-                    disabled={actionLoading}
-                    style={({ pressed }) => [
-                      styles.rejectPill,
-                      actionLoading && styles.btnDisabled,
-                      pressed && styles.pressed,
-                    ]}
-                    hitSlop={8}
-                  >
-                    <Text style={styles.rejectPillText}>Reject</Text>
-                    <Ionicons name="close" size={14} color="#EF4444" />
-                  </Pressable>
+                  <View style={styles.headerSideSlot}>
+                    <Pressable
+                      onPress={() => setRejectOpen(true)}
+                      disabled={actionLoading}
+                      style={({ pressed }) => [
+                        styles.rejectPill,
+                        actionLoading && styles.btnDisabled,
+                        pressed && styles.pressed,
+                      ]}
+                      hitSlop={8}
+                    >
+                      <Text style={styles.rejectPillText} maxFontSizeMultiplier={1.2}>
+                        Reject
+                      </Text>
+                      <Ionicons name="close" size={14} color="#EF4444" />
+                    </Pressable>
+                  </View>
                 </View>
 
                 <View style={[styles.sheet, { maxHeight: sheetMaxHeight }]}>
@@ -1664,16 +1672,24 @@ const styles = StyleSheet.create({
   /** Porter-style: pill + reject float above sheet top edge */
   sheetOverlapHeader: {
     position: "relative",
-    height: BADGE_H,
+    minHeight: BADGE_H,
     marginBottom: -BADGE_OVERLAP,
     zIndex: 30,
-    alignItems: "center",
-    justifyContent: "flex-start",
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    paddingHorizontal: H_PADDING,
     paddingTop: 0,
     ...Platform.select({
       android: { elevation: 16 },
       default: {},
     }),
+  },
+  headerSideSlot: {
+    flex: 1,
+    minWidth: 72,
+    alignItems: "flex-end",
+    justifyContent: "flex-start",
   },
   badgeFuseShell: {
     width: BADGE_W,
@@ -1681,6 +1697,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     position: "relative",
+    flexShrink: 0,
     ...Platform.select({
       ios: {
         shadowColor: "#000",
@@ -1712,10 +1729,6 @@ const styles = StyleSheet.create({
     color: "#B91C1C",
   },
   rejectPill: {
-    position: "absolute",
-    /** Float above sheet — negative top lifts it clear of the sheet edge */
-    top: -10,
-    right: H_PADDING,
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
@@ -1944,14 +1957,16 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textSecondary,
   },
   qtyHeader: {
-    width: 46,
+    width: 48,
+    minWidth: 48,
     textAlign: "center",
     fontSize: 10,
     fontWeight: "700",
     color: GatiMitraMerchant.textSecondary,
   },
   amountHeader: {
-    width: 73,
+    width: 72,
+    minWidth: 72,
     textAlign: "right",
     fontSize: 10,
     fontWeight: "700",

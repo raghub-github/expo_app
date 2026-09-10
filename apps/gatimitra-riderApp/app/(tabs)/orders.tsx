@@ -8,9 +8,8 @@ import {
   Platform,
   AppState,
   Alert,
-  TouchableOpacity,
+  type LayoutChangeEvent,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import * as Location from "expo-location";
 import { useSessionStore } from "@/src/stores/sessionStore";
@@ -44,7 +43,7 @@ import { openSubscriptionDutyBlockedSheet } from "@/src/stores/subscriptionDutyB
 import { showRiderPaymentSuccess } from "@/src/stores/paymentSuccessSheetStore";
 import { useRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
 import { MapRightControls } from "@/src/components/home/MapRightControls";
-import { SearchingOrdersPill } from "@/src/components/home/SearchingOrdersPill";
+import { HomeMapTopChrome } from "@/src/components/home/HomeMapTopChrome";
 import {
   openRazorpayCheckout,
   isNativeRazorpayAvailable,
@@ -58,6 +57,7 @@ import { shouldSkipCoalescedFix, COALESCE_IDLE_HOME_MOVE_M, COALESCE_IDLE_HOME_H
 import { useHomeMapLocationStore } from "@/src/stores/homeMapLocationStore";
 import { HomeDutyMap } from "@/src/components/home/HomeDutyMap";
 import { mapLog } from "@/src/lib/map-debug";
+import { useRiderBottomDockStore } from "@/src/stores/riderBottomDockStore";
 import { isUsableMapCoordinate, readLatestRiderGps, rememberMapCameraCenter } from "@/src/lib/readLatestRiderGps";
 
 /** Screen/demand re-render threshold — coarser than the map pin store. */
@@ -508,14 +508,14 @@ export default function OrdersScreen() {
   }, []);
 
   useEffect(() => {
-    if (!isOnDuty) return;
     let alertShown = false;
     const checkLocationStatus = async () => {
       try {
         const { status } = await Location.getForegroundPermissionsAsync();
         const enabled = await Location.hasServicesEnabledAsync();
         if (status !== "granted") {
-          if (!alertShown) {
+          // Only nag for permission while on duty; off-duty still paints last-known / seed pin.
+          if (isOnDuty && !alertShown) {
             alertShown = true;
             Alert.alert(
               t("location.required"),
@@ -543,8 +543,6 @@ export default function OrdersScreen() {
       }
     };
     void checkLocationStatus();
-    // Permission/GPS recovery is AppState-driven. A 5s poll while tracking
-    // burned CPU/battery for no UI change (OS dialogs already cover GPS-off).
     const subscription = AppState.addEventListener("change", (nextAppState) => {
       if (nextAppState === "active") void checkLocationStatus();
     });
@@ -574,30 +572,23 @@ export default function OrdersScreen() {
     }
   }, []);
 
-  // Keep the shared GPS watch while on duty or in an active order — even if this
-  // tab is blurred under Active Ride. Stopping on blur dropped the last fix and
-  // left the next map on Mapbox's world view until the location button was pressed.
+  // Keep GPS watch for the home "You" pin whether on or off duty.
+  // Duty server pings stay gated in useRiderDutyLocationPing (on-duty / active order only).
   useEffect(() => {
-    const needsWatch = isOnDuty || activeOrders.length > 0;
-    if (!needsWatch) {
-      void tracker.stop();
-      return;
-    }
     void tracker.start();
     return () => {
       void tracker.stop();
     };
-  }, [tracker, isOnDuty, activeOrders.length]);
+  }, [tracker]);
 
   // Foreground resume: refresh without tearing down the shared watch (keeps last fix).
   useEffect(() => {
     const sub = AppState.addEventListener("change", (nextAppState) => {
       if (nextAppState !== "active") return;
-      if (!isOnDuty && activeOrders.length === 0) return;
       void tracker.start();
     });
     return () => sub.remove();
-  }, [tracker, isOnDuty, activeOrders.length]);
+  }, [tracker]);
 
   const handleEnableLocation = useCallback(async () => {
     setCheckingLocation(true);
@@ -707,6 +698,33 @@ export default function OrdersScreen() {
 
   const showOffDutyBanner = homeChrome.showOffDutyBanner;
   const mapHasPin = useHomeMapLocationStore((s) => s.fix != null);
+  const [mapDockHeight, setMapDockHeight] = useState(0);
+  const setHomeDockHeight = useRiderBottomDockStore((s) => s.setHomeDockHeight);
+  const clearHomeDockHeight = useRiderBottomDockStore((s) => s.clearHomeDockHeight);
+
+  const onMapDockLayout = useCallback((e: LayoutChangeEvent) => {
+    const next = Math.round(e.nativeEvent.layout.height);
+    setMapDockHeight((prev) => (prev === next ? prev : next));
+    setHomeDockHeight(next);
+  }, [setHomeDockHeight]);
+
+  useEffect(() => {
+    const dockVisible =
+      (isOnDuty && !homeChrome.hasActiveOrder) || showOffDutyBanner;
+    if (!dockVisible) {
+      setMapDockHeight(0);
+      clearHomeDockHeight();
+    }
+  }, [
+    isOnDuty,
+    homeChrome.hasActiveOrder,
+    showOffDutyBanner,
+    clearHomeDockHeight,
+  ]);
+
+  const showStoresToggle = homeChrome.fetchDemandZones && !gpsBlocked;
+  const showSearching =
+    homeChrome.showSearchingPill && !gpsBlocked && homeFocused;
 
   return (
     <View style={styles.container}>
@@ -728,29 +746,12 @@ export default function OrdersScreen() {
           isOnDuty={isOnDuty}
         />
 
-        {/* Nearby Stores map-layer toggle — independent of hot zones. */}
-        {homeChrome.fetchDemandZones && !gpsBlocked ? (
-          <View style={styles.storeToggleHost} pointerEvents="box-none">
-            <TouchableOpacity
-              style={[styles.storeToggle, showNearbyStores && styles.storeToggleOn]}
-              onPress={() => setShowNearbyStores((v) => !v)}
-              accessibilityRole="button"
-              accessibilityLabel={t("home.nearbyStores", "Nearby stores")}
-              activeOpacity={0.85}
-            >
-              <Ionicons
-                name="storefront"
-                size={16}
-                color={showNearbyStores ? "#ffffff" : "#EA580C"}
-              />
-              <Text style={[styles.storeToggleText, showNearbyStores && styles.storeToggleTextOn]}>
-                {t("home.stores", "Stores")}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
-
-        {homeChrome.showSearchingPill && !gpsBlocked && homeFocused ? <SearchingOrdersPill /> : null}
+        <HomeMapTopChrome
+          showStores={showStoresToggle}
+          storesActive={showNearbyStores}
+          onStoresPress={() => setShowNearbyStores((v) => !v)}
+          showSearching={showSearching}
+        />
 
         {gpsBlocked ? (
           <View style={styles.gpsOverlay} pointerEvents="box-none">
@@ -809,11 +810,12 @@ export default function OrdersScreen() {
           onRecenter={handleRecenter}
           showOffDutyBanner={showOffDutyBanner}
           hasDemandZonesDock={isOnDuty && !homeChrome.hasActiveOrder}
+          dockHeight={mapDockHeight}
           showActiveRideFab={homeChrome.showActiveRideFab}
         />
 
         {isOnDuty && !homeChrome.hasActiveOrder ? (
-          <View style={styles.demandHost} pointerEvents="box-none">
+          <View style={styles.demandHost} pointerEvents="box-none" onLayout={onMapDockLayout}>
             <HighDemandZonesPanel
               visible
               zones={panelZones}
@@ -825,7 +827,7 @@ export default function OrdersScreen() {
         ) : null}
 
         {showOffDutyBanner ? (
-          <View style={styles.offDutyHost} pointerEvents="box-none">
+          <View style={styles.offDutyHost} pointerEvents="box-none" onLayout={onMapDockLayout}>
             <OffDutyBanner
               visible
               dutyLocked={dutyGoOnBlocked || subscriptionDispatchBlocked}
@@ -868,41 +870,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     zIndex: 40,
     elevation: 24,
-  },
-  storeToggleHost: {
-    position: "absolute",
-    top: 12,
-    left: 12,
-    zIndex: 45,
-    elevation: 26,
-  },
-  storeToggle: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: "#ffffff",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "#FED7AA",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-  storeToggleOn: {
-    backgroundColor: "#EA580C",
-    borderColor: "#EA580C",
-  },
-  storeToggleText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#EA580C",
-  },
-  storeToggleTextOn: {
-    color: "#ffffff",
   },
   offDutyHost: {
     position: "absolute",
@@ -947,7 +914,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#ffffff",
     borderRadius: 16,
     padding: 20,
-    marginBottom: 24,
   },
 });
 

@@ -12,6 +12,8 @@ import {
   RIDER_AUTH_SURFACE,
 } from "@/src/theme/riderAuthTheme";
 import { RiderFonts } from "@/src/theme/fonts";
+import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 type LanguageSelectorContentProps = {
   selected: LanguageCode;
@@ -42,6 +44,7 @@ export function LanguageSelectorContent({
 }: LanguageSelectorContentProps) {
   const { t } = useTranslation();
   const bottomInset = useRiderBottomInset();
+  const { isShortHeight, isCompactWidth, rf } = useResponsiveLayout();
   const footerPad = Math.max(bottomInset, 20) + 36;
 
   return (
@@ -62,8 +65,19 @@ export function LanguageSelectorContent({
             <View style={styles.backBtn} />
           )}
         </View>
-        <Text style={styles.title}>{t("topbar.selectLanguage", "Select language")}</Text>
-        <Text style={styles.subtitle}>{t("language.selectOne", "Select one from below")}</Text>
+        <Text
+          style={[
+            styles.title,
+            flexShrinkText,
+            { fontSize: rf(isShortHeight ? 26 : 32, { min: 22, max: 32 }) },
+          ]}
+          numberOfLines={2}
+        >
+          {t("topbar.selectLanguage", "Select language")}
+        </Text>
+        <Text style={[styles.subtitle, flexShrinkText]} numberOfLines={2}>
+          {t("language.selectOne", "Select one from below")}
+        </Text>
       </View>
 
       <ScrollView
@@ -80,15 +94,20 @@ export function LanguageSelectorContent({
               <Pressable
                 key={lang.code}
                 onPress={() => onSelect(lang.code)}
-                style={[styles.langCard, isSelected && styles.langCardSelected]}
+                style={[
+                  rowLayout.row,
+                  styles.langCard,
+                  isCompactWidth && styles.langCardCompact,
+                  isSelected && styles.langCardSelected,
+                ]}
                 accessibilityRole="radio"
                 accessibilityState={{ selected: isSelected }}
               >
-                <View style={styles.langCopy}>
-                  <Text style={styles.langNative} numberOfLines={1}>
+                <View style={[styles.langCopy, rowLayout.grow]}>
+                  <Text style={[styles.langNative, flexShrinkText]} numberOfLines={1}>
                     {lang.native}
                   </Text>
-                  <Text style={styles.langLabel} numberOfLines={1}>
+                  <Text style={[styles.langLabel, flexShrinkText]} numberOfLines={1}>
                     {lang.label}
                   </Text>
                 </View>
@@ -102,7 +121,9 @@ export function LanguageSelectorContent({
       <View style={[styles.footer, { paddingBottom: footerPad }]}>
         {onGetHelp ? (
           <Pressable onPress={onGetHelp} style={styles.helpWrap}>
-            <Text style={styles.helpText}>{t("language.getHelp", "Get Help")}</Text>
+            <Text style={styles.helpText} numberOfLines={1}>
+              {t("language.getHelp", "Get Help")}
+            </Text>
           </Pressable>
         ) : null}
         <AuthPrimaryButton
@@ -173,10 +194,15 @@ const styles = StyleSheet.create({
     backgroundColor: RIDER_AUTH_SURFACE,
     paddingHorizontal: 14,
     paddingVertical: 16,
-    flexDirection: "row",
     alignItems: "center",
     borderWidth: 1.5,
     borderColor: RIDER_AUTH_INK,
+    maxWidth: "48.4%",
+  },
+  langCardCompact: {
+    minHeight: 84,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
   },
   langCardSelected: {
     borderColor: RIDER_AUTH_INK,
@@ -184,6 +210,7 @@ const styles = StyleSheet.create({
   },
   langCopy: {
     flex: 1,
+    minWidth: 0,
     paddingRight: 8,
   },
   langNative: {

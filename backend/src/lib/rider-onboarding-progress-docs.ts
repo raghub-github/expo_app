@@ -113,8 +113,20 @@ export function dlRcOnboardingComplete(docs: OnboardingDocRow[]): boolean {
   );
 }
 
-export function panSelfieOnboardingComplete(docs: OnboardingDocRow[]): boolean {
-  return isOnboardingDocUsable(docs.find((d) => d.docType === "selfie"));
+/**
+ * PAN + selfie step.
+ * PAN is mandatory unless `panSkipOverride` is true for this rider.
+ * Selfie is always required.
+ */
+export function panSelfieOnboardingComplete(
+  docs: OnboardingDocRow[],
+  opts?: { panSkipOverride?: boolean | null },
+): boolean {
+  const selfieOk = isOnboardingDocUsable(docs.find((d) => d.docType === "selfie"));
+  if (!selfieOk) return false;
+  if (opts?.panSkipOverride === true) return true;
+  const pan = docs.find((d) => d.docType === "pan");
+  return isAdminOrElectronicallyCompleteDoc(pan);
 }
 
 export function rentalEvOnboardingComplete(docs: OnboardingDocRow[]): boolean {
