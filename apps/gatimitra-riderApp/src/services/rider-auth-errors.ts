@@ -1,4 +1,5 @@
 import { notifySessionRevoked } from "@/src/services/sessionEvents";
+import { isDefiniteRiderSessionRevocation } from "@/src/services/rider-auth-failure";
 
 export function parseApiErrorCode(body?: string | null): string | undefined {
   if (!body?.trim()) return undefined;
@@ -21,21 +22,14 @@ export function parseApiErrorMessage(body?: string | null): string {
   }
 }
 
-/** Match merchant app: only explicit auth revocation should force sign-out. */
+/**
+ * Match merchant app: only explicit auth revocation should even SIGNAL sign-out — and the signal is
+ * still confirmed authoritatively (SessionRevokedGate → confirmStillValid) before the session is
+ * actually cleared, so a single transient/racy 401 during cold start never logs the rider out.
+ */
 export function notifyForceLogoutIfNeeded(status: number, body?: string | null): void {
-  if (status !== 401) return;
   const code = parseApiErrorCode(body);
   const msg = parseApiErrorMessage(body);
-  if (code === "invalid_token") {
-    notifySessionRevoked({ reason: "invalid_token" });
-    return;
-  }
-  if (code === "session_revoked") {
-    const isForcedDeviceLogout =
-      msg.includes("Signed out from all devices") ||
-      msg.includes("Signed out from this device");
-    if (isForcedDeviceLogout) {
-      notifySessionRevoked({ reason: "revoked" });
-    }
-  }
+  if (!isDefiniteRiderSessionRevocation(status, code, msg)) return;
+  notifySessionRevoked({ reason: code === "invalid_token" ? "invalid_token" : "revoked" });
 }

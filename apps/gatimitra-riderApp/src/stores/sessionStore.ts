@@ -3,6 +3,7 @@ import type { Session } from "@gatimitra/contracts";
 import { getItem, setItem, removeItem } from "@/src/utils/storage";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { riderAuthService } from "@/src/services/auth/auth.service";
+import { isAuthRejectionMessage } from "@/src/services/rider-auth-failure";
 
 const LEGACY_SESSION_KEY = "gm_session_v1";
 const TOKEN_KEY = "gm_rider_access_token_v1";
@@ -21,6 +22,14 @@ type SessionState = {
   setSession: (s: Session | null) => Promise<void>;
   hydrate: () => Promise<void>;
   refreshSessionIfNeeded: (opts?: { force?: boolean }) => Promise<void>;
+  /**
+   * Authoritatively check whether THIS device's session is still valid, by attempting a forced
+   * refresh (the /rider/refresh-session endpoint only succeeds when user_device_sessions.is_active
+   * is TRUE for the token's device). Returns true when the session is still good (a fresh token is
+   * persisted), false only when the server definitively rejects it. Used to gate force-logout so a
+   * single transient/racy 401 during cold start never signs the rider out.
+   */
+  confirmStillValid: () => Promise<boolean>;
 };
 
 function buildSession(accessToken: string, meta: SessionMeta): Session {
@@ -127,6 +136,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.log("[SessionStore] Session refreshed");
     } catch (error) {
       console.warn("[SessionStore] Session refresh failed (keeping current token):", error);
+    }
+  },
+
+  confirmStillValid: async () => {
+    const current = get().session;
+    if (!current?.accessToken || current.role !== "rider") return false;
+    try {
+      const deviceId = await getOrCreateDeviceId();
+      // A forced refresh is the authoritative "is my device session active?" probe: the backend
+      // /rider/refresh-session requires an active user_device_sessions row for the token's device.
+      const next = await riderAuthService.refreshSession({
+        accessToken: current.accessToken,
+        deviceId,
+      });
+      await get().setSession(next);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Network / server hiccup (not an auth rejection) → treat as STILL valid so we never sign the
+      // rider out on a transient failure. Only a definitive auth rejection confirms it is truly gone.
+      if (!isAuthRejectionMessage(message)) {
+        console.warn("[SessionStore] confirmStillValid: transient refresh failure, keeping session:", message);
+        return true;
+      }
+      return false;
     }
   },
 }));
