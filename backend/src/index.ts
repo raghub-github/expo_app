@@ -68,6 +68,7 @@ import { getDb } from "./db/client.js";
 import { reconcilePendingPayments } from "./modules/orders/order.placement.service.js";
 import { runCompetitorSnapshotsTick } from "./services/merchant-competitor-snapshots-tick.js";
 import { runMerchantRankingMetricsRefresh } from "./modules/store-ranking/metrics-refresh.js";
+import { runOrderSideEffectsReconcile } from "./lib/order-side-effects-reconciler.js";
 
 loadEnv();
 // Prefer IPv4 — corporate/VPN DNS64 (64:ff9b::*) often yields ENOTFOUND/unreachable for Supabase/Redis.
@@ -1137,6 +1138,7 @@ let merchantSubscriptionRenewalInterval: ReturnType<typeof setInterval> | null =
 let riderLocationMaintenanceInterval: ReturnType<typeof setInterval> | null = null;
 let riderTrackingWatchdogInterval: ReturnType<typeof setInterval> | null = null;
 let rankingMetricsInterval: ReturnType<typeof setInterval> | null = null;
+let orderSideEffectsReconcileInterval: ReturnType<typeof setInterval> | null = null;
 let shuttingDown = false;
 let inFlightRequests = 0;
 
@@ -1185,6 +1187,7 @@ const gracefulShutdown = async (signal: string) => {
   if (riderLocationMaintenanceInterval) { clearInterval(riderLocationMaintenanceInterval); riderLocationMaintenanceInterval = null; }
   if (riderTrackingWatchdogInterval) { clearInterval(riderTrackingWatchdogInterval); riderTrackingWatchdogInterval = null; }
   if (rankingMetricsInterval) { clearInterval(rankingMetricsInterval); rankingMetricsInterval = null; }
+  if (orderSideEffectsReconcileInterval) { clearInterval(orderSideEffectsReconcileInterval); orderSideEffectsReconcileInterval = null; }
 
   const drainStart = Date.now();
   while (inFlightRequests > 0 && Date.now() - drainStart < SHUTDOWN_DRAIN_TIMEOUT_MS) {
@@ -1329,6 +1332,32 @@ try {
   void runRankingMetricsLocked();
   rankingMetricsInterval = setInterval(() => { void runRankingMetricsLocked(); }, rankingMetricsIntervalMs);
   app.log.info({ intervalMinutes: 15 }, "store-ranking metrics refresh started");
+
+  // GAP 1 — order side-effects reconciler. The happy path fires merchant new-order alert + rider
+  // dispatch start inline at placement; this Redis-locked backstop heals the rare case where that
+  // inline fire-and-forget was lost (crash / blip / throw), so a placed food order can never be
+  // silently missed. Both healed effects are idempotent; it never touches the placement transaction.
+  const orderSideEffectsReconcileIntervalMs = 30_000;
+  const runOrderSideEffectsReconcileLocked = () =>
+    withLock("tick:order-side-effects-reconcile", 25_000, () => runOrderSideEffectsReconcile(50))
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "order_side_effects_reconcile", outcome: result === null ? "skipped" : "ran" },
+        );
+        if (result && (result.dispatchStarted > 0 || result.merchantNotified > 0)) {
+          app.log.warn(result, "order_side_effects_reconcile_healed");
+        }
+      })
+      .catch((err) => app.log.error({ err }, "order_side_effects_reconcile_tick"));
+  void runOrderSideEffectsReconcileLocked();
+  orderSideEffectsReconcileInterval = setInterval(
+    () => { void runOrderSideEffectsReconcileLocked(); },
+    orderSideEffectsReconcileIntervalMs
+  );
+  app.log.info({ intervalSeconds: 30 }, "order side-effects reconciler started");
 
   const orderAcceptanceIntervalMs = 10_000;
   const runAcceptanceTickLocked = () =>
