@@ -22,7 +22,7 @@ const LAUNCHER_SPLASH_ANDROID12 = "./assets/images/splash-android12.png";
 const googleServicesFile = path.resolve(__dirname, "google-services.json");
 const hasGoogleServices = fs.existsSync(googleServicesFile);
 
-const CUSTOMER_EAS_PROJECT_ID = "53fb1df5-d522-4e6a-bc73-04b7ad260992";
+const CUSTOMER_EAS_PROJECT_ID = "52247a95-93fe-4274-b7ff-47a113a2d683";
 
 module.exports = {
   ...appJson,
@@ -34,7 +34,10 @@ module.exports = {
     splash: {
       ...appJson.expo.splash,
       image: LAUNCHER_SPLASH_IMAGE,
-      resizeMode: "cover",
+      // "contain" — never crop the wordmark. "cover" scaled the brand image to fill the screen and
+      // clipped the sides ("GatiMitra" → "atiMit"). The teal letterbox matches the image bg, so
+      // contain is seamless.
+      resizeMode: "contain",
       backgroundColor: LAUNCHER_SPLASH_BG,
       android: {
         ...(appJson.expo.splash?.android || {}),
@@ -45,7 +48,7 @@ module.exports = {
       ios: {
         ...(appJson.expo.splash?.ios || {}),
         image: LAUNCHER_SPLASH_IMAGE,
-        resizeMode: "cover",
+        resizeMode: "contain",
         backgroundColor: LAUNCHER_SPLASH_BG,
       },
     },
@@ -114,14 +117,16 @@ module.exports = {
         {
           backgroundColor: LAUNCHER_SPLASH_BG,
           image: LAUNCHER_SPLASH_ANDROID12,
-          // Match JS bootstrap wordmark size — 240 looked like a "small then big" jump.
-          imageWidth: 400,
+          // 400dp was WIDER than most phone screens (~360–412dp), so the Android 12 splash overflowed
+          // and clipped the wordmark's sides. 240dp fits every phone width with margin and shows the
+          // full "GatiMitra" wordmark; the JS bootstrap wordmark takes over immediately after.
+          imageWidth: 240,
           resizeMode: "contain",
           enableFullScreenImage_legacy: true,
           android: {
             image: LAUNCHER_SPLASH_ANDROID12,
             backgroundColor: LAUNCHER_SPLASH_BG,
-            imageWidth: 400,
+            imageWidth: 240,
           },
           ios: {
             image: LAUNCHER_SPLASH_IMAGE,
@@ -214,6 +219,6 @@ module.exports = {
       },
     },
     // Required for development builds — links the runtime to your EAS project.
-    owner: "raghubhunia",
+    owner: "raghubhunia53s-team",
   },
 };
