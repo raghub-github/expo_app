@@ -130,7 +130,7 @@ export async function isOrderStillDispatchable(orderCoreId: number): Promise<boo
   );
 }
 
-async function loadDispatchOrderTarget(
+export async function loadDispatchOrderTarget(
   orderCoreId: number,
   waveNumber: number
 ): Promise<DispatchOrderTarget | null> {
