@@ -2736,6 +2736,76 @@ async function acceptFoodOrderForRider(
 
   await assertOfferStillClaimable(riderId, preCheck.id);
 
+  // GAP 2 — final location revalidation. The offer was validated at dispatch time; re-check the
+  // rider's current location + pickup radius at the moment of accept so a stale / moved-away rider
+  // cannot claim the order. Runs BEFORE the atomic claim; gated by RIDER_ACCEPT_REVALIDATE_MODE
+  // (shadow logs only, enforce rejects). Admin force-assign bypasses via skipPickupRadius.
+  if (!_opts?.skipPickupRadius) {
+    const {
+      riderAcceptRevalidateMode,
+      evaluateRiderAcceptRevalidation,
+      riderAcceptRevalidationMessage,
+    } = await import("../../lib/rider-accept-revalidation.js");
+    const mode = riderAcceptRevalidateMode();
+    if (mode !== "off") {
+      try {
+        const {
+          resolveRiderAssignmentContext: resolveCtx,
+          resolveOrderDispatchRadiusMeters,
+          haversineDistanceMeters,
+          riderDispatchLocationStaleMaxAgeSeconds,
+        } = await import("../../lib/order-assignment-engine.js");
+        const [ctx, radiusMeters] = await Promise.all([
+          resolveCtx(riderId, { skipAssignmentCheck: true, allowStaleGps: true }),
+          resolveOrderDispatchRadiusMeters(preCheck.id, "food").catch(() => 0),
+        ]);
+        const pickupLat = Number(preCheck.pickupLat);
+        const pickupLon = Number(preCheck.pickupLon);
+        const distanceMeters =
+          ctx && Number.isFinite(pickupLat) && Number.isFinite(pickupLon)
+            ? haversineDistanceMeters(ctx.lat, ctx.lng, pickupLat, pickupLon)
+            : Number.POSITIVE_INFINITY;
+        const gpsAgeSeconds = ctx
+          ? Math.max(0, (Date.now() - ctx.locationUpdatedAt.getTime()) / 1000)
+          : Number.POSITIVE_INFINITY;
+        const decision = evaluateRiderAcceptRevalidation({
+          hasGps: ctx != null,
+          gpsAgeSeconds,
+          distanceMeters,
+          radiusMeters,
+          staleMaxSeconds: riderDispatchLocationStaleMaxAgeSeconds(),
+        });
+        if (!decision.allow) {
+          console.warn(
+            "[accept-revalidate]",
+            JSON.stringify({
+              mode,
+              riderId,
+              orderCoreId: preCheck.id,
+              reason: decision.reason,
+              gpsAgeSeconds: Number.isFinite(gpsAgeSeconds) ? Math.round(gpsAgeSeconds) : null,
+              distanceMeters: Number.isFinite(distanceMeters) ? Math.round(distanceMeters) : null,
+              radiusMeters,
+              action: mode === "enforce" ? "REJECTED" : "SHADOW_WOULD_REJECT",
+            })
+          );
+          if (mode === "enforce") {
+            throw Object.assign(new Error(riderAcceptRevalidationMessage(decision.reason)), {
+              statusCode: 409,
+              code: `accept_revalidate_${decision.reason}`,
+            });
+          }
+        }
+      } catch (err) {
+        // Re-throw only the deliberate enforce rejection; never let an infra error wedge accept.
+        if (err && typeof err === "object" && (err as { code?: string }).code?.startsWith("accept_revalidate_")) {
+          throw err;
+        }
+        console.warn("[accept-revalidate] skipped (infra)", (err as Error)?.message ?? err);
+      }
+    }
+  }
+
   const txStartedAt = Date.now();
   console.info(
     "[acceptFoodOrderForRider] accept_transaction_started",

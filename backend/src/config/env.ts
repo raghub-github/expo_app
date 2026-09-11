@@ -299,6 +299,18 @@ const EnvSchema = z.object({
     .default(900),
 
   /**
+   * GAP 2 — final location revalidation when a rider ACCEPTS an offer. The offer was validated at
+   * dispatch time; between offer and accept a rider can go stale or move out of the pickup radius.
+   * `enforce` rejects such an accept (order returns to the pool); `shadow` only logs what it would
+   * reject; `off` disables it. Default `shadow` so real rejection rates can be observed before
+   * enforcing. Freshness uses the STALE window (not the tighter fresh window) so a normal recent
+   * fix never blocks a legitimate accept.
+   */
+  RIDER_ACCEPT_REVALIDATE_MODE: z
+    .preprocess(emptyToUndefined, z.enum(["off", "shadow", "enforce"]))
+    .default("shadow"),
+
+  /**
    * P2 "wake + fresh ping": before finalizing an offer to the top candidate, ask that
    * rider's app to report its location RIGHT NOW (via the rider:{id} realtime channel),
    * wait briefly, then price/route the offer off that <2s point. OFF by default — needs
