@@ -86,8 +86,12 @@ function attachEarnings(
 /** Notify one eligible rider via push + rider websocket channel. Never throws. */
 export async function notifyRiderDispatchOffer(
   target: DispatchOrderTarget,
-  rider: EligibleDispatchRider
+  rider: EligibleDispatchRider,
+  opts?: { realert?: boolean }
 ): Promise<void> {
+  // A re-alert (GAP 3b) reuses the same wave but MUST carry a distinct idempotency key, otherwise
+  // notificationService dedups it against the first offer and nothing is re-sent.
+  const keySuffix = opts?.realert ? ":realert" : "";
   try {
     const displayId = target.formattedOrderId?.trim() || target.orderId;
     const label = SERVICE_LABEL[target.serviceType];
@@ -165,7 +169,7 @@ export async function notifyRiderDispatchOffer(
         priority: "critical",
         deliverNow: true,
         bypassQuietHours: true,
-        idempotencyKey: `RIDER_DISPATCH_OFFER:${target.orderId}:${rider.riderId}:${target.waveNumber}`,
+        idempotencyKey: `RIDER_DISPATCH_OFFER:${target.orderId}:${rider.riderId}:${target.waveNumber}${keySuffix}`,
         overrides: {
           title,
           body,
@@ -178,8 +182,9 @@ export async function notifyRiderDispatchOffer(
           pickupDistanceMeters: String(Math.round(rider.distanceMeters)),
           category: toCategory(target.serviceType),
           skip_in_app_banner: true,
+          realert: opts?.realert ? "1" : "0",
           alertStartedAt: String(Date.now()),
-          alertSessionId: `RIDER_DISPATCH_OFFER:${target.orderId}:${rider.riderId}:${target.waveNumber}`,
+          alertSessionId: `RIDER_DISPATCH_OFFER:${target.orderId}:${rider.riderId}:${target.waveNumber}${keySuffix}`,
           ...(earnings?.estimatedEarning != null
             ? {
                 estimatedEarning: String(earnings.estimatedEarning),

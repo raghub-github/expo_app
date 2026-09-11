@@ -311,6 +311,22 @@ const EnvSchema = z.object({
     .default("shadow"),
 
   /**
+   * GAP 3b — one bounded re-alert of an un-accepted dispatch offer before the wave radius expands.
+   * A rider whose first offer FCM was dropped while the app was killed otherwise waits for the next
+   * radius expansion or a manual /pending-offers poll. When enabled, riders already offered THIS
+   * wave who still haven't accepted (order unassigned) and are still eligible get exactly ONE extra
+   * critical push, de-duped per (session, wave, rider) via Redis. Additive + safe → default ON.
+   */
+  DISPATCH_OFFER_REALERT_ENABLED: z.preprocess(
+    (v) => v === undefined || v === "" || v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(true),
+  /** Seconds after a wave was dispatched before the single re-alert may fire (must be < wave interval). */
+  DISPATCH_OFFER_REALERT_DELAY_SECONDS: z
+    .preprocess(emptyToUndefined, z.coerce.number().int().min(3).max(120))
+    .default(8),
+
+  /**
    * P2 "wake + fresh ping": before finalizing an offer to the top candidate, ask that
    * rider's app to report its location RIGHT NOW (via the rider:{id} realtime channel),
    * wait briefly, then price/route the offer off that <2s point. OFF by default — needs
