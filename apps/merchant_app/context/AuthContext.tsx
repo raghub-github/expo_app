@@ -17,10 +17,12 @@ import {
   MERCHANT_TOKEN_KEY,
   clearAllMerchantAuthArtifacts,
   readMerchantAccessToken,
+  readMerchantTokenExpiresAt,
   writeMerchantSessionToken,
 } from "@/lib/merchantSessionStorage";
 import { merchantQueryClient } from "@/lib/merchantQueryClient";
 import { parsePartnerData, validateMerchantSessionFromStore } from "@/lib/validateMerchantSession";
+import { decideInitialAuth } from "@/lib/merchantSessionBootstrap";
 import {
   onMerchantTokenRefreshed,
   refreshMerchantSessionIfNeeded,
@@ -277,15 +279,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return unsub;
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
+  // Background re-validation of an already-restored session. Never blocks the UI; only a
+  // server-CONFIRMED revocation (invalid) signs out. Network failures keep the session.
+  const validateInBackground = useCallback(
+    async (sbId: string | null, cancelledRef: { current: boolean }) => {
       const result = await validateMerchantSessionFromStore();
-      if (cancelled) return;
+      if (cancelledRef.current) return;
       if (result.ok) {
-        const sbId = await getStoredSupabaseUserId();
-        if (cancelled) return;
         await persistPartner(result.session.partner);
+        if (cancelledRef.current) return;
         applyAuthenticated({
           token: result.session.token,
           partner: result.session.partner,
@@ -294,35 +296,81 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       if (result.reason === "invalid") {
-        // Genuine revocation/expiry the server confirmed — clear and show login.
         await clearAllMerchantAuthArtifacts();
-        if (!cancelled) applyUnauthenticated();
+        if (!cancelledRef.current) applyUnauthenticated();
+      }
+      // reason === "network": keep the restored session; AppState-active re-validates later.
+    },
+    [applyAuthenticated, applyUnauthenticated]
+  );
+
+  useEffect(() => {
+    const cancelledRef = { current: false };
+    (async () => {
+      // Fast, LOCAL reads only — no network in the critical path, so the branded splash never
+      // waits on "Checking your session..." on a normal open.
+      const [token, expiresAtSec, cachedPartner, sbId] = await Promise.all([
+        readMerchantAccessToken(),
+        readMerchantTokenExpiresAt(),
+        readCachedPartner(),
+        getStoredSupabaseUserId(),
+      ]);
+      if (cancelledRef.current) return;
+
+      const decision = decideInitialAuth({
+        token,
+        expiresAtSec,
+        hasCachedPartner: cachedPartner != null,
+        nowSec: Math.floor(Date.now() / 1000),
+      });
+
+      if (decision.kind === "authenticated" && cachedPartner) {
+        // Trust the valid local session → render the app immediately, then verify in the background.
+        applyAuthenticated({
+          token: decision.token,
+          partner: cachedPartner,
+          supabaseUserId: sbId,
+        });
+        void validateInBackground(sbId, cancelledRef);
         return;
       }
-      // reason === "network": the cold-start check couldn't reach the server (offline / timeout /
-      // transient 5xx). Do NOT bounce a valid, persisted session to login — stay signed in with
-      // the last cached partner and let the AppState-active handler re-validate. Mirrors that
-      // foreground handler, which already tolerates "network". Only fall back to login when there
-      // is no persisted token + cached partner to trust.
-      const cachedToken = await readMerchantAccessToken();
-      const cachedPartner = await readCachedPartner();
-      if (cancelled) return;
-      if (cachedToken?.trim() && cachedPartner) {
-        const sbId = await getStoredSupabaseUserId();
-        if (cancelled) return;
+
+      if (decision.kind === "unauthenticated") {
+        if (!cancelledRef.current) applyUnauthenticated();
+        return;
+      }
+
+      // decision.kind === "validate": no fast path (first run after update, token without a cached
+      // partner, or a locally-expired token). Fall back to the network validate — the only case that
+      // may briefly hold the splash, and it is rare.
+      const result = await validateMerchantSessionFromStore();
+      if (cancelledRef.current) return;
+      if (result.ok) {
+        await persistPartner(result.session.partner);
+        if (cancelledRef.current) return;
         applyAuthenticated({
-          token: cachedToken.trim(),
-          partner: cachedPartner,
+          token: result.session.token,
+          partner: result.session.partner,
           supabaseUserId: sbId,
         });
         return;
       }
-      if (!cancelled) applyUnauthenticated();
+      if (result.reason === "invalid") {
+        await clearAllMerchantAuthArtifacts();
+        if (!cancelledRef.current) applyUnauthenticated();
+        return;
+      }
+      // network: keep a persisted token + cached partner if we have them; else login.
+      if (token?.trim() && cachedPartner) {
+        applyAuthenticated({ token: token.trim(), partner: cachedPartner, supabaseUserId: sbId });
+        return;
+      }
+      if (!cancelledRef.current) applyUnauthenticated();
     })();
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
     };
-  }, [applyAuthenticated, applyUnauthenticated]);
+  }, [applyAuthenticated, applyUnauthenticated, validateInBackground]);
 
   useEffect(() => {
     if (authState.status !== "authenticated") return undefined;

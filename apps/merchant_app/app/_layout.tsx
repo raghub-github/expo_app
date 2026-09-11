@@ -311,11 +311,7 @@ function MerchantAppShell({
           variant="root"
           appReady={appReady}
           statusMessage={
-            fontsTimedOut && !fontsLoaded
-              ? "Starting GatiMitra Partner..."
-              : !authReady
-                ? "Checking your session..."
-                : null
+            fontsTimedOut && !fontsLoaded ? "Starting GatiMitra Partner..." : null
           }
           onSplashReady={onSplashReady}
           onExitComplete={onSplashExitComplete}
