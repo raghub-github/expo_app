@@ -33,9 +33,58 @@ export const RIDER_SERVICE_DISPLAY_ORDER: RiderServiceTypeValue[] = ["food", "pa
  * (e.g. admin blacklist or vehicle-category assignment) so no row is ever reason-less. */
 export const GENERIC_SERVICE_BLOCK: EligibilityReason = {
   code: "NOT_AVAILABLE",
-  reason: "This service isn't available for your vehicle or area right now.",
-  requiredAction: "Check your vehicle and documents, or try again from a covered area.",
+  reason: "This service isn't available in your area right now.",
+  requiredAction: "Try again from a covered area, or check your documents if prompted.",
 };
+
+/** Document / verification gaps the rider can clear by uploading. */
+export function isDocEligibilityCode(code: string): boolean {
+  const c = String(code || "").toUpperCase();
+  return (
+    c.startsWith("DL_") ||
+    c.startsWith("RC_") ||
+    c.includes("PROOF_") ||
+    c.includes("NOT_VERIFIED") ||
+    c.includes("_PENDING") ||
+    c.includes("_REJECTED") ||
+    c.includes("_EXPIRED")
+  );
+}
+
+/** Geo / location enablement — service off in this area. */
+export function isAreaEligibilityCode(code: string): boolean {
+  const c = String(code || "").toUpperCase();
+  return (
+    c === "SERVICE_DISABLED" ||
+    c === "NOT_AVAILABLE" ||
+    c.includes("AREA") ||
+    c.includes("LOCATION") ||
+    c.includes("GEO") ||
+    c.includes("HIRING")
+  );
+}
+
+/**
+ * UI slogan mode for the eligibility reason sheet:
+ * - docsMissing → keep vehicle/document messaging
+ * - areaOnly (docs complete) → "Not available in your area"
+ */
+export function resolveEligibilitySloganMode(
+  reasons: EligibilityReason[],
+): "docs" | "area" {
+  if (reasons.some((r) => isDocEligibilityCode(r.code))) return "docs";
+  if (reasons.some((r) => isAreaEligibilityCode(r.code))) return "area";
+  // Vehicle-class / fuel / commercial with no missing docs → treat as area/policy.
+  return "area";
+}
+
+export function areaEligibilityDisplayReason(): EligibilityReason {
+  return {
+    code: "SERVICE_DISABLED",
+    reason: "Not available in your area",
+    requiredAction: "Move to a covered work area or choose another service.",
+  };
+}
 
 export function buildServiceEligibilityRows(args: {
   selectableServices: RiderServiceTypeValue[];

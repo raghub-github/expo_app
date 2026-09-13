@@ -1,4 +1,5 @@
 import { ApiError, NetworkTimeoutError } from "@gatimitra/sdk";
+import { HttpError } from "@/src/services/http";
 
 export type RiderActionType =
   | "accept"
@@ -43,27 +44,35 @@ export function newRiderActionId(): string {
 export function classifyRiderActionFailure(err: unknown): RiderActionFailureKind {
   if (err instanceof RiderActionBusyError) return "busy";
   if (err instanceof NetworkTimeoutError) return "timeout";
-  if (err instanceof ApiError) {
-    if (err.status === 401) return "auth";
-    if (err.status === 408 || err.status === 429) return "server";
-    if (err.status === 409) return "conflict";
-    if (err.status >= 500) return "server";
-    if (err.status >= 400) return "business";
+
+  const status =
+    err instanceof ApiError || err instanceof HttpError ? err.status : null;
+  if (status != null) {
+    if (status === 401) return "auth";
+    if (status === 408 || status === 429) return "server";
+    if (status === 409) return "conflict";
+    if (status >= 500) return "server";
+    if (status >= 400) return "business";
   }
+
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
   if (msg.includes("timed out") || msg.includes("timeout")) return "timeout";
   if (
-    msg.includes("network") ||
-    msg.includes("failed to fetch") ||
     msg.includes("network request failed") ||
+    msg.includes("failed to fetch") ||
     msg.includes("internet") ||
     msg.includes("offline") ||
     msg.includes("econn") ||
-    msg.includes("enotfound")
+    msg.includes("enotfound") ||
+    /(^|\b)network error\b/.test(msg) ||
+    msg === "network" ||
+    msg.startsWith("network:")
   ) {
     return "network";
   }
-  return "network";
+  // Do not default unknown / business strings to "network" — that made invalid DL
+  // show "Couldn't reach the server".
+  return "business";
 }
 
 export function isRetryableRiderActionFailure(kind: RiderActionFailureKind): boolean {

@@ -141,7 +141,10 @@ export function isDocStepSatisfied(
   doc: OnboardingDocumentTypeDef,
   optional: boolean
 ): boolean {
-  if (optional && isDocSkipped(data, doc.code)) return true;
+  // Intentional skip (geo-optional or catalog-optional) counts as satisfied for the wizard.
+  // Skip UI is only shown when policy allows; backend persists and re-validates.
+  if (isDocSkipped(data, doc.code)) return true;
+  void optional;
   return isDocStepComplete(data, doc);
 }
 
@@ -296,8 +299,9 @@ export function filterSkippedDocsForVehicle(
   skipped?: string[]
 ): string[] | undefined {
   if (!skipped?.length) return undefined;
-  const optionalCodes = new Set(docs.filter((doc) => doc.optional).map((doc) => doc.code));
-  const filtered = skipped.filter((code) => optionalCodes.has(code));
+  // Keep geo-skippable codes even when the vehicle catalog marks them required.
+  const vehicleCodes = new Set(docs.map((doc) => doc.code));
+  const filtered = skipped.filter((code) => vehicleCodes.has(code));
   return filtered.length ? filtered : undefined;
 }
 

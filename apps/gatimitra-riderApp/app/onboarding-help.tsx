@@ -21,6 +21,7 @@ import { performRiderLogout } from "@/src/lib/performRiderLogout";
 import { LanguageSelectionSheet } from "@/src/components/language/LanguageSelectionSheet";
 import { onboardingStepMetaForRoute } from "@/src/lib/onboarding-routes";
 import { useRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
+import { useSessionStore } from "@/src/stores/sessionStore";
 
 const CARD = "#FFFFFF";
 const INK = RIDER_AUTH_INK;
@@ -118,6 +119,7 @@ export default function OnboardingHelpScreen() {
   const bottomInset = useRiderBottomInset();
   const { width } = useWindowDimensions();
   const params = useLocalSearchParams<{ step?: string }>();
+  const hasSession = useSessionStore((s) => Boolean(s.session?.accessToken));
   const [languageOpen, setLanguageOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
 
@@ -132,14 +134,20 @@ export default function OnboardingHelpScreen() {
       : stepMeta.label;
 
   const openRaiseHand = () => {
+    // Authenticated onboarding must NOT force prelogin — that asked for name/mobile
+    // again and orphaned attachment uploads (rider_id null while Bearer present).
     router.push({
       pathname: "/raise-ticket",
       params: {
-        prelogin: "1",
+        ...(hasSession ? {} : { prelogin: "1" }),
         from: "onboarding",
         step: paramString(params.step) ?? "",
       },
     });
+  };
+
+  const openTrackTickets = () => {
+    router.push("/my-tickets");
   };
 
   const confirmLogout = () => {
@@ -229,6 +237,24 @@ export default function OnboardingHelpScreen() {
               Raise a Hand
             </Text>
           </Pressable>
+          {hasSession ? (
+            <Pressable
+              onPress={openTrackTickets}
+              style={({ pressed }) => [styles.trackCta, pressed && { opacity: 0.92 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Track Existing Tickets"
+            >
+              <Ionicons name="list-outline" size={18} color={INK} />
+              <Text
+                style={styles.trackCtaText}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.75}
+              >
+                Track Existing Tickets
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
 
         <Text style={styles.sectionLabel}>App settings</Text>
@@ -389,6 +415,27 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#0B0B0B",
     textAlign: "center",
+  },
+  trackCta: {
+    marginTop: 10,
+    alignSelf: "stretch",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: "rgba(15, 23, 42, 0.18)",
+  },
+  trackCtaText: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: INK,
+    textAlign: "center",
+    flexShrink: 1,
   },
   sectionLabel: {
     marginTop: 26,

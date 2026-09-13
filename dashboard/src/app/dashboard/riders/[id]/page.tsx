@@ -29,10 +29,18 @@ interface Rider {
   status: string;
   city: string | null;
   state: string | null;
+  district?: string | null;
+  region?: string | null;
   pincode: string | null;
   address: string | null;
   lat: number | null;
   lon: number | null;
+  registeredCity?: string | null;
+  registeredState?: string | null;
+  registeredRegion?: string | null;
+  registeredDistrict?: string | null;
+  registeredPincode?: string | null;
+  registeredAddress?: string | null;
   referralCode: string | null;
   referredBy: number | null;
   defaultLanguage: string;
@@ -340,7 +348,44 @@ export default function RiderDetailsPage() {
   const addresses = riderData.addresses ?? [];
   const vehicle = riderData.vehicle ?? null;
   const primaryAddress = addresses.find((a) => a.isPrimary) || addresses[0];
-  const displayAddress = primaryAddress?.fullAddress || rider.address || "—";
+  const formatAddr = (parts: {
+    address?: string | null;
+    district?: string | null;
+    city?: string | null;
+    region?: string | null;
+    state?: string | null;
+    pincode?: string | null;
+  }) => {
+    const primary = String(parts.address || "").trim();
+    if (primary) {
+      const pin = String(parts.pincode || "").trim();
+      return pin && !primary.includes(pin) ? `${primary}, ${pin}` : primary;
+    }
+    const list = [parts.district, parts.city, parts.region, parts.state, parts.pincode]
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+    const deduped: string[] = [];
+    for (const p of list) {
+      if (deduped[deduped.length - 1]?.toLowerCase() !== p.toLowerCase()) deduped.push(p);
+    }
+    return deduped.length ? deduped.join(", ") : "—";
+  };
+  const registeredAddressLine = formatAddr({
+    address: rider.registeredAddress,
+    district: rider.registeredDistrict,
+    city: rider.registeredCity,
+    region: rider.registeredRegion,
+    state: rider.registeredState,
+    pincode: rider.registeredPincode,
+  });
+  const workingAddressLine = formatAddr({
+    address: rider.address || primaryAddress?.fullAddress,
+    district: rider.district,
+    city: rider.city,
+    region: rider.region,
+    state: rider.state,
+    pincode: rider.pincode,
+  });
   const wallet = riderData.wallet ?? null;
 
   const isFullyOnboarded =
@@ -558,11 +603,19 @@ export default function RiderDetailsPage() {
             <MapPin className="h-4 w-4" />
             Address Information
           </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <InfoCard icon={<MapPin className="h-4 w-4" />} label="Address" value={displayAddress} className="col-span-1 sm:col-span-2 lg:col-span-4" />
-            <InfoCard icon={<Building2 className="h-4 w-4" />} label="City" value={rider.city || "—"} />
-            <InfoCard icon={<Building2 className="h-4 w-4" />} label="State" value={rider.state || "—"} />
-            <InfoCard icon={<MapPin className="h-4 w-4" />} label="Pincode" value={rider.pincode || "—"} />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <InfoCard
+              icon={<MapPin className="h-4 w-4" />}
+              label="Registered Address"
+              value={registeredAddressLine}
+              className="col-span-1 sm:col-span-2"
+            />
+            <InfoCard
+              icon={<MapPin className="h-4 w-4" />}
+              label="Working Address"
+              value={workingAddressLine}
+              className="col-span-1 sm:col-span-2"
+            />
           </div>
         </div>
 

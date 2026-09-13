@@ -48,6 +48,11 @@ type Props = {
   issueTitle: string;
   order?: RiderRecentOrder | null;
   isPreLogin?: boolean;
+  /** Authenticated rider: show identity; lock when verified. */
+  lockedName?: string;
+  lockedMobile?: string;
+  nameReadOnly?: boolean;
+  mobileReadOnly?: boolean;
   initialDescription?: string;
   onCanSubmitChange?: (canSubmit: boolean) => void;
   onSubmit: (payload: RaiseTicketSubmitPayload) => void;
@@ -69,6 +74,10 @@ export const RaiseTicketSubmitForm = forwardRef<RaiseTicketSubmitFormHandle, Pro
     issueTitle,
     order,
     isPreLogin = false,
+    lockedName = "",
+    lockedMobile = "",
+    nameReadOnly = false,
+    mobileReadOnly = false,
     initialDescription = "",
     onCanSubmitChange,
     onSubmit,
@@ -79,8 +88,8 @@ export const RaiseTicketSubmitForm = forwardRef<RaiseTicketSubmitFormHandle, Pro
   const [description, setDescription] = useState(() =>
     String(initialDescription || "").slice(0, MAX_CHARS),
   );
-  const [contactName, setContactName] = useState("");
-  const [contactMobile, setContactMobile] = useState("");
+  const [contactName, setContactName] = useState(() => String(lockedName || "").trim());
+  const [contactMobile, setContactMobile] = useState(() => String(lockedMobile || "").trim());
   const [contactEmail, setContactEmail] = useState("");
   const [photos, setPhotos] = useState<(string | undefined)[]>(
     Array.from({ length: MAX_PHOTOS }, () => undefined),
@@ -88,15 +97,38 @@ export const RaiseTicketSubmitForm = forwardRef<RaiseTicketSubmitFormHandle, Pro
   const [previewUri, setPreviewUri] = useState<string | null>(null);
   const [previewSlot, setPreviewSlot] = useState<number | null>(null);
 
+  const showIdentityBlock = isPreLogin || Boolean(lockedMobile) || Boolean(lockedName);
+
+  useEffect(() => {
+    if (lockedName.trim()) setContactName(lockedName.trim());
+  }, [lockedName]);
+
+  useEffect(() => {
+    if (lockedMobile.trim()) setContactMobile(lockedMobile.trim());
+  }, [lockedMobile]);
+
   const photoUris = useMemo(() => photos.filter((u): u is string => Boolean(u)), [photos]);
 
   const canSubmit = useMemo(() => {
     const hasContent = description.trim().length >= MIN_DESC_CHARS || photoUris.length >= 1;
-    if (!isPreLogin) return hasContent;
+    if (!isPreLogin) {
+      // Authenticated: name required only when not yet known from profile.
+      if (nameReadOnly || lockedName.trim().length >= 2) return hasContent;
+      return hasContent && contactName.trim().length >= 2;
+    }
     const nameOk = contactName.trim().length >= 2;
     const contactOk = isValidMobile(contactMobile) || isValidEmail(contactEmail);
     return hasContent && nameOk && contactOk;
-  }, [description, photoUris.length, isPreLogin, contactName, contactMobile, contactEmail]);
+  }, [
+    description,
+    photoUris.length,
+    isPreLogin,
+    contactName,
+    contactMobile,
+    contactEmail,
+    nameReadOnly,
+    lockedName,
+  ]);
 
   useEffect(() => {
     onCanSubmitChange?.(canSubmit);
@@ -184,7 +216,10 @@ export const RaiseTicketSubmitForm = forwardRef<RaiseTicketSubmitFormHandle, Pro
               : undefined,
             raisedByEmail: isValidEmail(contactEmail) ? contactEmail.trim().toLowerCase() : undefined,
           }
-        : {}),
+        : {
+            // Backend ignores these for auth tickets; sent only if name still editable.
+            ...(contactName.trim().length >= 2 ? { raisedByName: contactName.trim() } : {}),
+          }),
     });
   };
 
@@ -232,55 +267,67 @@ export const RaiseTicketSubmitForm = forwardRef<RaiseTicketSubmitFormHandle, Pro
         </View>
       ) : null}
 
-      {isPreLogin ? (
+      {showIdentityBlock ? (
         <View style={styles.contactBlock}>
           <Text style={styles.fieldLabel}>
             {t("profile.supportFlow.contactName", "Your name")}
-            <Text style={styles.required}> *</Text>
+            {isPreLogin || !nameReadOnly ? <Text style={styles.required}> *</Text> : null}
           </Text>
           <TextInput
             value={contactName}
-            onChangeText={setContactName}
+            onChangeText={nameReadOnly || (Boolean(lockedName) && nameReadOnly) ? undefined : setContactName}
+            editable={!nameReadOnly}
             placeholder={t("profile.supportFlow.contactNamePh", "Enter your full name")}
             placeholderTextColor="#94A3B8"
-            style={styles.input}
+            style={[styles.input, nameReadOnly && styles.inputLocked]}
             autoCapitalize="words"
           />
 
           <Text style={styles.fieldLabel}>
             {t("profile.supportFlow.contactMobile", "Mobile number")}
+            {isPreLogin ? null : mobileReadOnly ? (
+              <Text style={styles.lockedHint}>
+                {" "}
+                ({t("profile.supportFlow.readOnly", "from your account")})
+              </Text>
+            ) : null}
           </Text>
           <TextInput
             value={contactMobile}
-            onChangeText={setContactMobile}
+            onChangeText={mobileReadOnly ? undefined : setContactMobile}
+            editable={!mobileReadOnly}
             placeholder={t("profile.supportFlow.contactMobilePh", "10-digit mobile number")}
             placeholderTextColor="#94A3B8"
-            style={styles.input}
+            style={[styles.input, mobileReadOnly && styles.inputLocked]}
             keyboardType="phone-pad"
             maxLength={15}
           />
 
-          <Text style={styles.orLabel}>{t("profile.supportFlow.contactOr", "OR")}</Text>
+          {isPreLogin ? (
+            <>
+              <Text style={styles.orLabel}>{t("profile.supportFlow.contactOr", "OR")}</Text>
 
-          <Text style={styles.fieldLabel}>
-            {t("profile.supportFlow.contactEmail", "Email address")}
-          </Text>
-          <TextInput
-            value={contactEmail}
-            onChangeText={setContactEmail}
-            placeholder={t("profile.supportFlow.contactEmailPh", "Enter your email")}
-            placeholderTextColor="#94A3B8"
-            style={styles.input}
-            keyboardType="email-address"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          <Text style={styles.contactHint}>
-            {t(
-              "profile.supportFlow.contactHint",
-              "Mobile or email — at least one is required so we can reach you.",
-            )}
-          </Text>
+              <Text style={styles.fieldLabel}>
+                {t("profile.supportFlow.contactEmail", "Email address")}
+              </Text>
+              <TextInput
+                value={contactEmail}
+                onChangeText={setContactEmail}
+                placeholder={t("profile.supportFlow.contactEmailPh", "Enter your email")}
+                placeholderTextColor="#94A3B8"
+                style={styles.input}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Text style={styles.contactHint}>
+                {t(
+                  "profile.supportFlow.contactHint",
+                  "Mobile or email — at least one is required so we can reach you.",
+                )}
+              </Text>
+            </>
+          ) : null}
         </View>
       ) : null}
 
@@ -488,6 +535,15 @@ const styles = StyleSheet.create({
     color: "#0F172A",
     backgroundColor: "#FFFFFF",
     marginBottom: 12,
+  },
+  inputLocked: {
+    backgroundColor: "#F1F5F9",
+    color: "#334155",
+  },
+  lockedHint: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#64748B",
   },
   orLabel: {
     alignSelf: "center",

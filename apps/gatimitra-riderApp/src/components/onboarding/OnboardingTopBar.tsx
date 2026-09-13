@@ -27,9 +27,12 @@ type StackHeaderRoute = { name?: string } | undefined;
 export function OnboardingTopBar({
   route,
   routeName: routeNameProp,
+  title,
 }: {
   route?: StackHeaderRoute;
   routeName?: string;
+  /** Optional center title (e.g. payment product name). */
+  title?: string;
 }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -38,6 +41,7 @@ export function OnboardingTopBar({
   const routeName = routeNameProp ?? route?.name ?? "";
   const showBack = canGoBackFromOnboardingRoute(routeName);
   const pageBg = routeName === "language" ? RIDER_AUTH_BG : ONBOARDING_PAGE_BG;
+  const headerTitle = title?.trim() || "";
 
   useEffect(() => {
     if (Platform.OS === "android") {
@@ -60,54 +64,62 @@ export function OnboardingTopBar({
   return (
     <>
       <StatusBar style="dark" backgroundColor={pageBg} />
-      <View
-        style={[styles.bar, { paddingTop: insets.top + 10, backgroundColor: pageBg }]}
-        pointerEvents="box-none"
-      >
-        {showBack ? (
-          <Pressable
-            onPress={goBack}
-            hitSlop={12}
-            style={styles.iconChip}
-            accessibilityRole="button"
-            accessibilityLabel="Go back one step"
-          >
-            <Ionicons name="arrow-back" size={22} color="#0F172A" />
-          </Pressable>
-        ) : (
-          <View style={styles.spacer} />
-        )}
-
-        <View style={{ flex: 1 }} pointerEvents="none" />
-
-        <View style={styles.rightRow}>
-          <Pressable
-            onPress={openHelp}
-            hitSlop={8}
-            style={styles.helpChip}
-            accessibilityRole="button"
-            accessibilityLabel="Help"
-          >
-            <Ionicons name="headset-outline" size={16} color="#0F172A" />
-            <Text
-              style={styles.helpLabel}
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.8}
+      <View style={styles.barHost} pointerEvents="box-none">
+        <View
+          style={[styles.bar, { paddingTop: insets.top + 10, backgroundColor: pageBg }]}
+          pointerEvents="box-none"
+        >
+          {showBack ? (
+            <Pressable
+              onPress={goBack}
+              hitSlop={12}
+              style={styles.iconChip}
+              accessibilityRole="button"
+              accessibilityLabel="Go back one step"
             >
-              Help
-            </Text>
-          </Pressable>
+              <Ionicons name="arrow-back" size={22} color="#0F172A" />
+            </Pressable>
+          ) : (
+            <View style={styles.spacer} />
+          )}
 
-          <Pressable
-            onPress={() => setLanguageOpen(true)}
-            hitSlop={12}
-            style={styles.iconChip}
-            accessibilityRole="button"
-            accessibilityLabel="Change language"
-          >
-            <HeaderLanguageIcon size={18} color="#0F172A" />
-          </Pressable>
+          <View style={styles.titleWrap} pointerEvents="none">
+            {headerTitle ? (
+              <Text style={styles.title} numberOfLines={1}>
+                {headerTitle}
+              </Text>
+            ) : null}
+          </View>
+
+          <View style={styles.rightRow}>
+            <Pressable
+              onPress={openHelp}
+              hitSlop={8}
+              style={styles.helpChip}
+              accessibilityRole="button"
+              accessibilityLabel="Help"
+            >
+              <Ionicons name="headset-outline" size={16} color="#0F172A" />
+              <Text
+                style={styles.helpLabel}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.8}
+              >
+                Help
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setLanguageOpen(true)}
+              hitSlop={12}
+              style={styles.iconChip}
+              accessibilityRole="button"
+              accessibilityLabel="Change language"
+            >
+              <HeaderLanguageIcon size={18} color="#0F172A" />
+            </Pressable>
+          </View>
         </View>
       </View>
 
@@ -120,6 +132,10 @@ export function OnboardingTopBar({
 }
 
 const styles = StyleSheet.create({
+  barHost: {
+    width: "100%",
+    alignSelf: "flex-start",
+  },
   bar: {
     flexDirection: "row",
     alignItems: "center",
@@ -129,6 +145,20 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     // Default; overridden per-route so status-bar strip matches page bg.
     backgroundColor: ONBOARDING_PAGE_BG,
+  },
+  titleWrap: {
+    flex: 1,
+    minWidth: 0,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  title: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#0F172A",
+    letterSpacing: -0.2,
+    textAlign: "center",
   },
   rightRow: {
     flexDirection: "row",

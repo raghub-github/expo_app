@@ -22,6 +22,10 @@ import {
   type RiderKycDocumentItem,
 } from "@/src/hooks/useRiderDocuments";
 import { colors } from "@/src/theme";
+import {
+  focusToDocumentUpdateCode,
+  useDocumentUpdateSheetStore,
+} from "@/src/stores/documentUpdateSheetStore";
 
 const TEAL = colors.primary[600];
 const TEAL_LIGHT = colors.primary[50];
@@ -111,9 +115,18 @@ function MethodBadge({ method }: { method: "auto" | "manual" | "pending" | null 
   );
 }
 
-function DocumentRow({ doc }: { doc: RiderKycDocumentItem }) {
+function DocumentRow({
+  doc,
+  onUpdate,
+}: {
+  doc: RiderKycDocumentItem;
+  onUpdate?: () => void;
+}) {
   const { t } = useTranslation();
   const iconName = resolveIcon(doc.icon);
+  const canUpdate =
+    Boolean(onUpdate) &&
+    (doc.status === "not_uploaded" || doc.status === "rejected" || doc.status === "pending");
 
   return (
     <View style={styles.docCard}>
@@ -153,6 +166,20 @@ function DocumentRow({ doc }: { doc: RiderKycDocumentItem }) {
             </View>
           ))}
         </View>
+      ) : null}
+
+      {canUpdate ? (
+        <Pressable
+          onPress={onUpdate}
+          style={({ pressed }) => [styles.updateBtn, pressed && { opacity: 0.9 }]}
+          accessibilityRole="button"
+          accessibilityLabel={`Upload ${doc.label}`}
+        >
+          <Ionicons name="cloud-upload-outline" size={16} color="#FFFFFF" />
+          <Text style={styles.updateBtnText}>
+            {doc.status === "rejected" ? "Re-upload" : "Upload"}
+          </Text>
+        </Pressable>
       ) : null}
     </View>
   );
@@ -261,14 +288,25 @@ export function ViewDocumentsScreen() {
             {t("profile.kycDocuments.allDocuments", "All documents")}
           </Text>
 
-          {data.documents.map((doc) => (
-            <DocumentRow key={doc.docKey} doc={doc} />
-          ))}
+          {data.documents.map((doc) => {
+            const updateCode = focusToDocumentUpdateCode(doc.docKey);
+            return (
+              <DocumentRow
+                key={doc.docKey}
+                doc={doc}
+                onUpdate={
+                  updateCode
+                    ? () => useDocumentUpdateSheetStore.getState().open(updateCode)
+                    : undefined
+                }
+              />
+            );
+          })}
 
           <Text style={styles.footerHint}>
             {t(
-              "profile.kycDocuments.readOnlyHint",
-              "Document details are read-only. Contact support if any status looks incorrect.",
+              "profile.kycDocuments.updateHint",
+              "Tap Upload on a pending document to update it here. Contact support if a verified status looks incorrect.",
             )}
           </Text>
         </ScrollView>
@@ -427,6 +465,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E2E8F0",
     gap: 10,
+  },
+  updateBtn: {
+    marginTop: 2,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: "#15803D",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+  },
+  updateBtnText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 14,
   },
   docHeader: {
     flexDirection: "row",

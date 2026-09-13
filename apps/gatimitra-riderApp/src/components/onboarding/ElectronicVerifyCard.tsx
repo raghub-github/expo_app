@@ -7,7 +7,7 @@
  * For PAN/DL results are also cross-checked against verified Aadhaar.
  * RC verifies the vehicle only (owner may differ from the rider).
  */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -304,6 +304,10 @@ export function ElectronicVerifyCard(props: {
   state: EvState;
   disabled?: boolean;
   onVerify: () => void;
+  /** Explicit manual-upload path after auto-verify failure. */
+  onUploadManually?: () => void;
+  /** When false, hide Upload manually (e.g. DigiLocker-only policies). Default: true. */
+  allowManualUpload?: boolean;
   verifyLabel: string;
   retryLabel?: string;
   verifiedTitle?: string;
@@ -322,6 +326,8 @@ export function ElectronicVerifyCard(props: {
     state,
     disabled,
     onVerify,
+    onUploadManually,
+    allowManualUpload = true,
     verifyLabel,
     retryLabel,
     verifiedTitle,
@@ -331,7 +337,6 @@ export function ElectronicVerifyCard(props: {
     dob = "",
     onDobChange,
   } = props;
-  const [failureNoticeDismissed, setFailureNoticeDismissed] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
 
   const dobYmd = dob && /^\d{4}-\d{2}-\d{2}$/.test(dob) ? dob : "";
@@ -342,14 +347,6 @@ export function ElectronicVerifyCard(props: {
       ? `${state.phase}:${state.error}`
       : null;
 
-  useEffect(() => {
-    if (!failureKey) {
-      setFailureNoticeDismissed(false);
-      return;
-    }
-    setFailureNoticeDismissed(false);
-  }, [failureKey]);
-
   const verifiedRows = useMemo(
     () => (state.phase === "verified" ? buildVerifiedRows(state.details) : []),
     [state],
@@ -357,6 +354,8 @@ export function ElectronicVerifyCard(props: {
 
   const dobOk = !requiresDob || Boolean(dobYmd);
   const verifyDisabled = Boolean(disabled) || state.phase === "verifying" || !dobOk;
+  /** Manual upload must stay tappable even when Verify again is locked (e.g. same PAN). */
+  const manualUploadDisabled = state.phase === "verifying";
   const pickerDisabled = state.phase === "verifying" || Boolean(disabled);
 
   if (state.phase === "verified") {
@@ -405,22 +404,16 @@ export function ElectronicVerifyCard(props: {
     state.phase === "verifying"
       ? "Verifying…"
       : state.phase === "failed" || state.phase === "manual" || state.phase === "mismatch"
-        ? retryLabel || verifyLabel
+        ? retryLabel || "Verify again"
         : verifyLabel;
 
-  const showFailureNotice = Boolean(failureKey) && !failureNoticeDismissed;
-
-  const dismissBtn = (
-    <TouchableOpacity
-      onPress={() => setFailureNoticeDismissed(true)}
-      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      accessibilityRole="button"
-      accessibilityLabel="Dismiss failure reason"
-      style={styles.noticeDismissBtn}
-    >
-      <Ionicons name="close" size={18} color="#64748b" />
-    </TouchableOpacity>
-  );
+  const showFailureNotice = Boolean(failureKey);
+  const showDualFailActions =
+    (state.phase === "failed" || state.phase === "mismatch") &&
+    allowManualUpload &&
+    typeof onUploadManually === "function";
+  /** After Upload manually — hide Verify / Upload buttons; photos + Continue live below. */
+  const hideActionButtons = state.phase === "manual";
 
   const applyPickedDate = (selected: Date) => {
     onDobChange?.(dateToYmd(selected));
@@ -495,21 +488,48 @@ export function ElectronicVerifyCard(props: {
         </View>
       ) : null}
 
-      <TouchableOpacity
-        style={[styles.button, verifyDisabled && styles.buttonDisabled]}
-        disabled={verifyDisabled}
-        onPress={onVerify}
-        activeOpacity={0.8}
-      >
-        {state.phase === "verifying" ? (
-          <ActivityIndicator size="small" color="#fff" />
-        ) : (
-          <Ionicons name="flash" size={16} color="#fff" />
-        )}
-        <Text style={[styles.buttonText, verifyDisabled && styles.buttonTextDisabled]}>
-          {buttonLabel}
-        </Text>
-      </TouchableOpacity>
+      {hideActionButtons ? null : showDualFailActions ? (
+        <View style={styles.failActionsRow}>
+          <TouchableOpacity
+            style={[styles.button, styles.failActionPrimary, verifyDisabled && styles.buttonDisabled]}
+            disabled={verifyDisabled}
+            onPress={onVerify}
+            activeOpacity={0.8}
+          >
+            {/* This row only renders in the mismatch/failed phase; tapping "Verify again" moves the
+                card to the "verifying" layout, so the spinner never belongs here. */}
+            <Ionicons name="refresh" size={16} color="#fff" />
+            <Text style={[styles.buttonText, verifyDisabled && styles.buttonTextDisabled]}>
+              Verify again
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.buttonOutline, manualUploadDisabled && styles.buttonDisabled]}
+            disabled={manualUploadDisabled}
+            onPress={onUploadManually}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="cloud-upload-outline" size={16} color="#166534" />
+            <Text style={styles.buttonOutlineText}>Upload manually</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <TouchableOpacity
+          style={[styles.button, verifyDisabled && styles.buttonDisabled]}
+          disabled={verifyDisabled}
+          onPress={onVerify}
+          activeOpacity={0.8}
+        >
+          {state.phase === "verifying" ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Ionicons name="flash" size={16} color="#fff" />
+          )}
+          <Text style={[styles.buttonText, verifyDisabled && styles.buttonTextDisabled]}>
+            {buttonLabel}
+          </Text>
+        </TouchableOpacity>
+      )}
 
       {showFailureNotice && state.phase === "mismatch" ? (
         <View style={[styles.notice, styles.noticeWarn]}>
@@ -524,52 +544,51 @@ export function ElectronicVerifyCard(props: {
             <Text style={styles.noticeWarnReason}>Reason: {state.error}</Text>
             <Text style={styles.noticeWarnText}>
               {documentLabel.toLowerCase().includes("pan")
-                ? "Enter a different PAN that matches your Aadhaar name, then tap Verify again. Photo upload stays locked until the number changes."
+                ? "Enter a different PAN that matches your Aadhaar name, then tap Verify again — or upload a clear photo manually."
                 : documentLabel.toLowerCase().includes("rc") ||
                     documentLabel.toLowerCase().includes("registration")
-                  ? "Upload a clear photo of a valid RC below to continue. Cashfree still verified the registration number."
-                  : `Check the ${documentLabel} details against your Aadhaar name, then try Verify again.`}
+                  ? "Upload a clear photo of a valid RC below to continue, or tap Verify again."
+                  : `Check the ${documentLabel} details against your Aadhaar name, then Verify again or Upload manually.`}
             </Text>
           </View>
-          {dismissBtn}
         </View>
       ) : null}
 
-      {showFailureNotice && state.phase === "failed" && mode === "auto" ? (
-        <View style={[styles.notice, styles.noticeError]}>
-          <Ionicons name="close-circle" size={16} color="#be123c" />
+      {showFailureNotice && state.phase === "failed" ? (
+        <View
+          style={[
+            styles.notice,
+            mode === "auto" ? styles.noticeError : styles.noticeWarn,
+          ]}
+        >
+          <Ionicons
+            name={mode === "auto" ? "close-circle" : "alert-circle"}
+            size={16}
+            color={mode === "auto" ? "#be123c" : "#b45309"}
+          />
           <View style={{ flex: 1, gap: 4 }}>
-            <Text style={styles.noticeErrorTitle}>Couldn't verify automatically</Text>
-            <Text style={styles.noticeErrorReason}>Reason: {state.error}</Text>
-            <Text style={styles.noticeErrorText}>
-              {documentLabel.toLowerCase().includes("pan")
-                ? `Enter a correct ${documentLabel} number, then tap Verify again. Verify stays locked until the number changes.`
-                : `Re-check the ${documentLabel} number and try again — or upload a clear photo below for manual review.`}
+            <Text
+              style={mode === "auto" ? styles.noticeErrorTitle : styles.noticeWarnTitle}
+            >
+              Couldn't verify automatically
+            </Text>
+            <Text
+              style={mode === "auto" ? styles.noticeErrorReason : styles.noticeWarnReason}
+            >
+              Reason: {state.error}
+            </Text>
+            <Text style={mode === "auto" ? styles.noticeErrorText : styles.noticeWarnText}>
+              Tap Verify again to retry with Cashfree, or Upload manually to submit a clear photo
+              for review.
             </Text>
           </View>
-          {dismissBtn}
-        </View>
-      ) : null}
-      {showFailureNotice && state.phase === "failed" && mode === "hybrid" ? (
-        <View style={[styles.notice, styles.noticeWarn]}>
-          <Ionicons name="alert-circle" size={16} color="#b45309" />
-          <View style={{ flex: 1, gap: 4 }}>
-            <Text style={styles.noticeWarnTitle}>Couldn't verify automatically</Text>
-            <Text style={styles.noticeWarnReason}>Reason: {state.error}</Text>
-            <Text style={styles.noticeWarnText}>
-              {documentLabel.toLowerCase().includes("pan")
-                ? `Enter a correct ${documentLabel} number and try Verify again. Actions stay locked until the number changes.`
-                : `Check licence number + DOB (as on DL), try again, or upload a clear photo for manual review.`}
-            </Text>
-          </View>
-          {dismissBtn}
         </View>
       ) : null}
       {state.phase === "manual" ? (
         <View style={[styles.notice, styles.noticeInfo]}>
-          <Ionicons name="time" size={16} color="#4f46e5" />
+          <Ionicons name="cloud-upload-outline" size={16} color="#4f46e5" />
           <Text style={styles.noticeInfoText}>
-            Queued for manual verification. Upload the document photo to continue.
+            Upload the required photos below, then tap Continue.
           </Text>
         </View>
       ) : null}
@@ -641,6 +660,21 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 16,
   },
+  failActionsRow: { gap: 8 },
+  failActionPrimary: { flexGrow: 0 },
+  buttonOutline: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderWidth: 1.5,
+    borderColor: "#86efac",
+  },
+  buttonOutlineText: { color: "#166534", fontSize: 15, fontWeight: "700" },
   buttonDisabled: {
     backgroundColor: "#16a34a",
     borderWidth: 0,

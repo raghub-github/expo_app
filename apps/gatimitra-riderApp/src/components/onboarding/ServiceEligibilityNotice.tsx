@@ -3,8 +3,9 @@
  * rider can do now and which are unavailable until specific documents are verified. The exact
  * list + reasons come from the backend summary — nothing is hard-coded here (§37).
  */
-import React from "react";
+import React, { useMemo } from "react";
 import { View, Text, StyleSheet } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import type { RiderOnboardingSummary } from "@/src/services/api/riderApi";
 
@@ -15,6 +16,13 @@ const SERVICE_LABEL: Record<string, string> = {
   parcel: "Parcel",
   person_ride: "Person Ride",
 };
+
+const SERVICE_ICON: Record<string, keyof typeof Ionicons.glyphMap> = {
+  food: "fast-food-outline",
+  parcel: "cube-outline",
+  person_ride: "bicycle-outline",
+};
+
 const DOC_LABEL: Record<string, string> = {
   DRIVING_LICENSE: "Driving Licence",
   REGISTRATION_CERTIFICATE: "Registration Certificate",
@@ -30,7 +38,7 @@ function statusHeadline(status: string): { title: string; tone: string } {
     case "COMPLETE_LIMITED":
       return { title: "Onboarding complete — limited services", tone: "#B45309" };
     case "READY_FOR_PAYMENT":
-      return { title: "Ready to complete onboarding", tone: "#B45309" };
+      return { title: "Ready to complete onboarding", tone: "#166534" };
     case "BLOCKED":
       return { title: "A required document is missing", tone: "#B91C1C" };
     case "MANUAL_REVIEW_REQUIRED":
@@ -84,30 +92,148 @@ export function ServiceEligibilityNotice({
   summary,
   showTitle = true,
   compact = false,
+  /** Payment-page layout: per-service rows explaining what the fee unlocks. */
+  variant = "default",
 }: {
   summary: RiderOnboardingSummary | null;
   showTitle?: boolean;
   /** Tighter layout for payment screen above sticky CTA */
   compact?: boolean;
+  variant?: "default" | "requiredFor";
 }) {
+  const rows = useMemo(() => {
+    if (!summary) return [];
+    const ob = summary.onboarding;
+    const eligible = new Set(ob.eligibleServices);
+    const blockedMap = new Map(ob.blockedServices.map((b) => [b.service, b]));
+    const allServices = orderedServices(
+      ob.eligibleServices,
+      ob.blockedServices.map((b) => b.service),
+    );
+    return allServices.map((s) => {
+      const blocked = blockedMap.get(s);
+      const isBlocked = Boolean(blocked);
+      return {
+        service: s,
+        label: SERVICE_LABEL[s] ?? s,
+        icon: SERVICE_ICON[s] ?? "ellipse-outline",
+        isBlocked,
+        detail: isBlocked
+          ? blocked
+            ? blockedSlogan(blocked)
+            : "Locked until documents are verified"
+          : "Available after you pay this fee",
+      };
+    });
+  }, [summary]);
+
   if (!summary) return null;
   const ob = summary.onboarding;
   const head = statusHeadline(ob.status);
-  const eligible = ob.eligibleServices;
   const blocked = ob.blockedServices;
-  const blockedMap = new Map(blocked.map((b) => [b.service, b]));
-  const allServices = orderedServices(
-    eligible,
-    blocked.map((b) => b.service)
-  );
 
-  if (allServices.length === 0) {
+  if (variant === "requiredFor") {
+    const uniqueFootnotes = Array.from(
+      new Set(blocked.map((b) => blockedSlogan(b)).filter(Boolean)),
+    );
+
+    return (
+      <View style={styles.reqCard}>
+        <LinearGradient
+          colors={["#ECFDF5", "#FFFFFF"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.reqCardInner}
+        >
+          <View style={styles.reqHeader}>
+            <View style={styles.reqIconWrap}>
+              <Ionicons name="key-outline" size={18} color="#166534" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.reqEyebrow}>This fee is required for</Text>
+              <Text style={styles.reqTitle}>Unlocking your rider services</Text>
+            </View>
+          </View>
+
+          <Text style={styles.reqLead}>
+            Paying completes registration. Eligible services go live after payment; locked ones
+            need extra docs from Profile later.
+          </Text>
+
+          <View style={styles.reqList}>
+            {rows.length === 0 ? (
+              <Text style={styles.noneText}>No service is available yet.</Text>
+            ) : (
+              rows.map((row) => (
+                <View
+                  key={row.service}
+                  style={[styles.reqRow, row.isBlocked ? styles.reqRowBlocked : styles.reqRowOk]}
+                >
+                  <View
+                    style={[
+                      styles.reqRowIcon,
+                      row.isBlocked ? styles.reqRowIconBlocked : styles.reqRowIconOk,
+                    ]}
+                  >
+                    <Ionicons
+                      name={row.icon}
+                      size={18}
+                      color={row.isBlocked ? "#B91C1C" : "#166534"}
+                    />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <View style={styles.reqRowTitleLine}>
+                      <Text style={styles.reqRowLabel} numberOfLines={1}>
+                        {row.label}
+                      </Text>
+                      <View
+                        style={[
+                          styles.reqStatusPill,
+                          row.isBlocked ? styles.reqStatusPillBlocked : styles.reqStatusPillOk,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.reqStatusPillText,
+                            row.isBlocked && styles.reqStatusPillTextBlocked,
+                          ]}
+                        >
+                          {row.isBlocked ? "Later" : "After pay"}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={styles.reqRowDetail} numberOfLines={2}>
+                      {row.detail}
+                    </Text>
+                  </View>
+                </View>
+              ))
+            )}
+          </View>
+
+          {uniqueFootnotes.length > 0 ? (
+            <Text style={styles.reqFoot}>
+              {uniqueFootnotes.join(" ")} Add missing docs later from Profile to unlock.
+            </Text>
+          ) : (
+            <Text style={styles.reqFoot}>
+              All listed services unlock once payment succeeds and verification finishes.
+            </Text>
+          )}
+        </LinearGradient>
+      </View>
+    );
+  }
+
+  if (rows.length === 0) {
     return (
       <View style={[styles.card, compact && styles.cardCompact]}>
         {showTitle ? (
           <View style={styles.headerRow}>
             <Ionicons name="shield-checkmark-outline" size={16} color={head.tone} />
-            <Text style={[styles.headerText, { color: head.tone }, compact && styles.headerTextCompact]}>
+            <Text
+              style={[styles.headerText, { color: head.tone }, compact && styles.headerTextCompact]}
+            >
               {head.title}
             </Text>
           </View>
@@ -117,43 +243,49 @@ export function ServiceEligibilityNotice({
     );
   }
 
+  const uniqueSlogans = Array.from(
+    new Set(blocked.map((b) => blockedSlogan(b)).filter(Boolean)),
+  );
+
   return (
     <View style={[styles.card, compact && styles.cardCompact]}>
       {showTitle ? (
         <View style={styles.headerRow}>
           <Ionicons name="shield-checkmark-outline" size={16} color={head.tone} />
-          <Text style={[styles.headerText, { color: head.tone }, compact && styles.headerTextCompact]}>
+          <Text
+            style={[styles.headerText, { color: head.tone }, compact && styles.headerTextCompact]}
+          >
             {head.title}
           </Text>
         </View>
       ) : null}
 
       <View style={styles.chipRow}>
-        {allServices.map((s) => {
-          const isBlocked = blockedMap.has(s);
-          return (
-            <View key={s} style={[styles.chip, isBlocked ? styles.chipBlocked : styles.chipOk]}>
-              <Ionicons
-                name={isBlocked ? "close-circle" : "checkmark-circle"}
-                size={14}
-                color={isBlocked ? "#DC2626" : "#16A34A"}
-              />
-              <Text
-                style={[styles.chipText, isBlocked && styles.chipTextBlocked]}
-                numberOfLines={1}
-              >
-                {SERVICE_LABEL[s] ?? s}
-              </Text>
-            </View>
-          );
-        })}
+        {rows.map((row) => (
+          <View
+            key={row.service}
+            style={[styles.chip, row.isBlocked ? styles.chipBlocked : styles.chipOk]}
+          >
+            <Ionicons
+              name={row.isBlocked ? "close-circle" : "checkmark-circle"}
+              size={14}
+              color={row.isBlocked ? "#DC2626" : "#16A34A"}
+            />
+            <Text
+              style={[styles.chipText, row.isBlocked && styles.chipTextBlocked]}
+              numberOfLines={1}
+            >
+              {row.label}
+            </Text>
+          </View>
+        ))}
       </View>
 
-      {blocked.length > 0 ? (
+      {uniqueSlogans.length > 0 ? (
         <View style={styles.sloganBlock}>
-          {blocked.map((b) => (
-            <Text key={`${b.service}-slogan`} style={styles.sloganText}>
-              {blockedSlogan(b)}
+          {uniqueSlogans.map((slogan) => (
+            <Text key={slogan} style={styles.sloganText}>
+              {slogan}
             </Text>
           ))}
           <Text style={styles.footerText}>
@@ -233,4 +365,119 @@ const styles = StyleSheet.create({
   },
   noneText: { fontSize: 13, color: "#6B7280" },
   footerText: { fontSize: 12, lineHeight: 17, color: "#475569", marginTop: 2 },
+
+  reqCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+    overflow: "hidden",
+    shadowColor: "#065F46",
+    shadowOpacity: 0.1,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
+    backgroundColor: "#FFFFFF",
+  },
+  reqCardInner: {
+    padding: 16,
+    gap: 12,
+  },
+  reqHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  reqIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: "#DCFCE7",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+  },
+  reqEyebrow: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: "#059669",
+    marginBottom: 2,
+  },
+  reqTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#0F172A",
+    letterSpacing: -0.2,
+  },
+  reqLead: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#64748B",
+  },
+  reqList: {
+    gap: 8,
+  },
+  reqRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+  },
+  reqRowOk: {
+    backgroundColor: "rgba(240, 253, 244, 0.95)",
+    borderColor: "#86EFAC",
+  },
+  reqRowBlocked: {
+    backgroundColor: "rgba(255, 247, 237, 0.95)",
+    borderColor: "#FDBA74",
+  },
+  reqRowIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  reqRowIconOk: { backgroundColor: "#BBF7D0" },
+  reqRowIconBlocked: { backgroundColor: "#FED7AA" },
+  reqRowTitleLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 2,
+  },
+  reqRowLabel: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#0F172A",
+  },
+  reqStatusPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  reqStatusPillOk: { backgroundColor: "#166534" },
+  reqStatusPillBlocked: { backgroundColor: "#9A3412" },
+  reqStatusPillText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: 0.2,
+  },
+  reqStatusPillTextBlocked: { color: "#FFF7ED" },
+  reqRowDetail: {
+    fontSize: 12.5,
+    lineHeight: 17,
+    color: "#57534E",
+  },
+  reqFoot: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: "#64748B",
+  },
 });

@@ -43,6 +43,8 @@ import {
   applyOutcome,
   resolveVerifiedIdentifierConflict,
   applyAsyncTerminalOutcome,
+  isIdentifierVerifiedOnOtherSubject,
+  upsertDuplicateVerificationRequest,
 } from "./history.js";
 import { resolveEffectivePolicy } from "./policy/engine.js";
 import type {
@@ -83,6 +85,7 @@ async function runProviderCall(
   docKind: VerificationDocumentKind,
   args: SubmitCommonArgs,
   provider: (verificationId: string) => Promise<NormalizedVerification>,
+  opts?: { knownBusinessIdentifier?: string | null },
 ): Promise<SubmitOutcome> {
   // 1. Policy
   const policy = await resolveEffectivePolicy({
@@ -102,6 +105,66 @@ async function runProviderCall(
   } catch {
     // No active provider config — treat as manual.
     return { kind: "manual", reason: "provider_not_configured", policy };
+  }
+
+  const knownBiz = String(opts?.knownBusinessIdentifier || "").trim() || null;
+
+  // 2b. Pre-check: document already verified on another account — do NOT call Cashfree
+  // and do NOT spam verification_requests (reuse at most one duplicate row).
+  if (knownBiz) {
+    try {
+      const taken = await isIdentifierVerifiedOnOtherSubject({
+        documentKind: docKind,
+        businessIdentifier: knownBiz,
+        subjectType: args.subjectType,
+        subjectId: args.subjectId,
+      });
+      if (taken) {
+        const dup = await upsertDuplicateVerificationRequest({
+          documentKind: docKind,
+          businessIdentifier: knownBiz,
+          subjectType: args.subjectType,
+          subjectId: args.subjectId,
+          providerConfigId,
+          createdBy: args.createdBy ?? null,
+        });
+        if (dup.created) {
+          await appendEvent({
+            requestId: dup.requestId,
+            eventKind: "submit",
+            toStatus: "duplicate",
+            actorType: "system",
+            details: { reason: "precheck_foreign_verified", businessIdentifier: knownBiz },
+          });
+        }
+        const result: NormalizedVerification = {
+          verificationId: dup.verificationId,
+          attemptNumber: 1,
+          provider: "cashfree",
+          providerReference: null,
+          subjectType: args.subjectType,
+          subjectId: args.subjectId,
+          documentKind: docKind,
+          status: "duplicate",
+          statusReason: "This document number is already verified on another account.",
+          confidence: null,
+          businessIdentifier: knownBiz,
+          verifiedData: {},
+          rawRequest: {},
+          rawResponse: { precheck: "foreign_verified" },
+          responseHeaders: {},
+          httpStatus: null,
+          durationMs: null,
+          providerArtifacts: [],
+        };
+        return { kind: "auto", result, requestId: dup.requestId, policy };
+      }
+    } catch (preErr) {
+      console.warn(
+        "[verification] duplicate precheck failed (continuing with provider):",
+        preErr instanceof Error ? preErr.message : preErr,
+      );
+    }
   }
 
   // 3. Mint verification_id, create request row (attempt # increments per subject+doc).
@@ -164,6 +227,37 @@ async function runProviderCall(
           "[verification] applyOutcome fallback failed:",
           fallbackErr instanceof Error ? fallbackErr.message : fallbackErr,
         );
+      }
+    }
+
+    // If this attempt became a cross-account duplicate, collapse prior duplicate spam
+    // and keep a single notice row for this subject+doc+identifier.
+    if (normalized.status === "duplicate" && normalized.businessIdentifier) {
+      try {
+        const kept = await upsertDuplicateVerificationRequest({
+          documentKind: docKind,
+          businessIdentifier: String(normalized.businessIdentifier),
+          subjectType: args.subjectType,
+          subjectId: args.subjectId,
+          providerConfigId,
+          createdBy: args.createdBy ?? null,
+          statusReason: normalized.statusReason || undefined,
+        });
+        // Prefer the collapsed row id for callers when we reused an older duplicate.
+        if (!kept.created && kept.requestId !== requestId) {
+          await applyOutcome(requestId, {
+            status: "cancelled",
+            statusReason: "superseded_duplicate_notice",
+          });
+          return {
+            kind: "auto",
+            result: { ...normalized, verificationId: kept.verificationId },
+            requestId: kept.requestId,
+            policy,
+          };
+        }
+      } catch {
+        /* best-effort collapse */
       }
     }
 
@@ -249,15 +343,21 @@ async function runProviderCall(
 // ── Per-document submit methods ────────────────────────────────────────────
 
 export async function submitPan(args: SubmitCommonArgs & { pan: string; name?: string }): Promise<SubmitOutcome> {
-  return runProviderCall("pan", args, async (vid) => {
-    const name = typeof args.name === "string" ? args.name.trim() : "";
-    const call = await cashfree.verifyPan({
-      verification_id: vid,
-      pan: args.pan,
-      ...(name ? { name } : {}),
-    });
-    return adaptPan(call as never, common("pan", vid, args));
-  });
+  const pan = String(args.pan || "").trim().toUpperCase();
+  return runProviderCall(
+    "pan",
+    args,
+    async (vid) => {
+      const name = typeof args.name === "string" ? args.name.trim() : "";
+      const call = await cashfree.verifyPan({
+        verification_id: vid,
+        pan,
+        ...(name ? { name } : {}),
+      });
+      return adaptPan(call as never, common("pan", vid, args));
+    },
+    { knownBusinessIdentifier: pan },
+  );
 }
 
 export async function submitIfsc(args: SubmitCommonArgs & { ifsc: string }): Promise<SubmitOutcome> {
@@ -268,17 +368,36 @@ export async function submitIfsc(args: SubmitCommonArgs & { ifsc: string }): Pro
 }
 
 export async function submitDrivingLicence(args: SubmitCommonArgs & { dlNumber: string; dob: string }): Promise<SubmitOutcome> {
-  return runProviderCall("driving_licence", args, async (vid) => {
-    const call = await cashfree.verifyDrivingLicence({ verification_id: vid, dl_number: args.dlNumber, dob: args.dob });
-    return adaptDrivingLicence(call as never, common("driving_licence", vid, args));
-  });
+  const dlNumber = String(args.dlNumber || "").trim().toUpperCase();
+  return runProviderCall(
+    "driving_licence",
+    args,
+    async (vid) => {
+      const call = await cashfree.verifyDrivingLicence({
+        verification_id: vid,
+        dl_number: dlNumber,
+        dob: args.dob,
+      });
+      return adaptDrivingLicence(call as never, common("driving_licence", vid, args));
+    },
+    { knownBusinessIdentifier: dlNumber },
+  );
 }
 
 export async function submitVehicleRc(args: SubmitCommonArgs & { vehicleNumber: string }): Promise<SubmitOutcome> {
-  return runProviderCall("vehicle_rc", args, async (vid) => {
-    const call = await cashfree.verifyVehicleRc({ verification_id: vid, vehicle_number: args.vehicleNumber });
-    return adaptVehicleRc(call as never, common("vehicle_rc", vid, args));
-  });
+  const vehicleNumber = String(args.vehicleNumber || "").trim().toUpperCase();
+  return runProviderCall(
+    "vehicle_rc",
+    args,
+    async (vid) => {
+      const call = await cashfree.verifyVehicleRc({
+        verification_id: vid,
+        vehicle_number: vehicleNumber,
+      });
+      return adaptVehicleRc(call as never, common("vehicle_rc", vid, args));
+    },
+    { knownBusinessIdentifier: vehicleNumber },
+  );
 }
 
 export async function submitPassport(args: SubmitCommonArgs & { fileNumber: string; dob: string; name?: string }): Promise<SubmitOutcome> {

@@ -17,7 +17,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useNavigation } from "expo-router";
 import {
   openRazorpayCheckout,
   isNativeRazorpayAvailable,
@@ -39,6 +39,7 @@ import {
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
 import { useRiderOnboardingSummary } from "@/src/hooks/useRiderOnboardingSummary";
 import { ServiceEligibilityNotice } from "@/src/components/onboarding/ServiceEligibilityNotice";
+import { ONBOARDING_PAGE_BG } from "@/src/components/onboarding/OnboardingTopBar";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
 import {
   onboardingStepToRoute,
@@ -59,10 +60,11 @@ import {
   ErrorBanner,
   onboardingFormStyles as form,
 } from "@/src/components/onboarding/OnboardingFormUi";
+import { fetchRiderHiringStatus } from "@/src/services/onboardingGeo.service";
 
 const ACCENT = "#39d353";
 const ACCENT_DARK = "#22a745";
-const BG = "#f4fbf6";
+const BG = ONBOARDING_PAGE_BG;
 
 const ONBOARDING_STEPS = ["KYC", "Vehicle", "Payment"];
 
@@ -130,6 +132,7 @@ function PriceRow({
 }
 
 export default function PaymentScreen() {
+  const navigation = useNavigation();
   const queryClient = useQueryClient();
   const session = useSessionStore((s) => s.session);
   const { data, hydrate } = useOnboardingStore();
@@ -165,6 +168,68 @@ export default function PaymentScreen() {
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  useEffect(() => {
+    const nextTitle = feeConfig?.headline?.trim() || "GMitra Prime";
+    navigation.setOptions({ title: nextTitle });
+  }, [navigation, feeConfig?.headline]);
+
+  // Block payment when work location was never server-saved, or geo is NOT_HIRING.
+  useEffect(() => {
+    if (data.riderId && !riderStatusFetched) return;
+    if (riderStatusFetched && riderStatus?.workLocationConfirmed !== true) {
+      if (gateBounceRef.current === "/(onboarding)/location") return;
+      gateBounceRef.current = "/(onboarding)/location";
+      router.replace("/(onboarding)/location");
+      return;
+    }
+
+    const token = session?.accessToken;
+    if (!token || !data.riderId) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const ha = riderStatus?.homeAddress;
+        const source = data.locationSource || ha?.locationSource || null;
+        const res = await fetchRiderHiringStatus(token, {
+          riderId: String(data.riderId),
+          stateId: data.stateId || ha?.stateId || null,
+          regionId: data.regionId || ha?.regionId || null,
+          districtId: data.districtId || ha?.districtId || null,
+          state: data.state || ha?.state || null,
+          region: data.region || ha?.region || null,
+          district: data.district || ha?.district || null,
+          manualOther: source === "manual_other",
+        });
+        if (cancelled) return;
+        if (res.hiringAllowed === false) {
+          if (gateBounceRef.current === "/(onboarding)/location") return;
+          gateBounceRef.current = "/(onboarding)/location";
+          router.replace("/(onboarding)/location");
+        }
+      } catch {
+        // Keep payment if status already confirmed; location Continue enforces hiring on save.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    data.riderId,
+    data.locationSource,
+    data.stateId,
+    data.regionId,
+    data.districtId,
+    data.state,
+    data.region,
+    data.district,
+    riderStatusFetched,
+    riderStatus?.workLocationConfirmed,
+    riderStatus?.homeAddress,
+    session?.accessToken,
+  ]);
 
   useEffect(() => {
     if (data.riderId && !riderStatusFetched) return;
@@ -219,16 +284,24 @@ export default function PaymentScreen() {
     if (data.riderId && !riderStatusFetched) return;
     const next = riderStatus?.nextOnboardingStep;
     if (!next || next === "payment" || next === "bank_account") return;
+
+    // Vehicle package already finalized (including optional DL/RC skips) — never bounce
+    // back to dl_rc/rental_ev from payment just because status briefly lags.
+    const vehicleSubmitted =
+      Boolean(data.vehicleChoice?.trim()) &&
+      data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice.trim();
     if (
-      next === "rental_ev" &&
-      isVehicleOnboardingComplete(
-        next as ServerOnboardingStep,
-        riderStatus?.completedOnboardingSteps,
-        data.vehicleOnboardingFlow
-      )
+      (next === "dl_rc" || next === "rental_ev") &&
+      (vehicleSubmitted ||
+        isVehicleOnboardingComplete(
+          next as ServerOnboardingStep,
+          riderStatus?.completedOnboardingSteps,
+          data.vehicleOnboardingFlow
+        ))
     ) {
       return;
     }
+
     const href = onboardingStepToRoute(next as ServerOnboardingStep);
     if (gateBounceRef.current === href) return;
     gateBounceRef.current = href;
@@ -239,6 +312,8 @@ export default function PaymentScreen() {
     riderStatus?.nextOnboardingStep,
     riderStatus?.completedOnboardingSteps,
     data.vehicleOnboardingFlow,
+    data.vehicleChoice,
+    data.vehicleOnboardingSubmittedFor,
   ]);
 
   const macroStepIndex = useMemo(() => {
@@ -298,8 +373,8 @@ export default function PaymentScreen() {
     return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
   }, [feeConfig?.discountPercent]);
   const standardDisplay = feeConfig?.standardOnboardingFee ?? "99";
-  const payButtonLabel =
-    feeConfig?.payButtonText?.trim() || `Pay ₹${totalDisplay}`;
+  // Always show the live computed total — backend CTA copy can lag behind discounts.
+  const payButtonLabel = `Pay ₹${totalDisplay} · Complete onboarding`;
 
   const isPaying = loading || createOrder.isPending;
 
@@ -580,94 +655,89 @@ export default function PaymentScreen() {
 
   return (
     <View style={form.root}>
-      <SafeAreaView style={form.safeArea} edges={["top", "bottom"]}>
+      <SafeAreaView style={form.safeArea} edges={["bottom"]}>
         <View style={styles.body}>
           <ScrollView
             style={styles.scroll}
             contentContainerStyle={[
-              form.scrollContent,
               styles.scrollContent,
-              { paddingBottom: Math.max(footerHeight + 40, 180) },
+              { paddingBottom: Math.max(footerHeight + 24, 120) },
             ]}
             showsVerticalScrollIndicator
             keyboardShouldPersistTaps="handled"
+            scrollEnabled
             bounces
+            nestedScrollEnabled
           >
-            <LinearGradient
-              colors={["#dff5e4", BG]}
-              start={{ x: 0.5, y: 0 }}
-              end={{ x: 0.5, y: 1 }}
-              style={[form.header, styles.headerExtra]}
-            >
+            <View style={styles.introBlock}>
               <StepProgress steps={ONBOARDING_STEPS} currentIndex={macroStepIndex} />
-
-              <View style={[form.stepPill, styles.stepPillSpaced]}>
-                <Ionicons name="card-outline" size={14} color={ACCENT_DARK} />
-                <Text style={form.stepPillText}>Payment</Text>
-              </View>
-
-              <Text style={form.title}>{feeConfig?.headline ?? "Onboarding Fee"}</Text>
-              <Text style={form.subtitle}>
-                {feeConfig?.subtitle ?? "Complete your onboarding by paying the registration fee"}
+              <Text style={styles.introSubtitle}>
+                {feeConfig?.subtitle?.trim() ||
+                  "Pay once to activate your rider account and start on services you’re eligible for."}
               </Text>
-            </LinearGradient>
-
-            {/* Price card — keep short so eligibility stays above the fold when possible */}
-            <View style={[form.formCard, styles.paymentCard]}>
-              <View style={styles.heroBlock}>
-                {discountPct != null ? (
-                  <View style={styles.discountBadge}>
-                    <Ionicons name="pricetag" size={12} color="#b45309" />
-                    <Text style={styles.discountBadgeText}>{discountPct}% off</Text>
-                  </View>
-                ) : null}
-
-                <Text style={styles.heroAmount}>₹{totalDisplay}</Text>
-                <Text style={styles.heroLabel}>
-                  {feeConfig?.feeLabel ?? "One-time onboarding fee"}
-                  {standardDisplay !== feeConfig?.discountedOnboardingFee ? (
-                    <Text style={styles.heroStruckInline}>  ₹{standardDisplay}</Text>
-                  ) : null}
-                </Text>
-              </View>
-
-              <View style={styles.breakdownBox}>
-                <PriceRow label="Onboarding fee" value={`₹${subtotalDisplay}`} />
-                {gstPct > 0 ? (
-                  <PriceRow label={`GST (${gstPct}%)`} value={`₹${gstDisplay}`} />
-                ) : null}
-                <View style={styles.breakdownDivider} />
-                <PriceRow label="Total payable" value={`₹${totalDisplay}`} bold accent />
-              </View>
-
-              <View style={styles.infoBanner}>
-                <Ionicons name="information-circle-outline" size={18} color="#0369A1" />
-                <Text style={styles.infoBannerText}>
-                  {feeConfig?.infoMessage ??
-                    "This fee covers document verification and account setup"}
-                </Text>
-              </View>
-
-              {feeConfig?.alertNotice ? (
-                <View style={styles.alertBox}>
-                  <Ionicons name="shield-checkmark-outline" size={18} color={ACCENT_DARK} />
-                  <Text style={styles.alertText}>{feeConfig.alertNotice}</Text>
-                </View>
-              ) : null}
-
-              {error ? <ErrorBanner message={error} /> : null}
             </View>
 
-            {/* Separate card below price — scrolls clear of sticky pay CTA */}
-            <View style={styles.eligibilityOutside}>
+            <View style={styles.pagePad}>
               {onboardingSummary ? (
-                <>
-                  <Text style={styles.eligibilitySectionLabel}>Service access</Text>
-                  <ServiceEligibilityNotice summary={onboardingSummary} compact />
-                </>
+                <ServiceEligibilityNotice
+                  summary={onboardingSummary}
+                  variant="requiredFor"
+                />
               ) : (
-                <View style={styles.eligibilityPlaceholder} />
+                <View style={styles.eligibilityPlaceholder}>
+                  <ActivityIndicator color={ACCENT_DARK} />
+                  <Text style={styles.eligibilityPlaceholderText}>
+                    Checking which services this fee unlocks…
+                  </Text>
+                </View>
               )}
+
+              <LinearGradient
+                colors={["#ECFDF5", "#FFFFFF"]}
+                start={{ x: 0.5, y: 0 }}
+                end={{ x: 0.5, y: 1 }}
+                style={styles.amountCard}
+              >
+                <View style={styles.amountTop}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.amountEyebrow}>Amount due</Text>
+                    <Text style={styles.amountValue}>₹{totalDisplay}</Text>
+                    <Text style={styles.amountHint}>
+                      {feeConfig?.feeLabel ?? "One-time onboarding fee"}
+                      {standardDisplay !== feeConfig?.discountedOnboardingFee ? (
+                        <Text style={styles.amountStruck}>  ₹{standardDisplay}</Text>
+                      ) : null}
+                    </Text>
+                  </View>
+                  {discountPct != null ? (
+                    <View style={styles.discountBadge}>
+                      <Ionicons name="pricetag" size={12} color="#B45309" />
+                      <Text style={styles.discountBadgeText}>{discountPct}% off</Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View style={styles.breakdownBox}>
+                  <PriceRow label="Onboarding fee" value={`₹${subtotalDisplay}`} />
+                  {gstPct > 0 ? (
+                    <PriceRow label={`GST (${gstPct}%)`} value={`₹${gstDisplay}`} />
+                  ) : null}
+                  <View style={styles.breakdownDivider} />
+                  <PriceRow label="Total payable" value={`₹${totalDisplay}`} bold accent />
+                </View>
+
+                <View style={styles.coversRow}>
+                  <View style={styles.coversIcon}>
+                    <Ionicons name="shield-checkmark" size={16} color={ACCENT_DARK} />
+                  </View>
+                  <Text style={styles.coversText}>
+                    {feeConfig?.infoMessage?.trim() ||
+                      "Covers document verification and account setup"}
+                  </Text>
+                </View>
+
+                {error ? <ErrorBanner message={error} /> : null}
+              </LinearGradient>
             </View>
           </ScrollView>
 
@@ -678,7 +748,6 @@ export default function PaymentScreen() {
               if (!mountedRef.current || !(h > 0)) return;
               if (Math.abs(h - footerHeightRef.current) <= 2) return;
               footerHeightRef.current = h;
-              // Defer — sync setState from onLayout + ScrollView padding fights Fabric.
               requestAnimationFrame(() => {
                 if (mountedRef.current) setFooterHeight(h);
               });
@@ -691,9 +760,10 @@ export default function PaymentScreen() {
               disabled={isPaying || !documentsReadyForPayment}
             />
 
-            {feeConfig?.footerNote ? (
-              <Text style={styles.footerNote}>{feeConfig.footerNote}</Text>
-            ) : null}
+            <Text style={styles.footerNote}>
+              {feeConfig?.footerNote?.trim() ||
+                "Non-refundable once verification begins. Locked services can be unlocked later from Profile."}
+            </Text>
           </View>
         </View>
       </SafeAreaView>
@@ -717,85 +787,115 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flex: 1,
+    minHeight: 0,
   },
   scrollContent: {
     flexGrow: 1,
+    paddingTop: 0,
+    backgroundColor: BG,
   },
-  headerExtra: {
-    paddingBottom: 12,
+  introBlock: {
+    paddingHorizontal: 20,
+    paddingTop: 88,
+    paddingBottom: 8,
+    gap: 10,
+    backgroundColor: BG,
   },
-  stepPillSpaced: {
-    marginTop: 8,
+  introSubtitle: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: "#475569",
+    textAlign: "center",
   },
-  paymentCard: {
-    gap: 12,
-    marginBottom: 12,
-    paddingVertical: 16,
-  },
-  eligibilityOutside: {
-    marginHorizontal: 16,
-    marginBottom: 12,
-    gap: 8,
-    minHeight: 96,
+  pagePad: {
+    paddingHorizontal: 16,
+    gap: 14,
+    paddingBottom: 8,
+    backgroundColor: BG,
   },
   eligibilityPlaceholder: {
-    minHeight: 88,
-  },
-  eligibilitySectionLabel: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: colors.gray[500],
-    letterSpacing: 0.3,
-    textTransform: "uppercase",
-    marginLeft: 2,
-  },
-  heroBlock: {
-    alignItems: "center",
-    paddingVertical: 2,
-    gap: 2,
-  },
-  discountBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: "#fef3c7",
+    minHeight: 120,
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: "#fde68a",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 20,
-    marginBottom: 2,
+    borderColor: "#D1FAE5",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    padding: 20,
   },
-  discountBadgeText: {
-    fontSize: 12,
+  eligibilityPlaceholderText: {
+    fontSize: 13,
+    color: "#64748B",
+    textAlign: "center",
+  },
+  amountCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "#A7F3D0",
+    padding: 18,
+    gap: 14,
+    overflow: "hidden",
+    shadowColor: "#065F46",
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
+  },
+  amountTop: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  amountEyebrow: {
+    fontSize: 11,
     fontWeight: "700",
-    color: "#b45309",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+    color: "#059669",
+    marginBottom: 4,
   },
-  heroAmount: {
-    fontSize: 36,
+  amountValue: {
+    fontSize: 40,
     fontWeight: "800",
     color: ACCENT_DARK,
-    letterSpacing: -1,
+    letterSpacing: -1.2,
   },
-  heroLabel: {
+  amountHint: {
+    marginTop: 2,
     fontSize: 13,
     color: colors.gray[500],
     fontWeight: "500",
-    textAlign: "center",
   },
-  heroStruckInline: {
+  amountStruck: {
     fontSize: 13,
     color: colors.gray[400],
     textDecorationLine: "line-through",
     fontWeight: "500",
   },
+  discountBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#FEF3C7",
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
+  },
+  discountBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#B45309",
+  },
   breakdownBox: {
-    backgroundColor: colors.gray[50],
-    borderRadius: 14,
-    padding: 12,
+    backgroundColor: "rgba(255,255,255,0.9)",
+    borderRadius: 16,
+    padding: 14,
     gap: 8,
     borderWidth: 1,
-    borderColor: colors.gray[100],
+    borderColor: "#D1FAE5",
   },
   priceRow: {
     flexDirection: "row",
@@ -824,42 +924,32 @@ const styles = StyleSheet.create({
   },
   breakdownDivider: {
     height: 1,
-    backgroundColor: colors.gray[200],
+    backgroundColor: "#D1FAE5",
     marginVertical: 2,
   },
-  infoBanner: {
+  coversRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 8,
-    backgroundColor: "#E0F2FE",
-    borderRadius: 12,
-    padding: 10,
+    gap: 10,
+    backgroundColor: "rgba(255,255,255,0.75)",
+    borderRadius: 14,
+    padding: 12,
     borderWidth: 1,
-    borderColor: "#bae6fd",
+    borderColor: "#D1FAE5",
   },
-  infoBannerText: {
+  coversIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    backgroundColor: "#DCFCE7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  coversText: {
     flex: 1,
-    flexShrink: 1,
-    fontSize: 12.5,
+    fontSize: 13,
     lineHeight: 18,
-    color: "#0369A1",
-  },
-  alertBox: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    backgroundColor: "#edf8f0",
-    borderRadius: 12,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: "rgba(57, 211, 83, 0.2)",
-  },
-  alertText: {
-    flex: 1,
-    flexShrink: 1,
-    fontSize: 12.5,
-    lineHeight: 18,
-    color: colors.gray[700],
+    color: "#334155",
   },
   footer: {
     paddingHorizontal: 16,
@@ -867,7 +957,7 @@ const styles = StyleSheet.create({
     paddingBottom: Platform.OS === "ios" ? 4 : 10,
     backgroundColor: BG,
     borderTopWidth: 1,
-    borderTopColor: "rgba(57, 211, 83, 0.15)",
+    borderTopColor: "rgba(15, 23, 42, 0.06)",
     ...Platform.select({
       ios: {
         shadowColor: "#000",

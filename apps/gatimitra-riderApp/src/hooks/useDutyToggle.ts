@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Alert } from "react-native";
 import * as Location from "expo-location";
+import { ApiError } from "@gatimitra/sdk";
 import { useDutyStore } from "@/src/stores/dutyStore";
 import { riderApi } from "@/src/services/api/riderApi";
 import {
@@ -15,6 +16,7 @@ import {
   riderVehicleQueryKey,
   type RiderVehicleStatusResponse,
 } from "@/src/hooks/useRiderVehicle";
+import { RIDER_VEHICLES_QUERY_KEY } from "@/src/hooks/useRiderVehicles";
 import { useVehicleGateStore } from "@/src/stores/vehicleGateStore";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { resolveDutyServiceTypesForToggle } from "@/src/hooks/useRiderDutyServiceFilter";
@@ -27,6 +29,7 @@ import {
 } from "@/src/lib/rider-blocked-services";
 import { useRef, useState } from "react";
 import type { RiderVehicleView } from "@/src/services/api/riderApi";
+import { openDutyWorkLocationSheet } from "@/src/stores/dutyWorkLocationSheetStore";
 
 function vehicleDutyLabel(v: RiderVehicleView): string {
   const cls =
@@ -42,10 +45,6 @@ function vehicleDutyLabel(v: RiderVehicleView): string {
   return `${cls}${fuel ? ` · ${fuel}` : ""} · ${own} · ${v.registrationMasked || v.registrationNumber}`;
 }
 
-/**
- * When the rider has 2 verified vehicles, force an explicit pick before going ON
- * (max 2 RCs). Returns selected id, or null if cancelled.
- */
 function promptSelectVehicleForDuty(
   vehicles: RiderVehicleView[],
   activeVehicleId: number | null
@@ -89,23 +88,16 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   ]);
 }
 
-/**
- * Best-effort fix for the go-ON request only — never blocks or prompts for
- * permission (that's handled elsewhere in onboarding). Without this, going ON
- * duty only logged lat/lon into duty_logs (audit trail) and left
- * rider_current_locations (what dispatch/serviceability actually reads) to the
- * independent background ping loop, which could lag long enough that a rider
- * who just went online showed as unavailable everywhere else.
- */
+/** Single GPS resolve for Duty ON — reused for precheck + PUT /duty. */
 async function resolveDutyToggleLocationFix(): Promise<{ lat: number; lon: number } | null> {
   try {
     const perm = await Location.getForegroundPermissionsAsync();
     if (perm.status !== "granted") return null;
     const fresh = await withTimeout(
       Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
-      3000
+      2500
     );
-    const loc = fresh ?? (await Location.getLastKnownPositionAsync({ maxAge: 30_000 }).catch(() => null));
+    const loc = fresh ?? (await Location.getLastKnownPositionAsync({ maxAge: 60_000 }).catch(() => null));
     if (!loc) return null;
     return { lat: loc.coords.latitude, lon: loc.coords.longitude };
   } catch {
@@ -122,10 +114,83 @@ function isDutyBlockedByServerError(error: unknown): boolean {
   );
 }
 
+function parseWorkLocationMismatch(error: unknown): {
+  message: string;
+  working: Record<string, unknown> | null;
+  detected: Record<string, unknown> | null;
+} | null {
+  const status =
+    error instanceof HttpError
+      ? error.status
+      : error instanceof ApiError
+        ? error.status
+        : null;
+  if (status !== 403) return null;
+
+  const bodyText =
+    error instanceof HttpError
+      ? error.body ?? ""
+      : error instanceof ApiError && error.payload
+        ? JSON.stringify(error.payload)
+        : "";
+  const haystack = `${error instanceof Error ? error.message : ""}\n${bodyText}`;
+  if (!/WORK_LOCATION_MISMATCH/i.test(haystack)) return null;
+
+  let working: Record<string, unknown> | null = null;
+  let detected: Record<string, unknown> | null = null;
+  let message =
+    "Your current location is different from your working location. Update your working location to go ON-DUTY here, or cancel to stay offline.";
+
+  const applyPayload = (parsed: {
+    message?: string;
+    working?: Record<string, unknown>;
+    registered?: Record<string, unknown>;
+    detected?: Record<string, unknown>;
+  }) => {
+    if (parsed.message?.trim()) message = parsed.message.trim();
+    const w = parsed.working ?? parsed.registered;
+    if (w && typeof w === "object") working = w;
+    if (parsed.detected && typeof parsed.detected === "object") {
+      detected = parsed.detected;
+    }
+  };
+
+  if (error instanceof ApiError && error.payload && typeof error.payload === "object") {
+    applyPayload(error.payload as {
+      message?: string;
+      working?: Record<string, unknown>;
+      registered?: Record<string, unknown>;
+      detected?: Record<string, unknown>;
+    });
+  } else if (error instanceof HttpError && error.body) {
+    try {
+      applyPayload(JSON.parse(error.body) as {
+        message?: string;
+        working?: Record<string, unknown>;
+        registered?: Record<string, unknown>;
+        detected?: Record<string, unknown>;
+      });
+    } catch {
+      /* use defaults */
+    }
+  }
+
+  return { message, working, detected };
+}
+
+function deferDutyQueryRefresh(queryClient: ReturnType<typeof useQueryClient>) {
+  // Non-critical — never block Duty ON success on these.
+  void queryClient.invalidateQueries({ queryKey: ["rider", "duty"] });
+  setTimeout(() => {
+    void queryClient.invalidateQueries({ queryKey: ["rider", "subscription"] });
+    void queryClient.invalidateQueries({ queryKey: ["rider", "earnings"] });
+  }, 0);
+}
+
 export type SetDutyResult = {
   ok: boolean;
   blockedFromGoingOn?: boolean;
-  reason?: "vehicle" | "services" | "network" | "blocked" | "busy";
+  reason?: "vehicle" | "services" | "network" | "blocked" | "busy" | "location";
 };
 
 export function useDutyToggle() {
@@ -156,15 +221,8 @@ export function useDutyToggle() {
   const subscriptionDutyBlocked =
     subscriptionStatus?.dues?.dispatchBlocked === true ||
     subscriptionStatus?.dues?.alertBanner?.variant === "restricted";
-  // Penalty blocks duty ONLY when the server says so — and the server now decides
-  // that against the Super-Admin wallet threshold (penaltyFullyStopsDuty), not on
-  // "balance is negative". A sub-threshold penalty (or a brief order-time debit that
-  // dips the balance negative) must NOT block go-ON or flip the toggle off; it only
-  // shows a "pay it down" banner. Re-deriving a hard stop from walletBalance < 0 here
-  // was the bug that turned the toggle off on any penalty / on order assignment.
   const walletPenaltyBlocksDuty = restrictions?.penaltyDutyStopped === true;
 
-  /** Client-side hard lock — never call PUT /duty ON while true. */
   const dutyGoOnBlocked =
     accountFullyBlocked || subscriptionDutyBlocked || walletPenaltyBlocksDuty;
 
@@ -185,9 +243,7 @@ export function useDutyToggle() {
     },
     onSuccess: (data) => {
       void useDutyStore.getState().setDutyStatus(data.isOnDuty);
-      void queryClient.invalidateQueries({ queryKey: ["rider", "subscription"] });
-      void queryClient.invalidateQueries({ queryKey: ["rider", "duty"] });
-      void queryClient.invalidateQueries({ queryKey: ["rider", "earnings"] });
+      deferDutyQueryRefresh(queryClient);
     },
   });
 
@@ -202,17 +258,18 @@ export function useDutyToggle() {
     try {
       if (next) {
         if (dutyGoOnBlocked) {
-          void queryClient.invalidateQueries({ queryKey: ["rider", "subscription"] });
-          void queryClient.invalidateQueries({ queryKey: ["rider", "duty"] });
-          void queryClient.invalidateQueries({ queryKey: ["rider", "earnings"] });
+          deferDutyQueryRefresh(queryClient);
           return { ok: false, blockedFromGoingOn: true, reason: "blocked" };
         }
 
-        // Prefer cache so the first tap is instant; refresh in parallel with a short timeout.
+        // Parallel: GPS once + vehicle status (cache-first, short refresh).
         const cached =
           queryClient.getQueryData<RiderVehicleStatusResponse>(riderVehicleQueryKey) ?? null;
-        const fetched = await withTimeout(loadRiderVehicleStatusForDutyGate(), 2500);
-        const vehicleStatus = fetched ?? cached;
+        const [fix, fetchedVehicle] = await Promise.all([
+          resolveDutyToggleLocationFix(),
+          withTimeout(loadRiderVehicleStatusForDutyGate(), 2000),
+        ]);
+        const vehicleStatus = fetchedVehicle ?? cached;
 
         if (vehicleStatus) {
           queryClient.setQueryData(riderVehicleQueryKey, vehicleStatus);
@@ -228,33 +285,53 @@ export function useDutyToggle() {
           return { ok: false, reason: "vehicle" };
         }
 
-        // Phase C: multi-vehicle — require explicit selection before going ON.
-        try {
-          const fleet = await riderApi.getVehicles();
-          const verified = (fleet.vehicles ?? []).filter(
-            (v) => v.verified && String(v.status).toLowerCase() !== "retired"
-          );
-          if (verified.length > 1) {
-            const picked = await promptSelectVehicleForDuty(verified, fleet.activeVehicleId);
-            if (picked == null) {
-              return { ok: false, reason: "vehicle" };
+        // Multi-vehicle pick only when cache/fleet says >1 — skip blocking list fetch
+        // when we already know there is a single verified vehicle.
+        const fleetCache = queryClient.getQueryData<{
+          vehicles?: RiderVehicleView[];
+          activeVehicleId?: number | null;
+        }>(RIDER_VEHICLES_QUERY_KEY);
+        const cachedVerified = (fleetCache?.vehicles ?? []).filter(
+          (v) => v.verified && String(v.status).toLowerCase() !== "retired"
+        );
+        const needsFleetFetch = cachedVerified.length !== 1;
+
+        if (needsFleetFetch) {
+          try {
+            const fleet = await withTimeout(riderApi.getVehicles(), 2500);
+            if (fleet) {
+              queryClient.setQueryData(RIDER_VEHICLES_QUERY_KEY, fleet);
+              const verified = (fleet.vehicles ?? []).filter(
+                (v) => v.verified && String(v.status).toLowerCase() !== "retired"
+              );
+              if (verified.length > 1) {
+                const picked = await promptSelectVehicleForDuty(
+                  verified,
+                  fleet.activeVehicleId ?? null
+                );
+                if (picked == null) {
+                  return { ok: false, reason: "vehicle" };
+                }
+                if (picked !== fleet.activeVehicleId) {
+                  await riderApi.setActiveVehicle(picked);
+                  void queryClient.invalidateQueries({ queryKey: RIDER_VEHICLES_QUERY_KEY });
+                  void queryClient.invalidateQueries({ queryKey: riderVehicleQueryKey });
+                }
+              } else if (
+                verified.length === 1 &&
+                verified[0]!.id !== fleet.activeVehicleId
+              ) {
+                await riderApi.setActiveVehicle(verified[0]!.id);
+                void queryClient.invalidateQueries({ queryKey: RIDER_VEHICLES_QUERY_KEY });
+                void queryClient.invalidateQueries({ queryKey: riderVehicleQueryKey });
+              }
             }
-            if (picked !== fleet.activeVehicleId) {
-              await riderApi.setActiveVehicle(picked);
-              void queryClient.invalidateQueries({ queryKey: ["rider", "vehicles"] });
-              void queryClient.invalidateQueries({ queryKey: riderVehicleQueryKey });
-            }
-          } else if (verified.length === 1 && verified[0]!.id !== fleet.activeVehicleId) {
-            await riderApi.setActiveVehicle(verified[0]!.id);
-            void queryClient.invalidateQueries({ queryKey: ["rider", "vehicles"] });
-            void queryClient.invalidateQueries({ queryKey: riderVehicleQueryKey });
+          } catch {
+            // Non-fatal: fall through with current active vehicle.
           }
-        } catch {
-          // Non-fatal: fall through with current active vehicle if list fails.
         }
 
         let serviceTypes = resolveDutyServiceTypesForToggle(queryClient);
-        // Cache may not be warm on first tap — fall back so Go-ON still hits the API.
         if (!serviceTypes?.length) {
           const stored = vehicleStatus.vehicle?.serviceTypes;
           if (Array.isArray(stored) && stored.length > 0) {
@@ -264,13 +341,57 @@ export function useDutyToggle() {
           }
         }
 
+        if (!fix?.lat || !fix?.lon) {
+          Alert.alert(
+            "Location needed",
+            "Turn on GPS and try again. We need your current location before you can go ON-DUTY."
+          );
+          return { ok: false, reason: "location" };
+        }
+
+        // Precheck BEFORE PUT /duty — mismatch sheet must not appear after optimistic ON.
         try {
-          const fix = await resolveDutyToggleLocationFix();
+          const pre = await riderApi.dutyPrecheck({ lat: fix.lat, lon: fix.lon });
+          if (pre.mismatch) {
+            openDutyWorkLocationSheet({
+              message:
+                pre.message ||
+                "Your current location is different from your working location. Update your working location to go ON-DUTY here.",
+              working: (pre.working ?? pre.registered ?? null) as never,
+              registered: (pre.working ?? pre.registered ?? null) as never,
+              detected: {
+                ...(pre.detected ?? {}),
+                lat: fix.lat,
+                lon: fix.lon,
+              } as never,
+            });
+            return { ok: false, reason: "location" };
+          }
+          if (pre.ok === false && pre.hiringAllowed === false) {
+            openDutyWorkLocationSheet({
+              mode: "not_hiring",
+              message:
+                pre.message || "Service not available at this location",
+              working: (pre.working ?? pre.registered ?? null) as never,
+              registered: (pre.working ?? pre.registered ?? null) as never,
+              detected: {
+                ...(pre.detected ?? {}),
+                lat: fix.lat,
+                lon: fix.lon,
+              } as never,
+            });
+            return { ok: false, reason: "location" };
+          }
+        } catch {
+          // Soft: if precheck fails (older backend), PUT /duty still enforces mismatch.
+        }
+
+        try {
           const data = await updateDutyMutation.mutateAsync({
             status: next,
             serviceTypes,
-            lat: fix?.lat,
-            lon: fix?.lon,
+            lat: fix.lat,
+            lon: fix.lon,
           });
           await useDutyStore.getState().setDutyStatus(data.isOnDuty);
           if (!data.isOnDuty) {
@@ -287,10 +408,22 @@ export function useDutyToggle() {
             openVerificationModal();
             return { ok: false, reason: "vehicle" };
           }
+          const locationMismatch = parseWorkLocationMismatch(error);
+          if (locationMismatch) {
+            openDutyWorkLocationSheet({
+              message: locationMismatch.message,
+              working: locationMismatch.working as never,
+              registered: locationMismatch.working as never,
+              detected: {
+                ...(locationMismatch.detected ?? {}),
+                lat: fix.lat,
+                lon: fix.lon,
+              } as never,
+            });
+            return { ok: false, reason: "location" };
+          }
           if (isDutyBlockedByServerError(error)) {
-            void queryClient.invalidateQueries({ queryKey: ["rider", "subscription"] });
-            void queryClient.invalidateQueries({ queryKey: ["rider", "duty"] });
-            void queryClient.invalidateQueries({ queryKey: ["rider", "earnings"] });
+            deferDutyQueryRefresh(queryClient);
             return { ok: false, blockedFromGoingOn: true, reason: "blocked" };
           }
           Alert.alert(

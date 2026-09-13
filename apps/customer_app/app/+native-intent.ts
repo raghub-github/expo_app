@@ -11,6 +11,11 @@
 
 import { extractAddressShareToken, isAddressSharePath } from "@/lib/addressShareLink";
 import { extractRestaurantShareSlug, isRestaurantSharePath } from "@/lib/restaurantShareLink";
+import {
+  geoOpenToLocationMapPath,
+  isGeoOrMapsOpenPath,
+  parseGeoOpenLink,
+} from "@/lib/geoOpenLink";
 
 function isReferralPath(path: string): boolean {
   return /(^|\/\/|\/)(ref|invite)(\/|\?|$)/.test(path) || /referral(\?|$)/.test(path);
@@ -41,6 +46,10 @@ export function redirectSystemPath({
   initial: boolean;
 }): string {
   try {
+    if (isGeoOrMapsOpenPath(path)) {
+      const parsed = parseGeoOpenLink(path);
+      if (parsed) return geoOpenToLocationMapPath(parsed);
+    }
     if (isAddressSharePath(path)) {
       const token = extractAddressShareToken(path);
       if (token) {

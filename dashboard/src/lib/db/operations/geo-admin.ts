@@ -502,7 +502,7 @@ export async function geoGetChildren(params: {
     effective_platform_offers: parseGeoEffectivePlatformOffers(r.effective_platform_offers) ?? [],
     require_rider_online_check: r.kind === "state" ? true : null,
   }));
-  return attachRiderOnlineCheckFlags(mapped);
+  return attachRiderHiringFlags(await attachRiderOnlineCheckFlags(mapped));
 }
 
 async function attachRiderOnlineCheckFlags(rows: GeoChildRow[]): Promise<GeoChildRow[]> {
@@ -523,6 +523,45 @@ async function attachRiderOnlineCheckFlags(rows: GeoChildRow[]): Promise<GeoChil
     );
   } catch {
     return rows;
+  }
+}
+
+/** Attach effective + explicit hiring flags for state/region/district rows.
+ * Resolves each node independently (nearest explicit ancestor). Never copies a
+ * sibling's override onto other children.
+ */
+async function attachRiderHiringFlags(rows: GeoChildRow[]): Promise<GeoChildRow[]> {
+  const targets = rows.filter(
+    (r) => r.kind === "state" || r.kind === "region" || r.kind === "district",
+  );
+  if (targets.length === 0) return rows;
+  try {
+    const { batchResolveRiderGeoHiring } = await import("./rider-geo-hiring-admin");
+    const resolved = await batchResolveRiderGeoHiring(
+      targets.map((r) => ({ kind: r.kind, id: r.id })),
+    );
+    return rows.map((r) => {
+      const hit = resolved.get(`${r.kind}:${r.id}`);
+      if (!hit) return r;
+      return {
+        ...r,
+        hiring_rider_enabled: hit.hiringEnabled,
+        hiring_rider_explicit: hit.explicit,
+        hiring_rider_source: hit.sourceLevel,
+      };
+    });
+  } catch {
+    // Fail closed: do not paint every child ON when batch resolve fails.
+    return rows.map((r) =>
+      r.kind === "state" || r.kind === "region" || r.kind === "district"
+        ? {
+            ...r,
+            hiring_rider_enabled: false,
+            hiring_rider_explicit: false,
+            hiring_rider_source: "none",
+          }
+        : r,
+    );
   }
 }
 

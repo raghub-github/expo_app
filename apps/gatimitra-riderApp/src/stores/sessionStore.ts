@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { Session } from "@gatimitra/contracts";
 import { getItem, setItem, removeItem } from "@/src/utils/storage";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
+import { riderIdFromSession } from "@/src/utils/normalizeRiderId";
 import { riderAuthService } from "@/src/services/auth/auth.service";
 import { isAuthRejectionMessage } from "@/src/services/rider-auth-failure";
 
@@ -32,26 +33,43 @@ type SessionState = {
   confirmStillValid: () => Promise<boolean>;
 };
 
+/** Single-flight refresh so cold-start request storms share one refresh. */
+let refreshInFlight: Promise<void> | null = null;
+
+function enrichSession(session: Session): Session {
+  const riderId = riderIdFromSession(session) ?? undefined;
+  if (!riderId || session.riderId === riderId) return session;
+  return { ...session, riderId };
+}
+
 function buildSession(accessToken: string, meta: SessionMeta): Session {
-  return {
+  return enrichSession({
     accessToken,
     expiresAt: meta.expiresAt,
     role: meta.role,
     userId: meta.userId,
     riderId: meta.riderId,
-  };
+  });
 }
 
 async function persistSession(session: Session): Promise<void> {
-  await setItem(TOKEN_KEY, session.accessToken);
+  const enriched = enrichSession(session);
+  await setItem(TOKEN_KEY, enriched.accessToken);
   const meta: SessionMeta = {
-    expiresAt: session.expiresAt,
-    role: session.role,
-    userId: session.userId,
-    riderId: session.riderId,
+    expiresAt: enriched.expiresAt,
+    role: enriched.role,
+    userId: enriched.userId,
+    riderId: enriched.riderId,
   };
   await setItem(META_KEY, JSON.stringify(meta));
   await removeItem(LEGACY_SESSION_KEY);
+
+  // Read-after-write: never treat login as success if nothing landed on disk.
+  const tokenCheck = await getItem(TOKEN_KEY);
+  const metaCheck = await getItem(META_KEY);
+  if (!tokenCheck || !metaCheck) {
+    throw new Error("Session persist verification failed");
+  }
 }
 
 async function readPersistedSession(): Promise<Session | null> {
@@ -73,8 +91,9 @@ async function readPersistedSession(): Promise<Session | null> {
   try {
     const parsed = JSON.parse(legacyRaw) as Session;
     if (!parsed?.accessToken || !parsed.userId) return null;
-    await persistSession(parsed);
-    return parsed;
+    const enriched = enrichSession(parsed);
+    await persistSession(enriched);
+    return enriched;
   } catch {
     await removeItem(LEGACY_SESSION_KEY);
     return null;
@@ -94,12 +113,20 @@ async function hydrateRiderSession(
       set({ hydrated: true, session: null });
       return;
     }
+    // Paint authenticated immediately — do not flash login while refresh runs.
     set({ session: restored });
-    await get().refreshSessionIfNeeded();
+    try {
+      await get().refreshSessionIfNeeded();
+    } catch (error) {
+      // Network / refresh hiccup must not wipe a structurally valid local session.
+      console.warn("[SessionStore] Hydration refresh failed (keeping restored session):", error);
+    }
     set({ hydrated: true, session: get().session ?? restored });
   } catch (error) {
     console.error("[SessionStore] Hydration error:", error);
-    set({ hydrated: true, session: null });
+    // If we already restored a session into memory, keep it; only mark hydrated.
+    const current = get().session;
+    set({ hydrated: true, session: current });
   }
 }
 
@@ -108,35 +135,50 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   session: null,
 
   setSession: async (s) => {
-    set({ session: s });
     if (!s) {
+      set({ session: null });
       await removeItem(TOKEN_KEY);
       await removeItem(META_KEY);
       await removeItem(LEGACY_SESSION_KEY);
       return;
     }
-    await persistSession(s);
+    const enriched = enrichSession(s);
+    // Optimistic memory write so navigation can proceed; persist must succeed.
+    set({ session: enriched });
+    await persistSession(enriched);
   },
 
   hydrate: () => hydrateRiderSession(set, get),
 
   refreshSessionIfNeeded: async (opts) => {
-    const current = get().session;
-    if (!current?.accessToken || current.role !== "rider") return;
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (!opts?.force && current.expiresAt - nowSec > REFRESH_LEAD_SEC) return;
-
-    try {
-      const deviceId = await getOrCreateDeviceId();
-      const next = await riderAuthService.refreshSession({
-        accessToken: current.accessToken,
-        deviceId,
-      });
-      await get().setSession(next);
-      console.log("[SessionStore] Session refreshed");
-    } catch (error) {
-      console.warn("[SessionStore] Session refresh failed (keeping current token):", error);
+    if (refreshInFlight) {
+      await refreshInFlight;
+      return;
     }
+
+    refreshInFlight = (async () => {
+      const current = get().session;
+      if (!current?.accessToken || current.role !== "rider") return;
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (!opts?.force && current.expiresAt - nowSec > REFRESH_LEAD_SEC) return;
+
+      try {
+        const deviceId = await getOrCreateDeviceId();
+        const next = await riderAuthService.refreshSession({
+          accessToken: current.accessToken,
+          deviceId,
+        });
+        await get().setSession(next);
+        console.log("[SessionStore] Session refreshed");
+      } catch (error) {
+        // Never clear the local session here — callers / SessionRevokedGate decide.
+        console.warn("[SessionStore] Session refresh failed (keeping current token):", error);
+      }
+    })().finally(() => {
+      refreshInFlight = null;
+    });
+
+    await refreshInFlight;
   },
 
   confirmStillValid: async () => {
@@ -144,8 +186,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!current?.accessToken || current.role !== "rider") return false;
     try {
       const deviceId = await getOrCreateDeviceId();
-      // A forced refresh is the authoritative "is my device session active?" probe: the backend
-      // /rider/refresh-session requires an active user_device_sessions row for the token's device.
       const next = await riderAuthService.refreshSession({
         accessToken: current.accessToken,
         deviceId,

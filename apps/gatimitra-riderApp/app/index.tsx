@@ -46,12 +46,13 @@ export default function Index() {
       return;
     } else if (session && onboardingHref) {
       target = onboardingHref;
+    } else if (session) {
+      // Session exists but href not ready yet (bindOwner / status) — keep splash.
+      return;
     } else if (!languageSelected) {
       target = "/(onboarding)/language";
     } else if (!hasRequestedPermissions) {
       target = "/(permissions)/request";
-    } else if (session) {
-      target = "/(tabs)";
     } else {
       target = "/(auth)/login";
     }
@@ -60,6 +61,18 @@ export default function Index() {
 
     const next = String(target);
     const prev = committedRef.current;
+
+    // Signing out / deleted rider → always allow login (reset sticky commit).
+    if (next.includes("/(auth)/login")) {
+      committedRef.current = next;
+      try {
+        router.replace(target);
+      } catch (err) {
+        committedRef.current = null;
+        console.warn("[Index] Navigation not ready yet:", err);
+      }
+      return;
+    }
 
     // Already committed this exact target.
     if (prev === next) return;

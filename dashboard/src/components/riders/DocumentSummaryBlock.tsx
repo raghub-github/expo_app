@@ -6,7 +6,7 @@ import { ModalPortal } from "@/components/ui/ModalPortal";
 
 type Props = {
   title: string;
-  status: "verified" | "pending" | "rejected" | "skipped" | "missing";
+  status: "verified" | "pending" | "rejected" | "skipped" | "missing" | "not_required";
   statusLabel: string;
   maskedNumber?: string | null;
   subtitle?: string | null;
@@ -19,22 +19,31 @@ type Props = {
 
 const STATUS_STYLES: Record<
   Props["status"],
-  { badge: string }
+  { badge: string; card: string }
 > = {
   verified: {
     badge: "bg-emerald-50 text-emerald-700 ring-emerald-200/80",
+    card: "border-slate-200/90 hover:border-slate-300",
   },
   pending: {
-    badge: "bg-slate-100 text-slate-600 ring-slate-200/80",
+    badge: "bg-rose-50 text-rose-800 ring-rose-300/80",
+    card: "border-rose-500 border-2 shadow-[0_0_0_1px_rgba(244,63,94,0.15)] hover:border-rose-600",
   },
   rejected: {
     badge: "bg-rose-50 text-rose-700 ring-rose-200/80",
+    card: "border-rose-300/90 hover:border-rose-400",
   },
   skipped: {
     badge: "bg-sky-50 text-sky-800 ring-sky-200/80",
+    card: "border-slate-200/90 hover:border-slate-300",
   },
   missing: {
     badge: "bg-slate-50 text-slate-600 ring-slate-200/80",
+    card: "border-slate-200/90 hover:border-slate-300",
+  },
+  not_required: {
+    badge: "bg-slate-50 text-slate-500 ring-slate-200/60",
+    card: "border-slate-200/70 opacity-90 hover:border-slate-300",
   },
 };
 
@@ -62,10 +71,12 @@ export function DocumentSummaryBlock({
   onClick,
   footer,
 }: Props) {
-  const style = STATUS_STYLES[status];
+  const style = STATUS_STYLES[status] ?? STATUS_STYLES.missing;
   const thumb = String(previewImageUrl || "").trim();
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200/90 bg-white transition hover:border-slate-300 hover:shadow-sm">
+    <div
+      className={`flex h-full min-h-0 flex-col overflow-hidden rounded-xl border bg-white transition hover:shadow-sm ${style.card}`}
+    >
       <button
         type="button"
         onClick={onClick}

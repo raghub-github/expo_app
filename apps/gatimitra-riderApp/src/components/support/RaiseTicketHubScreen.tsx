@@ -10,7 +10,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
-import { router, useLocalSearchParams } from "expo-router";
+import { router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { SupportScreenHeader } from "@/src/components/support/SupportScreenHeader";
 import { RaiseTicketCategoryCard } from "@/src/components/support/RaiseTicketCategoryCard";
@@ -31,17 +31,13 @@ import { colors, RIDER_AUTH_BG } from "@/src/theme";
 
 const TEAL = colors.primary[600];
 
-function isPreLoginParam(raw: string | string[] | undefined): boolean {
-  const v = Array.isArray(raw) ? raw[0] : raw;
-  return v === "1" || v === "true";
-}
-
 /** Hub — lists ticket_groups from API (same source as merchant Contact Us / dashboard Help tree). */
 export function RaiseTicketHubScreen() {
   const { t } = useTranslation();
-  const params = useLocalSearchParams<{ prelogin?: string }>();
   const hasSession = useSessionStore((s) => !!s.session?.accessToken);
-  const isPreLoginHub = isPreLoginParam(params.prelogin) || !hasSession;
+  // Session wins: never treat an authenticated rider as pre-login just because a
+  // stale `prelogin=1` param was passed from an older Help entry point.
+  const isPreLoginHub = !hasSession;
 
   const groupsQ = useQuery({
     queryKey: ["rider-help-groups"],

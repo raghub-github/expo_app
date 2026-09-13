@@ -108,6 +108,22 @@ module.exports = {
           ],
           category: ["BROWSABLE", "DEFAULT"],
         },
+        // Appear in Android "Open with" for places / coordinates (Mapbox handles in-app).
+        // Keep SEPARATE from autoVerify App Links — mixing geo + https breaks domain verify.
+        {
+          action: "VIEW",
+          category: ["BROWSABLE", "DEFAULT"],
+          data: [
+            { scheme: "geo" },
+            { scheme: "google.navigation" },
+            { scheme: "https", host: "maps.google.com" },
+            { scheme: "http", host: "maps.google.com" },
+            { scheme: "https", host: "www.google.com", pathPrefix: "/maps" },
+            { scheme: "http", host: "www.google.com", pathPrefix: "/maps" },
+            { scheme: "https", host: "maps.app.goo.gl" },
+            { scheme: "https", host: "goo.gl", pathPrefix: "/maps" },
+          ],
+        },
       ],
     },
     plugins: [

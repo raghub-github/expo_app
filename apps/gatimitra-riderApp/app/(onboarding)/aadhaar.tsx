@@ -347,6 +347,14 @@ export default function AadhaarScreen() {
   const { data: riderStatus } = useRiderStatus(data.riderId);
   useOnboardingEstablishedRedirect(riderStatus);
 
+  // Work location must be server-confirmed before Aadhaar (geo-scoped methods + hiring gate).
+  useEffect(() => {
+    if (riderStatus === undefined || riderStatus === null) return;
+    if (riderStatus.workLocationConfirmed !== true) {
+      router.replace("/(onboarding)/location");
+    }
+  }, [riderStatus]);
+
   // Do NOT auto-replace to pan-selfie/dl-rc when aadhaar is already done.
   // Index routes cold starts to the correct step; Continue/DigiLocker navigate
   // explicitly. Auto-forward here trapped Back from PAN → Aadhaar → PAN.
@@ -393,13 +401,72 @@ export default function AadhaarScreen() {
   const photosValid = Boolean(aadhaarFrontUri && aadhaarBackUri);
 
   // Policy Center: Cashfree DigiLocker (auto/hybrid) vs classic photo upload (manual).
+  // Intersect with geo-scoped identity methods from Super Admin Geo & Coverage.
   const { data: modesData } = useVerificationModes();
   const verifyDocument = useVerifyDocument();
   const pollDigilocker = usePollAadhaarDigilocker();
-  const aadhaarMode = (modesData?.modes?.aadhaar_digilocker ??
+  const [identityMethods, setIdentityMethods] = useState<{
+    digilocker: boolean;
+    aadhaarMasking: boolean;
+    manualUpload: boolean;
+    mode: "manual" | "auto" | "hybrid" | "disabled";
+  } | null>(null);
+
+  useEffect(() => {
+    const token = session?.accessToken;
+    if (!token) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { fetchRiderIdentityMethods } = await import(
+          "@/src/services/onboardingGeo.service"
+        );
+        const res = await fetchRiderIdentityMethods(token, {
+          riderId: data.riderId,
+          stateId: data.stateId,
+          regionId: data.regionId,
+          districtId: data.districtId,
+        });
+        if (cancelled) return;
+        setIdentityMethods({
+          digilocker: res.methods?.digilocker ?? res.digilocker,
+          aadhaarMasking: res.methods?.aadhaarMasking ?? res.aadhaarMasking,
+          manualUpload: res.methods?.manualUpload ?? res.manualUpload,
+          mode: res.mode,
+        });
+      } catch {
+        if (!cancelled) setIdentityMethods(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    session?.accessToken,
+    data.riderId,
+    data.stateId,
+    data.regionId,
+    data.districtId,
+    data.locationSource,
+  ]);
+
+  const globalMode = (modesData?.modes?.aadhaar_digilocker ??
     modesData?.modes?.aadhaar ??
     "manual") as "manual" | "auto" | "hybrid" | "disabled";
-  const aadhaarElectronic = aadhaarMode === "auto" || aadhaarMode === "hybrid";
+  const aadhaarMode = (identityMethods?.mode ?? globalMode) as
+    | "manual"
+    | "auto"
+    | "hybrid"
+    | "disabled";
+  const allowDigilocker =
+    identityMethods == null
+      ? aadhaarMode === "auto" || aadhaarMode === "hybrid"
+      : identityMethods.digilocker || identityMethods.aadhaarMasking;
+  const allowManual =
+    identityMethods == null
+      ? aadhaarMode === "manual" || aadhaarMode === "hybrid"
+      : identityMethods.manualUpload;
+  const aadhaarElectronic = allowDigilocker && (aadhaarMode === "auto" || aadhaarMode === "hybrid");
   const [aadhaarEv, setAadhaarEv] = useState<EvState>({ phase: "idle" });
   const [digilockerSessionUrl, setDigilockerSessionUrl] = useState<string | null>(null);
   const [verifiedFrontKey, setVerifiedFrontKey] = useState<string | null>(null);
@@ -710,36 +777,35 @@ export default function AadhaarScreen() {
     [pollDigilockerUntilDone, tx]
   );
 
-  /** DigiLocker fills name/DOB; photos only for manual / hybrid fallback. */
+  /** DigiLocker fills name/DOB; photos for manual / hybrid / post-failure upload. */
   const showPhotoBox =
+    !allowDigilocker ||
     aadhaarMode === "manual" ||
+    aadhaarEv.phase === "failed" ||
+    aadhaarEv.phase === "manual" ||
+    aadhaarEv.phase === "mismatch" ||
     (aadhaarMode === "hybrid" &&
-      (aadhaarEv.phase === "failed" || aadhaarEv.phase === "manual"));
-  const showNameDobFields =
-    aadhaarMode === "manual" ||
-    (aadhaarMode === "hybrid" &&
-      (aadhaarEv.phase === "failed" || aadhaarEv.phase === "manual"));
+      (aadhaarEv.phase === "failed" || aadhaarEv.phase === "manual" || !allowDigilocker));
+  const showNameDobFields = showPhotoBox;
 
   const canContinue = (() => {
     if (submitting || uploading || underAge) {
       return false;
     }
-    // DigiLocker auto: Continue only after successful DigiLocker verify.
-    if (aadhaarMode === "auto") {
-      if (aadhaarEv.phase !== "verified") return false;
-      if (aadhaarValid && aadhaarAlreadyRegistered) return false;
-      return true;
-    }
-    // Hybrid: DigiLocker verified, OR classic form after fail/manual.
-    if (aadhaarMode === "hybrid") {
+    // DigiLocker auto: verified DigiLocker, OR classic form after fail → Upload manually.
+    if (aadhaarMode === "auto" && allowDigilocker) {
       if (aadhaarEv.phase === "verified") {
         return !(aadhaarValid && aadhaarAlreadyRegistered);
       }
-      if (aadhaarEv.phase === "failed" || aadhaarEv.phase === "manual") {
+      if (
+        allowManual !== false &&
+        (aadhaarEv.phase === "failed" ||
+          aadhaarEv.phase === "manual" ||
+          aadhaarEv.phase === "mismatch")
+      ) {
         return (
           aadhaarValid &&
           !aadhaarAlreadyRegistered &&
-          !checkingAadhaar &&
           nameValid &&
           dobValid &&
           photosValid
@@ -747,15 +813,33 @@ export default function AadhaarScreen() {
       }
       return false;
     }
-    // Manual: full classic form (Aadhaar + name + DOB + photos).
-    return (
-      aadhaarValid &&
-      !aadhaarAlreadyRegistered &&
-      !checkingAadhaar &&
-      nameValid &&
-      dobValid &&
-      photosValid
-    );
+    // Hybrid: DigiLocker verified, OR classic form after fail/manual / geo manual-only.
+    if (aadhaarMode === "hybrid" && allowDigilocker) {
+      if (aadhaarEv.phase === "verified") {
+        return !(aadhaarValid && aadhaarAlreadyRegistered);
+      }
+      if (aadhaarEv.phase === "failed" || aadhaarEv.phase === "manual" || !allowDigilocker) {
+        return (
+          aadhaarValid &&
+          !aadhaarAlreadyRegistered &&
+          nameValid &&
+          dobValid &&
+          photosValid
+        );
+      }
+      return false;
+    }
+    // Manual (or geo forced manual): classic form.
+    if (allowManual) {
+      return (
+        aadhaarValid &&
+        !aadhaarAlreadyRegistered &&
+        nameValid &&
+        dobValid &&
+        photosValid
+      );
+    }
+    return false;
   })();
 
   useEffect(() => {
@@ -764,7 +848,7 @@ export default function AadhaarScreen() {
 
   const handleBack = useCallback(() => {
     // Logged-in riders stay in onboarding — never bounce to login / re-OTP.
-    goBackFromOnboardingEntry({ previousOnboardingHref: "/(onboarding)/referral" });
+    goBackFromOnboardingEntry({ previousOnboardingHref: "/(onboarding)/location" });
   }, []);
 
   useEffect(() => {
@@ -1260,7 +1344,7 @@ export default function AadhaarScreen() {
                 </>
               ) : null}
 
-              {aadhaarElectronic ? (
+              {aadhaarElectronic && allowDigilocker ? (
                 <View style={styles.fieldGroup}>
                   <ElectronicVerifyCard
                     mode={aadhaarMode === "auto" ? "auto" : "hybrid"}
@@ -1275,8 +1359,10 @@ export default function AadhaarScreen() {
                       Boolean(digilockerSessionUrl)
                     }
                     onVerify={() => void runAadhaarElectronicVerify()}
+                    onUploadManually={() => setAadhaarEv({ phase: "manual" })}
+                    allowManualUpload={allowManual !== false}
                     verifyLabel={tx("verifyDigilocker")}
-                    retryLabel={tx("retryDigilocker")}
+                    retryLabel="Verify again"
                     documentLabel="Aadhaar"
                     verifiedTitle="Aadhaar is Verified"
                   />

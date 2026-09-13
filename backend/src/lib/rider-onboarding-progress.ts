@@ -13,9 +13,12 @@ import {
   adminCompletedVehicleOnboarding,
   bankAccountOnboardingCompleteFromDocs,
   dlRcOnboardingComplete,
+  isOnboardingDocSkipped,
   isOnboardingDocUsable,
+  normalizeOnboardingDocCode,
   panSelfieOnboardingComplete,
   rentalEvOnboardingComplete,
+  vehicleStepCompleteByRequired,
 } from "./rider-onboarding-progress-docs.js";
 import {
   computeOnboardingProgressPct,
@@ -28,6 +31,12 @@ import {
 import { normalizeDlNumber } from "./rider-dl-registration-check.js";
 import { normalizeRcNumber } from "./rider-rc-registration-check.js";
 import { maskAadhaarNumber } from "./mask-aadhaar.js";
+
+export {
+  isOnboardingDocSkipped,
+  normalizeOnboardingDocCode,
+  vehicleStepCompleteByRequired,
+} from "./rider-onboarding-progress-docs.js";
 
 export type RiderOnboardingStepKey =
   | "method_selection"
@@ -382,30 +391,42 @@ async function readRequiredDocsForVehicleChoice(
   return required.filter((code): code is string => typeof code === "string" && code.length > 0);
 }
 
-function vehicleStepCompleteByRequired(
-  docs: {
-    docType: string;
-    fileUrl?: string | null;
-    verified?: boolean | null;
-    verificationMethod?: string | null;
-    verificationStatus?: string | null;
-    metadata?: unknown;
-  }[],
-  requiredDocs: string[]
-): boolean {
-  return requiredDocs.every((code) => {
-    if (code === "dl") {
-      return (
-        isOnboardingDocUsable(docs.find((d) => d.docType === "dl")) ||
-        (isOnboardingDocUsable(docs.find((d) => d.docType === "dl_front")) &&
-          isOnboardingDocUsable(docs.find((d) => d.docType === "dl_back")))
-      );
-    }
-    return isOnboardingDocUsable(docs.find((d) => d.docType === code));
-  });
+function readSkippedOnboardingDocs(docs: { docType: string; metadata: unknown }[]): string[] {
+  const row = docs.find((d) => d.docType === "onboarding_vehicle_selection");
+  if (!row?.metadata || typeof row.metadata !== "object") return [];
+  const meta = row.metadata as { skippedOnboardingDocs?: unknown };
+  if (!Array.isArray(meta.skippedOnboardingDocs)) return [];
+  return meta.skippedOnboardingDocs
+    .map((c) => String(c || "").trim().toLowerCase())
+    .filter(Boolean);
 }
 
-function vehicleStepComplete(
+/** Rider intentionally skipped bank during onboarding (add later from Earnings). */
+export function readBankAccountOnboardingSkipped(
+  docs: { docType: string; metadata: unknown }[],
+): boolean {
+  const row = docs.find((d) => d.docType === "onboarding_vehicle_selection");
+  if (!row?.metadata || typeof row.metadata !== "object") return false;
+  const meta = row.metadata as {
+    bankAccountOnboardingSkipped?: unknown;
+    skippedOnboardingDocs?: unknown;
+  };
+  if (meta.bankAccountOnboardingSkipped === true) return true;
+  const skipped = Array.isArray(meta.skippedOnboardingDocs)
+    ? meta.skippedOnboardingDocs.map((c) => String(c || "").trim()).filter(Boolean)
+    : [];
+  return (
+    isOnboardingDocSkipped(skipped, "bank_account") ||
+    isOnboardingDocSkipped(skipped, "bank_proof")
+  );
+}
+
+/**
+ * When the rider finalized vehicle onboarding (submitVehicleDocs) with intentional skips,
+ * treat remaining optional/geo-skipped DL/RC as satisfied for funnel progress.
+ * Does NOT unlock service eligibility — that stays in the eligibility engine.
+ */
+function vehicleStepCompleteWithSkips(
   docs: {
     docType: string;
     metadata: unknown;
@@ -414,10 +435,36 @@ function vehicleStepComplete(
     verificationMethod?: string | null;
     verificationStatus?: string | null;
   }[],
-  flow: "dl_rc" | "rental_ev" | "payment" | null
+  flow: "dl_rc" | "rental_ev" | "payment" | null,
+  skippedDocs: string[],
+  vehicleDocsSubmittedFor: string | null,
+  vehicleChoice: string | null
 ): boolean {
   if (flow === "payment") return hasDocType(docs, "onboarding_vehicle_selection");
   if (flow === "rental_ev") return rentalEvComplete(docs);
+
+  // Submitted vehicle package: skips count as satisfied for onboarding progress.
+  if (
+    vehicleChoice &&
+    vehicleDocsSubmittedFor &&
+    vehicleDocsSubmittedFor === vehicleChoice &&
+    skippedDocs.length > 0
+  ) {
+    const dlSkipped = isOnboardingDocSkipped(skippedDocs, "dl");
+    const rcSkipped = isOnboardingDocSkipped(skippedDocs, "rc");
+    const dlOk =
+      dlSkipped ||
+      isOnboardingDocUsable(docs.find((d) => d.docType === "dl")) ||
+      (isOnboardingDocUsable(docs.find((d) => d.docType === "dl_front")) &&
+        isOnboardingDocUsable(docs.find((d) => d.docType === "dl_back")));
+    const rcOk = rcSkipped || isOnboardingDocUsable(docs.find((d) => d.docType === "rc"));
+    // Both skipped, or each is either present or skipped.
+    if (dlOk && rcOk) return true;
+    // Only one of DL/RC was in the vehicle doc list and was skipped — still OK if the
+    // other is present OR also skipped. If neither doc was required (both skipped), OK.
+    if (dlSkipped && rcSkipped) return true;
+  }
+
   if (flow === "dl_rc") return dlRcComplete(docs);
   return dlRcComplete(docs) || rentalEvComplete(docs);
 }
@@ -476,7 +523,11 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   vehicleCategoryCode: string | null;
   vehicleOnboardingFlow: "dl_rc" | "rental_ev" | "payment" | null;
   vehicleDocsSubmittedFor: string | null;
+  /** Rider intentionally skipped optional geo DL/RC during onboarding. */
+  skippedOnboardingDocs: string[];
   bankAccountOnboardingDone: boolean;
+  /** True when bank step was skipped (no payment method linked yet). */
+  bankAccountOnboardingSkipped: boolean;
 }> {
   const emptyProgress: OnboardingProgressMap = {
     aadhaar: "not_started",
@@ -507,7 +558,9 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     vehicleCategoryCode: null as string | null,
     vehicleOnboardingFlow: null as "dl_rc" | "rental_ev" | "payment" | null,
     vehicleDocsSubmittedFor: null as string | null,
+    skippedOnboardingDocs: [] as string[],
     bankAccountOnboardingDone: false,
+    bankAccountOnboardingSkipped: false,
   };
   const db = getDb();
 
@@ -578,10 +631,17 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   const vehicleFlow = readOnboardingVehicleFlow(docs);
   const vehicleChoice = readVehicleChoice(docs);
   const vehicleDocsSubmittedFor = readVehicleDocsSubmittedFor(docs);
+  const skippedOnboardingDocs = readSkippedOnboardingDocs(docs);
   const configuredRequiredDocs = await readRequiredDocsForVehicleChoice(vehicleChoice);
   const vehicleDocsSatisfied = configuredRequiredDocs?.length
-    ? vehicleStepCompleteByRequired(docs, configuredRequiredDocs)
-    : vehicleStepComplete(docs, vehicleFlow);
+    ? vehicleStepCompleteByRequired(docs, configuredRequiredDocs, skippedOnboardingDocs)
+    : vehicleStepCompleteWithSkips(
+        docs,
+        vehicleFlow,
+        skippedOnboardingDocs,
+        vehicleDocsSubmittedFor,
+        vehicleChoice
+      );
   const adminVehicleDone = adminCompletedVehicleOnboarding(docs);
   const vehicleReadyForPayment =
     (vehicleDocsSatisfied &&
@@ -591,8 +651,13 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
 
   if (configuredRequiredDocs?.length) {
     if (vehicleDocsSatisfied) {
-      const dlRcRequired = configuredRequiredDocs.filter((code) => code === "dl" || code === "rc");
-      if (dlRcRequired.length > 0) completed.push("dl_rc");
+      const dlRcRequired = configuredRequiredDocs.filter((code) => {
+        const n = normalizeOnboardingDocCode(code);
+        return n === "dl" || n === "rc" || code === "dl" || code === "rc";
+      });
+      if (dlRcRequired.length > 0 || skippedOnboardingDocs.length > 0) {
+        completed.push("dl_rc");
+      }
       const rentalRequired = configuredRequiredDocs.filter(
         (code) => code === "rental_proof" || code === "ev_proof"
       );
@@ -606,7 +671,12 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
       }
     }
   } else {
-    if (dlRcComplete(docs)) {
+    if (
+      dlRcComplete(docs) ||
+      (vehicleDocsSatisfied &&
+        vehicleDocsSubmittedFor === vehicleChoice &&
+        (skippedOnboardingDocs.length > 0 || vehicleFlow === "dl_rc"))
+    ) {
       completed.push("dl_rc");
     }
     if (rentalEvComplete(docs)) {
@@ -685,17 +755,22 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     .orderBy(desc(riderPaymentMethods.updatedAt))
     .limit(1);
   const bankStatus = String(bankMethod?.verificationStatus || "").toLowerCase();
-  const bankAccountOnboardingDone =
+  const bankSkipped = readBankAccountOnboardingSkipped(docs);
+  const bankLinked =
     bankAccountOnboardingCompleteFromDocs(docs) ||
     bankStatus === "verified" ||
     bankStatus === "pending";
+  const bankAccountOnboardingDone = bankLinked || bankSkipped;
+  const bankAccountOnboardingSkipped = bankSkipped && !bankLinked;
 
   const appSyncFields = {
     vehicleChoice,
     vehicleCategoryCode: readVehicleCategoryCode(docs),
     vehicleOnboardingFlow: vehicleFlow,
     vehicleDocsSubmittedFor,
+    skippedOnboardingDocs,
     bankAccountOnboardingDone,
+    bankAccountOnboardingSkipped,
   };
 
   const skipPan = Boolean(rider.panSkipOverride);

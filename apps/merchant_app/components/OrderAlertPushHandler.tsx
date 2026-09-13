@@ -27,6 +27,7 @@ import {
   rememberIncomingOrderAlertConfig,
   startedAtFromPush,
 } from "@/lib/newOrderAlertManager";
+import { rememberRemoteNewOrderAlertPresented } from "@/lib/presentLocalNewOrderAlert";
 
 export default function OrderAlertPushHandler() {
   const { selectedStore } = useSelectedStore();
@@ -58,6 +59,7 @@ export default function OrderAlertPushHandler() {
       if (!isMerchantNewOrderPushData(data)) return;
       const orderId = extractNewOrderIdFromPush(data);
       if (!orderId) return;
+      rememberRemoteNewOrderAlertPresented(orderId);
       const sid = storeIdRef.current;
       const dev = sid ? await readDeviceOrderAlertsAsync(sid) : null;
       if (sid && dev) rememberIncomingOrderAlertConfig(settingsRef.current, dev);

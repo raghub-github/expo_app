@@ -9,6 +9,12 @@ import {
   Platform,
   ActivityIndicator,
 } from "react-native";
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
@@ -21,8 +27,12 @@ import {
   type EligibilityReason,
 } from "@/src/lib/rider-service-eligibility-rows";
 import { ServiceEligibilityReasonSheet } from "@/src/components/header/ServiceEligibilityReasonSheet";
-import { headerControlText, HEADER_SERVICES_WIDTH } from "@/src/theme/headerFonts";
+import { headerControlText } from "@/src/theme/headerFonts";
 import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
+import {
+  focusToDocumentUpdateCode,
+  useDocumentUpdateSheetStore,
+} from "@/src/stores/documentUpdateSheetStore";
 
 const GREEN = "#16A34A";
 const POPOVER_WIDTH = 188;
@@ -31,6 +41,14 @@ const BEAK_WIDTH = 12;
 const BEAK_HEIGHT = 7;
 const FALLBACK_HEADER_HEIGHT = 52;
 const FALLBACK_TRIGGER_WIDTH = 48;
+/** Keep room for duty + trailing actions; long multi-select labels ellipsize. */
+const CHIP_MAX_WIDTH_RATIO = 0.42;
+const CHIP_PAD_H = 10;
+const CHIP_MIN_WIDTH = 72;
+const WIDTH_ANIM = {
+  duration: 240,
+  easing: Easing.out(Easing.cubic),
+};
 
 type MenuAnchor = {
   top: number;
@@ -54,6 +72,8 @@ type ServiceMeta = {
 };
 
 const SERVICE_ORDER: RiderServiceTypeValue[] = ["food", "parcel", "person_ride"];
+/** Only show "All Services" when the full catalog is eligible + selected. */
+const ALL_CATALOG_COUNT = SERVICE_ORDER.length;
 
 const SERVICE_META: Record<RiderServiceTypeValue, ServiceMeta> = {
   food: {
@@ -142,20 +162,9 @@ export function RiderServiceTypeDropdown({
 }: RiderServiceTypeDropdownProps) {
   const { t } = useTranslation();
   const { width: windowWidth } = useWindowDimensions();
-  const { isCompactWidth, rw } = useResponsiveLayout();
+  const { isCompactWidth } = useResponsiveLayout();
   const tight = compact || isCompactWidth;
-  const servicesWidth = tight
-    ? undefined
-    : Math.round(
-        rw(HEADER_SERVICES_WIDTH, {
-          min: 100,
-          max: 128,
-          factor: 0.4,
-        })
-      );
-  const chipWidthStyle = tight
-    ? styles.chipFlex
-    : { width: servicesWidth as number };
+  const chipMaxWidth = Math.round(windowWidth * CHIP_MAX_WIDTH_RATIO);
   const {
     selectedServices,
     eligibleServices,
@@ -172,6 +181,9 @@ export function RiderServiceTypeDropdown({
     reasons: EligibilityReason[];
   } | null>(null);
   const triggerRef = useRef<View>(null);
+  const chipWidth = useSharedValue(CHIP_MIN_WIDTH);
+  const hasMeasuredWidth = useRef(false);
+  const lastTargetWidth = useRef(0);
 
   // All three services, each tagged selectable (checkbox) or blocked (with backend reasons).
   // Blocked services are shown — never silently hidden — so preference != eligibility.
@@ -188,7 +200,9 @@ export function RiderServiceTypeDropdown({
   );
 
   const triggerLabel = useMemo(() => {
-    if (allSelected && eligibleServices.length > 1) {
+    // "All Services" only when every catalog service is eligible and selected.
+    // If only 2 are available, list those names — never say "All".
+    if (allSelected && eligibleServices.length >= ALL_CATALOG_COUNT) {
       return allServicesLabel;
     }
     if (selectedServices.length === 1) {
@@ -199,8 +213,33 @@ export function RiderServiceTypeDropdown({
         .map((service) => serviceLabel(service, t))
         .join(", ");
     }
+    if (eligibleServices.length === 1) {
+      return serviceLabel(eligibleServices[0]!, t);
+    }
     return allServicesLabel;
-  }, [allSelected, eligibleServices.length, selectedServices, allServicesLabel, t]);
+  }, [allSelected, eligibleServices, selectedServices, allServicesLabel, t]);
+
+  const applyMeasuredContentWidth = useCallback(
+    (contentWidth: number) => {
+      const next = Math.min(
+        chipMaxWidth,
+        Math.max(CHIP_MIN_WIDTH, Math.ceil(contentWidth + CHIP_PAD_H * 2)),
+      );
+      if (Math.abs(next - lastTargetWidth.current) < 0.5) return;
+      lastTargetWidth.current = next;
+      if (!hasMeasuredWidth.current) {
+        chipWidth.value = next;
+        hasMeasuredWidth.current = true;
+        return;
+      }
+      chipWidth.value = withTiming(next, WIDTH_ANIM);
+    },
+    [chipMaxWidth, chipWidth],
+  );
+
+  const chipAnimStyle = useAnimatedStyle(() => ({
+    width: chipWidth.value,
+  }));
 
   const measureAndAnchor = useCallback(() => {
     return new Promise<MenuAnchor | null>((resolve) => {
@@ -254,24 +293,44 @@ export function RiderServiceTypeDropdown({
     setAnchor(null);
   }, []);
 
+  const hasBlocked = serviceRows.some((r) => r.state === "blocked");
+  const canOpen = eligibleServices.length > 0 && !isUpdating;
+  const showAllRow = eligibleServices.length > 1;
+  const showChevron = eligibleServices.length > 1 || hasBlocked;
+  const measureLabel = visible ? triggerLabel : allServicesLabel;
+
+  const measureLayer = (
+    <View style={styles.measureHost} pointerEvents="none">
+      <View
+        style={styles.measureRow}
+        onLayout={(e) => applyMeasuredContentWidth(e.nativeEvent.layout.width)}
+      >
+        <Text style={styles.triggerText} numberOfLines={1} allowFontScaling={false}>
+          {measureLabel}
+        </Text>
+        {(visible ? showChevron : true) ? (
+          <Ionicons name="chevron-down" size={13} color={GREEN} />
+        ) : null}
+      </View>
+    </View>
+  );
+
   if (!visible) {
-    // Same width chip as loaded state — prevents first-paint row reflow.
     return (
-      <View style={[styles.wrap, styles.trigger, styles.triggerPlaceholder, chipWidthStyle]} pointerEvents="none">
+      <Animated.View
+        style={[styles.wrap, styles.trigger, styles.triggerPlaceholder, chipAnimStyle]}
+        pointerEvents="none"
+      >
+        {measureLayer}
         <View style={styles.triggerRow}>
           <Text style={styles.triggerText} numberOfLines={1} allowFontScaling={false}>
             {allServicesLabel}
           </Text>
           <Ionicons name="chevron-down" size={13} color={GREEN} />
         </View>
-      </View>
+      </Animated.View>
     );
   }
-
-  const hasBlocked = serviceRows.some((r) => r.state === "blocked");
-  const canOpen = eligibleServices.length > 0 && !isUpdating;
-  const showAllRow = eligibleServices.length > 1;
-  const showChevron = eligibleServices.length > 1 || hasBlocked;
 
   const beakLeft = anchor
     ? Math.min(
@@ -281,11 +340,15 @@ export function RiderServiceTypeDropdown({
     : BEAK_WIDTH;
 
   return (
-    <View style={[styles.wrap, chipWidthStyle]} collapsable={false}>
+    <Animated.View
+      style={[styles.wrap, tight ? styles.chipTight : null, chipAnimStyle]}
+      collapsable={false}
+    >
+      {measureLayer}
       <View
         ref={triggerRef}
         collapsable={false}
-        style={[styles.triggerHost, chipWidthStyle]}
+        style={styles.triggerHost}
         onLayout={() => {
           if (open) {
             void measureAndAnchor().then((next) => {
@@ -299,7 +362,7 @@ export function RiderServiceTypeDropdown({
           delayPressIn={0}
           onPress={() => (open ? closeMenu() : void openMenu())}
           disabled={!canOpen}
-          style={[styles.trigger, chipWidthStyle]}
+          style={styles.trigger}
           accessibilityRole="button"
           accessibilityState={{ expanded: open }}
           accessibilityLabel={triggerLabel}
@@ -385,7 +448,9 @@ export function RiderServiceTypeDropdown({
                           allSelected ? styles.menuTextAllOn : styles.menuTextDefault,
                         ]}
                       >
-                        {allServicesLabel}
+                        {eligibleServices.length >= ALL_CATALOG_COUNT
+                          ? allServicesLabel
+                          : t("topbar.allAvailableServices", "All available")}
                       </Text>
                       <ServiceCheckbox checked={allSelected} />
                     </TouchableOpacity>
@@ -468,8 +533,18 @@ export function RiderServiceTypeDropdown({
           // onboarding to upload a second RC.
           router.push("/vehicles");
         }}
+        onUploadMissingDoc={(target) => {
+          setReasonSheet(null);
+          closeMenu();
+          const code = focusToDocumentUpdateCode(target.focus);
+          if (code) {
+            useDocumentUpdateSheetStore.getState().open(code);
+            return;
+          }
+          router.push("/vehicles");
+        }}
       />
-    </View>
+    </Animated.View>
   );
 }
 
@@ -477,14 +552,24 @@ const styles = StyleSheet.create({
   wrap: {
     flexShrink: 1,
     minWidth: 0,
-    alignSelf: "stretch",
+    alignSelf: "flex-start",
     justifyContent: "center",
+    overflow: "hidden",
   },
-  chipFlex: {
-    flex: 1,
-    width: "100%",
-    minWidth: 0,
+  chipTight: {
     maxWidth: "100%",
+  },
+  measureHost: {
+    position: "absolute",
+    opacity: 0,
+    left: 0,
+    top: 0,
+    zIndex: -1,
+  },
+  measureRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
   },
   triggerHost: {
     minWidth: 0,
@@ -492,10 +577,10 @@ const styles = StyleSheet.create({
   },
   trigger: {
     height: 36,
-    minWidth: 0,
     width: "100%",
+    minWidth: 0,
     justifyContent: "center",
-    paddingHorizontal: 8,
+    paddingHorizontal: CHIP_PAD_H,
     paddingVertical: 0,
     borderRadius: 8,
     borderWidth: 1,
@@ -508,7 +593,8 @@ const styles = StyleSheet.create({
   triggerRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
+    gap: 4,
+    flexShrink: 1,
     minWidth: 0,
   },
   triggerText: {

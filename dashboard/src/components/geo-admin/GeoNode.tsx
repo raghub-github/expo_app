@@ -23,12 +23,14 @@ export const GeoNode = React.memo(function GeoNode(props: {
   onToggleExpand: () => void;
   onServiceToggle: (service: "food" | "parcel" | "ride", value: boolean) => void | Promise<void>;
   onRiderOnlineCheckToggle?: (value: boolean) => void | Promise<void>;
+  onHiringRiderToggle?: (value: boolean) => void | Promise<void>;
   onEdit: () => void;
   onPlatformOfferMap: () => void;
   onDeliverySlabs: () => void;
   depth: number;
   pendingService?: "food" | "parcel" | "ride" | null;
   pendingRiderOnlineCheck?: boolean;
+  pendingHiringRider?: boolean;
 }) {
   const { row } = props;
   const canExpand = row.has_children;
@@ -37,6 +39,26 @@ export const GeoNode = React.memo(function GeoNode(props: {
   const pathLabel = row.path?.trim() ?? "";
   const showPath = pathLabel.length > 0 && pathLabel.toLowerCase() !== row.name.trim().toLowerCase();
   const offers = row.effective_platform_offers ?? [];
+  const showHiring =
+    row.kind === "state" || row.kind === "region" || row.kind === "district";
+  // Only true when backend resolved enabled — never treat missing/null as ON (sibling bleed).
+  const hiringOn = row.hiring_rider_enabled === true;
+  const hiringSource = String(row.hiring_rider_source || "").toLowerCase();
+  const hiringStatusLabel = (() => {
+    if (row.hiring_rider_enabled == null && hiringSource === "none") {
+      return "Status unavailable — refresh";
+    }
+    if (hiringOn) {
+      if (row.hiring_rider_explicit) return "Explicit ON for this location";
+      if (hiringSource === "state") return "ON (inherited from State)";
+      if (hiringSource === "region") return "ON (inherited from Region)";
+      return "ON (inherited / default)";
+    }
+    if (row.hiring_rider_explicit) return "Explicit OFF — riders cannot onboard here";
+    if (hiringSource === "state") return "OFF (inherited from State)";
+    if (hiringSource === "region") return "OFF (inherited from Region)";
+    return "OFF (inherited)";
+  })();
 
   return (
     <div
@@ -213,6 +235,44 @@ export const GeoNode = React.memo(function GeoNode(props: {
                   )}
                 >
                   {props.pendingRiderOnlineCheck ? (
+                    <Loader2 className="h-2.5 w-2.5 animate-spin text-teal-600" aria-hidden />
+                  ) : null}
+                </span>
+              </button>
+            </div>
+          ) : null}
+          {showHiring ? (
+            <div className="flex items-start justify-between gap-2 rounded-lg border border-teal-200/70 bg-teal-50/40 px-2.5 py-1.5">
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold leading-tight text-slate-800">Hiring Rider</p>
+                <p className="mt-0.5 text-[9px] leading-snug text-slate-500">
+                  {hiringStatusLabel}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={hiringOn}
+                aria-busy={props.pendingHiringRider}
+                disabled={props.pendingHiringRider || !props.onHiringRiderToggle}
+                title="State ON = all children ON. State OFF = all children OFF. District ON = that district + region + state ON; siblings stay OFF. Region OFF = all its districts OFF; State auto-OFF if nothing left active."
+                onClick={() => void props.onHiringRiderToggle?.(!hiringOn)}
+                className={cn(
+                  "relative mt-0.5 inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors",
+                  "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-teal-500",
+                  hiringOn
+                    ? "border-emerald-400/50 bg-emerald-500"
+                    : "border-slate-200 bg-slate-300",
+                  props.pendingHiringRider && "cursor-not-allowed opacity-60"
+                )}
+              >
+                <span
+                  className={cn(
+                    "absolute top-px left-px flex h-4 w-4 items-center justify-center rounded-full bg-white shadow-sm transition-transform",
+                    hiringOn && "translate-x-[16px]"
+                  )}
+                >
+                  {props.pendingHiringRider ? (
                     <Loader2 className="h-2.5 w-2.5 animate-spin text-teal-600" aria-hidden />
                   ) : null}
                 </span>

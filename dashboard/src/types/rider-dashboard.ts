@@ -198,6 +198,17 @@ export interface RiderSummary {
   paymentCompleted?: boolean;
   /** True when rider belongs in admin Pending Approval (paid + required docs + stage APPROVAL). */
   approvalQueueEligible?: boolean;
+  /**
+   * Manual-upload documents still awaiting agent review (post-onboarding reuploads included).
+   * Used on riders home card for red "pending verification" chips + Verify CTA.
+   */
+  pendingManualDocuments?: Array<{
+    id: number;
+    docType: string;
+    label: string;
+    verificationStatus: string;
+    updatedAt: string | null;
+  }>;
 }
 
 /** Minimal rider info for sub-pages (penalties, orders, etc.) */

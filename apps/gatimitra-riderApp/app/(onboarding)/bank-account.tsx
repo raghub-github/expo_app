@@ -35,6 +35,7 @@ import {
   useRiderStatus,
   useVerificationModes,
   useVerifyDocument,
+  useSaveOnboardingStep,
 } from "@/src/hooks/useOnboarding";
 import { canAccessOnboardingBankAccountScreen } from "@/src/lib/onboarding-routes";
 import { setOnboardingBackOverride } from "@/src/lib/onboarding-back-override";
@@ -74,6 +75,7 @@ export default function BankAccountOnboardingScreen() {
   const addLocked = Boolean(addGate?.locked && countdown.locked);
   const { data: modesData } = useVerificationModes();
   const verifyDocument = useVerifyDocument();
+  const saveStep = useSaveOnboardingStep();
 
   const bankMode = (modesData?.modes?.bank_account ?? "hybrid") as
     | "manual"
@@ -102,7 +104,51 @@ export default function BankAccountOnboardingScreen() {
     if (riderStatus?.bankAccountOnboardingDone && !data.bankAccountOnboardingDone) {
       void setData({ bankAccountOnboardingDone: true });
     }
-  }, [riderStatus?.bankAccountOnboardingDone, data.bankAccountOnboardingDone, setData]);
+    if (
+      riderStatus?.bankAccountOnboardingSkipped &&
+      !data.bankAccountOnboardingSkipped
+    ) {
+      void setData({
+        bankAccountOnboardingSkipped: true,
+        bankAccountOnboardingDone: true,
+      });
+    }
+  }, [
+    riderStatus?.bankAccountOnboardingDone,
+    riderStatus?.bankAccountOnboardingSkipped,
+    data.bankAccountOnboardingDone,
+    data.bankAccountOnboardingSkipped,
+    setData,
+  ]);
+
+  // Already skipped / completed → payment (and heal server if local-only skip).
+  useEffect(() => {
+    if (!vehicleReady) return;
+    if (!data.bankAccountOnboardingDone && !data.bankAccountOnboardingSkipped) return;
+    if (
+      data.bankAccountOnboardingSkipped &&
+      data.riderId &&
+      !riderStatus?.bankAccountOnboardingSkipped &&
+      !riderStatus?.bankAccountOnboardingDone
+    ) {
+      void saveStep
+        .mutateAsync({
+          riderId: String(data.riderId),
+          step: "bank_account",
+          data: { skipped: true },
+        })
+        .catch(() => undefined);
+    }
+    router.replace("/(onboarding)/payment");
+  }, [
+    vehicleReady,
+    data.bankAccountOnboardingDone,
+    data.bankAccountOnboardingSkipped,
+    data.riderId,
+    riderStatus?.bankAccountOnboardingSkipped,
+    riderStatus?.bankAccountOnboardingDone,
+    saveStep,
+  ]);
 
   useEffect(() => {
     if (!existingBank) return;
@@ -210,10 +256,21 @@ export default function BankAccountOnboardingScreen() {
     setSubmitting(true);
     setError(null);
     try {
+      if (data.riderId) {
+        await saveStep.mutateAsync({
+          riderId: String(data.riderId),
+          step: "bank_account",
+          data: { skipped: true },
+        });
+      }
       notifyOnboardingToast(
         "Bank skipped. You can add it anytime from Earnings after onboarding.",
       );
       await goToPayment({ skipped: true });
+    } catch (e) {
+      const message = extractApiErrorMessage(e, "Could not skip bank account");
+      setError(message);
+      notifyOnboardingToast(message);
     } finally {
       setSubmitting(false);
     }

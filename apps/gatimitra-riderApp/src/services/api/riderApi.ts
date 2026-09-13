@@ -1404,6 +1404,78 @@ export const riderApi = {
   },
 
   /**
+   * Fast Duty ON gate — one GPS resolve for working-location match + hiring.
+   * Call before updateDutyStatus(true) so mismatch UI shows before enabling ON.
+   */
+  async dutyPrecheck(coords: { lat: number; lon: number }) {
+    const client = createApiClient();
+    return client.request<{
+      ok: boolean;
+      mismatch: boolean;
+      hiringAllowed?: boolean;
+      message?: string | null;
+      working?: {
+        state?: string | null;
+        district?: string | null;
+        region?: string | null;
+        stateId?: string | null;
+        regionId?: string | null;
+        districtId?: string | null;
+      };
+      registered?: {
+        state?: string | null;
+        district?: string | null;
+        region?: string | null;
+        stateId?: string | null;
+        regionId?: string | null;
+        districtId?: string | null;
+      };
+      detected?: {
+        state?: string | null;
+        district?: string | null;
+        region?: string | null;
+        stateId?: string | null;
+        regionId?: string | null;
+        districtId?: string | null;
+        lat?: number | null;
+        lon?: number | null;
+      } | null;
+    }>("/v1/rider/duty/precheck", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(coords),
+    });
+  },
+
+  /** Update working location (post-onboarding). Does not overwrite registered address. */
+  async updateHomeLocation(body: {
+    lat: number;
+    lon: number;
+    city: string;
+    state: string;
+    address: string;
+    pincode?: string;
+    region?: string | null;
+    district?: string | null;
+    stateId?: string | null;
+    regionId?: string | null;
+    districtId?: string | null;
+    locationSource?: "gps_auto" | "manual_select" | "manual_other" | "duty_update" | null;
+    locationOtherState?: string | null;
+    locationOtherDistrict?: string | null;
+  }) {
+    const client = createApiClient();
+    return client.request<{ success: boolean }>(
+      "/v1/rider/home-location",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+  },
+
+  /**
    * Backend-authoritative per-service eligibility for the logged-in rider at a location.
    * Powers the "preference != eligibility" dropdown surface — the app displays this
    * decision (with reasons), it never computes eligibility itself.

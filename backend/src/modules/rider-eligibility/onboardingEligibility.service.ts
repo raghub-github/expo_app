@@ -149,7 +149,11 @@ export async function resolveRiderOnboardingSummary(riderId: number): Promise<Ri
   const docView = (code: MissingDocumentCode, dbType: string): OnboardingDocView => {
     const row = byType.get(dbType);
     const requiredForSomeService = anyBlockedNeeds(code);
-    const canSkipDuringOnboarding = anyServiceOmitsRequirement(code);
+    // DL: skip allowed when at least one service at this geo does not require DL.
+    // RC: never geo-skippable here — petrol must upload RC; EV skip is enforced
+    // in the rider app (EV-only) + onboarding save guard, then EV proof upload.
+    const canSkipDuringOnboarding =
+      code === "REGISTRATION_CERTIFICATE" ? false : anyServiceOmitsRequirement(code);
     const requirement = requiredForSomeService ? "required" : "optional";
     const r: DocRow = row
       ? {

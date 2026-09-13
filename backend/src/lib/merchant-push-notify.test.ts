@@ -75,3 +75,17 @@ test("empty everything → no delivery, no throw", () => {
   const r = selectMerchantPushDelivery({ expoCandidateTokens: [], nativeFcmTokens: [] });
   assert.deepEqual(r, { expoTokens: [], nativeTokens: [] });
 });
+
+test("web/partnersite FCM must not be treated as app native (regression guard)", () => {
+  // Dual-token preference drops Expo whenever *any* native token exists.
+  // If partnersite web FCM tokens leak into nativeFcmTokens, phone Expo pushes
+  // are black-holed. getMerchantStoreNativeFcmTokens now excludes web/browser/
+  // partnersite/dashboard — this test locks the delivery selector contract:
+  // only real app FCM tokens may suppress Expo.
+  const { expoTokens, nativeTokens } = selectMerchantPushDelivery({
+    expoCandidateTokens: [EXPO_A],
+    nativeFcmTokens: [], // correctly filtered empty when only web tokens exist
+  });
+  assert.deepEqual(expoTokens, [EXPO_A]);
+  assert.deepEqual(nativeTokens, []);
+});

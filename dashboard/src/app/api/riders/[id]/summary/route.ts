@@ -163,7 +163,7 @@ export async function GET(
 
     // Per‑rider summary cache (30s) – keyed by rider + filters to avoid
     // recalculating heavy aggregates on quick tab switches.
-    const cacheKey = riderId ? `rider_summary_v6:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
+    const cacheKey = riderId ? `rider_summary_v7:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
     const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
 
     if (cacheKey) {
@@ -403,6 +403,98 @@ export async function GET(
         }
       })(),
     ]);
+
+    const DOC_TYPE_LABELS: Record<string, string> = {
+      dl: "Driving Licence",
+      dl_front: "Driving Licence",
+      dl_back: "Driving Licence (back)",
+      rc: "Registration Certificate",
+      aadhaar: "Aadhaar",
+      aadhaar_front: "Aadhaar",
+      aadhaar_back: "Aadhaar (back)",
+      pan: "PAN",
+      selfie: "Selfie",
+      profile_photo: "Profile photo",
+      rental_proof: "Rental proof",
+      ev_proof: "EV proof",
+      insurance: "Insurance",
+      bank_proof: "Bank proof",
+      vehicle_image: "Vehicle image",
+      ev_ownership_proof: "EV ownership proof",
+    };
+    const SKIP_DOC_TYPES = new Set([
+      "onboarding_vehicle_selection",
+      "onboarding_work_location",
+      "other",
+      "upi_qr_proof",
+    ]);
+
+    const pendingManualDocRows = await db
+      .select({
+        id: riderDocuments.id,
+        docType: riderDocuments.docType,
+        verificationMethod: riderDocuments.verificationMethod,
+        verificationStatus: riderDocuments.verificationStatus,
+        verified: riderDocuments.verified,
+        requiresManualReview: riderDocuments.requiresManualReview,
+        updatedAt: riderDocuments.updatedAt,
+      })
+      .from(riderDocuments)
+      .where(eq(riderDocuments.riderId, riderId))
+      .catch(() => [] as Array<{
+        id: number;
+        docType: string;
+        verificationMethod: string | null;
+        verificationStatus: string | null;
+        verified: boolean | null;
+        requiresManualReview: boolean | null;
+        updatedAt: Date | null;
+      }>);
+
+    const pendingManualDocuments = pendingManualDocRows
+      .filter((row) => {
+        const type = String(row.docType || "").toLowerCase();
+        if (SKIP_DOC_TYPES.has(type)) return false;
+        if (row.verified === true) return false;
+        const status = String(row.verificationStatus || "").toLowerCase();
+        if (status === "approved" || status === "auto_verified") return false;
+        if (status === "rejected") return false;
+        const method = String(row.verificationMethod || "").toUpperCase();
+        const isManual =
+          method === "MANUAL_UPLOAD" ||
+          row.requiresManualReview === true ||
+          status === "pending";
+        return isManual && (status === "pending" || status === "" || row.requiresManualReview === true);
+      })
+      .map((row) => {
+        const type = String(row.docType || "").toLowerCase();
+        return {
+          id: row.id,
+          docType: type,
+          label: DOC_TYPE_LABELS[type] || type.replace(/_/g, " ").toUpperCase(),
+          verificationStatus: String(row.verificationStatus || "pending"),
+          updatedAt:
+            row.updatedAt instanceof Date
+              ? row.updatedAt.toISOString()
+              : row.updatedAt
+                ? String(row.updatedAt)
+                : null,
+        };
+      });
+
+    // Dedupe by base doc family (dl_front/dl_back → one DL entry).
+    const pendingByFamily = new Map<string, (typeof pendingManualDocuments)[number]>();
+    for (const doc of pendingManualDocuments) {
+      const family = doc.docType.replace(/_front$|_back$/, "");
+      if (!pendingByFamily.has(family)) {
+        pendingByFamily.set(family, {
+          ...doc,
+          docType: family,
+          label: DOC_TYPE_LABELS[family] || doc.label,
+        });
+      }
+    }
+    const pendingManualDocumentsDeduped = [...pendingByFamily.values()];
 
     let recentPenalties: Array<Record<string, unknown>> = [];
     try {
@@ -902,6 +994,7 @@ export async function GET(
         paymentCompleted,
         approvalQueueEligible,
         logoutSession: logoutSession ?? DEFAULT_LOGOUT_SESSION,
+        pendingManualDocuments: pendingManualDocumentsDeduped,
       },
     } as const;
 

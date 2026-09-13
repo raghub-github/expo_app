@@ -10,8 +10,8 @@ import { expandRiderDocumentsForDashboard } from "@/lib/rider-document-display";
 import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getDb } from "@/lib/db/client";
-import { riderWallet, walletLedger, riderPenalties, withdrawalRequests, onboardingPayments } from "@/lib/db/schema";
-import { eq, desc } from "drizzle-orm";
+import { riderWallet, walletLedger, riderPenalties, withdrawalRequests, onboardingPayments, riderWorkingLocationHistory } from "@/lib/db/schema";
+import { eq, desc, sql } from "drizzle-orm";
 import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 import {
   decryptRiderAccountNumber,
@@ -300,14 +300,92 @@ export async function GET(
       isRiderEligibleForApprovalQueue(riderId),
     ]);
 
+    // Soft-repair: if registered_* never seeded but working location exists, copy once.
+    // Matches onboarding rule: same place at onboard → registered === working.
+    try {
+      await db.execute(sql`
+        UPDATE public.riders
+        SET
+          registered_city = city,
+          registered_state = state,
+          registered_region = region,
+          registered_district = district,
+          registered_pincode = pincode,
+          registered_address = address,
+          registered_lat = lat,
+          registered_lon = lon,
+          registered_state_id = state_id,
+          registered_region_id = region_id,
+          registered_district_id = district_id
+        WHERE id = ${riderId}
+          AND registered_state IS NULL
+          AND state IS NOT NULL
+          AND btrim(state) <> ''
+      `);
+      const refreshed = await getRiderById(riderId);
+      if (refreshed) {
+        riderData = { ...riderData, rider: refreshed };
+      }
+    } catch {
+      // Columns may not exist yet on older DBs — ignore.
+    }
+
+    const riderForResponse = {
+      ...riderData.rider,
+      selfieUrl: riderForUi.selfieUrl,
+    };
+
+    let workingLocationHistory: Array<{
+      id: number;
+      state: string | null;
+      region: string | null;
+      district: string | null;
+      city: string | null;
+      pincode: string | null;
+      address: string | null;
+      lat: number | null;
+      lon: number | null;
+      source: string | null;
+      isCurrent: boolean;
+      changedAt: string;
+    }> = [];
+    try {
+      const histRows = await db
+        .select()
+        .from(riderWorkingLocationHistory)
+        .where(eq(riderWorkingLocationHistory.riderId, riderId))
+        .orderBy(desc(riderWorkingLocationHistory.changedAt))
+        .limit(50);
+      workingLocationHistory = histRows.map((h) => ({
+        id: h.id,
+        state: h.state ?? null,
+        region: h.region ?? null,
+        district: h.district ?? null,
+        city: h.city ?? null,
+        pincode: h.pincode ?? null,
+        address: h.address ?? null,
+        lat: h.lat ?? null,
+        lon: h.lon ?? null,
+        source: h.source ?? null,
+        isCurrent: Boolean(h.isCurrent),
+        changedAt:
+          h.changedAt instanceof Date
+            ? h.changedAt.toISOString()
+            : String(h.changedAt ?? ""),
+      }));
+    } catch {
+      workingLocationHistory = [];
+    }
+
     return NextResponse.json({
       success: true,
       data: {
-        rider: riderForUi,
+        rider: riderForResponse,
         paymentCompleted,
         approvalQueueEligible,
         documents: documentsForUi,
         addresses: riderData.addresses ?? [],
+        workingLocationHistory,
         vehicle: riderData.vehicle
           ? {
               id: riderData.vehicle.id,

@@ -1,5 +1,5 @@
 import { Stack } from "expo-router";
-import { View } from "react-native";
+import { View, StyleSheet } from "react-native";
 import { RIDER_AUTH_BG } from "@/src/theme/riderAuthTheme";
 import {
   OnboardingTopBar,
@@ -22,8 +22,19 @@ export default function OnboardingLayout() {
           // screen's own layout without shifting content.
           headerShown: true,
           headerTransparent: true,
-          headerStyle: { backgroundColor: ONBOARDING_PAGE_BG },
-          header: (props) => <OnboardingTopBar route={props.route} />,
+          headerStyle: { backgroundColor: "transparent" },
+          // Full-screen transparent headers steal ScrollView gestures unless empty space
+          // uses box-none so touches pass through to the screen below.
+          header: (props) => (
+            <View style={styles.headerTouchThrough} pointerEvents="box-none">
+              <OnboardingTopBar
+                route={props.route}
+                title={
+                  typeof props.options?.title === "string" ? props.options.title : undefined
+                }
+              />
+            </View>
+          ),
           contentStyle: { flex: 1, width: "100%", backgroundColor: ONBOARDING_PAGE_BG },
           animation: "fade",
         }}
@@ -32,6 +43,7 @@ export default function OnboardingLayout() {
           name="language"
           options={{ contentStyle: { flex: 1, width: "100%", backgroundColor: RIDER_AUTH_BG } }}
         />
+        <Stack.Screen name="payment" options={{ title: "GMitra Prime" }} />
         {/* help is a redirect — no top bar needed. */}
         <Stack.Screen name="help" options={{ headerShown: false }} />
       </Stack>
@@ -41,3 +53,13 @@ export default function OnboardingLayout() {
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  headerTouchThrough: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 100,
+  },
+});

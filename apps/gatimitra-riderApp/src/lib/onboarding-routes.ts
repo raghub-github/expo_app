@@ -237,6 +237,21 @@ export function resolveOnboardingRouteFromServer(
     }
     return "/(onboarding)/payment";
   }
+  // Stale nextStep=dl_rc after optional skip + submit: prefer bank/payment.
+  if (
+    serverStep === "dl_rc" &&
+    canAccessOnboardingBankAccountScreen({
+      vehicleChoice: options?.vehicleChoice,
+      vehicleOnboardingSubmittedFor: options?.vehicleOnboardingSubmittedFor,
+      completedOnboardingSteps: options?.completedOnboardingSteps,
+      vehicleOnboardingFlow: options?.vehicleOnboardingFlow,
+    })
+  ) {
+    if (!isBankAccountOnboardingComplete(options)) {
+      return "/(onboarding)/bank-account";
+    }
+    return "/(onboarding)/payment";
+  }
   return onboardingStepToRoute(serverStep);
 }
 
@@ -353,12 +368,20 @@ export function shouldForwardFromOnboardingScreen(
 export function resolveNewRiderDocsEntryHref(options?: {
   referralPromptHandled?: boolean | null;
   completedOnboardingSteps?: string[] | null;
-}): `/(onboarding)/referral` | `/(onboarding)/aadhaar` {
+  workLocationConfirmed?: boolean | null;
+}): `/(onboarding)/referral` | `/(onboarding)/location` | `/(onboarding)/aadhaar` {
   const completed = options?.completedOnboardingSteps ?? [];
-  if (completed.includes("aadhaar_name") || options?.referralPromptHandled === true) {
+  if (options?.referralPromptHandled !== true && !completed.includes("aadhaar_name")) {
+    return "/(onboarding)/referral";
+  }
+  // One-time work location even for riders who already finished Aadhaar earlier.
+  if (options?.workLocationConfirmed !== true) {
+    return "/(onboarding)/location";
+  }
+  if (completed.includes("aadhaar_name")) {
     return "/(onboarding)/aadhaar";
   }
-  return "/(onboarding)/referral";
+  return "/(onboarding)/aadhaar";
 }
 
 export function resolveOnboardingHref(
@@ -375,6 +398,7 @@ export function resolveOnboardingHref(
     approvalStatus?: string | null;
     paymentCompleted?: boolean | null;
     referralPromptHandled?: boolean | null;
+    workLocationConfirmed?: boolean | null;
   }
 ): `/(tabs)/orders` | `/(onboarding)/${string}` {
   const establishedHref = resolveEstablishedRiderHref(
@@ -396,6 +420,21 @@ export function resolveOnboardingHref(
     return "/(onboarding)/pending";
   }
 
+  const completed = options?.completedOnboardingSteps ?? [];
+
+  // One-time work location gate for ALL in-progress riders (including those who
+  // already finished earlier KYC steps). Never wipe progress — resume after save.
+  if (options?.workLocationConfirmed !== true) {
+    if (
+      options?.referralPromptHandled !== true &&
+      !completed.includes("aadhaar_name") &&
+      !completed.includes("pan_selfie")
+    ) {
+      return "/(onboarding)/referral";
+    }
+    return "/(onboarding)/location";
+  }
+
   const serverRoute = resolveOnboardingRouteFromServer(serverStep, {
     completedOnboardingSteps: options?.completedOnboardingSteps,
     vehicleOnboardingFlow: options?.vehicleOnboardingFlow,
@@ -404,7 +443,6 @@ export function resolveOnboardingHref(
     bankAccountOnboardingDone: options?.bankAccountOnboardingDone,
   });
 
-  const completed = options?.completedOnboardingSteps ?? [];
   if (completed.length > 0) {
     const resumeStep = resolveFirstIncompleteOnboardingStep(
       completed,
@@ -426,16 +464,18 @@ export function resolveOnboardingHref(
     }
   }
 
-  // Brand-new rider (no KYC progress yet): optional referral prompt before Aadhaar.
-  // The referral screen self-gates on Super Admin rider_referral_enabled.
+  // Brand-new rider (no KYC progress yet): referral → location → Aadhaar.
   if (
     !completed.includes("aadhaar_name") &&
-    options?.referralPromptHandled !== true &&
     (!serverStep ||
       serverStep === "method_selection" ||
       serverStep === "aadhaar_name")
   ) {
-    return "/(onboarding)/referral";
+    return resolveNewRiderDocsEntryHref({
+      referralPromptHandled: options?.referralPromptHandled,
+      completedOnboardingSteps: completed,
+      workLocationConfirmed: options?.workLocationConfirmed,
+    });
   }
 
   if (serverRoute) return serverRoute;
@@ -447,6 +487,7 @@ export function resolveOnboardingHref(
   return resolveNewRiderDocsEntryHref({
     referralPromptHandled: options?.referralPromptHandled,
     completedOnboardingSteps: options?.completedOnboardingSteps,
+    workLocationConfirmed: options?.workLocationConfirmed,
   });
 }
 
@@ -463,9 +504,9 @@ export function resolveOnboardingHref(
  */
 export const ONBOARDING_FLOW_ROUTE_SEQUENCE = [
   "language",
-  "location",
   "welcome",
   "referral",
+  "location",
   "aadhaar",
   "pan-selfie",
   "dl-rc",
@@ -534,8 +575,8 @@ export function previousOnboardingRoute(
 /** True when the current onboarding route has a previous step to go back to. */
 export function canGoBackFromOnboardingRoute(currentRouteName: string): boolean {
   const seg = onboardingRouteSegment(currentRouteName);
-  // Aadhaar is the first KYC step — no in-header back (avoids leaving verification mid-flow).
-  if (seg === "aadhaar") return false;
+  if (seg === "language" || seg === "welcome" || seg === "location") return false;
+  // Aadhaar → location (work location precedes KYC); same pattern as other steps.
   return previousOnboardingRoute(currentRouteName) != null;
 }
 

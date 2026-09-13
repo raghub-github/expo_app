@@ -36,9 +36,19 @@ export async function loadRiderRejectedOrderIds(): Promise<string[]> {
 
 export async function persistRiderRejectedOrderId(orderId: string): Promise<void> {
   const entries = await readEntries();
-  if (entries.some((e) => e.orderId === orderId)) return;
-  entries.push({ orderId, rejectedAt: Date.now() });
+  const id = orderId.trim();
+  if (!id) return;
+  if (entries.some((e) => e.orderId === id)) return;
+  entries.push({ orderId: id, rejectedAt: Date.now() });
   await writeEntries(entries);
+}
+
+/** Persist both internal + formatted ids so pool filters never miss a reject. */
+export async function persistRiderRejectedOrderIds(ids: Array<string | null | undefined>): Promise<void> {
+  const unique = [...new Set(ids.map((x) => String(x || "").trim()).filter(Boolean))];
+  for (const id of unique) {
+    await persistRiderRejectedOrderId(id);
+  }
 }
 
 /** Drop rejected ids that are no longer in the dispatch pool. */

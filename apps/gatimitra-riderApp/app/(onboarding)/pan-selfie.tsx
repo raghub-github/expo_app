@@ -451,9 +451,8 @@ export default function PanSelfieScreen() {
   };
 
   const lockPanActionsAfterFail = (pan: string) => {
+    // Block instant re-verify of the same failed number, but keep manual photo upload available.
     setVerifyBlockedForPan(pan.toUpperCase());
-    setPanPhotoUri(null);
-    setPanPhotoSignedUrl(null);
   };
 
   const panActionsLocked =
@@ -540,15 +539,13 @@ export default function PanSelfieScreen() {
     }
   };
 
-  /** Photo needed? Only in manual mode or hybrid fallback — never after name/invalid lock. */
+  /** Photo needed? Manual mode, hybrid fallback, or after auto-verify failure. */
   const panPhotoRequiredNow =
-    !panActionsLocked &&
-    (!panElectronic ||
-      panEv.phase === "manual" ||
-      (panEv.phase === "failed" && !panActionsLocked));
-  const showPanPhotoBox =
-    !panActionsLocked &&
-    (panPhotoRequiredNow || Boolean(panPhotoUri));
+    !panElectronic ||
+    panEv.phase === "manual" ||
+    panEv.phase === "failed" ||
+    panEv.phase === "mismatch";
+  const showPanPhotoBox = panPhotoRequiredNow || Boolean(panPhotoUri);
 
   const canContinuePan =
     adminPanSkip ||
@@ -1411,7 +1408,13 @@ export default function PanSelfieScreen() {
                           panActionsLocked
                         }
                         onVerify={() => void runPanElectronicVerify()}
+                        onUploadManually={() => {
+                          setPanEv({ phase: "manual" });
+                          setVerifyBlockedForPan(null);
+                        }}
+                        allowManualUpload
                         verifyLabel="Verify PAN instantly"
+                        retryLabel="Verify again"
                         documentLabel="PAN card"
                         verifiedTitle="PAN is Valid"
                       />

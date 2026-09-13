@@ -368,16 +368,20 @@ function makeSession(
 ): NewOrderAlertSession {
   const startedAt = normalizeNotificationDateMs(args.notificationDate) ?? Date.now();
   const configuredRepeats = cfg?.configuredRepeats ?? 1;
+  // Only credit wall-clock / OS playback when the tray may already have chimed
+  // (tap / cold-start / background seed). FOREGROUND + MODAL must never silence
+  // themselves because FCM `alertStartedAt` is older than one clip length — that
+  // was muting Incoming Order sound while the sheet was open.
   const assumeOs =
     args.source === "NOTIFICATION_TAP" ||
     args.source === "COLD_START" ||
     args.source === "BACKGROUND";
   const completedRepeats =
-    args.notificationDate != null
+    assumeOs && args.notificationDate != null
       ? estimateCompletedRepeats({
           startedAt,
           configuredRepeats,
-          assumeOsPlayedOnce: assumeOs && !isOrderAlertSoundPlaying(),
+          assumeOsPlayedOnce: !isOrderAlertSoundPlaying(),
         })
       : 0;
   return {
@@ -727,7 +731,10 @@ export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<
     }
   }
   if (session && session.orderId === orderId) {
-    syncCompletedFromClock(session, session.owner === "background");
+    // Only credit an OS pass when background owned the tray chime.
+    if (session.owner === "background") {
+      syncCompletedFromClock(session, true);
+    }
     const remaining = remainingRepeatsOf(session);
     session.owner = "modal";
     session.orderOpened = true;

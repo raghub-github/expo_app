@@ -123,6 +123,14 @@ export async function notifyMerchantStoreNewOrder(
     console.warn("[merchant-new-order] direct FCM failed (tolerated)", (e as Error).message)
   );
 
+  // Keep the ONLINE sticky in sync for killed devices (🔔 N new) — separate tag
+  // from the heads-up new-order alert so both can show in the shade.
+  const { notifyMerchantStoreStatus } = await import("./merchant-push-notify.js");
+  await notifyMerchantStoreStatus(sql, merchantStoreId, "ONLINE", {
+    eventId: `STORE_STATUS:NEW_ORDER:${merchantStoreId}:${foodId ?? orderIdText}`,
+    kitchenSubtitle: `New order · #${displayId}`,
+  }).catch(() => undefined);
+
   // v2 inbox / audit — push channel omitted so we do not twin the direct FCM above.
   // Idempotency still blocks eventBus MERCHANT_NEW_ORDER retries for this order.
   await sendNotification({

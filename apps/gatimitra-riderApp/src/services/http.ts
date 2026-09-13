@@ -15,10 +15,27 @@ export class HttpError extends Error {
 }
 
 export function isRiderNotFoundError(error: unknown): boolean {
-  if (!(error instanceof HttpError)) return false;
-  if (error.status === 404) return true;
-  const haystack = `${error.message}\n${error.body ?? ""}`;
-  return /rider not found/i.test(haystack);
+  const status =
+    error instanceof HttpError
+      ? error.status
+      : error instanceof ApiError
+        ? error.status
+        : null;
+  if (status === 404) return true;
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "";
+  const body =
+    error instanceof HttpError
+      ? error.body ?? ""
+      : error instanceof ApiError && error.payload && typeof error.payload === "object"
+        ? JSON.stringify(error.payload)
+        : "";
+  const haystack = `${message}\n${body}`;
+  return /rider not found|rider_not_found|no rider|unknown rider/i.test(haystack);
 }
 
 export function isOrderFetchNotFoundError(error: unknown): boolean {
@@ -31,14 +48,18 @@ export function isUnauthorizedError(error: unknown): boolean {
   return error instanceof HttpError && error.status === 401;
 }
 
-/** Prefer `{ error }` from API JSON over raw HTTP / SQL dump in UI. */
+/** Prefer `{ message }` from API JSON over raw HTTP / SQL dump / snake_case codes in UI. */
 export function extractApiErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError) {
     const payload = error.payload;
     if (payload && typeof payload === "object") {
       const rec = payload as { error?: string; message?: string };
-      const apiError = rec.error?.trim() || rec.message?.trim();
-      if (apiError && !apiError.includes("Failed query:")) return apiError;
+      const code = rec.error?.trim() ?? "";
+      const msg = rec.message?.trim() ?? "";
+      // Prefer human message over machine codes like `dl_already_registered`.
+      if (msg && (!code || /^[a-z][a-z0-9_]*$/i.test(code))) return msg;
+      if (msg) return msg;
+      if (code && !code.includes("Failed query:")) return code;
     }
     if (error.status >= 500) {
       return "Server error. Please retry in a moment.";
@@ -52,12 +73,17 @@ export function extractApiErrorMessage(error: unknown, fallback: string): string
   if (!body) return fallback;
   try {
     const parsed = JSON.parse(body) as { error?: string; message?: string };
-    const apiError = parsed.error?.trim() || parsed.message?.trim();
-    if (apiError && !apiError.includes("Failed query:")) return apiError;
+    const code = parsed.error?.trim() ?? "";
+    const msg = parsed.message?.trim() ?? "";
+    if (msg && (!code || /^[a-z][a-z0-9_]*$/i.test(code))) return msg;
+    if (msg) return msg;
+    if (code && !code.includes("Failed query:")) return code;
   } catch {
     /* plain text body */
   }
-  if (body.length < 240 && !body.includes("Failed query:")) return body;
+  if (body.length < 240 && !body.includes("Failed query:") && !body.trim().startsWith("{")) {
+    return body;
+  }
   return fallback;
 }
 

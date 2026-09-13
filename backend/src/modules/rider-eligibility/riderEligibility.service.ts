@@ -33,6 +33,7 @@ export function docVerified(row: {
   verified: boolean | null;
   verificationMethod: string | null;
   verificationStatus: string | null;
+  fileUrl?: string | null;
 } | undefined): { verified: boolean; submitted: boolean; rejected: boolean } {
   if (!row) return { verified: false, submitted: false, rejected: false };
   const method = String(row.verificationMethod || "").toUpperCase();
@@ -45,7 +46,17 @@ export function docVerified(row: {
     method.startsWith("CASHFREE_") ||
     method === "RAZORPAY_BANK";
   const rejected = status === "rejected" || status === "auto_rejected";
-  const submitted = !verified && !rejected && Boolean(row.verificationMethod || row.verificationStatus);
+  const fileUrl = String(row.fileUrl || "").trim();
+  const hasUpload =
+    Boolean(fileUrl) &&
+    !/cashfree_(dl|rc|pan)_verified|digilocker_verified|aadhaar_masking_verified/i.test(fileUrl);
+  const submitted =
+    !verified &&
+    !rejected &&
+    (Boolean(row.verificationMethod || row.verificationStatus) ||
+      method === "MANUAL_UPLOAD" ||
+      hasUpload ||
+      status === "pending");
   return { verified, submitted, rejected };
 }
 
@@ -125,6 +136,7 @@ export async function loadRiderEligibilityAttributes(
       verificationMethod: riderDocuments.verificationMethod,
       verificationStatus: riderDocuments.verificationStatus,
       expiryDate: riderDocuments.expiryDate,
+      fileUrl: riderDocuments.fileUrl,
     })
     .from(riderDocuments)
     .where(eq(riderDocuments.riderId, riderId));

@@ -119,6 +119,29 @@ export const geoAdminApi = baseApi.injectEndpoints({
       invalidatesTags: [{ type: "Geo" }],
     }),
 
+    geoRiderHiring: build.mutation<
+      {
+        ok: boolean;
+        hiringEnabled: boolean;
+        explicitOnNode?: boolean;
+        sourceLevel?: string | null;
+      },
+      {
+        level: "state" | "region" | "district" | "division" | "post_office" | "pincode";
+        refId: string;
+        hiringEnabled: boolean;
+      }
+    >({
+      query: (body) => ({
+        url: "/super-admin/geo/rider-hiring",
+        method: "POST",
+        body,
+      }),
+      // Invalidate hierarchy so every visible sibling re-resolves independently.
+      // Do not optimistically flip siblings — only the toggled node changes explicitly.
+      invalidatesTags: [{ type: "Geo" }],
+    }),
+
     geoUpsert: build.mutation<
       { result: unknown },
       {
@@ -387,6 +410,7 @@ export const {
   useLazyGeoSearchQuery,
   useGeoToggleMutation,
   useGeoRiderOnlineCheckMutation,
+  useGeoRiderHiringMutation,
   useGeoUpsertMutation,
   useGeoUpdateNodeMutation,
   useGeoDeleteNodeMutation,

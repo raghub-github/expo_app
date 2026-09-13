@@ -3,6 +3,7 @@
 import { useAppParams, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { GeoNodePricingContent, type GeoNodeLevel } from "@/components/geo-admin/GeoNodePricingContent";
 import { RiderEligibilityPolicyPanel } from "@/components/geo-admin/RiderEligibilityPolicyPanel";
+import { RiderIdentityMethodsPanel } from "@/components/geo-admin/RiderIdentityMethodsPanel";
 
 const VALID_LEVELS: GeoNodeLevel[] = ["state", "region", "district", "division", "post_office", "pincode"];
 
@@ -23,6 +24,7 @@ export default function GeoNodePricingPage() {
       {/* Eligibility is deliberately a SEPARATE card below pricing — it decides WHO may
           receive a service, never the fare. */}
       <RiderEligibilityPolicyPanel level={level} refId={refId} name={name} />
+      <RiderIdentityMethodsPanel level={level} refId={refId} name={name} />
     </div>
   );
 }

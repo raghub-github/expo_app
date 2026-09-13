@@ -162,6 +162,79 @@ async function loadPreLoginRiderTicket(sql: ReturnType<typeof getSql>, ticketIdN
   return (rows as Array<Record<string, unknown>>)[0] ?? null;
 }
 
+function mobileTail10(raw: string | null | undefined): string | null {
+  const digits = String(raw ?? "").replace(/\D/g, "");
+  if (digits.length < 10) return null;
+  return digits.slice(-10);
+}
+
+/**
+ * Authenticated rider may own a ticket by rider_id, raised_by_id, or the same
+ * OTP-verified mobile used on a Pre_login / orphan onboarding ticket.
+ */
+async function loadOwnedRiderTicket(
+  sql: ReturnType<typeof getSql>,
+  ticketIdNum: number,
+  riderId: number,
+  riderMobile?: string | null,
+) {
+  const mobile10 = mobileTail10(riderMobile);
+  const rows = mobile10
+    ? await sql`
+        SELECT id, status, rider_id, raised_by_id, raised_by_mobile
+        FROM unified_tickets
+        WHERE id = ${ticketIdNum}
+          AND raised_by_type = 'RIDER'::unified_ticket_source
+          AND ticket_source = 'RIDER'::unified_ticket_source
+          AND (
+            rider_id = ${riderId}
+            OR raised_by_id = ${riderId}
+            OR RIGHT(REGEXP_REPLACE(COALESCE(raised_by_mobile, ''), '[^0-9]', '', 'g'), 10) = ${mobile10}
+          )
+        LIMIT 1
+      `
+    : await sql`
+        SELECT id, status, rider_id, raised_by_id, raised_by_mobile
+        FROM unified_tickets
+        WHERE id = ${ticketIdNum}
+          AND raised_by_type = 'RIDER'::unified_ticket_source
+          AND ticket_source = 'RIDER'::unified_ticket_source
+          AND (
+            rider_id = ${riderId}
+            OR raised_by_id = ${riderId}
+          )
+        LIMIT 1
+      `;
+  return (rows as Array<Record<string, unknown>>)[0] ?? null;
+}
+
+/** Link orphan Pre_login / null-rider tickets to this rider once they are authenticated. */
+async function claimOrphanRiderTickets(
+  sql: ReturnType<typeof getSql>,
+  riderId: number,
+  riderMobile: string | null,
+): Promise<void> {
+  const mobile10 = mobileTail10(riderMobile);
+  if (!mobile10) return;
+  try {
+    await sql`
+      UPDATE unified_tickets
+      SET rider_id = COALESCE(rider_id, ${riderId}),
+          raised_by_id = COALESCE(raised_by_id, ${riderId}),
+          updated_at = NOW()
+      WHERE ticket_source = 'RIDER'::unified_ticket_source
+        AND raised_by_type = 'RIDER'::unified_ticket_source
+        AND (
+          rider_id IS NULL
+          OR raised_by_id IS NULL
+        )
+        AND RIGHT(REGEXP_REPLACE(COALESCE(raised_by_mobile, ''), '[^0-9]', '', 'g'), 10) = ${mobile10}
+    `;
+  } catch {
+    /* best-effort claim — list query still returns matches by mobile */
+  }
+}
+
 type RiderTitleRow = {
   id: number;
   group_id: number | null;
@@ -580,18 +653,19 @@ export async function riderSupportRoutes(app: FastifyInstance) {
 
   app.post("/tickets", async (req, reply) => {
     const body = (req.body || {}) as Record<string, unknown>;
-    const preLogin = isPreLoginRequest(body);
+    const authPresent = req.auth?.role === "rider" && Boolean(req.auth?.sub);
+    // Authenticated session ALWAYS wins — never create orphan Pre_login tickets while logged in
+    // (that broke attachment upload ownership and forced name/mobile re-entry).
+    const preLogin = isPreLoginRequest(body) && !authPresent;
 
     let me: Awaited<ReturnType<typeof resolveRider>> | null = null;
     if (preLogin) {
-      if (req.auth?.role === "rider" && req.auth?.sub) {
-        me = await resolveRider(req.auth.sub);
-      }
+      // truly anonymous
     } else {
-      if (req.auth?.role !== "rider" || !req.auth?.sub) {
+      if (!authPresent) {
         return reply.code(401).send({ error: "rider_required" });
       }
-      me = await resolveRider(req.auth.sub);
+      me = await resolveRider(req.auth!.sub);
       if (!me) return reply.code(404).send({ error: "rider_not_found" });
     }
 
@@ -615,6 +689,23 @@ export async function riderSupportRoutes(app: FastifyInstance) {
       if (!raisedByName) return reply.code(400).send({ error: "invalid_name" });
       if (!raisedByMobile && !raisedByEmail) {
         return reply.code(400).send({ error: "contact_required" });
+      }
+    } else if (me) {
+      // Backend is source of truth — ignore client mobile; use profile.
+      raisedByMobile = me.mobile;
+      raisedByName = me.name;
+      // Optional: allow client to supply a display name only when profile name is placeholder.
+      const clientName = normRaisedByName(body.raised_by_name);
+      if (
+        clientName &&
+        (!me.name || me.name.trim().toLowerCase() === "rider")
+      ) {
+        raisedByName = clientName;
+      }
+      const phoneFromJwt =
+        typeof req.auth?.phone === "string" ? req.auth.phone.trim() : "";
+      if (!raisedByMobile && phoneFromJwt) {
+        raisedByMobile = normRaisedByMobile(phoneFromJwt);
       }
     }
 
@@ -801,17 +892,40 @@ export async function riderSupportRoutes(app: FastifyInstance) {
     const offset = Math.max(0, Number((req.query as { offset?: string }).offset) || 0);
     const sql = getSql();
 
-    const rows = await sql`
-      SELECT id, ticket_id, status, priority, ticket_title, ticket_category,
-             subject, description, created_at, updated_at, order_id,
-             resolved_at, last_response_at, last_response_by_type
-      FROM unified_tickets
-      WHERE rider_id = ${me.id}
-        AND raised_by_type = 'RIDER'::unified_ticket_source
-        AND ticket_source = 'RIDER'::unified_ticket_source
-      ORDER BY created_at DESC, id DESC
-      LIMIT ${limit} OFFSET ${offset}
-    `;
+    // Claim onboarding / Pre_login tickets that used this rider's verified mobile.
+    await claimOrphanRiderTickets(sql, me.id, me.mobile);
+
+    const mobile10 = mobileTail10(me.mobile);
+    const rows = mobile10
+      ? await sql`
+          SELECT id, ticket_id, status, priority, ticket_title, ticket_category,
+                 subject, description, created_at, updated_at, order_id,
+                 resolved_at, last_response_at, last_response_by_type
+          FROM unified_tickets
+          WHERE raised_by_type = 'RIDER'::unified_ticket_source
+            AND ticket_source = 'RIDER'::unified_ticket_source
+            AND (
+              rider_id = ${me.id}
+              OR raised_by_id = ${me.id}
+              OR RIGHT(REGEXP_REPLACE(COALESCE(raised_by_mobile, ''), '[^0-9]', '', 'g'), 10) = ${mobile10}
+            )
+          ORDER BY created_at DESC, id DESC
+          LIMIT ${limit} OFFSET ${offset}
+        `
+      : await sql`
+          SELECT id, ticket_id, status, priority, ticket_title, ticket_category,
+                 subject, description, created_at, updated_at, order_id,
+                 resolved_at, last_response_at, last_response_by_type
+          FROM unified_tickets
+          WHERE raised_by_type = 'RIDER'::unified_ticket_source
+            AND ticket_source = 'RIDER'::unified_ticket_source
+            AND (
+              rider_id = ${me.id}
+              OR raised_by_id = ${me.id}
+            )
+          ORDER BY created_at DESC, id DESC
+          LIMIT ${limit} OFFSET ${offset}
+        `;
 
     const tickets = (rows as Array<Record<string, unknown>>).map((t) => ({
       id: Number(t.id),
@@ -847,6 +961,10 @@ export async function riderSupportRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "invalid_ticket_id" });
       }
       const sql = getSql();
+      await claimOrphanRiderTickets(sql, me.id, me.mobile);
+
+      const owned = await loadOwnedRiderTicket(sql, ticketIdNum, me.id, me.mobile);
+      if (!owned) return reply.code(404).send({ error: "ticket_not_found" });
 
       const ticketRows = await sql`
         SELECT id, ticket_id, status, priority, ticket_title, ticket_category,
@@ -855,9 +973,6 @@ export async function riderSupportRoutes(app: FastifyInstance) {
                satisfaction_rating, satisfaction_feedback, satisfaction_collected_at
         FROM unified_tickets
         WHERE id = ${ticketIdNum}
-          AND rider_id = ${me.id}
-          AND raised_by_type = 'RIDER'::unified_ticket_source
-          AND ticket_source = 'RIDER'::unified_ticket_source
         LIMIT 1
       `;
       const tr = (ticketRows as Array<Record<string, unknown>>)[0];
@@ -924,15 +1039,8 @@ export async function riderSupportRoutes(app: FastifyInstance) {
       text || (attachments.length > 1 ? "Shared attachments" : "Shared an attachment");
 
     if (me) {
-      const ticketRows = await sql`
-        SELECT id, status FROM unified_tickets
-        WHERE id = ${ticketIdNum}
-          AND rider_id = ${me.id}
-          AND raised_by_type = 'RIDER'::unified_ticket_source
-          AND ticket_source = 'RIDER'::unified_ticket_source
-        LIMIT 1
-      `;
-      if ((ticketRows as Array<unknown>).length === 0) {
+      const owned = await loadOwnedRiderTicket(sql, ticketIdNum, me.id, me.mobile);
+      if (!owned) {
         return reply.code(404).send({ error: "ticket_not_found" });
       }
     }
@@ -1028,16 +1136,14 @@ export async function riderSupportRoutes(app: FastifyInstance) {
       }
 
       if (me) {
-        const owns = await sql`
-          SELECT id FROM unified_tickets
-          WHERE id = ${ticketIdNum}
-            AND rider_id = ${me.id}
-            AND raised_by_type = 'RIDER'::unified_ticket_source
-            AND ticket_source = 'RIDER'::unified_ticket_source
-          LIMIT 1
-        `;
-        if ((owns as Array<unknown>).length === 0) {
-          return reply.code(404).send({ error: "ticket_not_found" });
+        const owns = await loadOwnedRiderTicket(sql, ticketIdNum, me.id, me.mobile);
+        if (!owns) {
+          // Fallback: authenticated rider uploading to a ticket wrongly tagged Pre_login
+          // (legacy bug). Allow only if they created it in the last 3h with matching mobile.
+          const legacy = await loadPreLoginRiderTicket(sql, ticketIdNum);
+          if (!legacy) {
+            return reply.code(404).send({ error: "ticket_not_found" });
+          }
         }
       } else {
         const preLoginTicket = await loadPreLoginRiderTicket(sql, ticketIdNum);
@@ -1058,8 +1164,17 @@ export async function riderSupportRoutes(app: FastifyInstance) {
 
       const originalName = String(filePart.filename || "file");
       const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "file";
-      const mime = String(filePart.mimetype || "application/octet-stream");
-      const allowed = /^(image\/(jpeg|png|gif|webp)|application\/pdf)$/i;
+      let mime = String(filePart.mimetype || "application/octet-stream");
+      // Android gallery often reports image/* or empty; sniff common magic bytes.
+      if (!/^image\//i.test(mime) && mime !== "application/pdf") {
+        if (buffer[0] === 0xff && buffer[1] === 0xd8) mime = "image/jpeg";
+        else if (buffer[0] === 0x89 && buffer[1] === 0x50) mime = "image/png";
+        else if (buffer[0] === 0x47 && buffer[1] === 0x49) mime = "image/gif";
+        else if (buffer[0] === 0x52 && buffer[1] === 0x49) mime = "image/webp";
+      }
+      // HEIC from iOS — accept and store; dashboard may still need conversion for preview,
+      // but never silently reject (that caused "missing" attachments for some tickets).
+      const allowed = /^(image\/(jpeg|png|gif|webp|heic|heif)|application\/pdf)$/i;
       if (!allowed.test(mime)) {
         return reply.code(400).send({
           error: "unsupported_mime_type",
@@ -1072,11 +1187,15 @@ export async function riderSupportRoutes(app: FastifyInstance) {
       try {
         const { uploadToR2 } = await import("../../services/r2/r2Service.js");
         const uploaded = await uploadToR2(buffer, r2Key, mime);
+        const proxyUrl = attachmentsProxyUrlFromKeyForApi(uploaded.key);
+        // Do NOT mirror onto unified_tickets.attachments here — the opening/chat
+        // message owns attachment rows. Mirroring caused duplicate images in the
+        // dashboard (header card + conversation message).
         return reply.code(201).send({
           ok: true,
           attachment: {
             storageKey: uploaded.key,
-            url: attachmentsProxyUrlFromKeyForApi(uploaded.key),
+            url: proxyUrl,
             name: originalName,
             mimeType: mime,
           },
@@ -1112,6 +1231,15 @@ export async function riderSupportRoutes(app: FastifyInstance) {
         : null;
 
     const sql = getSql();
+    await claimOrphanRiderTickets(sql, me.id, me.mobile);
+    const owned = await loadOwnedRiderTicket(sql, ticketIdNum, me.id, me.mobile);
+    if (!owned) {
+      return reply.code(400).send({
+        error: "rating_not_allowed",
+        message: "Ticket must be resolved or closed.",
+      });
+    }
+
     const rows = await sql`
       UPDATE unified_tickets
       SET satisfaction_rating = ${rating},
@@ -1119,9 +1247,6 @@ export async function riderSupportRoutes(app: FastifyInstance) {
           satisfaction_collected_at = NOW(),
           updated_at = NOW()
       WHERE id = ${ticketIdNum}
-        AND rider_id = ${me.id}
-        AND raised_by_type = 'RIDER'::unified_ticket_source
-        AND ticket_source = 'RIDER'::unified_ticket_source
         AND status IN ('RESOLVED'::unified_ticket_status, 'CLOSED'::unified_ticket_status)
       RETURNING id, ticket_id, status, priority, ticket_title, ticket_category,
                 subject, description, order_id, created_at, updated_at,
@@ -1160,6 +1285,15 @@ export async function riderSupportRoutes(app: FastifyInstance) {
       }
 
       const sql = getSql();
+      await claimOrphanRiderTickets(sql, me.id, me.mobile);
+      const owned = await loadOwnedRiderTicket(sql, ticketIdNum, me.id, me.mobile);
+      if (!owned) {
+        return reply.code(400).send({
+          error: "reopen_not_allowed",
+          message: "Only resolved or closed tickets can be reopened.",
+        });
+      }
+
       const rows = await sql`
         UPDATE unified_tickets
         SET status = 'REOPENED'::unified_ticket_status,
@@ -1167,9 +1301,6 @@ export async function riderSupportRoutes(app: FastifyInstance) {
             updated_at = NOW(),
             reopen_count = COALESCE(reopen_count, 0) + 1
         WHERE id = ${ticketIdNum}
-          AND rider_id = ${me.id}
-          AND raised_by_type = 'RIDER'::unified_ticket_source
-          AND ticket_source = 'RIDER'::unified_ticket_source
           AND status IN ('RESOLVED'::unified_ticket_status, 'CLOSED'::unified_ticket_status)
         RETURNING id, ticket_id, status, priority, ticket_title, ticket_category,
                   subject, description, order_id, created_at, updated_at,

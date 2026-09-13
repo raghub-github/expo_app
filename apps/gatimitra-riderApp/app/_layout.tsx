@@ -32,12 +32,15 @@ import { RiderDutyLocationPing } from "@/src/components/RiderDutyLocationPing";
 import { isRiderWsEnabled } from "@/src/config/env";
 import { IncomingRideOrderHost } from "@/src/components/orders/IncomingRideOrderHost";
 import { SubscriptionDutyBlockedSheetHost } from "@/src/components/subscription/SubscriptionDutyBlockedSheetHost";
+import { DutyWorkLocationMismatchSheetHost } from "@/src/components/duty/DutyWorkLocationMismatchSheet";
+import { WorkingLocationSuccessModal } from "@/src/components/duty/WorkingLocationSuccessModal";
 import { RiderPaymentSuccessSheet } from "@/src/components/ui/RiderPaymentSuccessSheet";
 import { ActiveOrderResumeBootstrap } from "@/src/components/orders/ActiveOrderResumeBootstrap";
 import { ActiveOrderKeepAwakeGate } from "@/src/hooks/useActiveOrderKeepAwake";
 import { RiderPostDeliveryTipHost } from "@/src/components/orders/RiderPostDeliveryTipHost";
 import { RiderToastHost } from "@/src/components/RiderToastHost";
 import { RiderOfflineBanner } from "@/src/components/RiderOfflineBanner";
+import { RiderDocumentUpdateSheetHost } from "@/src/components/documents/RiderDocumentUpdateSheetHost";
 import { initializeMapbox } from "@/src/services/maps/mapbox";
 import { bootstrapRiderAppAssets } from "@/src/lib/riderAppAssetsDisk";
 import { hydrateRiderSubscriptionCache } from "@/src/lib/rider-subscription-cache";
@@ -221,6 +224,9 @@ function RootLayoutNav() {
 
           <IncomingRideOrderHost />
           <SubscriptionDutyBlockedSheetHost />
+          <DutyWorkLocationMismatchSheetHost />
+          <WorkingLocationSuccessModal />
+          <RiderDocumentUpdateSheetHost />
           <RiderPaymentSuccessSheet />
           <RiderPostDeliveryTipHost />
           <RiderToastHost />
