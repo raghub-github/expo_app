@@ -13,6 +13,7 @@ import { queryKeys } from '@/lib/queryKeys';
 import { invalidateRiderSummary } from '@/lib/cache-invalidation';
 import { useRiderSummaryQuery, fetchRiderSummary } from '@/hooks/queries/useRiderSummaryQuery';
 import { useRiderAccessQuery } from '@/hooks/queries/useRiderAccessQuery';
+import { RiderCancellationAnalyticsSection } from '@/components/riders/RiderCancellationAnalyticsSection';
 import type { RiderListEntry, RiderSummary } from '@/types/rider-dashboard';
 import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
 import { formatRiderOrderDisplayId } from '@/lib/riders/format-rider-order-display-id';
@@ -2703,6 +2704,14 @@ export default function RidersPage() {
                         {content}
                       </div>
                     ))}
+                  </div>
+                  {/* Cancellation analytics — directly below Order Metrics by Service */}
+                  <div className="w-full min-w-0 flex flex-col">
+                    <RiderCancellationAnalyticsSection
+                      riderId={riderId}
+                      from={ordersFrom}
+                      to={ordersTo}
+                    />
                   </div>
                 </div>
 
