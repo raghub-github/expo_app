@@ -122,8 +122,9 @@ const styles = StyleSheet.create({
   servicesSlot: {
     height: 36,
     justifyContent: "center",
+    alignItems: "flex-start",
     flexShrink: 1,
-    flexGrow: 1,
+    flexGrow: 0,
     minWidth: 0,
   },
   leadingSpacer: {

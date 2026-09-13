@@ -54,8 +54,13 @@ export type GeoChildRow = {
   effective_platform_offers?: GeoEffectivePlatformOffer[] | null;
   /** State-only: Super Admin rider-online checkout gate. Null on non-state rows. */
   require_rider_online_check?: boolean | null;
+  /** Effective hiring for rider onboarding (state/region/district). Default true when resolved. */
+  hiring_rider_enabled?: boolean | null;
+  /** True when this node has its own explicit hiring row (not inherited). */
+  hiring_rider_explicit?: boolean | null;
+  /** Where effective hiring was resolved from: district | region | state | default | none. */
+  hiring_rider_source?: string | null;
 };
-
 export type GeoSearchRow = {
   kind: string;
   id: string;
@@ -86,6 +91,9 @@ export type GeoSearchRow = {
   rider_rate_summaries?: RiderRateSummaries | null;
   effective_platform_offers?: GeoEffectivePlatformOffer[] | null;
   require_rider_online_check?: boolean | null;
+  hiring_rider_enabled?: boolean | null;
+  hiring_rider_explicit?: boolean | null;
+  hiring_rider_source?: string | null;
 };
 
 export type GeoPricingRuleRow = {

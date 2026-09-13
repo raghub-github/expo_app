@@ -20,7 +20,6 @@ import { resolveRiderOrderWalletEntryType } from '@/lib/riders/rider-wallet-cred
 import { buildTicketDetailHref } from '@/lib/tickets/ticket-path-utils';
 import { formatRiderOrderStatusDisplayLabel, resolveRiderDashboardOrderStatusKey, resolveRiderDashboardOrderStatusLabel, type RiderDashboardOrderStatusInput } from '@/lib/riders/rider-order-status-display';
 import {
-  buildRiderDetailUrl,
   buildRidersHomeUrl,
 } from '@/lib/riders/rider-dashboard-navigation';
 import {
@@ -953,7 +952,11 @@ export default function RidersPage() {
     rider.kyc_status === 'APPROVED' &&
     rider.onboarding_stage === 'ACTIVE';
 
-  const needsVerification = rider && !isFullyOnboarded;
+  const pendingManualDocuments =
+    (displaySummary ?? riderSummary)?.pendingManualDocuments ?? [];
+  const hasPendingManualDocs = pendingManualDocuments.length > 0;
+  const needsVerification = Boolean(rider && (!isFullyOnboarded || hasPendingManualDocs));
+  const pendingDocLabels = pendingManualDocuments.map((d) => d.label).join(", ");
 
   return (
     <div className="space-y-6 w-full max-w-full min-w-0 overflow-x-hidden px-2 sm:px-4 md:px-6">
@@ -1033,7 +1036,21 @@ export default function RidersPage() {
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {needsVerification && (
-                  <button onClick={() => router.push(`/dashboard/riders/${rider.id}/onboarding`)} className="px-2.5 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-medium flex items-center gap-1 cursor-pointer">
+                  <button
+                    onClick={() => {
+                      const currentSearch =
+                        searchParams.get("search")?.trim() || `GMR${rider.id}`;
+                      const returnTo = buildRidersHomeUrl(rider.id, currentSearch);
+                      router.push(
+                        `/dashboard/riders/${rider.id}/onboarding?returnTo=${encodeURIComponent(returnTo)}`,
+                      );
+                    }}
+                    className={`px-2.5 py-1.5 text-white rounded-lg text-xs font-medium flex items-center gap-1 cursor-pointer ${
+                      hasPendingManualDocs
+                        ? "bg-red-600 hover:bg-red-700"
+                        : "bg-blue-600 hover:bg-blue-700"
+                    }`}
+                  >
                     <CheckCircle className="h-3.5 w-3.5" /> Verify
                   </button>
                 )}
@@ -1042,7 +1059,10 @@ export default function RidersPage() {
                     const currentSearch =
                       searchParams.get("search")?.trim() || `GMR${rider.id}`;
                     const returnTo = buildRidersHomeUrl(rider.id, currentSearch);
-                    router.push(buildRiderDetailUrl(rider.id, returnTo));
+                    // Same document cards / verification desk UI as Pending Onboarding.
+                    router.push(
+                      `/dashboard/riders/${rider.id}/onboarding?returnTo=${encodeURIComponent(returnTo)}`,
+                    );
                   }}
                   className="px-3 py-1.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 text-xs font-medium cursor-pointer"
                 >
@@ -1072,6 +1092,22 @@ export default function RidersPage() {
               })()}
             </div>
 
+            {hasPendingManualDocs ? (
+              <div className="mx-4 mt-3 mb-1 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5">
+                <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-red-600 text-[11px] font-bold text-white">
+                  !
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-red-700">
+                    Document verification pending
+                  </p>
+                  <p className="text-xs text-red-600 mt-0.5">
+                    {pendingDocLabels} — tap <span className="font-bold">Verify</span> to review.
+                  </p>
+                </div>
+              </div>
+            ) : null}
+
             {/* Dense info row – single row on large screens, minimal vertical space */}
             <div className="px-4 py-2.5">
               <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5 text-sm">
@@ -1079,7 +1115,15 @@ export default function RidersPage() {
                   <InfoInline label="Status" value={(riderSummary?.rider?.status ?? rider.status) === "BLOCKED" ? <span className="font-medium text-red-600">BLOCKED</span> : (riderSummary?.rider?.status ?? rider.status)} />
                   <InfoInline
                     label="KYC"
-                    value={rider.kyc_status || riderSummary?.rider?.kycStatus || "—"}
+                    value={
+                      hasPendingManualDocs ? (
+                        <span className="font-semibold text-red-600">
+                          Pending: {pendingDocLabels}
+                        </span>
+                      ) : (
+                        rider.kyc_status || riderSummary?.rider?.kycStatus || "—"
+                      )
+                    }
                   />
                   <InfoInline
                     label="Onboarding"
@@ -1089,6 +1133,16 @@ export default function RidersPage() {
                         : ONBOARDING_STAGE_LABELS[rider.onboarding_stage] ?? rider.onboarding_stage
                     }
                   />
+                  {hasPendingManualDocs ? (
+                    <InfoInline
+                      label="Docs pending"
+                      value={
+                        <span className="font-semibold text-red-600">
+                          {pendingDocLabels} verification pending
+                        </span>
+                      }
+                    />
+                  ) : null}
                   {needsVerification &&
                     (riderSummary?.paymentCompleted ||
                       (riderSummary?.onboardingFees && Number(riderSummary.onboardingFees.totalPaid) > 0)) && (
@@ -2391,7 +2445,7 @@ export default function RidersPage() {
               </div>
             );
             const hasOrderMetrics = summary.orderMetrics && typeof summary.orderMetrics === 'object';
-            const orderMetricsAndWalletSection = (
+            const orderMetricsSection = (
               <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm hover:shadow-md transition-shadow h-full min-h-0 flex flex-col ring-1 ring-gray-900/5">
                 <h3 className="text-md font-semibold mb-4 text-gray-800 shrink-0">Order Metrics by Service</h3>
                 {hasOrderMetrics ? (
@@ -2424,85 +2478,87 @@ export default function RidersPage() {
                     })}
                   </div>
                 ) : (
-                  <p className="text-xs text-gray-500 mb-4">No order metrics available.</p>
+                  <p className="text-xs text-gray-500">No order metrics available.</p>
                 )}
-                {/* Wallet Freeze: inline in same section */}
-                <div className="mt-5 pt-5 border-t border-gray-200">
-                  <h4 className="text-sm font-semibold text-gray-800 mb-1">Wallet Freeze</h4>
-                  <p className="text-xs text-gray-500 mb-3">Freeze rider wallet to block withdrawals. All actions are tracked with agent email.</p>
-                  <div className={`rounded-lg border-2 p-3 mb-3 ${isFrozen ? 'bg-red-50/80 border-red-200' : 'bg-emerald-50/80 border-emerald-200'}`}>
-                    <div className="flex items-center gap-2 mb-1">
-                      {isFrozen ? <Lock className="h-4 w-4 text-red-600 shrink-0" /> : <Unlock className="h-4 w-4 text-emerald-600 shrink-0" />}
-                      <span className={`text-sm font-semibold ${isFrozen ? 'text-red-800' : 'text-emerald-800'}`}>
-                        {isFrozen ? 'Wallet frozen' : 'Wallet active'}
-                      </span>
-                    </div>
-                    {isFrozen && wallet?.freezeReason ? (
-                      <p className="text-xs text-gray-700 mt-1">
-                        <span className="font-medium">Reason: </span>
-                        {wallet.freezeReason}
-                      </p>
-                    ) : null}
-                    {latestFreeze && (
-                      <p className="text-xs text-gray-700 mt-1">
-                        <span className="font-medium">Latest: </span>
-                        {String(latestFreeze.action) === 'freeze' ? 'Frozen' : 'Unfrozen'} by{' '}
-                        <span className="font-medium">{latestFreeze.performedByEmail ?? latestFreeze.performedByName ?? 'Agent'}</span>
-                        {latestFreezeDate && !Number.isNaN(latestFreezeDate.getTime()) ? ` on ${latestFreezeDate.toLocaleString()}` : ''}
-                        {latestFreeze.reason ? ` — ${latestFreeze.reason}` : ''}
-                      </p>
-                    )}
-                    {!latestFreeze && <p className="text-xs text-gray-500 mt-1">No freeze/unfreeze history yet.</p>}
+              </div>
+            );
+
+            const walletFreezeSection = (
+              <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm hover:shadow-md transition-shadow h-full min-h-0 flex flex-col ring-1 ring-gray-900/5">
+                <h3 className="text-md font-semibold mb-1 text-gray-800 shrink-0">Wallet Freeze</h3>
+                <p className="text-xs text-gray-500 mb-3">Freeze rider wallet to block withdrawals. All actions are tracked with agent email.</p>
+                <div className={`rounded-lg border-2 p-3 mb-3 ${isFrozen ? 'bg-red-50/80 border-red-200' : 'bg-emerald-50/80 border-emerald-200'}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    {isFrozen ? <Lock className="h-4 w-4 text-red-600 shrink-0" /> : <Unlock className="h-4 w-4 text-emerald-600 shrink-0" />}
+                    <span className={`text-sm font-semibold ${isFrozen ? 'text-red-800' : 'text-emerald-800'}`}>
+                      {isFrozen ? 'Wallet frozen' : 'Wallet active'}
+                    </span>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {canFreezeWallet && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => { setWalletFreezeModal('freeze'); setWalletFreezeError(null); setWalletFreezeReason(''); }}
-                          disabled={isFrozen || walletFreezeSubmitting}
-                          className="px-3 py-1.5 text-sm font-medium bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
-                        >
-                          Freeze wallet
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { setWalletFreezeModal('unfreeze'); setWalletFreezeError(null); setWalletFreezeReason(''); }}
-                          disabled={!isFrozen || walletFreezeSubmitting}
-                          className="px-3 py-1.5 text-sm font-medium bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
-                        >
-                          Unfreeze wallet
-                        </button>
-                      </>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => { setWalletFreezeHistoryOpen(!walletFreezeHistoryOpen); if (!walletFreezeHistoryOpen) fetchWalletFreezeHistory(); }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors cursor-pointer"
-                    >
-                      <History className="h-4 w-4" /> View history
-                    </button>
-                  </div>
-                  {walletFreezeHistoryOpen && (
-                    <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3 max-h-40 overflow-y-auto">
-                      <p className="text-xs font-semibold text-gray-800 mb-2">Freeze / Unfreeze history</p>
-                      {walletFreezeHistory.length === 0 ? (
-                        <p className="text-xs text-gray-600">No history or loading…</p>
-                      ) : (
-                        <ul className="space-y-2 text-xs text-gray-800">
-                          {walletFreezeHistory.map((h, i) => (
-                            <li key={i} className="flex flex-wrap gap-x-2 gap-y-0.5 items-baseline">
-                              <span className="font-semibold text-gray-900">{h.action === 'freeze' ? 'Frozen' : 'Unfrozen'}</span>
-                              <span className="text-gray-800">by {h.performedByEmail ?? h.performedByName ?? '—'}</span>
-                              <span className="text-gray-700">{new Date(h.createdAt).toLocaleString()}</span>
-                              {h.reason && <span className="text-gray-800">— {h.reason}</span>}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
+                  {isFrozen && wallet?.freezeReason ? (
+                    <p className="text-xs text-gray-700 mt-1">
+                      <span className="font-medium">Reason: </span>
+                      {wallet.freezeReason}
+                    </p>
+                  ) : null}
+                  {latestFreeze && (
+                    <p className="text-xs text-gray-700 mt-1">
+                      <span className="font-medium">Latest: </span>
+                      {String(latestFreeze.action) === 'freeze' ? 'Frozen' : 'Unfrozen'} by{' '}
+                      <span className="font-medium">{latestFreeze.performedByEmail ?? latestFreeze.performedByName ?? 'Agent'}</span>
+                      {latestFreezeDate && !Number.isNaN(latestFreezeDate.getTime()) ? ` on ${latestFreezeDate.toLocaleString()}` : ''}
+                      {latestFreeze.reason ? ` — ${latestFreeze.reason}` : ''}
+                    </p>
                   )}
+                  {!latestFreeze && <p className="text-xs text-gray-500 mt-1">No freeze/unfreeze history yet.</p>}
                 </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {canFreezeWallet && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => { setWalletFreezeModal('freeze'); setWalletFreezeError(null); setWalletFreezeReason(''); }}
+                        disabled={isFrozen || walletFreezeSubmitting}
+                        className="px-3 py-1.5 text-sm font-medium bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                      >
+                        Freeze wallet
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setWalletFreezeModal('unfreeze'); setWalletFreezeError(null); setWalletFreezeReason(''); }}
+                        disabled={!isFrozen || walletFreezeSubmitting}
+                        className="px-3 py-1.5 text-sm font-medium bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                      >
+                        Unfreeze wallet
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { setWalletFreezeHistoryOpen(!walletFreezeHistoryOpen); if (!walletFreezeHistoryOpen) fetchWalletFreezeHistory(); }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors cursor-pointer"
+                  >
+                    <History className="h-4 w-4" /> View history
+                  </button>
+                </div>
+                {walletFreezeHistoryOpen && (
+                  <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3 max-h-40 overflow-y-auto">
+                    <p className="text-xs font-semibold text-gray-800 mb-2">Freeze / Unfreeze history</p>
+                    {walletFreezeHistory.length === 0 ? (
+                      <p className="text-xs text-gray-600">No history or loading…</p>
+                    ) : (
+                      <ul className="space-y-2 text-xs text-gray-800">
+                        {walletFreezeHistory.map((h, i) => (
+                          <li key={i} className="flex flex-wrap gap-x-2 gap-y-0.5 items-baseline">
+                            <span className="font-semibold text-gray-900">{h.action === 'freeze' ? 'Frozen' : 'Unfrozen'}</span>
+                            <span className="text-gray-800">by {h.performedByEmail ?? h.performedByName ?? '—'}</span>
+                            <span className="text-gray-700">{new Date(h.createdAt).toLocaleString()}</span>
+                            {h.reason && <span className="text-gray-800">— {h.reason}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
                 {/* Wallet freeze/unfreeze modal */}
                 {walletFreezeModal && (
                   <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => !walletFreezeSubmitting && setWalletFreezeModal(null)}>
@@ -2542,11 +2598,12 @@ export default function RidersPage() {
             );
 
             // Layout: Recent Orders, Recent Tickets, Recent Penalties = full width (one per row).
-            // Recent Withdrawals, Blacklist, Order Metrics & Wallet = two per row.
+            // Recent Withdrawals, Blacklist, Order Metrics, Wallet Freeze = two per row.
             const twoColSections: { id: SectionId; content: React.ReactNode }[] = [
               { id: 'withdrawals', content: withdrawalsSection },
               { id: 'blacklist', content: blacklistSection },
-              { id: 'metrics' as SectionId, content: orderMetricsAndWalletSection },
+              { id: 'metrics', content: orderMetricsSection },
+              { id: 'walletFreeze', content: walletFreezeSection },
             ];
 
             return (

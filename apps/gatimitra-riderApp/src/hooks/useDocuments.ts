@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { getRiderAppConfig } from "@/src/config/env";
 import { postJson } from "@/src/services/http";
+import { RIDER_ONBOARDING_SUMMARY_QUERY_KEY } from "@/src/hooks/useRiderOnboardingSummary";
 
 const API_BASE = () => getRiderAppConfig().apiBaseUrl;
 
@@ -53,7 +54,12 @@ export function useSaveDocument() {
       );
     },
     onSuccess: (_result, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["rider", String(variables.riderId)] });
+      // Keep KYC list, eligibility, and onboarding summary in sync after any save
+      // (onboarding continue + DOCUMENT_UPDATE sheet).
+      void queryClient.invalidateQueries({ queryKey: ["rider", String(variables.riderId)] });
+      void queryClient.invalidateQueries({ queryKey: ["rider", "me", "documents"] });
+      void queryClient.invalidateQueries({ queryKey: RIDER_ONBOARDING_SUMMARY_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["rider", "eligibility"] });
     },
   });
 }

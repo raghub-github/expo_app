@@ -76,6 +76,30 @@ export function isVehicleFlowPayment(type?: OnboardingVehicleType): boolean {
   return type?.onboardingFlow === "payment";
 }
 
+/**
+ * EV / electric catalog vehicles — only these may skip RC during onboarding
+ * (they must still upload EV proof). Petrol/CNG/diesel must provide RC.
+ */
+export function isElectricOnboardingVehicle(
+  type?: Pick<
+    OnboardingVehicleType,
+    "code" | "mapsToVehicleType" | "categoryCode" | "label" | "onboardingFlow"
+  > | null,
+): boolean {
+  if (!type) return false;
+  if (type.onboardingFlow === "rental_ev") return true;
+  const hay = [
+    type.code,
+    type.mapsToVehicleType,
+    type.categoryCode,
+    type.label,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return /\bev[_-]?|electric|e[_-]?rickshaw/.test(hay);
+}
+
 /** Flat list of display names for one catalog row (splits grouped admin labels). */
 export function expandVehicleDisplayNames(
   type: Pick<OnboardingVehicleType, "label" | "mapsToVehicleType">

@@ -471,8 +471,8 @@ export async function GET(
         };
       });
 
-      // Historical safeguard: some merchant-created tickets had the same text in both
-      // unified_tickets.description and the first merchant message. Hide that duplicate in detail view.
+      // Hide duplicate opening message when the same text already sits on ticket.description
+      // (merchant legacy + rider/customer app createTicketWithPhotos).
       if (normalizedTicketDescription.length > 0) {
         let droppedFirstDuplicate = false;
         const normalizedDescription = normalizedTicketDescription.replace(/\r\n/g, "\n");
@@ -485,7 +485,18 @@ export async function GET(
               : typeof m.message_text === "string"
                 ? m.message_text
                 : "";
-          if (senderType !== "MERCHANT") return true;
+          // Prefer keeping the chat message (with attachments). Drop only when the
+          // message has NO attachments and matches description — otherwise keep
+          // the message and let TicketViewClient hide the description header.
+          const atts = Array.isArray(m.attachments) ? m.attachments : [];
+          if (atts.length > 0) return true;
+          if (
+            senderType !== "MERCHANT" &&
+            senderType !== "RIDER" &&
+            senderType !== "CUSTOMER"
+          ) {
+            return true;
+          }
           if (body.replace(/\r\n/g, "\n").trim() !== normalizedDescription) return true;
           droppedFirstDuplicate = true;
           return false;

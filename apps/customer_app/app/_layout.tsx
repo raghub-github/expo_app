@@ -79,6 +79,11 @@ import { peekPendingCheckoutPayment } from "@/lib/pendingCheckoutPayment";
 import { extractAddressShareToken } from "@/lib/addressShareLink";
 import { extractRestaurantShareSlug } from "@/lib/restaurantShareLink";
 import {
+  geoOpenToLocationMapPath,
+  isGeoOrMapsOpenPath,
+  parseGeoOpenLink,
+} from "@/lib/geoOpenLink";
+import {
   clearPendingReferral,
   peekPendingReferral,
 } from "@/lib/pendingReferral";
@@ -567,6 +572,17 @@ function AddressShareLinkCapture() {
 
   useEffect(() => {
     const apply = (url: string | null, isInitial: boolean) => {
+      if (url && isGeoOrMapsOpenPath(url)) {
+        const parsed = parseGeoOpenLink(url);
+        if (parsed) {
+          if (isInitial) {
+            if (initialHandledRef.current) return;
+            initialHandledRef.current = true;
+          }
+          router.replace(geoOpenToLocationMapPath(parsed) as any);
+          return;
+        }
+      }
       const token = extractAddressShareToken(url);
       if (token) {
         if (isInitial) {

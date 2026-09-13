@@ -41,5 +41,18 @@ adb shell am start -a android.intent.action.VIEW \
   -d "https://gatimitra.com/address/share/<token>"
 ```
 
+## Android “Open with” (geo / Google Maps)
+
+Customer App also registers a **separate** (non-`autoVerify`) intent-filter for
+`geo:`, `google.navigation:`, and Google Maps HTTPS hosts so it appears in the
+system chooser next to Maps / Zomato / Rapido. Taps with parseable coordinates
+open the in-app Mapbox `/location-map` screen.
+
+```bash
+adb shell am start -a android.intent.action.VIEW -d "geo:28.4595,77.0266?q=28.4595,77.0266(Gurgaon)"
+```
+
+Requires a **new native build** after changing `app.config.js` intent filters.
+
 There is no iOS App Store listing in this repo. Universal Links entitlements
 are declared; AASA is served only when `APPLE_TEAM_ID` is set on the backend.

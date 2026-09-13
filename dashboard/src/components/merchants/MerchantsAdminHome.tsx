@@ -222,7 +222,7 @@ function TrendChartControls({
 
 function ChartEmpty({ message }: { message: string }) {
   return (
-    <div className="flex h-full min-h-[200px] flex-col items-center justify-center rounded-xl bg-[#F8FAFC] px-4 text-center">
+    <div className="flex h-full min-h-[200px] flex-col items-center justify-center rounded-xl bg-[#F4F6F8] px-4 text-center">
       <TrendingUp className="mb-2 h-8 w-8 text-[#121212]/20" aria-hidden />
       <p className="text-sm font-medium text-[#121212]/55">{message}</p>
     </div>
@@ -560,109 +560,113 @@ export function MerchantsAdminHome({
   };
 
   return (
-    <div className="space-y-6 overflow-hidden rounded-2xl border border-[#121212]/06 bg-[linear-gradient(180deg,#E8EEF3_0%,#F3F7FA_40%,#F3F7FA_100%)] p-3 pb-10 sm:rounded-3xl sm:p-5">
-      {/* Toolbar only — page title stays in the dashboard header */}
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <div className="flex w-full flex-wrap items-center gap-2 rounded-2xl border border-white/80 bg-white/90 p-2 shadow-[0_8px_30px_rgba(18,18,18,0.06)] backdrop-blur-sm lg:w-auto">
-          <div className="relative min-w-[180px] flex-1 sm:min-w-[220px]">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#121212]/40" />
+    <div className="space-y-5 pb-8">
+      {/* Single filter composition */}
+      <div className="rounded-2xl border border-[#121212]/08 bg-white p-3 shadow-[0_1px_0_rgba(18,18,18,0.04)] sm:p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <div className="relative min-w-0 flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#121212]/35" />
             <input
               type="search"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search store by name, ID or phone"
-              className="h-9 w-full rounded-xl border border-[#121212]/08 bg-[#F8FAFC] pl-8 pr-3 text-xs text-[#121212] placeholder:text-[#121212]/40 focus:border-[#121212]/2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#121212]/08"
+              placeholder="Search store by name, ID or place"
+              className="h-11 w-full rounded-xl border border-[#121212]/10 bg-[#FAFBFC] pl-10 pr-3 text-sm text-[#121212] placeholder:text-[#121212]/40 focus:border-[#121212]/25 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#121212]/08"
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleSearch();
               }}
             />
           </div>
-          <select
-            value={storeTypeFilter}
-            onChange={(e) => onStoreTypeChange(e.target.value)}
-            className="h-9 rounded-xl border border-[#121212]/08 bg-[#F8FAFC] px-3 text-xs font-medium text-[#121212] focus:border-[#121212]/2 focus:outline-none focus:ring-2 focus:ring-[#121212]/08"
-            aria-label="Store type"
-          >
-            <option value="">All types</option>
-            <option value="RESTAURANT">Restaurant</option>
-            <option value="CLOUD_KITCHEN">Cloud Kitchen</option>
-            <option value="CAFE">Cafe</option>
-            <option value="PHARMA">Pharma</option>
-            <option value="GROCERY">Grocery</option>
-          </select>
-          <div className="flex items-center gap-1 rounded-xl border border-[#121212]/08 bg-[#F8FAFC] px-2 py-1">
-            <input
-              type="date"
-              value={dateFromInput}
-              onChange={(e) => onDateFromChange(e.target.value)}
-              className="h-7 border-0 bg-transparent px-1 text-xs text-[#121212] focus:outline-none focus:ring-0"
-              aria-label="From date"
-            />
-            <span className="text-xs text-[#121212]/30">–</span>
-            <input
-              type="date"
-              value={dateToInput}
-              onChange={(e) => onDateToChange(e.target.value)}
-              className="h-7 border-0 bg-transparent px-1 text-xs text-[#121212] focus:outline-none focus:ring-0"
-              aria-label="To date"
-            />
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={storeTypeFilter}
+              onChange={(e) => onStoreTypeChange(e.target.value)}
+              className="h-11 min-w-[140px] rounded-xl border border-[#121212]/10 bg-[#FAFBFC] px-3 text-sm font-medium text-[#121212] focus:border-[#121212]/25 focus:outline-none focus:ring-2 focus:ring-[#121212]/08"
+              aria-label="Store type"
+            >
+              <option value="">All types</option>
+              <option value="RESTAURANT">Restaurant</option>
+              <option value="CLOUD_KITCHEN">Cloud Kitchen</option>
+              <option value="CAFE">Cafe</option>
+              <option value="PHARMA">Pharma</option>
+              <option value="GROCERY">Grocery</option>
+            </select>
+            <div className="flex h-11 items-center gap-1.5 rounded-xl border border-[#121212]/10 bg-[#FAFBFC] px-2.5">
+              <input
+                type="date"
+                value={dateFromInput}
+                onChange={(e) => onDateFromChange(e.target.value)}
+                className="h-8 border-0 bg-transparent px-1 text-sm text-[#121212] focus:outline-none focus:ring-0"
+                aria-label="From date"
+              />
+              <span className="text-xs text-[#121212]/30">–</span>
+              <input
+                type="date"
+                value={dateToInput}
+                onChange={(e) => onDateToChange(e.target.value)}
+                className="h-8 border-0 bg-transparent px-1 text-sm text-[#121212] focus:outline-none focus:ring-0"
+                aria-label="To date"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={fromDate || toDate ? onClearFilters : onApplyFilters}
+              className="h-11 rounded-xl bg-[#121212] px-5 text-sm font-semibold text-white transition hover:bg-black"
+            >
+              {fromDate || toDate ? "Clear" : "Apply"}
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={fromDate || toDate ? onClearFilters : onApplyFilters}
-            className="h-9 rounded-xl border border-[#121212]/10 bg-white px-3 text-xs font-semibold text-[#121212] transition-colors hover:bg-[#F3F7FA]"
-          >
-            {fromDate || toDate ? "Clear" : "Apply"}
-          </button>
         </div>
       </div>
 
-      {/* Hero KPI strip — single row from xl up */}
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
+      {/* KPI strip */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         {(statsLoading ? Array.from({ length: 6 }) : statCards).map((card, i) => {
           if (statsLoading) {
             return (
               <div
                 key={i}
-                className="h-[88px] animate-pulse rounded-xl border border-[#121212]/06 bg-white/80 shadow-[0_4px_20px_rgba(18,18,18,0.04)]"
+                className="h-[104px] animate-pulse rounded-2xl border border-[#121212]/06 bg-white"
               />
             );
           }
           const c = card as (typeof statCards)[number];
           const Icon = c.icon;
           const active = category === c.key;
+          const attentionRing =
+            c.key === "pending" && c.count > 0
+              ? "border-rose-400 ring-2 ring-rose-200/70"
+              : c.key === "drafted" && c.count > 0
+                ? "border-sky-300 ring-1 ring-sky-100"
+                : "border-[#121212]/08";
           return (
             <button
               key={c.key}
               type="button"
               onClick={() => onCategoryClick(c.key)}
-              className={`group relative flex flex-col overflow-hidden rounded-xl border bg-white px-3 py-2.5 text-left shadow-[0_4px_20px_rgba(18,18,18,0.04)] transition hover:-translate-y-0.5 hover:shadow-[0_10px_28px_rgba(18,18,18,0.08)] ${
-                c.attention
-                  ? "border-amber-200/80 ring-1 ring-amber-100"
-                  : "border-[#121212]/06"
-              } ${active ? "ring-2 ring-[#121212] ring-offset-2 ring-offset-[#F3F7FA]" : ""}`}
+              className={`group relative flex flex-col overflow-hidden rounded-2xl border bg-white px-3.5 py-3 text-left shadow-[0_1px_0_rgba(18,18,18,0.04)] transition hover:-translate-y-0.5 hover:shadow-[0_12px_28px_rgba(18,18,18,0.08)] ${attentionRing} ${
+                active ? "ring-2 ring-[#121212] ring-offset-2" : ""
+              }`}
             >
               {c.attention ? (
-                <span className="absolute right-2.5 top-2.5 h-1.5 w-1.5 rounded-full bg-amber-500 shadow-[0_0_0_3px_rgba(245,158,11,0.25)]" />
+                <span className="absolute right-3 top-3 h-2 w-2 rounded-full bg-rose-500 shadow-[0_0_0_3px_rgba(244,63,94,0.2)]" />
               ) : null}
-              <div className="flex items-center gap-2.5">
+              <div className="flex items-start gap-2.5">
                 <span
-                  className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${c.iconBg}`}
+                  className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${c.iconBg}`}
                 >
                   <Icon className="h-4 w-4" />
                 </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-xl font-bold leading-none tracking-tight text-[#121212]">
-                      {c.count}
-                    </span>
-                    <span className="truncate text-[11px] font-semibold text-[#121212]/70">
-                      {c.label}
-                    </span>
-                  </div>
-                  <span className="mt-0.5 block truncate text-[10px] font-medium leading-snug text-[#121212]/40">
+                <div className="min-w-0 flex-1 pt-0.5">
+                  <p className="truncate text-[11px] font-semibold uppercase tracking-[0.06em] text-[#121212]/45">
+                    {c.label}
+                  </p>
+                  <p className="mt-1 text-2xl font-bold leading-none tracking-tight text-[#121212]">
+                    {c.count}
+                  </p>
+                  <p className="mt-1 truncate text-[11px] font-medium text-[#121212]/45">
                     {c.hint}
-                  </span>
+                  </p>
                 </div>
               </div>
               <MiniSparkline data={c.spark} color={c.sparkColor} />
@@ -671,12 +675,12 @@ export function MerchantsAdminHome({
         })}
       </div>
 
-      {/* Shared analytics toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* Analytics header */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-sm font-bold text-[#121212]">Analytics</h2>
-          <p className="text-[11px] text-[#121212]/45">
-            Trends for <span className="font-semibold text-[#121212]/65">{trendLabel}</span>
+          <h2 className="text-base font-bold tracking-tight text-[#121212]">Analytics</h2>
+          <p className="mt-0.5 text-xs text-[#121212]/50">
+            Trends for <span className="font-semibold text-[#121212]/75">{trendLabel}</span>
           </p>
         </div>
         <TrendChartControls
@@ -689,19 +693,16 @@ export function MerchantsAdminHome({
         />
       </div>
 
-      {/* Analytics grid */}
+      {/* Primary analytics: Status mix + Growth */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-        {/* Status mix donut */}
-        <div className="rounded-2xl border border-[#121212]/06 bg-white p-4 shadow-[0_4px_20px_rgba(18,18,18,0.04)] sm:p-5 xl:col-span-4">
-          <div className="mb-3 flex items-start justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-bold text-[#121212]">Status mix</h3>
-              <p className="text-[11px] text-[#121212]/45">Current store portfolio</p>
-            </div>
+        <div className="rounded-2xl border border-[#121212]/08 bg-white p-4 sm:p-5 xl:col-span-4">
+          <div className="mb-4">
+            <h3 className="text-sm font-bold text-[#121212]">Status mix</h3>
+            <p className="text-xs text-[#121212]/45">Current store portfolio</p>
           </div>
           <div style={{ height: CHART_HEIGHT }}>
             {statsLoading ? (
-              <div className="h-full animate-pulse rounded-xl bg-[#F3F7FA]" />
+              <div className="h-full animate-pulse rounded-xl bg-[#F4F6F8]" />
             ) : statusMixEmpty ? (
               <ChartEmpty message="No status data yet" />
             ) : (
@@ -713,11 +714,11 @@ export function MerchantsAdminHome({
                     nameKey="name"
                     cx="50%"
                     cy="48%"
-                    innerRadius={58}
-                    outerRadius={86}
-                    paddingAngle={3}
+                    innerRadius={62}
+                    outerRadius={90}
+                    paddingAngle={2}
                     stroke="#fff"
-                    strokeWidth={2}
+                    strokeWidth={3}
                   >
                     {statusMixData.map((entry) => (
                       <Cell
@@ -746,20 +747,19 @@ export function MerchantsAdminHome({
           </div>
         </div>
 
-        {/* Merchant Growth */}
-        <div className="rounded-2xl border border-[#121212]/06 bg-white p-4 shadow-[0_4px_20px_rgba(18,18,18,0.04)] sm:p-5 xl:col-span-8">
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+        <div className="rounded-2xl border border-[#121212]/08 bg-white p-4 sm:p-5 xl:col-span-8">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
             <div>
               <h3 className="text-sm font-bold text-[#121212]">Merchant growth</h3>
-              <p className="text-[11px] text-[#121212]/45">New stores over time</p>
+              <p className="text-xs text-[#121212]/45">New stores over time</p>
             </div>
-            <span className="inline-flex items-center rounded-full bg-[#121212]/06 px-2.5 py-1 text-[11px] font-semibold text-[#121212]">
+            <span className="inline-flex items-center rounded-full bg-[#121212] px-3 py-1 text-[11px] font-semibold text-white">
               {growthTotal} new in period
             </span>
           </div>
           <div style={{ height: CHART_HEIGHT }}>
             {overviewQuery.isLoading ? (
-              <div className="h-full animate-pulse rounded-xl bg-[#F3F7FA]" />
+              <div className="h-full animate-pulse rounded-xl bg-[#F4F6F8]" />
             ) : growthEmpty ? (
               <ChartEmpty message="No new stores in this range" />
             ) : (
@@ -767,11 +767,11 @@ export function MerchantsAdminHome({
                 <AreaChart data={growthData} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
                   <defs>
                     <linearGradient id="growthFillPremium" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#121212" stopOpacity={0.22} />
+                      <stop offset="0%" stopColor="#121212" stopOpacity={0.2} />
                       <stop offset="100%" stopColor="#121212" stopOpacity={0.01} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E8EEF2" vertical={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF1F4" vertical={false} />
                   <XAxis
                     dataKey="label"
                     tick={{ fontSize: 10, fill: "#6b7280" }}
@@ -809,25 +809,25 @@ export function MerchantsAdminHome({
           </div>
         </div>
 
-        {/* Verification stacked bars */}
-        <div className="rounded-2xl border border-[#121212]/06 bg-white p-4 shadow-[0_4px_20px_rgba(18,18,18,0.04)] sm:p-5 xl:col-span-7">
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+        {/* Secondary analytics */}
+        <div className="rounded-2xl border border-[#121212]/08 bg-white p-4 sm:p-5 xl:col-span-7">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
             <div>
               <h3 className="text-sm font-bold text-[#121212]">Verification outcome</h3>
-              <p className="text-[11px] text-[#121212]/45">Daily verified vs rejected</p>
+              <p className="text-xs text-[#121212]/45">Daily verified vs rejected</p>
             </div>
             <div className="flex items-center gap-2 text-[11px] font-semibold">
-              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">
+              <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-700 ring-1 ring-emerald-100">
                 {verificationTotals.verified} verified
               </span>
-              <span className="rounded-full bg-red-50 px-2 py-0.5 text-red-700">
+              <span className="rounded-full bg-rose-50 px-2.5 py-1 text-rose-700 ring-1 ring-rose-100">
                 {verificationTotals.rejected} rejected
               </span>
             </div>
           </div>
           <div style={{ height: CHART_HEIGHT }}>
             {overviewQuery.isLoading ? (
-              <div className="h-full animate-pulse rounded-xl bg-[#F3F7FA]" />
+              <div className="h-full animate-pulse rounded-xl bg-[#F4F6F8]" />
             ) : verificationEmpty ? (
               <ChartEmpty message="No verification activity in this range" />
             ) : (
@@ -836,7 +836,7 @@ export function MerchantsAdminHome({
                   data={verificationData}
                   margin={{ top: 8, right: 8, left: -12, bottom: 0 }}
                 >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E8EEF2" vertical={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF1F4" vertical={false} />
                   <XAxis
                     dataKey="label"
                     tick={{ fontSize: 10, fill: "#6b7280" }}
@@ -888,15 +888,14 @@ export function MerchantsAdminHome({
           </div>
         </div>
 
-        {/* Store type mix */}
-        <div className="rounded-2xl border border-[#121212]/06 bg-white p-4 shadow-[0_4px_20px_rgba(18,18,18,0.04)] sm:p-5 xl:col-span-5">
-          <div className="mb-3">
+        <div className="rounded-2xl border border-[#121212]/08 bg-white p-4 sm:p-5 xl:col-span-5">
+          <div className="mb-4">
             <h3 className="text-sm font-bold text-[#121212]">Store type mix</h3>
-            <p className="text-[11px] text-[#121212]/45">Based on recent stores</p>
+            <p className="text-xs text-[#121212]/45">Based on recent stores</p>
           </div>
           <div style={{ height: CHART_HEIGHT }}>
             {overviewQuery.isLoading ? (
-              <div className="h-full animate-pulse rounded-xl bg-[#F3F7FA]" />
+              <div className="h-full animate-pulse rounded-xl bg-[#F4F6F8]" />
             ) : storeTypeEmpty ? (
               <ChartEmpty message="No recent stores to classify" />
             ) : (
@@ -906,7 +905,7 @@ export function MerchantsAdminHome({
                   layout="vertical"
                   margin={{ top: 4, right: 16, left: 8, bottom: 4 }}
                 >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E8EEF2" horizontal={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF1F4" horizontal={false} />
                   <XAxis
                     type="number"
                     allowDecimals={false}
@@ -917,7 +916,7 @@ export function MerchantsAdminHome({
                   <YAxis
                     type="category"
                     dataKey="name"
-                    width={96}
+                    width={100}
                     tick={{ fontSize: 10, fill: "#374151" }}
                     axisLine={false}
                     tickLine={false}
@@ -943,19 +942,19 @@ export function MerchantsAdminHome({
         </div>
       </div>
 
-      {/* Table */}
-      <div className="overflow-hidden rounded-2xl border border-[#121212]/06 bg-white shadow-[0_4px_24px_rgba(18,18,18,0.05)]">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#121212]/06 bg-[#F8FAFC]/80 px-4 py-4 sm:px-5">
+      {/* Merchants table */}
+      <div className="overflow-hidden rounded-2xl border border-[#121212]/08 bg-white shadow-[0_1px_0_rgba(18,18,18,0.04)]">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#121212]/06 px-4 py-4 sm:px-5">
           <div>
-            <span className="text-sm font-bold text-[#121212]">All Merchants</span>
-            <p className="text-[11px] text-[#121212]/45">Recent child stores in scope</p>
+            <h2 className="text-base font-bold tracking-tight text-[#121212]">All Merchants</h2>
+            <p className="mt-0.5 text-xs text-[#121212]/50">Recent child stores in scope</p>
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={exportCsv}
               disabled={stores.length === 0}
-              className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-[#121212]/10 bg-white px-3 text-[11px] font-semibold text-[#121212]/75 shadow-sm transition-colors hover:bg-white disabled:opacity-40"
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[#121212]/12 bg-white px-3.5 text-xs font-semibold text-[#121212] transition hover:bg-[#FAFBFC] disabled:opacity-40"
             >
               <Download className="h-3.5 w-3.5" />
               Export CSV
@@ -963,7 +962,7 @@ export function MerchantsAdminHome({
             <button
               type="button"
               onClick={() => onCategoryClick("total")}
-              className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-[#121212]/10 bg-white px-3 text-[11px] font-semibold text-[#121212]/75 shadow-sm transition-colors hover:bg-white"
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[#121212] px-3.5 text-xs font-semibold text-white transition hover:bg-black"
             >
               <Filter className="h-3.5 w-3.5" />
               View all
@@ -972,11 +971,11 @@ export function MerchantsAdminHome({
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-left text-sm">
-            <thead className="sticky top-0 z-[1] bg-[#F3F7FA] text-[11px] font-semibold uppercase tracking-wide text-[#121212]/50">
+            <thead className="bg-[#FAFBFC] text-[11px] font-semibold uppercase tracking-[0.08em] text-[#121212]/45">
               <tr>
-                <th className="px-4 py-3 sm:px-5">Store Name</th>
+                <th className="px-4 py-3 sm:px-5">Store name</th>
                 <th className="px-4 py-3">Store ID</th>
-                <th className="px-4 py-3">Store Type</th>
+                <th className="px-4 py-3">Store type</th>
                 <th className="px-4 py-3">City</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-right sm:px-5">Action</th>
@@ -987,7 +986,7 @@ export function MerchantsAdminHome({
                 Array.from({ length: 5 }).map((_, i) => (
                   <tr key={i}>
                     <td colSpan={6} className="px-4 py-3">
-                      <div className="h-9 animate-pulse rounded-xl bg-[#F3F7FA]" />
+                      <div className="h-10 animate-pulse rounded-xl bg-[#F4F6F8]" />
                     </td>
                   </tr>
                 ))
@@ -995,56 +994,56 @@ export function MerchantsAdminHome({
                 <tr>
                   <td
                     colSpan={6}
-                    className="px-4 py-12 text-center text-sm text-[#121212]/55"
+                    className="px-4 py-14 text-center text-sm text-[#121212]/50"
                   >
                     No merchants found.
                   </td>
                 </tr>
               ) : (
-                stores.map((store, idx) => {
+                stores.map((store) => {
                   const status = (store.approval_status || "").toUpperCase();
                   const isVerified = status === "APPROVED";
+                  const needsAttention =
+                    !isVerified && status !== "REJECTED" && status !== "BLOCKED";
                   return (
                     <tr
                       key={store.id}
-                      className={`transition hover:bg-[#F3F7FA]/90 ${
-                        idx % 2 === 1 ? "bg-[#FAFBFC]" : "bg-white"
+                      className={`transition hover:bg-[#FAFBFC] ${
+                        needsAttention ? "bg-rose-50/40" : "bg-white"
                       }`}
                     >
-                      <td className="px-4 py-3.5 sm:px-5">
+                      <td className="px-4 py-3 sm:px-5">
                         <div className="flex items-center gap-3">
-                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#121212]/08 text-xs font-bold text-[#121212]">
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#121212] text-xs font-bold text-white">
                             {(store.name || "S").charAt(0).toUpperCase()}
                           </span>
-                          <span className="font-medium text-[#121212] line-clamp-2">
+                          <span className="font-semibold text-[#121212] line-clamp-2">
                             {store.name}
                           </span>
                         </div>
                       </td>
-                      <td className="px-4 py-3.5 font-mono text-xs text-[#121212]/55">
+                      <td className="px-4 py-3 font-mono text-xs text-[#121212]/55">
                         {store.store_id}
                       </td>
-                      <td className="px-4 py-3.5">
+                      <td className="px-4 py-3">
                         <span
                           className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${storeTypeBadgeClass(store.store_type)}`}
                         >
                           {storeTypeLabel(store.store_type)}
                         </span>
                       </td>
-                      <td className="px-4 py-3.5 text-[#121212]/70">
-                        {store.city ?? "—"}
-                      </td>
-                      <td className="px-4 py-3.5">
+                      <td className="px-4 py-3 text-[#121212]/70">{store.city ?? "—"}</td>
+                      <td className="px-4 py-3">
                         <StatusPill status={store.approval_status} />
                       </td>
-                      <td className="px-4 py-3.5 text-right sm:px-5">
+                      <td className="px-4 py-3 text-right sm:px-5">
                         <button
                           type="button"
                           onClick={() => router.push(buildStoreUrl(store))}
-                          className={`inline-flex items-center gap-0.5 rounded-xl px-3 py-1.5 text-[11px] font-semibold text-white transition-colors ${
+                          className={`inline-flex items-center gap-0.5 rounded-xl px-3.5 py-2 text-xs font-semibold text-white transition ${
                             isVerified
                               ? "bg-[#121212] hover:bg-black"
-                              : "bg-amber-500 hover:bg-amber-600"
+                              : "bg-rose-600 hover:bg-rose-700"
                           }`}
                         >
                           {isVerified ? "View" : "Verify"}
@@ -1058,7 +1057,7 @@ export function MerchantsAdminHome({
             </tbody>
           </table>
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#121212]/06 bg-[#F8FAFC]/60 px-4 py-3 text-xs text-[#121212]/55 sm:px-5">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#121212]/06 bg-[#FAFBFC] px-4 py-3 text-xs text-[#121212]/55 sm:px-5">
           <span>
             Showing 1 to {stores.length} of {total} entries
           </span>

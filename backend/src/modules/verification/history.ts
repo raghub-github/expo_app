@@ -174,6 +174,127 @@ export async function resolveVerifiedIdentifierConflict(args: {
   return "ok";
 }
 
+/** True when this identifier is already verified on a *different* subject. */
+export async function isIdentifierVerifiedOnOtherSubject(args: {
+  documentKind: VerificationDocumentKind;
+  businessIdentifier: string | null | undefined;
+  subjectType: VerificationSubjectKind;
+  subjectId: number;
+}): Promise<boolean> {
+  const biz = String(args.businessIdentifier || "").trim();
+  if (!biz) return false;
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT id
+    FROM public.verification_requests
+    WHERE document_kind = ${args.documentKind}
+      AND business_identifier = ${biz}
+      AND status = ${"verified"}
+      AND (
+        subject_type <> ${args.subjectType}
+        OR subject_id <> ${args.subjectId}
+      )
+    LIMIT 1
+  `) as unknown as Array<{ id: number }>;
+  return rows.length > 0;
+}
+
+/**
+ * Reuse at most ONE duplicate row for subject+doc+identifier.
+ * Cancels older duplicate spam for the same key.
+ */
+export async function upsertDuplicateVerificationRequest(args: {
+  documentKind: VerificationDocumentKind;
+  businessIdentifier: string;
+  subjectType: VerificationSubjectKind;
+  subjectId: number;
+  providerConfigId?: number | null;
+  createdBy?: number | null;
+  statusReason?: string;
+}): Promise<{ requestId: number; verificationId: string; created: boolean }> {
+  const biz = String(args.businessIdentifier || "").trim();
+  const sql = getSql();
+  const reason =
+    args.statusReason ||
+    "This document number is already verified on another account.";
+
+  const existing = (await sql`
+    SELECT id, verification_id
+    FROM public.verification_requests
+    WHERE subject_type = ${args.subjectType}
+      AND subject_id = ${args.subjectId}
+      AND document_kind = ${args.documentKind}
+      AND business_identifier = ${biz}
+      AND status = ${"duplicate"}
+    ORDER BY updated_at DESC NULLS LAST, id DESC
+    LIMIT 1
+  `) as unknown as Array<{ id: number; verification_id: string }>;
+
+  if (existing[0]) {
+    const keepId = Number(existing[0].id);
+    await sql`
+      UPDATE public.verification_requests
+      SET
+        status_reason = ${reason},
+        updated_at = NOW()
+      WHERE id = ${keepId}
+    `;
+    // Collapse spam: cancel other duplicate rows for same subject+doc+identifier.
+    await sql`
+      UPDATE public.verification_requests
+      SET
+        status = ${"cancelled"},
+        status_reason = ${"superseded_duplicate_notice"},
+        updated_at = NOW()
+      WHERE subject_type = ${args.subjectType}
+        AND subject_id = ${args.subjectId}
+        AND document_kind = ${args.documentKind}
+        AND business_identifier = ${biz}
+        AND status = ${"duplicate"}
+        AND id <> ${keepId}
+    `;
+    return {
+      requestId: keepId,
+      verificationId: String(existing[0].verification_id),
+      created: false,
+    };
+  }
+
+  const verificationId = newVerificationId();
+  const attemptNumber = await nextAttemptNumber({
+    subjectType: args.subjectType,
+    subjectId: args.subjectId,
+    documentKind: args.documentKind,
+  });
+  const rows = (await sql`
+    INSERT INTO public.verification_requests (
+      verification_id, provider, provider_config_id, document_kind,
+      subject_type, subject_id, attempt_number, status, status_reason,
+      business_identifier, provider_dedupe_behaviour, created_by
+    ) VALUES (
+      ${verificationId},
+      ${"cashfree"},
+      ${args.providerConfigId ?? null},
+      ${args.documentKind},
+      ${args.subjectType},
+      ${args.subjectId},
+      ${attemptNumber},
+      ${"duplicate"},
+      ${reason},
+      ${biz},
+      ${"precheck_skip_provider"},
+      ${args.createdBy ?? null}
+    )
+    RETURNING id
+  `) as unknown as Array<{ id: number }>;
+
+  return {
+    requestId: Number(rows[0]!.id),
+    verificationId,
+    created: true,
+  };
+}
+
 /**
  * Repair rows left on `initiated` after Cashfree already returned (old bug:
  * unique verified-identifier constraint aborted applyOutcome). Uses the latest

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { X, Upload, FileText, Trash2 } from "lucide-react";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { ModalPortal } from "@/components/ui/ModalPortal";
@@ -16,6 +16,20 @@ interface DocumentEditModalProps {
   docType: string;
   isLoading?: boolean;
 }
+
+/** Doc types that never show / require a document number field. */
+const NO_DOC_NUMBER_TYPES = new Set([
+  "selfie",
+  "profile_photo",
+]);
+
+const ALLOWED_TYPES = [
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "application/pdf",
+];
 
 function isPendingUrl(url?: string | null): boolean {
   const v = (url ?? "").trim();
@@ -33,12 +47,15 @@ export function DocumentEditModal({
   docType,
   isLoading = false,
 }: DocumentEditModalProps) {
+  const hideDocNumber = NO_DOC_NUMBER_TYPES.has(docType);
   const [docNumber, setDocNumber] = useState(currentDocNumber || "");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(currentImageUrl || null);
   const [errors, setErrors] = useState<{ docNumber?: string; file?: string }>({});
   const [removing, setRemoving] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragDepthRef = useRef(0);
 
   const showRemove =
     !selectedFile &&
@@ -53,34 +70,79 @@ export function DocumentEditModal({
       setPreviewUrl(isPendingUrl(currentImageUrl) ? null : currentImageUrl || null);
       setErrors({});
       setRemoving(false);
+      setDragging(false);
+      dragDepthRef.current = 0;
     }
   }, [isOpen, currentDocNumber, currentImageUrl]);
 
+  const applyFile = useCallback(
+    (file: File | undefined | null) => {
+      if (!file) return;
+
+      if (!ALLOWED_TYPES.includes(file.type)) {
+        setErrors((prev) => ({
+          ...prev,
+          file: "Invalid file type. Allowed types: JPEG, PNG, WebP, PDF",
+        }));
+        return;
+      }
+
+      if (file.size > 10 * 1024 * 1024) {
+        setErrors((prev) => ({ ...prev, file: "File size exceeds 10MB limit" }));
+        return;
+      }
+
+      setSelectedFile(file);
+      setErrors((prev) => ({ ...prev, file: undefined }));
+
+      if (file.type.startsWith("image/")) {
+        const reader = new FileReader();
+        reader.onloadend = () => setPreviewUrl(reader.result as string);
+        reader.readAsDataURL(file);
+      } else {
+        setPreviewUrl(null);
+      }
+    },
+    [],
+  );
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    applyFile(e.target.files?.[0]);
+  };
 
-    const allowedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp", "application/pdf"];
-    if (!allowedTypes.includes(file.type)) {
-      setErrors({ ...errors, file: "Invalid file type. Allowed types: JPEG, PNG, WebP, PDF" });
-      return;
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthRef.current += 1;
+    setDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthRef.current -= 1;
+    if (dragDepthRef.current <= 0) {
+      dragDepthRef.current = 0;
+      setDragging(false);
     }
+  };
 
-    if (file.size > 10 * 1024 * 1024) {
-      setErrors({ ...errors, file: "File size exceeds 10MB limit" });
-      return;
-    }
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
 
-    setSelectedFile(file);
-    setErrors({ ...errors, file: undefined });
+  const busy = isLoading || removing;
+  const inputId = `document-file-input-${docType}`;
 
-    if (file.type.startsWith("image/")) {
-      const reader = new FileReader();
-      reader.onloadend = () => setPreviewUrl(reader.result as string);
-      reader.readAsDataURL(file);
-    } else {
-      setPreviewUrl(null);
-    }
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthRef.current = 0;
+    setDragging(false);
+    if (busy) return;
+    const file = e.dataTransfer.files?.[0];
+    applyFile(file);
   };
 
   const handleRemoveStoredImage = async () => {
@@ -106,11 +168,17 @@ export function DocumentEditModal({
 
   const handleSave = async () => {
     const newErrors: { docNumber?: string; file?: string } = {};
-    if (docNumber && docNumber.trim().length > 0 && docNumber.trim().length < 3) {
+    if (
+      !hideDocNumber &&
+      docNumber &&
+      docNumber.trim().length > 0 &&
+      docNumber.trim().length < 3
+    ) {
       newErrors.docNumber = "Document number must be at least 3 characters";
     }
 
-    const docNumberChanged = docNumber !== (currentDocNumber || "");
+    const docNumberChanged =
+      !hideDocNumber && docNumber !== (currentDocNumber || "");
     const fileChanged = selectedFile !== null;
     const isNew = isPendingUrl(currentImageUrl) && !currentR2Key;
 
@@ -129,7 +197,11 @@ export function DocumentEditModal({
     }
 
     await onSave({
-      docNumber: docNumber.trim() ? docNumber.trim() : undefined,
+      docNumber: hideDocNumber
+        ? undefined
+        : docNumber.trim()
+          ? docNumber.trim()
+          : undefined,
       file: fileChanged ? selectedFile || undefined : undefined,
     });
   };
@@ -155,9 +227,6 @@ export function DocumentEditModal({
     return labels[type] || type;
   };
 
-  const busy = isLoading || removing;
-  const inputId = `document-file-input-${docType}`;
-
   if (!isOpen) return null;
 
   return (
@@ -180,51 +249,86 @@ export function DocumentEditModal({
         </div>
 
         <div className="p-4 sm:p-6 space-y-5 overflow-y-auto flex-1 min-h-0">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Document number{" "}
-              {["selfie", "profile_photo", "bank_proof", "vehicle_image", "upi_qr_proof", "insurance", "rental_proof", "ev_proof"].includes(docType)
-                ? "(optional — not required)"
-                : "(optional)"}
-            </label>
-            <input
-              type="text"
-              value={docNumber}
-              onChange={(e) => {
-                setDocNumber(e.target.value);
-                setErrors({ ...errors, docNumber: undefined });
-              }}
-              className={`w-full px-4 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-gray-900 ${
-                errors.docNumber ? "border-red-500" : "border-gray-300"
-              }`}
-            />
-            {errors.docNumber && <p className="mt-1 text-sm text-red-600">{errors.docNumber}</p>}
-          </div>
+          {!hideDocNumber ? (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Document number{" "}
+                {["bank_proof", "vehicle_image", "upi_qr_proof", "insurance", "rental_proof", "ev_proof"].includes(docType)
+                  ? "(optional — not required)"
+                  : "(optional)"}
+              </label>
+              <input
+                type="text"
+                value={docNumber}
+                onChange={(e) => {
+                  setDocNumber(e.target.value);
+                  setErrors({ ...errors, docNumber: undefined });
+                }}
+                className={`w-full px-4 py-2.5 border rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-gray-900 ${
+                  errors.docNumber ? "border-red-500" : "border-gray-300"
+                }`}
+              />
+              {errors.docNumber && <p className="mt-1 text-sm text-red-600">{errors.docNumber}</p>}
+            </div>
+          ) : null}
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Document Image</label>
-            {previewUrl ? (
-              <div className="border-2 border-dashed border-gray-300 rounded-xl p-3 bg-gray-50/50 flex justify-center">
-                {previewUrl.startsWith("data:") ||
-                previewUrl.includes("/attachments/proxy") ||
-                previewUrl.startsWith("http") ? (
-                  <img
-                    src={previewUrl}
-                    alt="Document preview"
-                    className="max-h-52 rounded-lg object-contain"
-                  />
-                ) : (
-                  <div className="py-8 text-gray-400 flex flex-col items-center">
-                    <FileText className="h-10 w-10 mb-2" />
-                    <span className="text-sm">PDF Document</span>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center text-sm text-gray-500 bg-gray-50">
-                No image uploaded yet.
-              </div>
-            )}
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              {hideDocNumber ? "Selfie Image" : "Document Image"}
+            </label>
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => {
+                if (!busy) fileInputRef.current?.click();
+              }}
+              onKeyDown={(e) => {
+                if (!busy && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  fileInputRef.current?.click();
+                }
+              }}
+              onDragEnter={handleDragEnter}
+              onDragLeave={handleDragLeave}
+              onDragOver={handleDragOver}
+              onDrop={handleDrop}
+              className={`border-2 border-dashed rounded-xl p-3 transition-colors cursor-pointer ${
+                dragging
+                  ? "border-blue-500 bg-blue-50"
+                  : previewUrl
+                    ? "border-gray-300 bg-gray-50/50"
+                    : "border-gray-200 bg-gray-50"
+              } ${busy ? "opacity-50 pointer-events-none" : ""}`}
+            >
+              {previewUrl ? (
+                <div className="flex justify-center">
+                  {previewUrl.startsWith("data:") ||
+                  previewUrl.includes("/attachments/proxy") ||
+                  previewUrl.startsWith("http") ? (
+                    <img
+                      src={previewUrl}
+                      alt="Document preview"
+                      className="max-h-52 rounded-lg object-contain pointer-events-none"
+                    />
+                  ) : (
+                    <div className="py-8 text-gray-400 flex flex-col items-center">
+                      <FileText className="h-10 w-10 mb-2" />
+                      <span className="text-sm">PDF Document</span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="p-8 text-center text-sm text-gray-500">
+                  <Upload className="h-8 w-8 mx-auto mb-2 text-gray-400" />
+                  <p className="font-medium text-gray-600">
+                    {dragging ? "Drop image here" : "Drag & drop an image here"}
+                  </p>
+                  <p className="mt-1 text-xs text-gray-400">
+                    or click to browse (JPEG, PNG, WebP, PDF · max 10MB)
+                  </p>
+                </div>
+              )}
+            </div>
             {selectedFile && (
               <p className="mt-2 text-sm text-blue-700">
                 New file ready: {selectedFile.name} — click Save Changes to upload.

@@ -98,8 +98,17 @@ export type OnboardingData = {
   lon?: number;
   city?: string;
   state?: string;
+  region?: string;
+  district?: string;
   pincode?: string;
   address?: string;
+  stateId?: string;
+  regionId?: string;
+  districtId?: string;
+  /** gps_auto | manual_select | manual_other */
+  locationSource?: "gps_auto" | "manual_select" | "manual_other";
+  locationOtherState?: string;
+  locationOtherDistrict?: string;
 
   // Metadata
   currentStep?: OnboardingStep;

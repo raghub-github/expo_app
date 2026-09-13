@@ -154,7 +154,7 @@ export const riderSupportService = {
 
   async listTickets() {
     const data = await getJson<{ ok: boolean; tickets: RiderTicketListItem[] }>(
-      `${PREFIX()}/tickets`,
+      `${PREFIX()}/tickets?limit=100`,
       { headers: authHeaders() },
     );
     return data.tickets ?? [];
@@ -330,12 +330,25 @@ export const riderSupportService = {
           mimeType: uploaded.mimeType || meta.mimeType,
           url: uploaded.url,
         });
-      } catch {
-        // Ticket already created; skip failed upload and continue with others.
+      } catch (err) {
+        console.warn("[riderSupport] attachment upload failed", {
+          ticketId,
+          index: i,
+          message: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 
+    if (photoUris.length > 0 && attachments.length === 0) {
+      throw new Error(
+        "Ticket was created but photo upload failed. Open the ticket and try attaching again.",
+      );
+    }
+
     const desc = payload.description.trim();
+    // One conversation message only. Ticket.description stays on the row for list/search;
+    // do NOT also mirror the same text+photos onto ticket.attachments (dashboard was
+    // rendering description card + opening message = duplicate "Testing" + images).
     if (desc || attachments.length > 0) {
       try {
         await riderSupportService.sendMessage(
@@ -347,8 +360,16 @@ export const riderSupportService = {
           },
           { preLogin },
         );
-      } catch {
-        // Opening message is optional if ticket row + description already exist.
+      } catch (err) {
+        console.warn("[riderSupport] opening message failed", {
+          ticketId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+        if (attachments.length > 0) {
+          throw new Error(
+            "Photos uploaded but could not attach them to the ticket conversation. Please open Track ticket and retry.",
+          );
+        }
       }
     }
 

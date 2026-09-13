@@ -4,6 +4,9 @@ import {
   canAccessOnboardingBankAccountScreen,
   canAccessOnboardingPaymentScreen,
   resolveFirstIncompleteOnboardingStep,
+  resolveNewRiderDocsEntryHref,
+  resolveOnboardingHref,
+  resolveOnboardingRouteFromServer,
   previousOnboardingRoute,
   canGoBackFromOnboardingRoute,
   onboardingStepMetaForRoute,
@@ -26,9 +29,13 @@ describe("onboarding top-bar back navigation + step meta", () => {
   it("has no back target on the first step", () => {
     assert.equal(previousOnboardingRoute("language"), null);
     assert.equal(canGoBackFromOnboardingRoute("language"), false);
-    // Aadhaar is first KYC step — header back is hidden even if referral precedes it.
-    assert.equal(canGoBackFromOnboardingRoute("aadhaar"), false);
+    assert.equal(canGoBackFromOnboardingRoute("location"), false);
     assert.equal(canGoBackFromOnboardingRoute("pan-selfie"), true);
+  });
+
+  it("allows Aadhaar back to work location", () => {
+    assert.equal(previousOnboardingRoute("aadhaar"), "/(onboarding)/location");
+    assert.equal(canGoBackFromOnboardingRoute("aadhaar"), true);
   });
 
   it("returns null (not a crash) for an unknown route", () => {
@@ -94,6 +101,79 @@ describe("dashboard-completed onboarding steps", () => {
     assert.equal(
       resolveFirstIncompleteOnboardingStep(["pan_selfie", "dl_rc"], "dl_rc"),
       "aadhaar_name",
+    );
+  });
+
+  it("does not resume at DL/RC after optional skip was submitted", () => {
+    assert.equal(
+      resolveOnboardingRouteFromServer("dl_rc", {
+        vehicleChoice: "bike",
+        vehicleOnboardingSubmittedFor: "bike",
+        vehicleOnboardingFlow: "dl_rc",
+        bankAccountOnboardingDone: true,
+        completedOnboardingSteps: ["aadhaar_name", "pan_selfie"],
+      }),
+      "/(onboarding)/payment",
+    );
+    assert.equal(
+      resolveOnboardingRouteFromServer("dl_rc", {
+        vehicleChoice: "bike",
+        vehicleOnboardingSubmittedFor: "bike",
+        vehicleOnboardingFlow: "dl_rc",
+        bankAccountOnboardingDone: false,
+        completedOnboardingSteps: ["aadhaar_name", "pan_selfie"],
+      }),
+      "/(onboarding)/bank-account",
+    );
+  });
+});
+
+describe("work location before Aadhaar", () => {
+  it("routes new riders referral → location → aadhaar", () => {
+    assert.equal(resolveNewRiderDocsEntryHref({}), "/(onboarding)/referral");
+    assert.equal(
+      resolveNewRiderDocsEntryHref({ referralPromptHandled: true }),
+      "/(onboarding)/location",
+    );
+    assert.equal(
+      resolveNewRiderDocsEntryHref({
+        referralPromptHandled: true,
+        workLocationConfirmed: true,
+      }),
+      "/(onboarding)/aadhaar",
+    );
+  });
+
+  it("still shows location once even if Aadhaar was completed earlier", () => {
+    assert.equal(
+      resolveNewRiderDocsEntryHref({
+        completedOnboardingSteps: ["aadhaar_name"],
+        referralPromptHandled: false,
+        workLocationConfirmed: false,
+      }),
+      "/(onboarding)/location",
+    );
+  });
+
+  it("resumes mid-onboarding after work location is confirmed", () => {
+    assert.equal(
+      resolveOnboardingHref("in_progress", "pan_selfie", "pan_selfie", {
+        completedOnboardingSteps: ["aadhaar_name"],
+        referralPromptHandled: true,
+        workLocationConfirmed: true,
+      }),
+      "/(onboarding)/pan-selfie",
+    );
+  });
+
+  it("inserts location before resume when mid-onboarding lacks work location", () => {
+    assert.equal(
+      resolveOnboardingHref("in_progress", "pan_selfie", "pan_selfie", {
+        completedOnboardingSteps: ["aadhaar_name", "pan_selfie"],
+        referralPromptHandled: true,
+        workLocationConfirmed: false,
+      }),
+      "/(onboarding)/location",
     );
   });
 });

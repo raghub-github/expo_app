@@ -84,8 +84,12 @@ export type EligibilityBlockCode =
   | "FUEL_NOT_ALLOWED"
   | "OWNERSHIP_NOT_ALLOWED"
   | "DL_REQUIRED_NOT_VERIFIED"
+  | "DL_REQUIRED_PENDING"
+  | "DL_REQUIRED_REJECTED"
   | "DL_EXPIRED"
   | "RC_REQUIRED_NOT_VERIFIED"
+  | "RC_REQUIRED_PENDING"
+  | "RC_REQUIRED_REJECTED"
   | "RC_EXPIRED"
   | "COMMERCIAL_VEHICLE_REQUIRED"
   | "EV_PROOF_REQUIRED_NOT_VERIFIED"
@@ -119,17 +123,88 @@ export type EligibilityNextAction =
 
 export type EligibilityPolicySource = "geo_rule" | "default" | "override";
 
-/** Which blocking codes correspond to a concrete missing/invalid document. */
+/** Which blocking codes correspond to a concrete document the rider must (re)upload. */
 function missingDocsFromBlocking(blocking: EligibilityBlock[]): MissingDocumentCode[] {
   const out = new Set<MissingDocumentCode>();
   for (const b of blocking) {
-    if (b.code === "DL_REQUIRED_NOT_VERIFIED" || b.code === "DL_EXPIRED") out.add("DRIVING_LICENSE");
-    if (b.code === "RC_REQUIRED_NOT_VERIFIED" || b.code === "RC_EXPIRED") out.add("REGISTRATION_CERTIFICATE");
+    // Pending = already uploaded, awaiting review — do NOT ask for another upload.
+    if (
+      b.code === "DL_REQUIRED_NOT_VERIFIED" ||
+      b.code === "DL_REQUIRED_REJECTED" ||
+      b.code === "DL_EXPIRED"
+    ) {
+      out.add("DRIVING_LICENSE");
+    }
+    if (
+      b.code === "RC_REQUIRED_NOT_VERIFIED" ||
+      b.code === "RC_REQUIRED_REJECTED" ||
+      b.code === "RC_EXPIRED"
+    ) {
+      out.add("REGISTRATION_CERTIFICATE");
+    }
     if (b.code === "EV_PROOF_REQUIRED_NOT_VERIFIED") out.add("EV_PROOF");
     if (b.code === "OWNERSHIP_PROOF_REQUIRED_NOT_VERIFIED") out.add("OWNERSHIP_PROOF");
     if (b.code === "COMMERCIAL_PROOF_REQUIRED_NOT_VERIFIED") out.add("COMMERCIAL_PROOF");
   }
   return [...out];
+}
+
+function dlBlockForState(state: DocState): EligibilityBlock {
+  if (state === "expired") {
+    return {
+      code: "DL_EXPIRED",
+      reason: "Driving Licence has expired.",
+      requiredAction: "Renew and re-verify your Driving Licence.",
+    };
+  }
+  if (state === "pending") {
+    return {
+      code: "DL_REQUIRED_PENDING",
+      reason: "Driving Licence is pending review.",
+      requiredAction: "Wait for verification — no need to upload again.",
+    };
+  }
+  if (state === "failed") {
+    return {
+      code: "DL_REQUIRED_REJECTED",
+      reason: "Driving Licence was rejected. Please re-upload a clear photo.",
+      requiredAction: "Re-upload your Driving Licence.",
+    };
+  }
+  return {
+    code: "DL_REQUIRED_NOT_VERIFIED",
+    reason: "Driving Licence verification is required.",
+    requiredAction: "Upload or verify your Driving Licence.",
+  };
+}
+
+function rcBlockForState(state: DocState): EligibilityBlock {
+  if (state === "expired") {
+    return {
+      code: "RC_EXPIRED",
+      reason: "Registration Certificate has expired.",
+      requiredAction: "Renew and re-verify your RC.",
+    };
+  }
+  if (state === "pending") {
+    return {
+      code: "RC_REQUIRED_PENDING",
+      reason: "Registration Certificate is pending review.",
+      requiredAction: "Wait for verification — no need to upload again.",
+    };
+  }
+  if (state === "failed") {
+    return {
+      code: "RC_REQUIRED_REJECTED",
+      reason: "Registration Certificate was rejected. Please re-upload a clear photo.",
+      requiredAction: "Re-upload your Registration Certificate.",
+    };
+  }
+  return {
+    code: "RC_REQUIRED_NOT_VERIFIED",
+    reason: "Registration Certificate verification is required.",
+    requiredAction: "Upload or verify your Registration Certificate.",
+  };
 }
 
 export type EligibilityDecision = {
@@ -215,6 +290,14 @@ function nextActionFromBlocks(
   if (missing.includes("DRIVING_LICENSE")) return "UPLOAD_DL";
   if (missing.includes("REGISTRATION_CERTIFICATE")) return "UPLOAD_RC";
   if (missing.length > 0) return "UPDATE_DOCUMENT";
+  // Doc already submitted (pending review) — wait, don't re-upload.
+  if (
+    blocking.some(
+      (b) => b.code === "DL_REQUIRED_PENDING" || b.code === "RC_REQUIRED_PENDING"
+    )
+  ) {
+    return "BLOCK";
+  }
   const limited = blocking.some((b) =>
     [
       "COMMERCIAL_VEHICLE_REQUIRED",
@@ -292,35 +375,11 @@ export function resolveRiderServiceEligibility(
   // 3. Document verification + validity.
   const dl = docSatisfies(policy.dlRequirement, input.dl);
   if (!dl.ok) {
-    blocking.push(
-      dl.expired
-        ? {
-            code: "DL_EXPIRED",
-            reason: "Driving Licence has expired.",
-            requiredAction: "Renew and re-verify your Driving Licence.",
-          }
-        : {
-            code: "DL_REQUIRED_NOT_VERIFIED",
-            reason: "Driving Licence verification is required.",
-            requiredAction: "Verify your Driving Licence.",
-          }
-    );
+    blocking.push(dlBlockForState(input.dl));
   }
   const rc = docSatisfies(policy.rcRequirement, input.rc);
   if (!rc.ok) {
-    blocking.push(
-      rc.expired
-        ? {
-            code: "RC_EXPIRED",
-            reason: "Registration Certificate has expired.",
-            requiredAction: "Renew and re-verify your RC.",
-          }
-        : {
-            code: "RC_REQUIRED_NOT_VERIFIED",
-            reason: "Registration Certificate verification is required.",
-            requiredAction: "Verify your Registration Certificate.",
-          }
-    );
+    blocking.push(rcBlockForState(input.rc));
   }
 
   // 4. Commercial-vehicle requirement (geo-configurable).

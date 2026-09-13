@@ -62,6 +62,59 @@ export function isOnboardingDocUsable(doc?: OnboardingDocRow | null): boolean {
   return !isPlaceholderOnboardingFileUrl(doc.fileUrl);
 }
 
+/** Normalize wizard / catalog / geo codes so "dl" matches "driving_license" etc. */
+export function normalizeOnboardingDocCode(code: string): string {
+  const c = String(code || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  if (
+    c === "dl" ||
+    c === "driving_licence" ||
+    c === "driving_license" ||
+    c === "drivinglicence" ||
+    c === "drivinglicense"
+  ) {
+    return "dl";
+  }
+  if (
+    c === "rc" ||
+    c === "registration_certificate" ||
+    c === "vehicle_rc" ||
+    c === "registrationcertificate"
+  ) {
+    return "rc";
+  }
+  return c;
+}
+
+export function isOnboardingDocSkipped(skipped: string[], code: string): boolean {
+  const want = normalizeOnboardingDocCode(code);
+  return skipped.some((s) => normalizeOnboardingDocCode(s) === want);
+}
+
+/**
+ * Vehicle catalog required_docs satisfied for onboarding funnel progress.
+ * Intentional skips (persisted on onboarding_vehicle_selection) count as satisfied
+ * so optional geo DL/RC do not block bank/payment. Service eligibility stays separate.
+ */
+export function vehicleStepCompleteByRequired(
+  docs: OnboardingDocRow[],
+  requiredDocs: string[],
+  skippedDocs: string[] = [],
+): boolean {
+  return requiredDocs.every((code) => {
+    if (isOnboardingDocSkipped(skippedDocs, code)) return true;
+    if (normalizeOnboardingDocCode(code) === "dl") {
+      return (
+        isOnboardingDocUsable(docs.find((d) => d.docType === "dl")) ||
+        (isOnboardingDocUsable(docs.find((d) => d.docType === "dl_front")) &&
+          isOnboardingDocUsable(docs.find((d) => d.docType === "dl_back")))
+      );
+    }
+    const norm = normalizeOnboardingDocCode(code);
+    const docType = norm === "rc" ? "rc" : code;
+    return isOnboardingDocUsable(docs.find((d) => d.docType === docType || d.docType === code));
+  });
+}
+
 function isSideApproved(metadata: unknown, side: "front" | "back"): boolean {
   const meta = readMeta(metadata);
   const raw = meta.sideVerification;

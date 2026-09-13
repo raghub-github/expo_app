@@ -26,7 +26,7 @@ import {
 } from "@/src/stores/riderNetworkStore";
 import { useRiderPendingActionStore } from "@/src/stores/riderPendingActionStore";
 import { bindRiderActionRuntime, flushRiderPendingActions } from "@/src/lib/riderActionRuntime";
-
+import { riderIdFromSession } from "@/src/utils/normalizeRiderId";
 let reactQueryNativeWired = false;
 function wireReactQueryNativeManagers() {
   if (reactQueryNativeWired) return;
@@ -94,7 +94,8 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   // CRITICAL: partition onboarding + invalidate caches whenever the signed-in rider changes.
   useEffect(() => {
     if (!sessionHydrated) return;
-    const owner = sessionRiderId?.trim() || sessionUserId?.trim() || null;
+    const owner =
+      riderIdFromSession({ riderId: sessionRiderId, userId: sessionUserId }) || null;
     void bindOnboardingOwner(owner);
     if (!owner) {
       queryClient.removeQueries({ queryKey: ["onboarding"] });

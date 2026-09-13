@@ -49,6 +49,34 @@ function formatMobile(mobile?: string | null) {
   return mobile.trim();
 }
 
+type AddressLike = {
+  city?: string | null;
+  state?: string | null;
+  region?: string | null;
+  district?: string | null;
+  pincode?: string | null;
+  address?: string | null;
+} | null | undefined;
+
+function formatAddressLine(addr: AddressLike, fallback?: AddressLike): string {
+  const a = addr ?? fallback;
+  if (!a) return "—";
+  const primary = String(a.address || "").trim();
+  if (primary) {
+    const pin = String(a.pincode || "").trim();
+    return pin && !primary.includes(pin) ? `${primary}, ${pin}` : primary;
+  }
+  const parts = [a.district, a.city, a.region, a.state, a.pincode]
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+  // Dedupe consecutive duplicates (city often equals district).
+  const deduped: string[] = [];
+  for (const p of parts) {
+    if (deduped[deduped.length - 1]?.toLowerCase() !== p.toLowerCase()) deduped.push(p);
+  }
+  return deduped.length ? deduped.join(", ") : "—";
+}
+
 function approvalLabel(status: string, t: (key: string, fallback?: string) => string) {
   switch (status?.toUpperCase()) {
     case "APPROVED":
@@ -145,6 +173,16 @@ export function ViewProfileScreen() {
     displayProfile?.preferredLanguage ??
     "—";
 
+  const workingLoc = riderStatus?.workingLocation ?? riderStatus?.homeAddress ?? null;
+  const registeredLoc = riderStatus?.registeredAddress ?? null;
+  const registeredAddressLine = formatAddressLine(registeredLoc);
+  const workingAddressLine = formatAddressLine(workingLoc, {
+    city: displayProfile?.city,
+    state: displayProfile?.state ?? null,
+    address: displayProfile?.address ?? null,
+    pincode: displayProfile?.pincode ?? null,
+  });
+
   const showAvatar = Boolean(avatarUri) && !avatarError;
 
   return (
@@ -240,24 +278,15 @@ export function ViewProfileScreen() {
               icon="call-outline"
             />
             <ReadOnlyField
-              label={t("onboarding.profile.city", "City")}
-              value={displayProfile.city?.trim() || "—"}
-              icon="location-outline"
+              label={t("profile.viewProfileDetails.registeredAddress", "Registered Address")}
+              value={registeredAddressLine}
+              icon="home-outline"
             />
-            {displayProfile.state?.trim() ? (
-              <ReadOnlyField
-                label={t("profile.viewProfileDetails.state", "State")}
-                value={displayProfile.state.trim()}
-                icon="map-outline"
-              />
-            ) : null}
-            {displayProfile.address?.trim() ? (
-              <ReadOnlyField
-                label={t("profile.viewProfileDetails.address", "Address")}
-                value={[displayProfile.address, displayProfile.pincode].filter(Boolean).join(", ")}
-                icon="home-outline"
-              />
-            ) : null}
+            <ReadOnlyField
+              label={t("profile.viewProfileDetails.workingAddress", "Working Address")}
+              value={workingAddressLine}
+              icon="navigate-outline"
+            />
           </View>
 
           <View style={styles.sectionCard}>
@@ -517,6 +546,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "600",
     color: "#0F172A",
+    flexShrink: 1,
   },
   languageChip: {
     alignSelf: "flex-start",

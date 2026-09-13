@@ -543,6 +543,13 @@ export function RightSidebar({
   const appendRiderSearch = (href: string) => {
     if (!isRiderDashboard) return href;
     if (!selectedRiderId) return href;
+    // Queue pages must open the full list — never pin the last-searched rider.
+    if (
+      href === "/dashboard/riders/pending-onboarding" ||
+      href === "/dashboard/riders/pending-actions"
+    ) {
+      return href;
+    }
     return `${href}?search=${encodeURIComponent(selectedRiderId)}`;
   };
 

@@ -1,5 +1,5 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -31,6 +31,7 @@ import {
 } from "@/src/services/riderSupport.service";
 import { extractApiErrorMessage } from "@/src/services/http";
 import { useSessionStore } from "@/src/stores/sessionStore";
+import { useRiderStatus } from "@/src/hooks/useOnboarding";
 import { colors } from "@/src/theme";
 import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
@@ -49,11 +50,6 @@ function paramInt(raw: string | string[] | undefined): number | null {
   if (!s || !/^\d+$/.test(s)) return null;
   const n = Number(s);
   return Number.isInteger(n) && n > 0 ? n : null;
-}
-
-function isPreLoginParam(raw: string | string[] | undefined): boolean {
-  const v = Array.isArray(raw) ? raw[0] : raw;
-  return v === "1" || v === "true";
 }
 
 /**
@@ -85,8 +81,32 @@ export function RiderSupportChatScreen() {
   const titleCode = paramString(params.title_code);
   const orderId = paramInt(params.order_id);
   const orderLabel = paramString(params.formatted_order_id);
-  const isPreLogin = isPreLoginParam(params.prelogin) || !hasSession;
+  // Authenticated session wins over any prelogin=1 deep link (onboarding Help bug).
+  const isPreLogin = !hasSession;
   const prefillDescription = paramString(params.prefill_description) ?? "";
+  const sessionRiderId = useSessionStore((s) => s.session?.riderId);
+  const sessionUserId = useSessionStore((s) => s.session?.userId);
+  const riderIdForStatus =
+    String(sessionRiderId || "").replace(/^usr_/i, "") ||
+    (/^usr_(\d+)$/i.exec(String(sessionUserId || ""))?.[1] ?? undefined);
+
+  const { data: riderStatus } = useRiderStatus(!isPreLogin ? riderIdForStatus : undefined);
+
+  const lockedMobile = useMemo(() => {
+    const raw = String(riderStatus?.mobile || "").trim();
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length >= 10) return digits.slice(-10);
+    return "";
+  }, [riderStatus?.mobile]);
+
+  const lockedName = useMemo(() => {
+    const n = String(riderStatus?.name || "").trim();
+    if (n && n.toLowerCase() !== "rider") return n;
+    return "";
+  }, [riderStatus?.name]);
+
+  const nameLocked = Boolean(lockedName) && Boolean(riderStatus?.aadhaarVerified);
+  const mobileLocked = Boolean(lockedMobile);
 
   const [canSubmit, setCanSubmit] = useState(false);
   const [photoPreview, setPhotoPreview] = useState<PhotoPreviewState>({ uri: null, slot: null });
@@ -362,6 +382,10 @@ export function RiderSupportChatScreen() {
                 ref={formRef}
                 issueTitle={issueTitle}
                 isPreLogin={isPreLogin}
+                lockedName={lockedName}
+                lockedMobile={lockedMobile}
+                nameReadOnly={nameLocked}
+                mobileReadOnly={mobileLocked}
                 initialDescription={prefillDescription}
                 onCanSubmitChange={setCanSubmit}
                 onSubmit={onFormSubmit}

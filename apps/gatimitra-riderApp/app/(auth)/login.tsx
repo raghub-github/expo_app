@@ -228,6 +228,8 @@ export default function LoginScreen() {
   const bottomInset = useRiderBottomInset();
 
   const setSession = useSessionStore((s) => s.setSession);
+  const sessionHydrated = useSessionStore((s) => s.hydrated);
+  const existingSession = useSessionStore((s) => s.session);
   const setOnboardingData = useOnboardingStore((s) => s.setData);
 
   const [phoneE164, setPhoneE164] = useState("");
@@ -250,6 +252,13 @@ export default function LoginScreen() {
   const phoneValid = phoneDigits.length >= 10;
   const otpValid = otp.trim().length === OTP_LENGTH;
   const showSignupHero = step === "phone" && !keyboardVisible;
+
+  // Already authenticated (e.g. navigated here during restore race) → leave login.
+  useEffect(() => {
+    if (!sessionHydrated || !existingSession?.accessToken) return;
+    if (busy || takeoverBusy || sessionConflict) return;
+    router.replace("/");
+  }, [sessionHydrated, existingSession?.accessToken, busy, takeoverBusy, sessionConflict]);
 
   useEffect(() => {
     const onShow = (event: KeyboardEvent) => {
@@ -322,20 +331,41 @@ export default function LoginScreen() {
 
   const proceedAfterSession = async (session: Session) => {
     resetSessionRevokedFlag();
-    await setSession(session);
+
+    const initialRiderId =
+      session.riderId ??
+      (/^usr_(\d+)$/i.exec(session.userId.trim())?.[1] ?? undefined);
+
+    // Persist immediately so kill mid-status-fetch still restores auth on reopen.
+    const sessionWithRider: Session = {
+      ...session,
+      ...(initialRiderId ? { riderId: String(initialRiderId) } : {}),
+    };
+    try {
+      await setSession(sessionWithRider);
+    } catch (persistErr) {
+      console.warn("[Login] Session persist failed:", persistErr);
+      throw new Error("Could not save your login on this device. Please try again.");
+    }
+
+    if (initialRiderId) {
+      await useOnboardingStore.getState().bindOwner(String(initialRiderId));
+      await setOnboardingData({ riderId: String(initialRiderId) });
+    }
 
     const status = await riderAuthService.getRiderStatus(session.accessToken);
     const riderId =
       status.riderId ??
-      session.riderId ??
-      session.userId.replace(/^usr_/, "");
+      sessionWithRider.riderId ??
+      initialRiderId;
 
-    // Bind rider-scoped onboarding BEFORE writing — prevents inheriting another rider's RC/DL.
-    if (riderId) {
+    if (riderId && String(riderId) !== String(sessionWithRider.riderId ?? "")) {
+      await setSession({ ...sessionWithRider, riderId: String(riderId) });
       await useOnboardingStore.getState().bindOwner(String(riderId));
       await setOnboardingData({ riderId: String(riderId) });
-    } else {
-      await useOnboardingStore.getState().bindOwner(session.userId);
+    } else if (riderId && !initialRiderId) {
+      await useOnboardingStore.getState().bindOwner(String(riderId));
+      await setOnboardingData({ riderId: String(riderId) });
     }
 
     if (status.onboardingStatus === "approved") {
@@ -351,7 +381,7 @@ export default function LoginScreen() {
       status.onboardingStatus == null
     ) {
       await setOnboardingData({
-        ...(riderId ? { riderId } : {}),
+        ...(riderId ? { riderId: String(riderId) } : {}),
         referralPromptHandled: false,
         skippedReferral: false,
       });
@@ -511,10 +541,8 @@ export default function LoginScreen() {
         setSessionConflict(result);
         return;
       }
-      resetSessionRevokedFlag();
-      await setSession(result);
       setDeviceSessionRetry(false);
-      router.replace("/");
+      await proceedAfterSession(result);
     } catch (e) {
       if (isRiderAuthError(e) && e.code === "device_change_limit_exceeded") {
         setDeviceSessionRetry(false);

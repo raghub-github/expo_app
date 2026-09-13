@@ -1,6 +1,6 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 import React from "react";
-import { View, Text, Pressable, TouchableOpacity, StyleSheet } from "react-native";
+import { View, Text, Pressable, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
@@ -217,22 +217,48 @@ export function OffDutyBanner({ visible, onTurnOn, loading, dutyLocked = false }
                 "home.subscriptionDutyStopSub",
                 "Clear subscription dues to turn ON duty and receive orders"
               )
-            : t("home.turnOnDutySub", "Turn ON DUTY to start receiving orders")}
+            : loading
+              ? t("home.turningOnDutySub", "Turning ON duty… please wait")
+              : t("home.turnOnDutySub", "Turn ON DUTY to start receiving orders")}
         </Text>
       </View>
       <Pressable
-        style={[styles.turnOnBtn, loading && { opacity: 0.7 }, dutyLocked && styles.turnOnBtnLocked]}
+        style={[
+          styles.turnOnBtn,
+          loading && styles.turnOnBtnLoading,
+          dutyLocked && styles.turnOnBtnLocked,
+        ]}
         onPress={onTurnOn}
         disabled={loading}
         hitSlop={16}
         delayPressIn={0}
         accessibilityRole="button"
+        accessibilityState={{ disabled: loading, busy: loading }}
+        accessibilityLabel={
+          loading
+            ? t("home.turningOn", "Turning on")
+            : dutyLocked
+              ? t("home.whyDutyBlocked", "Why?")
+              : t("home.turnOn", "Turn On")
+        }
       >
-        <Text style={[styles.turnOnBtnText, dutyLocked && styles.turnOnBtnTextLocked]} numberOfLines={1}>
-          {dutyLocked
-            ? t("home.whyDutyBlocked", "Why?")
-            : t("home.turnOn", "Turn On")}
-        </Text>
+        {loading && !dutyLocked ? (
+          <View style={styles.turnOnBusyRow}>
+            <ActivityIndicator size="small" color={colors.primary[600]} />
+            <Text style={styles.turnOnBtnText} numberOfLines={1}>
+              {t("home.turningOn", "Turning on…")}
+            </Text>
+          </View>
+        ) : (
+          <Text
+            style={[styles.turnOnBtnText, dutyLocked && styles.turnOnBtnTextLocked]}
+            numberOfLines={1}
+          >
+            {dutyLocked
+              ? t("home.whyDutyBlocked", "Why?")
+              : t("home.turnOn", "Turn On")}
+          </Text>
+        )}
       </Pressable>
     </View>
   );
@@ -401,6 +427,18 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 14,
     paddingVertical: 8,
+    minWidth: 88,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  turnOnBtnLoading: {
+    opacity: 1,
+    minWidth: 118,
+  },
+  turnOnBusyRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
   turnOnBtnLocked: {
     backgroundColor: "#FEF2F2",

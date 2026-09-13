@@ -7,6 +7,7 @@ import {
   Platform,
   Animated,
   Vibration,
+  ActivityIndicator,
 } from "react-native";
 import { useTranslation } from "react-i18next";
 import { useDutyToggle } from "@/src/hooks/useDutyToggle";
@@ -107,17 +108,19 @@ export function DutyToggle({
       return;
     }
 
-    // Going ON — slide + color change immediately (merchant-like touch feel).
-    setOptimisticOn(true);
-    springTo(animValue, 1);
-
+    // Going ON — spinner shows immediately via isPending; pill stays OFF until PUT succeeds.
     void setDuty(true).then((result) => {
-      if (result?.ok) return;
+      if (result?.ok) {
+        setOptimisticOn(true);
+        springTo(animValue, 1);
+        return;
+      }
       setOptimisticOn(false);
       springTo(animValue, 0);
       if (result?.blockedFromGoingOn) {
         openSubscriptionDutyBlockedSheet();
       }
+      // location mismatch opens its own sheet via useDutyToggle
     });
   }, [animValue, dutyGoOnBlocked, isOnDuty, isPending, refetchSubscription, setDuty]);
 
@@ -189,7 +192,12 @@ export function DutyToggle({
     const offLabel = useShortLabels
       ? t("topbar.dutyOffShort", "OFF")
       : t("topbar.dutyOff", "OFF-DUTY");
-    const dutyLabel = displayOn ? onLabel : offLabel;
+    const turningOn = isPending && !displayOn;
+    const dutyLabel = turningOn
+      ? t("topbar.dutyTurningOn", "…")
+      : displayOn
+        ? onLabel
+        : offLabel;
 
     const backgroundColor = animValue.interpolate({
       inputRange: [0, 1],
@@ -209,11 +217,17 @@ export function DutyToggle({
           onPress={requestToggle}
           onPressIn={onPressIn}
           onPressOut={onPressOut}
-          disabled={isPending && !displayOn}
+          disabled={isPending}
           hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
           accessibilityRole="switch"
-          accessibilityState={{ checked: displayOn, disabled: dutyGoOnBlocked }}
-          accessibilityLabel={dutyLabel}
+          accessibilityState={{
+            checked: displayOn,
+            disabled: dutyGoOnBlocked || isPending,
+            busy: isPending,
+          }}
+          accessibilityLabel={
+            turningOn ? t("topbar.dutyTurningOnA11y", "Turning on duty") : dutyLabel
+          }
         >
           <Animated.View style={{ transform: [{ scale: pressScale }] }}>
             <Animated.View
@@ -236,19 +250,23 @@ export function DutyToggle({
                 pointerEvents="none"
               >
                 <Text style={styles.pillText} numberOfLines={1} allowFontScaling={false}>
-                  {!displayOn ? offLabel : ""}
+                  {!displayOn ? (turningOn ? t("topbar.dutyTurningOn", "…") : offLabel) : ""}
                 </Text>
               </View>
               <Animated.View
                 style={[styles.knob, { transform: [{ translateX: knobTranslateX }] }]}
                 pointerEvents="none"
               >
-                <View
-                  style={[
-                    styles.knobDot,
-                    { backgroundColor: displayOn ? ON_GREEN : OFF_SLATE },
-                  ]}
-                />
+                {turningOn ? (
+                  <ActivityIndicator size="small" color={OFF_SLATE} />
+                ) : (
+                  <View
+                    style={[
+                      styles.knobDot,
+                      { backgroundColor: displayOn ? ON_GREEN : OFF_SLATE },
+                    ]}
+                  />
+                )}
               </Animated.View>
             </Animated.View>
           </Animated.View>
@@ -366,7 +384,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   pillBusy: {
-    opacity: 0.92,
+    opacity: 0.96,
   },
   labelLeft: {
     position: "absolute",

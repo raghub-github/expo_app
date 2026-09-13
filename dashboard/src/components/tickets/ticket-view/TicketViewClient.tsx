@@ -383,6 +383,33 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     contactLabel != null &&
     ticket?.raisedByMobile &&
     ticket.raisedByMobile.trim() !== "";
+
+  /** Rider/customer app posts description as ticket.description AND as the first chat message.
+   * Hide the header description/attachment card when the conversation already has that content. */
+  const openingChatDuplicatesDescription = useMemo(() => {
+    const desc = String(ticket?.description ?? "")
+      .replace(/\r\n/g, "\n")
+      .trim();
+    if (!desc) return false;
+    const msgs = ticket?.messages ?? [];
+    for (const m of msgs) {
+      if (m.isInternalNote) continue;
+      const sender = String(m.senderType ?? "").toUpperCase();
+      if (sender !== "RIDER" && sender !== "CUSTOMER" && sender !== "MERCHANT") continue;
+      const body = String(m.message ?? "")
+        .replace(/\r\n/g, "\n")
+        .trim();
+      if (body === desc) return true;
+    }
+    return false;
+  }, [ticket?.description, ticket?.messages]);
+
+  const showDescriptionHeader =
+    Boolean(ticket?.description?.trim()) && !openingChatDuplicatesDescription;
+  const showHeaderAttachments =
+    Boolean(ticket?.attachments && ticket.attachments.length > 0) &&
+    !openingChatDuplicatesDescription;
+
   const defaultReplyToOverride = useMemo(() => {
     if (!isSystemOtherTicketGroup(ticket?.group ?? undefined)) return null;
     const em = corporateFields.corporateEntityEmail?.trim();
@@ -578,10 +605,10 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
                   variant="metaOnly"
                 />
               </div>
-              {/* Description area now integrated into same surface (no extra detached card). */}
-              {(ticket.description || (ticket.attachments && ticket.attachments.length > 0)) && (
+              {/* Description area — skipped when the same text already exists as the first chat message. */}
+              {(showDescriptionHeader || showHeaderAttachments) && (
                 <div className="mt-2 border-b border-gray-200 pb-3.5">
-                  {ticket.description && (
+                  {showDescriptionHeader ? (
                     <>
                       <div className="flex gap-2.5">
                         <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-300 bg-gray-200 text-xs font-semibold text-gray-700">
@@ -660,7 +687,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
                                 </div>
                               </>
                             )}
-                            {ticket.attachments && ticket.attachments.length > 0 && (
+                            {showHeaderAttachments && ticket.attachments && ticket.attachments.length > 0 && (
                               <>
                                 <span aria-hidden className="h-3.5 w-3.5" />
                                 <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -722,10 +749,10 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
                         </div>
                       </div>
                     </>
-                  )}
-                  {ticket.attachments && ticket.attachments.length > 0 && !ticket.description && (
+                  ) : null}
+                  {showHeaderAttachments && !showDescriptionHeader ? (
                     <div className="mt-2 flex flex-wrap items-center gap-2">
-                        {ticket.attachments.map((att, i) => {
+                        {ticket.attachments!.map((att, i) => {
                           const { url, name, mimeType } = attachmentRowMeta(
                             att as string | { url?: string; name?: string; mimeType?: string; mime_type?: string }
                           );
@@ -777,7 +804,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
                           );
                         })}
                     </div>
-                  )}
+                  ) : null}
                 </div>
               )}
               <div className="mt-0">

@@ -74,6 +74,7 @@ export const documentTypeEnum = pgEnum("document_type", [
   "rental_proof",
   "ev_proof",
   "onboarding_vehicle_selection",
+  "onboarding_work_location",
   "insurance",
   "bank_proof",
   "upi_qr_proof",
@@ -1213,6 +1214,27 @@ const ridersTable = pgTable(
     address: text("address"),
     lat: doublePrecision("lat"),
     lon: doublePrecision("lon"),
+    /** Current working location enrichment (may change over time). */
+    district: text("district"),
+    region: text("region"),
+    stateId: uuid("state_id"),
+    regionId: uuid("region_id"),
+    districtId: uuid("district_id"),
+    locationSource: text("location_source"),
+    locationOtherState: text("location_other_state"),
+    locationOtherDistrict: text("location_other_district"),
+    /** Permanent registered address — not overwritten by working-location updates. */
+    registeredCity: text("registered_city"),
+    registeredState: text("registered_state"),
+    registeredRegion: text("registered_region"),
+    registeredDistrict: text("registered_district"),
+    registeredPincode: text("registered_pincode"),
+    registeredAddress: text("registered_address"),
+    registeredLat: doublePrecision("registered_lat"),
+    registeredLon: doublePrecision("registered_lon"),
+    registeredStateId: uuid("registered_state_id"),
+    registeredRegionId: uuid("registered_region_id"),
+    registeredDistrictId: uuid("registered_district_id"),
     referralCode: text("referral_code").unique(),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     referredBy: integer("referred_by").references((): any => (ridersTable as any).id),
@@ -1251,6 +1273,40 @@ const ridersTable = pgTable(
 );
 
 export const riders = ridersTable;
+
+/**
+ * Append-only working location history.
+ * riders.* holds the current working location; this table keeps prior snapshots.
+ */
+export const riderWorkingLocationHistory = pgTable(
+  "rider_working_location_history",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => ridersTable.id, { onDelete: "cascade" }),
+    state: text("state"),
+    region: text("region"),
+    district: text("district"),
+    city: text("city"),
+    pincode: text("pincode"),
+    address: text("address"),
+    stateId: uuid("state_id"),
+    regionId: uuid("region_id"),
+    districtId: uuid("district_id"),
+    lat: doublePrecision("lat"),
+    lon: doublePrecision("lon"),
+    source: text("source"),
+    isCurrent: boolean("is_current").notNull().default(false),
+    changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    riderChangedIdx: index("rider_working_location_history_rider_changed_idx").on(
+      table.riderId,
+      table.changedAt
+    ),
+  })
+);
 
 /**
  * Rider documents with history support (allows reupload)

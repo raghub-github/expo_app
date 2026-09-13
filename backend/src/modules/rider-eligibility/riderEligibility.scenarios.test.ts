@@ -331,15 +331,32 @@ test("SCENARIO: a rejected DL is treated as failed (not merely missing) and bloc
   );
   assert.equal(d.eligible, false);
   assert.equal(d.dlState, "failed");
-  assert.ok(codes(d).includes("DL_REQUIRED_NOT_VERIFIED"));
+  assert.ok(codes(d).includes("DL_REQUIRED_REJECTED"));
+  assert.equal(d.nextAction, "UPLOAD_DL");
 
   // On food (DL optional by default) the same rejected DL does NOT block.
   const food = resolveRiderServiceEligibility(
     buildInput({ vehicleCategory: "2_wheeler", vehicleType: "bike", dl: REJECTED }),
     policy("food")
   );
-  assert.equal(food.dlState, "failed");
   assert.equal(food.eligible, true);
+});
+
+test("SCENARIO: pending manual DL upload blocks parcel but does NOT ask for another upload", () => {
+  const d = resolveRiderServiceEligibility(
+    buildInput({
+      vehicleCategory: "2_wheeler",
+      vehicleType: "bike",
+      dl: SUBMITTED_PENDING,
+      rc: MANUAL_APPROVED,
+    }),
+    policy("parcel")
+  );
+  assert.equal(d.eligible, false);
+  assert.equal(d.dlState, "pending");
+  assert.ok(codes(d).includes("DL_REQUIRED_PENDING"));
+  assert.equal(d.nextAction, "BLOCK");
+  assert.deepEqual(d.missingDocuments, []);
 });
 
 /* ── Additional vehicle-evidence document gates (§4, §13) — default exempt ───────────── */

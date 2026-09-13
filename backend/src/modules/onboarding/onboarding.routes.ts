@@ -570,7 +570,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
       schema: {
         body: z.object({
           riderId: z.string(),
-          step: z.enum(["aadhaar_name", "dl_rc", "rental_ev", "pan_selfie", "location"]),
+          step: z.enum(["aadhaar_name", "dl_rc", "rental_ev", "pan_selfie", "location", "bank_account"]),
           data: z.object({
             aadhaarNumber: z.string().optional(),
             fullName: z.string().optional(),
@@ -588,6 +588,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
             submitVehicleDocs: z.boolean().optional(),
             /** Optional docs the rider skipped during vehicle onboarding. */
             skippedOnboardingDocs: z.array(z.string()).optional(),
+            /** Bank step: rider skipped linking for now (add later from Earnings). */
+            skipped: z.boolean().optional(),
             rentalProofSignedUrl: z.string().optional(),
             evProofSignedUrl: z.string().optional(),
             maxSpeedDeclaration: z.number().optional(),
@@ -915,9 +917,21 @@ export async function onboardingRoutes(app: FastifyInstance) {
           hasOwnVehicle:
             typeof stepData.hasOwnVehicle === "boolean" ? stepData.hasOwnVehicle : undefined,
           skippedOnboardingDocs: Array.isArray(stepData.skippedOnboardingDocs)
-            ? stepData.skippedOnboardingDocs
-                .map((c) => String(c || "").trim())
-                .filter(Boolean)
+            ? (() => {
+                const raw = stepData.skippedOnboardingDocs
+                  .map((c) => String(c || "").trim())
+                  .filter(Boolean);
+                const choice = String(stepData.vehicleChoice || stepData.vehicleType || "").toLowerCase();
+                const flow = String(stepData.onboardingFlow || "").toLowerCase();
+                const isEv =
+                  flow === "rental_ev" ||
+                  /\bev[_-]?|electric|e[_-]?rickshaw/.test(choice);
+                // Petrol / non-EV cannot skip RC — strip any RC skip codes.
+                if (isEv) return raw;
+                return raw.filter(
+                  (c) => !/^(rc|registration_certificate|vehicle_rc)$/i.test(c),
+                );
+              })()
             : undefined,
         };
 
@@ -955,6 +969,19 @@ export async function onboardingRoutes(app: FastifyInstance) {
               ? selectionMeta.vehicleChoice.trim()
               : prevChoice;
           const choiceChanged = Boolean(nextChoice && prevChoice && nextChoice !== prevChoice);
+
+          // Keep bank skip markers if the rider already skipped bank after vehicle submit.
+          if (Array.isArray(selectionMeta.skippedOnboardingDocs)) {
+            const prevSkipped = Array.isArray(prevMeta.skippedOnboardingDocs)
+              ? prevMeta.skippedOnboardingDocs.map((c) => String(c || "").trim()).filter(Boolean)
+              : [];
+            const keepBank = prevSkipped.filter((c) =>
+              /^(bank_account|bank_proof)$/i.test(c),
+            );
+            selectionMeta.skippedOnboardingDocs = Array.from(
+              new Set([...(selectionMeta.skippedOnboardingDocs as string[]), ...keepBank]),
+            );
+          }
 
           const mergedMeta: Record<string, unknown> = {
             ...prevMeta,
@@ -1341,6 +1368,58 @@ export async function onboardingRoutes(app: FastifyInstance) {
           .update(riders)
           .set(updateData)
           .where(eq(riders.id, riderIdInt));
+      } else if (step === "bank_account") {
+        // Optional bank link: persist skip so app restart resumes at payment, not bank again.
+        if (stepData.skipped === true) {
+          const existingSelection = await db
+            .select()
+            .from(riderDocuments)
+            .where(
+              and(
+                eq(riderDocuments.riderId, riderIdInt),
+                eq(riderDocuments.docType, "onboarding_vehicle_selection"),
+              ),
+            )
+            .limit(1);
+
+          const prevMeta =
+            existingSelection[0]?.metadata &&
+            typeof existingSelection[0].metadata === "object"
+              ? (existingSelection[0].metadata as Record<string, unknown>)
+              : {};
+          const prevSkipped = Array.isArray(prevMeta.skippedOnboardingDocs)
+            ? prevMeta.skippedOnboardingDocs
+                .map((c) => String(c || "").trim())
+                .filter(Boolean)
+            : [];
+          const mergedSkipped = Array.from(
+            new Set([...prevSkipped, "bank_account", "bank_proof"]),
+          );
+          const mergedMeta: Record<string, unknown> = {
+            ...prevMeta,
+            bankAccountOnboardingSkipped: true,
+            bankAccountOnboardingSkippedAt: new Date().toISOString(),
+            skippedOnboardingDocs: mergedSkipped,
+          };
+
+          if (existingSelection[0]) {
+            await db
+              .update(riderDocuments)
+              .set({
+                metadata: mergedMeta,
+                updatedAt: new Date(),
+              })
+              .where(eq(riderDocuments.id, existingSelection[0].id));
+          } else {
+            await db.insert(riderDocuments).values({
+              riderId: riderIdInt,
+              docType: "onboarding_vehicle_selection",
+              fileUrl: "n/a",
+              metadata: mergedMeta,
+              verified: false,
+            });
+          }
+        }
       }
 
       // Fire-and-forget: kick off any auto verifications that this step
@@ -1637,6 +1716,386 @@ export async function onboardingRoutes(app: FastifyInstance) {
     }
   });
 
+  /** GET /geo/states — selectable states for onboarding work location. */
+  app.get("/geo/states", async () => {
+    const { listOnboardingStates } = await import("../../lib/rider-onboarding-geo.js");
+    const states = await listOnboardingStates();
+    return { success: true, states };
+  });
+
+  /** GET /geo/regions?stateId= */
+  app.get("/geo/regions", async (req, reply) => {
+    const stateId = String((req.query as { stateId?: string }).stateId || "").trim();
+    if (!stateId) return reply.code(400).send({ error: "stateId required" });
+    const { listOnboardingRegions } = await import("../../lib/rider-onboarding-geo.js");
+    const regions = await listOnboardingRegions(stateId);
+    return { success: true, regions };
+  });
+
+  /** GET /geo/districts?stateId= | ?regionId= — prefer stateId for State→District UX. */
+  app.get("/geo/districts", async (req, reply) => {
+    const q = req.query as { regionId?: string; stateId?: string };
+    const stateId = String(q.stateId || "").trim();
+    const regionId = String(q.regionId || "").trim();
+    const {
+      listOnboardingDistricts,
+      listOnboardingDistrictsByState,
+    } = await import("../../lib/rider-onboarding-geo.js");
+    if (stateId) {
+      const districts = await listOnboardingDistrictsByState(stateId);
+      return { success: true, districts };
+    }
+    if (regionId) {
+      const districts = await listOnboardingDistricts(regionId);
+      return { success: true, districts };
+    }
+    return reply.code(400).send({ error: "stateId or regionId required" });
+  });
+
+  /** POST /geo/resolve — match GPS/hints to State/Region/District hierarchy. */
+  app.post(
+    "/geo/resolve",
+    {
+      schema: {
+        body: z.object({
+          lat: z.number().optional().nullable(),
+          lng: z.number().optional().nullable(),
+          pincode: z.string().optional().nullable(),
+          stateHint: z.string().optional().nullable(),
+          districtHint: z.string().optional().nullable(),
+          cityHint: z.string().optional().nullable(),
+        }),
+      },
+    },
+    async (req) => {
+      const body = req.body as {
+        lat?: number | null;
+        lng?: number | null;
+        pincode?: string | null;
+        stateHint?: string | null;
+        districtHint?: string | null;
+        cityHint?: string | null;
+      };
+      const { resolveOnboardingWorkLocation } = await import("../../lib/rider-onboarding-geo.js");
+      const resolved = await resolveOnboardingWorkLocation(body);
+      return { success: true, location: resolved };
+    },
+  );
+
+  /**
+   * POST /work-location — persist confirmed State/Region/District (+ source).
+   * Authoritative columns on riders; optional onboarding_work_location audit meta.
+   */
+  app.post(
+    "/work-location",
+    {
+      schema: {
+        body: z.object({
+          riderId: z.string().optional(),
+          lat: z.number().optional().nullable(),
+          lon: z.number().optional().nullable(),
+          city: z.string().optional().nullable(),
+          state: z.string().min(1),
+          region: z.string().optional().nullable(),
+          district: z.string().optional().nullable(),
+          pincode: z.string().optional().nullable(),
+          address: z.string().optional().nullable(),
+          stateId: z.string().uuid().optional().nullable(),
+          regionId: z.string().uuid().optional().nullable(),
+          districtId: z.string().uuid().optional().nullable(),
+          locationSource: z.enum(["gps_auto", "manual_select", "manual_other"]),
+          locationOtherState: z.string().optional().nullable(),
+          locationOtherDistrict: z.string().optional().nullable(),
+        }),
+      },
+    },
+    async (req, reply) => {
+      const body = req.body as {
+        riderId?: string;
+        lat?: number | null;
+        lon?: number | null;
+        city?: string | null;
+        state: string;
+        region?: string | null;
+        district?: string | null;
+        pincode?: string | null;
+        address?: string | null;
+        stateId?: string | null;
+        regionId?: string | null;
+        districtId?: string | null;
+        locationSource: "gps_auto" | "manual_select" | "manual_other";
+        locationOtherState?: string | null;
+        locationOtherDistrict?: string | null;
+      };
+
+      const riderId =
+        parseRiderIdFromAuthSub(req.auth?.sub) ??
+        (body.riderId ? parseInt(body.riderId, 10) : NaN);
+      if (!Number.isFinite(riderId) || riderId <= 0) {
+        return reply.code(403).send({ error: "Invalid rider session" });
+      }
+
+      if (body.locationSource === "manual_other") {
+        const otherState = String(body.locationOtherState || body.state || "").trim();
+        const otherDistrict = String(body.locationOtherDistrict || body.district || "").trim();
+        if (!otherState || !otherDistrict) {
+          return reply.code(400).send({
+            error: "Other location requires state and district names",
+          });
+        }
+      } else if (!body.stateId && !String(body.state || "").trim()) {
+        return reply.code(400).send({ error: "state required" });
+      }
+
+      // Hiring gate — never persist a NOT HIRING work location as confirmed.
+      {
+        const { resolveRiderHiring } = await import("../../lib/rider-geo-hiring.js");
+        const hiring = await resolveRiderHiring({
+          stateId: body.stateId,
+          regionId: body.regionId,
+          districtId: body.districtId,
+          manualOther: body.locationSource === "manual_other",
+          stateName: body.state,
+          regionName: body.region,
+          districtName: body.district,
+        });
+        if (!hiring.hiringAllowed) {
+          return reply.code(403).send({
+            error: "NOT_HIRING",
+            message: "Service not available at this location",
+            hiring,
+          });
+        }
+      }
+
+      const db = getDb();
+      const { saveRiderWorkingLocation } = await import(
+        "../../lib/rider-working-location.js"
+      );
+      let updated: Awaited<ReturnType<typeof saveRiderWorkingLocation>> & { id?: number };
+      try {
+        updated = {
+          ...(await saveRiderWorkingLocation({
+            riderId,
+            lat: body.lat,
+            lon: body.lon,
+            city: body.city,
+            state: body.state,
+            region: body.region,
+            district: body.district,
+            pincode: body.pincode,
+            address: body.address,
+            stateId: body.stateId,
+            regionId: body.regionId,
+            districtId: body.districtId,
+            locationSource: body.locationSource,
+            locationOtherState: body.locationOtherState,
+            locationOtherDistrict: body.locationOtherDistrict,
+            // First onboarding confirm seeds permanent registered address once.
+            seedRegisteredIfEmpty: true,
+          })),
+          id: riderId,
+        };
+      } catch (err: any) {
+        if (err?.statusCode === 404) {
+          return reply.code(404).send({ error: "Rider not found" });
+        }
+        throw err;
+      }
+
+      // Audit meta (best-effort) — same pattern as onboarding_vehicle_selection.
+      try {
+        const existing = await db
+          .select({ id: riderDocuments.id, metadata: riderDocuments.metadata })
+          .from(riderDocuments)
+          .where(
+            and(
+              eq(riderDocuments.riderId, riderId),
+              eq(riderDocuments.docType, "onboarding_work_location"),
+            ),
+          )
+          .limit(1);
+        const meta = {
+          locationSource: body.locationSource,
+          state: body.state,
+          region: body.region,
+          district: body.district,
+          stateId: body.stateId,
+          regionId: body.regionId,
+          districtId: body.districtId,
+          locationOtherState: body.locationOtherState,
+          locationOtherDistrict: body.locationOtherDistrict,
+          lat: body.lat,
+          lon: body.lon,
+          pincode: body.pincode,
+          confirmedAt: new Date().toISOString(),
+        };
+        if (existing[0]) {
+          await db
+            .update(riderDocuments)
+            .set({ metadata: meta })
+            .where(eq(riderDocuments.id, existing[0].id));
+        } else {
+          await db.insert(riderDocuments).values({
+            riderId,
+            docType: "onboarding_work_location",
+            fileUrl: "n/a",
+            metadata: meta,
+          });
+        }
+      } catch {
+        /* non-fatal */
+      }
+
+      return { success: true, location: updated };
+    },
+  );
+
+  /**
+   * GET /hiring-status — effective Hiring Rider status for State/Region/District.
+   * Source of truth for rider app; never hardcode availability on client.
+   */
+  app.get("/hiring-status", async (req) => {
+    const q = req.query as {
+      riderId?: string;
+      stateId?: string;
+      regionId?: string;
+      districtId?: string;
+      state?: string;
+      region?: string;
+      district?: string;
+      manualOther?: string;
+    };
+
+    const riderId =
+      parseRiderIdFromAuthSub(req.auth?.sub) ??
+      (q.riderId ? parseInt(q.riderId, 10) : NaN);
+
+    let stateId = q.stateId?.trim() || null;
+    let regionId = q.regionId?.trim() || null;
+    let districtId = q.districtId?.trim() || null;
+    let stateName = q.state?.trim() || null;
+    let regionName = q.region?.trim() || null;
+    let districtName = q.district?.trim() || null;
+    let manualOther =
+      q.manualOther === "1" || q.manualOther === "true" || q.manualOther === "yes";
+
+    if (Number.isFinite(riderId) && riderId > 0 && !stateId && !districtId && !manualOther) {
+      const db = getDb();
+      const [row] = await db
+        .select({
+          stateId: riders.stateId,
+          regionId: riders.regionId,
+          districtId: riders.districtId,
+          state: riders.state,
+          region: riders.region,
+          district: riders.district,
+          locationSource: riders.locationSource,
+        })
+        .from(riders)
+        .where(eq(riders.id, riderId))
+        .limit(1);
+      stateId = row?.stateId ?? null;
+      regionId = row?.regionId ?? null;
+      districtId = row?.districtId ?? null;
+      stateName = stateName || row?.state || null;
+      regionName = regionName || row?.region || null;
+      districtName = districtName || row?.district || null;
+      if (row?.locationSource === "manual_other") manualOther = true;
+    }
+
+    const { resolveRiderHiring } = await import("../../lib/rider-geo-hiring.js");
+    const hiring = await resolveRiderHiring({
+      stateId,
+      regionId,
+      districtId,
+      manualOther,
+      stateName,
+      regionName,
+      districtName,
+    });
+
+    return {
+      success: true,
+      hiringAllowed: hiring.hiringAllowed,
+      status: hiring.status,
+      source: hiring.source,
+      state: hiring.state,
+      region: hiring.region,
+      district: hiring.district,
+      resolvedGeo: hiring.resolvedGeo,
+      explicit: hiring.explicit,
+    };
+  });
+
+  /**
+   * GET /identity-methods — geo-scoped Aadhaar options ∩ global Policy Center mode.
+   */
+  app.get("/identity-methods", async (req) => {
+    const q = req.query as {
+      riderId?: string;
+      stateId?: string;
+      regionId?: string;
+      districtId?: string;
+    };
+    const riderId =
+      parseRiderIdFromAuthSub(req.auth?.sub) ??
+      (q.riderId ? parseInt(q.riderId, 10) : NaN);
+
+    let stateId = q.stateId?.trim() || null;
+    let regionId = q.regionId?.trim() || null;
+    let districtId = q.districtId?.trim() || null;
+
+    if (Number.isFinite(riderId) && riderId > 0 && !stateId && !districtId) {
+      const db = getDb();
+      const [row] = await db
+        .select({
+          stateId: riders.stateId,
+          regionId: riders.regionId,
+          districtId: riders.districtId,
+        })
+        .from(riders)
+        .where(eq(riders.id, riderId))
+        .limit(1);
+      stateId = row?.stateId ?? null;
+      regionId = row?.regionId ?? null;
+      districtId = row?.districtId ?? null;
+    }
+
+    let globalMode = "manual";
+    try {
+      const { resolveEffectivePolicy } = await import("../verification/policy/engine.js");
+      const policy = await resolveEffectivePolicy({
+        subjectType: "rider",
+        documentKind: "aadhaar_digilocker",
+      });
+      globalMode = policy.mode;
+    } catch {
+      globalMode = "manual";
+    }
+
+    const {
+      pickIdentityGeoAnchor,
+      resolveRiderIdentityMethods,
+    } = await import("../../lib/rider-geo-identity-methods.js");
+    const anchor = pickIdentityGeoAnchor({ stateId, regionId, districtId });
+    const resolved = await resolveRiderIdentityMethods({
+      geoLevel: anchor?.level,
+      geoRefId: anchor?.refId,
+      globalMode,
+    });
+
+    return {
+      success: true,
+      ...resolved,
+      methods: {
+        digilocker: resolved.digilocker,
+        aadhaarMasking: resolved.aadhaarMasking,
+        manualUpload: resolved.manualUpload,
+      },
+    };
+  });
+
   /**
    * POST /verify-document — interactive electronic verification for the rider
    * app's onboarding steps (PAN / DL / RC / Aadhaar DigiLocker).
@@ -1698,6 +2157,53 @@ export async function onboardingRoutes(app: FastifyInstance) {
             error: "aadhaar_already_registered",
             message: "Aadhar Already Registered , Please try with Diff one .",
           });
+        }
+        // Enforce geo-scoped identity methods ∩ global policy.
+        try {
+          const [loc] = await db
+            .select({
+              stateId: riders.stateId,
+              regionId: riders.regionId,
+              districtId: riders.districtId,
+            })
+            .from(riders)
+            .where(eq(riders.id, riderIdInt))
+            .limit(1);
+          let globalMode = "manual";
+          try {
+            const { resolveEffectivePolicy } = await import("../verification/policy/engine.js");
+            const policy = await resolveEffectivePolicy({
+              subjectType: "rider",
+              documentKind: "aadhaar_digilocker",
+            });
+            globalMode = policy.mode;
+          } catch {
+            globalMode = "manual";
+          }
+          const {
+            pickIdentityGeoAnchor,
+            resolveRiderIdentityMethods,
+          } = await import("../../lib/rider-geo-identity-methods.js");
+          const anchor = pickIdentityGeoAnchor({
+            stateId: loc?.stateId,
+            regionId: loc?.regionId,
+            districtId: loc?.districtId,
+          });
+          const methods = await resolveRiderIdentityMethods({
+            geoLevel: anchor?.level,
+            geoRefId: anchor?.refId,
+            globalMode,
+          });
+          if (!methods.digilocker && !methods.aadhaarMasking) {
+            return reply.code(403).send({
+              success: false,
+              error: "identity_method_not_allowed",
+              message:
+                "Electronic Aadhaar verification is not available for your work location. Please use photo upload.",
+            });
+          }
+        } catch {
+          /* fail-open to global policy */
         }
       } else if (b.docKind === "pan") {
         const pan = normalizePan(b.pan);

@@ -2,7 +2,7 @@
 
 import React, { useMemo, useState } from "react";
 import { GeoNode } from "./GeoNode";
-import { useGeoChildrenQuery, useGeoToggleMutation, useGeoRiderOnlineCheckMutation } from "@/store/api/geoAdminApi";
+import { useGeoChildrenQuery, useGeoToggleMutation, useGeoRiderOnlineCheckMutation, useGeoRiderHiringMutation } from "@/store/api/geoAdminApi";
 import type { GeoChildRow } from "@/lib/geo/geo-shared";
 import type { GeoHierarchyLevel } from "@/store/api/geoAdminApi";
 import { RefreshCw } from "lucide-react";
@@ -47,7 +47,9 @@ function GeoTreeNode(props: {
 
   const [toggleMut] = useGeoToggleMutation();
   const [riderCheckMut] = useGeoRiderOnlineCheckMutation();
+  const [hiringMut] = useGeoRiderHiringMutation();
   const [pendingRiderOnlineCheck, setPendingRiderOnlineCheck] = useState(false);
+  const [pendingHiringRider, setPendingHiringRider] = useState(false);
 
   const onServiceToggle = async (service: "food" | "parcel" | "ride", value: boolean) => {
     setPendingService(service);
@@ -68,6 +70,22 @@ function GeoTreeNode(props: {
     }
   };
 
+  const onHiringRiderToggle = async (value: boolean) => {
+    if (props.row.kind !== "state" && props.row.kind !== "region" && props.row.kind !== "district") {
+      return;
+    }
+    setPendingHiringRider(true);
+    try {
+      await hiringMut({
+        level: props.row.kind,
+        refId: props.row.id,
+        hiringEnabled: value,
+      }).unwrap();
+    } finally {
+      setPendingHiringRider(false);
+    }
+  };
+
   const showChildLoader = expanded && props.row.has_children && (isFetching || isLoading) && !data?.rows?.length;
 
   return (
@@ -78,12 +96,20 @@ function GeoTreeNode(props: {
         onToggleExpand={() => setExpanded((e) => !e)}
         onServiceToggle={onServiceToggle}
         onRiderOnlineCheckToggle={props.row.kind === "state" ? onRiderOnlineCheckToggle : undefined}
+        onHiringRiderToggle={
+          props.row.kind === "state" ||
+          props.row.kind === "region" ||
+          props.row.kind === "district"
+            ? onHiringRiderToggle
+            : undefined
+        }
         onEdit={() => props.onEdit(props.row)}
         onPlatformOfferMap={() => props.onPlatformOfferMap(props.row)}
         onDeliverySlabs={() => props.onDeliverySlabs(props.row)}
         depth={props.depth}
         pendingService={pendingService}
         pendingRiderOnlineCheck={pendingRiderOnlineCheck}
+        pendingHiringRider={pendingHiringRider}
       />
       {expanded && props.row.has_children && (
         <div className="relative ml-3 border-l-2 border-teal-100/80 pl-1 sm:ml-4">

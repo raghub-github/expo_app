@@ -22,9 +22,10 @@ import { useRiderOnboardingSummary } from "@/src/hooks/useRiderOnboardingSummary
 import type { RiderVehicleView } from "@/src/services/api/riderApi";
 import { colors } from "@/src/theme";
 import { RiderFonts } from "@/src/theme/fonts";
+import { useDocumentUpdateSheetStore } from "@/src/stores/documentUpdateSheetStore";
 
-const TEAL = "#0D9488";
-const TEAL_DARK = "#0F766E";
+const TEAL = "#0F766E";
+const TEAL_DARK = "#115E59";
 const SERVICE_LABEL: Record<string, string> = {
   food: "Food",
   parcel: "Parcel",
@@ -64,18 +65,31 @@ function formatOwnership(ownership: string) {
 function DlStatusCard({
   state,
   requiredForSomeService,
+  onUpload,
 }: {
   state: string;
   requiredForSomeService: boolean;
+  onUpload?: () => void;
 }) {
   const verified = state.includes("VERIFIED");
   const expired = state === "EXPIRED";
   const tone = verified ? "#047857" : expired ? "#DC2626" : "#B45309";
   const bg = verified ? "#ECFDF5" : expired ? "#FEF2F2" : "#FFFBEB";
   const border = verified ? "#A7F3D0" : expired ? "#FECACA" : "#FDE68A";
+  const canUpload = Boolean(onUpload) && !verified;
 
   return (
-    <View style={[styles.dlCard, { backgroundColor: bg, borderColor: border }]}>
+    <Pressable
+      disabled={!canUpload}
+      onPress={onUpload}
+      style={({ pressed }) => [
+        styles.dlCard,
+        { backgroundColor: bg, borderColor: border },
+        canUpload && pressed && { opacity: 0.92 },
+      ]}
+      accessibilityRole={canUpload ? "button" : undefined}
+      accessibilityLabel={canUpload ? "Upload driving licence" : undefined}
+    >
       <View style={[styles.dlIconWrap, { backgroundColor: "#FFFFFF" }]}>
         <Ionicons
           name={verified ? "shield-checkmark" : expired ? "warning" : "document-text-outline"}
@@ -89,8 +103,17 @@ function DlStatusCard({
         {requiredForSomeService ? (
           <Text style={styles.dlHint}>Required for some services on your account</Text>
         ) : null}
+        {canUpload ? (
+          <Text style={styles.dlUploadHint}>Tap to upload and unblock services</Text>
+        ) : null}
       </View>
-    </View>
+      {canUpload ? (
+        <View style={styles.dlUploadChip}>
+          <Ionicons name="cloud-upload-outline" size={14} color={TEAL_DARK} />
+          <Text style={styles.dlUploadChipText}>Upload</Text>
+        </View>
+      ) : null}
+    </Pressable>
   );
 }
 
@@ -316,7 +339,15 @@ export function VehiclesAndDocumentsScreen() {
           ) : null}
 
           {dl ? (
-            <DlStatusCard state={dl.state} requiredForSomeService={dl.requiredForSomeService} />
+            <DlStatusCard
+              state={dl.state}
+              requiredForSomeService={dl.requiredForSomeService}
+              onUpload={
+                dl.state.includes("VERIFIED")
+                  ? undefined
+                  : () => useDocumentUpdateSheetStore.getState().open("dl")
+              }
+            />
           ) : null}
 
           <Text style={styles.listHeading}>Your vehicles</Text>
@@ -469,6 +500,28 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#64748B",
     marginTop: 2,
+  },
+  dlUploadHint: {
+    fontFamily: RiderFonts.poppinsSemiBold,
+    fontSize: 12,
+    color: TEAL_DARK,
+    marginTop: 4,
+  },
+  dlUploadChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#99F6E4",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  dlUploadChipText: {
+    fontFamily: RiderFonts.poppinsBold,
+    fontSize: 12,
+    color: TEAL_DARK,
   },
   listHeading: {
     fontFamily: RiderFonts.poppinsBold,
@@ -639,10 +692,12 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   useBtn: {
-    marginTop: 2,
+    marginTop: 6,
+    marginHorizontal: 8,
     backgroundColor: TEAL,
     borderRadius: 14,
     paddingVertical: 13,
+    paddingHorizontal: 16,
     alignItems: "center",
   },
   useBtnText: {

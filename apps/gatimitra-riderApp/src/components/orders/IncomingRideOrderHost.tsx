@@ -27,7 +27,7 @@ import { ApiError } from "@gatimitra/sdk";
 import { isActiveRiderOrder } from "@/src/lib/active-order-display";
 import {
   loadRiderRejectedOrderIds,
-  persistRiderRejectedOrderId,
+  persistRiderRejectedOrderIds,
   pruneRiderRejectedOrderIds,
 } from "@/src/lib/riderRejectedOrders";
 import { readRiderDeviceOrderAlerts, volumeStepTo01 } from "@/src/lib/riderDeviceOrderAlerts";
@@ -221,9 +221,16 @@ export function IncomingRideOrderHost() {
     // a hydration race or a failed eligible-services fetch would silently swallow
     // every incoming offer. The dispatch-block filter below stays unconditional.
     const hasExplicitSelection = (dutySelectedServices?.length ?? 0) > 0;
+    const isRejected = (o: { id: string; formattedOrderId?: string | null }) => {
+      const fmt = o.formattedOrderId?.trim();
+      return (
+        rejectedRef.current.has(o.id) ||
+        (Boolean(fmt) && rejectedRef.current.has(fmt!))
+      );
+    };
     return orders.filter(
       (o) =>
-        !rejectedRef.current.has(o.id) &&
+        !isRejected(o) &&
         !expiredRef.current.has(o.id) &&
         !useIncomingDispatchOfferStore.getState().isCancelled(o.id) &&
         o.status === "pending" &&
@@ -416,13 +423,18 @@ export function IncomingRideOrderHost() {
       const headIsForce = head?.higherDispatchPriority === true;
       const currentStillValid =
         !!current &&
-        list.some(
-          (o) =>
+        list.some((o) => {
+          const fmt = o.formattedOrderId?.trim();
+          const rejected =
+            rejectedRef.current.has(o.id) ||
+            (Boolean(fmt) && rejectedRef.current.has(fmt!));
+          return (
             o.id === current &&
-            !rejectedRef.current.has(o.id) &&
+            !rejected &&
             !expiredRef.current.has(o.id) &&
             !cancelled.includes(o.id)
-        );
+          );
+        });
       // Stick to the open sheet unless a higher-priority Force Assignment arrives.
       if (currentStillValid && !(headIsForce && current !== poolHeadId)) {
         return current;
@@ -475,15 +487,19 @@ export function IncomingRideOrderHost() {
     (reasonCode: string, reasonText: string) => {
       if (!activeOrderId) return;
       const id = activeOrderId;
+      const order = activeOrderRef.current;
+      const fmt = order?.formattedOrderId?.trim() || null;
+      const rejectRef = fmt || id;
       rejectedRef.current.add(id);
+      if (fmt) rejectedRef.current.add(fmt);
       offerShownAtRef.current.delete(id);
-      void persistRiderRejectedOrderId(id);
+      void persistRiderRejectedOrderIds([id, fmt]);
       bumpPool();
       closeModal();
       setActiveOrderId(null);
       setRejectSheetOpen(false);
       rejectOrder.mutate(
-        { orderId: id, reasonCode, reasonText },
+        { orderId: rejectRef, reasonCode, reasonText },
         {
           onError: () => {
             Alert.alert(

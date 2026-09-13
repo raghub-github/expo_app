@@ -1692,6 +1692,166 @@ export async function riderRoutes(app: FastifyInstance) {
     }
   );
 
+  /**
+   * Fast Duty ON gate: one GPS resolve → working-location match + hiring.
+   * Call before PUT /duty so mismatch UI shows before enabling ON.
+   */
+  app.post(
+    "/duty/precheck",
+    {
+      schema: {
+        body: z.object({
+          lat: z.number(),
+          lon: z.number(),
+        }),
+        response: {
+          200: z.object({
+            ok: z.boolean(),
+            mismatch: z.boolean(),
+            hiringAllowed: z.boolean().optional(),
+            message: z.string().nullable().optional(),
+            working: z
+              .object({
+                state: z.string().nullable(),
+                district: z.string().nullable(),
+                region: z.string().nullable(),
+                stateId: z.string().nullable(),
+                regionId: z.string().nullable(),
+                districtId: z.string().nullable(),
+                lat: z.number().nullable().optional(),
+                lon: z.number().nullable().optional(),
+              })
+              .optional(),
+            registered: z
+              .object({
+                state: z.string().nullable(),
+                district: z.string().nullable(),
+                region: z.string().nullable(),
+                stateId: z.string().nullable(),
+                regionId: z.string().nullable(),
+                districtId: z.string().nullable(),
+              })
+              .optional(),
+            detected: z
+              .object({
+                state: z.string().nullable(),
+                district: z.string().nullable(),
+                region: z.string().nullable(),
+                stateId: z.string().nullable(),
+                regionId: z.string().nullable(),
+                districtId: z.string().nullable(),
+                lat: z.number().nullable().optional(),
+                lon: z.number().nullable().optional(),
+              })
+              .nullable()
+              .optional(),
+            registeredAddress: z
+              .object({
+                state: z.string().nullable(),
+                district: z.string().nullable(),
+              })
+              .optional(),
+          }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const userId = req.auth!.sub;
+      const riderIdMatch = userId.match(/usr_(\d+)/);
+      if (!riderIdMatch) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const riderId = parseInt(riderIdMatch[1]!, 10);
+      const body = req.body as { lat: number; lon: number };
+      const lat = Number(body.lat);
+      const lon = Number(body.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) {
+        return reply.status(400).send({
+          error: "LOCATION_REQUIRED",
+          message: "Current GPS is required to go ON-DUTY.",
+        });
+      }
+
+      const db = getDb();
+      const [rider] = await db
+        .select({
+          state: riders.state,
+          district: riders.district,
+          region: riders.region,
+          stateId: riders.stateId,
+          regionId: riders.regionId,
+          districtId: riders.districtId,
+          locationOtherState: riders.locationOtherState,
+          locationOtherDistrict: riders.locationOtherDistrict,
+          registeredState: riders.registeredState,
+          registeredDistrict: riders.registeredDistrict,
+        })
+        .from(riders)
+        .where(eq(riders.id, riderId))
+        .limit(1);
+
+      if (!rider) {
+        return reply.status(404).send({ error: "Rider not found" });
+      }
+
+      const { checkDutyWorkingLocation } = await import(
+        "../../lib/rider-duty-work-location.js"
+      );
+      const check = await checkDutyWorkingLocation({
+        working: {
+          state: rider.state,
+          district: rider.district,
+          region: rider.region,
+          stateId: rider.stateId,
+          regionId: rider.regionId,
+          districtId: rider.districtId,
+          locationOtherState: rider.locationOtherState,
+          locationOtherDistrict: rider.locationOtherDistrict,
+        },
+        lat,
+        lon,
+      });
+
+      if (check.mismatch) {
+        return {
+          ok: false,
+          mismatch: true,
+          hiringAllowed: check.hiringAllowed,
+          message: check.message,
+          working: check.working,
+          registered: check.working,
+          detected: check.detected,
+          registeredAddress: {
+            state: rider.registeredState,
+            district: rider.registeredDistrict,
+          },
+        };
+      }
+
+      if (!check.hiringAllowed) {
+        return {
+          ok: false,
+          mismatch: false,
+          hiringAllowed: false,
+          message: "Service not available at this location",
+          working: check.working,
+          detected: check.detected,
+        };
+      }
+
+      return {
+        ok: true,
+        mismatch: false,
+        hiringAllowed: true,
+        working: check.working,
+        detected: check.detected,
+      };
+    },
+  );
+
   // Update duty status (go online/offline). When going online, blacklisted services are excluded so rider can only be online for required services.
   app.put(
     "/duty",
@@ -1711,7 +1871,42 @@ export async function riderRoutes(app: FastifyInstance) {
             blockedServiceTypes: z.array(z.string()).optional(),
             lastUpdated: z.string(),
           }),
-          403: z.object({ error: z.string() }),
+          403: z.object({
+            error: z.string(),
+            message: z.string().optional(),
+            working: z
+              .object({
+                state: z.string().nullable().optional(),
+                district: z.string().nullable().optional(),
+                region: z.string().nullable().optional(),
+                stateId: z.string().nullable().optional(),
+                regionId: z.string().nullable().optional(),
+                districtId: z.string().nullable().optional(),
+              })
+              .optional(),
+            registered: z
+              .object({
+                state: z.string().nullable().optional(),
+                district: z.string().nullable().optional(),
+                region: z.string().nullable().optional(),
+                stateId: z.string().nullable().optional(),
+                regionId: z.string().nullable().optional(),
+                districtId: z.string().nullable().optional(),
+              })
+              .optional(),
+            detected: z
+              .object({
+                state: z.string().nullable().optional(),
+                district: z.string().nullable().optional(),
+                region: z.string().nullable().optional(),
+                stateId: z.string().nullable().optional(),
+                regionId: z.string().nullable().optional(),
+                districtId: z.string().nullable().optional(),
+                lat: z.number().nullable().optional(),
+                lon: z.number().nullable().optional(),
+              })
+              .optional(),
+          }),
         },
       },
     },
@@ -1911,6 +2106,43 @@ export async function riderRoutes(app: FastifyInstance) {
         }
       }
 
+      // Saved WORKING location vs current duty GPS (registered address is separate).
+      if (
+        dutyLat != null &&
+        dutyLon != null &&
+        Number.isFinite(dutyLat) &&
+        Number.isFinite(dutyLon)
+      ) {
+        const { checkDutyWorkingLocation } = await import(
+          "../../lib/rider-duty-work-location.js"
+        );
+        const locCheck = await checkDutyWorkingLocation({
+          working: {
+            state: rider.state,
+            district: rider.district,
+            region: rider.region,
+            stateId: rider.stateId,
+            regionId: rider.regionId,
+            districtId: rider.districtId,
+            locationOtherState: rider.locationOtherState,
+            locationOtherDistrict: rider.locationOtherDistrict,
+          },
+          lat: dutyLat,
+          lon: dutyLon,
+        });
+        if (locCheck.mismatch) {
+          return reply.status(403).send({
+            error: "WORK_LOCATION_MISMATCH",
+            message:
+              locCheck.message ||
+              "Your current location is different from your working location. Update your working location to go ON-DUTY here.",
+            working: locCheck.working,
+            registered: locCheck.working,
+            detected: locCheck.detected,
+          });
+        }
+      }
+
       await recordRiderDutyLog({
         riderId,
         status: "ON",
@@ -1970,16 +2202,33 @@ export async function riderRoutes(app: FastifyInstance) {
           state: z.string().min(1),
           pincode: z.string().optional(),
           address: z.string().min(1),
+          region: z.string().optional().nullable(),
+          district: z.string().optional().nullable(),
+          stateId: z.string().uuid().optional().nullable(),
+          regionId: z.string().uuid().optional().nullable(),
+          districtId: z.string().uuid().optional().nullable(),
+          locationSource: z
+            .enum(["gps_auto", "manual_select", "manual_other", "duty_update"])
+            .optional()
+            .nullable(),
+          locationOtherState: z.string().optional().nullable(),
+          locationOtherDistrict: z.string().optional().nullable(),
         }),
         response: {
           200: z.object({
             success: z.boolean(),
             city: z.string().nullable(),
             state: z.string().nullable(),
+            region: z.string().nullable(),
+            district: z.string().nullable(),
             pincode: z.string().nullable(),
             address: z.string().nullable(),
             lat: z.number().nullable(),
             lon: z.number().nullable(),
+            stateId: z.string().nullable(),
+            regionId: z.string().nullable(),
+            districtId: z.string().nullable(),
+            locationSource: z.string().nullable(),
           }),
           403: z.object({ error: z.string() }),
         },
@@ -2000,42 +2249,214 @@ export async function riderRoutes(app: FastifyInstance) {
         state: string;
         pincode?: string;
         address: string;
+        region?: string | null;
+        district?: string | null;
+        stateId?: string | null;
+        regionId?: string | null;
+        districtId?: string | null;
+        locationSource?: "gps_auto" | "manual_select" | "manual_other" | "duty_update" | null;
+        locationOtherState?: string | null;
+        locationOtherDistrict?: string | null;
       };
 
+      // Same hiring gate as onboarding work-location — don't let duty move into NOT_HIRING.
+      {
+        const { resolveRiderHiring } = await import("../../lib/rider-geo-hiring.js");
+        const hiring = await resolveRiderHiring({
+          stateId: body.stateId,
+          regionId: body.regionId,
+          districtId: body.districtId,
+          manualOther: body.locationSource === "manual_other",
+          stateName: body.state,
+          regionName: body.region,
+          districtName: body.district,
+        });
+        if (!hiring.hiringAllowed) {
+          return reply.status(403).send({
+            error: "NOT_HIRING",
+            message: "Service not available at this location",
+          });
+        }
+      }
+
+      const { saveRiderWorkingLocation } = await import(
+        "../../lib/rider-working-location.js"
+      );
+      try {
+        const updated = await saveRiderWorkingLocation({
+          riderId,
+          lat: body.lat,
+          lon: body.lon,
+          city: body.city,
+          state: body.state,
+          pincode: body.pincode,
+          address: body.address,
+          region: body.region,
+          district: body.district,
+          stateId: body.stateId,
+          regionId: body.regionId,
+          districtId: body.districtId,
+          locationSource: body.locationSource || "duty_update",
+          locationOtherState: body.locationOtherState,
+          locationOtherDistrict: body.locationOtherDistrict,
+          seedRegisteredIfEmpty: false,
+        });
+        return {
+          success: true,
+          city: updated.city,
+          state: updated.state,
+          region: updated.region,
+          district: updated.district,
+          pincode: updated.pincode,
+          address: updated.address,
+          lat: updated.lat,
+          lon: updated.lon,
+          stateId: updated.stateId,
+          regionId: updated.regionId,
+          districtId: updated.districtId,
+          locationSource: updated.locationSource,
+        };
+      } catch (err: any) {
+        if (err?.statusCode === 404) {
+          return reply.status(403).send({ error: "Rider not found" });
+        }
+        throw err;
+      }
+    },
+  );
+
+  /** Working location history (empty array is valid — never an error). */
+  app.get(
+    "/working-location/history",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            current: z
+              .object({
+                state: z.string().nullable(),
+                region: z.string().nullable(),
+                district: z.string().nullable(),
+                city: z.string().nullable(),
+                address: z.string().nullable(),
+                lat: z.number().nullable(),
+                lon: z.number().nullable(),
+                source: z.string().nullable(),
+                changedAt: z.string().nullable(),
+              })
+              .nullable(),
+            history: z.array(
+              z.object({
+                id: z.number(),
+                state: z.string().nullable(),
+                region: z.string().nullable(),
+                district: z.string().nullable(),
+                city: z.string().nullable(),
+                address: z.string().nullable(),
+                lat: z.number().nullable(),
+                lon: z.number().nullable(),
+                source: z.string().nullable(),
+                isCurrent: z.boolean(),
+                changedAt: z.string(),
+              }),
+            ),
+          }),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const userId = req.auth!.sub;
+      const riderIdMatch = userId.match(/usr_(\d+)/);
+      if (!riderIdMatch) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const riderId = parseInt(riderIdMatch[1]!, 10);
       const db = getDb();
-      const [updated] = await db
-        .update(riders)
-        .set({
-          lat: parseFloat(Number(body.lat).toFixed(8)),
-          lon: parseFloat(Number(body.lon).toFixed(8)),
-          city: body.city.trim(),
-          state: body.state.trim(),
-          pincode: body.pincode?.trim() || null,
-          address: body.address.trim(),
-          updatedAt: new Date(),
-        })
-        .where(eq(riders.id, riderId))
-        .returning({
-          city: riders.city,
+
+      const [working] = await db
+        .select({
           state: riders.state,
-          pincode: riders.pincode,
+          region: riders.region,
+          district: riders.district,
+          city: riders.city,
           address: riders.address,
           lat: riders.lat,
           lon: riders.lon,
-        });
+          source: riders.locationSource,
+          updatedAt: riders.updatedAt,
+        })
+        .from(riders)
+        .where(eq(riders.id, riderId))
+        .limit(1);
 
-      if (!updated) {
-        return reply.status(403).send({ error: "Rider not found" });
+      let history: Array<{
+        id: number;
+        state: string | null;
+        region: string | null;
+        district: string | null;
+        city: string | null;
+        address: string | null;
+        lat: number | null;
+        lon: number | null;
+        source: string | null;
+        isCurrent: boolean;
+        changedAt: string;
+      }> = [];
+
+      try {
+        const { riderWorkingLocationHistory } = await import("../../db/schema.js");
+        const { desc } = await import("drizzle-orm");
+        const rows = await db
+          .select({
+            id: riderWorkingLocationHistory.id,
+            state: riderWorkingLocationHistory.state,
+            region: riderWorkingLocationHistory.region,
+            district: riderWorkingLocationHistory.district,
+            city: riderWorkingLocationHistory.city,
+            address: riderWorkingLocationHistory.address,
+            lat: riderWorkingLocationHistory.lat,
+            lon: riderWorkingLocationHistory.lon,
+            source: riderWorkingLocationHistory.source,
+            isCurrent: riderWorkingLocationHistory.isCurrent,
+            changedAt: riderWorkingLocationHistory.changedAt,
+          })
+          .from(riderWorkingLocationHistory)
+          .where(eq(riderWorkingLocationHistory.riderId, riderId))
+          .orderBy(desc(riderWorkingLocationHistory.changedAt))
+          .limit(50);
+        history = rows.map((r) => ({
+          id: r.id,
+          state: r.state,
+          region: r.region,
+          district: r.district,
+          city: r.city,
+          address: r.address,
+          lat: r.lat,
+          lon: r.lon,
+          source: r.source,
+          isCurrent: Boolean(r.isCurrent),
+          changedAt: r.changedAt?.toISOString?.() ?? String(r.changedAt),
+        }));
+      } catch {
+        history = [];
       }
 
       return {
-        success: true,
-        city: updated.city,
-        state: updated.state,
-        pincode: updated.pincode,
-        address: updated.address,
-        lat: updated.lat,
-        lon: updated.lon,
+        current: working?.state
+          ? {
+              state: working.state,
+              region: working.region,
+              district: working.district,
+              city: working.city,
+              address: working.address,
+              lat: working.lat,
+              lon: working.lon,
+              source: working.source,
+              changedAt: working.updatedAt?.toISOString?.() ?? null,
+            }
+          : null,
+        history,
       };
     },
   );
@@ -2064,12 +2485,58 @@ export async function riderRoutes(app: FastifyInstance) {
               .object({
                 city: z.string().nullable(),
                 state: z.string().nullable(),
+                region: z.string().nullable(),
+                district: z.string().nullable(),
                 pincode: z.string().nullable(),
                 address: z.string().nullable(),
                 lat: z.number().nullable(),
                 lon: z.number().nullable(),
+                stateId: z.string().nullable(),
+                regionId: z.string().nullable(),
+                districtId: z.string().nullable(),
+                locationSource: z.string().nullable(),
+                locationOtherState: z.string().nullable(),
+                locationOtherDistrict: z.string().nullable(),
               })
               .nullable(),
+            /** Permanent registered address (independent of working location). */
+            registeredAddress: z
+              .object({
+                city: z.string().nullable(),
+                state: z.string().nullable(),
+                region: z.string().nullable(),
+                district: z.string().nullable(),
+                pincode: z.string().nullable(),
+                address: z.string().nullable(),
+                lat: z.number().nullable(),
+                lon: z.number().nullable(),
+                stateId: z.string().nullable(),
+                regionId: z.string().nullable(),
+                districtId: z.string().nullable(),
+              })
+              .nullable()
+              .optional(),
+            /** Alias: current working location (same payload as homeAddress). */
+            workingLocation: z
+              .object({
+                city: z.string().nullable(),
+                state: z.string().nullable(),
+                region: z.string().nullable(),
+                district: z.string().nullable(),
+                pincode: z.string().nullable(),
+                address: z.string().nullable(),
+                lat: z.number().nullable(),
+                lon: z.number().nullable(),
+                stateId: z.string().nullable(),
+                regionId: z.string().nullable(),
+                districtId: z.string().nullable(),
+                locationSource: z.string().nullable(),
+                locationOtherState: z.string().nullable(),
+                locationOtherDistrict: z.string().nullable(),
+              })
+              .nullable()
+              .optional(),
+            workLocationConfirmed: z.boolean(),
             nextOnboardingStep: z.string(),
             completedOnboardingSteps: z.array(z.string()),
             rating: z.number().nullable(),
@@ -2100,7 +2567,9 @@ export async function riderRoutes(app: FastifyInstance) {
             vehicleCategoryCode: z.string().nullable(),
             vehicleOnboardingFlow: z.string().nullable(),
             vehicleDocsSubmittedFor: z.string().nullable(),
+            skippedOnboardingDocs: z.array(z.string()),
             bankAccountOnboardingDone: z.boolean(),
+            bankAccountOnboardingSkipped: z.boolean(),
           }),
           404: z.object({
             error: z.string(),
@@ -2111,7 +2580,9 @@ export async function riderRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const { riderId } = req.params as { riderId: string };
 
-      const parsedId = parseInt(riderId, 10);
+      const normalized =
+        /^usr_(\d+)$/i.exec(riderId.trim())?.[1] ?? riderId.trim();
+      const parsedId = parseInt(normalized, 10);
       if (!Number.isFinite(parsedId) || parsedId <= 0) {
         return (reply as any).code(400).send({ error: "Invalid rider ID" });
       }
@@ -2165,17 +2636,80 @@ export async function riderRoutes(app: FastifyInstance) {
         approvalStatus,
         accountStatus: rider.status,
         hasHomeLocation: rider.lat != null && rider.lon != null,
+        workLocationConfirmed: Boolean(
+          rider.locationSource ||
+            (rider.state && (rider.district || rider.districtId || rider.locationOtherDistrict)),
+        ),
         homeAddress:
           rider.lat != null && rider.lon != null
             ? {
                 city: rider.city ?? null,
                 state: rider.state ?? null,
+                region: rider.region ?? null,
+                district: rider.district ?? null,
                 pincode: rider.pincode ?? null,
                 address: rider.address ?? null,
                 lat: rider.lat ?? null,
                 lon: rider.lon ?? null,
+                stateId: rider.stateId ?? null,
+                regionId: rider.regionId ?? null,
+                districtId: rider.districtId ?? null,
+                locationSource: rider.locationSource ?? null,
+                locationOtherState: rider.locationOtherState ?? null,
+                locationOtherDistrict: rider.locationOtherDistrict ?? null,
+              }
+            : rider.locationSource || rider.state
+              ? {
+                  city: rider.city ?? null,
+                  state: rider.state ?? null,
+                  region: rider.region ?? null,
+                  district: rider.district ?? null,
+                  pincode: rider.pincode ?? null,
+                  address: rider.address ?? null,
+                  lat: rider.lat ?? null,
+                  lon: rider.lon ?? null,
+                  stateId: rider.stateId ?? null,
+                  regionId: rider.regionId ?? null,
+                  districtId: rider.districtId ?? null,
+                  locationSource: rider.locationSource ?? null,
+                  locationOtherState: rider.locationOtherState ?? null,
+                  locationOtherDistrict: rider.locationOtherDistrict ?? null,
+                }
+              : null,
+        workingLocation:
+          rider.locationSource || rider.state
+            ? {
+                city: rider.city ?? null,
+                state: rider.state ?? null,
+                region: rider.region ?? null,
+                district: rider.district ?? null,
+                pincode: rider.pincode ?? null,
+                address: rider.address ?? null,
+                lat: rider.lat ?? null,
+                lon: rider.lon ?? null,
+                stateId: rider.stateId ?? null,
+                regionId: rider.regionId ?? null,
+                districtId: rider.districtId ?? null,
+                locationSource: rider.locationSource ?? null,
+                locationOtherState: rider.locationOtherState ?? null,
+                locationOtherDistrict: rider.locationOtherDistrict ?? null,
               }
             : null,
+        registeredAddress: (rider as any).registeredState
+          ? {
+              city: (rider as any).registeredCity ?? null,
+              state: (rider as any).registeredState ?? null,
+              region: (rider as any).registeredRegion ?? null,
+              district: (rider as any).registeredDistrict ?? null,
+              pincode: (rider as any).registeredPincode ?? null,
+              address: (rider as any).registeredAddress ?? null,
+              lat: (rider as any).registeredLat ?? null,
+              lon: (rider as any).registeredLon ?? null,
+              stateId: (rider as any).registeredStateId ?? null,
+              regionId: (rider as any).registeredRegionId ?? null,
+              districtId: (rider as any).registeredDistrictId ?? null,
+            }
+          : null,
         nextOnboardingStep: progress.nextStep,
         completedOnboardingSteps: progress.completedSteps,
         rating,
@@ -2206,7 +2740,9 @@ export async function riderRoutes(app: FastifyInstance) {
         vehicleCategoryCode: progress.vehicleCategoryCode,
         vehicleOnboardingFlow: progress.vehicleOnboardingFlow,
         vehicleDocsSubmittedFor: progress.vehicleDocsSubmittedFor,
+        skippedOnboardingDocs: progress.skippedOnboardingDocs ?? [],
         bankAccountOnboardingDone: progress.bankAccountOnboardingDone,
+        bankAccountOnboardingSkipped: progress.bankAccountOnboardingSkipped,
       };
     },
   );
@@ -2241,27 +2777,54 @@ export async function riderRoutes(app: FastifyInstance) {
             documentId: z.number(),
             success: z.boolean(),
           }),
+          403: z.object({
+            error: z.string(),
+          }),
+          409: z.object({
+            error: z.string(),
+            message: z.string().optional(),
+          }),
         },
       },
     },
-    async (req) => {
-      const { riderId, docType, fileUrl, r2Key, extractedName, extractedDob, metadata, files, autoVerify } =
-        req.body as {
-          riderId: number;
-          docType: string;
+    async (req, reply) => {
+      const authRiderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (authRiderId == null) {
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+
+      const {
+        riderId: bodyRiderId,
+        docType,
+        fileUrl,
+        r2Key,
+        extractedName,
+        extractedDob,
+        metadata,
+        files,
+        autoVerify,
+      } = req.body as {
+        riderId: number;
+        docType: string;
+        fileUrl: string;
+        r2Key?: string;
+        extractedName?: string;
+        extractedDob?: string;
+        metadata?: Record<string, unknown>;
+        autoVerify?: boolean;
+        files?: {
+          side: "front" | "back" | "single";
           fileUrl: string;
           r2Key?: string;
-          extractedName?: string;
-          extractedDob?: string;
-          metadata?: Record<string, unknown>;
-          autoVerify?: boolean;
-          files?: {
-            side: "front" | "back" | "single";
-            fileUrl: string;
-            r2Key?: string;
-            mimeType?: string;
-          }[];
-        };
+          mimeType?: string;
+        }[];
+      };
+
+      // Always bind to the authenticated rider — never trust a foreign body.riderId (IDOR).
+      if (bodyRiderId !== authRiderId) {
+        return (reply as any).status(403).send({ error: "Rider mismatch" });
+      }
+      const riderId = authRiderId;
       const db = getDb();
 
       const resolveStoredFileUrl = (url: string, key?: string) => {
@@ -2289,7 +2852,10 @@ export async function riderRoutes(app: FastifyInstance) {
           if (typeof rawAadhaarPre === "string") {
             const digits = normalizeAadhaarDigits(rawAadhaarPre);
             if (digits && (await isAadhaarAlreadyRegistered(digits, riderId))) {
-              throw new Error("Aadhar Already Registered , Please try with Diff one .");
+              return reply.status(409).send({
+                error: "aadhaar_already_registered",
+                message: "Already registered with another rider",
+              });
             }
           }
         }
@@ -2299,7 +2865,10 @@ export async function riderRoutes(app: FastifyInstance) {
           if (typeof rawPan === "string") {
             const pan = normalizePan(rawPan);
             if (pan && (await isPanAlreadyRegistered(pan, riderId))) {
-              throw new Error("PAN Already Registered , Please try with Diff one .");
+              return reply.status(409).send({
+                error: "pan_already_registered",
+                message: "Already registered with another rider",
+              });
             }
           }
         }
@@ -2309,7 +2878,10 @@ export async function riderRoutes(app: FastifyInstance) {
           if (typeof rawDl === "string") {
             const dl = normalizeDlNumber(rawDl);
             if (dl && (await isDlAlreadyRegistered(dl, riderId))) {
-              throw new Error("Driving License Already Registered , Please try with Diff one .");
+              return reply.status(409).send({
+                error: "dl_already_registered",
+                message: "Already registered with another rider",
+              });
             }
           }
         }
@@ -2319,7 +2891,10 @@ export async function riderRoutes(app: FastifyInstance) {
           if (typeof rawRc === "string") {
             const rc = normalizeRcNumber(rawRc);
             if (rc && (await isRcAlreadyRegistered(rc, riderId))) {
-              throw new Error("RC Already Registered , Please try with Diff one .");
+              return reply.status(409).send({
+                error: "rc_already_registered",
+                message: "Already registered with another rider",
+              });
             }
           }
         }

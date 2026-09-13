@@ -40,6 +40,7 @@ import NewOrderAutoOpenHandler from "../components/NewOrderAutoOpenHandler";
 import { AppAssetsPrefetch } from "@/components/AppAssetsPrefetch";
 import { ensureMerchantAppAssetsLoaded } from "@/store/appAssetsStore";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
+import BackgroundNewOrderLocalAlert from "../components/BackgroundNewOrderLocalAlert";
 import StoreStatusPushHandler from "../components/StoreStatusPushHandler";
 import WaitingForOrderNotifier from "../components/WaitingForOrderNotifier";
 import StoreOnlineStatusNotifier from "../components/StoreOnlineStatusNotifier";
@@ -94,6 +95,7 @@ function AuthenticatedAppHosts() {
       <BackgroundOrderPermissionsGate />
       <NewOrderAutoOpenHandler />
       <OrderAlertPushHandler />
+      <BackgroundNewOrderLocalAlert />
       <StoreStatusPushHandler />
       <LiveOrdersStickyPushRefresh />
       <WaitingForOrderNotifier />

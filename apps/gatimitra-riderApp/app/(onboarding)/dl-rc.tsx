@@ -59,6 +59,7 @@ import {
   findVehicleType,
   formatVehicleGroupPreviewTitle,
   formatVehicleRowTitle,
+  isElectricOnboardingVehicle,
   normalizeSelectedVehicleModelLabel,
   vehiclesForCategory,
   type OnboardingVehicleType,
@@ -162,10 +163,8 @@ const COPY = {
   catalogLoading: "Loading vehicle categories…",
   catalogEmpty: "No vehicle categories are available right now. Please try again later.",
   catalogError: "Could not load vehicle categories. Check your connection and try again.",
-    dlAlreadyRegistered:
-      "This driving licence is already associated with another account. Please try a different one.",
-    rcAlreadyRegistered:
-      "This registration certificate is already associated with another account. Please try a different one.",
+    dlAlreadyRegistered: "Already registered with another rider",
+    rcAlreadyRegistered: "Already registered with another rider",
   skipOptionalDoc: "Skip",
 } as const;
 
@@ -375,9 +374,21 @@ export default function DlRcScreen() {
   const saveStep = useSaveOnboardingStep();
   const saveDocument = useSaveDocument();
   const { data: riderStatus } = useRiderStatus(data.riderId);
-  const reuploadParam = useLocalSearchParams<{ reupload?: string | string[] }>().reupload;
+  const searchParams = useLocalSearchParams<{
+    reupload?: string | string[];
+    focus?: string | string[];
+  }>();
+  const reuploadParam = searchParams.reupload;
+  const focusParamRaw = searchParams.focus;
   const isReupload =
     (Array.isArray(reuploadParam) ? reuploadParam[0] : reuploadParam) === "1";
+  const reuploadFocus = (() => {
+    const raw = Array.isArray(focusParamRaw) ? focusParamRaw[0] : focusParamRaw;
+    const v = String(raw ?? "").toLowerCase();
+    if (v === "dl" || v === "driving_licence" || v === "driving_license") return "dl" as const;
+    if (v === "rc" || v === "vehicle_rc") return "rc" as const;
+    return null;
+  })();
   // Approved riders are normally bounced off this screen — keep them here to re-upload DL/RC.
   useOnboardingEstablishedRedirect(isReupload ? null : riderStatus);
 
@@ -483,7 +494,12 @@ export default function DlRcScreen() {
 
   const { summary: onboardingSummary } = useRiderOnboardingSummary();
 
-  /** Phase C: catalog optional OR geo policy allows skip (at least one service omits this doc). */
+  /** Phase C: DL may skip when catalog/geo allows. RC skip only for EV (petrol RC is mandatory). */
+  const isElectricVehicle = useMemo(
+    () => isElectricOnboardingVehicle(selectedVehicleType),
+    [selectedVehicleType],
+  );
+
   const geoAllowsDocSkip = useMemo(() => {
     const step = String(wizardStep || "").toLowerCase();
     let code: string | null = null;
@@ -498,7 +514,20 @@ export default function DlRcScreen() {
     );
   }, [wizardStep, onboardingSummary?.documents]);
 
-  const isOptionalDocStep = Boolean(currentDocStep?.optional) || geoAllowsDocSkip;
+  const isRcWizardStep = useMemo(() => {
+    const step = String(wizardStep || "").toLowerCase();
+    return step === "rc" || step === "registration_certificate" || step === "vehicle_rc";
+  }, [wizardStep]);
+
+  const isOptionalDocStep = useMemo(() => {
+    const catalogOptional = Boolean(currentDocStep?.optional);
+    if (isRcWizardStep) {
+      // Petrol / non-EV: RC is always mandatory for onboarding (all services).
+      // EV only: may skip RC, then must upload EV proof on rental-ev / ev_proof step.
+      return isElectricVehicle;
+    }
+    return catalogOptional || geoAllowsDocSkip;
+  }, [currentDocStep?.optional, isRcWizardStep, isElectricVehicle, geoAllowsDocSkip]);
 
   const currentDocDef = useMemo(() => {
     if (wizardStep === "category" || wizardStep === "vehicle") return undefined;
@@ -533,8 +562,12 @@ export default function DlRcScreen() {
       const vehicle = findVehicleType(sortedVehicleTypes, data.vehicleChoice);
       const docs = resolveVehicleOnboardingDocs(vehicle, documentCatalog);
       if (docs.length > 0 && data.vehicleChoice) {
+        const focused =
+          reuploadFocus != null
+            ? docs.find((d) => d.code === reuploadFocus)
+            : undefined;
         const rc = docs.find((d) => d.code === "rc");
-        setWizardStep(rc?.code ?? docs[0]!.code);
+        setWizardStep(focused?.code ?? rc?.code ?? docs[0]!.code);
       } else if (data.vehicleCategoryCode) {
         setWizardStep("vehicle");
       } else {
@@ -570,6 +603,7 @@ export default function DlRcScreen() {
     data.documentUploads,
     data.skippedOnboardingDocs,
     isReupload,
+    reuploadFocus,
     documentCatalogFetched,
     session?.accessToken,
   ]);
@@ -1112,44 +1146,37 @@ export default function DlRcScreen() {
             : "") ||
           (typeof res.reason === "string" && res.reason.trim()) ||
           "Couldn't verify this document automatically. You can try again or upload a photo for manual review.";
+        const failFallback =
+          wizardStep === "dl"
+            ? "Invalid DL number. Please check and try again."
+            : wizardStep === "rc"
+              ? "Invalid RC number. Please check and try again."
+              : "Couldn't verify this document automatically. You can try again or upload a photo for manual review.";
         setDocEv({
           phase: "failed",
-          error: exact,
+          error: friendlyOnboardingError(exact, failFallback),
           providerReference: res.providerReference ?? null,
           verificationId: res.verificationId ?? null,
         });
       }
     } catch (e) {
       if (attemptId !== docVerifyAttemptRef.current) return;
-      let message = friendlyOnboardingError(
-        e,
-        "Couldn't verify right now. Check your connection and try again."
-      );
-      const raw = extractApiErrorMessage(e, "");
-      if (/dob_required/i.test(raw)) {
-        message =
-          "Date of birth is required. Enter DOB as on your driving licence (DD/MM/YYYY).";
-      } else if (/invalid_dl/i.test(raw)) {
-        message = "Invalid DL format. Use a valid Indian DL number.";
-      } else if (/invalid_vehicle_number/i.test(raw)) {
-        message = "Invalid RC format. Use a valid vehicle registration number.";
-      }
-      setDocEv({ phase: "failed", error: message });
+      const catchFallback =
+        wizardStep === "dl"
+          ? "Invalid DL number. Please check and try again."
+          : wizardStep === "rc"
+            ? "Invalid RC number. Please check and try again."
+            : "Couldn't verify right now. Check your connection and try again.";
+      setDocEv({
+        phase: "failed",
+        error: friendlyOnboardingError(e, catchFallback),
+      });
     } finally {
       if (attemptId === docVerifyAttemptRef.current) {
         docVerifyInFlightRef.current = false;
       }
     }
   };
-
-  /** Photos needed? Fail / manual / hard mismatch / RC owner soft-mismatch. */
-  const docPhotoRequiredNow =
-    !docElectronic ||
-    docEv.phase === "failed" ||
-    docEv.phase === "manual" ||
-    docEv.phase === "mismatch" ||
-    rcVerifiedNeedsPhoto;
-  const showDocPhotoBox = docPhotoRequiredNow || Boolean(docDraftUri);
 
   /** Authoritative gate: Cashfree/session verified OR server verified for this number. */
   const docIsElectronicallyVerified = docVerifiedElectronically;
@@ -1162,11 +1189,7 @@ export default function DlRcScreen() {
     !submitting &&
     (docIsElectronicallyVerified ||
       (docElectronic
-        ? (docEv.phase === "failed" ||
-            docEv.phase === "manual" ||
-            docEv.phase === "mismatch" ||
-            rcVerifiedNeedsPhoto) &&
-          docPhotoValid
+        ? (docEv.phase === "manual" || rcVerifiedNeedsPhoto) && docPhotoValid
         : docPhotoValid));
   const canContinueCategory =
     Boolean(selectedCategory?.isActive) &&
@@ -1580,7 +1603,7 @@ export default function DlRcScreen() {
       skippedOnboardingDocs: mergedData.skippedOnboardingDocs ?? [],
     };
     for (const stepDoc of vehicleOnboardingDocs) {
-      if (stepDoc.optional && isDocSkipped(mergedData, stepDoc.code)) continue;
+      if (isDocSkipped(mergedData, stepDoc.code)) continue;
       const saved = getDocUploadState(mergedData, stepDoc.code);
       if (stepDoc.requiresTextField && saved.textValue.trim()) {
         stepPayload[metadataKeyForDocText(stepDoc.code)] = saved.textValue.trim().toUpperCase();
@@ -1637,17 +1660,40 @@ export default function DlRcScreen() {
       leaveReuploadFlow();
       return;
     }
+
+    // EV that skipped RC must upload EV proof before bank.
+    const skippedRc = (mergedData.skippedOnboardingDocs ?? []).some((c) =>
+      /^(rc|registration_certificate|vehicle_rc)$/i.test(String(c)),
+    );
+    const evProof = getDocUploadState(mergedData, "ev_proof");
+    const rentalProof = getDocUploadState(mergedData, "rental_proof");
+    const needsEvProofGate =
+      isElectricOnboardingVehicle(selectedVehicleType) &&
+      skippedRc &&
+      !evProof.signedUrl &&
+      !rentalProof.signedUrl;
+    if (needsEvProofGate || (onboardingFlow === "rental_ev" && !evProof.signedUrl && !rentalProof.signedUrl)) {
+      router.replace("/(onboarding)/rental-ev");
+      return;
+    }
+
     router.replace("/(onboarding)/bank-account");
   };
 
   const handleDocStepSkip = async () => {
     if (!isOptionalDocStep || wizardStep === "category" || wizardStep === "vehicle") return;
+    if (isRcWizardStep && !isElectricVehicle) {
+      notifyOnboardingToast(
+        "RC is required for petrol vehicles. Only EV riders can skip RC and upload EV proof instead.",
+      );
+      return;
+    }
     const skipped = Array.from(new Set([...(data.skippedOnboardingDocs ?? []), wizardStep]));
     const mergedData = { ...data, skippedOnboardingDocs: skipped };
     await setData({ skippedOnboardingDocs: skipped });
     if (data.riderId) {
-      void saveStep
-        .mutateAsync({
+      try {
+        await saveStep.mutateAsync({
           riderId: data.riderId,
           step: "dl_rc",
           data: {
@@ -1658,8 +1704,10 @@ export default function DlRcScreen() {
             hasOwnVehicle: data.hasOwnVehicle,
             onboardingFlow: data.vehicleOnboardingFlow,
           },
-        })
-        .catch(() => undefined);
+        });
+      } catch {
+        // Local skip kept; finalize / next save will retry persistence.
+      }
     }
     const isLastDoc = currentDocIndex >= vehicleOnboardingDocs.length - 1;
     if (!isLastDoc) {
@@ -1769,12 +1817,12 @@ export default function DlRcScreen() {
           if (data.riderId) {
             void queryClient.invalidateQueries({ queryKey: ["rider", data.riderId] });
           }
-          if (!isLastDoc) {
-            advanceToDocStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
-            return;
-          }
           if (isReupload) {
             leaveReuploadFlow();
+            return;
+          }
+          if (!isLastDoc) {
+            advanceToDocStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
             return;
           }
           setSubmitting(true);
@@ -1794,12 +1842,12 @@ export default function DlRcScreen() {
       }
 
       if (docAlreadyComplete) {
-        if (!isLastDoc) {
-          advanceToDocStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
-          return;
-        }
         if (isReupload) {
           leaveReuploadFlow();
+          return;
+        }
+        if (!isLastDoc) {
+          advanceToDocStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
           return;
         }
         if (!data.riderId) {
@@ -1949,13 +1997,13 @@ export default function DlRcScreen() {
 
       await setData(mergedAfterUpload);
 
-      if (!isLastDoc) {
-        advanceToDocStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
+      if (isReupload) {
+        leaveReuploadFlow();
         return;
       }
 
-      if (isReupload) {
-        leaveReuploadFlow();
+      if (!isLastDoc) {
+        advanceToDocStep(vehicleOnboardingDocs[currentDocIndex + 1]!.code);
         return;
       }
 
@@ -1992,8 +2040,15 @@ export default function DlRcScreen() {
                 <HeaderSkipLink
                   label={tx("skipOptionalDoc")}
                   onPress={() => void handleDocStepSkip()}
-                  disabled={!isOptionalDocStep || uploading || submitting || saveStep.isPending}
-                  hidden={!isOptionalDocStep}
+                  disabled={
+                    !isOptionalDocStep ||
+                    docVerifiedElectronically ||
+                    uploading ||
+                    submitting ||
+                    saveStep.isPending
+                  }
+                  // Hide Skip once this document is already verified — rider must Continue, not skip.
+                  hidden={!isOptionalDocStep || docVerifiedElectronically || isReupload}
                 />
               ) : (
                 <View style={form.headerSkipSpacer} />
@@ -2202,8 +2257,11 @@ export default function DlRcScreen() {
                     hidePhotos={
                       docElectronic
                         ? docIsElectronicallyVerified ||
-                          (docEv.phase === "idle" && !docDraftUri) ||
-                          (docEv.phase === "verifying" && !docDraftUri)
+                          !(
+                            docEv.phase === "manual" ||
+                            rcVerifiedNeedsPhoto ||
+                            Boolean(docDraftUri)
+                          )
                         : false
                     }
                     hideChecklist={wizardStep === "dl" || wizardStep === "rc"}
@@ -2220,6 +2278,8 @@ export default function DlRcScreen() {
                             docEv.phase === "verifying"
                           }
                           onVerify={() => void runDocElectronicVerify()}
+                          onUploadManually={() => setDocEv({ phase: "manual" })}
+                          allowManualUpload
                           verifyLabel={
                             wizardStep === "rc"
                               ? "Verify Instantly"
@@ -2227,6 +2287,7 @@ export default function DlRcScreen() {
                                 ? "Verify Instantly"
                                 : "Verify"
                           }
+                          retryLabel="Verify again"
                           documentLabel={
                             wizardStep === "dl"
                               ? "driving licence"
@@ -2256,11 +2317,13 @@ export default function DlRcScreen() {
                     label={
                       uploading
                         ? tx("uploading")
-                        : continueToNextDocLabel(
-                            vehicleOnboardingDocs,
-                            currentDocIndex,
-                            tx("continue")
-                          )
+                        : isReupload
+                          ? "Save & close"
+                          : continueToNextDocLabel(
+                              vehicleOnboardingDocs,
+                              currentDocIndex,
+                              tx("continue")
+                            )
                     }
                     onPress={() => void handleDocStepContinue()}
                     disabled={!canContinueDoc}

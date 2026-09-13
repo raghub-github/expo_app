@@ -72,7 +72,7 @@ export default function OnboardingReferralScreen() {
     // Confirmed OFF in dashboard — skip prompt for this rider.
     if (config.referralEnabled !== true) {
       await setData({ referralPromptHandled: true, skippedReferral: true });
-      router.replace("/(onboarding)/aadhaar");
+      router.replace("/(onboarding)/location");
       return;
     }
 
@@ -116,7 +116,7 @@ export default function OnboardingReferralScreen() {
         skippedReferral: true,
         referralCode: undefined,
       });
-      router.replace("/(onboarding)/aadhaar");
+      router.replace("/(onboarding)/location");
     } catch {
       setApplying(false);
     }
@@ -189,7 +189,7 @@ export default function OnboardingReferralScreen() {
           skippedReferral: false,
           referralCode: verifiedCode,
         });
-        router.replace("/(onboarding)/aadhaar");
+        router.replace("/(onboarding)/location");
         return;
       }
 
@@ -199,7 +199,7 @@ export default function OnboardingReferralScreen() {
           skippedReferral: true,
           referralCode: undefined,
         });
-        router.replace("/(onboarding)/aadhaar");
+        router.replace("/(onboarding)/location");
         return;
       }
 

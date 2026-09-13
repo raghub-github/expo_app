@@ -61,11 +61,17 @@ export async function getMerchantStoreNativeFcmTokens(
   storeId: number
 ): Promise<string[]> {
   try {
+    // CRITICAL: exclude partnersite/dashboard/browser web FCM tokens.
+    // Those share the merchant user_id; treating them as "native" made
+    // selectMerchantPushDelivery drop Expo phone tokens, so killed/background
+    // pushes only hit the browser and the Partner app never rang.
     const rows = await sql`
       SELECT DISTINCT nd.native_token AS token
       FROM public.native_device_push_tokens nd
       WHERE nd.token_type = 'fcm'
         AND lower(nd.role) = 'merchant'
+        AND lower(coalesce(nd.platform, '')) <> 'web'
+        AND lower(coalesce(nd.source, '')) NOT IN ('partnersite', 'browser', 'dashboard')
         AND (
           nd.store_id = ${storeId}
           OR nd.user_id IN (
@@ -100,8 +106,11 @@ function flattenPushData(data: Record<string, unknown> | undefined): Record<stri
   return out;
 }
 
-async function sendMerchantNativeFcm(tokens: string[], payload: PushPayload): Promise<void> {
-  if (!tokens.length) return;
+async function sendMerchantNativeFcm(
+  tokens: string[],
+  payload: PushPayload
+): Promise<{ ok: boolean; deadTokens: string[] }> {
+  if (!tokens.length) return { ok: false, deadTokens: [] };
   const data = flattenPushData(payload.data);
   const deepLink =
     typeof payload.data?.url === "string"
@@ -113,28 +122,53 @@ async function sendMerchantNativeFcm(tokens: string[], payload: PushPayload): Pr
           : null;
   const isNewOrderAlert = payload.channelId === "merchant_new_orders_alert";
   const playSound = payload.playSound !== false;
-  await Promise.all(
-    tokens.map((token) =>
-      sendFcmV1({
-        notificationId: randomUUID(),
-        token,
-        title: payload.title,
-        body: payload.body,
-        channelId: payload.channelId ?? "merchant_default",
-        sound: isNewOrderAlert ? "notification" : playSound ? "default" : null,
-        playSound,
-        // Killed / background: always include Android notification block.
-        silent: false,
-        sticky: payload.sticky === true,
-        appRole: "merchant",
-        priority: isNewOrderAlert ? "critical" : "high",
-        collapseKey: payload.collapseKey ?? null,
-        tag: payload.tag ?? null,
-        data,
-        deepLink,
-      }).catch(() => ({ ok: false as const }))
-    )
+  const results = await Promise.all(
+    tokens.map(async (token) => {
+      try {
+        const res = await sendFcmV1({
+          notificationId: randomUUID(),
+          token,
+          title: payload.title,
+          body: payload.body,
+          channelId: payload.channelId ?? "merchant_default",
+          sound: isNewOrderAlert ? "notification" : playSound ? "default" : null,
+          playSound,
+          // Killed / background: always include Android notification block.
+          silent: false,
+          sticky: payload.sticky === true,
+          appRole: "merchant",
+          priority: isNewOrderAlert ? "critical" : "high",
+          collapseKey: payload.collapseKey ?? null,
+          tag: payload.tag ?? null,
+          data,
+          deepLink,
+        });
+        return { token, res };
+      } catch {
+        return { token, res: { ok: false as const, errorCode: "FCM_THROW", errorMessage: "send failed" } };
+      }
+    })
   );
+  const { isTerminalPushDeliveryError, purgeInvalidPushTokens } = await import(
+    "../modules/push/purgeInvalidPushTokens.js"
+  );
+  const deadTokens = results
+    .filter(
+      ({ res }) =>
+        !res.ok &&
+        isTerminalPushDeliveryError(
+          "errorCode" in res ? res.errorCode : null,
+          "errorMessage" in res ? res.errorMessage : null
+        )
+    )
+    .map(({ token }) => token);
+  if (deadTokens.length > 0) {
+    void purgeInvalidPushTokens(deadTokens);
+  }
+  return {
+    ok: results.some(({ res }) => res.ok),
+    deadTokens,
+  };
 }
 
 async function sendMerchantExpoPush(tokens: string[], payload: PushPayload): Promise<void> {
@@ -142,33 +176,70 @@ async function sendMerchantExpoPush(tokens: string[], payload: PushPayload): Pro
   const expoTokens = tokens.filter((t) => isExpoPushTokenString(t));
   if (!expoTokens.length) return;
   const silent = payload.playSound === false;
-  const messages = expoTokens.map((to) => ({
-    to,
-    sound: payload.channelId === "merchant_new_orders_alert" ? "notification" : silent ? null : "default",
-    title: payload.title,
-    body: payload.body,
-    data: {
-      ...(payload.data ?? {}),
-      skip_in_app_banner: true,
-      appRole: "merchant",
-      sticky: payload.sticky === true ? "true" : "false",
-    },
-    priority: "high" as const,
-    channelId: payload.channelId ?? "merchant_default",
-    collapseId: payload.collapseKey ?? undefined,
-  }));
+  const sound =
+    payload.channelId === "merchant_new_orders_alert"
+      ? "notification"
+      : silent
+        ? null
+        : "default";
   try {
-    await fetch("https://exp.host/--/api/v2/push/send", {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Accept-Encoding": "gzip, deflate",
-        "Content-Type": "application/json",
+    const { deliverExpoPush } = await import("../modules/push/deliverExpoPush.js");
+    await deliverExpoPush({
+      to: expoTokens,
+      title: payload.title,
+      body: payload.body,
+      sound,
+      channelId: payload.channelId ?? "merchant_default",
+      collapseKey: payload.collapseKey ?? undefined,
+      // Merchant kitchen alerts must not sit in BullMQ if the worker is down.
+      forceInline: true,
+      data: {
+        ...(payload.data ?? {}),
+        skip_in_app_banner: true,
+        appRole: "merchant",
+        sticky: payload.sticky === true ? "true" : "false",
       },
-      body: JSON.stringify(messages),
+      screen:
+        typeof payload.data?.url === "string"
+          ? String(payload.data.url)
+          : typeof payload.data?.screen === "string"
+            ? String(payload.data.screen)
+            : undefined,
     });
-  } catch {
-    /* best-effort */
+  } catch (e) {
+    console.warn(
+      "[merchant-push] Expo deliver failed; raw fallback",
+      (e as Error)?.message ?? e
+    );
+    // Emergency raw send if queue/inline path throws.
+    const messages = expoTokens.map((to) => ({
+      to,
+      sound,
+      title: payload.title,
+      body: payload.body,
+      data: {
+        ...(payload.data ?? {}),
+        skip_in_app_banner: true,
+        appRole: "merchant",
+        sticky: payload.sticky === true ? "true" : "false",
+      },
+      priority: "high" as const,
+      channelId: payload.channelId ?? "merchant_default",
+      collapseId: payload.collapseKey ?? undefined,
+    }));
+    try {
+      await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Accept-Encoding": "gzip, deflate",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(messages),
+      });
+    } catch {
+      /* best-effort */
+    }
   }
 }
 
@@ -372,9 +443,25 @@ async function notifyMerchantStore(
     tag: args.tag,
     playSound: args.playSound,
   };
-  // Dual-token devices get native FCM only (see selectMerchantPushDelivery) — no double-notify.
-  if (expoTokens.length > 0) await sendMerchantExpoPush(expoTokens, pushPayload);
-  if (nativeTokens.length > 0) await sendMerchantNativeFcm(nativeTokens, pushPayload);
+  // Prefer native FCM when present (avoids dual-token double tray). If every
+  // native send fails (stale/unregistered token), fall back to Expo so
+  // background/killed new-order alerts are not black-holed.
+  if (nativeTokens.length > 0) {
+    const nativeResult = await sendMerchantNativeFcm(nativeTokens, pushPayload);
+    if (!nativeResult.ok) {
+      const expoFallback = [
+        ...new Set(expoCandidateTokens.filter((t) => isExpoPushTokenString(t))),
+      ];
+      if (expoFallback.length > 0 && args.skipExpo !== true) {
+        console.warn(
+          `[merchant-push] native FCM failed for store=${args.storeId}; falling back to ${expoFallback.length} Expo token(s)`
+        );
+        await sendMerchantExpoPush(expoFallback, { ...pushPayload, skipExpo: false });
+      }
+    }
+  } else if (expoTokens.length > 0) {
+    await sendMerchantExpoPush(expoTokens, pushPayload);
+  }
 }
 
 async function getMerchantStoreScopedNativeFcmTokens(
@@ -388,6 +475,8 @@ async function getMerchantStoreScopedNativeFcmTokens(
       WHERE nd.token_type = 'fcm'
         AND lower(nd.role) = 'merchant'
         AND nd.store_id = ${storeId}
+        AND lower(coalesce(nd.platform, '')) <> 'web'
+        AND lower(coalesce(nd.source, '')) NOT IN ('partnersite', 'browser', 'dashboard')
         AND (nd.last_seen_at IS NULL OR nd.last_seen_at >= now() - interval '90 days')
     `;
     const scoped = [
@@ -557,7 +646,19 @@ export async function notifyMerchantStoreStatus(
     `[STORE_STATUS_NOTIFICATION] merchantId=${merchantId ?? ""} storeId=${storeId} storeName=${storeName ?? "Your store"} state=${state} source=FCM notificationId=${STORE_STATUS_FCM_TAG} action=POSTED eventId=${eventId} body=${body.slice(0, 80)}`
   );
   if (nativeTokens.length > 0) {
-    await sendMerchantNativeFcm(nativeTokens, pushPayload);
+    const nativeResult = await sendMerchantNativeFcm(nativeTokens, pushPayload);
+    if (!nativeResult.ok) {
+      const expoFallback =
+        expoTokens.length > 0
+          ? expoTokens
+          : [...new Set((await getMerchantStorePushTokens(sql, storeId)).filter((t) => isExpoPushTokenString(t)))];
+      if (expoFallback.length > 0) {
+        console.warn(
+          `[STORE_STATUS_NOTIFICATION] native FCM failed for store=${storeId}; falling back to Expo`
+        );
+        await sendMerchantExpoPush(expoFallback, { ...pushPayload, skipExpo: false });
+      }
+    }
     return;
   }
   await sendMerchantExpoPush(expoTokens, pushPayload);
@@ -654,6 +755,8 @@ export async function notifyMerchantNewRating(
     actionUrl,
     channelId: "merchant_order_lifecycle",
     playSound: true,
+    collapseKey: `gm_rating_${args.foodOrderId ?? args.displayOrderId}`,
+    tag: `merchant-rating-${args.foodOrderId ?? args.displayOrderId}`,
     pushData: {
       type: "merchant_rating",
       orderId: args.displayOrderId,
@@ -691,6 +794,8 @@ export async function notifyMerchantNewComplaint(
     channelId: "merchant_complaints",
     playSound: true,
     actionUrl: "/(tabs)/complaints",
+    collapseKey: `gm_complaint_${args.storeId}_${Date.now()}`,
+    tag: `merchant-complaint-${args.storeId}-${Date.now()}`,
     pushData: {
       type: "merchant_complaint",
       url: "/(tabs)/complaints",
@@ -783,6 +888,9 @@ export async function notifyMerchantRiderAssigned(
     actionUrl,
     channelId: "merchant_order_lifecycle",
     skipInbox: true,
+    playSound: true,
+    collapseKey: `gm_rider_assigned_${args.foodOrderId ?? args.displayOrderId}`,
+    tag: `merchant-rider-assigned-${args.foodOrderId ?? args.displayOrderId}`,
     pushData: {
       type: "merchant_rider_assigned",
       stage: "RIDER_ASSIGNED",
@@ -827,6 +935,9 @@ export async function notifyMerchantRiderReachedPickup(
     orderId: args.foodOrderId,
     actionUrl,
     channelId: "merchant_order_lifecycle",
+    playSound: true,
+    collapseKey: `gm_rider_pickup_${args.foodOrderId ?? args.displayOrderId}`,
+    tag: `merchant-rider-pickup-${args.foodOrderId ?? args.displayOrderId}`,
     pushData: {
       type: "merchant_rider_pickup",
       refreshLiveOrders: true,
@@ -880,6 +991,9 @@ export async function notifyMerchantRiderFreeWaitExceeded(
     orderId: args.foodOrderId,
     actionUrl,
     channelId: "merchant_order_lifecycle",
+    playSound: true,
+    collapseKey: `gm_rider_wait_${args.foodOrderId}`,
+    tag: `merchant-rider-wait-${args.foodOrderId}`,
     pushData: {
       type: "merchant_rider_wait_priority",
       refreshLiveOrders: true,
@@ -1065,48 +1179,38 @@ export async function notifyMerchantOrderLifecycle(
     args.foodOrderId != null
       ? merchantAppOrderHref(args.foodOrderId)
       : merchantAppOrdersTabHref(stage);
+  const orderKey = args.foodOrderId ?? args.displayOrderId;
 
-  // Kitchen stage changes update the Zomato-style sticky only
-  // (🍳 preparing / ✅ ready / 🛵 out) — no separate "Order #X is ready" heads-up.
-  const kitchenStickyOnly = new Set([
-    "PREPARING",
-    "ACCEPTED",
-    "READY",
-    "READY_FOR_PICKUP",
-    "OUT_FOR_DELIVERY",
-    "PICKED_UP",
-    "HANDED_OVER",
-    "IN_TRANSIT",
-    "DISPATCHED",
-  ]);
-
-  if (!kitchenStickyOnly.has(stage)) {
-    await notifyMerchantStore(sql, {
-      storeId: args.storeId,
-      type: "order",
-      title: copy.title,
-      body: copy.body,
-      orderId: args.foodOrderId,
-      actionUrl,
-      channelId: "merchant_order_lifecycle",
-      skipInbox: stage !== "CANCELLED" && stage !== "DELIVERED",
-      skipNative: stage === "CANCELLED",
-      pushData: {
-        type: "merchant_order_lifecycle",
-        stage,
-        refreshLiveOrders: true,
-        activeOrdersCount,
-        preparing: breakdown.preparing,
-        ready: breakdown.ready,
-        outForDelivery: breakdown.out_for_delivery,
-        pendingAccept: breakdown.pending_accept,
-        stickySubtitle: copy.subtitle,
-        orderId: args.displayOrderId,
-        foodOrderId: args.foodOrderId,
-        url: actionUrl,
-      },
-    });
-  }
+  // Always send a heads-up lifecycle push (preparing / ready / out / cancel / …)
+  // PLUS update the ONLINE sticky. Sticky-only was silencing Partner when the
+  // app was backgrounded/killed — merchants only saw "🍳 N preparing" updates.
+  await notifyMerchantStore(sql, {
+    storeId: args.storeId,
+    type: "order",
+    title: copy.title,
+    body: copy.body,
+    orderId: args.foodOrderId,
+    actionUrl,
+    channelId: "merchant_order_lifecycle",
+    playSound: true,
+    skipInbox: stage !== "CANCELLED" && stage !== "DELIVERED",
+    collapseKey: `gm_lifecycle_${orderKey}_${stage}`,
+    tag: `merchant-lifecycle-${orderKey}-${stage}`,
+    pushData: {
+      type: "merchant_order_lifecycle",
+      stage,
+      refreshLiveOrders: true,
+      activeOrdersCount,
+      preparing: breakdown.preparing,
+      ready: breakdown.ready,
+      outForDelivery: breakdown.out_for_delivery,
+      pendingAccept: breakdown.pending_accept,
+      stickySubtitle: copy.subtitle,
+      orderId: args.displayOrderId,
+      foodOrderId: args.foodOrderId,
+      url: actionUrl,
+    },
+  });
 
   // Keep the persistent ONLINE sticky in sync (Prep / Ready / Out counts).
   // Includes CANCELLED/DELIVERED so zeroed stages auto-hide and idle returns

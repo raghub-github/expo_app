@@ -60,6 +60,16 @@ interface Rider {
   vehicleChoice?: string | null;
   city: string | null;
   state: string | null;
+  district?: string | null;
+  region?: string | null;
+  pincode?: string | null;
+  address?: string | null;
+  registeredCity?: string | null;
+  registeredState?: string | null;
+  registeredRegion?: string | null;
+  registeredDistrict?: string | null;
+  registeredPincode?: string | null;
+  registeredAddress?: string | null;
   createdAt: string;
   updatedAt: string;
   panSkipOverride?: boolean | null;
@@ -119,6 +129,29 @@ function isElectronicallyVerifiedMethod(method: string | null | undefined): bool
   return isAppVerifiedMethod(method) || isDashboardElectronicMethod(method);
 }
 
+function formatRiderAddressLine(parts: {
+  address?: string | null;
+  district?: string | null;
+  city?: string | null;
+  region?: string | null;
+  state?: string | null;
+  pincode?: string | null;
+}): string {
+  const primary = String(parts.address || "").trim();
+  if (primary) {
+    const pin = String(parts.pincode || "").trim();
+    return pin && !primary.includes(pin) ? `${primary}, ${pin}` : primary;
+  }
+  const list = [parts.district, parts.city, parts.region, parts.state, parts.pincode]
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+  const deduped: string[] = [];
+  for (const p of list) {
+    if (deduped[deduped.length - 1]?.toLowerCase() !== p.toLowerCase()) deduped.push(p);
+  }
+  return deduped.length ? deduped.join(", ") : "—";
+}
+
 function verificationMethodBadge(method: string | null | undefined): {
   label: string;
   className: string;
@@ -151,6 +184,21 @@ interface OnboardingPayment {
   createdAt: string;
 }
 
+interface WorkingLocationHistoryEntry {
+  id: number;
+  state: string | null;
+  region: string | null;
+  district: string | null;
+  city: string | null;
+  pincode: string | null;
+  address: string | null;
+  lat: number | null;
+  lon: number | null;
+  source: string | null;
+  isCurrent: boolean;
+  changedAt: string;
+}
+
 interface PaymentMethod {
   id: number;
   methodType: string;
@@ -172,6 +220,7 @@ interface RiderData {
   vehicle?: VehicleInfo | null;
   onboardingPayments?: OnboardingPayment[];
   paymentMethods?: PaymentMethod[];
+  workingLocationHistory?: WorkingLocationHistoryEntry[];
 }
 
 const DOCUMENT_LABELS: Record<string, string> = {
@@ -288,13 +337,99 @@ function readSkippedOnboardingDocs(documents: Document[] | null | undefined): st
   return meta.skippedOnboardingDocs.map((c) => String(c || "").trim()).filter(Boolean);
 }
 
+function readVehicleOnboardingContext(args: {
+  documents: Document[] | null | undefined;
+  vehicleChoice?: string | null;
+  fuelType?: string | null;
+}): {
+  flow: "dl_rc" | "rental_ev" | "payment" | null;
+  vehicleChoice: string | null;
+} {
+  const selection = (args.documents || []).find(
+    (d) => d.docType === "onboarding_vehicle_selection",
+  );
+  const meta = (selection?.metadata || {}) as Record<string, unknown>;
+  const rawFlow = String(
+    meta.vehicleOnboardingFlow || meta.onboardingFlow || meta.flow || "",
+  )
+    .trim()
+    .toLowerCase();
+  let flow: "dl_rc" | "rental_ev" | "payment" | null =
+    rawFlow === "dl_rc" || rawFlow === "rental_ev" || rawFlow === "payment"
+      ? rawFlow
+      : null;
+
+  const choice = String(
+    meta.vehicleChoice || args.vehicleChoice || args.fuelType || "",
+  )
+    .trim()
+    .toLowerCase();
+
+  const docs = args.documents || [];
+  const hasDlOrRc = docs.some((d) => {
+    const t = String(d.docType || "").toLowerCase();
+    return t === "dl" || t.startsWith("dl_") || t === "rc";
+  });
+  const hasRentalOrEv = docs.some((d) => {
+    const t = String(d.docType || "").toLowerCase();
+    return t === "rental_proof" || t === "ev_proof";
+  });
+
+  if (!flow) {
+    if (hasRentalOrEv && !hasDlOrRc) flow = "rental_ev";
+    else if (hasDlOrRc) flow = "dl_rc";
+    else if (/rental|ev_bike|ev-bike/.test(choice)) flow = "rental_ev";
+    else if (choice) flow = "dl_rc";
+  }
+
+  return { flow, vehicleChoice: choice || null };
+}
+
+/** Whether this doc type is needed for the rider's vehicle path (missing → not "Pending"). */
+function isDocTypeNeededForVehicle(
+  docType: string,
+  ctx: { flow: "dl_rc" | "rental_ev" | "payment" | null },
+): "required" | "optional" | "not_needed" {
+  const t = docType.toLowerCase();
+
+  if (t === "bank_proof" || t === "bank_account") return "optional";
+  if (t === "insurance" || t === "vehicle_image" || t === "upi_qr_proof") {
+    return "optional";
+  }
+
+  if (t === "rental_proof" || t === "ev_proof") {
+    if (ctx.flow === "rental_ev") return "required";
+    return "not_needed";
+  }
+
+  if (t === "dl" || t.startsWith("dl_") || t === "rc") {
+    if (ctx.flow === "rental_ev") return "not_needed";
+    // Default / own-vehicle path expects DL+RC.
+    if (ctx.flow === "dl_rc" || ctx.flow == null) return "required";
+    return "not_needed";
+  }
+
+  // Identity docs are always in scope for verification.
+  if (
+    t.startsWith("aadhaar") ||
+    t === "pan" ||
+    t === "selfie" ||
+    t === "profile_photo"
+  ) {
+    return "required";
+  }
+
+  return "optional";
+}
+
 function resolveDocBlockMeta(
   doc: Document | null | undefined,
   docType: string,
   panSkipOverride: boolean,
   skippedOnboardingDocs: string[] = [],
+  need: "required" | "optional" | "not_needed" = "optional",
 ): {
-  status: "verified" | "pending" | "rejected" | "skipped" | "missing";
+  status: "verified" | "pending" | "rejected" | "skipped" | "missing" | "not_required";
   statusLabel: string;
   subtitle?: string | null;
 } {
@@ -313,6 +448,8 @@ function resolveDocBlockMeta(
     (skippedSet.has(docType.toLowerCase()) ||
       (docType.startsWith("dl") && skippedSet.has("dl")) ||
       (docType === "rc" && skippedSet.has("rc")) ||
+      ((docType === "bank_proof" || docType === "bank_account") &&
+        (skippedSet.has("bank_proof") || skippedSet.has("bank_account"))) ||
       (docType.startsWith("aadhaar") && skippedSet.has("aadhaar")));
   if (isSkippedByRider && (!doc || !doc.fileUrl || doc.fileUrl === "pending" || isNonImageFileRef(doc.fileUrl))) {
     return {
@@ -335,10 +472,29 @@ function resolveDocBlockMeta(
           : "Manual",
     };
   }
+  // Submitted but not verified — always show Pending (even if type is usually optional).
   if (doc) {
     return { status: "pending", statusLabel: "Pending", subtitle: "Awaiting verification" };
   }
-  return { status: "missing", statusLabel: "Pending", subtitle: "No document uploaded" };
+  if (need === "not_needed") {
+    return {
+      status: "not_required",
+      statusLabel: "Not required",
+      subtitle: "Not needed for this vehicle type",
+    };
+  }
+  if (need === "optional") {
+    return {
+      status: "missing",
+      statusLabel: "Not uploaded",
+      subtitle: "Optional — no document uploaded",
+    };
+  }
+  return {
+    status: "missing",
+    statusLabel: "Missing",
+    subtitle: "Required — no document uploaded",
+  };
 }
 
 export default function RiderOnboardingClient() {
@@ -1140,6 +1296,34 @@ export default function RiderOnboardingClient() {
 
   const isAlreadyVerified = riderData.rider.onboardingStage === "ACTIVE" && riderData.rider.kycStatus === "APPROVED";
   const isBlocked = riderData.rider.status === "BLOCKED" || riderData.rider.status === "BANNED";
+  const vehicleDocCtx = readVehicleOnboardingContext({
+    documents: riderData.documents,
+    vehicleChoice: riderData.rider.vehicleChoice,
+    fuelType: riderData.vehicle?.fuelType,
+  });
+  const skippedOnboardingDocs = readSkippedOnboardingDocs(riderData.documents);
+  const allDocTypesForPending = [
+    ...DOCUMENT_SECTIONS.identity,
+    ...DOCUMENT_SECTIONS.vehicle,
+    ...DOCUMENT_SECTIONS.additional,
+  ];
+  const pendingVerificationDocs = allDocTypesForPending
+    .map((docType) => {
+      const doc = getLatestDocument(docType);
+      const need = isDocTypeNeededForVehicle(docType, vehicleDocCtx);
+      const meta = resolveDocBlockMeta(
+        doc,
+        docType,
+        Boolean(riderData.rider.panSkipOverride),
+        skippedOnboardingDocs,
+        need,
+      );
+      return meta.status === "pending"
+        ? { docType, label: DOCUMENT_LABELS[docType] || docType }
+        : null;
+    })
+    .filter((x): x is { docType: string; label: string } => Boolean(x));
+  const hasPendingVerification = pendingVerificationDocs.length > 0;
   const riderInitials = (riderData.rider.name || "R")
     .trim()
     .split(/\s+/)
@@ -1173,10 +1357,25 @@ export default function RiderOnboardingClient() {
             <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-medium text-gray-700">
               {ONBOARDING_STAGE_LABELS[riderData.rider.onboardingStage] ?? riderData.rider.onboardingStage}
             </span>
+            {hasPendingVerification ? (
+              <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-800 ring-1 ring-rose-200">
+                Verification pending · {pendingVerificationDocs.length}
+              </span>
+            ) : null}
           </div>
         </div>
         <button
-          onClick={() => router.push("/dashboard/riders")}
+          onClick={() => {
+            const returnTo =
+              typeof window !== "undefined"
+                ? new URLSearchParams(window.location.search).get("returnTo")
+                : null;
+            if (returnTo && returnTo.startsWith("/dashboard/riders")) {
+              router.push(returnTo);
+              return;
+            }
+            router.push("/dashboard/riders");
+          }}
           className="shrink-0 rounded-lg border border-gray-300 bg-white/80 px-4 py-2.5 text-sm font-semibold text-gray-800"
         >
           ← Back to riders
@@ -1184,7 +1383,29 @@ export default function RiderOnboardingClient() {
       </div>
 
       {/* Warning Banners */}
-      {isAlreadyVerified && (
+      {hasPendingVerification && (
+        <div className="rounded-2xl border border-rose-300 bg-rose-50/95 p-4 shadow-sm backdrop-blur">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-rose-600" />
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-rose-900">
+                Verification pending
+              </h3>
+              <p className="mt-1 text-sm text-rose-800">
+                {pendingVerificationDocs.length} document
+                {pendingVerificationDocs.length === 1 ? "" : "s"} submitted and awaiting
+                review
+                {pendingVerificationDocs.length
+                  ? `: ${pendingVerificationDocs.map((d) => d.label).join(", ")}`
+                  : ""}
+                . Highlighted cards below need action.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isAlreadyVerified && !hasPendingVerification && (
         <div className="rounded-2xl border border-emerald-200/80 bg-emerald-50/90 p-4 shadow-sm backdrop-blur">
           <div className="flex items-start gap-3">
             <CheckCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-emerald-600" />
@@ -1192,6 +1413,22 @@ export default function RiderOnboardingClient() {
               <h3 className="text-sm font-semibold text-emerald-900">Rider already verified</h3>
               <p className="mt-1 text-sm text-emerald-800">
                 Onboarding is complete and documents are verified. Re-run verification only when required.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isAlreadyVerified && hasPendingVerification && (
+        <div className="rounded-2xl border border-amber-200/80 bg-amber-50/90 p-4 shadow-sm backdrop-blur">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-600" />
+            <div>
+              <h3 className="text-sm font-semibold text-amber-900">
+                Rider active — some documents still pending
+              </h3>
+              <p className="mt-1 text-sm text-amber-800">
+                Account is active, but the highlighted documents below still need verification.
               </p>
             </div>
           </div>
@@ -1239,22 +1476,47 @@ export default function RiderOnboardingClient() {
           </div>
         </div>
         <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-2 sm:p-6 md:grid-cols-3 lg:grid-cols-4">
-          {[
-            ["Rider ID", `GMR${riderData.rider.id}`],
-            ["Name", riderData.rider.name || "—"],
-            ["Mobile", riderData.rider.mobile],
-            ["Onboarding stage", ONBOARDING_STAGE_LABELS[riderData.rider.onboardingStage] ?? riderData.rider.onboardingStage],
-            ["KYC status", riderData.rider.kycStatus],
-            ["Account status", riderData.rider.status],
-            ["City", riderData.rider.city || "—"],
-            ["State", riderData.rider.state || "—"],
-          ].map(([label, value]) => (
+          {(
+            [
+              ["Rider ID", `GMR${riderData.rider.id}`, false],
+              ["Name", riderData.rider.name || "—", false],
+              ["Mobile", riderData.rider.mobile, false],
+              [
+                "Onboarding stage",
+                ONBOARDING_STAGE_LABELS[riderData.rider.onboardingStage] ??
+                  riderData.rider.onboardingStage,
+                false,
+              ],
+              ["KYC status", riderData.rider.kycStatus, false],
+              ["Account status", riderData.rider.status, false],
+              [
+                "Registered Address",
+                formatRiderAddressLine({
+                  address: riderData.rider.registeredAddress,
+                  district: riderData.rider.registeredDistrict,
+                  city: riderData.rider.registeredCity,
+                  region: riderData.rider.registeredRegion,
+                  state: riderData.rider.registeredState,
+                  pincode: riderData.rider.registeredPincode,
+                }),
+                true,
+              ],
+            ] as Array<[string, string, boolean]>
+          ).map(([label, value, wide]) => (
             <div
               key={label}
-              className="rounded-2xl border border-gray-100 bg-gradient-to-b from-gray-50/80 to-white px-4 py-3"
+              className={`rounded-2xl border border-gray-100 bg-gradient-to-b from-gray-50/80 to-white px-4 py-3${
+                wide ? " sm:col-span-2 lg:col-span-2" : ""
+              }`}
             >
               <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">{label}</p>
-              <p className="mt-1 truncate text-sm font-semibold text-gray-900">{value}</p>
+              <p
+                className={`mt-1 text-sm font-semibold text-gray-900${
+                  wide ? " break-words" : " truncate"
+                }`}
+              >
+                {value}
+              </p>
             </div>
           ))}
           {(riderData.vehicle || riderData.rider.vehicleChoice) && (
@@ -1296,6 +1558,118 @@ export default function RiderOnboardingClient() {
           )}
         </div>
       </div>
+
+      {/* Working Address — current + previous history (above Onboarding fees) */}
+      {(() => {
+        const workingLine = formatRiderAddressLine({
+          address: riderData.rider.address,
+          district: riderData.rider.district,
+          city: riderData.rider.city,
+          region: riderData.rider.region,
+          state: riderData.rider.state,
+          pincode: riderData.rider.pincode,
+        });
+        const history = riderData.workingLocationHistory ?? [];
+        const previous = history.filter((h) => !h.isCurrent);
+        const sourceLabel = (source: string | null | undefined) => {
+          switch (String(source || "").toLowerCase()) {
+            case "duty_update":
+              return "Duty update";
+            case "gps_auto":
+              return "GPS";
+            case "manual_select":
+              return "Manual select";
+            case "manual_other":
+              return "Manual other";
+            case "system_backfill":
+              return "System";
+            default:
+              return source || "—";
+          }
+        };
+        return (
+          <div className="overflow-hidden rounded-3xl border border-emerald-100 bg-white shadow-[0_18px_50px_-32px_rgba(10,35,66,0.3)]">
+            <div className="border-b border-emerald-100 bg-gradient-to-r from-emerald-50 to-white px-6 py-5">
+              <h2 className="text-lg font-semibold text-[#0A2342]">Working Address</h2>
+              <p className="mt-1 text-sm text-gray-500">
+                Current work area. Updates when the rider changes working location; previous areas stay in history.
+              </p>
+            </div>
+            <div className="space-y-4 p-6">
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50/40 px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+                    Current working address
+                  </p>
+                  <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-800">
+                    Current
+                  </span>
+                </div>
+                <p className="mt-1 text-sm font-semibold text-gray-900 break-words">{workingLine}</p>
+              </div>
+
+              {previous.length > 0 ? (
+                <div>
+                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                    Previous working addresses
+                  </p>
+                  <div className="overflow-x-auto rounded-2xl border border-gray-100">
+                    <table className="min-w-full divide-y divide-gray-100 text-sm">
+                      <thead className="bg-slate-50">
+                        <tr>
+                          <th className="px-3 py-2.5 text-left text-xs font-semibold text-gray-500">
+                            Address
+                          </th>
+                          <th className="px-3 py-2.5 text-left text-xs font-semibold text-gray-500">
+                            Source
+                          </th>
+                          <th className="px-3 py-2.5 text-left text-xs font-semibold text-gray-500">
+                            Changed
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100 bg-white">
+                        {previous.map((h) => (
+                          <tr key={h.id} className="hover:bg-slate-50/80">
+                            <td className="px-3 py-2.5 text-sm font-medium text-gray-900 break-words">
+                              {formatRiderAddressLine({
+                                address: h.address,
+                                district: h.district,
+                                city: h.city,
+                                region: h.region,
+                                state: h.state,
+                                pincode: h.pincode,
+                              })}
+                            </td>
+                            <td className="px-3 py-2.5 text-xs text-gray-600">
+                              {sourceLabel(h.source)}
+                            </td>
+                            <td className="px-3 py-2.5 text-xs text-gray-600 whitespace-nowrap">
+                              {h.changedAt
+                                ? new Date(h.changedAt).toLocaleString("en-IN", {
+                                    day: "numeric",
+                                    month: "short",
+                                    year: "numeric",
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })
+                                : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500">
+                  No previous working address yet. History appears after the rider changes their work location.
+                </p>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Onboarding Fees Section */}
       {riderData.onboardingPayments && riderData.onboardingPayments.length > 0 && (
@@ -1463,8 +1837,13 @@ export default function RiderOnboardingClient() {
                 : undefined;
             const title = aadhaarFrontLabel || DOCUMENT_LABELS[docType] || docType;
             const panSkip = Boolean(riderData.rider.panSkipOverride);
-            const skippedDocs = readSkippedOnboardingDocs(riderData.documents);
-            const meta = resolveDocBlockMeta(doc, docType, panSkip, skippedDocs);
+            const meta = resolveDocBlockMeta(
+              doc,
+              docType,
+              panSkip,
+              skippedOnboardingDocs,
+              isDocTypeNeededForVehicle(docType, vehicleDocCtx),
+            );
             const rawNumber =
               doc?.docNumber ||
               (docType === "aadhaar_front" || docType === "aadhaar_back"
@@ -1527,7 +1906,8 @@ export default function RiderOnboardingClient() {
               doc,
               docType,
               false,
-              readSkippedOnboardingDocs(riderData.documents),
+              skippedOnboardingDocs,
+              isDocTypeNeededForVehicle(docType, vehicleDocCtx),
             );
             return (
               <DocumentSummaryBlock
@@ -1563,7 +1943,8 @@ export default function RiderOnboardingClient() {
               doc,
               docType,
               false,
-              readSkippedOnboardingDocs(riderData.documents),
+              skippedOnboardingDocs,
+              isDocTypeNeededForVehicle(docType, vehicleDocCtx),
             );
             return (
               <DocumentSummaryBlock
@@ -1950,20 +2331,22 @@ function DocumentCard({
       : "?";
   const imageUrl = resolveDocumentPreviewUrl(document, fallbackPreviewUrl);
   const imageKey = imageUrl ? `${imageUrl}-${imageRefreshKey ?? document?.id ?? ""}` : "no-image";
+  const hasRealUpload =
+    (Boolean(document?.r2Key) && !isNonImageFileRef(document?.r2Key)) ||
+    (Boolean(document?.fileUrl) &&
+      !isNonImageFileRef(document!.fileUrl) &&
+      document!.fileUrl !== "pending" &&
+      !String(document!.fileUrl).startsWith("placeholder"));
+  // Only show image area when a real upload exists — hide for electronic-only verifies.
   const showPreview =
     Boolean(imageUrl) &&
     !previewBroken &&
+    hasRealUpload &&
     hasDocumentPreview(document, fallbackPreviewUrl);
 
   useEffect(() => {
     setPreviewBroken(false);
   }, [imageUrl, document?.id, imageRefreshKey]);
-  const hasRealUpload =
-    Boolean(document?.r2Key) ||
-    (Boolean(document?.fileUrl) &&
-      !isNonImageFileRef(document!.fileUrl) &&
-      document!.fileUrl !== "pending" &&
-      !String(document!.fileUrl).startsWith("placeholder"));
   const canApproveReject =
     Boolean(document) &&
     hasRealUpload &&
@@ -2065,7 +2448,7 @@ function DocumentCard({
         )}
       </div>
 
-      {document && showPreview ? (
+      {document && showPreview && imageUrl ? (
         <button
           type="button"
           onClick={onView}
@@ -2075,19 +2458,14 @@ function DocumentCard({
               : "group relative block h-28 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-100"
           }
         >
-          {imageUrl ? (
-            <img
-              key={imageKey}
-              src={imageUrl}
-              alt={DOCUMENT_LABELS[docType]}
-              className="h-full w-full object-cover object-center"
-              onError={() => setPreviewBroken(true)}
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center text-sm text-slate-400">
-              No image
-            </div>
-          )}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            key={imageKey}
+            src={imageUrl}
+            alt={DOCUMENT_LABELS[docType]}
+            className="h-full w-full object-cover object-center"
+            onError={() => setPreviewBroken(true)}
+          />
           <span className="absolute inset-0 flex items-center justify-center bg-black/0 transition group-hover:bg-black/25">
             <Eye className="h-5 w-5 text-white opacity-0 drop-shadow transition group-hover:opacity-100" />
           </span>
@@ -2132,72 +2510,77 @@ function DocumentCard({
             </p>
 
             {canOfferEmptyActions ? (
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {onUpload ? (
                   <button
                     type="button"
                     disabled={isLoading}
                     onClick={() => setUploadModalOpen(true)}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+                    className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
                   >
-                    <Upload className="h-3.5 w-3.5" />
+                    <Upload className="h-3.5 w-3.5 shrink-0" />
                     Upload manually
                   </button>
-                ) : (
-                  <div />
-                )}
+                ) : null}
                 {canEv ? (
                   <button
                     type="button"
                     disabled={isLoading}
                     onClick={() => setEvModalOpen(true)}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2.5 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+                    className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
                   >
                     Verify electronically
                   </button>
-                ) : (
-                  <div />
-                )}
+                ) : null}
               </div>
             ) : document && hasRealUpload && isManualUploadMethod(document.verificationMethod) ? (
-              <div className="flex flex-wrap items-center gap-1.5">
-                {document.r2Key ? (
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                {showPreview || document.r2Key || imageUrl ? (
                   <button
+                    type="button"
                     onClick={onView}
-                    className="rounded-md bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200"
+                    disabled={!showPreview && !imageUrl}
+                    className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
+                    <Eye className="h-3.5 w-3.5 shrink-0" />
                     View
                   </button>
                 ) : null}
                 <button
+                  type="button"
                   onClick={onEdit}
                   disabled={isLoading || isDisabled}
-                  className="rounded-md bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
                   title={isDisabled ? "Cannot edit - rider is blocked" : "Edit document"}
                 >
-                  <Edit className="h-3.5 w-3.5" />
+                  <Edit className="h-3.5 w-3.5 shrink-0" />
+                  Edit
                 </button>
                 {canApproveReject ? (
                   <>
                     <button
+                      type="button"
                       onClick={onApprove}
                       disabled={isLoading || isDisabled}
-                      className="rounded-md bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
                       title="Approve"
                     >
                       {isLoading ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
                       ) : (
-                        <CheckCircle className="h-3.5 w-3.5" />
+                        <CheckCircle className="h-3.5 w-3.5 shrink-0" />
                       )}
+                      Approve
                     </button>
                     <button
+                      type="button"
                       onClick={onReject}
                       disabled={isLoading || isDisabled}
-                      className="rounded-md bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
                       title="Reject"
                     >
-                      <XCircle className="h-3.5 w-3.5" />
+                      <XCircle className="h-3.5 w-3.5 shrink-0" />
+                      Reject
                     </button>
                   </>
                 ) : null}
@@ -2205,7 +2588,8 @@ function DocumentCard({
                   <button
                     type="button"
                     onClick={() => setEvModalOpen(true)}
-                    className="rounded-md bg-violet-50 px-2.5 py-1.5 text-xs font-semibold text-violet-700 hover:bg-violet-100"
+                    disabled={isLoading || isDisabled}
+                    className="col-span-2 inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-50 sm:col-span-1 lg:col-span-1"
                   >
                     Verify electronically
                   </button>

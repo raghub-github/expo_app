@@ -61,6 +61,14 @@ function searchRowToChild(r: GeoSearchRow): GeoChildRow {
     rider_rate_summaries: r.rider_rate_summaries ?? null,
     effective_platform_offers: r.effective_platform_offers ?? [],
     require_rider_online_check: r.require_rider_online_check ?? (r.kind === "state" ? true : null),
+    hiring_rider_enabled:
+      r.kind === "state" || r.kind === "region" || r.kind === "district"
+        ? (r.hiring_rider_enabled ?? true)
+        : null,
+    hiring_rider_explicit:
+      r.kind === "state" || r.kind === "region" || r.kind === "district"
+        ? Boolean(r.hiring_rider_explicit)
+        : null,
   };
 }
 

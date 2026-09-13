@@ -166,71 +166,104 @@ export function PendingOnboardingClient() {
         </div>
       ) : (
         <>
-          <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-            <table className="min-w-full divide-y divide-slate-200">
-              <thead className="bg-slate-50">
-                <tr>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500">Rider</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500">Mobile</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500">Stage</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500">Next step</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500">Progress</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500">City</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500">Updated</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500">Actions</th>
+          <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+            <table className="w-full min-w-[1100px] border-collapse text-left">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50/90">
+                  <th className="whitespace-nowrap px-3 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Rider
+                  </th>
+                  <th className="whitespace-nowrap px-3 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Mobile
+                  </th>
+                  <th className="whitespace-nowrap px-3 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Stage
+                  </th>
+                  <th className="whitespace-nowrap px-3 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Next step
+                  </th>
+                  <th className="whitespace-nowrap px-3 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Progress
+                  </th>
+                  <th className="whitespace-nowrap px-3 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    City
+                  </th>
+                  <th className="whitespace-nowrap px-3 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Updated
+                  </th>
+                  <th className="whitespace-nowrap px-3 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Actions
+                  </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody>
                 {rows.map((r) => {
-                  const tel = `${r.countryCode || "+91"}${r.mobile}`.replace(/\s+/g, "");
+                  const rawCc = String(r.countryCode || "+91").trim();
+                  const rawMobile = String(r.mobile || "").replace(/\s+/g, "");
+                  const dialMobile = rawMobile.replace(/^\+?91/, "");
+                  const tel = `${rawCc.startsWith("+") ? rawCc : `+${rawCc}`}${dialMobile}`.replace(
+                    /\s+/g,
+                    "",
+                  );
+                  const displayMobile = `${rawCc.startsWith("+") ? rawCc : `+${rawCc}`} ${dialMobile}`;
                   const returnTo = search
                     ? `/dashboard/riders/pending-onboarding?search=${encodeURIComponent(search)}`
                     : "/dashboard/riders/pending-onboarding";
+                  const address = [r.city, r.state].filter(Boolean).join(", ") || "—";
+                  const riderLabel = `GMR${r.id}${r.name ? ` · ${r.name}` : ""}`;
                   return (
-                    <tr key={r.id} className="hover:bg-slate-50/80">
-                      <td className="whitespace-nowrap px-4 py-2.5 text-sm">
-                        <div className="font-medium text-slate-900">GMR{r.id}</div>
-                        <div className="text-xs text-slate-500">{r.name || "—"}</div>
+                    <tr
+                      key={r.id}
+                      className="h-12 border-b border-slate-100 transition-colors hover:bg-slate-50/90 last:border-b-0"
+                    >
+                      <td className="max-w-[220px] whitespace-nowrap px-3 py-2.5 text-sm">
+                        <span className="block truncate font-medium text-slate-900" title={riderLabel}>
+                          <span className="tabular-nums text-slate-900">GMR{r.id}</span>
+                          {r.name ? (
+                            <span className="font-normal text-slate-500"> · {r.name}</span>
+                          ) : null}
+                        </span>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2.5 text-sm text-slate-700">
+                      <td className="whitespace-nowrap px-3 py-2.5 text-sm">
                         <a
                           href={`tel:${tel}`}
                           className="inline-flex items-center gap-1.5 font-medium text-blue-600 hover:text-blue-700"
                         >
-                          <Phone className="h-3.5 w-3.5" />
-                          {r.countryCode} {r.mobile}
+                          <Phone className="h-3.5 w-3.5 shrink-0" />
+                          {displayMobile}
                         </a>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2.5">
+                      <td className="whitespace-nowrap px-3 py-2.5">
                         <span className="inline-flex rounded-md bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200/80">
                           {ONBOARDING_STAGE_LABELS[r.onboardingStage] ?? r.onboardingStage}
                         </span>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2.5 text-sm text-slate-600">
+                      <td className="whitespace-nowrap px-3 py-2.5 text-sm text-slate-600">
                         {formatStep(r.nextRequiredStep)}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2.5 text-sm tabular-nums text-slate-600">
+                      <td className="whitespace-nowrap px-3 py-2.5 text-sm tabular-nums text-slate-700">
                         {Math.max(0, Math.min(100, r.onboardingProgressPct))}%
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2.5 text-sm text-slate-500">
-                        {r.city || "—"}
-                        {r.state ? `, ${r.state}` : ""}
+                      <td className="max-w-[200px] whitespace-nowrap px-3 py-2.5 text-sm text-slate-500">
+                        <span className="block truncate" title={address}>
+                          {address}
+                        </span>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2.5 text-xs text-slate-500">
+                      <td className="whitespace-nowrap px-3 py-2.5 text-xs text-slate-500">
                         {formatWhen(r.updatedAt)}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2.5 text-sm">
-                        <div className="flex items-center gap-2">
+                      <td className="whitespace-nowrap px-3 py-2.5">
+                        <div className="inline-flex items-center gap-2">
                           <Link
                             href={buildRidersHomeUrl(r.id)}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-[#121212] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-black"
+                            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#121212] px-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-black"
                           >
-                            <User className="h-3.5 w-3.5" aria-hidden />
+                            <User className="h-3.5 w-3.5 shrink-0" aria-hidden />
                             Open profile
                           </Link>
                           <Link
                             href={`/dashboard/riders/${r.id}/onboarding?returnTo=${encodeURIComponent(returnTo)}`}
-                            className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
+                            className="inline-flex h-8 items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
                           >
                             Onboarding
                           </Link>

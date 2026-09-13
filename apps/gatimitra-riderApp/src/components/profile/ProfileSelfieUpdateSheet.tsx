@@ -1,11 +1,14 @@
+/**
+ * Profile selfie update — same full-screen oval capture UI as onboarding
+ * (`LiveSelfieCameraModal`), then preview + upload.
+ */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
   Modal,
   Pressable,
-  TouchableOpacity,
-  ScrollView,
+  Image,
   StyleSheet,
   ActivityIndicator,
   Platform,
@@ -15,20 +18,16 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
-import { SelfieAutoCapture, type SelfieAutoCaptureHandle } from "@/src/components/onboarding/SelfieAutoCapture";
+import { LiveSelfieCameraModal } from "@/src/components/onboarding/LiveSelfieCameraModal";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { uploadRiderSelfieDocument } from "@/src/lib/upload-rider-selfie";
 import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
-import { colors } from "@/src/theme";
 import { useProfileSelfieSheetStore } from "@/src/stores/profileSelfieSheetStore";
+import { colors } from "@/src/theme";
 
-const SELFIE_TIPS = [
-  "Face the camera directly",
-  "Use good lighting",
-  "Remove sunglasses, goggles, or mask",
-  "Tap Capture selfie when you are ready",
-] as const;
+const ACCENT_DARK = "#22a745";
+const BG = "#F4F6F8";
 
 type Props = {
   visible: boolean;
@@ -43,9 +42,10 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
   const setOnboardingData = useOnboardingStore((s) => s.setData);
   const queryClient = useQueryClient();
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [captureReady, setCaptureReady] = useState(false);
-  const captureRef = useRef<SelfieAutoCaptureHandle>(null);
+  /** Sync flag — LiveSelfieCameraModal calls onClose right after onCaptured. */
+  const capturedRef = useRef(false);
 
   const riderIdRaw = session?.riderId ?? session?.userId;
   const riderIdNum =
@@ -57,8 +57,14 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
     if (!visible) {
       setSelfieUri(null);
       setUploading(false);
-      setCaptureReady(false);
+      setCameraOpen(false);
+      capturedRef.current = false;
+      return;
     }
+    // Same as onboarding: open full-screen live capture immediately.
+    capturedRef.current = false;
+    setSelfieUri(null);
+    setCameraOpen(true);
   }, [visible]);
 
   useEffect(() => {
@@ -71,6 +77,27 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
     if (uploading) return;
     onClose();
   }, [uploading, onClose]);
+
+  const handleCameraClose = useCallback(() => {
+    setCameraOpen(false);
+    // Back without capture → dismiss sheet. After capture, preview Modal stays.
+    if (!capturedRef.current) {
+      onClose();
+    }
+  }, [onClose]);
+
+  const handleCaptured = useCallback(async (uri: string) => {
+    capturedRef.current = true;
+    setSelfieUri(uri);
+    setCameraOpen(false);
+  }, []);
+
+  const handleRetake = useCallback(() => {
+    if (uploading) return;
+    capturedRef.current = false;
+    setSelfieUri(null);
+    setCameraOpen(true);
+  }, [uploading]);
 
   const handleSave = useCallback(async () => {
     if (!selfieUri || uploading) return;
@@ -131,158 +158,137 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
   if (!visible) return null;
 
   const topInset = Math.max(insets.top, Platform.OS === "android" ? 28 : 0);
-  const uploadLabel = t("profile.selfieUpdate.upload", "Upload selfie");
-
-  function renderUploadButton() {
-    return (
-      <View
-        collapsable={false}
-        style={[styles.saveBtnShell, uploading && styles.saveBtnShellDisabled]}
-      >
-        <TouchableOpacity
-          activeOpacity={uploading ? 1 : 0.85}
-          onPress={() => {
-            if (!uploading) void handleSave();
-          }}
-          disabled={uploading}
-          accessibilityRole="button"
-          accessibilityLabel={uploadLabel}
-          style={styles.saveBtnHit}
-        >
-          {uploading ? (
-            <ActivityIndicator color="#FFFFFF" />
-          ) : (
-            <View style={styles.saveBtnRow}>
-              <Ionicons name="cloud-upload-outline" size={22} color="#FFFFFF" />
-              <Text style={styles.saveBtnText}>{uploadLabel}</Text>
-            </View>
-          )}
-        </TouchableOpacity>
-      </View>
-    );
-  }
+  const showPreview = Boolean(selfieUri) && !cameraOpen;
 
   return (
-    <Modal
-      visible
-      animationType="slide"
-      presentationStyle="fullScreen"
-      onRequestClose={handleClose}
-    >
-      <View style={styles.root}>
-        <LinearGradient
-          colors={["#0F766E", "#0D9488", "#14B8A6"]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={[styles.hero, { paddingTop: topInset + 12 }]}
-        >
-          <View style={styles.heroRow}>
-            <Pressable
-              onPress={handleClose}
-              disabled={uploading}
-              style={({ pressed }) => [styles.closeBtn, pressed && styles.closeBtnPressed]}
-              accessibilityRole="button"
-              accessibilityLabel={t("common.close", "Close")}
-            >
-              <Ionicons name="close" size={22} color="#FFFFFF" />
-            </Pressable>
-            <View style={styles.heroText}>
-              <Text style={styles.title}>
-                {t("profile.selfieUpdate.title", "Update profile photo")}
-              </Text>
-              <Text style={styles.subtitle}>
-                {t(
-                  "profile.selfieUpdate.subtitle",
-                  "Look at the camera and tap Capture selfie. Gallery photos are not allowed."
-                )}
-              </Text>
-            </View>
-            <View style={styles.heroSpacer} />
-          </View>
-        </LinearGradient>
-
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={[
-            styles.scrollContent,
-            { paddingBottom: Math.max(insets.bottom, 24) + 16 },
-          ]}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.captureCard}>
-            <View style={styles.stepPill}>
-              <Ionicons name="scan-outline" size={16} color={colors.primary[700]} />
-              <Text style={styles.stepPillText}>
-                {t("profile.selfieUpdate.liveCapture", "Live capture only")}
-              </Text>
-            </View>
-
-            <SelfieAutoCapture
-              ref={captureRef}
-              uri={selfieUri}
-              active={visible}
-              disabled={uploading}
-              liveProbe={false}
-              hideManualCapture
-              onCaptureReadinessChange={setCaptureReady}
-              onCaptured={async (uri) => setSelfieUri(uri)}
-              onRemove={() => setSelfieUri(null)}
-              onRejected={(message) => notifyOnboardingToast(message)}
-              hint={t(
-                "profile.selfieUpdate.hint",
-                "Align your face, then tap Capture selfie"
-              )}
-              tips={SELFIE_TIPS}
-              capturedAction={renderUploadButton()}
-            />
-          </View>
-        </ScrollView>
-
-        {!selfieUri ? (
-          <View
-            collapsable={false}
-            style={[styles.stickyFooter, { paddingBottom: Math.max(insets.bottom, 16) }]}
+    <>
+      {/* Preview + upload after capture (same post-capture pattern as onboarding) */}
+      <Modal
+        visible={showPreview}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={handleClose}
+      >
+        <View style={styles.root}>
+          <LinearGradient
+            colors={["#dff5e4", BG]}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
+            style={[styles.header, { paddingTop: topInset + 12 }]}
           >
-            <TouchableOpacity
-              activeOpacity={uploading || !captureReady ? 1 : 0.88}
-              onPress={() => {
-                if (uploading || !captureReady) return;
-                captureRef.current?.capture();
-              }}
-              disabled={uploading || !captureReady}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: uploading || !captureReady }}
-              accessibilityLabel={t("profile.selfieUpdate.capture", "Capture selfie")}
-              style={[
-                styles.stickyCaptureBtn,
-                (uploading || !captureReady) && styles.stickyCaptureBtnDisabled,
+            <View style={styles.headerRow}>
+              <Pressable
+                onPress={handleClose}
+                disabled={uploading}
+                style={({ pressed }) => [styles.closeBtn, pressed && styles.closeBtnPressed]}
+                accessibilityRole="button"
+                accessibilityLabel={t("common.close", "Close")}
+              >
+                <Ionicons name="close" size={22} color="#0f172a" />
+              </Pressable>
+              <View style={styles.headerText}>
+                <View style={styles.stepPill}>
+                  <Ionicons name="person-outline" size={14} color={ACCENT_DARK} />
+                  <Text style={styles.stepPillText}>
+                    {t("profile.selfieUpdate.liveCapture", "Live capture only")}
+                  </Text>
+                </View>
+                <Text style={styles.title}>
+                  {t("profile.selfieUpdate.title", "Update profile photo")}
+                </Text>
+                <Text style={styles.subtitle}>
+                  {t(
+                    "profile.selfieUpdate.previewHint",
+                    "Review your selfie, then upload or retake."
+                  )}
+                </Text>
+              </View>
+              <View style={styles.headerSpacer} />
+            </View>
+          </LinearGradient>
+
+          <View style={styles.previewBody}>
+            {selfieUri ? (
+              <Pressable
+                onPress={() => undefined}
+                style={styles.previewCard}
+                accessibilityRole="image"
+                accessibilityLabel="Captured selfie"
+              >
+                <Image
+                  key={selfieUri}
+                  source={{ uri: selfieUri }}
+                  style={styles.previewImage}
+                  resizeMode="cover"
+                />
+              </Pressable>
+            ) : null}
+
+            <Pressable
+              onPress={handleRetake}
+              disabled={uploading}
+              style={({ pressed }) => [
+                styles.secondaryBtn,
+                pressed && styles.btnPressed,
+                uploading && styles.btnDisabled,
               ]}
+              accessibilityRole="button"
+              accessibilityLabel={t("profile.selfieUpdate.retake", "Retake selfie")}
             >
-              <Ionicons name="camera-outline" size={22} color="#FFFFFF" />
-              <Text style={styles.stickyCaptureText}>
-                {t("profile.selfieUpdate.capture", "Capture selfie")}
+              <Ionicons name="refresh" size={20} color={ACCENT_DARK} />
+              <Text style={styles.secondaryBtnText}>
+                {t("profile.selfieUpdate.retake", "Retake selfie")}
               </Text>
-            </TouchableOpacity>
+            </Pressable>
+
+            <Pressable
+              onPress={() => void handleSave()}
+              disabled={uploading || !selfieUri}
+              style={({ pressed }) => [
+                styles.primaryBtn,
+                pressed && styles.btnPressed,
+                (uploading || !selfieUri) && styles.btnDisabled,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={t("profile.selfieUpdate.upload", "Upload selfie")}
+            >
+              {uploading ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <>
+                  <Ionicons name="cloud-upload-outline" size={20} color="#FFFFFF" />
+                  <Text style={styles.primaryBtnText}>
+                    {t("profile.selfieUpdate.upload", "Upload selfie")}
+                  </Text>
+                </>
+              )}
+            </Pressable>
           </View>
-        ) : null}
-      </View>
-    </Modal>
+        </View>
+      </Modal>
+
+      {/* Same full-screen oval camera as onboarding pan-selfie */}
+      <LiveSelfieCameraModal
+        visible={visible && cameraOpen}
+        disabled={uploading}
+        onClose={handleCameraClose}
+        onCaptured={handleCaptured}
+        onRejected={(message) => notifyOnboardingToast(message)}
+      />
+    </>
   );
 }
 
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#F4F6F8",
+    backgroundColor: BG,
   },
-  hero: {
+  header: {
     paddingHorizontal: 16,
     paddingBottom: 20,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
   },
-  heroRow: {
+  headerRow: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 12,
@@ -291,120 +297,111 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(255,255,255,0.85)",
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.28)",
+    borderColor: colors.gray[200],
   },
   closeBtnPressed: {
     opacity: 0.85,
   },
-  heroText: {
+  headerText: {
     flex: 1,
+    alignItems: "center",
     paddingTop: 2,
   },
-  heroSpacer: {
+  headerSpacer: {
     width: 40,
+  },
+  stepPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#b7ebc6",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    marginBottom: 12,
+  },
+  stepPillText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: ACCENT_DARK,
   },
   title: {
     fontSize: 22,
     fontWeight: "800",
-    color: "#FFFFFF",
+    color: "#0f172a",
     letterSpacing: -0.3,
+    textAlign: "center",
   },
   subtitle: {
     marginTop: 6,
     fontSize: 13,
     lineHeight: 18,
-    color: "rgba(255,255,255,0.92)",
+    color: colors.gray[500],
+    textAlign: "center",
   },
-  scroll: {
+  previewBody: {
     flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    gap: 14,
+    alignItems: "center",
   },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 16,
-  },
-  captureCard: {
-    backgroundColor: "#FFFFFF",
+  previewCard: {
+    width: "100%",
+    maxWidth: 320,
+    aspectRatio: 3 / 4,
     borderRadius: 20,
-    padding: 20,
-    overflow: "visible",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-  },
-  stepPill: {
-    alignSelf: "center",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: colors.primary[50],
-    borderWidth: 1,
-    borderColor: colors.primary[200],
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    marginBottom: 16,
-  },
-  stepPillText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: colors.primary[700],
-  },
-  saveBtnShell: {
-    alignSelf: "stretch",
-    width: "100%",
-    minHeight: 56,
-    borderRadius: 14,
-    backgroundColor: "#0D9488",
     overflow: "hidden",
+    backgroundColor: colors.gray[100],
+    borderWidth: 1,
+    borderColor: colors.gray[200],
   },
-  saveBtnShellDisabled: {
-    backgroundColor: "#94A3B8",
-  },
-  saveBtnHit: {
-    minHeight: 56,
+  previewImage: {
     width: "100%",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 16,
+    height: "100%",
   },
-  saveBtnRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  saveBtnText: {
-    marginLeft: 8,
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
-  stickyFooter: {
-    width: "100%",
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    backgroundColor: "#F4F6F8",
-    borderTopWidth: 1,
-    borderTopColor: "#E2E8F0",
-  },
-  stickyCaptureBtn: {
+  primaryBtn: {
     width: "100%",
     minHeight: 56,
     borderRadius: 14,
-    backgroundColor: "#0D9488",
+    backgroundColor: ACCENT_DARK,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
   },
-  stickyCaptureBtnDisabled: {
-    backgroundColor: "#94A3B8",
-  },
-  stickyCaptureText: {
+  primaryBtnText: {
     fontSize: 16,
     fontWeight: "700",
     color: "#FFFFFF",
+  },
+  secondaryBtn: {
+    width: "100%",
+    minHeight: 52,
+    borderRadius: 14,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1.5,
+    borderColor: ACCENT_DARK,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  secondaryBtnText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: ACCENT_DARK,
+  },
+  btnPressed: {
+    opacity: 0.88,
+  },
+  btnDisabled: {
+    opacity: 0.55,
   },
 });

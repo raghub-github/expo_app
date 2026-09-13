@@ -4,6 +4,7 @@ import {
   buildServiceEligibilityRows,
   hasBlockedService,
   resolveSelectableServices,
+  resolveEligibilitySloganMode,
   GENERIC_SERVICE_BLOCK,
   RIDER_SERVICE_DISPLAY_ORDER,
 } from "./rider-service-eligibility-rows";
@@ -143,4 +144,20 @@ test("a custom order is honoured", () => {
     rows.map((r) => r.service),
     ["person_ride", "food", "parcel"]
   );
+});
+
+test("eligibility slogan: docs missing → docs mode; area/disabled → area mode", () => {
+  assert.equal(
+    resolveEligibilitySloganMode([
+      { code: "DL_REQUIRED_NOT_VERIFIED", reason: "DL required" },
+    ]),
+    "docs"
+  );
+  assert.equal(
+    resolveEligibilitySloganMode([
+      { code: "SERVICE_DISABLED", reason: "Not at this location" },
+    ]),
+    "area"
+  );
+  assert.equal(resolveEligibilitySloganMode([GENERIC_SERVICE_BLOCK]), "area");
 });

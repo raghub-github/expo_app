@@ -23,7 +23,7 @@ export interface CreateRiderResponse {
 
 export interface SaveOnboardingStepRequest {
   riderId: string;
-  step: "aadhaar_name" | "dl_rc" | "rental_ev" | "pan_selfie" | "location";
+  step: "aadhaar_name" | "dl_rc" | "rental_ev" | "pan_selfie" | "location" | "bank_account";
   data: {
     aadhaarNumber?: string;
     fullName?: string;
@@ -39,6 +39,9 @@ export interface SaveOnboardingStepRequest {
     vehicleModelLabel?: string;
     onboardingFlow?: "dl_rc" | "rental_ev" | "payment";
     submitVehicleDocs?: boolean;
+    skippedOnboardingDocs?: string[];
+    /** Bank step skip — rider will add bank later from Earnings. */
+    skipped?: boolean;
     rentalProofSignedUrl?: string;
     evProofSignedUrl?: string;
     maxSpeedDeclaration?: number;
@@ -201,13 +204,53 @@ export function useRiderStatus(
         approvalStatus: string;
         accountStatus?: string;
         hasHomeLocation?: boolean;
+        workLocationConfirmed?: boolean;
         homeAddress?: {
           city: string | null;
           state: string | null;
+          region?: string | null;
+          district?: string | null;
           pincode: string | null;
           address: string | null;
           lat: number | null;
           lon: number | null;
+          stateId?: string | null;
+          regionId?: string | null;
+          districtId?: string | null;
+          locationSource?: string | null;
+          locationOtherState?: string | null;
+          locationOtherDistrict?: string | null;
+        } | null;
+        /** Permanent registered address (independent of working location). */
+        registeredAddress?: {
+          city: string | null;
+          state: string | null;
+          region?: string | null;
+          district?: string | null;
+          pincode: string | null;
+          address: string | null;
+          lat: number | null;
+          lon: number | null;
+          stateId?: string | null;
+          regionId?: string | null;
+          districtId?: string | null;
+        } | null;
+        /** Current working location (same payload as homeAddress). */
+        workingLocation?: {
+          city: string | null;
+          state: string | null;
+          region?: string | null;
+          district?: string | null;
+          pincode: string | null;
+          address: string | null;
+          lat: number | null;
+          lon: number | null;
+          stateId?: string | null;
+          regionId?: string | null;
+          districtId?: string | null;
+          locationSource?: string | null;
+          locationOtherState?: string | null;
+          locationOtherDistrict?: string | null;
         } | null;
         nextOnboardingStep?: string;
         completedOnboardingSteps?: string[];
@@ -239,7 +282,9 @@ export function useRiderStatus(
         vehicleCategoryCode?: string | null;
         vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment" | null;
         vehicleDocsSubmittedFor?: string | null;
+        skippedOnboardingDocs?: string[];
         bankAccountOnboardingDone?: boolean;
+        bankAccountOnboardingSkipped?: boolean;
       }>(`${API_BASE()}/v1/rider/${riderId}/status`, {
         headers: { authorization: `Bearer ${session.accessToken}` },
       });
