@@ -7,6 +7,7 @@ import {
 } from "./rider-cancellation-analytics";
 import {
   resolveCancellationResponsibility,
+  resolveLegResponsibility,
   responsibilityFromCatalogAttribute,
   responsibilityFromRawActor,
 } from "./cancellation-responsibility";
@@ -61,6 +62,44 @@ test("resolve: catalog attribute wins over raw actor", () => {
   );
   // Nothing => UNKNOWN (never dropped, never rider).
   assert.equal(resolveCancellationResponsibility({}), "UNKNOWN");
+});
+
+// --- per-leg responsibility precedence ------------------------------------
+
+test("leg: rider self-cancel is rider fault unless the reason is attributed otherwise", () => {
+  // No catalogued reason -> explicit rider self-cancel is rider fault.
+  assert.equal(
+    resolveLegResponsibility({ exclusionSource: "rider_cancel_assigned", exclusionAttribute: null }),
+    "RIDER_FAULT"
+  );
+  // Rider cancelled but the reason is a customer reason -> not blamed on the rider.
+  assert.equal(
+    resolveLegResponsibility({ exclusionSource: "rider_cancel_assigned", exclusionAttribute: "CUSTOMER" }),
+    "CUSTOMER_FAULT"
+  );
+});
+
+test("leg: admin unassign is NOT rider fault by default (only when reason says RIDER)", () => {
+  assert.equal(
+    resolveLegResponsibility({ exclusionSource: "admin_unassign", exclusionAttribute: null }),
+    "UNKNOWN"
+  );
+  assert.equal(
+    resolveLegResponsibility({ exclusionSource: "admin_unassign", exclusionAttribute: "RIDER" }),
+    "RIDER_FAULT"
+  );
+});
+
+test("leg: terminal cancel uses order-cancellation attribute, then raw actor", () => {
+  assert.equal(
+    resolveLegResponsibility({ exclusionSource: null, terminalAttribute: "MERCHANT" }),
+    "MERCHANT_FAULT"
+  );
+  assert.equal(
+    resolveLegResponsibility({ exclusionSource: null, terminalAttribute: null, cancelledBy: "SYSTEM" }),
+    "SYSTEM_FAULT"
+  );
+  assert.equal(resolveLegResponsibility({ exclusionSource: null }), "UNKNOWN");
 });
 
 // --- engine: spec §10 Food example ---------------------------------------

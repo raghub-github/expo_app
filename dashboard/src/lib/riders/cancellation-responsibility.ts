@@ -86,3 +86,40 @@ export function resolveCancellationResponsibility(input: {
     "UNKNOWN"
   );
 }
+
+/** Dispatch-exclusion sources that represent an assignment-level cancellation of the leg. */
+export type CancellationLegSource =
+  | "rider_cancel_assigned"
+  | "admin_unassign"
+  | (string & {})
+  | null
+  | undefined;
+
+/**
+ * Resolve responsibility for one cancelled rider-accepted leg, honoring where the cancellation
+ * actually happened:
+ *   - rider self-cancel: the exclusion reason's catalog attribute wins (so a rider who cancels
+ *     for a genuine customer/merchant reason is NOT blamed); absent a catalogued reason, the
+ *     explicit rider self-cancel is rider fault.
+ *   - admin removed the rider: the admin's reason attribute decides; absent one, UNKNOWN (an
+ *     admin unassign is not, by itself, rider fault — §21).
+ *   - terminal order cancel: the order-cancellation reason's attribute, then the raw actor.
+ */
+export function resolveLegResponsibility(input: {
+  exclusionSource?: CancellationLegSource;
+  exclusionAttribute?: string | null;
+  terminalAttribute?: string | null;
+  cancelledBy?: string | null;
+}): CancellationResponsibility {
+  if (input.exclusionSource === "rider_cancel_assigned") {
+    return responsibilityFromCatalogAttribute(input.exclusionAttribute) ?? "RIDER_FAULT";
+  }
+  if (input.exclusionSource === "admin_unassign") {
+    return responsibilityFromCatalogAttribute(input.exclusionAttribute) ?? "UNKNOWN";
+  }
+  return (
+    responsibilityFromCatalogAttribute(input.terminalAttribute) ??
+    responsibilityFromRawActor(input.cancelledBy) ??
+    "UNKNOWN"
+  );
+}
