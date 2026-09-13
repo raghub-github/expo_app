@@ -62,6 +62,11 @@ const GeoIcon = dynamic(async () => {
   return (props: { className?: string }) => <MapPin {...props} />;
 });
 
+const CancellationBlockIcon = dynamic(async () => {
+  const { ShieldAlert } = await import("lucide-react");
+  return (props: { className?: string }) => <ShieldAlert {...props} />;
+});
+
 // ✅ Incoming feature
 const StoreOnboardingIcon = dynamic(async () => {
   const { IndianRupee } = await import("lucide-react");
@@ -236,6 +241,15 @@ const adminOptions: AdminOption[] = [
       "Assignment limits, geo-fenced milestones, and dispatch wave settings (food / parcel / ride)",
     color: "text-indigo-700",
     bgColor: "bg-indigo-50 hover:bg-indigo-100",
+  },
+  {
+    name: "Cancellation-rate auto-block",
+    href: "/dashboard/super-admin/rider-cancellation-block",
+    Icon: CancellationBlockIcon,
+    description:
+      "Per-service rider-fault cancellation-rate thresholds — riders who reach the limit are auto-blocked for that service.",
+    color: "text-rose-700",
+    bgColor: "bg-rose-50 hover:bg-rose-100",
   },
   {
     name: "Real-time tracking & geo-scoping",

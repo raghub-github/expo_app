@@ -140,6 +140,28 @@ async function readActiveBlacklist(riderId: number) {
   };
 }
 
+/**
+ * Cancellation-rate auto-blocks (rider_cancellation_service_blocks): presence = blocked for
+ * that service. Rule-governed — lifted only by re-evaluation, never manually. Merged into the
+ * dispatch block set exactly like the negative-wallet auto-blocks.
+ */
+async function readCancellationServiceBlocks(riderId: number): Promise<string[]> {
+  const pg = getSql();
+  try {
+    const rows = await pg`
+      SELECT service_type
+      FROM rider_cancellation_service_blocks
+      WHERE rider_id = ${riderId}
+    `;
+    return (rows as unknown as { service_type: string }[]).map((r) => r.service_type);
+  } catch (err: unknown) {
+    // Table not migrated yet — fail open (no cancellation blocks).
+    if ((err as { code?: string })?.code === "42P01") return [];
+    console.warn("[rider-account-restrictions] cancellation blocks read failed", err);
+    return [];
+  }
+}
+
 async function readSubscriptionDuesOutstanding(riderId: number): Promise<number> {
   const pg = getSql();
   try {
@@ -271,7 +293,7 @@ export async function getRiderAccountRestrictions(
 ): Promise<RiderAccountRestrictions> {
   const db = getDb();
 
-  const [[rider], [wallet], blockRows, blacklist, subscriptionDuesOutstanding, activePenaltyTotal] =
+  const [[rider], [wallet], blockRows, blacklist, subscriptionDuesOutstanding, activePenaltyTotal, cancellationBlockedServices] =
     await Promise.all([
       db.select({ status: riders.status }).from(riders).where(eq(riders.id, riderId)).limit(1),
       db.select().from(riderWallet).where(eq(riderWallet.riderId, riderId)).limit(1),
@@ -285,6 +307,7 @@ export async function getRiderAccountRestrictions(
       readActiveBlacklist(riderId),
       readSubscriptionDuesOutstanding(riderId),
       readActivePenaltyTotal(riderId),
+      readCancellationServiceBlocks(riderId),
     ]);
 
   const totalBalance = round2(Number(wallet?.totalBalance ?? 0));
@@ -320,7 +343,8 @@ export async function getRiderAccountRestrictions(
   let accountRestrictedReason: RiderAccountRestrictions["accountRestrictedReason"] = "none";
   let blacklistBlockedServices = mergeBlockedServices(
     blacklist.blockedServices,
-    walletBlockedServices
+    walletBlockedServices,
+    cancellationBlockedServices
   );
   let allServicesBlacklisted =
     blacklistBlockedServices.length >= 3 ||

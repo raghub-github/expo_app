@@ -69,6 +69,7 @@ import { reconcilePendingPayments } from "./modules/orders/order.placement.servi
 import { runCompetitorSnapshotsTick } from "./services/merchant-competitor-snapshots-tick.js";
 import { runMerchantRankingMetricsRefresh } from "./modules/store-ranking/metrics-refresh.js";
 import { runOrderSideEffectsReconcile } from "./lib/order-side-effects-reconciler.js";
+import { runCancellationAutoBlockReconcile } from "./lib/rider-cancellation-auto-block.service.js";
 
 loadEnv();
 // Prefer IPv4 — corporate/VPN DNS64 (64:ff9b::*) often yields ENOTFOUND/unreachable for Supabase/Redis.
@@ -1139,6 +1140,7 @@ let riderLocationMaintenanceInterval: ReturnType<typeof setInterval> | null = nu
 let riderTrackingWatchdogInterval: ReturnType<typeof setInterval> | null = null;
 let rankingMetricsInterval: ReturnType<typeof setInterval> | null = null;
 let orderSideEffectsReconcileInterval: ReturnType<typeof setInterval> | null = null;
+let cancellationAutoBlockReconcileInterval: ReturnType<typeof setInterval> | null = null;
 let shuttingDown = false;
 let inFlightRequests = 0;
 
@@ -1188,6 +1190,7 @@ const gracefulShutdown = async (signal: string) => {
   if (riderTrackingWatchdogInterval) { clearInterval(riderTrackingWatchdogInterval); riderTrackingWatchdogInterval = null; }
   if (rankingMetricsInterval) { clearInterval(rankingMetricsInterval); rankingMetricsInterval = null; }
   if (orderSideEffectsReconcileInterval) { clearInterval(orderSideEffectsReconcileInterval); orderSideEffectsReconcileInterval = null; }
+  if (cancellationAutoBlockReconcileInterval) { clearInterval(cancellationAutoBlockReconcileInterval); cancellationAutoBlockReconcileInterval = null; }
 
   const drainStart = Date.now();
   while (inFlightRequests > 0 && Date.now() - drainStart < SHUTDOWN_DRAIN_TIMEOUT_MS) {
@@ -1358,6 +1361,33 @@ try {
     orderSideEffectsReconcileIntervalMs
   );
   app.log.info({ intervalSeconds: 30 }, "order side-effects reconciler started");
+
+  // Cancellation-rate auto-block reconciler — safety net + config-change catch-up. The
+  // immediate post-cancel hook applies blocks in real time; this releases riders after an
+  // admin raises the threshold and catches any rider-fault cancel that skipped the hook.
+  const cancellationAutoBlockReconcileIntervalMs = 60_000;
+  const runCancellationAutoBlockReconcileLocked = () =>
+    withLock("tick:cancellation-auto-block-reconcile", 55_000, () =>
+      runCancellationAutoBlockReconcile()
+    )
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "cancellation_auto_block_reconcile", outcome: result === null ? "skipped" : "ran" },
+        );
+        if (result && (result.blocked > 0 || result.unblocked > 0)) {
+          app.log.warn(result, "cancellation_auto_block_reconcile_applied");
+        }
+      })
+      .catch((err) => app.log.error({ err }, "cancellation_auto_block_reconcile_tick"));
+  void runCancellationAutoBlockReconcileLocked();
+  cancellationAutoBlockReconcileInterval = setInterval(
+    () => { void runCancellationAutoBlockReconcileLocked(); },
+    cancellationAutoBlockReconcileIntervalMs
+  );
+  app.log.info({ intervalSeconds: 60 }, "cancellation auto-block reconciler started");
 
   const orderAcceptanceIntervalMs = 10_000;
   const runAcceptanceTickLocked = () =>

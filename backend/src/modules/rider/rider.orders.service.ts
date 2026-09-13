@@ -7266,11 +7266,17 @@ export async function cancelAssignedOrderForRider(
 
   const orderType = String(existing.orderType).trim().toLowerCase();
   try {
-    if (orderType === "food") {
-      return await cancelAssignedFoodForRider(riderId, orderRef, input);
-    }
-    if (orderType === "person_ride") {
-      return await cancelAssignedRideForRider(riderId, orderRef, input);
+    if (orderType === "food" || orderType === "person_ride") {
+      const result =
+        orderType === "food"
+          ? await cancelAssignedFoodForRider(riderId, orderRef, input)
+          : await cancelAssignedRideForRider(riderId, orderRef, input);
+      // Immediate cancellation-rate auto-block re-evaluation (fire-and-forget; never blocks cancel).
+      const { evaluateRiderCancellationBlocksSafe } = await import(
+        "../../lib/rider-cancellation-auto-block.service.js"
+      );
+      evaluateRiderCancellationBlocksSafe(riderId, orderType);
+      return result;
     }
   } catch (err) {
     const status = riderCancelErrStatus(err);
