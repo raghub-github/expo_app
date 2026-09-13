@@ -42,8 +42,9 @@ export default function TabsLayout() {
           },
           tabBarBackground: () => null,
           freezeOnBlur: true,
-          // Full-width shift only — single transition owner (no custom Reanimated page slide).
-          animation: "shift",
+          // Full-width shift — driven entirely by transitionSpec + sceneStyleInterpolator below (no
+          // named `animation` preset: bottom-tabs only uses a preset's own spec/interpolator when
+          // ours are absent, so setting one here is a no-op that just adds an unused variable).
           transitionSpec: CUSTOMER_TAB_TRANSITION_SPEC,
           sceneStyleInterpolator: forCustomerTabSlide,
           // Keep Food/Home scenes in the graph so rapid tab presses don't remount mid-slide.
@@ -55,7 +56,12 @@ export default function TabsLayout() {
           options={{
             title: "Home",
             headerShown: false,
-            freezeOnBlur: true,
+            // freezeOnBlur + AppState resume can leave Home cards/buttons untappable, and —
+            // combined with the always-mounted (lazy:false) Food tab + the custom slide transition
+            // above — was also the cause of Home→Food tab switches bouncing back to Home within
+            // ~1s (react-native-screens freezing/unfreezing Home while its own effects were still
+            // settling raced the tab-slide transition). Never freeze Home.
+            freezeOnBlur: false,
           }}
         />
         <Tabs.Screen
