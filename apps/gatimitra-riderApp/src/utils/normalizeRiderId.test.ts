@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { normalizeRiderId, riderIdFromSession } from "./normalizeRiderId.ts";
+import { normalizeRiderId, riderIdFromSession } from "./normalizeRiderId";
 
 describe("normalizeRiderId", () => {
   it("strips usr_ prefix", () => {

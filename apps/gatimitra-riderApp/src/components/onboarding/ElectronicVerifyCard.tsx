@@ -496,11 +496,9 @@ export function ElectronicVerifyCard(props: {
             onPress={onVerify}
             activeOpacity={0.8}
           >
-            {state.phase === "verifying" ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons name="refresh" size={16} color="#fff" />
-            )}
+            {/* This row only renders in the mismatch/failed phase; tapping "Verify again" moves the
+                card to the "verifying" layout, so the spinner never belongs here. */}
+            <Ionicons name="refresh" size={16} color="#fff" />
             <Text style={[styles.buttonText, verifyDisabled && styles.buttonTextDisabled]}>
               Verify again
             </Text>
