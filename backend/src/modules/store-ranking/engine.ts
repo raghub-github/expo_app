@@ -11,6 +11,7 @@ import {
   distanceScore,
   promiseReliability,
   ratePenalty,
+  speedScore,
   velocityScore,
 } from "./normalize.js";
 import type {
@@ -36,6 +37,7 @@ function scoreOne(f: StoreFeatures, cfg: RankingConfig): RankedStore {
   const r = cfg.references;
   const signalNorms: Record<SignalKey, number> = {
     distance: distanceScore(f.roadDistanceKm, r.distanceRefKm),
+    deliverySpeed: speedScore(f.actualEtaMedianMin, r.etaFastMin, r.etaSlowMin),
     rating: bayesianRating(f.avgRating, f.ratingCount, r.ratingPriorMean, r.ratingMinVotes),
     etaReliability: promiseReliability(f.promisedEtaMin, f.actualEtaMedianMin),
     kptReliability: promiseReliability(f.expectedKptMin, f.actualKptMedianMin),
@@ -65,10 +67,13 @@ function scoreOne(f: StoreFeatures, cfg: RankingConfig): RankedStore {
     complaint: f.complaintRate,
     oos: f.oosRate,
   };
+  // Penalty confidence is gated on the RATE's own window sample (30d), not the 7d velocity count,
+  // so a store with a high 30d cancellation rate but no orders this week is still penalised.
+  const penaltySample = Number.isFinite(f.ratedSampleCount) ? f.ratedSampleCount : f.recentOrders;
   (Object.keys(penaltyInputs) as PenaltyKey[]).forEach((k) => {
     const pen = ratePenalty(
       penaltyInputs[k],
-      f.recentOrders,
+      penaltySample,
       r.penaltyRateRef[k],
       cfg.penaltyCaps[k] ?? 0,
       cfg.minSample

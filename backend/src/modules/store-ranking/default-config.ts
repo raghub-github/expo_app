@@ -12,11 +12,14 @@ export const DEFAULT_HOME_FOOD_CONFIG: RankingConfig = {
   profile: "HOME_FOOD",
   enabled: false, // ship dark — flip per-geo from Super Admin
   weights: {
-    distance: 22,
+    // Quality-forward but bounded: proximity stays strong, but actual speed + rating + reliability
+    // together can lift a clearly better store above a marginally closer one.
+    distance: 20,
+    deliverySpeed: 12,
     rating: 18,
-    etaReliability: 14,
+    etaReliability: 8,
     kptReliability: 10,
-    velocity: 12,
+    velocity: 10,
     availability: 12,
   },
   offerWeight: 6,
@@ -33,6 +36,8 @@ export const DEFAULT_HOME_FOOD_CONFIG: RankingConfig = {
   },
   references: {
     distanceRefKm: 8,
+    etaFastMin: 20,
+    etaSlowMin: 55,
     ratingPriorMean: 4.0,
     ratingMinVotes: 20,
     velocityRefOrders: 200,

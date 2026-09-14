@@ -29,6 +29,21 @@ export function distanceScore(roadKm: number, refKm: number): number {
 }
 
 /**
+ * Absolute delivery-SPEED score in [0,1] from the actual median delivery minutes. 1 at/below
+ * `fastMin`, 0 at/above `slowMin`, linear between. This is the signal that makes a genuinely slow
+ * store (e.g. 64-min median) rank below a fast one (§8) — independent of promise-vs-actual
+ * reliability, which needs a captured promised ETA. Unknown actual ⇒ neutral 0.5 (never a free 1).
+ */
+export function speedScore(actualMin: number | null, fastMin: number, slowMin: number): number {
+  if (actualMin == null || !Number.isFinite(actualMin) || actualMin <= 0) return 0.5;
+  const fast = Number.isFinite(fastMin) && fastMin > 0 ? fastMin : 10;
+  const slow = Number.isFinite(slowMin) && slowMin > fast ? slowMin : fast + 1;
+  if (actualMin <= fast) return 1;
+  if (actualMin >= slow) return 0;
+  return clamp01((slow - actualMin) / (slow - fast));
+}
+
+/**
  * Bayesian (confidence-adjusted) rating in [0,1]. Few reviews are pulled toward the global mean C,
  * so 5.0 (8 reviews) does not beat 4.7 (2500 reviews) purely on the raw average (§10).
  * (v*R + m*C) / (v+m), then /5.
