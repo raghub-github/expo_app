@@ -153,3 +153,121 @@ export async function aggregateRiderCancellationCounts(input: {
     unknownServiceOrders,
   };
 }
+
+export type RiderServiceOrderMetrics = {
+  service: string;
+  sent: number;
+  accepted: number;
+  completed: number;
+  cancelled: number;
+  rejected: number;
+};
+
+type ServiceMetricsRow = {
+  service: string;
+  accepted: string | number;
+  completed: string | number;
+  cancelled: string | number;
+  rejected: string | number;
+};
+
+/**
+ * Authoritative per-service order metrics for one rider, from the SAME assignment spine as
+ * the cancellation analytics — so `accepted` and `cancelled` are identical across both cards
+ * by construction (no more "last 10 orders / order.status" drift).
+ *
+ *   - order_rider_assignments is an ACCEPTED ledger (every row has accepted_at): it yields
+ *     accepted / completed (delivered) / cancelled-after-acceptance, using the rider's best
+ *     leg per order (DISTINCT ON) so a re-accept-and-deliver is never miscounted.
+ *   - Declined offers are NOT in that ledger — they live in order_rider_dispatch_exclusions
+ *     as exclusion_source='rider_reject'. `rejected` counts distinct such orders the rider
+ *     never ultimately accepted.
+ *   - `sent` = accepted + rejected (the offers we can actually attribute to the rider).
+ *
+ * Lifetime by default; the window (accepted_at for accepts, created_at for rejects) matches
+ * the analytics window when provided. Scoped to rider_id throughout.
+ */
+export async function aggregateRiderServiceOrderMetrics(input: {
+  riderId: number;
+  from?: string | null;
+  to?: string | null;
+}): Promise<RiderServiceOrderMetrics[]> {
+  const sql = getSql();
+  const from = input.from ? new Date(input.from) : null;
+  const to = input.to ? new Date(input.to) : null;
+
+  const rows = (await sql`
+    WITH accepted_legs AS (
+      SELECT DISTINCT ON (ora.order_core_id)
+        ora.order_core_id,
+        oc.order_type::text AS service,
+        (ora.assignment_status::text = 'completed' OR ora.delivered_at IS NOT NULL) AS completed,
+        (
+          ora.assignment_status::text = 'cancelled'
+          OR (
+            oc.status::text IN ('cancelled', 'failed')
+            AND ora.assignment_status::text NOT IN ('unassigned', 'rejected', 'completed')
+          )
+        ) AS cancelled
+      FROM order_rider_assignments ora
+      INNER JOIN orders_core oc ON oc.id = ora.order_core_id
+      WHERE ora.rider_id = ${input.riderId}
+        AND ora.accepted_at IS NOT NULL
+        AND oc.order_type IN ('food', 'parcel', 'person_ride')
+        AND (${from}::timestamptz IS NULL OR ora.accepted_at >= ${from}::timestamptz)
+        AND (${to}::timestamptz IS NULL OR ora.accepted_at <= ${to}::timestamptz)
+      ORDER BY
+        ora.order_core_id,
+        CASE
+          WHEN ora.assignment_status::text = 'completed' OR ora.delivered_at IS NOT NULL THEN 0
+          WHEN ora.assignment_status::text = 'cancelled'
+            OR (oc.status::text IN ('cancelled', 'failed')
+                AND ora.assignment_status::text NOT IN ('unassigned', 'rejected', 'completed')) THEN 1
+          ELSE 2
+        END ASC,
+        ora.accepted_at DESC NULLS LAST
+    ),
+    accepted_agg AS (
+      SELECT service,
+        count(*) AS accepted,
+        count(*) FILTER (WHERE completed) AS completed,
+        count(*) FILTER (WHERE cancelled) AS cancelled
+      FROM accepted_legs
+      GROUP BY service
+    ),
+    rejected_agg AS (
+      SELECT oc.order_type::text AS service,
+        count(DISTINCT ex.order_core_id) AS rejected
+      FROM order_rider_dispatch_exclusions ex
+      INNER JOIN orders_core oc ON oc.id = ex.order_core_id
+      WHERE ex.rider_id = ${input.riderId}
+        AND ex.exclusion_source = 'rider_reject'
+        AND oc.order_type IN ('food', 'parcel', 'person_ride')
+        AND ex.order_core_id NOT IN (SELECT order_core_id FROM accepted_legs)
+        AND (${from}::timestamptz IS NULL OR ex.created_at >= ${from}::timestamptz)
+        AND (${to}::timestamptz IS NULL OR ex.created_at <= ${to}::timestamptz)
+      GROUP BY oc.order_type::text
+    )
+    SELECT s.service,
+      COALESCE(a.accepted, 0) AS accepted,
+      COALESCE(a.completed, 0) AS completed,
+      COALESCE(a.cancelled, 0) AS cancelled,
+      COALESCE(r.rejected, 0) AS rejected
+    FROM (SELECT unnest(ARRAY['food', 'parcel', 'person_ride']) AS service) s
+    LEFT JOIN accepted_agg a ON a.service = s.service
+    LEFT JOIN rejected_agg r ON r.service = s.service
+  `) as unknown as ServiceMetricsRow[];
+
+  return rows.map((row) => {
+    const accepted = Number(row.accepted) || 0;
+    const rejected = Number(row.rejected) || 0;
+    return {
+      service: row.service,
+      accepted,
+      completed: Number(row.completed) || 0,
+      cancelled: Number(row.cancelled) || 0,
+      rejected,
+      sent: accepted + rejected,
+    };
+  });
+}

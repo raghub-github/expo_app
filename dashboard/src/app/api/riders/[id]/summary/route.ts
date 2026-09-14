@@ -8,6 +8,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb, getSql } from "@/lib/db/client";
 import { fetchRiderUnifiedTickets } from "@/lib/riders/rider-unified-tickets";
 import { fetchRiderRecentOrders, formatRiderOrderDisplayId } from "@/lib/riders/rider-orders-query";
+import { aggregateRiderServiceOrderMetrics } from "@/lib/riders/rider-cancellation-analytics.query";
 import {
   displayIdFromPenaltyMetadata,
   resolveFormattedOrderIdsByCoreId,
@@ -719,30 +720,27 @@ export async function GET(
     const isOnline =
       isFullyOnboarded && latestDutyLog ? latestDutyLog.status === "ON" : false;
 
-    // Calculate order metrics per service type
-    // Note: This uses orders table - for detailed assignment tracking, use order_rider_assignments if available
+    // Per-service order metrics — LIFETIME, from the same order_rider_assignments spine as the
+    // Cancellation Analytics card, so `accepted` and `cancelled` match across both cards by
+    // construction. (The old version counted only the last ~10 orders using order-level status,
+    // which mis-attributed customer/re-dispatch cancels to the rider and undercounted accepts.)
+    const serviceMetrics = await aggregateRiderServiceOrderMetrics({ riderId });
     const orderMetrics = {
-      food: { sent: 0, accepted: 0, completed: 0, rejected: 0 },
-      parcel: { sent: 0, accepted: 0, completed: 0, rejected: 0 },
-      person_ride: { sent: 0, accepted: 0, completed: 0, rejected: 0 },
+      food: { sent: 0, accepted: 0, completed: 0, cancelled: 0, rejected: 0 },
+      parcel: { sent: 0, accepted: 0, completed: 0, cancelled: 0, rejected: 0 },
+      person_ride: { sent: 0, accepted: 0, completed: 0, cancelled: 0, rejected: 0 },
     };
-
-    // Count orders by type and status
-    recentOrders.forEach(order => {
-      const orderType = order.orderType as 'food' | 'parcel' | 'person_ride';
-      if (orderMetrics[orderType]) {
-        orderMetrics[orderType].sent++;
-        if (order.status === 'accepted' || order.status === 'reached_store' || order.status === 'picked_up' || order.status === 'in_transit' || order.status === 'delivered') {
-          orderMetrics[orderType].accepted++;
-        }
-        if (order.status === 'delivered') {
-          orderMetrics[orderType].completed++;
-        }
-        if (order.status === 'cancelled' || order.status === 'failed') {
-          orderMetrics[orderType].rejected++;
-        }
+    for (const m of serviceMetrics) {
+      if (m.service === "food" || m.service === "parcel" || m.service === "person_ride") {
+        orderMetrics[m.service] = {
+          sent: m.sent,
+          accepted: m.accepted,
+          completed: m.completed,
+          cancelled: m.cancelled,
+          rejected: m.rejected,
+        };
       }
-    });
+    }
 
     const limitationFlags =
       activeVehicle?.limitationFlags &&

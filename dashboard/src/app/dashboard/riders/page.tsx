@@ -2452,7 +2452,7 @@ export default function RidersPage() {
                 {hasOrderMetrics ? (
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 shrink-0">
                     {(['food', 'parcel', 'person_ride'] as const).map((service) => {
-                      const metrics = summary.orderMetrics?.[service] ?? { sent: 0, accepted: 0, completed: 0, rejected: 0 };
+                      const metrics = summary.orderMetrics?.[service] ?? { sent: 0, accepted: 0, completed: 0, cancelled: 0, rejected: 0 };
                       return (
                         <div key={service} className="p-4 bg-gradient-to-br from-blue-50 to-purple-50 rounded-lg border border-blue-200">
                           <p className="text-sm font-bold text-gray-800 capitalize mb-3">{service.replace('_', ' ')}</p>
@@ -2468,6 +2468,10 @@ export default function RidersPage() {
                             <div className="flex justify-between text-xs">
                               <span className="text-gray-600">Completed:</span>
                               <span className="font-semibold text-blue-600">{Number(metrics.completed) ?? 0}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                              <span className="text-gray-600">Cancelled:</span>
+                              <span className="font-semibold text-amber-600">{Number(metrics.cancelled) ?? 0}</span>
                             </div>
                             <div className="flex justify-between text-xs">
                               <span className="text-gray-600">Rejected:</span>

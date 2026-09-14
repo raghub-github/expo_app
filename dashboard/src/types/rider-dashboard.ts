@@ -151,9 +151,9 @@ export interface RiderSummary {
     createdAt?: string;
   }[];
   orderMetrics: {
-    food: { sent: number; accepted: number; completed: number; rejected: number };
-    parcel: { sent: number; accepted: number; completed: number; rejected: number };
-    person_ride: { sent: number; accepted: number; completed: number; rejected: number };
+    food: { sent: number; accepted: number; completed: number; cancelled: number; rejected: number };
+    parcel: { sent: number; accepted: number; completed: number; cancelled: number; rejected: number };
+    person_ride: { sent: number; accepted: number; completed: number; cancelled: number; rejected: number };
   };
   wallet: {
     totalBalance: string;
