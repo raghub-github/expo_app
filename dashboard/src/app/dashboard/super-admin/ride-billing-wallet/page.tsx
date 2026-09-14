@@ -12,6 +12,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
+  validateCancellationSlabs,
+  evaluateCancellationSlabPolicy,
+  type CancellationSlab,
+} from "@gatimitra/financial-rules";
+import {
   AlertTriangle,
   ArrowLeft,
   Banknote,
@@ -23,8 +28,10 @@ import {
   LineChart,
   Loader2,
   Percent,
+  Plus,
   RefreshCw,
   ShieldAlert,
+  Trash2,
   Wallet,
 } from "lucide-react";
 
@@ -123,13 +130,13 @@ const DEFAULT_POLICY: Policy = {
 
 type CancelService = "food" | "parcel" | "person_ride";
 
-type CancelConfigRow = {
+type PolicyServiceConfig = {
   serviceType: CancelService;
-  thresholdPct: number;
-  minAccepted: number;
   enabled: boolean;
+  policyVersion: number;
   updatedBy: string | null;
   updatedAt: string | null;
+  slabs: CancellationSlab[];
 };
 
 const CANCEL_SERVICES: CancelService[] = ["food", "parcel", "person_ride"];
@@ -138,6 +145,8 @@ const CANCEL_SERVICE_LABELS: Record<CancelService, string> = {
   parcel: "Parcel",
   person_ride: "Person Ride",
 };
+
+const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 const RELATED_LINKS = [
   {
@@ -184,13 +193,17 @@ export default function RideBillingWalletHub() {
   const [watchlist, setWatchlist] = useState<Watchlist | null>(null);
   const [reportsLoading, setReportsLoading] = useState(false);
 
-  // Cancellation-rate auto-block policy (per service).
-  const [cancelRows, setCancelRows] = useState<CancelConfigRow[]>([]);
-  const [cancelDraft, setCancelDraft] = useState<CancelConfigRow[]>([]);
+  // Rider-fault cancellation SLAB policy (per service).
+  const [policyRows, setPolicyRows] = useState<PolicyServiceConfig[]>([]);
+  const [policyDraft, setPolicyDraft] = useState<PolicyServiceConfig[]>([]);
   const [cancelLoading, setCancelLoading] = useState(true);
   const [cancelSaving, setCancelSaving] = useState(false);
   const [cancelSavedAt, setCancelSavedAt] = useState<number | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  // Preview tool state.
+  const [previewService, setPreviewService] = useState<CancelService>("food");
+  const [previewAccepted, setPreviewAccepted] = useState<number>(15);
+  const [previewRiderFault, setPreviewRiderFault] = useState<number>(9);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -257,13 +270,13 @@ export default function RideBillingWalletHub() {
       const json = (await res.json()) as {
         success?: boolean;
         error?: string;
-        config?: CancelConfigRow[];
+        policy?: PolicyServiceConfig[];
       };
-      if (!res.ok || !json.success || !Array.isArray(json.config)) {
+      if (!res.ok || !json.success || !Array.isArray(json.policy)) {
         throw new Error(json.error || `Load failed (${res.status})`);
       }
-      setCancelRows(json.config);
-      setCancelDraft(json.config);
+      setPolicyRows(json.policy);
+      setPolicyDraft(clone(json.policy));
     } catch (e) {
       setCancelError(e instanceof Error ? e.message : "Could not load cancellation policy");
     } finally {
@@ -275,43 +288,85 @@ export default function RideBillingWalletHub() {
     void refreshCancelConfig();
   }, [refreshCancelConfig]);
 
-  const patchCancel = useCallback(
-    (service: CancelService, next: Partial<CancelConfigRow>) =>
-      setCancelDraft((prev) =>
+  const patchService = useCallback(
+    (service: CancelService, next: Partial<PolicyServiceConfig>) =>
+      setPolicyDraft((prev) =>
         prev.map((r) => (r.serviceType === service ? { ...r, ...next } : r))
       ),
     []
   );
 
-  const cancelDirty = useMemo(() => {
-    if (cancelRows.length === 0) return false;
-    return cancelDraft.some((d) => {
-      const orig = cancelRows.find((r) => r.serviceType === d.serviceType);
-      return (
-        !orig ||
-        orig.thresholdPct !== d.thresholdPct ||
-        orig.minAccepted !== d.minAccepted ||
-        orig.enabled !== d.enabled
-      );
-    });
-  }, [cancelRows, cancelDraft]);
+  const patchSlab = useCallback(
+    (service: CancelService, slabIdx: number, next: Partial<CancellationSlab>) =>
+      setPolicyDraft((prev) =>
+        prev.map((r) =>
+          r.serviceType === service
+            ? { ...r, slabs: r.slabs.map((s, i) => (i === slabIdx ? { ...s, ...next } : s)) }
+            : r
+        )
+      ),
+    []
+  );
+
+  const addSlab = useCallback(
+    (service: CancelService) =>
+      setPolicyDraft((prev) =>
+        prev.map((r) => {
+          if (r.serviceType !== service) return r;
+          const last = r.slabs[r.slabs.length - 1];
+          const nextMin = last ? (last.maxAccepted ?? last.minAccepted) + 1 : 1;
+          const slab: CancellationSlab = {
+            slabNumber: (last?.slabNumber ?? 0) + 1,
+            minAccepted: nextMin,
+            maxAccepted: null,
+            blockingEnabled: true,
+            thresholdPct: 20,
+          };
+          // New slab becomes the open-ended tail; cap the previous tail if it was open.
+          const slabs = r.slabs.map((s, i) =>
+            i === r.slabs.length - 1 && s.maxAccepted == null
+              ? { ...s, maxAccepted: nextMin - 1 }
+              : s
+          );
+          return { ...r, slabs: [...slabs, slab] };
+        })
+      ),
+    []
+  );
+
+  const removeSlab = useCallback(
+    (service: CancelService, slabIdx: number) =>
+      setPolicyDraft((prev) =>
+        prev.map((r) => {
+          if (r.serviceType !== service) return r;
+          const slabs = r.slabs
+            .filter((_, i) => i !== slabIdx)
+            .map((s, i) => ({ ...s, slabNumber: i + 1 }));
+          return { ...r, slabs };
+        })
+      ),
+    []
+  );
+
+  const validationByService = useMemo(() => {
+    const map = new Map<CancelService, string[]>();
+    for (const d of policyDraft) map.set(d.serviceType, validateCancellationSlabs(d.slabs));
+    return map;
+  }, [policyDraft]);
 
   const cancelInvalid = useMemo(() => {
-    for (const d of cancelDraft) {
-      if (!d.enabled) continue;
-      if (!(d.thresholdPct > 0) || d.thresholdPct > 100) {
-        return `${CANCEL_SERVICE_LABELS[d.serviceType]}: threshold must be between 0 and 100%`;
-      }
-      if (d.minAccepted < 0 || !Number.isFinite(d.minAccepted)) {
-        return `${CANCEL_SERVICE_LABELS[d.serviceType]}: minimum accepted orders must be 0 or more`;
-      }
-    }
-    return null;
-  }, [cancelDraft]);
+    for (const [, errs] of validationByService) if (errs.length > 0) return true;
+    return false;
+  }, [validationByService]);
+
+  const cancelDirty = useMemo(
+    () => JSON.stringify(policyRows) !== JSON.stringify(policyDraft),
+    [policyRows, policyDraft]
+  );
 
   const saveCancelConfig = useCallback(async () => {
     if (cancelInvalid) {
-      setCancelError(cancelInvalid);
+      setCancelError("Fix the highlighted slab errors before saving.");
       return;
     }
     setCancelSaving(true);
@@ -321,31 +376,47 @@ export default function RideBillingWalletHub() {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          config: cancelDraft.map((r) => ({
+          policy: policyDraft.map((r) => ({
             serviceType: r.serviceType,
-            thresholdPct: Number(r.thresholdPct),
-            minAccepted: Math.trunc(Number(r.minAccepted)),
             enabled: Boolean(r.enabled),
+            slabs: r.slabs.map((s) => ({
+              slabNumber: Math.trunc(s.slabNumber),
+              minAccepted: Math.trunc(s.minAccepted),
+              maxAccepted: s.maxAccepted == null ? null : Math.trunc(s.maxAccepted),
+              blockingEnabled: Boolean(s.blockingEnabled),
+              thresholdPct: Number(s.thresholdPct),
+            })),
           })),
         }),
       });
       const json = (await res.json()) as {
         success?: boolean;
         error?: string;
-        config?: CancelConfigRow[];
+        policy?: PolicyServiceConfig[];
       };
-      if (!res.ok || !json.success || !Array.isArray(json.config)) {
+      if (!res.ok || !json.success || !Array.isArray(json.policy)) {
         throw new Error(json.error || `Save failed (${res.status})`);
       }
-      setCancelRows(json.config);
-      setCancelDraft(json.config);
+      setPolicyRows(json.policy);
+      setPolicyDraft(clone(json.policy));
       setCancelSavedAt(Date.now());
     } catch (e) {
       setCancelError(e instanceof Error ? e.message : "Save failed");
     } finally {
       setCancelSaving(false);
     }
-  }, [cancelDraft, cancelInvalid]);
+  }, [policyDraft, cancelInvalid]);
+
+  const previewResult = useMemo(() => {
+    const svc = policyDraft.find((r) => r.serviceType === previewService);
+    if (!svc) return null;
+    return evaluateCancellationSlabPolicy({
+      enabled: svc.enabled,
+      slabs: svc.slabs,
+      accepted: Math.max(0, Math.trunc(previewAccepted)),
+      riderFault: Math.max(0, Math.trunc(previewRiderFault)),
+    });
+  }, [policyDraft, previewService, previewAccepted, previewRiderFault]);
 
   const isDirty = useMemo(() => {
     if (!policy) return false;
@@ -671,14 +742,14 @@ export default function RideBillingWalletHub() {
               Cancellation-rate auto-block
             </h2>
             <p className="max-w-3xl text-xs text-slate-500">
-              Per-service rider-fault cancellation-rate limit. When a rider&apos;s{" "}
+              Per-service{" "}
               <span className="font-semibold text-slate-700">rider-fault</span>{" "}
-              cancellation rate for a service reaches the threshold (and they have at
-              least the minimum accepted orders), they are auto-blocked for that
-              service only. Only rider-fault cancellations count — customer, merchant,
-              and system cancellations never do. A blocked rider is released only when
-              you change the threshold for that service; there is no manual unblock and
-              no timer. Changes take effect within ~60s.
+              cancellation slab policy. Each service has cumulative accepted-order slabs; when a
+              rider&apos;s lifetime rider-fault cancellation rate reaches the matching slab&apos;s
+              threshold, they are auto-blocked for that service only. A grace slab never blocks.
+              Only rider-fault cancellations count — customer, merchant, and system cancellations
+              never do. Released only by re-evaluation under the current policy (no manual unblock,
+              no timer). Changes take effect within ~60s.
             </p>
           </div>
         </div>
@@ -695,154 +766,256 @@ export default function RideBillingWalletHub() {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-              {CANCEL_SERVICES.map((service) => {
-                const row =
-                  cancelDraft.find((r) => r.serviceType === service) ?? {
-                    serviceType: service,
-                    thresholdPct: 0,
-                    minAccepted: 20,
-                    enabled: false,
-                    updatedBy: null,
-                    updatedAt: null,
-                  };
-                const on = row.enabled;
+            <div className="space-y-5">
+              {policyDraft.map((svc) => {
+                const errs = validationByService.get(svc.serviceType) ?? [];
                 return (
                   <div
-                    key={service}
-                    className={`rounded-xl border p-4 transition ${
-                      on
-                        ? "border-rose-200 bg-rose-50/40"
-                        : "border-slate-200 bg-slate-50/50"
+                    key={svc.serviceType}
+                    className={`rounded-xl border p-4 ${
+                      svc.enabled ? "border-rose-200 bg-rose-50/30" : "border-slate-200 bg-slate-50/40"
                     }`}
                   >
                     <div className="mb-3 flex items-center justify-between">
-                      <span className="text-sm font-bold text-slate-900">
-                        {CANCEL_SERVICE_LABELS[service]}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-slate-900">
+                          {CANCEL_SERVICE_LABELS[svc.serviceType]}
+                        </span>
+                        <span className="rounded bg-slate-200/70 px-1.5 py-0.5 text-[10px] font-mono text-slate-600">
+                          v{svc.policyVersion}
+                        </span>
+                      </div>
                       <label className="inline-flex cursor-pointer items-center gap-2">
                         <input
                           type="checkbox"
-                          checked={on}
-                          onChange={(e) =>
-                            patchCancel(service, { enabled: e.target.checked })
-                          }
+                          checked={svc.enabled}
+                          onChange={(e) => patchService(svc.serviceType, { enabled: e.target.checked })}
                           className="h-4 w-4 accent-rose-600"
                         />
                         <span
                           className={`text-[11px] font-semibold uppercase tracking-wide ${
-                            on ? "text-rose-700" : "text-slate-400"
+                            svc.enabled ? "text-rose-700" : "text-slate-400"
                           }`}
                         >
-                          {on ? "On" : "Off"}
+                          {svc.enabled ? "Enforcing" : "Off"}
                         </span>
                       </label>
                     </div>
 
-                    <label className="block">
-                      <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                        Rider-fault rate ≥
-                      </span>
-                      <div className="flex items-center gap-1">
-                        <input
-                          type="number"
-                          min={0}
-                          max={100}
-                          step={0.5}
-                          value={row.thresholdPct}
-                          disabled={!on}
-                          onChange={(e) =>
-                            patchCancel(service, {
-                              thresholdPct: Number(e.target.value),
-                            })
-                          }
-                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-mono text-slate-900 focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-200 disabled:bg-slate-100 disabled:text-slate-400"
-                        />
-                        <span className="text-sm font-semibold text-slate-500">%</span>
-                      </div>
-                    </label>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                            <th className="px-2 py-1">Slab</th>
+                            <th className="px-2 py-1">Min accepted</th>
+                            <th className="px-2 py-1">Max accepted</th>
+                            <th className="px-2 py-1">Blocking</th>
+                            <th className="px-2 py-1">Rider-fault ≥</th>
+                            <th className="px-2 py-1"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {svc.slabs.map((slab, idx) => (
+                            <tr key={idx} className="border-t border-slate-100">
+                              <td className="px-2 py-1.5 font-mono text-slate-700">{idx + 1}</td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={slab.minAccepted}
+                                  onChange={(e) =>
+                                    patchSlab(svc.serviceType, idx, {
+                                      minAccepted: Math.max(1, Math.trunc(Number(e.target.value))),
+                                    })
+                                  }
+                                  className="w-20 rounded-md border border-slate-200 px-2 py-1 font-mono"
+                                />
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <input
+                                  type="number"
+                                  min={1}
+                                  placeholder="∞"
+                                  value={slab.maxAccepted ?? ""}
+                                  onChange={(e) =>
+                                    patchSlab(svc.serviceType, idx, {
+                                      maxAccepted:
+                                        e.target.value === ""
+                                          ? null
+                                          : Math.max(1, Math.trunc(Number(e.target.value))),
+                                    })
+                                  }
+                                  className="w-20 rounded-md border border-slate-200 px-2 py-1 font-mono"
+                                />
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <label className="inline-flex items-center gap-1 text-[11px]">
+                                  <input
+                                    type="checkbox"
+                                    checked={slab.blockingEnabled}
+                                    onChange={(e) =>
+                                      patchSlab(svc.serviceType, idx, { blockingEnabled: e.target.checked })
+                                    }
+                                    className="h-4 w-4 accent-rose-600"
+                                  />
+                                  {slab.blockingEnabled ? "Block" : "Grace"}
+                                </label>
+                              </td>
+                              <td className="px-2 py-1.5">
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    step={0.5}
+                                    value={slab.thresholdPct}
+                                    disabled={!slab.blockingEnabled}
+                                    onChange={(e) =>
+                                      patchSlab(svc.serviceType, idx, {
+                                        thresholdPct: Number(e.target.value),
+                                      })
+                                    }
+                                    className="w-20 rounded-md border border-slate-200 px-2 py-1 font-mono disabled:bg-slate-100 disabled:text-slate-400"
+                                  />
+                                  <span className="text-xs text-slate-400">%</span>
+                                </div>
+                              </td>
+                              <td className="px-2 py-1.5 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => removeSlab(svc.serviceType, idx)}
+                                  disabled={svc.slabs.length <= 1}
+                                  className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-red-600 disabled:opacity-30"
+                                  title="Remove slab"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
 
-                    <label className="mt-3 block">
-                      <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                        Min accepted orders
+                    <div className="mt-2 flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={() => addSlab(svc.serviceType)}
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                      >
+                        <Plus className="h-3.5 w-3.5" /> Add slab
+                      </button>
+                      <span className="text-[10px] text-slate-400">
+                        Leave Max blank for an open-ended top slab (and above).
                       </span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={row.minAccepted}
-                        disabled={!on}
-                        onChange={(e) =>
-                          patchCancel(service, {
-                            minAccepted: Math.max(0, Math.trunc(Number(e.target.value))),
-                          })
-                        }
-                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-mono text-slate-900 focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-200 disabled:bg-slate-100 disabled:text-slate-400"
-                      />
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        Rule applies only after this many accepted orders. Protects new
-                        riders. Default: 20.
-                      </p>
-                    </label>
+                    </div>
 
-                    {row.updatedAt ? (
-                      <p className="mt-3 text-[10px] text-slate-400">
-                        Updated {new Date(row.updatedAt).toLocaleString()}
-                        {row.updatedBy ? ` by ${row.updatedBy}` : ""}
-                      </p>
+                    {errs.length > 0 ? (
+                      <ul className="mt-2 list-disc space-y-0.5 pl-5 text-[11px] font-semibold text-red-600">
+                        {errs.map((er, i) => (
+                          <li key={i}>{er}</li>
+                        ))}
+                      </ul>
                     ) : null}
                   </div>
                 );
               })}
             </div>
 
-            <div className="mt-5 flex items-center justify-between">
-              <div className="text-xs text-slate-500">
-                Live —{" "}
-                <span className="font-mono text-slate-700">
-                  {cancelRows
-                    .map(
-                      (r) =>
-                        `${CANCEL_SERVICE_LABELS[r.serviceType].toLowerCase()} ${
-                          r.enabled ? `${r.thresholdPct}%/${r.minAccepted}` : "off"
-                        }`
-                    )
-                    .join(" · ") || "…"}
-                </span>
+            {/* Preview / calculator (spec §23) */}
+            <div className="mt-5 rounded-xl border border-indigo-200 bg-indigo-50/40 p-4">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-indigo-700">
+                Policy preview
               </div>
-              <div className="flex items-center gap-3">
-                {cancelSavedAt ? (
-                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600">
-                    <Check className="h-3.5 w-3.5" /> Saved — re-evaluates in ~60s
-                  </span>
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="text-xs">
+                  <span className="mb-1 block text-slate-500">Service</span>
+                  <select
+                    value={previewService}
+                    onChange={(e) => setPreviewService(e.target.value as CancelService)}
+                    className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm"
+                  >
+                    {CANCEL_SERVICES.map((s) => (
+                      <option key={s} value={s}>
+                        {CANCEL_SERVICE_LABELS[s]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs">
+                  <span className="mb-1 block text-slate-500">Accepted orders</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={previewAccepted}
+                    onChange={(e) => setPreviewAccepted(Number(e.target.value))}
+                    className="w-28 rounded-md border border-slate-200 px-2 py-1.5 font-mono text-sm"
+                  />
+                </label>
+                <label className="text-xs">
+                  <span className="mb-1 block text-slate-500">Rider-fault cancellations</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={previewRiderFault}
+                    onChange={(e) => setPreviewRiderFault(Number(e.target.value))}
+                    className="w-28 rounded-md border border-slate-200 px-2 py-1.5 font-mono text-sm"
+                  />
+                </label>
+                {previewResult ? (
+                  <div className="ml-auto text-right text-xs">
+                    <div className="text-slate-500">
+                      Slab{" "}
+                      <span className="font-mono text-slate-800">
+                        {previewResult.currentSlab?.slabNumber ?? "—"}
+                      </span>{" "}
+                      · Rate{" "}
+                      <span className="font-mono text-slate-800">
+                        {previewResult.ratePct.toFixed(2)}%
+                      </span>{" "}
+                      · Threshold{" "}
+                      <span className="font-mono text-slate-800">
+                        {previewResult.thresholdPct == null ? "—" : `${previewResult.thresholdPct}%`}
+                      </span>
+                    </div>
+                    <div
+                      className={`mt-1 text-sm font-bold ${
+                        previewResult.shouldBlock ? "text-red-600" : "text-emerald-600"
+                      }`}
+                    >
+                      {previewResult.shouldBlock
+                        ? "SERVICE WILL BE BLOCKED"
+                        : `Not blocked (${previewResult.reason.replace(/_/g, " ")})`}
+                    </div>
+                  </div>
                 ) : null}
-                <button
-                  type="button"
-                  onClick={() => setCancelDraft(cancelRows)}
-                  disabled={!cancelDirty || cancelSaving}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40"
-                >
-                  Reset
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void saveCancelConfig()}
-                  disabled={!cancelDirty || cancelSaving || Boolean(cancelInvalid)}
-                  className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-40"
-                >
-                  {cancelSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                  Save cancellation policy
-                </button>
               </div>
             </div>
-            {cancelInvalid ? (
-              <p className="mt-2 text-xs font-semibold text-red-600">{cancelInvalid}</p>
-            ) : null}
-            <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
-              Rate is lifetime rider-fault cancellations ÷ accepted orders for the
-              service. Raising a threshold releases riders now under it; lowering it
-              blocks riders now at or above it.
-            </p>
+
+            <div className="mt-5 flex items-center justify-end gap-3">
+              {cancelSavedAt ? (
+                <span className="mr-auto inline-flex items-center gap-1 text-xs font-semibold text-emerald-600">
+                  <Check className="h-3.5 w-3.5" /> Saved — re-evaluates in ~60s
+                </span>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setPolicyDraft(clone(policyRows))}
+                disabled={!cancelDirty || cancelSaving}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+              >
+                Reset
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveCancelConfig()}
+                disabled={!cancelDirty || cancelSaving || cancelInvalid}
+                className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-40"
+              >
+                {cancelSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                Save cancellation policy
+              </button>
+            </div>
           </>
         )}
       </section>

@@ -6,7 +6,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getDb } from "@/lib/db/client";
+import { getDb, getSql } from "@/lib/db/client";
 import {
   riders,
   dutyLogs,
@@ -341,6 +341,71 @@ export async function GET(
         r.earningsIncentives > 0
     );
 
+    // Cancellation auto-block / unblock events in this window — so agents can see WHY a
+    // service was auto-blocked, right in the activity log. Sourced from the versioned audit
+    // (rider_service_block_history, source='cancellation_rate_auto_block').
+    let serviceBlockEvents: Array<{
+      at: string;
+      service: string;
+      action: string;
+      slab: number | null;
+      policyVersion: number | null;
+      riderFaultRate: number | null;
+      thresholdPct: number | null;
+      accepted: number | null;
+      riderFault: number | null;
+      reason: string;
+    }> = [];
+    try {
+      const sqlB = getSql();
+      const evRows = (await sqlB`
+        SELECT service_type, action, reason, metadata, created_at
+        FROM rider_service_block_history
+        WHERE rider_id = ${riderId}
+          AND created_at >= ${fromDate}
+          AND created_at <= ${toDate}
+          AND metadata->>'source' = 'cancellation_rate_auto_block'
+          AND (${serviceFilter} = 'all' OR service_type = ${serviceFilter})
+        ORDER BY created_at DESC
+      `) as unknown as Array<{
+        service_type: string;
+        action: string;
+        reason: string;
+        metadata: Record<string, unknown> | null;
+        created_at: string | Date;
+      }>;
+      serviceBlockEvents = evRows.map((r) => {
+        const m = r.metadata ?? {};
+        const num = (v: unknown): number | null => (v == null ? null : Number(v));
+        const rate = num(m.riderFaultRate);
+        const threshold = num(m.thresholdPct);
+        const accepted = num(m.accepted);
+        const riderFault = num(m.riderFault);
+        const slab = num(m.slab);
+        const verb = r.action === "blocked" ? "Auto-blocked" : "Auto-unblocked";
+        const detail =
+          rate != null && threshold != null && accepted != null && riderFault != null
+            ? ` — rider-fault ${riderFault}/${accepted} = ${rate}% vs ${threshold}% threshold (slab ${slab ?? "?"})`
+            : "";
+        return {
+          at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+          service: r.service_type,
+          action: r.action,
+          slab,
+          policyVersion: num(m.policyVersion),
+          riderFaultRate: rate,
+          thresholdPct: threshold,
+          accepted,
+          riderFault,
+          reason: `${verb} for ${r.service_type.replace("_", " ")}${detail}`,
+        };
+      });
+    } catch (err) {
+      if ((err as { code?: string })?.code !== "42P01") {
+        console.warn("[activity-logs] service block events read failed", err);
+      }
+    }
+
     const total = activityRows.length;
     const paginatedRows = activityRows.slice(offset, offset + limit);
 
@@ -369,6 +434,7 @@ export async function GET(
         rows: paginatedRows,
         total,
         totals,
+        serviceBlockEvents,
         from: fromDate.toISOString().slice(0, 10),
         to: toDate.toISOString().slice(0, 10),
         period,

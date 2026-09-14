@@ -1,21 +1,25 @@
 /**
- * Rider cancellation-rate auto-block engine.
+ * Rider-fault cancellation SLAB auto-block engine (backend side effects).
  *
- * Applies the Super-Admin per-service rule: when a rider's lifetime RIDER-FAULT cancellation
- * rate for a service reaches the threshold (and min accepted orders is met), block the rider
- * for that service only. The block lifts only when re-evaluation finds the rider under the
- * (possibly changed) threshold — the sole release path is an admin threshold change.
+ * Applies the Super-Admin per-service slab policy: at a rider's CUMULATIVE accepted-order
+ * count for a service, pick the matching slab; if that slab blocks and the rider's lifetime
+ * RIDER-FAULT cancellation rate reaches its threshold, block the rider for that service only.
+ * The decision itself is the shared, integer-safe engine in @gatimitra/financial-rules
+ * (evaluateCancellationSlabPolicy) — identical to what the dashboard shows.
  *
- * Writes presence rows to rider_cancellation_service_blocks (merged into
- * getRiderAccountRestrictions for enforcement) and logs every transition to
- * rider_service_block_history. Duty is re-synced so a blocked service drops immediately.
+ * Blocks are presence rows in rider_cancellation_service_blocks (merged into
+ * getRiderAccountRestrictions → assignment-engine exclusion). Every transition is logged to
+ * rider_service_block_history with slab + policy_version for audit. Duty re-syncs so a newly
+ * blocked service drops immediately. Manual blacklist blocks are a separate system and are
+ * never touched here; releasing is rule-governed only (re-evaluation under the current policy).
  */
 
-import { getSql } from "../db/client.js";
 import {
-  evaluateCancellationBlock,
-  type RiderCancellationBlockConfig,
-} from "./rider-cancellation-block-policy.js";
+  evaluateCancellationSlabPolicy,
+  type CancellationSlab,
+  type CancellationSlabPolicy,
+} from "@gatimitra/financial-rules";
+import { getSql } from "../db/client.js";
 import {
   AUTO_BLOCK_SERVICES,
   getRiderFaultStatsByService,
@@ -28,36 +32,63 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-export type ServiceConfigRow = RiderCancellationBlockConfig & { serviceType: AutoBlockService };
-
-/** Load per-service config (defaults to disabled if a row is missing). */
-export async function loadCancellationBlockConfig(): Promise<Map<AutoBlockService, ServiceConfigRow>> {
+/** Load per-service slab policy (defaults to disabled/empty if rows are missing). */
+export async function loadCancellationSlabPolicy(): Promise<
+  Map<AutoBlockService, CancellationSlabPolicy>
+> {
   const sql = getSql();
-  const map = new Map<AutoBlockService, ServiceConfigRow>();
+  const map = new Map<AutoBlockService, CancellationSlabPolicy>();
   for (const s of AUTO_BLOCK_SERVICES) {
-    map.set(s, { serviceType: s, enabled: false, thresholdPct: 0, minAccepted: 20 });
+    map.set(s, { enabled: false, policyVersion: 1, slabs: [] });
   }
   try {
-    const rows = (await sql`
-      SELECT service_type, threshold_pct::float8 AS threshold_pct, min_accepted, enabled
-      FROM rider_cancellation_block_config
-      WHERE service_type IN ('food','parcel','person_ride')
-    `) as unknown as {
-      service_type: AutoBlockService;
-      threshold_pct: number;
-      min_accepted: number;
-      enabled: boolean;
-    }[];
-    for (const r of rows) {
-      map.set(r.service_type, {
-        serviceType: r.service_type,
-        enabled: r.enabled === true,
-        thresholdPct: Number(r.threshold_pct),
+    const [headers, slabRows] = await Promise.all([
+      sql`
+        SELECT service_type, enabled, policy_version
+        FROM rider_cancellation_policy
+        WHERE service_type IN ('food','parcel','person_ride')
+      ` as unknown as Promise<
+        { service_type: AutoBlockService; enabled: boolean; policy_version: number }[]
+      >,
+      sql`
+        SELECT service_type, slab_number, min_accepted, max_accepted,
+               blocking_enabled, threshold_pct::float8 AS threshold_pct
+        FROM rider_cancellation_policy_slabs
+        WHERE service_type IN ('food','parcel','person_ride')
+        ORDER BY service_type, min_accepted
+      ` as unknown as Promise<
+        {
+          service_type: AutoBlockService;
+          slab_number: number;
+          min_accepted: number;
+          max_accepted: number | null;
+          blocking_enabled: boolean;
+          threshold_pct: number;
+        }[]
+      >,
+    ]);
+
+    const slabsByService = new Map<AutoBlockService, CancellationSlab[]>();
+    for (const r of slabRows) {
+      const list = slabsByService.get(r.service_type) ?? [];
+      list.push({
+        slabNumber: Number(r.slab_number),
         minAccepted: Number(r.min_accepted),
+        maxAccepted: r.max_accepted == null ? null : Number(r.max_accepted),
+        blockingEnabled: r.blocking_enabled === true,
+        thresholdPct: Number(r.threshold_pct),
+      });
+      slabsByService.set(r.service_type, list);
+    }
+    for (const h of headers) {
+      map.set(h.service_type, {
+        enabled: h.enabled === true,
+        policyVersion: Number(h.policy_version) || 1,
+        slabs: slabsByService.get(h.service_type) ?? [],
       });
     }
   } catch (err) {
-    console.warn("[cancellation-auto-block] config load failed; treating as disabled", err);
+    console.warn("[cancellation-auto-block] policy load failed; treating as disabled", err);
   }
   return map;
 }
@@ -77,7 +108,9 @@ async function logHistory(input: {
   action: "blocked" | "unblocked";
   stats: ServiceFaultStats;
   rate: number;
-  thresholdPct: number;
+  slabNumber: number | null;
+  thresholdPct: number | null;
+  policyVersion: number;
   reason: string;
 }): Promise<void> {
   const sql = getSql();
@@ -90,12 +123,14 @@ async function logHistory(input: {
         ${input.reason}, 'system',
         ${JSON.stringify({
           source: "cancellation_rate_auto_block",
+          policyVersion: input.policyVersion,
+          slab: input.slabNumber,
           riderFaultRate: round2(input.rate),
           thresholdPct: input.thresholdPct,
           accepted: input.stats.accepted,
           cancelled: input.stats.cancelled,
           riderFault: input.stats.riderFault,
-        })}::jsonb
+        })}::text::jsonb
       )
     `;
   } catch (err) {
@@ -118,36 +153,46 @@ export type ServiceEvaluationResult = {
   changed: boolean;
   blocked: boolean;
   riderFaultRate: number;
+  slabNumber: number | null;
 };
 
-/** Evaluate + reconcile one rider+service against the current config. */
+/** Evaluate + reconcile one rider+service against the current slab policy. */
 export async function evaluateRiderServiceBlock(
   riderId: number,
   service: AutoBlockService,
-  config: RiderCancellationBlockConfig,
+  policy: CancellationSlabPolicy,
   stats: ServiceFaultStats
 ): Promise<ServiceEvaluationResult> {
   const sql = getSql();
-  const decision = evaluateCancellationBlock(config, stats);
+  const decision = evaluateCancellationSlabPolicy({
+    enabled: policy.enabled,
+    slabs: policy.slabs,
+    accepted: stats.accepted,
+    riderFault: stats.riderFault,
+  });
+  const slabNumber = decision.currentSlab?.slabNumber ?? null;
   const currentlyBlocked = await isBlocked(riderId, service);
 
   if (decision.shouldBlock && !currentlyBlocked) {
     await sql`
       INSERT INTO rider_cancellation_service_blocks
-        (rider_id, service_type, threshold_pct, rider_fault_rate, accepted_count, cancelled_count, rider_fault_count)
+        (rider_id, service_type, threshold_pct, rider_fault_rate, accepted_count,
+         cancelled_count, rider_fault_count, slab_number, policy_version, reason)
       VALUES (
-        ${riderId}, ${service}, ${config.thresholdPct}, ${round2(decision.riderFaultRate)},
-        ${stats.accepted}, ${stats.cancelled}, ${stats.riderFault}
+        ${riderId}, ${service}, ${decision.thresholdPct ?? 0}, ${round2(decision.ratePct)},
+        ${stats.accepted}, ${stats.cancelled}, ${stats.riderFault},
+        ${slabNumber}, ${policy.policyVersion}, 'cancellation_rate_exceeded'
       )
       ON CONFLICT (rider_id, service_type) DO NOTHING
     `;
     await logHistory({
       riderId, service, action: "blocked", stats,
-      rate: decision.riderFaultRate, thresholdPct: config.thresholdPct,
-      reason: `cancellation_rate_${round2(decision.riderFaultRate)}pct_ge_threshold_${config.thresholdPct}pct`,
+      rate: decision.ratePct, slabNumber, thresholdPct: decision.thresholdPct,
+      policyVersion: policy.policyVersion,
+      reason: `slab_${slabNumber ?? "?"}_rate_${round2(decision.ratePct)}pct_ge_threshold_${decision.thresholdPct ?? "?"}pct`,
     });
     await resyncDuty(riderId);
-    return { service, changed: true, blocked: true, riderFaultRate: decision.riderFaultRate };
+    return { service, changed: true, blocked: true, riderFaultRate: decision.ratePct, slabNumber };
   }
 
   if (!decision.shouldBlock && currentlyBlocked) {
@@ -157,17 +202,24 @@ export async function evaluateRiderServiceBlock(
     `;
     await logHistory({
       riderId, service, action: "unblocked", stats,
-      rate: decision.riderFaultRate, thresholdPct: config.thresholdPct,
+      rate: decision.ratePct, slabNumber, thresholdPct: decision.thresholdPct,
+      policyVersion: policy.policyVersion,
       reason:
-        decision.reason === "disabled"
-          ? "rule_disabled"
-          : `cancellation_rate_${round2(decision.riderFaultRate)}pct_below_threshold_${config.thresholdPct}pct`,
+        decision.reason === "policy_disabled"
+          ? "policy_disabled"
+          : `slab_${slabNumber ?? "?"}_rate_${round2(decision.ratePct)}pct_below_threshold`,
     });
     await resyncDuty(riderId);
-    return { service, changed: true, blocked: false, riderFaultRate: decision.riderFaultRate };
+    return { service, changed: true, blocked: false, riderFaultRate: decision.ratePct, slabNumber };
   }
 
-  return { service, changed: false, blocked: currentlyBlocked, riderFaultRate: decision.riderFaultRate };
+  return {
+    service,
+    changed: false,
+    blocked: currentlyBlocked,
+    riderFaultRate: decision.ratePct,
+    slabNumber,
+  };
 }
 
 /** Evaluate a rider across all services (used by the immediate post-cancellation hook). */
@@ -175,16 +227,16 @@ export async function evaluateRiderCancellationBlocks(
   riderId: number,
   onlyService?: AutoBlockService
 ): Promise<ServiceEvaluationResult[]> {
-  const [config, stats] = await Promise.all([
-    loadCancellationBlockConfig(),
+  const [policy, stats] = await Promise.all([
+    loadCancellationSlabPolicy(),
     getRiderFaultStatsByService(riderId),
   ]);
   const services = onlyService ? [onlyService] : [...AUTO_BLOCK_SERVICES];
   const results: ServiceEvaluationResult[] = [];
   for (const service of services) {
-    const cfg = config.get(service)!;
+    const pol = policy.get(service)!;
     const s = stats[service] ?? { accepted: 0, riderFault: 0, cancelled: 0 };
-    results.push(await evaluateRiderServiceBlock(riderId, service, cfg, s));
+    results.push(await evaluateRiderServiceBlock(riderId, service, pol, s));
   }
   return results;
 }
@@ -206,7 +258,7 @@ export function evaluateRiderCancellationBlocksSafe(
 export async function reevaluateServiceCancellationBlocks(
   service: AutoBlockService
 ): Promise<{ evaluated: number; blocked: number; unblocked: number }> {
-  const config = (await loadCancellationBlockConfig()).get(service)!;
+  const policy = (await loadCancellationSlabPolicy()).get(service)!;
   const riderIds = await getRidersWithServiceCancellations(service);
   let blocked = 0;
   let unblocked = 0;
@@ -216,7 +268,7 @@ export async function reevaluateServiceCancellationBlocks(
       riderFault: 0,
       cancelled: 0,
     };
-    const res = await evaluateRiderServiceBlock(riderId, service, config, stats);
+    const res = await evaluateRiderServiceBlock(riderId, service, policy, stats);
     if (res.changed && res.blocked) blocked += 1;
     if (res.changed && !res.blocked) unblocked += 1;
   }

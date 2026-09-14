@@ -742,6 +742,61 @@ export async function GET(
       }
     }
 
+    // Cancellation-rate AUTO-BLOCKS (rider_cancellation_service_blocks) — surfaced so the
+    // Blacklist Status card and Activity Log can explain WHY a service was auto-blocked.
+    const cancellationServiceBlocks: Record<
+      string,
+      {
+        slabNumber: number | null;
+        policyVersion: number | null;
+        riderFaultRate: number;
+        thresholdPct: number;
+        acceptedCount: number;
+        riderFaultCount: number;
+        blockedAt: string | null;
+        reason: string;
+      }
+    > = {};
+    try {
+      const sqlC = getSql();
+      const blockRows = (await sqlC`
+        SELECT service_type, slab_number, policy_version,
+               rider_fault_rate::float8 AS rate, threshold_pct::float8 AS threshold,
+               accepted_count, rider_fault_count, created_at
+        FROM rider_cancellation_service_blocks
+        WHERE rider_id = ${riderId}
+      `) as unknown as {
+        service_type: string;
+        slab_number: number | null;
+        policy_version: number | null;
+        rate: number;
+        threshold: number;
+        accepted_count: number;
+        rider_fault_count: number;
+        created_at: string | Date | null;
+      }[];
+      for (const b of blockRows) {
+        cancellationServiceBlocks[b.service_type] = {
+          slabNumber: b.slab_number == null ? null : Number(b.slab_number),
+          policyVersion: b.policy_version == null ? null : Number(b.policy_version),
+          riderFaultRate: Number(b.rate),
+          thresholdPct: Number(b.threshold),
+          acceptedCount: Number(b.accepted_count),
+          riderFaultCount: Number(b.rider_fault_count),
+          blockedAt:
+            b.created_at instanceof Date
+              ? b.created_at.toISOString()
+              : (b.created_at ?? null),
+          reason: `Rider-fault cancellations ${Number(b.rider_fault_count)}/${Number(b.accepted_count)} = ${Number(b.rate).toFixed(2)}% ≥ ${Number(b.threshold)}% (slab ${b.slab_number ?? "?"})`,
+        };
+      }
+    } catch (err) {
+      // Table not migrated yet — fail open (no cancellation blocks surfaced).
+      if ((err as { code?: string })?.code !== "42P01") {
+        console.warn("[rider summary] cancellation blocks read failed", err);
+      }
+    }
+
     const limitationFlags =
       activeVehicle?.limitationFlags &&
       typeof activeVehicle.limitationFlags === "object" &&
@@ -988,6 +1043,7 @@ export async function GET(
           };
         })() : null,
         orderMetrics,
+        cancellationServiceBlocks,
         onboardingFees,
         paymentCompleted,
         approvalQueueEligible,
