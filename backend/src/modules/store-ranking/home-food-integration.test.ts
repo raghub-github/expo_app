@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { orderPoolByRanking, homeFoodRankingConfig } from "./home-food-integration.js";
+import { orderPoolByRanking } from "./home-food-integration.js";
 import { DEFAULT_HOME_FOOD_CONFIG } from "./default-config.js";
 import type { RankingMetricsRow } from "./metrics-read.js";
 import type { RankingConfig } from "./types.js";
@@ -84,17 +84,25 @@ test("single-element and empty pools are returned untouched", () => {
   assert.deepEqual(orderPoolByRanking([] as Row[], new Map(), ON), []);
 });
 
-test("config reflects the STORE_RANKING_HOME_FOOD_ENABLED env flag (default OFF)", () => {
-  const prev = process.env.STORE_RANKING_HOME_FOOD_ENABLED;
-  try {
-    delete process.env.STORE_RANKING_HOME_FOOD_ENABLED;
-    assert.equal(homeFoodRankingConfig().enabled, false);
-    process.env.STORE_RANKING_HOME_FOOD_ENABLED = "true";
-    assert.equal(homeFoodRankingConfig().enabled, true);
-    process.env.STORE_RANKING_HOME_FOOD_ENABLED = "false";
-    assert.equal(homeFoodRankingConfig().enabled, false);
-  } finally {
-    if (prev === undefined) delete process.env.STORE_RANKING_HOME_FOOD_ENABLED;
-    else process.env.STORE_RANKING_HOME_FOOD_ENABLED = prev;
-  }
+test("active-subscription boost nudges but cannot override a clearly better organic store", () => {
+  const rows: Row[] = [
+    { id: 1, distance_km: 2, name: "subscribed-ok" },
+    { id: 2, distance_km: 2, name: "unsubscribed-great" },
+  ];
+  const metrics = new Map<number, RankingMetricsRow>([
+    [1, metric(1, { avgRating: 4.5, ratingCount: 300, orders7d: 100, totalOrders30d: 400 })],
+    [2, metric(2, { avgRating: 4.55, ratingCount: 320, orders7d: 110, totalOrders30d: 420 })],
+  ]);
+  // Store 1 is subscribed (raw boost 6, capped by boostCaps.subscription=6); it may edge ahead of a
+  // near-identical store but the boost is bounded — a strongly better store still wins (see below).
+  const boosted = orderPoolByRanking(rows, metrics, ON, new Map([[1, 6]]));
+  assert.equal(boosted[0].id, 1, "small quality gap + capped boost lets the subscriber lead");
+
+  // Now make store 2 clearly better — the capped boost must NOT float store 1 above it (§15).
+  const metrics2 = new Map<number, RankingMetricsRow>([
+    [1, metric(1, { avgRating: 3.2, ratingCount: 300, orders7d: 5, totalOrders30d: 40, cancellationRate: 0.2 })],
+    [2, metric(2, { avgRating: 4.8, ratingCount: 2000, orders7d: 200, totalOrders30d: 600 })],
+  ]);
+  const boosted2 = orderPoolByRanking(rows, metrics2, ON, new Map([[1, 6]]));
+  assert.equal(boosted2[0].id, 2, "capped subscription boost cannot beat a clearly stronger organic store");
 });
