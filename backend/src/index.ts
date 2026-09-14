@@ -857,6 +857,16 @@ await app.register(rideWalletConfigAdminRoutes, {
   prefix: "/v1/admin/ride-wallet-config",
 });
 
+// Store-ranking policy (store_ranking_config) — Super Admin tunes food discovery
+// ranking weights/caps/windows, enables per profile, and previews a location. Same
+// internal-secret / admin-role gate as ride-wallet-config.
+const { storeRankingAdminRoutes } = await import(
+  "./modules/store-ranking/store-ranking.admin.routes.js"
+);
+await app.register(storeRankingAdminRoutes, {
+  prefix: "/v1/admin/store-ranking",
+});
+
 // Ride Settlement Reports — Super Admin read-only aggregates over
 // ride_settlements (revenue, cash vs online, wallet recovery, negative wallet
 // watchlist). Phase 4 hardening of the Ride Billing Architecture.
