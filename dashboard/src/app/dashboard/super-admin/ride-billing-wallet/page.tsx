@@ -121,6 +121,24 @@ const DEFAULT_POLICY: Policy = {
   commissionOnToll: false,
 };
 
+type CancelService = "food" | "parcel" | "person_ride";
+
+type CancelConfigRow = {
+  serviceType: CancelService;
+  thresholdPct: number;
+  minAccepted: number;
+  enabled: boolean;
+  updatedBy: string | null;
+  updatedAt: string | null;
+};
+
+const CANCEL_SERVICES: CancelService[] = ["food", "parcel", "person_ride"];
+const CANCEL_SERVICE_LABELS: Record<CancelService, string> = {
+  food: "Food",
+  parcel: "Parcel",
+  person_ride: "Person Ride",
+};
+
 const RELATED_LINKS = [
   {
     href: "/dashboard/super-admin/commission",
@@ -165,6 +183,14 @@ export default function RideBillingWalletHub() {
   const [cashReport, setCashReport] = useState<CashReport | null>(null);
   const [watchlist, setWatchlist] = useState<Watchlist | null>(null);
   const [reportsLoading, setReportsLoading] = useState(false);
+
+  // Cancellation-rate auto-block policy (per service).
+  const [cancelRows, setCancelRows] = useState<CancelConfigRow[]>([]);
+  const [cancelDraft, setCancelDraft] = useState<CancelConfigRow[]>([]);
+  const [cancelLoading, setCancelLoading] = useState(true);
+  const [cancelSaving, setCancelSaving] = useState(false);
+  const [cancelSavedAt, setCancelSavedAt] = useState<number | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -220,6 +246,106 @@ export default function RideBillingWalletHub() {
   useEffect(() => {
     void refreshReports();
   }, [refreshReports]);
+
+  const refreshCancelConfig = useCallback(async () => {
+    setCancelLoading(true);
+    setCancelError(null);
+    try {
+      const res = await fetch("/api/super-admin/rider-cancellation-block-config", {
+        cache: "no-store",
+      });
+      const json = (await res.json()) as {
+        success?: boolean;
+        error?: string;
+        config?: CancelConfigRow[];
+      };
+      if (!res.ok || !json.success || !Array.isArray(json.config)) {
+        throw new Error(json.error || `Load failed (${res.status})`);
+      }
+      setCancelRows(json.config);
+      setCancelDraft(json.config);
+    } catch (e) {
+      setCancelError(e instanceof Error ? e.message : "Could not load cancellation policy");
+    } finally {
+      setCancelLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshCancelConfig();
+  }, [refreshCancelConfig]);
+
+  const patchCancel = useCallback(
+    (service: CancelService, next: Partial<CancelConfigRow>) =>
+      setCancelDraft((prev) =>
+        prev.map((r) => (r.serviceType === service ? { ...r, ...next } : r))
+      ),
+    []
+  );
+
+  const cancelDirty = useMemo(() => {
+    if (cancelRows.length === 0) return false;
+    return cancelDraft.some((d) => {
+      const orig = cancelRows.find((r) => r.serviceType === d.serviceType);
+      return (
+        !orig ||
+        orig.thresholdPct !== d.thresholdPct ||
+        orig.minAccepted !== d.minAccepted ||
+        orig.enabled !== d.enabled
+      );
+    });
+  }, [cancelRows, cancelDraft]);
+
+  const cancelInvalid = useMemo(() => {
+    for (const d of cancelDraft) {
+      if (!d.enabled) continue;
+      if (!(d.thresholdPct > 0) || d.thresholdPct > 100) {
+        return `${CANCEL_SERVICE_LABELS[d.serviceType]}: threshold must be between 0 and 100%`;
+      }
+      if (d.minAccepted < 0 || !Number.isFinite(d.minAccepted)) {
+        return `${CANCEL_SERVICE_LABELS[d.serviceType]}: minimum accepted orders must be 0 or more`;
+      }
+    }
+    return null;
+  }, [cancelDraft]);
+
+  const saveCancelConfig = useCallback(async () => {
+    if (cancelInvalid) {
+      setCancelError(cancelInvalid);
+      return;
+    }
+    setCancelSaving(true);
+    setCancelError(null);
+    try {
+      const res = await fetch("/api/super-admin/rider-cancellation-block-config", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          config: cancelDraft.map((r) => ({
+            serviceType: r.serviceType,
+            thresholdPct: Number(r.thresholdPct),
+            minAccepted: Math.trunc(Number(r.minAccepted)),
+            enabled: Boolean(r.enabled),
+          })),
+        }),
+      });
+      const json = (await res.json()) as {
+        success?: boolean;
+        error?: string;
+        config?: CancelConfigRow[];
+      };
+      if (!res.ok || !json.success || !Array.isArray(json.config)) {
+        throw new Error(json.error || `Save failed (${res.status})`);
+      }
+      setCancelRows(json.config);
+      setCancelDraft(json.config);
+      setCancelSavedAt(Date.now());
+    } catch (e) {
+      setCancelError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setCancelSaving(false);
+    }
+  }, [cancelDraft, cancelInvalid]);
 
   const isDirty = useMemo(() => {
     if (!policy) return false;
@@ -533,6 +659,192 @@ export default function RideBillingWalletHub() {
         {invalid ? (
           <p className="mt-2 text-xs font-semibold text-red-600">{invalid}</p>
         ) : null}
+      </section>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="grid h-10 w-10 place-items-center rounded-xl bg-rose-50 text-rose-700">
+            <ShieldAlert className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">
+              Cancellation-rate auto-block
+            </h2>
+            <p className="max-w-3xl text-xs text-slate-500">
+              Per-service rider-fault cancellation-rate limit. When a rider&apos;s{" "}
+              <span className="font-semibold text-slate-700">rider-fault</span>{" "}
+              cancellation rate for a service reaches the threshold (and they have at
+              least the minimum accepted orders), they are auto-blocked for that
+              service only. Only rider-fault cancellations count — customer, merchant,
+              and system cancellations never do. A blocked rider is released only when
+              you change the threshold for that service; there is no manual unblock and
+              no timer. Changes take effect within ~60s.
+            </p>
+          </div>
+        </div>
+
+        {cancelError ? (
+          <div className="mb-4 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+            <ShieldAlert className="mt-0.5 h-4 w-4" /> <span>{cancelError}</span>
+          </div>
+        ) : null}
+
+        {cancelLoading ? (
+          <div className="flex items-center gap-2 py-6 text-sm text-slate-500">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              {CANCEL_SERVICES.map((service) => {
+                const row =
+                  cancelDraft.find((r) => r.serviceType === service) ?? {
+                    serviceType: service,
+                    thresholdPct: 0,
+                    minAccepted: 20,
+                    enabled: false,
+                    updatedBy: null,
+                    updatedAt: null,
+                  };
+                const on = row.enabled;
+                return (
+                  <div
+                    key={service}
+                    className={`rounded-xl border p-4 transition ${
+                      on
+                        ? "border-rose-200 bg-rose-50/40"
+                        : "border-slate-200 bg-slate-50/50"
+                    }`}
+                  >
+                    <div className="mb-3 flex items-center justify-between">
+                      <span className="text-sm font-bold text-slate-900">
+                        {CANCEL_SERVICE_LABELS[service]}
+                      </span>
+                      <label className="inline-flex cursor-pointer items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={(e) =>
+                            patchCancel(service, { enabled: e.target.checked })
+                          }
+                          className="h-4 w-4 accent-rose-600"
+                        />
+                        <span
+                          className={`text-[11px] font-semibold uppercase tracking-wide ${
+                            on ? "text-rose-700" : "text-slate-400"
+                          }`}
+                        >
+                          {on ? "On" : "Off"}
+                        </span>
+                      </label>
+                    </div>
+
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        Rider-fault rate ≥
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={0.5}
+                          value={row.thresholdPct}
+                          disabled={!on}
+                          onChange={(e) =>
+                            patchCancel(service, {
+                              thresholdPct: Number(e.target.value),
+                            })
+                          }
+                          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-mono text-slate-900 focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-200 disabled:bg-slate-100 disabled:text-slate-400"
+                        />
+                        <span className="text-sm font-semibold text-slate-500">%</span>
+                      </div>
+                    </label>
+
+                    <label className="mt-3 block">
+                      <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        Min accepted orders
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={row.minAccepted}
+                        disabled={!on}
+                        onChange={(e) =>
+                          patchCancel(service, {
+                            minAccepted: Math.max(0, Math.trunc(Number(e.target.value))),
+                          })
+                        }
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-mono text-slate-900 focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-200 disabled:bg-slate-100 disabled:text-slate-400"
+                      />
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        Rule applies only after this many accepted orders. Protects new
+                        riders. Default: 20.
+                      </p>
+                    </label>
+
+                    {row.updatedAt ? (
+                      <p className="mt-3 text-[10px] text-slate-400">
+                        Updated {new Date(row.updatedAt).toLocaleString()}
+                        {row.updatedBy ? ` by ${row.updatedBy}` : ""}
+                      </p>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-5 flex items-center justify-between">
+              <div className="text-xs text-slate-500">
+                Live —{" "}
+                <span className="font-mono text-slate-700">
+                  {cancelRows
+                    .map(
+                      (r) =>
+                        `${CANCEL_SERVICE_LABELS[r.serviceType].toLowerCase()} ${
+                          r.enabled ? `${r.thresholdPct}%/${r.minAccepted}` : "off"
+                        }`
+                    )
+                    .join(" · ") || "…"}
+                </span>
+              </div>
+              <div className="flex items-center gap-3">
+                {cancelSavedAt ? (
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600">
+                    <Check className="h-3.5 w-3.5" /> Saved — re-evaluates in ~60s
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setCancelDraft(cancelRows)}
+                  disabled={!cancelDirty || cancelSaving}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void saveCancelConfig()}
+                  disabled={!cancelDirty || cancelSaving || Boolean(cancelInvalid)}
+                  className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-40"
+                >
+                  {cancelSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  Save cancellation policy
+                </button>
+              </div>
+            </div>
+            {cancelInvalid ? (
+              <p className="mt-2 text-xs font-semibold text-red-600">{cancelInvalid}</p>
+            ) : null}
+            <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
+              Rate is lifetime rider-fault cancellations ÷ accepted orders for the
+              service. Raising a threshold releases riders now under it; lowering it
+              blocks riders now at or above it.
+            </p>
+          </>
+        )}
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
