@@ -276,6 +276,43 @@ export default function RidersPage() {
   const [blacklistError, setBlacklistError] = useState<string | null>(null);
   const [blacklistLoadingService, setBlacklistLoadingService] = useState<'food' | 'parcel' | 'person_ride' | 'all' | null>(null);
 
+  // Blacklist / block history log (filterable: service, date range, reason).
+  type BlacklistHistoryRow = {
+    at: string; service: string; action: string; kind: 'manual' | 'auto';
+    source: string; reason: string; actor: string | null; isPermanent: boolean | null; expiresAt: string | null;
+  };
+  const [blHistoryOpen, setBlHistoryOpen] = useState(false);
+  const [blHistory, setBlHistory] = useState<BlacklistHistoryRow[]>([]);
+  const [blHistoryLoading, setBlHistoryLoading] = useState(false);
+  const [blFilterService, setBlFilterService] = useState<'all' | 'food' | 'parcel' | 'person_ride'>('all');
+  const [blFilterFrom, setBlFilterFrom] = useState('');
+  const [blFilterTo, setBlFilterTo] = useState('');
+  const [blFilterQ, setBlFilterQ] = useState('');
+
+  const fetchBlacklistHistory = useCallback(async () => {
+    if (!riderId) return;
+    setBlHistoryLoading(true);
+    try {
+      const p = new URLSearchParams();
+      if (blFilterService !== 'all') p.set('service', blFilterService);
+      if (blFilterFrom) p.set('from', blFilterFrom);
+      if (blFilterTo) p.set('to', blFilterTo);
+      if (blFilterQ.trim()) p.set('q', blFilterQ.trim());
+      const res = await fetch(`/api/riders/${riderId}/blacklist-history?${p.toString()}`);
+      const json = await res.json();
+      if (res.ok && json.success) setBlHistory(json.data?.rows ?? []);
+      else setBlHistory([]);
+    } catch {
+      setBlHistory([]);
+    } finally {
+      setBlHistoryLoading(false);
+    }
+  }, [riderId, blFilterService, blFilterFrom, blFilterTo, blFilterQ]);
+
+  useEffect(() => {
+    if (blHistoryOpen) void fetchBlacklistHistory();
+  }, [blHistoryOpen, fetchBlacklistHistory]);
+
   // Wallet freeze: modal and action state
   const [walletFreezeModal, setWalletFreezeModal] = useState<'freeze' | 'unfreeze' | null>(null);
   const [walletFreezeReason, setWalletFreezeReason] = useState('');
@@ -2393,6 +2430,81 @@ export default function RidersPage() {
                     );
                   })}
                 </div>
+
+                {/* Blacklist & block history log — all services, date-wise, reason-wise */}
+                <div className="mt-4 shrink-0 border-t border-gray-100 pt-3">
+                  <button
+                    type="button"
+                    onClick={() => setBlHistoryOpen((v) => !v)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                  >
+                    <History className="h-4 w-4" /> {blHistoryOpen ? 'Hide' : 'View'} blacklist & block history
+                  </button>
+                  {blHistoryOpen && (
+                    <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3">
+                      <div className="flex flex-wrap items-end gap-2 mb-3">
+                        <label className="text-xs">
+                          <span className="block text-gray-500 mb-0.5">Service</span>
+                          <select
+                            value={blFilterService}
+                            onChange={(e) => setBlFilterService(e.target.value as typeof blFilterService)}
+                            className="rounded-md border border-gray-300 px-2 py-1 text-sm"
+                          >
+                            <option value="all">All services</option>
+                            <option value="food">Food</option>
+                            <option value="parcel">Parcel</option>
+                            <option value="person_ride">Person Ride</option>
+                          </select>
+                        </label>
+                        <label className="text-xs">
+                          <span className="block text-gray-500 mb-0.5">From</span>
+                          <input type="date" value={blFilterFrom} onChange={(e) => setBlFilterFrom(e.target.value)} className="rounded-md border border-gray-300 px-2 py-1 text-sm" />
+                        </label>
+                        <label className="text-xs">
+                          <span className="block text-gray-500 mb-0.5">To</span>
+                          <input type="date" value={blFilterTo} onChange={(e) => setBlFilterTo(e.target.value)} className="rounded-md border border-gray-300 px-2 py-1 text-sm" />
+                        </label>
+                        <label className="text-xs flex-1 min-w-[140px]">
+                          <span className="block text-gray-500 mb-0.5">Reason / agent</span>
+                          <input type="text" value={blFilterQ} onChange={(e) => setBlFilterQ(e.target.value)} placeholder="Search reason or agent" className="w-full rounded-md border border-gray-300 px-2 py-1 text-sm" />
+                        </label>
+                        {(blFilterService !== 'all' || blFilterFrom || blFilterTo || blFilterQ) && (
+                          <button type="button" onClick={() => { setBlFilterService('all'); setBlFilterFrom(''); setBlFilterTo(''); setBlFilterQ(''); }} className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded-md hover:bg-gray-200">Clear</button>
+                        )}
+                      </div>
+                      <div className="max-h-72 overflow-y-auto">
+                        {blHistoryLoading ? (
+                          <p className="text-xs text-gray-500 py-4 text-center">Loading…</p>
+                        ) : blHistory.length === 0 ? (
+                          <p className="text-xs text-gray-500 py-4 text-center">No blacklist or block history for these filters.</p>
+                        ) : (
+                          <ul className="space-y-2">
+                            {blHistory.map((h, i) => {
+                              const blocked = h.action === 'blacklisted' || h.action === 'blocked';
+                              const svcLabel = h.service === 'all' ? 'All Services' : h.service.replace('_', ' ');
+                              const sourceLabel = h.source === 'cancellation_rate' ? 'Auto · cancellation' : h.source === 'wallet' ? 'Auto · wallet' : h.kind === 'manual' ? 'Agent' : 'System';
+                              return (
+                                <li key={i} className={`rounded-lg border p-2.5 text-xs ${blocked ? 'border-red-200 bg-red-50/50' : 'border-emerald-200 bg-emerald-50/50'}`}>
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className={`font-semibold capitalize ${blocked ? 'text-red-700' : 'text-emerald-700'}`}>
+                                      {h.action} · {svcLabel}
+                                    </span>
+                                    <span className="text-[10px] text-gray-500 shrink-0">{new Date(h.at).toLocaleString()}</span>
+                                  </div>
+                                  <div className="mt-0.5 text-gray-700">{h.reason}</div>
+                                  <div className="mt-0.5 text-[10px] text-gray-500">
+                                    {sourceLabel}{h.actor ? ` · ${h.actor}` : ''}{h.isPermanent ? ' · Permanent' : h.expiresAt ? ` · until ${new Date(h.expiresAt).toLocaleDateString()}` : ''}
+                                  </div>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 {/* Blacklist / Whitelist modal */}
                 {blacklistModal && (
                   <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => !blacklistSubmitting && setBlacklistModal(null)}>
