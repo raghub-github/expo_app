@@ -5,7 +5,6 @@
 
 import type { MerchantSummary } from "@/services/merchant.service";
 import type { LiveStatus } from "@/store/storeStatusStore";
-import { compareMerchantsByDiscoveryRank } from "@/lib/merchantDiscoveryRank";
 import { toTimestamp } from "@/lib/storeScheduleUi";
 
 export type MerchantListSort = "default" | "rating" | "distance";
@@ -117,14 +116,26 @@ export function filterAndSortMerchants(
     list = list.filter((m) => isOpen(m));
   }
 
-  return [...list].sort((a, b) => {
-    const aOpen = isOpen(a);
-    const bOpen = isOpen(b);
-    if (aOpen !== bOpen) return aOpen ? -1 : 1;
-    if (sortBy === "rating") return (b.avgRating ?? 0) - (a.avgRating ?? 0);
-    if (sortBy === "distance") return (a.distanceKm ?? 999) - (b.distanceKm ?? 999);
-    return compareMerchantsByDiscoveryRank(a, b);
-  });
+  // Explicit user sorts (rating / distance) re-order on the client; the backend order is ignored.
+  if (sortBy === "rating" || sortBy === "distance") {
+    return [...list].sort((a, b) => {
+      const aOpen = isOpen(a);
+      const bOpen = isOpen(b);
+      if (aOpen !== bOpen) return aOpen ? -1 : 1;
+      if (sortBy === "rating") return (b.avgRating ?? 0) - (a.avgRating ?? 0);
+      return (a.distanceKm ?? 999) - (b.distanceKm ?? 999);
+    });
+  }
+
+  // "default" → TRUST THE SERVER ORDER. /v1/merchants returns the authoritative order
+  // (the config-driven ranking engine when enabled, else the legacy discovery sort), so the
+  // client must NOT re-rank — doing so would undo the backend ranking. We only group currently-open
+  // stores before closed ones (live status can flip after the response), preserving the server's
+  // relative order within each group (stable partition, engine-independent).
+  const open: MerchantSummary[] = [];
+  const closed: MerchantSummary[] = [];
+  for (const m of list) (isOpen(m) ? open : closed).push(m);
+  return [...open, ...closed];
 }
 
 export function merchantListingStoreCountLabel(
