@@ -80,6 +80,7 @@ export function neutralHistoricalFeatures(): Pick<
   | "expectedKptMin"
   | "actualKptMedianMin"
   | "recentOrders"
+  | "ratedSampleCount"
   | "cancellationRate"
   | "refundRate"
   | "complaintRate"
@@ -92,6 +93,7 @@ export function neutralHistoricalFeatures(): Pick<
     expectedKptMin: null,
     actualKptMedianMin: null,
     recentOrders: 0,
+    ratedSampleCount: 0,
     cancellationRate: 0,
     refundRate: 0,
     complaintRate: 0,
@@ -116,6 +118,8 @@ export function metricsToHistoricalFeatures(
     expectedKptMin: row.kptExpectedMin,
     actualKptMedianMin: row.kptActualMin,
     recentOrders: row.orders7d,
+    // 30d order count backs the cancellation/refund/complaint rates → the penalty confidence gate.
+    ratedSampleCount: row.totalOrders30d,
     cancellationRate: row.cancellationRate,
     refundRate: row.refundRate,
     complaintRate: row.complaintRate,

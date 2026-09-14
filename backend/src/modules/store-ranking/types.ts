@@ -22,6 +22,7 @@ export type RankingProfile =
  *  impression/click events are instrumented (product decision: defer). */
 export type SignalKey =
   | "distance"
+  | "deliverySpeed"
   | "rating"
   | "etaReliability"
   | "kptReliability"
@@ -49,8 +50,14 @@ export type StoreFeatures = {
   /** KPT: expected (configured) vs actual median prep (minutes). null → neutral. */
   expectedKptMin: number | null;
   actualKptMedianMin: number | null;
-  /** Recent successful order count (already windowed + decayed upstream). */
+  /** Recent successful order count (7d window) — drives VELOCITY only. */
   recentOrders: number;
+  /**
+   * Observation count backing the windowed RATES below (the 30d denominator). Penalty confidence
+   * is gated on THIS, not recentOrders — a store with a high 30d cancellation rate but zero orders
+   * in the last 7d must still be penalised (the rate's own window is what makes it trustworthy).
+   */
+  ratedSampleCount: number;
   /** Menu availability 0..1 (1 = fully available; = 1 - OOS fraction). */
   availabilityFraction: number;
   /** Windowed rates 0..1 (already Bayesian-smoothed / min-sample handled upstream where possible). */
@@ -72,6 +79,10 @@ export type StoreFeatures = {
 export type RankingReferences = {
   /** Distance at which the distance score reaches 0 (km). */
   distanceRefKm: number;
+  /** Actual median delivery minutes at/below which delivery-speed score is 1 (fast). */
+  etaFastMin: number;
+  /** Actual median delivery minutes at/above which delivery-speed score is 0 (slow). */
+  etaSlowMin: number;
   /** Bayesian rating prior: global mean C and min-votes m. */
   ratingPriorMean: number; // C, 0..5
   ratingMinVotes: number; // m

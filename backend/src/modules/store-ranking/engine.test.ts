@@ -7,6 +7,7 @@ import {
   distanceScore,
   promiseReliability,
   ratePenalty,
+  speedScore,
   velocityScore,
   applyCap,
   clamp01,
@@ -26,6 +27,7 @@ function store(id: number, over: Partial<StoreFeatures> = {}): StoreFeatures {
     expectedKptMin: 15,
     actualKptMedianMin: 15,
     recentOrders: 300,
+    ratedSampleCount: 500,
     availabilityFraction: 1,
     cancellationRate: 0.02,
     refundRate: 0.01,
@@ -73,6 +75,41 @@ test("rate penalty: bounded by cap, and zero below min sample (tiny-sample prote
   assert.equal(ratePenalty(1, 5, 0.2, 14, 20), 0); // 5 orders < minSample → no penalty
   assert.equal(ratePenalty(1, 500, 0.2, 14, 20), 14); // huge rate capped at 14
   assert.ok(ratePenalty(0.1, 500, 0.2, 14, 20) < 14);
+});
+
+test("delivery speed: fast store scores high, slow store low, unknown neutral", () => {
+  assert.equal(speedScore(15, 20, 55), 1); // at/below fast → 1
+  assert.equal(speedScore(55, 20, 55), 0); // at/above slow → 0
+  assert.equal(speedScore(70, 20, 55), 0);
+  assert.ok(speedScore(30, 20, 55) > speedScore(45, 20, 55));
+  assert.equal(speedScore(null, 20, 55), 0.5); // unknown → neutral
+});
+
+test("BUG-FIX: 30d rate penalty gates on ratedSampleCount, not 7d velocity (§11/§26)", () => {
+  // A store with a high 30d cancellation rate but ZERO orders in the last 7d must still be
+  // penalised — its rate is trustworthy on the 30d sample. Regression for the real-data bug where
+  // a 41%-cancel store escaped all penalties because orders_7d = 0.
+  const badButQuietThisWeek = store(1, {
+    recentOrders: 0, // nothing this week
+    ratedSampleCount: 40, // but 40 orders over 30d back the rate
+    cancellationRate: 0.41,
+  });
+  const [r] = rankStores([badButQuietThisWeek], CFG);
+  assert.ok((r!.breakdown.penalties.cancellation ?? 0) < 0, "high 30d cancellation must be penalised despite 0 recent orders");
+});
+
+test("BUG-FIX: a genuinely bad nearby store no longer out-ranks a good farther store", () => {
+  // Nearest store: 41% cancellation, 64-min median delivery, but closest. Good store: farther but
+  // fast + reliable. Quality must win (this was the real-data inversion).
+  const nearBad = store(1, {
+    roadDistanceKm: 0.4, actualEtaMedianMin: 64, cancellationRate: 0.41, ratedSampleCount: 40, recentOrders: 0,
+    avgRating: 4.2, ratingCount: 30,
+  });
+  const farGood = store(2, {
+    roadDistanceKm: 2.5, actualEtaMedianMin: 16, cancellationRate: 0.0, ratedSampleCount: 40, recentOrders: 6,
+    avgRating: 4.6, ratingCount: 60,
+  });
+  assert.deepEqual(idsInOrder([nearBad, farGood]), [2, 1]);
 });
 
 test("applyCap / clamp01 guard NaN and negatives", () => {
