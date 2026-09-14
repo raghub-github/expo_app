@@ -269,3 +269,190 @@ export function normalizeEnginePreviewDisplay(
 export function buildIdempotencyKey(prefix: string, parts: (string | number | null | undefined)[]): string {
   return `${prefix}:${parts.filter((p) => p != null && p !== "").join(":")}`;
 }
+
+/* ------------------------------------------------------------------------- *
+ * Rider-fault cancellation SLAB POLICY — the single authoritative engine.
+ *
+ * Shared by both the Admin/Control dashboard (analytics + config preview) and
+ * the backend auto-block service, so the rate, current slab, threshold and
+ * block decision are computed identically everywhere (no dashboard-vs-engine
+ * drift). PURE: no I/O, no clock, no rounding before the decision.
+ *
+ * Model: per service, an ordered, CONTIGUOUS set of slabs keyed on CUMULATIVE
+ * accepted orders. Each slab has a rider-fault cancellation threshold and a
+ * blocking flag (a grace slab has blockingEnabled=false). A rider is blocked
+ * for a service when, at their current cumulative accepted count, the matching
+ * slab has blocking enabled and the rider-fault rate REACHES the threshold
+ * (>=). Only rider-fault cancellations feed the rate — the caller supplies the
+ * already-classified counts.
+ * ------------------------------------------------------------------------- */
+
+export type CancellationSlab = {
+  slabNumber: number;
+  /** Inclusive lower bound of cumulative accepted orders (>= 1). */
+  minAccepted: number;
+  /** Inclusive upper bound, or null for an open-ended top slab ("and above"). */
+  maxAccepted: number | null;
+  /** false = grace slab (rate shown, never blocks). */
+  blockingEnabled: boolean;
+  /** Rider-fault % that triggers a block when blockingEnabled (0..100). */
+  thresholdPct: number;
+};
+
+export type CancellationSlabPolicy = {
+  enabled: boolean;
+  policyVersion: number;
+  slabs: CancellationSlab[];
+};
+
+export type SlabEvaluationReason =
+  | "policy_disabled"
+  | "no_accepted_orders"
+  | "no_matching_slab"
+  | "grace_slab"
+  | "no_rider_fault"
+  | "below_threshold"
+  | "threshold_reached";
+
+export type SlabEvaluation = {
+  accepted: number;
+  riderFault: number;
+  /** Display rate (full precision, NOT used for the decision). */
+  ratePct: number;
+  currentSlab: CancellationSlab | null;
+  thresholdPct: number | null;
+  blockingEnabled: boolean;
+  shouldBlock: boolean;
+  reason: SlabEvaluationReason;
+};
+
+function toInt(n: number): number {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v < 0) return 0;
+  return Math.trunc(v);
+}
+
+/** Display-only rate; the block decision never uses this rounded/float value. */
+export function cancellationRatePct(accepted: number, riderFault: number): number {
+  const a = toInt(accepted);
+  const f = toInt(riderFault);
+  if (a <= 0) return 0;
+  return (f / a) * 100;
+}
+
+/** The slab whose [minAccepted, maxAccepted] contains `accepted` (max null = ∞). */
+export function selectCancellationSlab(
+  slabs: CancellationSlab[],
+  accepted: number
+): CancellationSlab | null {
+  const a = toInt(accepted);
+  if (a <= 0) return null;
+  for (const s of slabs) {
+    const min = toInt(s.minAccepted);
+    const max = s.maxAccepted == null ? Infinity : toInt(s.maxAccepted);
+    if (a >= min && a <= max) return s;
+  }
+  return null;
+}
+
+/**
+ * Authoritative evaluation. Integer/rational comparison only:
+ *   rate >= threshold  <=>  riderFault/accepted >= thresholdPct/100
+ *                      <=>  riderFault * 10000 >= round(thresholdPct*100) * accepted
+ * so 60.00% is exactly 60%, and 7/11 is compared as a true ratio (never 63.64%).
+ */
+export function evaluateCancellationSlabPolicy(input: {
+  enabled: boolean;
+  slabs: CancellationSlab[];
+  accepted: number;
+  riderFault: number;
+}): SlabEvaluation {
+  const accepted = toInt(input.accepted);
+  const riderFault = Math.min(toInt(input.riderFault), accepted);
+  const ratePct = cancellationRatePct(accepted, riderFault);
+  const base = { accepted, riderFault, ratePct };
+
+  if (!input.enabled) {
+    return { ...base, currentSlab: null, thresholdPct: null, blockingEnabled: false, shouldBlock: false, reason: "policy_disabled" };
+  }
+  if (accepted <= 0) {
+    return { ...base, currentSlab: null, thresholdPct: null, blockingEnabled: false, shouldBlock: false, reason: "no_accepted_orders" };
+  }
+  const slab = selectCancellationSlab(input.slabs, accepted);
+  if (!slab) {
+    return { ...base, currentSlab: null, thresholdPct: null, blockingEnabled: false, shouldBlock: false, reason: "no_matching_slab" };
+  }
+  if (!slab.blockingEnabled) {
+    return { ...base, currentSlab: slab, thresholdPct: slab.thresholdPct, blockingEnabled: false, shouldBlock: false, reason: "grace_slab" };
+  }
+  if (riderFault <= 0) {
+    return { ...base, currentSlab: slab, thresholdPct: slab.thresholdPct, blockingEnabled: true, shouldBlock: false, reason: "no_rider_fault" };
+  }
+  const thresholdBps = Math.round(Number(slab.thresholdPct) * 100); // 0..10000
+  const shouldBlock = riderFault * 10000 >= thresholdBps * accepted;
+  return {
+    ...base,
+    currentSlab: slab,
+    thresholdPct: slab.thresholdPct,
+    blockingEnabled: true,
+    shouldBlock,
+    reason: shouldBlock ? "threshold_reached" : "below_threshold",
+  };
+}
+
+/**
+ * Validate an admin-edited slab set for one service. Returns human-readable
+ * errors ([] = valid). Enforces: >=1 slab; positive contiguous ranges starting
+ * at 1 with no gaps/overlaps; only the last slab may be open-ended; thresholds
+ * within 0..100; unique ascending slab numbers.
+ */
+export function validateCancellationSlabs(slabs: CancellationSlab[]): string[] {
+  const errors: string[] = [];
+  if (!Array.isArray(slabs) || slabs.length === 0) {
+    return ["At least one slab is required."];
+  }
+  const sorted = [...slabs].sort((a, b) => a.minAccepted - b.minAccepted);
+
+  const numbers = new Set<number>();
+  for (const s of sorted) {
+    if (numbers.has(s.slabNumber)) errors.push(`Duplicate slab number ${s.slabNumber}.`);
+    numbers.add(s.slabNumber);
+    if (!Number.isInteger(s.minAccepted) || s.minAccepted < 1) {
+      errors.push(`Slab ${s.slabNumber}: minimum accepted orders must be a whole number ≥ 1.`);
+    }
+    if (s.maxAccepted != null) {
+      if (!Number.isInteger(s.maxAccepted) || s.maxAccepted < s.minAccepted) {
+        errors.push(`Slab ${s.slabNumber}: maximum must be a whole number ≥ minimum (or blank for open-ended).`);
+      }
+    }
+    if (!(s.thresholdPct >= 0 && s.thresholdPct <= 100)) {
+      errors.push(`Slab ${s.slabNumber}: threshold must be between 0 and 100%.`);
+    }
+  }
+
+  if (sorted[0] && sorted[0].minAccepted !== 1) {
+    errors.push("The first slab must start at 1 accepted order.");
+  }
+  for (let i = 0; i < sorted.length; i++) {
+    const cur = sorted[i];
+    const next = sorted[i + 1];
+    if (next) {
+      if (cur.maxAccepted == null) {
+        errors.push(`Slab ${cur.slabNumber}: only the last slab may be open-ended.`);
+      } else if (next.minAccepted !== cur.maxAccepted + 1) {
+        errors.push(
+          `Slabs must be contiguous with no gaps or overlaps: slab ${next.slabNumber} should start at ${cur.maxAccepted + 1}.`
+        );
+      }
+    }
+  }
+  return errors;
+}
+
+/** Reference defaults (seeded by migration): grace 1–5, then 60% / 35% / 20% (top open-ended). */
+export const DEFAULT_CANCELLATION_SLABS: CancellationSlab[] = [
+  { slabNumber: 1, minAccepted: 1, maxAccepted: 5, blockingEnabled: false, thresholdPct: 0 },
+  { slabNumber: 2, minAccepted: 6, maxAccepted: 15, blockingEnabled: true, thresholdPct: 60 },
+  { slabNumber: 3, minAccepted: 16, maxAccepted: 25, blockingEnabled: true, thresholdPct: 35 },
+  { slabNumber: 4, minAccepted: 26, maxAccepted: null, blockingEnabled: true, thresholdPct: 20 },
+];

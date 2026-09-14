@@ -105,4 +105,57 @@ export declare function normalizeEnginePreviewDisplay(result: FinancialRuleExecu
     orderMilestone?: string;
 }): EnginePreviewDisplay;
 export declare function buildIdempotencyKey(prefix: string, parts: (string | number | null | undefined)[]): string;
+export type CancellationSlab = {
+    slabNumber: number;
+    /** Inclusive lower bound of cumulative accepted orders (>= 1). */
+    minAccepted: number;
+    /** Inclusive upper bound, or null for an open-ended top slab ("and above"). */
+    maxAccepted: number | null;
+    /** false = grace slab (rate shown, never blocks). */
+    blockingEnabled: boolean;
+    /** Rider-fault % that triggers a block when blockingEnabled (0..100). */
+    thresholdPct: number;
+};
+export type CancellationSlabPolicy = {
+    enabled: boolean;
+    policyVersion: number;
+    slabs: CancellationSlab[];
+};
+export type SlabEvaluationReason = "policy_disabled" | "no_accepted_orders" | "no_matching_slab" | "grace_slab" | "no_rider_fault" | "below_threshold" | "threshold_reached";
+export type SlabEvaluation = {
+    accepted: number;
+    riderFault: number;
+    /** Display rate (full precision, NOT used for the decision). */
+    ratePct: number;
+    currentSlab: CancellationSlab | null;
+    thresholdPct: number | null;
+    blockingEnabled: boolean;
+    shouldBlock: boolean;
+    reason: SlabEvaluationReason;
+};
+/** Display-only rate; the block decision never uses this rounded/float value. */
+export declare function cancellationRatePct(accepted: number, riderFault: number): number;
+/** The slab whose [minAccepted, maxAccepted] contains `accepted` (max null = ∞). */
+export declare function selectCancellationSlab(slabs: CancellationSlab[], accepted: number): CancellationSlab | null;
+/**
+ * Authoritative evaluation. Integer/rational comparison only:
+ *   rate >= threshold  <=>  riderFault/accepted >= thresholdPct/100
+ *                      <=>  riderFault * 10000 >= round(thresholdPct*100) * accepted
+ * so 60.00% is exactly 60%, and 7/11 is compared as a true ratio (never 63.64%).
+ */
+export declare function evaluateCancellationSlabPolicy(input: {
+    enabled: boolean;
+    slabs: CancellationSlab[];
+    accepted: number;
+    riderFault: number;
+}): SlabEvaluation;
+/**
+ * Validate an admin-edited slab set for one service. Returns human-readable
+ * errors ([] = valid). Enforces: >=1 slab; positive contiguous ranges starting
+ * at 1 with no gaps/overlaps; only the last slab may be open-ended; thresholds
+ * within 0..100; unique ascending slab numbers.
+ */
+export declare function validateCancellationSlabs(slabs: CancellationSlab[]): string[];
+/** Reference defaults (seeded by migration): grace 1–5, then 60% / 35% / 20% (top open-ended). */
+export declare const DEFAULT_CANCELLATION_SLABS: CancellationSlab[];
 //# sourceMappingURL=index.d.ts.map

@@ -2266,8 +2266,11 @@ export default function RidersPage() {
                     const blacklist = summary?.blacklistStatusByService?.[service];
                     const isBannedByBlacklist = blacklist?.isBanned ?? false;
                     const hasNegativeWalletBlock = globalWalletBlock || (service !== 'all' && negativeWalletBlocks.some((b: { serviceType: string }) => b.serviceType === service));
-                    const isBlocked = isBannedByBlacklist || hasNegativeWalletBlock;
-                    const isBlockedByNegativeWalletOnly = hasNegativeWalletBlock && !isBannedByBlacklist;
+                    const cancelBlock = service !== 'all' ? summary?.cancellationServiceBlocks?.[service] : undefined;
+                    const hasCancellationBlock = Boolean(cancelBlock);
+                    const isBlocked = isBannedByBlacklist || hasNegativeWalletBlock || hasCancellationBlock;
+                    const isBlockedByNegativeWalletOnly = hasNegativeWalletBlock && !isBannedByBlacklist && !hasCancellationBlock;
+                    const isBlockedByCancellationOnly = hasCancellationBlock && !isBannedByBlacklist && !hasNegativeWalletBlock;
                     const serviceLabel = service === 'all' ? 'All Services' : service.replace('_', ' ');
                     const isLoading = blacklistLoadingService === service;
                     const remaining = blacklist?.remainingMs != null ? formatRemaining(blacklist.remainingMs) : null;
@@ -2305,8 +2308,8 @@ export default function RidersPage() {
                                 <>Partially allowed ({((blacklist as { partiallyAllowedServices: string[] }).partiallyAllowedServices).map(s => s.replace('_', ' ')).join(', ')})</>
                               ) : (
                                 <>
-                                  {isBlocked ? (isBlockedByNegativeWalletOnly ? 'Blocked' : 'Banned') : 'Allowed'}
-                                  {isBlocked && !isBlockedByNegativeWalletOnly && (blacklist?.isPermanent ? ' (Permanent)' : blacklist?.expiresAt ? ` (Until ${new Date(blacklist.expiresAt).toLocaleDateString()})` : ' (Temporary)')}
+                                  {isBlocked ? (isBlockedByNegativeWalletOnly ? 'Blocked' : isBlockedByCancellationOnly ? 'Blocked (Cancellation rule)' : 'Banned') : 'Allowed'}
+                                  {isBlocked && !isBlockedByNegativeWalletOnly && !isBlockedByCancellationOnly && (blacklist?.isPermanent ? ' (Permanent)' : blacklist?.expiresAt ? ` (Until ${new Date(blacklist.expiresAt).toLocaleDateString()})` : ' (Temporary)')}
                                 </>
                               )}
                             </p>
@@ -2323,6 +2326,14 @@ export default function RidersPage() {
                             {isBlockedByNegativeWalletOnly && (
                               <p className="text-[11px] text-amber-700 mt-0.5">{globalWalletBlock ? "Unlocks when balance ≥ 0" : "Unlocks when balance > -50 for this service"}</p>
                             )}
+                            {cancelBlock && (
+                              <p className="text-xs text-red-700 mt-1 line-clamp-3">
+                                <span className="font-medium">Auto-block (cancellation): </span>
+                                {cancelBlock.reason}
+                                {cancelBlock.blockedAt ? ` · ${new Date(cancelBlock.blockedAt).toLocaleDateString()}` : ''}
+                                <span className="block text-[11px] text-amber-700 mt-0.5">Unlocks only if a Super Admin changes this service&apos;s cancellation slab policy.</span>
+                              </p>
+                            )}
                             {isBlocked && !isBlockedByNegativeWalletOnly && !blacklist?.isPermanent && remaining && (
                               <p className="text-xs text-amber-700 mt-1 flex items-center gap-1">
                                 <Clock className="h-3 w-3" />
@@ -2332,17 +2343,17 @@ export default function RidersPage() {
                           </div>
                           {riderId && !isLoading && (
                             <div className="shrink-0 flex flex-col items-end">
-                              {isBlockedByNegativeWalletOnly ? (
+                              {isBlockedByNegativeWalletOnly || isBlockedByCancellationOnly ? (
                                 <>
                                   <span className="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">Auto-block</span>
                                   <div
                                     aria-label={`Auto-blocked – ${serviceLabel}`}
                                     className="relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-gray-300 bg-gray-200 cursor-not-allowed"
-                                    title="Blocked by wallet balance rule (not an agent blacklist toggle)."
+                                    title={isBlockedByCancellationOnly ? "Blocked by rider-fault cancellation slab policy (not an agent blacklist toggle)." : "Blocked by wallet balance rule (not an agent blacklist toggle)."}
                                   >
                                     <span className="pointer-events-none inline-block h-4 w-4 transform translate-x-0.5 rounded-full bg-white shadow ring-0" style={{ marginTop: 2 }} />
                                   </div>
-                                  <p className="text-[10px] text-gray-500 mt-1">Wallet rule</p>
+                                  <p className="text-[10px] text-gray-500 mt-1">{isBlockedByCancellationOnly ? 'Cancellation rule' : 'Wallet rule'}</p>
                                 </>
                               ) : (isBlocked ? canUnblockForService(service) : canBlockForService(service)) ? (
                                 <>

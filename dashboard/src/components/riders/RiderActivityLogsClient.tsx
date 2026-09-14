@@ -16,6 +16,7 @@ import {
   IndianRupee,
   TrendingUp,
   XCircle,
+  ShieldAlert,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -108,6 +109,9 @@ export function RiderActivityLogsClient() {
     period?: string;
     serviceType?: string;
   }>({});
+  const [blockEvents, setBlockEvents] = useState<
+    Array<{ at: string; service: string; action: string; reason: string }>
+  >([]);
 
   const fetchActivityLogs = useCallback(
     async (riderId: number) => {
@@ -131,6 +135,7 @@ export function RiderActivityLogsClient() {
         setRows(json.data?.rows ?? []);
         setTotal(json.data?.total ?? 0);
         setTotalsFromApi(json.data?.totals ?? null);
+        setBlockEvents(json.data?.serviceBlockEvents ?? []);
         setMeta({
           from: json.data?.from,
           to: json.data?.to,
@@ -377,6 +382,31 @@ export function RiderActivityLogsClient() {
               {loading && (
                 <div className="absolute inset-0 bg-white/80 flex items-center justify-center z-10 rounded-b-2xl">
                   <LoadingSpinner className="h-8 w-8 text-gray-600" />
+                </div>
+              )}
+
+              {!loading && blockEvents.length > 0 && (
+                <div className="border-b border-gray-100 p-4 sm:p-6">
+                  <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-red-700">
+                    <ShieldAlert className="h-4 w-4" /> Cancellation policy events
+                  </h3>
+                  <ul className="space-y-2">
+                    {blockEvents.map((e, i) => (
+                      <li
+                        key={i}
+                        className={`rounded-lg border p-3 text-sm ${
+                          e.action === "blocked"
+                            ? "border-red-200 bg-red-50/60 text-red-800"
+                            : "border-emerald-200 bg-emerald-50/60 text-emerald-800"
+                        }`}
+                      >
+                        <div className="font-medium">{e.reason}</div>
+                        <div className="mt-0.5 text-[11px] opacity-70">
+                          {new Date(e.at).toLocaleString()}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
 

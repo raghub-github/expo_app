@@ -155,6 +155,20 @@ export interface RiderSummary {
     parcel: { sent: number; accepted: number; completed: number; cancelled: number; rejected: number };
     person_ride: { sent: number; accepted: number; completed: number; cancelled: number; rejected: number };
   };
+  /** Per-service rider-fault cancellation AUTO-BLOCKS (rule-governed; keyed by service). */
+  cancellationServiceBlocks?: Record<
+    string,
+    {
+      slabNumber: number | null;
+      policyVersion: number | null;
+      riderFaultRate: number;
+      thresholdPct: number;
+      acceptedCount: number;
+      riderFaultCount: number;
+      blockedAt: string | null;
+      reason: string;
+    }
+  >;
   wallet: {
     totalBalance: string;
     globalWalletBlock?: boolean;
