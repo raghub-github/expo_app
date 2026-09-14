@@ -62,6 +62,11 @@ const GeoIcon = dynamic(async () => {
   return (props: { className?: string }) => <MapPin {...props} />;
 });
 
+const StoreRankingIcon = dynamic(async () => {
+  const { ListOrdered } = await import("lucide-react");
+  return (props: { className?: string }) => <ListOrdered {...props} />;
+});
+
 
 // ✅ Incoming feature
 const StoreOnboardingIcon = dynamic(async () => {
@@ -237,6 +242,15 @@ const adminOptions: AdminOption[] = [
       "Assignment limits, geo-fenced milestones, and dispatch wave settings (food / parcel / ride)",
     color: "text-indigo-700",
     bgColor: "bg-indigo-50 hover:bg-indigo-100",
+  },
+  {
+    name: "Food store ranking",
+    href: "/dashboard/super-admin/store-ranking",
+    Icon: StoreRankingIcon,
+    description:
+      "Tune how the customer app orders food stores (weights, penalties, boosts, windows) with a live location preview.",
+    color: "text-teal-700",
+    bgColor: "bg-teal-50 hover:bg-teal-100",
   },
   {
     name: "Real-time tracking & geo-scoping",
