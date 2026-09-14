@@ -474,11 +474,13 @@ export async function merchantRoutes(app: FastifyInstance) {
       // pool keeps its existing distance order, so discovery never breaks. Eligibility/serviceability
       // and open/close gating already happened above; this only reorders already-eligible candidates.
       let rankedPool: typeof eligiblePool = eligiblePool;
+      let rankingApplied = false;
       if (requestedStoreType === "FOOD" && eligiblePool.length > 1) {
         const ranking = await rankHomeFoodPool(
           eligiblePool as Array<{ id: number; distance_km?: number | null }>
         );
         rankedPool = ranking.rows as typeof eligiblePool;
+        rankingApplied = ranking.ranked;
         if (ranking.ranked) {
           request.log.info(
             {
@@ -674,25 +676,32 @@ export async function merchantRoutes(app: FastifyInstance) {
               : null,
         };
       });
-      body.sort((a, b) => {
-        const score = (row: (typeof body)[number]) => {
-          const orders = row.completedOrderCount ?? 0;
-          const rating = row.avgRating ?? 0;
-          const reviews = row.totalReviews ?? 0;
-          const reviewSignal = Math.log10(reviews + 1);
-          const ratingQuality =
-            rating >= 4.5
-              ? rating * reviewSignal * 120
-              : rating >= 4
-                ? rating * reviewSignal * 80
-                : rating * 20;
-          const establishedBonus = rating >= 4 && reviews >= 5 ? 150 : 0;
-          return orders * 1000 + ratingQuality + establishedBonus;
-        };
-        const delta = score(b) - score(a);
-        if (delta !== 0) return delta;
-        return (a.distanceKm ?? 999) - (b.distanceKm ?? 999);
-      });
+      // When the ranking engine ordered the pool, PRESERVE that order — the authoritative,
+      // config-driven score is the source of truth. The legacy discovery-score sort below is
+      // only the fallback for when ranking is disabled/failed (keeps the previous behaviour).
+      if (!rankingApplied) {
+        body.sort((a, b) => {
+          const score = (row: (typeof body)[number]) => {
+            const orders = row.completedOrderCount ?? 0;
+            const rating = row.avgRating ?? 0;
+            const reviews = row.totalReviews ?? 0;
+            const reviewSignal = Math.log10(reviews + 1);
+            const ratingQuality =
+              rating >= 4.5
+                ? rating * reviewSignal * 120
+                : rating >= 4
+                  ? rating * reviewSignal * 80
+                  : rating * 20;
+            const establishedBonus = rating >= 4 && reviews >= 5 ? 150 : 0;
+            return orders * 1000 + ratingQuality + establishedBonus;
+          };
+          const delta = score(b) - score(a);
+          if (delta !== 0) return delta;
+          return (a.distanceKm ?? 999) - (b.distanceKm ?? 999);
+        });
+      }
+      // The customer app trusts this server order for its "default" sort (see merchantListing.ts) —
+      // ranked when enabled, legacy discovery-sorted otherwise — so it must not re-rank on the client.
       return reply.send({ items: body });
     }
   );
