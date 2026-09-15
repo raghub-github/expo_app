@@ -6,6 +6,7 @@ import { and, eq, isNull, isNotNull, inArray, or, sql, desc, asc, notInArray } f
 import { getDb, getSql } from "../../db/client.js";
 import { recordRiderOrderMilestoneLocationEvent } from "../../lib/rider-location-business-event.js";
 import { assertRiderServiceCapacityInTx } from "../../lib/rider-assignment-capacity-guard.js";
+import { assertBatchFeasibleAtAccept } from "../../lib/batch-dispatch/batch-dispatch-integration.js";
 import {
   customers,
   merchantStoreRatings,
@@ -2754,6 +2755,11 @@ async function acceptFoodOrderForRider(
     });
   }
 
+  // §37–39 authoritative accept-time batch check — a busy rider can't accept an additional food
+  // order that no longer batches safely (e.g. they picked up their first order after being offered
+  // this one). Fail-open: idle riders and the flag-off case are no-ops.
+  await assertBatchFeasibleAtAccept(riderId, "food", preCheck.id);
+
   const txStartedAt = Date.now();
   console.info(
     "[acceptFoodOrderForRider] accept_transaction_started",
@@ -3086,6 +3092,9 @@ async function acceptParcelOrderForRider(
       skip: _opts?.skipPickupRadius,
     });
   }
+
+  // §37–39 authoritative accept-time batch check (fail-open; idle / flag-off = no-op).
+  await assertBatchFeasibleAtAccept(riderId, "parcel", preCheck.id);
 
   const previousStatus = String(preCheck.currentStatus ?? "SEARCHING_RIDER");
 

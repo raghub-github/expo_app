@@ -540,6 +540,7 @@ export async function startForceAssignment(
     const eligible = await evaluateRiderDispatchEligibility(input.newRiderId, target, {
       // Admin intentionally picked this rider (may be busy); still send the offer.
       ignoreAssignmentLimit: true,
+      ignoreBatchGate: true, // admin override bypasses batch feasibility too
       allowStaleGps: true,
       logDecision: true,
       lastRejectReason,
@@ -1033,6 +1034,7 @@ export async function adminHardAssignSpecificRider(args: {
   const lastRejectReason: { current?: string } = {};
   const eligible = await evaluateRiderDispatchEligibility(args.riderId, target, {
     ignoreAssignmentLimit: true,
+    ignoreBatchGate: true, // admin override bypasses batch feasibility too
     allowStaleGps: true,
     logDecision: true,
     lastRejectReason,
