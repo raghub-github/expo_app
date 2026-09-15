@@ -27,6 +27,7 @@ import {
   type RiderDispatchPanelHandle,
 } from "@/components/super-admin/RiderDispatchSettingsPanel";
 import { buildServiceAssignmentRuleSummary } from "@/lib/service-assignment-rule-summary";
+import { BatchSettingsPanel } from "@/components/super-admin/BatchSettingsPanel";
 import {
   fetchDispatchWaveSettings,
   type ServiceFormState,
@@ -45,7 +46,7 @@ type GlobalAssignmentSettings = {
   person_ride_exclusive_mode: boolean;
 };
 
-type MainPanel = "assignment" | "geo" | "dispatch" | "pickup";
+type MainPanel = "assignment" | "geo" | "dispatch" | "pickup" | "batch";
 
 type PickupVerificationSettings = {
   barcode_verification_enabled: boolean;
@@ -236,7 +237,7 @@ export default function RiderAssignmentControlsPage() {
 
   useEffect(() => {
     const panel = searchParams.get("panel");
-    if (panel === "assignment" || panel === "geo" || panel === "dispatch" || panel === "pickup") {
+    if (panel === "assignment" || panel === "geo" || panel === "dispatch" || panel === "pickup" || panel === "batch") {
       setMainPanel(panel);
     }
   }, [searchParams]);
@@ -679,6 +680,14 @@ export default function RiderAssignmentControlsPage() {
             iconActiveClass="text-amber-700"
             showDot={pickupIsDirty}
           />
+          <ViewToggleButton
+            active={mainPanel === "batch"}
+            onClick={() => setMainPanel("batch")}
+            label="Batch settings"
+            icon={Layers}
+            activeClass="bg-violet-50 text-violet-700 ring-1 ring-violet-200"
+            iconActiveClass="text-violet-600"
+          />
         </div>
       </div>
 
@@ -1104,6 +1113,10 @@ export default function RiderAssignmentControlsPage() {
               </p>
             </div>
           </aside>
+        </div>
+      ) : mainPanel === "batch" ? (
+        <div className="rounded-2xl border border-gray-200 bg-white p-4 sm:p-6 shadow-sm">
+          <BatchSettingsPanel />
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
