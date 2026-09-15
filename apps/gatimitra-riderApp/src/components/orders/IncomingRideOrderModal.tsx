@@ -75,6 +75,8 @@ type Props = {
   loading?: boolean;
   loadingLabel?: string | null;
   acceptSwipeResetKey?: number;
+  /** §46 — the rider already has an active order, so this offer stacks onto the current delivery. */
+  isAdditional?: boolean;
   onAccept: () => void;
   onReject: () => void;
   onExpired?: () => void;
@@ -120,6 +122,7 @@ function IncomingOrderModalInner({
   loading = false,
   loadingLabel = null,
   acceptSwipeResetKey = 0,
+  isAdditional = false,
   onAccept,
   onReject,
   onExpired,
@@ -137,7 +140,8 @@ function IncomingOrderModalInner({
     order.category,
     order.category === "ride" ? rideLabel : undefined
   );
-  const acceptLabel = incomingOrderAcceptLabel(order.category);
+  const baseAcceptLabel = incomingOrderAcceptLabel(order.category);
+  const acceptLabel = isAdditional ? "Add to delivery" : baseAcceptLabel;
   const bannerIcon = categoryBannerIcon(order.category);
   const isDeliveryOrder = order.category === "food" || order.category === "parcel";
   const waitingAmount =
@@ -251,6 +255,31 @@ function IncomingOrderModalInner({
                   {bannerLabel}
                 </Text>
               </View>
+
+              {isAdditional ? (
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    alignSelf: "flex-start",
+                    marginTop: 6,
+                    backgroundColor: "#F5F3FF",
+                    borderColor: "#DDD6FE",
+                    borderWidth: 1,
+                    borderRadius: 999,
+                    paddingHorizontal: 10,
+                    paddingVertical: 4,
+                  }}
+                >
+                  <Ionicons name="layers-outline" size={12} color="#7C3AED" style={{ marginRight: 6 }} />
+                  <Text style={{ fontSize: 11, fontWeight: "600", color: "#6D28D9" }} numberOfLines={1}>
+                    {t(
+                      "orders.incoming.additional",
+                      "Additional order · adds to your current delivery"
+                    )}
+                  </Text>
+                </View>
+              ) : null}
 
               <View style={[rowLayout.row, styles.orderMetaRow]}>
                 <Text style={[styles.orderId, flexShrinkText]} numberOfLines={1}>
@@ -469,6 +498,7 @@ export const IncomingOrderModal = memo(IncomingOrderModalInner, (prev, next) => 
     prev.loading !== next.loading ||
     prev.loadingLabel !== next.loadingLabel ||
     prev.acceptSwipeResetKey !== next.acceptSwipeResetKey ||
+    prev.isAdditional !== next.isAdditional ||
     prev.onAccept !== next.onAccept ||
     prev.onReject !== next.onReject ||
     prev.onExpired !== next.onExpired

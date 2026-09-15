@@ -721,6 +721,13 @@ export function IncomingRideOrderHost() {
 
   if (!isOnDuty) return null;
 
+  // §46 — an incoming offer is an ADDITIONAL (batch) order when the rider already has ≥1 active
+  // order. Read from the active-orders cache (no new polling); the offer itself is not yet active.
+  const activeOrdersSnapshot =
+    queryClient.getQueryData<RiderOrderSummary[]>(RIDER_ACTIVE_ORDERS_QUERY_KEY) ?? [];
+  const isAdditionalOffer =
+    activeOrdersSnapshot.filter((o) => !activeOrder || o.id !== activeOrder.id).length > 0;
+
   return (
     <>
       <IncomingOrderModal
@@ -729,6 +736,7 @@ export function IncomingRideOrderHost() {
         loading={accepting || !!acceptPending}
         loadingLabel={acceptBusyLabel}
         acceptSwipeResetKey={acceptSwipeResetKey}
+        isAdditional={isAdditionalOffer}
         onAccept={handleAccept}
         onReject={handleRejectPress}
         onExpired={handleExpired}
