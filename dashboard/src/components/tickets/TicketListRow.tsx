@@ -445,7 +445,7 @@ export const TicketListRow = React.memo(function TicketListRow({
   return (
     <>
     <div
-      className="ticket-list-row flex items-center gap-2 border-b border-gray-200 bg-white pl-2 pr-1 py-2.5 min-h-0 relative group"
+      className="ticket-list-row flex flex-wrap items-center gap-2 sm:flex-nowrap border-b border-gray-200 bg-white pl-2 pr-1 py-2.5 min-h-0 relative group"
       style={{ overflow: "visible" }}
       onPointerEnter={prefetchThisTicket}
     >
@@ -568,7 +568,7 @@ export const TicketListRow = React.memo(function TicketListRow({
       </div>
 
       {/* Right: Priority + Status on one row; Group/Agent full width below */}
-      <div className="flex flex-col gap-1.5 shrink-0 items-start w-[288px] min-w-[288px] mr-2" onClick={(e) => e.stopPropagation()}>
+      <div className="flex flex-col gap-1.5 shrink-0 items-start w-full min-w-0 sm:w-[288px] sm:min-w-[288px] mr-2" onClick={(e) => e.stopPropagation()}>
         {snoozeCountdown ? (
           <div className="w-full text-right">
             <span
