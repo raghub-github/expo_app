@@ -5,6 +5,7 @@
 import { and, eq, isNull, isNotNull, inArray, or, sql, desc, asc, notInArray } from "drizzle-orm";
 import { getDb, getSql } from "../../db/client.js";
 import { recordRiderOrderMilestoneLocationEvent } from "../../lib/rider-location-business-event.js";
+import { assertRiderServiceCapacityInTx } from "../../lib/rider-assignment-capacity-guard.js";
 import {
   customers,
   merchantStoreRatings,
@@ -2766,6 +2767,9 @@ async function acceptFoodOrderForRider(
     .limit(1);
 
   const accepted = await db.transaction(async (tx) => {
+    // §43 atomic capacity — serialise this rider's concurrent accepts and re-check the configured
+    // limit BEFORE claiming, so two near-simultaneous accepts can never exceed the max.
+    await assertRiderServiceCapacityInTx(tx, riderId, "food");
     // Claim FIRST — conditional UPDATE is the atomic lock (no unlocked re-select race window).
     const currentFoodStatus = String(foodStatusAtAccept).trim().toUpperCase();
     const readyNow = currentFoodStatus === "READY_FOR_PICKUP";
@@ -3086,6 +3090,8 @@ async function acceptParcelOrderForRider(
   const previousStatus = String(preCheck.currentStatus ?? "SEARCHING_RIDER");
 
   const accepted = await db.transaction(async (tx) => {
+    // §43 atomic capacity — serialise + re-check before claiming.
+    await assertRiderServiceCapacityInTx(tx, riderId, "parcel");
     const [existing] = await tx
       .select({ id: ordersCore.id, orderId: ordersCore.orderId })
       .from(ordersCore)
@@ -3277,6 +3283,8 @@ async function acceptRideOrderForRider(
     .limit(1);
 
   const accepted = await db.transaction(async (tx) => {
+    // §43 atomic capacity — serialise + re-check before claiming (person-ride max is 1).
+    await assertRiderServiceCapacityInTx(tx, riderId, "person_ride");
     const [existing] = await tx
       .select({ id: ordersCore.id })
       .from(ordersCore)
