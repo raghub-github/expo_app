@@ -93,6 +93,12 @@ type Props = {
   milestoneGeo?: Partial<Record<string, MilestoneGeoState>>;
   /** Drop-order full screen owns the deliver slider while open. */
   suppressDropDeliverSlider?: boolean;
+  /**
+   * Pickup is ready to be marked without waiting for a merchant "order ready"
+   * signal (parcel has no restaurant prep step). When true, the Mark Pickup
+   * slider is enabled on arrival and the "wait for restaurant" hint is hidden.
+   */
+  forcePickupReady?: boolean;
 };
 
 function ActionIconButton({
@@ -191,6 +197,7 @@ export function FoodNavigateBottomSheetInner({
   milestoneGeo,
   routeMeta,
   suppressDropDeliverSlider = false,
+  forcePickupReady = false,
 }: Props) {
   const { t } = useTranslation();
   const { isShortHeight, height } = useResponsiveLayout();
@@ -239,8 +246,12 @@ export function FoodNavigateBottomSheetInner({
   const activeIsDrop = phase === "drop";
 
   const atStore = pickupConfirmed || reachSliderDone;
+  /** Ready to pick up: merchant marked the order ready, or the service has no
+   *  merchant-prep step at all (parcel — see forcePickupReady). */
+  const pickupReady = forcePickupReady || order.merchantOrderReady === true;
   const showPrepBanner =
     !hidePrepBanner &&
+    !forcePickupReady &&
     phase === "pickup" &&
     !rideStarted &&
     !showReachStore &&
@@ -304,7 +315,7 @@ export function FoodNavigateBottomSheetInner({
 
       {showMarkPickup ? (
         <>
-          {order.merchantOrderReady !== true ? (
+          {!pickupReady ? (
             <Text style={styles.waitReadyHint}>
               {t(
                 "orders.activeFood.waitMerchantReady",
@@ -315,7 +326,7 @@ export function FoodNavigateBottomSheetInner({
           <FoodSlideToReachStore
             label={t("orders.activeFood.slideMarkPickup", "Mark Pickup")}
             onComplete={onMarkPickup}
-            disabled={order.merchantOrderReady !== true}
+            disabled={!pickupReady}
             completed={false}
             completedLabel={t("orders.activeFood.pickedUp", "Order picked up ✓")}
             geoLocked={markPickupGeo.locked}

@@ -252,6 +252,15 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const { data: order, isLoading, isError, error, isFetching } = useRideOrder(orderId, {
     refetchInterval: isFoodOrder ? 12_000 : 15_000,
   });
+  /**
+   * Parcel orders share this food-mode navigation screen (see openActiveOrder →
+   * /active-food), but a parcel has NO restaurant-prep step: there is no merchant
+   * "order ready" signal and no pickup OTP/barcode/feedback. The backend already
+   * treats parcel pickup as verification-free & always-ready (mark-food-pickup →
+   * markParcelPickedUpForRider), so the UI must not gate pickup on merchantOrderReady
+   * or the rider gets hard-stuck at the store. This flag drives that parcel path.
+   */
+  const isParcelOrder = isFoodOrder && order?.category === "parcel";
   const { data: chatUnread } = usePartnerChatUnread(orderId, Boolean(order));
   const chatUnreadCount = chatUnread?.unreadCount ?? 0;
   const reachedPickup = useReachedPickup();
@@ -649,6 +658,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
   const showRestaurantFeedbackSheet =
     isFoodOrder &&
+    !isParcelOrder &&
     restaurantFeedbackOpen &&
     riderMarkedFoodPickup &&
     order?.merchantFeedbackSubmitted !== true &&
@@ -657,6 +667,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
   const showFoodPickOrderSheet =
     isFoodOrder &&
+    !isParcelOrder &&
     reachSliderDone &&
     !order?.pickupAcknowledged &&
     !pickOrderSheetDismissed &&
@@ -705,7 +716,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [isFoodOrder, order?.pickupDurationSeconds]);
 
   useEffect(() => {
-    if (!isFoodOrder || !order || orderDelivered || isLoading) return;
+    if (!isFoodOrder || isParcelOrder || !order || orderDelivered || isLoading) return;
     if (order.merchantFeedbackSubmitted === true) {
       setRestaurantFeedbackOpen(false);
       prevRiderMarkedPickupRef.current = riderMarkedFoodPickup;
@@ -721,7 +732,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     if (prev === false) {
       setRestaurantFeedbackOpen(true);
     }
-  }, [isFoodOrder, order, riderMarkedFoodPickup, orderDelivered, isLoading]);
+  }, [isFoodOrder, isParcelOrder, order, riderMarkedFoodPickup, orderDelivered, isLoading]);
 
   useEffect(() => {
     if (isFoodOrder && restaurantFeedbackOpen && !riderMarkedFoodPickup) {
@@ -1052,9 +1063,13 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         return t("orders.activeFood.deliveryInProgress", "Delivery in progress");
       }
       if (pickupConfirmed) {
-        return t("orders.activeFood.atRestaurantPickup", "Mark pickup at restaurant");
+        return isParcelOrder
+          ? t("orders.activeParcel.markPickup", "Mark parcel pickup")
+          : t("orders.activeFood.atRestaurantPickup", "Mark pickup at restaurant");
       }
-      return t("orders.activeFood.navigateRestaurant", "Navigate to restaurant");
+      return isParcelOrder
+        ? t("orders.activeParcel.navigatePickup", "Navigate to pickup")
+        : t("orders.activeFood.navigateRestaurant", "Navigate to restaurant");
     }
     if (orderDelivered) {
       return t("orders.activeRide.rideDeliveredTitle", "Ride completed");
@@ -1074,6 +1089,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     return t("orders.activeRide.navigatePickup", "Navigate to pickup");
   }, [
     isFoodOrder,
+    isParcelOrder,
     foodDeliveryActive,
     reachSliderDone,
     pickupOtpVerified,
@@ -1493,11 +1509,12 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       setPickupBannerVisible(true);
       setCameraFitTrigger((n) => n + 1);
       setRiderFoodPickupConfirmed(true);
-      if (data?.merchantFeedbackSubmitted !== true) {
+      // Parcel has no restaurant to rate — never open the merchant feedback sheet.
+      if (!isParcelOrder && data?.merchantFeedbackSubmitted !== true) {
         setRestaurantFeedbackOpen(true);
       }
     },
-    [t]
+    [t, isParcelOrder]
   );
 
   const completeFoodPickupVerification = useCallback(
@@ -1509,11 +1526,13 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   );
 
   const beginPickupFlow = useCallback(() => {
-    if (!order?.merchantOrderReady) return;
+    // Parcel: no merchant "ready" gate and no pickup verification — go straight to
+    // the direct mark path (backend routes mark-food-pickup → parcel pickup).
+    if (!isParcelOrder && !order?.merchantOrderReady) return;
     setPickOrderDetailOpen(false);
     setBarcodeError(null);
 
-    if (!pickupVerificationRequired) {
+    if (isParcelOrder || !pickupVerificationRequired) {
       const gps = readRiderGps();
       void markFoodPickup
         .mutateAsync({ orderId, ...gps, deviceTimestamp: new Date().toISOString() })
@@ -1546,6 +1565,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
     setPickupVerificationOpen(true);
   }, [
+    isParcelOrder,
     order?.merchantOrderReady,
     pickupVerificationRequired,
     barcodeVerificationEnabled,
@@ -2251,7 +2271,9 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const restaurantDisplayName =
     order?.merchantName?.trim() ||
     compactAddress(pickup?.address ?? "").line1 ||
-    t("orders.activeFood.restaurantFallback", "Restaurant");
+    (isParcelOrder
+      ? t("orders.activeParcel.pickupFallback", "Pickup point")
+      : t("orders.activeFood.restaurantFallback", "Restaurant"));
 
   const handleReportIssue = useCallback(() => {
     router.push({
@@ -2536,6 +2558,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           }
           milestoneGeo={milestoneGeo}
           suppressDropDeliverSlider={dropOrderScreenOpen}
+          forcePickupReady={isParcelOrder}
           sheetExpanded={navSheetExpanded}
           onToggleSheetExpanded={() => setNavSheetExpanded((v) => !v)}
           pickupFullAddress={pickup?.address?.trim() || ""}
