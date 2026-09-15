@@ -1173,7 +1173,23 @@ function HeaderComponent() {
     setShowLogoutConfirm(false);
   };
 
+  // Pages that show the generic DashboardSearch (rider ID / phone, merchant, etc.). Desktop shows
+  // it centered in the top bar; on mobile the top bar has no room, so we render a second search
+  // row just below the header (lg:hidden) — see the mobile search row after </header>.
+  const showDashboardSearch =
+    !effectivePathname.startsWith("/dashboard/orders") &&
+    effectivePathname !== "/order" &&
+    !effectivePathname.startsWith("/order/") &&
+    !effectivePathname.startsWith("/dashboard/tickets") &&
+    effectivePathname !== "/dashboard/area-managers" &&
+    !isGeoRiderAvailabilityPage &&
+    !isAmOnboardingFailedPage &&
+    !isParentOnboardingPage &&
+    !isMerchantStorePage &&
+    !effectivePathname.startsWith("/dashboard/merchants/verifications");
+
   return (
+    <>
     <header
       className={`flex shrink-0 items-center justify-between bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4 ${
         cleanPathname === GEO_LIST_PATH ? "min-h-14 py-1.5" : "h-14"
@@ -1578,13 +1594,7 @@ function HeaderComponent() {
           <NewTicketSideSheet type={newSheetType} onClose={() => setNewSheetType(null)} />
           ) : null}
         </div>
-      ) : !effectivePathname.startsWith("/dashboard/tickets") &&
-        effectivePathname !== "/dashboard/area-managers" &&
-        !isGeoRiderAvailabilityPage &&
-        !isAmOnboardingFailedPage &&
-        !isParentOnboardingPage &&
-        !isMerchantStorePage &&
-        !effectivePathname.startsWith("/dashboard/merchants/verifications") ? (
+      ) : showDashboardSearch ? (
         <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4 min-w-0">
           <DashboardSearch compact={true} />
         </div>
@@ -1748,6 +1758,14 @@ function HeaderComponent() {
         onSignOut={openLogoutConfirm}
       />
     </header>
+    {/* Mobile search row — the top bar has no room for the search on phones/tablets, so it lives
+        here just below the header. Desktop is unchanged (lg:hidden). */}
+    {showDashboardSearch ? (
+      <div className="lg:hidden flex items-center border-b border-gray-100 bg-white px-4 py-2 sm:px-6">
+        <DashboardSearch compact={true} />
+      </div>
+    ) : null}
+    </>
   );
 }
 
