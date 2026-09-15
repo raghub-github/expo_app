@@ -768,6 +768,8 @@ export async function evaluateRiderDispatchEligibility(
   >,
   options?: {
     ignoreAssignmentLimit?: boolean;
+    /** Skip the multi-order batching feasibility gate (admin force-assign / pool scans). */
+    ignoreBatchGate?: boolean;
     /** When set, last reject reason is written here (admin / Force Assignment UX). */
     lastRejectReason?: { current?: string };
     /** Wave-path diagnostics. Off for /available pool scans to avoid log floods. */
@@ -822,6 +824,27 @@ export async function evaluateRiderDispatchEligibility(
       eventContext: "dispatch_offer",
     });
     if (!assignmentOk) return reject("assignment_limit_or_active_order", { riderLat: ctx.lat, riderLng: ctx.lng });
+
+    // Multi-order BATCHING gate (flag-gated + fail-open). For a rider who already has active
+    // orders, only offer this additional order if the batch stays route-feasible and on-time
+    // (SLA always wins). No-op when dispatch_batch_config.enabled is false (current state), when
+    // the rider is idle, for person_ride, or on any error — so it can never block first-order
+    // dispatch. See batch-dispatch/batch-dispatch-integration.ts.
+    if (!options?.ignoreBatchGate) {
+      const { enforceBatchFeasibilityForCandidate } = await import(
+        "./batch-dispatch/batch-dispatch-integration.js"
+      );
+      const batchGate = await enforceBatchFeasibilityForCandidate({
+        riderId,
+        serviceType: target.serviceType,
+        orderCoreId: target.orderCoreId,
+        riderLat: ctx.lat,
+        riderLng: ctx.lng,
+      });
+      if (!batchGate.allow) {
+        return reject(batchGate.reason ?? "batch_infeasible", { riderLat: ctx.lat, riderLng: ctx.lng });
+      }
+    }
   }
   if (!ctx.eligibleServices.includes(target.serviceType)) return reject("service_not_in_duty");
   if (await isRiderBlacklistedForService(riderId, target.serviceType)) {
