@@ -207,3 +207,48 @@ export async function enforceBatchFeasibilityForCandidate(input: {
     return { allow: true, reason: null }; // fail-open — batching must never break dispatch
   }
 }
+
+/**
+ * Authoritative accept-time batch check (§37–39/§94). Enforced when a BUSY rider accepts an
+ * additional food/parcel order — closes the window where an order was offered while the rider was
+ * pre-pickup but the rider then picked up their first order (offer surfaces are gated, but the offer
+ * can outlive the state change). Throws 409 when the additional order can't be safely batched.
+ * FULLY fail-open: any error or missing data → returns (allow) so a normal accept never breaks.
+ */
+export async function assertBatchFeasibleAtAccept(
+  riderId: number,
+  serviceType: DispatchServiceType,
+  orderCoreId: number
+): Promise<void> {
+  try {
+    if (serviceType === "person_ride") return;
+    const config = (await loadBatchConfig()).get(serviceType);
+    if (!config || !config.enabled) return; // flag off → no-op
+    const { riderHasActiveDispatchOrder, loadRiderGpsLastKnown } = await import(
+      "../order-assignment-engine.js"
+    );
+    if (!(await riderHasActiveDispatchOrder(riderId))) return; // idle → first order, no batch check
+    const gps = await loadRiderGpsLastKnown(riderId).catch(() => null);
+    const gate = await enforceBatchFeasibilityForCandidate({
+      riderId,
+      serviceType,
+      orderCoreId,
+      riderLat: gps?.lat ?? null,
+      riderLng: gps?.lng ?? null,
+    });
+    if (!gate.allow) {
+      const message =
+        gate.reason === "RIDER_IN_PICKUP_TO_DROP_STATE"
+          ? "Finish delivering your current order before accepting another."
+          : "This order can't be added to your current delivery right now.";
+      throw Object.assign(new Error(message), {
+        statusCode: 409,
+        code: "batch_infeasible",
+        reason: gate.reason,
+      });
+    }
+  } catch (e) {
+    // Re-throw only our intentional 409; swallow everything else (fail-open).
+    if ((e as { code?: string })?.code === "batch_infeasible") throw e;
+  }
+}
