@@ -139,15 +139,21 @@ export function formatActiveOrderDistance(order: RiderOrderSummary): string {
   return label === "—" ? "" : label;
 }
 
-export function openActiveOrder(order: RiderOrderSummary): void {
+export function openActiveOrder(
+  order: RiderOrderSummary,
+  opts?: { replace?: boolean }
+): void {
+  // Switching BETWEEN two live order screens should swap (replace), not stack, so the
+  // back stack never fills with half-finished nav screens. Fresh opens push as before.
+  const go = opts?.replace ? router.replace : router.push;
   if (order.category === "ride") {
-    router.push(`/active-ride/${encodeURIComponent(order.id)}`);
+    go(`/active-ride/${encodeURIComponent(order.id)}`);
     return;
   }
   // Food and parcel share the delivery navigation screen (grocery maps to food category).
   if (order.category === "food" || order.category === "parcel") {
-    router.push(`/active-food/${encodeURIComponent(order.id)}`);
+    go(`/active-food/${encodeURIComponent(order.id)}`);
     return;
   }
-  router.push("/(tabs)/orders");
+  go("/(tabs)/orders");
 }
