@@ -37,6 +37,7 @@ import {
 import { buildNavMapEdgeInsets } from "@/src/lib/navigation-camera-fit";
 import { openGoogleMapsNavigation } from "@/src/lib/open-google-maps-navigation";
 import { FoodNavigationMapChrome } from "@/src/components/orders/FoodNavigationMapChrome";
+import { ActiveOrderSwitcherPill } from "@/src/components/orders/ActiveOrderSwitcherPill";
 import { FoodPickOrderSheet } from "@/src/components/orders/FoodPickOrderSheet";
 import { FoodPickOrderDetailScreen } from "@/src/components/orders/FoodPickOrderDetailScreen";
 import { FoodDropOrderScreen } from "@/src/components/orders/FoodDropOrderScreen";
@@ -2481,6 +2482,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
             onZoomIn={handleMapZoomIn}
             onZoomOut={handleMapZoomOut}
           />
+          {/* Switch to another live order without finishing this one (e.g. same-store batch). */}
+          {!orderDelivered ? <ActiveOrderSwitcherPill currentOrder={order} /> : null}
         </View>
       </View>
 
